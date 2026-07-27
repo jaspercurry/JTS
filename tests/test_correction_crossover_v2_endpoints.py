@@ -204,7 +204,7 @@ def _wav(attempt: int) -> bytes:
 
 def _conductor(backend, session, phone, *, published, phases_seen=None,
                analyses=None, index_phase_map=None,
-               retained=None) -> CrossoverV2Conductor:
+               retained=None, on_play=None) -> CrossoverV2Conductor:
     """A real conductor whose fake play uploads the phone blob (the acoustic
     seam) and whose fake analyze returns canned per-phase analyses.
 
@@ -219,6 +219,11 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
         if phases_seen is not None:
             block = v2host.crossover_v2_status_block()
             phases_seen.append((phase, block["phase"] if block else None))
+        if on_play is not None:
+            # Observed at the START of a capture, so it reports the durable
+            # state produced by every PRECEDING capture — which is what a
+            # test about "when did the apply fire" needs to read.
+            on_play(phase, phone.begun[0])
         index, attempt = phone.begun
         backend.phone_upload(
             session.session_id, session.content_key, _wav(attempt),
@@ -429,9 +434,12 @@ def test_happy_path_three_phases_with_deferred_verify_release():
 
 
 def test_auto_apply_fires_exactly_once_on_trusted_measure_and_arms_verify(monkeypatch):
-    """Owner ruling (2026-07-20): a trusted MEASURE accept must trigger the
+    """Owner ruling (2026-07-20): a trusted measurement must trigger the
     SAME apply transaction a household's tap used to invoke — automatically,
     on its own background thread, with no human review step in between.
+    (WHICH capture carries that trigger moved on 2026-07-27 — see
+    ``test_auto_apply_fires_at_the_cloud_measure_group_close_not_at_measure``,
+    which pins the ordering; this test pins the transaction itself.)
     Monkeypatches ``v2host.handle_v2_apply`` itself (the real
     ``apply_baseline_profile`` transaction through real seams is covered
     separately by ``test_apply_translates_measured_fingerprint_to_baseline_fingerprint``
@@ -462,6 +470,89 @@ def test_auto_apply_fires_exactly_once_on_trusted_measure_and_arms_verify(monkey
         camilla_factory=lambda: None,
     )
     _run(runner, client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    assert conductor.verify_outcome == "pass"
+    candidate = next(cand for kind, cand in published if kind == "candidate")
+    assert len(calls) == 1
+    assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
+    assert v2host.load_v2_state()["applied"] is True
+
+
+def test_auto_apply_fires_at_the_cloud_measure_group_close_not_at_measure(monkeypatch):
+    """The 2026-07-27 timing move, proved end to end through the REAL
+    ``run_capture_plan`` + conductor + ``_fire_auto_apply`` wiring.
+
+    Owner decision: the fit, the candidate build, and the auto-apply trigger
+    move from MEASURE's accept to the CLOUD_MEASURE group close, so the fit can
+    consume the spatial cloud's honesty verdict instead of preceding it by
+    eight captures. The 2026-07-20 "automatic, no human tap" ruling is
+    unchanged — only the trigger point moves.
+
+    Three things are asserted at once, because they are one property:
+
+    * **ordering** — no candidate and no apply exist at the START of capture 10
+      (the group's last position, still un-consumed), and both exist by the
+      start of capture 11 (VERIFY). Capture 10 is the only capture between
+      them, so it is the one that fired;
+    * **the host seam needed no change** — ``consume()`` keys on ``accepted`` +
+      ``auto_apply`` and never on a phase, so the flag simply arrives on a
+      later verdict and ``handle_v2_apply`` is still called exactly once, with
+      the published candidate's own fingerprint;
+    * **VERIFY still gates on the apply** — its begin is held (§5.2's
+      ``on_apply``) and only releases once the transaction lands, which is now
+      a REAL wait rather than a formality, and the session still reaches DONE.
+    """
+    calls: list[dict] = []
+
+    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
+        calls.append(dict(raw))
+        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
+        return {"status": "applied"}
+
+    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    published: list = []
+    seen: list[tuple[int, str, bool, bool]] = []
+
+    def _on_play(phase: str, index: int) -> None:
+        state = v2host.load_v2_state() or {}
+        seen.append((
+            index, phase,
+            state.get("candidate") is not None,
+            bool(state.get("applied")),
+        ))
+
+    conductor = _conductor(
+        backend, session, phone, published=published, on_play=_on_play,
+    )
+    volume = VolumeRecorder()
+    runner = _build_runner(
+        conductor, volume,
+        run_async=lambda coro, **kw: None,
+        camilla_factory=lambda: None,
+    )
+    _run(runner, client, session)
+
+    by_index = {index: (phase, cand, applied) for index, phase, cand, applied in seen}
+    # The plan's own shape, so this test fails loudly if the running order ever
+    # changes underneath it rather than silently checking the wrong captures.
+    assert by_index[2][0] == PHASE_MEASURE
+    assert by_index[10][0] == PHASE_CLOUD_MEASURE
+    assert by_index[11][0] == PHASE_VERIFY
+
+    # MEASURE has been consumed for eight captures by now and STILL produced
+    # no candidate and no apply — the move's whole point.
+    for index in range(3, 11):
+        _phase, candidate_present, applied = by_index[index]
+        assert candidate_present is False, index
+        assert applied is False, index
+    # Capture 10 is consumed; by VERIFY's play both exist.
+    assert by_index[11][1] is True
+    assert by_index[11][2] is True
 
     assert conductor.current_phase == PHASE_DONE
     assert conductor.verify_outcome == "pass"
@@ -593,14 +684,20 @@ def test_stop_before_apply_start_skips_the_dsp_mutation(monkeypatch):
 
 def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch):
     """SF1(b)/(c) interleaving 2/2: the auto-apply transaction lands BEFORE
-    the phone's Stop is processed (a deliberate Stop tap right after MEASURE
-    was accepted — realistic timing, since the auto-apply's own transaction
-    is synchronous-fast in this test and the phone's Stop needs a further
-    relay round trip to be discovered). The final durable state must be
-    COHERENT: applied=True preserved alongside the honest user_stopped
-    record (never clobbered either direction — SF1(b)), and the wizard
-    envelope must say the crossover WAS applied and surface Undo, never a
-    dishonest "nothing happened, start over" (SF1(c))."""
+    the phone's Stop is processed (a deliberate Stop tap right after the
+    capture that fires the auto-apply — realistic timing, since the
+    auto-apply's own transaction is synchronous-fast in this test and the
+    phone's Stop needs a further relay round trip to be discovered). The final
+    durable state must be COHERENT: applied=True preserved alongside the honest
+    user_stopped record (never clobbered either direction — SF1(b)), and the
+    wizard envelope must say the crossover WAS applied and surface Undo, never
+    a dishonest "nothing happened, start over" (SF1(c)).
+
+    The abort point moved with the 2026-07-27 timing move — from result 2
+    (MEASURE) to result 10 (the CLOUD_MEASURE group's last position, which is
+    where the fit, the candidate, and the auto-apply trigger now live). The
+    interleaving under test is unchanged; only the capture that fires the
+    apply is later."""
     _skip_purge_grace(monkeypatch)
     monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
 
@@ -613,7 +710,9 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec)
-    phone.abort_after_results = 2  # abort right after MEASURE's OWN result
+    # Abort right after the CLOUD_MEASURE group's closing result — the capture
+    # that now builds the candidate and fires the auto-apply.
+    phone.abort_after_results = 10
 
     def _abort_stopped(reason="stopped"):
         PhonePlanDriver.abort(phone, "stopped")
@@ -641,12 +740,14 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
     block = v2host.crossover_v2_status_block()
-    # The stop landed right after MEASURE, so the next pending phase is the
-    # pre-apply cloud — which sits INSIDE the wizard's "measure" step, not a
-    # new one. What this test is really about is the applied-keyed override
-    # below (W6.7 ruling 3): the render must stay honest ("already applied")
-    # regardless of which phase the projection reports.
-    assert block["phase"] == PHASE_CLOUD_MEASURE
+    # The stop landed right after the pre-apply cloud CLOSED, so that phase is
+    # accepted and the next pending one is VERIFY (not "applying" — the apply
+    # already landed, which is the whole premise here). What this test is
+    # really about is the applied-keyed override below (W6.7 ruling 3): the
+    # render must stay honest ("already applied") regardless of which phase
+    # the projection reports.
+    assert block["phase"] == PHASE_VERIFY
+    assert PHASE_CLOUD_MEASURE in state["accepted_phases"]
     env = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},

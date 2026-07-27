@@ -216,8 +216,10 @@ The conductor is I/O-free: all side effects cross an injected
 `publish_candidate`, `apply_complete`, `apply_failed`). The web host
 ([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
 binds the real seams — including firing the auto-apply itself on a
-background thread once a trusted MEASURE accept lands (gotcha #18) — and
-tests inject fakes.
+background thread once the candidate-carrying verdict lands (gotcha #18;
+that is the **pre-apply cloud group's close** since the 2026-07-27 timing
+move, MEASURE's own accept on the pre-cloud 3-entry shape — see "When the
+fit runs" below) — and tests inject fakes.
 
 ### The capture flow
 
@@ -248,6 +250,24 @@ polarity, and per-driver linearization stay single-position at the
 design-axis anchor (MEASURE). VERIFY's tracking comparator likewise
 stays at the anchor — it answers "did apply do what the model
 predicted", which a moved mic cannot answer.
+
+**When the fit runs** (owner decision, 2026-07-27). The fit still reads
+MEASURE's single-position analysis — the line above is unchanged — but it
+RUNS at the pre-apply group's close (index 10), not at MEASURE's accept
+(index 2), and takes the closed cloud's honesty verdict as an extra
+constraint. That is what makes the correction envelope's two cloud terms
+(`spatial_exclusion_limit`, `position_stability_limit`) reachable at all:
+before the move the candidate was built eight captures before the cloud
+it was supposed to consume, and auto-apply fired while positions 3–10
+were still being walked — so the "pre-apply cloud" was captured through
+an already-corrected speaker. The move closes both. Every MEASURE trust
+gate stays at index 2 (they read the analysis, not the candidate), so a
+doomed session still fails at sweep two rather than after a nine-position
+walk. A session with **no** pre-apply group — the pre-cloud 3-entry shape
+the conductor defaults to, and the 1-entry re-verify path — still builds
+at MEASURE, byte-identically: the rule is "the fit runs at the last
+capture before the apply". No wire bytes, screens, or plan entries
+changed; only conductor-internal timing.
 
 1. **CHECK** (~25 s, one tap). Ambient silence + two band-limited pilot
    chirps per driver at two levels (−10 dB apart). Yields the ambient
@@ -289,7 +309,18 @@ seed, which returned only 5.81 dB of a 9.27 dB spend and left the tweeter band
 ~3 dB low. A ripple scan that then drifts >6 dB from that anchor is discarded in
 favor of the anchored pair.
 The fit result travels on `MeasuredCrossoverCandidate.linearization` (empty
-dict = not attempted). Design and fitting-policy SSOT:
+dict = not attempted), and — since the 2026-07-27 timing move — the cloud
+inputs that constrained it travel beside it on
+`MeasuredCrossoverCandidate.exclusion_evidence`: the merged honesty intervals
+handed to `spatial_exclusion_limit`, the `band_spread`/`n_positions` behind
+`position_stability_limit`, and the identified-null registry with its τ/r per
+null. Empty dict = no cloud evidence entered this fit, which is also every
+pre-move candidate's implicit claim. Enough to re-derive both envelope terms
+from `candidate.json` alone; it deliberately duplicates data in
+`cloud_measure.json`, because that file is prunable session evidence while this
+travels with the correction it justifies. Same optional-field conventions as
+`linearization` (omitted from the fingerprint when empty, fingerprinted when
+present, accepted absent on `from_mapping`). Design and fitting-policy SSOT:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 "Layer 1a concretely"; engine at
 [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py),
@@ -863,7 +894,20 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
   `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`, plus
   per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
-  `tweeter_snr_verdict`.
+  `tweeter_snr_verdict`. (A `linearization` field rode this line until the
+  2026-07-27 timing move. The fit now runs eight captures later, so this line
+  could only ever have reported `""` — the field moved to
+  `..._candidate_built` below rather than being kept as a permanently-empty
+  one, the same treatment PR-5 gave the per-capture `flatness_*` fields.)
+- `correction.crossover_v2_candidate_built` — once per built candidate, from
+  whichever capture is the last before the apply: `candidate_fingerprint`,
+  `linearization` (the outcome — fitted / trim_rejected / ineligible_* /
+  fit_failed), `cloud_evidence` (did a cloud verdict reach the envelope),
+  `excluded_bands`, `cloud_positions`. Absent entirely when a measurement was
+  rejected — a session with no candidate makes no linearization claim.
+  Its sibling `correction.crossover_v2_fit_without_cloud` (WARNING) names the
+  honest degradation: a group whose pipeline never became available, so the
+  fit ran with no cloud terms.
 - `correction.crossover_v2_verify_diag` — `accepted`, `code`,
   `max_db_notch_excluded` (the number the tolerance actually gates on),
   `verify_tolerance_db`, `verify_gate_window_ms`, `measure_gate_window_ms`
@@ -1198,9 +1242,11 @@ no retries-as-bodge). Treat these as regression fences.
     `crossover_v2_flow.py` — the decision-maker, not the renderer) and
     having the conductor fire the SAME apply transaction a household's tap
     used to trigger (`handle_v2_apply`, unchanged, now called from a
-    background thread right after a trusted MEASURE accept instead of from
-    an HTTP handler alone). The `CaptureBeginDeferred` soft-hold mechanism
-    between MEASURE and VERIFY is UNCHANGED — only the release trigger
+    background thread right after the candidate-carrying accept instead of
+    from an HTTP handler alone — that accept was MEASURE's when this landed
+    and is the pre-apply cloud group's close since 2026-07-27, see "When the
+    fit runs"). The `CaptureBeginDeferred` soft-hold mechanism
+    before VERIFY is UNCHANGED — only the release trigger
     moved from a human tap to the auto-apply completing, and its copy
     changed from "waiting for the household to apply" to "Applying to
     your speaker…". `REVIEW_HOLD_BUDGET_S` shrank from 900 s (sized for a

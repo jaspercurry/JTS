@@ -174,7 +174,13 @@ adds phase — the high-credibility view for a crossover product).
 > gate instead: below the floor, MEASURE is rejected with guidance to
 > re-measure at a cleaner mic position — never a question. A trusted
 > candidate is applied automatically by the conductor, on its own
-> background thread, immediately after MEASURE accepts. The soft-held
+> background thread, immediately after MEASURE accepts. *(Trigger point
+> moved 2026-07-27 by owner decision: on a session that runs a pre-apply
+> position group — every production measurement session since PR-3b — the
+> fit, the candidate build, and the auto-apply now happen at that group's
+> CLOSE rather than at MEASURE's accept, so the fit can consume the cloud's
+> honesty verdict. Automatic-with-no-human-tap is unchanged. See the
+> HANDOFF's "When the fit runs".)* The soft-held
 > deferred-VERIFY mechanism described below is UNCHANGED; only the release
 > trigger moved from a human tap to the auto-apply completing. Current
 > operational truth (screen names, reason codes, the RESULT screen shape)

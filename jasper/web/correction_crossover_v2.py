@@ -1924,11 +1924,13 @@ def build_v2_run_and_consume(
     relay session is purged on every exit path.
 
     ``run_async``/``camilla_factory`` (owner ruling, 2026-07-20) are the SAME
-    dependencies :func:`handle_v2_apply` needs; when supplied, a trusted
-    MEASURE accept (the conductor's ``consume_capture`` verdict carrying
-    ``auto_apply: True``) fires the auto-apply on its OWN background thread —
+    dependencies :func:`handle_v2_apply` needs; when supplied, the conductor's
+    candidate-carrying ``consume_capture`` verdict (the one with
+    ``auto_apply: True`` — the CLOUD_MEASURE group close on a cloud session
+    since the 2026-07-27 timing move, MEASURE's own accept on the pre-cloud
+    shape) fires the auto-apply on its OWN background thread —
     see ``_fire_auto_apply`` below. ``prepare_v2_verify``'s verify-only
-    conductor never produces a MEASURE accept, so it passes neither.
+    conductor never produces one at all, so it passes neither.
 
     Host-owned error mapping (S1c):
 
@@ -2003,9 +2005,13 @@ def build_v2_run_and_consume(
             next ``begin_capture`` (VERIFY), which is what shows "Applying to
             your speaker…" via the EXISTING CaptureBeginDeferred hold
             (``authorize_begin``'s ``apply_complete``/``apply_failed`` seam
-            checks) until this finishes. A no-op when ``run_async``/
-            ``camilla_factory`` were not supplied (the verify-only re-arm
-            session never produces a MEASURE accept, so it never calls this).
+            checks) until this finishes. Since the 2026-07-27 timing move that
+            hold is a REAL wait rather than a formality — the apply now starts
+            at the pre-apply cloud's close, one capture before VERIFY, which is
+            the same relative position it held in the pre-cloud flow. A no-op
+            when ``run_async``/``camilla_factory`` were not supplied (the
+            verify-only re-arm session never produces a candidate at all, so it
+            never calls this).
             """
             if run_async is None or camilla_factory is None:
                 return
@@ -2160,11 +2166,18 @@ def build_v2_run_and_consume(
                 and verdict.get("accepted")
                 and verdict.get("auto_apply")
             ):
-                # The conductor's own trust gate already passed (owner
+                # The conductor's own trust gates already passed (owner
                 # ruling, 2026-07-20) — fire the auto-apply now, AFTER the
                 # verdict is persisted so the background thread's own
-                # persist_conductor_state calls always see MEASURE already
-                # recorded as accepted.
+                # persist_conductor_state calls always see the accepting phase
+                # already recorded as accepted.
+                #
+                # This branch keys on ``accepted`` + ``auto_apply`` and never
+                # on WHICH phase produced them, which is why the 2026-07-27
+                # timing move (the fit/candidate/auto-apply relocating from
+                # MEASURE's accept to the CLOUD_MEASURE group close) needed no
+                # change here: the flag simply arrives on a later verdict.
+                # Pinned by the endpoint tests rather than left to inference.
                 _fire_auto_apply(conductor.candidate)
             return verdict
 

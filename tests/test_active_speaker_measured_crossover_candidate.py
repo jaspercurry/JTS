@@ -583,13 +583,18 @@ def test_to_dict_canonical_shape_always_includes_linearization_key():
     candidate = _candidate()
     assert candidate.linearization == {}
     assert candidate.linearization_outcome == ""
+    assert candidate.exclusion_evidence == {}
     raw = candidate.to_dict()
     assert raw["linearization"] == {}
     assert raw["linearization_outcome"] == ""
+    # PR-6b's ``exclusion_evidence`` joins the same always-written set, for the
+    # same reason: a fresh empty write and a freshly-built raw dict must agree
+    # byte-for-byte or from_mapping's tamper check needs a special case.
+    assert raw["exclusion_evidence"] == {}
     assert set(raw) == {
         "schema_version", "kind", "program_id", "analysis", "source_preset",
         "role_attenuations_db", "alignment", "linearization",
-        "linearization_outcome", "fingerprint",
+        "linearization_outcome", "exclusion_evidence", "fingerprint",
     }
 
 
