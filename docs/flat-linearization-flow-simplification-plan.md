@@ -21,12 +21,27 @@ operational reference: [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover
 3. Express sessions should land well under 5 minutes (full walk today is
    ~10–15 min wall clock).
 
-What makes express *honest* now: the new horn removed the deep 8–16 kHz
-comb (2026-07-27 session: null depths 5.4–7.0 → ≤1.6 dB, all below the
-2.5 dB materiality floor). The biggest historical reason for many
-positions was HF-null decorrelation; with the comb gone, a small cloud's
-remaining job is LF support and outlier rejection, which fewer — but
-wide — positions can carry, with the degradation disclosed.
+What makes express *honest* now: the owner's new horn removed the deep
+8–16 kHz comb **on JTS3**. Evidence: the first real cloud session
+(2026-07-27, session `cap_4NUGqx3yIzSuv4ta2ozfKw`, bundle
+`d5b171fa81a5` on JTS3) measured every null depth ≤ 1.6 dB — all below
+the 2.5 dB materiality floor (`DEFAULT_MIN_NULL_DEPTH_DB`,
+`jasper/audio_measurement/interference_nulls.py`), registry honestly
+empty — against the old horn's source-fixed 5.4–7.0 dB comb
+([`flat-linearization-plan.md`](flat-linearization-plan.md) S0 ground
+truth). That session ran with an uncalibrated echo-analysis band
+(issue #1763, fixed by PR #1764 before this ladder), so the figure is
+exploratory until the confirmatory calibrated session — and it is a
+**single-speaker hardware fact**, not a product-wide one. The biggest
+historical reason for many positions was HF-null decorrelation; on a
+speaker whose horn (or baffle) still combs, a 4-position cloud
+decorrelates HF nulls less well — which is why §1.3 carries an
+HF-null row and §3 recommends Full on a first-ever commission. With
+the comb gone, a small cloud's remaining job is LF support and outlier
+rejection, which fewer — but wide — positions can carry, with the
+degradation disclosed. (PR-U3 adds a dated pointer note to the parent
+plan so its old-horn comb figures and this result don't read as
+contradicting canon.)
 
 **Owner feedback round (2026-07-27 evening, on the draft):**
 
@@ -65,8 +80,9 @@ group**. Full stays (N = 9, M = 6) = 16, untouched.
 Why 4 prompted positions and not the floated 3:
 
 - **Both wide offsets come free.** `CLOUD_POSITION_PROMPTS` front-loads
-  its wide (≥ 30 cm) moves at table offsets 2 and 3
-  (`test_cloud_prompts_front_load_the_wide_offsets`). A 4-position group
+  its wide (≥ 30 cm) moves at table offsets 2 and 3 (0-based — the code
+  comment above the table counts them 1-based as "3 and 4";
+  `test_cloud_prompts_front_load_the_wide_offsets`). A 4-position group
   walks offsets 0–3 and picks up both wide moves from the already-shipped,
   already-validated table — hand-width left/right plus forearm left/right,
   which is the owner's "middle, left, right" at two scales. Three prompted
@@ -80,13 +96,19 @@ Why 4 prompted positions and not the floated 3:
   (`spatial_combine.assess_geometry`). At 3 positions it is structurally
   unreachable — a barely-corroborated lock would be reported with full
   confidence. At 4 it keeps its designed semantics.
-- **The envelope's evidence discount actually binds, honestly.** The
-  S0-calibrated `position_stability_limit` (σ/√N,
-  `tests/test_active_speaker_linearization_envelope.py` calibration) sits
-  around 12.3 dB at 10 positions — above the fit's 12 dB per-filter cut
-  cap, so a full cloud pays nothing — but ~7.9 dB at 4 positions. An
-  express fit is automatically a lighter-touch fit. That is the honest
-  machinery working, not a new rule.
+- **The envelope's evidence discount (σ/√N) applies at whatever express
+  actually measures.** `position_stability_limit`'s S0 calibration
+  (`tests/test_active_speaker_linearization_envelope.py`) is **not
+  monotone in N**: 10 positions → 12.29 dB, but the one 4-position
+  reading (7.92 dB) comes from a deliberately degenerate one-height
+  subset (`S0_MAIN_HAND_WIDTH_LOW`) whose σ is inflated by the
+  documented clean break at cloud_07, and a 6-position one-height
+  subset reads 23.82 dB — *looser* than the full cloud. Express's
+  dispersed 4-position walk is structurally unlike any of those
+  subsets, so **its limit is unmeasured until the JTS3 product smoke**.
+  The honest statement is only this: the term is present, computed
+  from express's own spread, and will bind or not accordingly — no
+  code change either way.
 
 Geometry retakes stay enabled with the same budget
 (`GEOMETRY_RETRY_POSITIONS = 2`), so a locked express cloud can grow to 9
@@ -94,10 +116,19 @@ captures worst case — still comfortably under the relay ceiling
 (`max_attempts = 7 + 2 + 5 = 14 ≤ 32`) and the wall-clock ceiling
 (`1800 + (7−3)·120 = 2280 s`).
 
-**Duration.** By the capture page's own estimator (per-entry
-`duration_ms` + its 20 s/capture allowance,
-`capture-page/js/main.js::wakeLockHintText`), 7 captures ≈ **4 minutes**.
-The estimate the user sees is derived from the plan — nothing hardcoded.
+**Duration — two honest numbers, keep them straight.** The composed
+program audio for 7 captures is ≈ 2.4 min (measured through
+`build_v2_capture_plan` at JTS3-like bands: check 22.8 s + measure
+40.9 s + 5 × 16.2 s). The capture page's estimator
+(`capture-page/js/main.js::wakeLockHintText` — per-entry `duration_ms`
++ a deliberately generous 20 s/capture allowance, `Math.ceil` to
+minutes) **displays 5 minutes** for that plan (4.75 ceiled), and 11
+for the full tier. All displayed numbers derive from the plan —
+nothing hardcoded — so wizard/consent copy MUST say "about 5 minutes"
+(and "about 11" for full), never a prettier hand-written figure. The
+mandate's "well under 5 minutes" is a statement about expected real
+wall clock (audio + four short moves), not about the conservative
+display.
 
 ### 1.2 The N-floor decision
 
@@ -112,10 +143,17 @@ named plan shape** with its own validation:
   `prepare_v2_session` calls both with defaults and passes counts to
   neither; threading them from one resolved value closes the desync
   hazard.)
-- Tier-aware validation: express admits exactly (N = 5, M = 1); full keeps
-  the existing (6 ≤ N ≤ 12, M ≥ 5) rules. An M = 1 plan emits no
-  cloud-verify entries and moves the `done_title`/`done_body` screen onto
-  the VERIFY entry.
+- Tier-aware validation: express admits exactly (N =
+  `_min_positions_for_two_wide_offsets()`, M = 1) — **derived from the
+  prompt table, never the literal 5**, exactly as
+  `MIN_CLOUD_VERIFY_POSITIONS` already is and for the same reason: if
+  the table's wide moves are ever reordered, the floor must move with
+  them rather than leave express silently one-wide. Extend
+  `test_cloud_prompts_front_load_the_wide_offsets` to pin the express
+  constant alongside the two existing floors. Full keeps the existing
+  (6 ≤ N ≤ 12, M ≥ 5) rules. An M = 1 plan emits no cloud-verify
+  entries and moves the `done_title`/`done_body` screen onto the
+  VERIFY entry.
 - The tier rides the durable v2 state, the pipeline payload, and
   `/state`, so every consumer can tell which instrument produced a
   result (same unknown-vs-default rule as `echo_band_provenance`,
@@ -125,14 +163,15 @@ named plan shape** with its own validation:
 
 | Surface | Full (N=9, M=6) | Express (N=5, M=1) |
 |---|---|---|
-| Correction fit evidence | 8-position power-mean cloud | 4-position power-mean cloud; envelope's position-stability cap tightens ~12.3 → ~7.9 dB (S0-calibrated) — **automatic** |
+| Correction fit evidence | 8-position power-mean cloud | 4-position power-mean cloud; the envelope's σ/√N position-stability term computes from express's own spread (§1.1 — its limit is unmeasured until the JTS3 smoke) — **automatic** |
+| HF-null decorrelation | 8 dispersed positions | 4 positions decorrelate HF nulls less well on a speaker that still combs — the premise for express is a comb-free source (§0); on a combing speaker the registry/carve-out machinery still refuses honestly, but with less evidence. §3's first-run Full recommendation exists for this row |
 | Outlier exclusion screen | power-vs-median over 8 | over 4 (weaker; a single bad take is harder to identify) — **automatic**, disclosed |
 | Echo/geometry adjudication | n = 8, `thin_evidence` cliff at 2-of-≥4 | n = 4, same cliff semantics — **automatic** |
 | Null registry / carve-outs | full corroboration budget | fewer corroborations → more `insufficient_evidence` refusals — **automatic** (the detector refuses rather than guesses) |
 | Pre-apply spec verdict | cloud spec gauges on the measure cloud | same gauges on the 4-position cloud, tier-qualified |
 | **Post-apply spec verdict** | cloud-verify group (5 positions) re-measures the applied result across the cloud | **ABSENT.** Express verifies tracking at the mark only (±1.5 dB, `VERIFY_TOLERANCE_DB` unchanged). No cross-position post-apply claim — disclosed on the done screen, in the wizard, and in `/state` |
 | Before/after chart (PR-7) | both phases | "before" cloud + VERIFY tracking; the "after" cloud panel is absent and the callouts say why |
-| Wall clock | ~10–15 min | ≈ 4 min |
+| Wall clock | ~10–15 min (page displays 11) | expected ~3–5 min real; page displays 5 (§1.1) |
 
 The disclosure rule follows the program's standing prose discipline:
 never claim wider than measured. Express copy says what it verified
@@ -173,16 +212,35 @@ every time:
             speaker; keep the phone         may be empty
             pointed at it.
 [action]    [ I'm there — play the tone ] ← single full-width primary
-[stop]      Stop measuring                ← small text link, not a
-                                            red button
+[stop]      Stop measuring                ← small text link; its tap
+                                            opens a danger-styled
+                                            confirm (see below)
 ```
+
+**Stop demotion is a deliberate reversal of a documented decision.**
+`render.js` and `stopButtonEl` style Stop as the page's one danger-red
+button *on purpose* ("the one button … whose tap is destructive to the
+in-progress measurement"). The redesign keeps the destructiveness
+honored but moves it to the right layer: the always-present control
+shrinks to a text link (it appears 16× per full session and competes
+with the primary at equal weight today), and the tap opens a
+danger-styled confirm ("Stop measuring? This abandons the session")
+so a stray tap can't kill a session — which the current full-weight
+button actually can. Owner-reversible (§5).
 
 Server side: `CapturePlanEntry.screen` (an opaque `str → str` dict — no
 relay/protocol change) carries `progress`, `title` (now the
 instruction), and `body` (the detail clause). The old page renders new
 plans gracefully (it already shows `title` big and `body` small — the
 instruction simply becomes the headline); the new page renders old plans
-via the same fallbacks. `CloudPositionPrompt` splits into
+via the same fallbacks. **One deliberate exception: the VERIFY entry's
+`title`/`body` are NOT repurposed** — an old page renders them as the
+apply-hold heading (`renderPlanDeferred`), and
+`validate_capture_page` enforces only a build-stamp *format*, never a
+minimum build, so a phone with a cached pre-redesign bundle is
+admitted. The post-apply confirmation instruction therefore rides a
+**new** screen key the old page ignores (§2.2), keeping the fallback
+claim true for every entry. `CloudPositionPrompt` splits into
 (headline, detail, wide) so each move is authored as one short imperative
 plus at most one supporting clause, instead of a 2–3 sentence paragraph.
 
@@ -204,20 +262,34 @@ transient state channel only ("Playing the measurement tone…",
 - **VERIFY becomes hold-then-tap — the step-11 fix.** Today
   `AUTO_ADVANCE_ON_APPLY` fires the verify sweep with *no tap at all*
   once the apply completes, racing the user's walk back to the mark (the
-  2026-07-27 session failed exactly here: collapsed-gate capture from
-  mic placement, then a 1.73 dB vs 1.5 dB tracking miss with walk-back
-  placement suspect). New contract: during apply, the hold screen
-  instructs the walk-back ("Applying — walk back to the mark now");
-  when the apply completes, the page renders the standard step grammar
-  ("Back on the mark, holding still?" / "I'm there — play the tone") and
-  the sweep arms only after the tap. Acceptance criterion for the
-  implementation, regardless of seam: *the VERIFY tone must not fire
-  until the user confirms after apply completes, and the session must
-  tolerate at least a 60 s tap delay without expiring.* (The page
-  already controls arming — authorization and the `armed` post are
-  separate steps — so this is expected to be page policy plus a screen
-  key, with no conductor state-machine change; the implementer verifies
-  the authorized→armed window tolerates the delay.)
+  2026-07-27 session record: collapsed-gate capture from mic placement,
+  then a 1.73 dB vs 1.5 dB tracking miss with walk-back placement
+  suspect). New contract — **begin-first, and this ordering is
+  load-bearing**: the page posts `begin_capture` immediately as today
+  (each `capture_deferred` retry re-arms the host's `awaiting_begin`
+  clock during the apply hold — sitting tap-first in `awaiting_begin`
+  would hit `REVIEW_HOLD_BUDGET_S = 30 s` and kill the session as a
+  `relay_timeout`); the hold screen instructs the walk-back
+  ("Applying — walk back to the mark now"); when authorization lands,
+  the page renders the standard step grammar ("Back on the mark,
+  holding still?" / "I'm there — play the tone") and proceeds to
+  mic/ambient/`armed` **only after the tap**. The tap wait lives in the
+  host's `awaiting_arm` phase, whose budget is `DEFAULT_TIMEOUT_S =
+  120 s` (`jasper/capture_relay/session.py`) — the 60 s acceptance
+  criterion fits inside it. The entry KEEPS
+  `auto_advance=AUTO_ADVANCE_ON_APPLY` (so `begin_budget`'s hold
+  semantics and the `AUTO_ADVANCE_ON_APPLY` pins in
+  `tests/test_capture_relay_plan.py` stay live, no orphaned
+  constants); the post-apply confirmation copy rides a new screen key
+  (e.g. `confirm_title`/`confirm_body`) that an old page ignores — an
+  old page keeps today's exact behavior, hold copy included (§2.1).
+  Acceptance criteria: *the VERIFY tone must not fire until the user
+  confirms after apply completes; the session must tolerate at least a
+  60 s tap delay without expiring; an old-build page against a new
+  plan behaves byte-for-byte as today.* No conductor state-machine
+  change: `authorize_begin` is bookkeeping, playback happens at
+  `on_armed`, and a delayed arm is acoustically inert (the session
+  wall clock already scales via `session_wall_clock_ceiling_s`).
 - `VERIFY_TOLERANCE_DB = 1.5` does not move. The tap gate attacks the
   placement-rush cause; the tolerance is a spec constant, not a UX knob.
   If misses recur after this lands, that is a separate calibrated
@@ -239,12 +311,17 @@ is stated before the first tone and never only implied:
 - Then the existing placement instruction (mark definition), the
   acknowledgement, and the start button ("The mic is on the mark — start
   measuring").
-- Clutter removed at the same time: the dead `level_meter` component on
-  crossover consent screens (only the level-ramp flow ever feeds it) is
-  no longer emitted by the crossover spec builder; the mic picker
-  collapses once the session mic stream exists (it is locked to one
-  stream after the first capture anyway); the wake-lock hint remains the
-  fallback-only line it is today.
+- Clutter removed at the same time: the dead `level_meter` component
+  stops being emitted by `build_crossover_sweep_spec` — **scope note:
+  that builder serves every crossover consent screen** (the v2 cloud,
+  the legacy per-driver sweeps, and the 1-entry re-verify), and the
+  meter is dead on all of them (`updateLevelMeters` is fed only by the
+  level-ramp protocol), so the removal is intentionally that wide; the
+  `ui_level_meter` *builder helper* stays (it is pinned as a builder in
+  `tests/test_capture_relay_spec.py` and the level-ramp flow still
+  uses it). The mic picker collapses once the session mic stream
+  exists (it is locked to one stream after the first capture anyway);
+  the wake-lock hint remains the fallback-only line it is today.
 
 ### 2.4 Retry and recovery screens use the same grammar
 
@@ -299,21 +376,42 @@ grammar slots:
 - **Stop** (small text link) — abandon the session (existing semantics:
   volume restored; pre-apply abandonment leaves the speaker untouched).
 
-Retake design (wire-compatible, no relay/Worker change):
+Retake design (no Worker change; one Pi-side runner-contract
+extension):
 
-- A `begin_capture` for the **already-accepted just-completed index** is
-  the retake request — no new event kind. The conductor authorizes it
-  (budget permitting) and **drops the old take only when the
-  replacement capture is ACCEPTED**; a rejected or abandoned retake
-  keeps the original (fail-safe: you can never end up with less
-  evidence than you had).
-- Budget: retakes ride the existing per-slot attempt budget
-  (`CLOUD_RETAKE_ALLOWANCE`), shared with failure retries — bounded by
-  construction. The page hides the Retake control when the budget is
-  exhausted.
-- Scope: only the just-completed capture — no arbitrary-history
-  retakes, no retake across a closed group. VERIFY retake is the
-  existing `verify_retry` path, unchanged.
+- **The plan runner refuses out-of-order begins today** — this is a
+  verified constraint, not a guess: `_poll_capture_plan`
+  (`jasper/capture_relay/session.py`) hard-refuses any `begin_capture`
+  whose `(index, attempt)` ≠ `(accepted_count + 1, attempts_used + 1)`
+  with `begin_out_of_order`. A naive "begin the accepted index again"
+  therefore never reaches the conductor.
+- **The admitted-retake shape.** The runner's ordering contract gains
+  exactly one new admitted shape: a begin for `accepted_count` (the
+  just-accepted index) carrying a retake marker in its payload. On
+  such a begin the runner does **not** rewind `accepted_count`; the
+  retake capture flows through the normal
+  authorize → arm → upload → verdict path for that slot, and on
+  ACCEPT the conductor **replaces** the retained take (the swap is
+  conductor-side, where take retention already lives — the geometry
+  retry's drop machinery is the precedent). A rejected or abandoned
+  retake leaves the original take standing (fail-safe: you can never
+  end up with less evidence than you had). `accepted_count` never
+  decrements, so the completion check and index→phase lookups are
+  untouched. The Worker stays byte-opaque to all of it (events pass
+  through; the marker is payload).
+- Budget: retake attempts ride the just-accepted slot's existing
+  attempt budget (`CLOUD_RETAKE_ALLOWANCE` at the plan level), shared
+  with failure retries — bounded by construction. The page hides the
+  Retake control when the budget is exhausted.
+- Scope: only the just-completed capture, and only until the next
+  entry's begin is posted — no arbitrary-history retakes, no retake
+  across a closed group. VERIFY retake is the existing `verify_retry`
+  path, unchanged.
+- Acceptance criteria: retake works end-to-end through the **real
+  runner** in tests (`tests/test_capture_relay_plan.py` gains the
+  admitted-shape cases); a rejected retake demonstrably keeps the
+  original take; an old-build page (which never posts the marker)
+  behaves exactly as today.
 
 **Group-close timing consequence (deliberate change):** today the final
 cloud position's *acceptance* closes the group and fires fit + apply
@@ -334,14 +432,18 @@ feedback item 4) — a two-option chooser on the `/correction/` wizard's
 `microphone_check` screen, both tiers first-class with derived
 durations and a one-line claims difference:
 
-> **Quick tune** (~4 min) — 7 measurements; confirms the result at the
-> mark.
-> **Full measurement** (~12 min) — 16 measurements; re-checks the
+> **Quick tune** (about 5 min) — 7 measurements; confirms the result
+> at the mark.
+> **Full measurement** (about 11 min) — 16 measurements; re-checks the
 > result across the room.
 
-History picks only which option carries the "Recommended" badge (never
-a silent default): first-ever commission on this topology → Full
-recommended; re-tune → Quick recommended.
+(Both durations are the page estimator's derived numbers — §1.1 — and
+the wizard copy derives them the same way rather than hand-writing
+prettier ones.) History picks only which option carries the
+"Recommended" badge (never a silent default): first-ever commission on
+this topology → Full recommended — this is the §1.3 HF-null row's
+mitigation, since the comb-free premise for express is measured on
+JTS3, not on every speaker; re-tune → Quick recommended.
 
 Where the choice lives, and why the wizard rather than the capture
 page: the capture plan is baked into the HMAC-bound spec at session
@@ -393,28 +495,45 @@ reaches them.
   contract test); Node harness updates (`capture_plan_loop_test.mjs` +
   the screen-literal pins in `test_capture_page_js.py`).
 - **PR-U3 — wizard + docs (Sonnet).** Envelope tier picker with
-  history-based default; express done/verify disclosure copy; chart +
-  callouts handle the absent post-apply cloud; `/state` tier surfacing;
-  `HANDOFF-crossover-measurement-v2.md` (session walk, counts, prompt
-  copy section); productization-plan annotation (this phase supersedes
-  its UX surface, not its instrument); drift fixes found during design:
-  the plan doc's stale "N = 8" (code is 9), the stale
-  `"Spot 4 of 8"` comment in `crossover_envelope_v2.py`, and the
-  eight prose "16"s that would read false with two tiers.
+  history-based recommendation; express done/verify disclosure copy;
+  chart + callouts handle the absent post-apply cloud; `/state` tier
+  surfacing; `HANDOFF-crossover-measurement-v2.md` (session walk,
+  counts, prompt copy section); productization-plan annotation (this
+  phase supersedes its UX surface, not its instrument) **plus its
+  stale "N = 8 cloud-measure positions" line
+  (`docs/flat-linearization-productization-plan.md:492` — code is
+  9)**; a dated new-horn pointer note in
+  `docs/flat-linearization-plan.md` (§0); the stale `"Spot 4 of 8"`
+  comment in `jasper/active_speaker/crossover_envelope_v2.py`; and the
+  capture-count "16"s that read false once two tiers exist —
+  enumerated by the review, they span `HANDOFF-crossover-measurement-v2.md`
+  (~7 sites), `HANDOFF-correction.md` (2), `correction-journey-design.md`
+  (1), `crossover-measurement-productization-design.md` (1), plus the
+  narrative "16"s in `crossover_v2_flow.py` docstrings,
+  `session_volume_plan.py`, `capture_relay/spec.py`, and
+  `capture-page/js/main.js` (page prose is U2's copy to fix). The
+  implementer greps rather than trusting this list to stay complete.
 
-**Release order.** Relay untouched (screens are opaque; capacity 32
-dwarfs express's 14). Page deploys before the Pi (repo rule;
-`--branch=main` mandatory), and both directions are fallback-safe: old
-page renders new plans (instruction lands in the headline slot it
-already draws), new page renders old plans. Product smoke on JTS3 after:
-one express session end-to-end + one full-session spot-check of the new
-screens.
+**Release order.** Worker untouched (screens and event payloads are
+opaque to it; capacity 32 dwarfs express's 14). Page deploys before
+the Pi (repo rule; `--branch=main` mandatory). Both directions are
+fallback-safe **by construction, not by luck**: every behavior-changing
+signal (the post-apply confirm copy, the retake marker) rides keys an
+old page never reads and an old Pi never sends — the VERIFY
+`title`/`body` are deliberately NOT repurposed (§2.1/§2.2) because
+`validate_capture_page` enforces no minimum build and an old cached
+bundle is admitted. Product smoke on JTS3 after: one express session
+end-to-end + one full-session spot-check of the new screens (including
+the §2.5 courtesy pacing, by ear).
 
 ## 5. Scope fences and open items
 
 Fences (do not do):
 - No combiner / spec / fit math changes. Express consumes the shipped
-  estimators at n = 4, inside their calibrated regimes.
+  estimators at n = 4. (This deliberately sits below the full tier's
+  "min 6" comment and fundamental 1's N≈8–12 — the reconciliation is
+  §0's comb-free premise plus §1.3's HF-null row; read those before
+  calling this a contradiction.)
 - No relay protocol or Worker change; no capabilities bump.
 - `MIN_CLOUD_MEASURE_POSITIONS = 6` (full) and `VERIFY_TOLERANCE_DB =
   1.5` do not move.
@@ -446,5 +565,12 @@ Owner-reversible decisions taken in this doc (flag, don't block):
 5. Retakes share the existing per-slot attempt budget rather than
    getting their own (§2.6 — bounded by construction; revisit only if
    real sessions exhaust it).
+6. Stop demotes from an always-present danger button to a text link
+   with a danger-styled confirm (§2.1 — reverses `render.js`'s
+   documented styling decision; the confirm keeps the destructiveness
+   honored).
+7. The retake mechanism extends the Pi-side plan runner's
+   begin-ordering contract by one admitted shape (§2.6) rather than
+   adding a new event kind or a page→Pi mint round trip.
 
 Last verified: 2026-07-27
