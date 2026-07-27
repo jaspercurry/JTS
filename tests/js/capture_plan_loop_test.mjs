@@ -14,7 +14,15 @@
 //
 // Covers: full 3-of-3 accepted round trip; a capture_result rejection ->
 // "Try again" -> eventual acceptance; a capture_refused terminal (no retry
-// offered); capture_set_exhausted; Stop mid-round.
+// offered); capture_set_exhausted; Stop mid-round; and (tests 28-37) the
+// flow-simplification UX redesign — the one-instruction-per-step grammar,
+// voluntary retakes and the window they must never outlive, the group-close
+// confirm, and VERIFY's confirm-then-tone.
+//
+// The fake relay enforces the runner's ORDERING contract (not just its happy
+// path), so a retake test proves something: a page that dropped the marker,
+// or offered a retake after the window shut, gets refused exactly as the Pi
+// would refuse it.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -77,6 +85,9 @@ function makeNode(tag) {
     addEventListener(ev, fn) {
       (this._listeners[ev] = this._listeners[ev] || []).push(fn);
     },
+    removeEventListener(ev, fn) {
+      this._listeners[ev] = (this._listeners[ev] || []).filter((f) => f !== fn);
+    },
   };
   let text = "";
   Object.defineProperty(node, "textContent", {
@@ -105,15 +116,100 @@ function headingText(screenEl) {
   return heading ? heading.textContent : "";
 }
 
+// The step-screen grammar (flow-simplification §2.1) renders the counter as a
+// small `cap-eyebrow` paragraph ABOVE the headline, so "the first <p>" is no
+// longer the detail line — select by class instead.
+function eyebrowText(screenEl) {
+  const eyebrow = screenEl.children.find(
+    (c) => c.tagName === "P" && String(c.className).includes("cap-eyebrow"),
+  );
+  return eyebrow ? eyebrow.textContent : "";
+}
+
 function noteText(screenEl) {
-  const note = screenEl.children.find((c) => c.tagName === "P");
+  const note = screenEl.children.find(
+    (c) => c.tagName === "P" && String(c.className).includes("cap-note"),
+  );
   return note ? note.textContent : "";
 }
 
-// Every note paragraph, in order — a retry screen carrying server-supplied
-// guidance renders TWO (what happened, then what to do).
+// Every note paragraph, in order (the countdown screen renders its live
+// counter as a second one).
 function noteTexts(screenEl) {
-  return screenEl.children.filter((c) => c.tagName === "P").map((c) => c.textContent);
+  return screenEl.children
+    .filter((c) => c.tagName === "P" && String(c.className).includes("cap-note"))
+    .map((c) => c.textContent);
+}
+
+// The demoted Stop control (§2.1): a text link inside its own `cap-stop`
+// wrapper, on every page-owned step screen.
+function stopLink(screenEl) {
+  const wrap = screenEl.children.find(
+    (c) => c.tagName === "DIV" && String(c.className).includes("cap-stop"),
+  );
+  return wrap ? wrap.children.find((c) => c.tagName === "BUTTON") || null : null;
+}
+
+// The action row's buttons, in render order (primary, then any secondaries).
+function actionButtons(screenEl) {
+  const row = screenEl.children.find(
+    (c) => c.tagName === "DIV" && String(c.className).includes("cap-actions"),
+  );
+  return row ? row.children.filter((c) => c.tagName === "BUTTON") : [];
+}
+
+function actionLabels(screenEl) {
+  return actionButtons(screenEl).map((b) => b.textContent);
+}
+
+// Let queued microtasks/promise jobs drain — used where a round parks on a
+// tap (the §2.2 post-apply confirmation) so the test can inspect the screen
+// and click while runPlanCapture is still suspended.
+async function settle(rounds = 40) {
+  for (let i = 0; i < rounds; i += 1) await Promise.resolve();
+}
+
+function fire(node, event = "click") {
+  const listeners = (node && node._listeners && node._listeners[event]) || [];
+  return Promise.all(listeners.map((fn) => fn()));
+}
+
+// The page's own <dialog> (index.html) behind the demoted Stop link. Modelled
+// closely enough to exercise the real contract: showModal opens it, close()
+// fires a `close` event (what ESC/backdrop dismissal does in a browser), and
+// the accept/cancel buttons are separate nodes looked up by id.
+function makeStopConfirmDialog() {
+  const dialog = makeNode("dialog");
+  dialog.opens = 0;
+  dialog.open = false;
+  dialog.showModal = () => {
+    dialog.open = true;
+    dialog.opens += 1;
+  };
+  dialog.close = () => {
+    if (!dialog.open) return;
+    dialog.open = false;
+    void fire(dialog, "close");
+  };
+  return { dialog, accept: makeNode("button"), cancel: makeNode("button") };
+}
+
+// `getElementById` dispatches by id when a test opts into the stop-confirm
+// dialog; every other id keeps returning the status element (the shape every
+// pre-existing test in this file relies on, where the dialog is absent and
+// confirmStopMeasuring() therefore fails open).
+function installDocument(statusEl, confirm = null) {
+  globalThis.document = {
+    createElement: (tag) => makeNode(tag),
+    getElementById: (id) => {
+      if (confirm) {
+        if (id === "stop-confirm") return confirm.dialog;
+        if (id === "stop-confirm-accept") return confirm.accept;
+        if (id === "stop-confirm-cancel") return confirm.cancel;
+      }
+      return statusEl;
+    },
+  };
 }
 
 function backLink(screenEl) {
@@ -303,11 +399,31 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
   // real-world ordering: stale slot first, verdict on the next poll.
   let queuedAdmission = null;
   let pendingResult = null;
+  // FIDELITY (flow-simplification §2.6): mirror `_poll_capture_plan`'s
+  // ORDERING contract, not just its happy path. The runner admits
+  // (accepted_count + 1, attempts_used + 1) and exactly one other shape — a
+  // begin for the just-accepted index, on the next attempt, marked
+  // `retake: true`, and only while the next entry's begin has not been seen.
+  // Anything else is refused as `begin_out_of_order`, which ends the whole
+  // session. Enforcing it here is what makes a retake test prove something:
+  // a page that forgot the marker (or offered a retake after the window shut)
+  // fails instead of quietly passing against a permissive fake.
+  let attemptsUsed = 0;
+  let nextBeginSeen = false;
+  let currentRetake = false;
   const client = {
     async postEvent(event) {
       posted.push(event);
       if (event.begin_capture && !event.armed) {
         const { index, attempt } = event.begin_capture;
+        const wantsRetake = event.begin_capture.retake === true;
+        const inOrder = index === acceptedCount + 1 && attempt === attemptsUsed + 1;
+        const admittedRetake =
+          wantsRetake &&
+          acceptedCount > 0 &&
+          !nextBeginSeen &&
+          index === acceptedCount &&
+          attempt === attemptsUsed + 1;
         if (refuseAttempt && attempt === refuseAttempt) {
           queuedAdmission = {
             phase: "capture_refused",
@@ -316,13 +432,29 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
             index,
             attempt,
           };
+        } else if (!inOrder && !admittedRetake) {
+          queuedAdmission = {
+            phase: "capture_refused",
+            code: "begin_out_of_order",
+            error: `expected capture ${acceptedCount + 1} attempt ${attemptsUsed + 1}`,
+            index,
+            attempt,
+          };
         } else {
+          attemptsUsed = attempt;
+          currentRetake = admittedRetake;
+          if (!admittedRetake) nextBeginSeen = true;
           queuedAdmission = { phase: "capture_authorized", index, attempt };
         }
       } else if (event.armed) {
         const { index, attempt } = event.begin_capture;
         last = { phase: "sweep_complete" };
-        pendingResult = { index, attempt, verdict: resultFor(index, attempt) };
+        pendingResult = {
+          index,
+          attempt,
+          retake: currentRetake,
+          verdict: resultFor(index, attempt),
+        };
       }
       return { ok: true };
     },
@@ -339,9 +471,15 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
     async putBlob(blob, plaintextLen, sha256, captureIndex) {
       blobPuts.push({ length: blob.length, plaintextLen, sha256, captureIndex });
       if (pendingResult) {
-        const { index, attempt, verdict } = pendingResult;
+        const { index, attempt, retake, verdict } = pendingResult;
         pendingResult = null;
-        if (verdict.accepted) acceptedCount += 1;
+        // An accepted RETAKE replaces evidence rather than adding a capture,
+        // so it must not advance the accepted count (that would finish the
+        // set one capture short) and it leaves the retake window open.
+        if (verdict.accepted && !retake) {
+          acceptedCount += 1;
+          nextBeginSeen = false;
+        }
         // FIDELITY: the real runner relays the host's WHOLE verdict mapping
         // minus `accepted` (`_poll_capture_plan`'s capture_result post), not
         // just `error` — the v2 conductor's rejections carry `reason`,
@@ -503,6 +641,10 @@ async function testRejectedResultOffersTryAgainSameSlot() {
   const ctx = makeCtx(spec, client);
 
   await onPlanStart(ctx);
+  // §2.4 retry grammar: the eyebrow carries the counter plus "one more try",
+  // the headline is the instruction (here the generic fallback — this plan
+  // has no entry copy), the detail is the reason sentence.
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 2 — one more try");
   assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 needs another try");
   assert.equal(noteText(ctx.screenEl), "SNR too low.");
   let retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
@@ -527,7 +669,9 @@ async function testRejectedResultOffersTryAgainSameSlot() {
 // ============================================================================
 // 2a. A rejection carrying the Pi's OWN copy renders that copy, not the
 //     generic line — and a position-group geometry retake's `prompt` (the
-//     "move further out" instruction) renders as its own paragraph.
+//     "move further out" instruction) HEADLINES the retry screen (§2.4: the
+//     instruction owns the slot the household reads first; the reason
+//     sentence becomes the detail underneath).
 //
 // REGRESSION PIN (round-1 review blocker B2): the page extracted only
 // `accepted`/`error` from capture_result, so the v2 conductor's `reason` /
@@ -570,17 +714,21 @@ async function testGeometryRetakeRendersTheServerSuppliedGuidance() {
 
   await onPlanStart(ctx);
 
-  // Both halves reach the household, in order: what happened, then what to do.
-  assert.deepEqual(noteTexts(ctx.screenEl), [REASON, PROMPT]);
+  // Both halves reach the household, in the grammar's own slots: what to do
+  // as the headline, what happened as the detail underneath.
+  assert.equal(headingText(ctx.screenEl), PROMPT);
+  assert.deepEqual(noteTexts(ctx.screenEl), [REASON]);
   assert.ok(
     !noteTexts(ctx.screenEl).some((t) => t.includes("quality check")),
     "the generic fallback must not appear when the Pi supplied its own copy",
   );
-  // The status line surfaces the ACTIONABLE half — that is the one the
-  // operator has to do something about before tapping Try again.
+  // A move instruction means the tap is a placement confirmation, so it says
+  // so — "Try again" is for a rejection the household does not have to act on.
+  assert.deepEqual(actionLabels(ctx.screenEl), ["I’m there — play the tone"]);
+  // #status no longer restates any of it (§2.1) — the screen carries it.
   assert.ok(
-    statusHistory.some((s) => String(s).includes(PROMPT)),
-    "the status line carries the move instruction",
+    !statusHistory.some((s) => String(s).includes(PROMPT)),
+    "the status line stops duplicating the screen's own instruction",
   );
 
   const retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
@@ -2033,6 +2181,498 @@ async function testConcurrentReacquireCallsCoalesceToOneAcquireNoOrphan() {
   ok();
 }
 
+// ============================================================================
+// 28-37. The flow-simplification UX redesign (PR-U2,
+// docs/flat-linearization-flow-simplification-plan.md §§2.1-2.6): the
+// one-instruction-per-step grammar, voluntary retakes and their window, the
+// group-close confirm, and VERIFY's confirm-then-tone.
+// ============================================================================
+
+// A miniature of the express plan the Pi builds (build_v2_capture_plan): CHECK
+// (tap), one prompted cloud position (tap), VERIFY (on_apply, with the NEW
+// confirm_* keys and the done screen an M=1 plan moves onto it). Same screen
+// vocabulary as production, three captures instead of seven.
+const CLOUD_HEADLINE = "A hand’s width LEFT of the mark";
+const VERIFY_CONFIRM_HEADLINE = "Back on the mark, holding still?";
+
+function guidedPlanSpec({ target = 3, maxAttempts = 6, verifyConfirm = true } = {}) {
+  const verifyScreen = {
+    progress: `Measurement ${target} of ${target}`,
+    title: "Applying",
+    body: "Applying the measured crossover. Put the phone back on the mark.",
+    auto_advance: "on_apply",
+    done_title: "Your speaker is tuned",
+    done_body: "Confirmed at the mark and applied.",
+  };
+  if (verifyConfirm) {
+    verifyScreen.confirm_title = VERIFY_CONFIRM_HEADLINE;
+    verifyScreen.confirm_body = "Same spot, same height, pointed at the speaker.";
+  }
+  return planSpec({
+    target,
+    maxAttempts,
+    entries: [
+      {
+        index: 0,
+        kind_label: "check",
+        duration_ms: 25000,
+        screen: {
+          progress: `Measurement 1 of ${target}`,
+          title: "Stand the phone about 1 m in front of the speaker.",
+          body: "Stay quiet — JTS listens to the room first.",
+          auto_advance: "tap",
+        },
+      },
+      {
+        index: 1,
+        kind_label: "cloud_measure",
+        duration_ms: 16000,
+        screen: {
+          progress: `Measurement 2 of ${target}`,
+          title: CLOUD_HEADLINE,
+          body: "Same height, still pointed at the speaker.",
+          auto_advance: "tap",
+        },
+      },
+      { index: 2, kind_label: "verify", duration_ms: 16000, screen: verifyScreen },
+    ],
+  });
+}
+
+function primaryButton(ctx) {
+  const entry = (ctx.captureRefs.buttons || []).find((b) => b.action === "begin_capture");
+  return entry ? entry.el : null;
+}
+
+// Drain macrotasks (scheduleAutoBegin's setTimeout) as well as microtasks
+// until the screen reaches the expected state — the auto-posted VERIFY begin
+// runs OUTSIDE the promise the test awaited, so there is nothing to await.
+async function waitFor(predicate, label, rounds = 300) {
+  for (let i = 0; i < rounds; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+// ============================================================================
+// 28 (§2.1). Every step screen renders ONE grammar: the counter as a small
+// eyebrow, the instruction as the headline, one supporting clause, a single
+// full-width primary whose label confirms the placement, and Stop demoted to
+// a text link. `#status` stops carrying counters — it used to number the same
+// walk a second time, and disagree.
+// ============================================================================
+async function testStepScreenRendersTheOneInstructionGrammar() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 2 of 3");
+  assert.equal(headingText(ctx.screenEl), CLOUD_HEADLINE);
+  assert.equal(noteText(ctx.screenEl), "Same height, still pointed at the speaker.");
+  assert.deepEqual(actionLabels(ctx.screenEl), [
+    "I’m there — play the tone",
+    "Retake this measurement",
+  ]);
+  const stop = stopLink(ctx.screenEl);
+  assert.ok(stop, "Stop is present on every step screen");
+  assert.equal(stop.textContent, "Stop measuring");
+  assert.equal(stop.className, "cap-stop-link", "Stop is a text link, not a danger button");
+  // The eyebrow is the ONLY counter now.
+  assert.ok(
+    !statusHistory.some((s) => /Measurement \d+ of \d+/.test(String(s))),
+    `#status must not count the walk: ${JSON.stringify(statusHistory)}`,
+  );
+  assert.equal(statusHistory[statusHistory.length - 1], "");
+  ok();
+}
+
+// ============================================================================
+// 29 (§2.6). A voluntary retake re-measures the capture that JUST completed:
+// the begin carries the `retake` marker (the ONLY shape the runner admits for
+// an already-accepted index), the armed event re-states it, and acceptance
+// REPLACES rather than counting — the set still needs its full target.
+// ============================================================================
+async function testRetakeRepeatsTheJustAcceptedSlotWithTheMarker() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted, blobPuts } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  const retake = actionButtons(ctx.screenEl)[1];
+  assert.equal(retake.textContent, "Retake this measurement");
+  assert.ok(
+    String(retake.className).includes("cap-button--secondary"),
+    "the retake control is the quieter secondary, never the primary",
+  );
+  await fire(retake);
+
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
+    [[1, 1, undefined], [1, 2, true]],
+    "the retake re-uses the accepted index on the next attempt, marked",
+  );
+  const armed = posted.filter((e) => e.armed);
+  assert.equal(armed[armed.length - 1].begin_capture.retake, true);
+  assert.deepEqual(blobPuts.map((b) => b.captureIndex), [0, 1]);
+
+  // Accepted — the flow moves on to the NEXT entry, and the retaken slot is
+  // still retakeable (a household can be unhappy twice).
+  assert.equal(headingText(ctx.screenEl), CLOUD_HEADLINE);
+  await fire(primaryButton(ctx));
+  const afterNext = posted.filter((e) => e.begin_capture && !e.armed).slice(-1)[0];
+  assert.deepEqual(
+    [afterNext.begin_capture.index, afterNext.begin_capture.attempt],
+    [2, 3],
+    "an accepted retake did not consume a capture slot",
+  );
+  ok();
+}
+
+// ============================================================================
+// 30 (§2.6, review finding N4). THE RETAKE WINDOW. The runner shuts its own
+// window the moment the next entry's begin is seen — admitted OR merely
+// deferred, which includes the VERIFY hold's auto-posted one — and refuses a
+// later retake as `begin_out_of_order`, killing the session. So the page must
+// never offer (or honour) a retake past that point: the control disappears
+// with the screen, and a tap on a node captured beforehand is inert.
+// ============================================================================
+async function testRetakeWindowShutsOnceTheNextBeginIsPosted() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    // The prompted cloud position closes the group but does NOT close it out:
+    // the Pi stashes the combine and waits for a begin past the group.
+    resultFor: (index) =>
+      index === 2
+        ? { accepted: true, group_complete: "cloud_measure", awaiting_confirm: true }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+
+  // The group-close confirm (§2.6): the final prompted position is accepted
+  // but retakeable, because the fit + apply have not run yet.
+  assert.equal(headingText(ctx.screenEl), "All spots measured — ready to continue?");
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
+  const staleRetake = actionButtons(ctx.screenEl)[1];
+
+  await fire(primaryButton(ctx)); // Continue -> the VERIFY hold posts its begin
+  await waitFor(
+    () => posted.some((e) => e.begin_capture && !e.armed && e.begin_capture.index === 3),
+    "the VERIFY begin",
+  );
+  assert.equal(ctx.retakeSlot, null, "the window shuts the moment a later begin is posted");
+
+  const before = posted.length;
+  await fire(staleRetake);
+  assert.equal(
+    posted.length,
+    before,
+    "a retake tap that outlived the window posts nothing (it could only end the session)",
+  );
+  ok();
+}
+
+// ============================================================================
+// 31 (§2.6). Retakes ride the slot's EXISTING attempt budget, so the control
+// disappears when that budget cannot cover another attempt — rather than
+// offering a tap the Pi would refuse.
+// ============================================================================
+async function testRetakeIsNotOfferedWhenTheAttemptBudgetIsSpent() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec({ target: 2, maxAttempts: 2 });
+  const { client } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 2,
+    resultFor: (index, attempt) =>
+      attempt === 1 ? { accepted: false, reason: "Too noisy." } : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx)); // the failure retry consumes attempt 2 of 2
+
+  assert.deepEqual(
+    actionLabels(ctx.screenEl),
+    ["I’m there — play the tone"],
+    "no retake offer once the plan's own attempt budget is spent",
+  );
+  assert.equal(ctx.retakeSlot, null);
+  ok();
+}
+
+// ============================================================================
+// 32 (§2.6). The group-close confirm's Continue is what posts the begin PAST
+// the group — the tap the Pi's fit + auto-apply now waits behind.
+// ============================================================================
+async function testGroupConfirmContinueAdvancesIntoTheApplyHold() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) =>
+      index === 2 ? { accepted: true, awaiting_confirm: true } : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+
+  // Nothing has been posted for the next entry yet — the confirm is the gate.
+  assert.ok(
+    !posted.some((e) => e.begin_capture && e.begin_capture.index === 3),
+    "the group stays open until the household confirms past it",
+  );
+  await fire(primaryButton(ctx));
+  await waitFor(
+    () => posted.some((e) => e.begin_capture && !e.armed && e.begin_capture.index === 3),
+    "the confirming begin",
+  );
+  ok();
+}
+
+// ============================================================================
+// 33 (§2.2, the step-11 fix). VERIFY is BEGIN-FIRST, THEN CONFIRM: the begin
+// posts immediately (each deferred re-post re-arms the host's hold clock —
+// sitting tap-first would hit REVIEW_HOLD_BUDGET_S and kill the session), the
+// hold screen instructs the walk back, and the tone waits for the tap. The
+// page arms no timer of its own while it waits: the budget is the host's
+// `awaiting_arm` phase (120 s), which is what makes a 60 s walk back safe.
+// ============================================================================
+async function testVerifyArmsOnlyAfterTheHouseholdConfirms() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await waitFor(
+    () => headingText(ctx.screenEl) === VERIFY_CONFIRM_HEADLINE,
+    "the post-apply confirmation screen",
+  );
+
+  // The begin is already in (liveness); the TONE is not.
+  assert.ok(
+    posted.some((e) => e.begin_capture && !e.armed && e.begin_capture.index === 3),
+    "the begin posts immediately, as it always did",
+  );
+  assert.ok(
+    !posted.some((e) => e.armed && e.begin_capture.index === 3),
+    "the verify sweep must not fire before the household confirms",
+  );
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 3 of 3");
+  assert.equal(noteText(ctx.screenEl), "Same spot, same height, pointed at the speaker.");
+  assert.deepEqual(actionLabels(ctx.screenEl), ["I’m there — play the tone"]);
+  assert.equal(ctx.autoAdvanceTimer ?? null, null, "no page-side deadline races the host's");
+  assert.equal(ctx.autoAdvanceInterval ?? null, null);
+
+  // A long walk back changes nothing — the wait is event-driven.
+  await settle();
+  assert.ok(!posted.some((e) => e.armed && e.begin_capture.index === 3));
+
+  await fire(primaryButton(ctx));
+  await waitFor(
+    () => headingText(ctx.screenEl) === "Your speaker is tuned",
+    "the done screen",
+  );
+  assert.ok(posted.some((e) => e.armed && e.begin_capture.index === 3));
+  ok();
+}
+
+// ============================================================================
+// 34 (§2.2, the compatibility half). An entry with no `confirm_*` keys — every
+// plan built before the redesign, and every non-VERIFY entry — arms the moment
+// the Pi authorizes, byte-for-byte as today. The new behavior rides new keys
+// precisely so this stays true.
+// ============================================================================
+async function testAnEntryWithoutConfirmCopyStillAutoArms() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec({ verifyConfirm: false });
+  const { client, posted } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await waitFor(
+    () => headingText(ctx.screenEl) === "Your speaker is tuned",
+    "the done screen (no confirmation tap involved)",
+  );
+  assert.ok(posted.some((e) => e.armed && e.begin_capture.index === 3));
+  ok();
+}
+
+// ============================================================================
+// 35 (§2.6). A REJECTED retake keeps the marker on its retry. Without it the
+// retry is a begin for the just-accepted index with no marker — exactly what
+// the runner refuses as out-of-order, which ends the session. The fake relay
+// enforces that contract, so this fails loudly if the marker is dropped.
+// ============================================================================
+async function testARejectedRetakeKeepsItsMarkerOnTheRetry() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index, attempt) =>
+      attempt === 2 ? { accepted: false, reason: "A truck went past." } : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(actionButtons(ctx.screenEl)[1]); // Retake -> rejected
+
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 3 — one more try");
+  assert.equal(noteText(ctx.screenEl), "A truck went past.");
+  await fire(primaryButton(ctx));
+
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
+    [[1, 1, undefined], [1, 2, true], [1, 3, true]],
+  );
+  assert.equal(
+    headingText(ctx.screenEl),
+    CLOUD_HEADLINE,
+    "the retried retake was admitted and accepted, not refused",
+  );
+  ok();
+}
+
+// ============================================================================
+// 36 (§2.3). The consent announcement is DERIVED from the plan the Pi signed —
+// count and minutes both — using the same arithmetic as the wake-lock hint and
+// the Pi's own consent line. A one-capture plan (the re-verify re-arm) says
+// nothing rather than "1 measurements".
+// ============================================================================
+async function testPlanAnnouncementDerivesItsCountAndMinutes() {
+  const { planAnnouncementText, planEstimatedMinutes } = await loadModule();
+
+  // 25 + 16 + 16 s of audio, plus 20 s of allowance each -> 117 s -> 2 minutes.
+  const spec = guidedPlanSpec();
+  assert.equal(planEstimatedMinutes(spec), 2);
+  assert.equal(planAnnouncementText(spec), "3 measurements, about 2 minutes.");
+
+  // …but never twice. A current speaker's consent copy already opens with the
+  // same derived sentence (plus the tier name the phone has no field for), so
+  // the page's line stands down rather than repeating it two lines apart.
+  const announced = guidedPlanSpec();
+  announced.ui = {
+    screen: [
+      { type: "heading", text: "Tune your speaker" },
+      {
+        type: "steps",
+        items: [
+          "Quick tune: 3 measurements, about 2 minutes",
+          "Put the phone about 1 m in front of the speaker",
+        ],
+      },
+    ],
+  };
+  assert.equal(planAnnouncementText(announced), "");
+  // A speaker whose copy quotes DIFFERENT numbers is not this sentence — the
+  // page still announces the plan it was actually sent.
+  const other = guidedPlanSpec();
+  other.ui = { screen: [{ type: "steps", items: ["Full measurement: 16 measurements, about 11 minutes"] }] };
+  assert.equal(planAnnouncementText(other), "3 measurements, about 2 minutes.");
+
+  const reverify = planSpec({
+    target: 1,
+    maxAttempts: 3,
+    entries: [{ index: 0, kind_label: "verify", duration_ms: 16000, screen: {} }],
+  });
+  assert.equal(planAnnouncementText(reverify), "");
+  // No entry table (the legacy repeat-set and single-capture kinds): nothing
+  // to derive from, so nothing claimed.
+  assert.equal(planAnnouncementText(planSpec({ target: 3 })), "");
+  assert.equal(planEstimatedMinutes(planSpec({ target: 3 })), 0);
+  ok();
+}
+
+// ============================================================================
+// 37 (§2.1). Stop's demotion keeps its destructiveness: the text link opens
+// the page's own danger-styled <dialog>, and only its confirm button stops the
+// session. (A browser with no <dialog> support fails open — every other test
+// in this file runs without one and Stop acts immediately there.)
+// ============================================================================
+async function testStopLinkConfirmsBeforeAbandoningTheSession() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const confirm = makeStopConfirmDialog();
+  installDocument(makeStatusEl(), confirm);
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  const stop = stopLink(ctx.screenEl);
+
+  // Dismissing the dialog (Keep measuring / ESC / backdrop) leaves the
+  // session exactly as it was.
+  const dismissed = fire(stop);
+  assert.equal(confirm.dialog.opens, 1, "the tap opens the confirm, never stops outright");
+  await fire(confirm.cancel);
+  await dismissed;
+  assert.ok(!posted.some((e) => e.aborted), "a cancelled confirm posts no abort");
+  assert.equal(headingText(ctx.screenEl), CLOUD_HEADLINE, "the step screen survives");
+
+  const confirmed = fire(stop);
+  assert.equal(confirm.dialog.opens, 2);
+  await fire(confirm.accept);
+  await confirmed;
+  assert.deepEqual(
+    posted.filter((e) => e.aborted).map((e) => e.abort_reason),
+    ["stopped"],
+  );
+  assert.equal(headingText(ctx.screenEl), "Measurement stopped.");
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -2066,6 +2706,16 @@ const tests = [
   testRetapAfterPreArmMicDeniedReentersCaptureAndReusesSessionResources,
   testRetapAfterHostCancelledSweepStaysInert,
   testConcurrentReacquireCallsCoalesceToOneAcquireNoOrphan,
+  testStepScreenRendersTheOneInstructionGrammar,
+  testRetakeRepeatsTheJustAcceptedSlotWithTheMarker,
+  testRetakeWindowShutsOnceTheNextBeginIsPosted,
+  testRetakeIsNotOfferedWhenTheAttemptBudgetIsSpent,
+  testGroupConfirmContinueAdvancesIntoTheApplyHold,
+  testVerifyArmsOnlyAfterTheHouseholdConfirms,
+  testAnEntryWithoutConfirmCopyStillAutoArms,
+  testARejectedRetakeKeepsItsMarkerOnTheRetry,
+  testPlanAnnouncementDerivesItsCountAndMinutes,
+  testStopLinkConfirmsBeforeAbandoningTheSession,
 ];
 
 let failure = null;

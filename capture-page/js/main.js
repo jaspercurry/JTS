@@ -151,6 +151,15 @@ function setStatus(message, kind = "info") {
   }
 }
 
+// `#status` is the TRANSIENT STATE channel and nothing else (§2.1): a step
+// screen's counter and instruction live in the screen's own eyebrow/headline,
+// so the status line goes quiet rather than restating them in different words.
+// An empty status collapses (index.html's `#status:empty`) instead of leaving
+// a tinted bar with nothing in it.
+function clearStatus() {
+  setStatus("", "info");
+}
+
 // Fallback copy (#1658) for a phone whose browser has no Screen Wake Lock API,
 // or whose request was rejected — the household still needs SOME signal to
 // keep the screen on by hand, since the capture can run for several minutes.
@@ -163,6 +172,25 @@ const WAKE_LOCK_HINT_TEXT = "Keep your screen on — this takes about 4 minutes.
 // whole session either way.
 const WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS = 20000;
 
+// Whole minutes this plan is DISPLAYED as taking, or 0 when the spec carries
+// no entry table to estimate from (the legacy level-ramp and single-capture
+// kinds — never a fake "0 minutes" presented as a duration; callers treat 0 as
+// "say nothing"). Every displayed duration on this page derives from HERE, and
+// the Pi's own consent copy derives from the same arithmetic
+// (jasper/capture_relay/spec.py's CapturePlan.estimated_minutes, whose test
+// reads WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS out of this file) — so the phone and
+// the speaker can never quote two different promises about one session.
+function planEstimatedMinutes(spec) {
+  const entries = (spec && spec.capture_plan && spec.capture_plan.entries) || null;
+  if (!Array.isArray(entries) || entries.length === 0) return 0;
+  const totalMs = entries.reduce(
+    (sum, entry) =>
+      sum + (Number(entry && entry.duration_ms) || 0) + WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS,
+    0,
+  );
+  return Math.max(1, Math.ceil(totalMs / 60000));
+}
+
 // The screen-on hint's duration estimate, derived from the plan the Pi actually
 // sent rather than a constant. The hardcoded "about 4 minutes" was written for
 // the 3-capture flow; a 16-capture spatial cloud runs several times that, and a
@@ -170,15 +198,66 @@ const WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS = 20000;
 // No plan (the legacy level-ramp and single-capture kinds) keeps the original
 // string byte-for-byte.
 function wakeLockHintText(spec) {
-  const entries = (spec && spec.capture_plan && spec.capture_plan.entries) || null;
-  if (!Array.isArray(entries) || entries.length === 0) return WAKE_LOCK_HINT_TEXT;
-  const totalMs = entries.reduce(
-    (sum, entry) =>
-      sum + (Number(entry && entry.duration_ms) || 0) + WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS,
-    0,
-  );
-  const minutes = Math.max(1, Math.ceil(totalMs / 60000));
+  const minutes = planEstimatedMinutes(spec);
+  if (!minutes) return WAKE_LOCK_HINT_TEXT;
   return `Keep your screen on — this takes about ${minutes} minutes.`;
+}
+
+// The plan announcement (flow-simplification §2.3): say what the household is
+// about to do BEFORE the first tone — how many measurements, and how long —
+// rather than letting them infer it by counting prompts. Both numbers are
+// DERIVED from the plan the Pi signed; nothing here is hand-written.
+//
+// The page derives this rather than relying only on the speaker's own consent
+// line because the page ships FIRST (capture-page/README.md "Release order"):
+// against a speaker that predates the tier line, this is the whole
+// announcement. On a current speaker the two lines say the same numbers from
+// the same arithmetic (they cannot disagree) — the speaker's names the
+// instrument, "Quick tune"/"Full measurement", which the phone has no field
+// for; this one is the lead the household reads first. A one-capture plan
+// (the re-verify re-arm) says nothing — its consent copy leads with how cheap
+// it is, and "1 measurements" would fight that.
+function planAnnouncementText(spec) {
+  const minutes = planEstimatedMinutes(spec);
+  if (!minutes) return "";
+  const { target } = planTargetAndAttempts(spec);
+  if (target < 2) return "";
+  const sentence = `${target} measurements, about ${minutes} minutes`;
+  return specScreenSays(spec, sentence) ? "" : `${sentence}.`;
+}
+
+// …and never twice. A current speaker's consent copy opens with this same
+// derived sentence plus the tier name ("Quick tune: 7 measurements, about 5
+// minutes") — the phone has no field for the tier, so where both exist the
+// speaker's line is the better one and this page adds nothing. The needle is
+// the string the page JUST derived, not a guess at the speaker's wording:
+// both sides compute it from the same two plan numbers, so a match means the
+// household would otherwise read one sentence twice, two lines apart.
+function specScreenSays(spec, sentence) {
+  const screen = (spec && spec.ui && spec.ui.screen) || [];
+  if (!Array.isArray(screen)) return false;
+  return screen.some((component) => {
+    if (!component || typeof component !== "object") return false;
+    if (typeof component.text === "string" && component.text.includes(sentence)) return true;
+    return (
+      Array.isArray(component.items) &&
+      component.items.some((item) => typeof item === "string" && item.includes(sentence))
+    );
+  });
+}
+
+// Render it directly under the spec's own heading, so the announcement is the
+// first thing read and the placement instruction/acknowledgement/start button
+// follow it in order (§2.3). Defensive about the host DOM shape: a screen root
+// without the usual heading simply gets the line first.
+function insertPlanAnnouncement(screenEl, spec) {
+  const text = planAnnouncementText(spec);
+  if (!text || !screenEl || typeof screenEl.insertBefore !== "function") return;
+  const heading =
+    typeof screenEl.querySelector === "function" ? screenEl.querySelector("h1") : null;
+  const anchor =
+    heading && heading.parentNode === screenEl ? heading.nextSibling : screenEl.firstChild;
+  screenEl.insertBefore(el("p", { class: "cap-announce", text }), anchor || null);
 }
 
 function showWakeLockHint(spec) {
@@ -1456,15 +1535,64 @@ function entryForIndex(spec, index) {
 // check, so this is slower than the general status-poll cadence.
 const CAPTURE_DEFERRED_RETRY_POLL_MS = 1500;
 
-function stopButtonEl() {
-  return el("button", {
-    type: "button",
-    class: "cap-button cap-button--danger",
-    text: "Stop",
-    onclick: () => {
-      void stopCapture();
-    },
+// Page-local danger confirm for the demoted Stop control (§2.1). The capture
+// page shares NOTHING with the Pi's /assets/shared/js/dialog.js — different
+// origin, different bundle, and a CSP that admits no external anything — so
+// this is the page's own minimal <dialog>, declared statically in index.html
+// (copy included, since Stop is the only thing it ever confirms).
+//
+// Fails OPEN: a browser with no <dialog>/showModal gets today's behavior, an
+// immediate stop. The confirm guards a STRAY tap on a control that now sits on
+// every step screen; it is not a permission gate, and trapping a household in
+// a session they cannot end would be the worse failure.
+function confirmStopMeasuring() {
+  const dialog = document.getElementById("stop-confirm");
+  if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(true);
+  const accept = document.getElementById("stop-confirm-accept");
+  const cancel = document.getElementById("stop-confirm-cancel");
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      accept?.removeEventListener("click", onAccept);
+      cancel?.removeEventListener("click", onCancel);
+      dialog.removeEventListener("close", onClose);
+      try {
+        dialog.close();
+      } catch {
+        /* already closed (ESC / backdrop) */
+      }
+      resolve(value);
+    };
+    // ESC and the backdrop both close the dialog without a choice — that is a
+    // cancel, never a stop.
+    const onAccept = () => finish(true);
+    const onCancel = () => finish(false);
+    const onClose = () => finish(false);
+    accept?.addEventListener("click", onAccept);
+    cancel?.addEventListener("click", onCancel);
+    dialog.addEventListener("close", onClose);
+    dialog.showModal();
   });
+}
+
+// Stop, demoted (§2.1): a small text link rather than the page's one
+// full-weight danger button. It appears on EVERY step screen — 16 times in a
+// full session — and at equal weight it competed with the primary it sits
+// next to, so a stray tap could kill a session outright. The destructiveness
+// moves to the confirm above rather than being dropped.
+function stopLinkEl() {
+  return el("div", { class: "cap-stop" }, [
+    el("button", {
+      type: "button",
+      class: "cap-stop-link",
+      text: "Stop measuring",
+      onclick: async () => {
+        if (await confirmStopMeasuring()) await stopCapture();
+      },
+    }),
+  ]);
 }
 
 // Session-wide resources a v3 capture plan holds across EVERY round (#1658):
@@ -1482,6 +1610,12 @@ async function releasePlanSessionResources(ctx) {
   // state or a stale reacquire-failure from this session.
   ctx.parkedAtRetriableFailure = false;
   ctx.recorderFailure = null;
+  // Nothing is retakeable once the session is over (§2.6), and a round parked
+  // on the confirmation tap is released rather than left suspended — the
+  // terminal-path counterpart to the same release in makePlanController's
+  // abort, for the terminals that never go through it.
+  ctx.retakeSlot = null;
+  resolvePendingConfirm(ctx);
   if (typeof ctx.disposeSessionVisibilityWatch === "function") {
     ctx.disposeSessionVisibilityWatch();
   }
@@ -1605,6 +1739,11 @@ function makePlanController(ctx) {
     // A pending auto-advance countdown / scheduled begin must never fire a
     // begin against a session the household just stopped.
     clearAutoAdvance(ctx);
+    // …and a round parked on the post-apply confirmation tap (§2.2) must be
+    // released, or its runPlanCapture would stay suspended on a promise
+    // nothing will ever resolve. It re-checks `controller.aborted` the moment
+    // it wakes, so nothing runs past this point.
+    resolvePendingConfirm(ctx);
     if (reason === "stopped") {
       renderStoppedScreen(ctx);
     } else {
@@ -1636,15 +1775,133 @@ async function endPlanSession(ctx) {
   await releasePlanSessionResources(ctx);
 }
 
+// ---------------------------------------------------------------------------
+// The step-screen grammar (flow-simplification §2.1)
+//
+//   [eyebrow]  Measurement 4 of 7          <- screen.progress; the ONLY counter
+//   [headline] A forearm's length LEFT     <- the instruction, prominent
+//   [detail]   one short supporting clause <- may be empty
+//   [action]   I'm there — play the tone   <- ONE full-width primary
+//   [retake]   Retake this measurement     <- secondary, quieter (optional)
+//   [stop]     Stop measuring              <- small text link -> danger confirm
+//
+// Every page-owned plan screen renders these in the same DOM slots, so the
+// instruction is always in the same place on the phone. It inverts what
+// shipped before: the counter headlined and the instruction whispered
+// underneath, while `#status` counted the same walk a second time and
+// disagreed. `#status` is deliberately NOT part of this grammar any more — it
+// carries transient state only ("Speaker is checking this measurement…").
+// ---------------------------------------------------------------------------
+
+// The confirming tap's label: the tap IS the placement confirmation, so it
+// says so. Only for a plan that carries per-entry screens (the guided walk,
+// where a move actually happened); a plan with no entry table is the legacy
+// "N repeats of one spec" shape, whose byte-identical copy stays.
+const STEP_PRIMARY_LABEL = "I’m there — play the tone";
+
+function stepPrimaryLabel(entry) {
+  return entry && entry.screen ? STEP_PRIMARY_LABEL : "Next measurement";
+}
+
+function renderStepScreen(ctx, {
+  progress = "",
+  headline,
+  detail = "",
+  notes = [],
+  primary = null,
+  secondary = null,
+  extraActions = [],
+  captureHeading = false,
+}) {
+  const headingEl = el("h1", { class: "cap-heading", text: String(headline) });
+  const children = [];
+  if (progress) children.push(el("p", { class: "cap-eyebrow", text: String(progress) }));
+  children.push(headingEl);
+  if (detail) children.push(el("p", { class: "cap-note", text: String(detail) }));
+  for (const note of notes) if (note) children.push(note);
+  const actions = [primary, secondary, ...extraActions].filter(Boolean);
+  if (actions.length) children.push(el("div", { class: "cap-actions" }, actions));
+  children.push(stopLinkEl());
+  setScreen(ctx.screenEl, children);
+  ctx.captureRefs = {
+    // Only the forward primary registers as the begin affordance: it is what
+    // planRetryAffordance() names in a pre-arm failure message, and what the
+    // auto-advance blockers pin as "absent while the screen is not the
+    // household's to act on".
+    buttons: primary ? [{ action: "begin_capture", el: primary }] : [],
+    levelMeters: [],
+    // Only screens that go on to own the recording window hand their heading
+    // to advanceDeferredHoldHeading (see renderPlanDeferred).
+    ...(captureHeading ? { heading: headingEl } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Voluntary retakes (§2.6) — "I sneezed / a truck passed / I wasn't where I
+// meant to be", not a failure retry.
+//
+// THE WINDOW IS THE WHOLE CONTRACT. jasper/capture_relay/session.py's
+// `_poll_capture_plan` admits exactly one extra begin shape — the
+// just-accepted index, on the next attempt, carrying `retake: true` — and
+// ONLY while the next entry's begin has not been seen (its `next_begin_seen`,
+// which flips on an admitted OR merely deferred begin, including the VERIFY
+// hold's auto-posted one). Past that point a retake begin is refused as
+// `begin_out_of_order`, and ANY refusal ends the whole session. So an offer
+// that outlived the window would be a button whose only possible outcome is
+// killing the run: `ctx.retakeSlot` is cleared by every begin this page posts
+// and re-armed only by a fresh accepted verdict, and `canRetake` is checked
+// again inside the tap (a countdown's auto-begin can win the race).
+// ---------------------------------------------------------------------------
+
+// Only the heterogeneous guided plan (schema_version 2, per-entry screens)
+// offers retakes: its host keeps per-index take retention, so an accepted
+// retake REPLACES and a rejected one leaves the original standing. The
+// pre-entries "N repeats of one spec" plan has no such contract.
+function planSupportsRetake(spec) {
+  const entries = spec && spec.capture_plan && spec.capture_plan.entries;
+  return Array.isArray(entries) && entries.length > 0;
+}
+
+function canRetake(ctx, index) {
+  return Boolean(ctx.retakeSlot) && ctx.retakeSlot.index === index;
+}
+
+// Re-arm (or shut) the offer from an accepted verdict. `attempt` is the
+// attempt just consumed, so a retake would be `attempt + 1` — offered only
+// while the plan's own attempt budget covers it.
+function armRetakeSlot(ctx, { index, attempt }) {
+  const { maxAttempts } = planTargetAndAttempts(ctx.spec);
+  ctx.retakeSlot =
+    planSupportsRetake(ctx.spec) && attempt + 1 <= maxAttempts ? { index, attempt } : null;
+}
+
+function retakeControl(ctx, { index, attempt }) {
+  if (!canRetake(ctx, index)) return null;
+  const retake = button("Retake this measurement", async () => {
+    // Re-checked inside the tap: a pending countdown may have fired its own
+    // begin for the NEXT entry between render and tap, which shuts the
+    // window on the Pi.
+    if (!canRetake(ctx, index)) return;
+    // …and stop that countdown from firing behind this tap.
+    clearAutoAdvance(ctx);
+    retake.disabled = true;
+    try {
+      await runPlanCapture(ctx, { index, attempt: attempt + 1, retake: true });
+    } finally {
+      retake.disabled = false;
+    }
+  }, true);
+  return retake;
+}
+
 function renderPlanNext(ctx, { index, attempt, target }) {
   // The UPCOMING capture's own entry (§5.7), when the plan carries one —
-  // title/body copy only; a v1/v2 plan (or an entry with no `screen`) falls
-  // back to the generic "Measurement N of target" copy, unchanged.
+  // its progress/title/body drive the grammar; a v1/v2 plan (or an entry with
+  // no `screen`) falls back to the generic "Measurement N of target" copy,
+  // unchanged.
   const upcoming = entryForIndex(ctx.spec, index + 1);
   const screenCopy = (upcoming && upcoming.screen) || {};
-  const heading = String(screenCopy.title || `Measurement ${index} of ${target} ✓`);
-  const body = String(screenCopy.body || "Ready for the next measurement.");
-  const next = button("Next measurement", async () => {
+  const next = button(stepPrimaryLabel(upcoming), async () => {
     next.disabled = true;
     try {
       await runPlanCapture(ctx, { index: index + 1, attempt: attempt + 1 });
@@ -1652,53 +1909,84 @@ function renderPlanNext(ctx, { index, attempt, target }) {
       next.disabled = false;
     }
   });
-  setScreen(ctx.screenEl, [
-    el("h1", { class: "cap-heading", text: heading }),
-    el("p", { class: "cap-note", text: body }),
-    el("div", { class: "cap-actions" }, [next, stopButtonEl()]),
-  ]);
-  ctx.captureRefs = { buttons: [{ action: "begin_capture", el: next }], levelMeters: [] };
-  setStatus(`Measurement ${index} of ${target} done. Tap Next measurement when ready.`, "done");
+  renderStepScreen(ctx, {
+    progress: String(screenCopy.progress || ""),
+    headline: String(screenCopy.title || `Measurement ${index} of ${target} ✓`),
+    detail: String(screenCopy.body || "Ready for the next measurement."),
+    primary: next,
+    secondary: retakeControl(ctx, { index, attempt }),
+  });
+  // The screen carries the counter and the instruction; #status stops
+  // repeating them (§2.1 — the two counters used to disagree).
+  clearStatus();
 }
 
-function renderPlanRetry(ctx, { index, attempt, target, reason, prompt }) {
-  // The CURRENT capture's own entry, if any — only its title informs the
-  // heading; the rejection `reason` always wins the body (more important
-  // than generic per-entry copy).
+// "All spots done — continue" (§2.6). The pre-apply cloud's final position is
+// accepted but its group is NOT closed yet: the Pi stashed the combine and is
+// waiting for a begin PAST the group before it fits and applies. That pause is
+// the whole point — until this screen existed, the final position was the one
+// capture in the session a household could not choose to redo, because the
+// speaker was already being retuned by the time they could ask.
+//
+// Deliberately does not name a spot count: the page has no trusted field for
+// the group's size (`kind_label` is display/telemetry only by contract), and
+// inventing one from it would be a sentence that quietly goes wrong when a
+// plan shape changes.
+function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
   const current = entryForIndex(ctx.spec, index);
   const screenCopy = (current && current.screen) || {};
-  const heading = String(
-    screenCopy.title || `Measurement ${index} of ${target} needs another try`,
-  );
+  const proceed = button("Continue", () => {
+    // Synchronous: advanceAfterAccepted renders the next screen (and, for the
+    // apply hold, schedules its begin) — this node is gone by then, so it is
+    // disabled rather than re-enabled in a finally.
+    proceed.disabled = true;
+    advanceAfterAccepted(ctx, { index, attempt, target });
+  });
+  renderStepScreen(ctx, {
+    progress: String(screenCopy.progress || ""),
+    headline: "All spots measured — ready to continue?",
+    detail: "JTS tunes the speaker next. Retake this spot first if you want to.",
+    primary: proceed,
+    secondary: retakeControl(ctx, { index, attempt }),
+  });
+  clearStatus();
+}
+
+function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake = false }) {
+  // The CURRENT capture's own entry, if any — its progress and (absent
+  // server guidance) its instruction carry over; the rejection `reason`
+  // always wins the detail slot.
+  const current = entryForIndex(ctx.spec, index);
+  const screenCopy = (current && current.screen) || {};
   const message = reason || "That measurement didn't pass the speaker's quality check.";
   // A server-supplied `prompt` is an INSTRUCTION, not a restatement: the
   // position-group geometry retake sends "take this one from about two
   // forearms' length to the LEFT", which the operator has to act on before
-  // tapping Try again. It renders as its own paragraph under the reason
-  // because the two say different things (what happened / what to do), and
-  // collapsing them would bury the actionable half. Absent on every other
-  // rejection, where the generic single-paragraph shape is unchanged.
+  // tapping. Under the §2.4 grammar the instruction IS the headline (that is
+  // the slot the household reads first) and the reason sentence becomes the
+  // detail underneath — what to do over what happened, without losing either.
   const guidance = prompt ? String(prompt) : "";
-  const retry = button("Try again", async () => {
+  const headline =
+    guidance ||
+    String(screenCopy.title || `Measurement ${index} of ${target} needs another try`);
+  const retry = button(guidance ? STEP_PRIMARY_LABEL : "Try again", async () => {
     retry.disabled = true;
     try {
-      await runPlanCapture(ctx, { index, attempt: attempt + 1 });
+      // A rejected VOLUNTARY retake keeps the marker: without it this begin
+      // is (accepted_count, attempts_used + 1) with no retake flag, which the
+      // runner refuses as out-of-order — fatal to the session.
+      await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });
     } finally {
       retry.disabled = false;
     }
   });
-  const body = [el("p", { class: "cap-note", text: message })];
-  if (guidance) body.push(el("p", { class: "cap-note", text: guidance }));
-  setScreen(ctx.screenEl, [
-    el("h1", { class: "cap-heading", text: heading }),
-    ...body,
-    el("div", { class: "cap-actions" }, [retry, stopButtonEl()]),
-  ]);
-  ctx.captureRefs = { buttons: [{ action: "begin_capture", el: retry }], levelMeters: [] };
-  setStatus(
-    `Measurement ${index} needs another try — ${guidance || message}`,
-    "error",
-  );
+  renderStepScreen(ctx, {
+    progress: `${String(screenCopy.progress || `Measurement ${index} of ${target}`)} — one more try`,
+    headline,
+    detail: message,
+    primary: retry,
+  });
+  clearStatus();
 }
 
 // A distinct soft-hold screen (§5.7): the Pi is between phases (e.g. parked
@@ -1717,14 +2005,80 @@ function renderPlanDeferred(ctx, { index, target, reason }) {
   const heading = String(screenCopy.title || `Measurement ${index} of ${target}`);
   const message = reason || String(screenCopy.body ||
     "Waiting for the speaker to be ready for the next measurement.");
-  const headingEl = el("h1", { class: "cap-heading", text: heading });
-  setScreen(ctx.screenEl, [
-    headingEl,
-    el("p", { class: "cap-note", text: message }),
-    el("div", { class: "cap-actions" }, [stopButtonEl()]),
-  ]);
-  ctx.captureRefs = { buttons: [], levelMeters: [], heading: headingEl };
+  renderStepScreen(ctx, {
+    progress: String(screenCopy.progress || ""),
+    headline: heading,
+    detail: message,
+    captureHeading: true,
+  });
+  // A genuine transient state, so this one stays: the household is looking at
+  // a screen with nothing to tap and needs to know something is happening.
   setStatus(`Waiting — ${message}`, "info");
+}
+
+// The post-apply confirmation (§2.2), the step-11 fix. VERIFY's begin is
+// posted IMMEDIATELY, as it always was — each deferred re-post re-arms the
+// host's hold clock, and sitting tap-first in `awaiting_begin` would hit
+// REVIEW_HOLD_BUDGET_S and kill the session — so the ordering here is
+// begin-first, THEN confirm: while the apply runs the hold screen instructs
+// the walk back to the mark; once authorization lands this screen asks the
+// household to confirm they are standing there, and the tone waits for the
+// tap. That wait sits in the runner's `awaiting_arm` phase (DEFAULT_TIMEOUT_S,
+// 120 s), comfortably past a minute of walking back.
+//
+// The copy rides `confirm_title`/`confirm_body` — NEW keys an older cached
+// bundle ignores, which is why VERIFY's `title`/`body` were left as the hold
+// copy: a phone that predates this build renders exactly today's flow.
+function renderPlanConfirm(ctx, { index, onConfirm }) {
+  // Only reached for an entry whose `confirm_title` is set
+  // (entryConfirmsBeforeArming is the gate), so there is no fallback headline
+  // to invent here.
+  const entry = entryForIndex(ctx.spec, index);
+  const screenCopy = (entry && entry.screen) || {};
+  const progress = String(screenCopy.progress || "");
+  const headline = String(screenCopy.confirm_title);
+  const detail = String(screenCopy.confirm_body || "");
+  const confirm = button(STEP_PRIMARY_LABEL, () => {
+    confirm.disabled = true;
+    // The tap is spent — re-render the same instruction WITHOUT its
+    // affordance so nothing tappable survives into the recording window, and
+    // hand the heading to advanceDeferredHoldHeading exactly as the hold
+    // screen does.
+    renderStepScreen(ctx, { progress, headline, detail, captureHeading: true });
+    onConfirm();
+  });
+  renderStepScreen(ctx, { progress, headline, detail, primary: confirm });
+  clearStatus();
+}
+
+// Whether this entry gates its tone behind a post-apply confirmation. Absent
+// keys (every other entry, and any plan built before the redesign) mean "arm
+// as soon as the Pi authorizes" — byte-identical to the shipped behavior.
+function entryConfirmsBeforeArming(spec, index) {
+  const entry = entryForIndex(spec, index);
+  const screenCopy = (entry && entry.screen) || {};
+  return Boolean(screenCopy.confirm_title);
+}
+
+// Park until the household taps (or the session ends under them — Stop and
+// the visibility abort both settle the wait through the controller, so a
+// stopped session never leaves this promise dangling). No page-side timer
+// arms here: the tap budget is the host's, and inventing a second deadline
+// would only race it.
+function awaitPlanConfirmation(ctx, { index }) {
+  return new Promise((resolve) => {
+    ctx.pendingConfirm = resolve;
+    renderPlanConfirm(ctx, { index, onConfirm: () => resolvePendingConfirm(ctx) });
+  });
+}
+
+// Idempotent: the tap, Stop, the visibility abort, and the session teardown
+// can all reach it, and only the first one settles the wait.
+function resolvePendingConfirm(ctx) {
+  const pending = ctx && ctx.pendingConfirm;
+  if (!pending) return;
+  ctx.pendingConfirm = null;
+  pending();
 }
 
 // W6.12: once the on_apply hold's deferral actually resolves and recording
@@ -1804,14 +2158,22 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
     clearAutoAdvance(ctx);
     renderPlanNext(ctx, { index, attempt, target });
   }, true);
-  setScreen(ctx.screenEl, [
-    el("h1", { class: "cap-heading", text: heading }),
-    el("p", { class: "cap-note", text: body }),
-    counter,
-    el("div", { class: "cap-actions" }, [cancel, stopButtonEl()]),
-  ]);
-  ctx.captureRefs = { buttons: [], levelMeters: [] };
-  setStatus(`Next measurement starts in ${seconds}s — tap Cancel to hold.`, "info");
+  // A post-capture screen, so the just-finished capture is still retakeable
+  // (§2.6) — the control is deliberately NOT registered as the begin
+  // affordance below: the countdown still owns the forward path, and its
+  // auto-begin shuts the retake window the moment it fires (see
+  // retakeControl's re-check).
+  renderStepScreen(ctx, {
+    progress: String(screenCopy.progress || ""),
+    headline: heading,
+    detail: body,
+    notes: [counter],
+    primary: null,
+    secondary: cancel,
+    extraActions: [retakeControl(ctx, { index, attempt })],
+  });
+  // The countdown itself is on-screen; #status stops mirroring it (§2.1).
+  clearStatus();
   ctx.autoAdvanceInterval = setInterval(() => {
     if (ctx.planController && ctx.planController.aborted) {
       clearAutoAdvance(ctx);
@@ -2082,6 +2444,11 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
         banner: event.banner ? String(event.banner) : "",
         prompt: event.prompt ? String(event.prompt) : "",
         code: event.code ? String(event.code) : "",
+        // §2.6: the pre-apply cloud is walked but its group is NOT closed —
+        // the Pi is waiting for a begin PAST the group before it fits and
+        // applies. An older Pi never sends the key and the page advances
+        // exactly as it does today.
+        awaitingConfirm: event.awaiting_confirm === true,
       };
     }
     await delayMs(pollMs);
@@ -2120,14 +2487,16 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
 // the first) so deferral re-posts and later rounds keep the slot carrying
 // setup no matter which event a Pi poll lands on; `armed` still carries the
 // identical setup as belt-and-suspenders.
-async function beginAndAwaitAuthorization(ctx, { index, attempt }) {
+async function beginAndAwaitAuthorization(ctx, { index, attempt, retake = false }) {
   const { spec, client } = ctx;
   const controller = ctx.planController;
   const { target } = planTargetAndAttempts(spec);
   for (;;) {
-    setStatus(`Requesting measurement ${index} of ${target}…`, "info");
+    // No counter here any more (§2.1): the screen's eyebrow owns it, and this
+    // line used to number the same walk differently.
+    setStatus("Asking the speaker to start…", "info");
     await client.postEvent({
-      begin_capture: { index, attempt },
+      begin_capture: beginCapturePayload({ index, attempt, retake }),
       setup: setupWirePayload(),
     });
     if (controller.aborted) return { aborted: true };
@@ -2145,10 +2514,19 @@ async function beginAndAwaitAuthorization(ctx, { index, attempt }) {
   }
 }
 
+// The wire shape of a `begin_capture` request. The optional `retake` marker
+// (§2.6) is OMITTED unless it is true: jasper/capture_relay/session.py's
+// parse_begin_capture admits exactly two key sets and requires the literal
+// `true` when the key is present, so there is one wire shape per meaning and
+// a page that never retakes is byte-identical to the pre-retake page.
+function beginCapturePayload({ index, attempt, retake = false }) {
+  return retake ? { index, attempt, retake: true } : { index, attempt };
+}
+
 // The label of the live begin affordance on the current plan screen —
-// "Next measurement" / "Try again" / the spec's own Start-button label —
-// so a pre-arm failure's retry copy names a button that actually exists
-// (the plan screens have no button called "Start").
+// "I'm there — play the tone" / "Try again" / the spec's own Start-button
+// label — so a pre-arm failure's retry copy names a button that actually
+// exists (the plan screens have no button called "Start").
 function planRetryAffordance(ctx) {
   const begin = ((ctx.captureRefs && ctx.captureRefs.buttons) || []).find(
     (entry) => entry && entry.action === "begin_capture",
@@ -2159,15 +2537,20 @@ function planRetryAffordance(ctx) {
 
 // One capture round: begin -> Pi admission -> quiet window + sweep + upload
 // (index-aware) -> Pi verdict -> the next screen. Invoked once from
-// onPlanStart (index 1, attempt 1) and thereafter from a "Next measurement" /
-// "Try again" tap.
-async function runPlanCapture(ctx, { index, attempt }) {
+// onPlanStart (index 1, attempt 1) and thereafter from a primary tap ("I'm
+// there — play the tone" / "Try again" / "Continue") or a Retake tap
+// (`retake: true`, §2.6 — the just-accepted slot on the next attempt).
+async function runPlanCapture(ctx, { index, attempt, retake = false }) {
   const { spec, client } = ctx;
   const controller = ctx.planController;
   const { target } = planTargetAndAttempts(spec);
   // A fresh round cancels any pending auto-advance (e.g. a countdown, or a Cancel
   // that dropped to the manual tap then the tap fired) so no stale timer fires.
   clearAutoAdvance(ctx);
+  // Posting ANY begin shuts the retake window this page offers — it re-opens
+  // only on the next accepted verdict (armRetakeSlot). See retakeControl's
+  // header for why an offer must never outlive the runner's own window.
+  ctx.retakeSlot = null;
   let disposeWatch = () => {};
   // Whether this round's `armed` post was ATTEMPTED (set just before the
   // await — a lost response may still have armed the Pi). It splits the
@@ -2181,7 +2564,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
   let armedPosted = false;
 
   try {
-    const admission = await beginAndAwaitAuthorization(ctx, { index, attempt });
+    const admission = await beginAndAwaitAuthorization(ctx, { index, attempt, retake });
     if (controller.aborted || admission.aborted) return;
     if (admission.deadSession) {
       renderSessionExpired(ctx);
@@ -2200,6 +2583,15 @@ async function runPlanCapture(ctx, { index, attempt }) {
       renderPlanRefused(ctx, admission);
       await endPlanSession(ctx);
       return;
+    }
+
+    // Confirm-then-tone (§2.2): an entry that carries `confirm_*` copy waits
+    // for the household's tap AFTER the Pi authorizes — the VERIFY sweep must
+    // not fire into a walk back to the mark. Every other entry (and every
+    // pre-redesign plan) resolves immediately, so this is inert for them.
+    if (entryConfirmsBeforeArming(spec, index)) {
+      await awaitPlanConfirmation(ctx, { index });
+      if (controller.aborted) return;
     }
 
     advanceDeferredHoldHeading(ctx);
@@ -2233,6 +2625,10 @@ async function runPlanCapture(ctx, { index, attempt }) {
         return;
       }
       wireTrackEndedRecovery(ctx, recorder, spec);
+      // The session's mic is now open and reused for every remaining capture
+      // (#1658) — the picker cannot change it any more, so it stops taking up
+      // room above the instruction (§2.3).
+      collapseMicPicker();
     }
     const capture = inspectRecorder(recorder, spec);
     if (capture.decision.action === "refuse") {
@@ -2289,7 +2685,10 @@ async function runPlanCapture(ctx, { index, attempt }) {
       degraded: capture.decision.degraded,
       device: capture.device,
       noise_floor: { duration_ms: noise.duration_ms, rms_dbfs: noise.rms_dbfs },
-      begin_capture: { index, attempt },
+      // The armed event re-states its own begin context; carry the retake
+      // marker here too, so a Pi poll that lands on THIS event rather than the
+      // begin still reads the same (index, attempt, retake) request.
+      begin_capture: beginCapturePayload({ index, attempt, retake }),
       setup: setupWirePayload(),
       acknowledgement: ctx.planAcknowledgement,
       ...ambientStatsFieldsFor(spec, noise),
@@ -2354,19 +2753,30 @@ async function runPlanCapture(ctx, { index, attempt }) {
       return;
     }
     if (verdict.accepted) {
-      // Route by the UPCOMING entry's auto-advance policy (§5.2): a hold that
-      // owns the screen (on_apply), a cancelable countdown, or the manual tap.
-      advanceAfterAccepted(ctx, { index, attempt, target });
+      // The just-accepted capture becomes retakeable — until this page posts
+      // its next begin (§2.6).
+      armRetakeSlot(ctx, { index, attempt });
+      if (verdict.awaitingConfirm) {
+        // The pre-apply cloud is walked but NOT closed: the Pi is holding the
+        // fit + apply behind a begin past the group, which is exactly the
+        // window in which retaking this spot still means something.
+        renderPlanGroupConfirm(ctx, { index, attempt, target });
+      } else {
+        // Route by the UPCOMING entry's auto-advance policy (§5.2): a hold that
+        // owns the screen (on_apply), a cancelable countdown, or the manual tap.
+        advanceAfterAccepted(ctx, { index, attempt, target });
+      }
     } else {
       // `error` first for the legacy shape (kinds whose host sets it), then
       // the v2 conductor's `reason`/`banner`; `prompt` is the separate
-      // what-to-do line renderPlanRetry shows underneath.
+      // what-to-do instruction renderPlanRetry headlines.
       renderPlanRetry(ctx, {
         index,
         attempt,
         target,
         reason: verdict.error || verdict.reason || verdict.banner,
         prompt: verdict.prompt,
+        retake,
       });
     }
   } catch (err) {
@@ -2800,6 +3210,10 @@ async function boot() {
         stop: stopCapture,
       },
     });
+    // §2.3: the consent screen IS the plan announcement — say how many
+    // measurements and how long BEFORE the first tone, above the placement
+    // instruction the spec already renders.
+    insertPlanAnnouncement(screenEl, spec);
     void buildMicPicker(screenEl);
     setStatus(
       spec.acknowledgement
@@ -2866,6 +3280,15 @@ async function buildMicPicker(beforeEl) {
   }
 }
 
+// Collapse the picker once the session's mic stream exists (§2.3). A v3 plan
+// session opens ONE stream and reuses it for every capture (#1658), so from
+// that moment the picker cannot change anything — leaving it above the
+// instruction is a live-looking control that silently does nothing. Hidden
+// rather than removed, so boot()'s re-boot removal still finds it.
+function collapseMicPicker() {
+  if (micPickerEl) micPickerEl.hidden = true;
+}
+
 // The fragment (`#…`) the current wizard instance booted from. A hashchange to
 // a DIFFERENT fragment (a freshly-scanned QR / a new link, or the speaker page
 // swapping the link) must re-initialize the whole wizard — a page navigated by
@@ -2924,4 +3347,7 @@ export {
   entryForIndex,
   renderPlanDeferred,
   advanceDeferredHoldHeading,
+  planAnnouncementText,
+  planEstimatedMinutes,
+  beginCapturePayload,
 };

@@ -97,7 +97,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 3,
         "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260726.1",
+        "capture_page_build": "20260727.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -105,7 +105,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260726-1" in index_html
+    assert "main.js?v=20260727-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -114,6 +114,158 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'from "./level-events.js?v=20260716-1"' in main_js
     assert 'from "./ambient-stats.js?v=20260717-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
+
+
+def test_capture_page_step_screens_render_one_instruction_grammar():
+    """Flow-simplification §2.1: every page-owned plan screen renders the SAME
+    grammar in the SAME DOM slots — the counter as a small eyebrow, the
+    instruction as the headline, one supporting clause, a single full-width
+    primary, and Stop demoted to a text link. The behavior is exercised in
+    capture_plan_loop_test.mjs; these pins keep the wiring (and the styles the
+    grammar depends on) from silently regressing."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+
+    assert "function renderStepScreen(ctx, {" in main_js
+    # The counter is server-derived and rendered once, in the eyebrow.
+    assert 'el("p", { class: "cap-eyebrow", text: String(progress) })' in main_js
+    assert 'String(screenCopy.progress || "")' in main_js
+    assert ".cap-eyebrow {" in index_html
+    # The one primary label: the tap IS the placement confirmation.
+    assert 'const STEP_PRIMARY_LABEL = "I’m there — play the tone";' in main_js
+
+
+def test_capture_page_stop_is_a_text_link_behind_a_danger_confirm():
+    """§2.1 reverses render.js's documented "Stop is the one danger button"
+    styling for the PAGE-OWNED step screens only: Stop appears on all 16 of a
+    full session's screens, and at equal weight with the primary a stray tap
+    could abandon the session outright. The destructiveness moves to a
+    page-local <dialog> (the capture page shares nothing with the Pi's
+    dialog.js — different origin, different bundle, strict CSP), which the
+    browser cannot suppress the way it can window.confirm()."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+
+    assert "function stopLinkEl() {" in main_js
+    assert 'class: "cap-stop-link"' in main_js
+    assert "function confirmStopMeasuring() {" in main_js
+    assert "if (await confirmStopMeasuring()) await stopCapture();" in main_js
+    assert '<dialog id="stop-confirm" class="cap-dialog">' in index_html
+    assert 'id="stop-confirm-accept"' in index_html
+    assert 'id="stop-confirm-cancel"' in index_html
+    # Native popups stay out (they can be suppressed); no inline handlers
+    # either — the CSP admits no inline script.
+    assert "window.confirm(" not in main_js
+    assert "onclick=" not in index_html
+    # The page never renders relay-supplied text inside the dialog: its copy
+    # is static markup.
+    assert "Stop measuring?" in index_html
+
+
+def test_capture_page_status_line_stops_counting_the_walk():
+    """§2.1: `#status` used to number the same walk a second time, in its own
+    vocabulary, and disagree with the screen's counter. It is the transient
+    STATE channel now — the removed counter strings must not come back."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+
+    assert "function clearStatus() {" in main_js
+    assert "Measurement ${index} of ${target} done. Tap Next measurement" not in main_js
+    assert "Requesting measurement ${index} of ${target}" not in main_js
+    assert "Next measurement starts in ${seconds}s" not in main_js
+    assert '"Asking the speaker to start…"' in main_js
+    # Transient state survives — those lines are the channel's whole job.
+    assert '"Speaker is checking this measurement…"' in main_js
+    assert "#status:empty {" in index_html
+
+
+def test_capture_page_retake_offer_never_outlives_the_runners_window():
+    """§2.6 + review finding N4. jasper/capture_relay/session.py's
+    `_poll_capture_plan` admits a retake ONLY for the just-accepted index, on
+    the next attempt, carrying the marker, and ONLY while the next entry's
+    begin has not been seen (its `next_begin_seen`, which flips on an admitted
+    OR merely deferred begin — including the VERIFY hold's auto-posted one).
+    Past that the begin is refused as out-of-order, and ANY refusal ends the
+    session, so an offer that outlived the window would be a button whose only
+    outcome is killing the run. Behavior is exercised end-to-end against a fake
+    relay that enforces the runner's ordering (capture_plan_loop_test.mjs);
+    these pins keep the three mechanisms in place."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    # 1. Every begin this page posts shuts the window…
+    start = main_js.index("async function runPlanCapture(ctx, { index, attempt, retake = false }) {")
+    end = main_js.index("async function onPlanStart(ctx)", start)
+    run_body = main_js[start:end]
+    assert "ctx.retakeSlot = null;" in run_body
+    # …and only an accepted verdict re-arms it, within the plan's own budget.
+    assert "armRetakeSlot(ctx, { index, attempt });" in run_body
+    assert "planSupportsRetake(ctx.spec) && attempt + 1 <= maxAttempts" in main_js
+    # 2. The tap re-checks (a countdown's auto-begin can win the race).
+    assert "function canRetake(ctx, index) {" in main_js
+    assert main_js.count("if (!canRetake(ctx, index)) return") >= 2
+    # 3. The marker is a distinct wire shape, and a rejected retake keeps it.
+    assert "function beginCapturePayload({ index, attempt, retake = false }) {" in main_js
+    assert "return retake ? { index, attempt, retake: true } : { index, attempt };" in main_js
+    assert "await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });" in main_js
+
+
+def test_capture_page_verify_confirms_after_the_hold_before_the_tone():
+    """§2.2, the step-11 fix. VERIFY is BEGIN-FIRST, THEN CONFIRM: the begin
+    posts immediately (each deferred re-post re-arms the host's hold clock —
+    sitting tap-first in `awaiting_begin` would hit REVIEW_HOLD_BUDGET_S and
+    kill the session as a relay timeout), the hold screen instructs the walk
+    back, and the tone waits for the household's tap once authorization lands.
+    The confirmation copy rides NEW screen keys, which is what keeps a cached
+    pre-redesign bundle rendering today's exact flow."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "function entryConfirmsBeforeArming(spec, index) {" in main_js
+    assert "return Boolean(screenCopy.confirm_title);" in main_js
+    assert "String(screenCopy.confirm_body || \"\")" in main_js
+    assert "await awaitPlanConfirmation(ctx, { index });" in main_js
+    # The gate sits AFTER admission and BEFORE the mic/ambient/armed leg.
+    run_start = main_js.index("async function runPlanCapture(ctx, { index, attempt, retake = false }) {")
+    gate = main_js.index("await awaitPlanConfirmation(ctx, { index });", run_start)
+    assert main_js.index("const admission = await beginAndAwaitAuthorization(", run_start) < gate
+    assert gate < main_js.index("armedPosted = true;", run_start)
+    # A parked confirmation is released by Stop / teardown rather than left
+    # suspended on a promise nothing resolves.
+    assert "function resolvePendingConfirm(ctx) {" in main_js
+    abort_start = main_js.index("function makePlanController(ctx) {")
+    abort_end = main_js.index("async function endPlanSession(ctx)", abort_start)
+    assert "resolvePendingConfirm(ctx);" in main_js[abort_start:abort_end]
+    release_start = main_js.index("async function releasePlanSessionResources(ctx) {")
+    release_end = main_js.index("async function reacquireSessionWakeLock", release_start)
+    assert "resolvePendingConfirm(ctx);" in main_js[release_start:release_end]
+
+
+def test_capture_page_consent_announces_the_plan_before_the_first_tone():
+    """§2.3: the consent screen IS the announcement — how many measurements
+    and how long, DERIVED from the signed plan (never hardcoded), above the
+    placement instruction. The page derives it rather than only rendering the
+    speaker's own consent line because the page ships FIRST (README "Release
+    order"): against a speaker that predates the tier line this is the whole
+    announcement. tests/test_capture_relay_spec.py pins the per-capture
+    allowance across the two derivations."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    index_html = (_REPO / "capture-page/index.html").read_text(encoding="utf-8")
+
+    assert "function planEstimatedMinutes(spec) {" in main_js
+    assert "function planAnnouncementText(spec) {" in main_js
+    assert 'const sentence = `${target} measurements, about ${minutes} minutes`;' in main_js
+    # …and stands down when the speaker's own consent copy already carries that
+    # exact derived sentence, so the household never reads it twice.
+    assert "return specScreenSays(spec, sentence) ? \"\" : `${sentence}.`;" in main_js
+    assert "insertPlanAnnouncement(screenEl, spec);" in main_js
+    assert ".cap-announce {" in index_html
+    # One derivation, shared with the wake-lock hint — not a second estimate.
+    hint_start = main_js.index("function wakeLockHintText(spec) {")
+    hint_end = main_js.index("function planAnnouncementText", hint_start)
+    assert "planEstimatedMinutes(spec)" in main_js[hint_start:hint_end]
+    # The mic picker collapses once the session's one mic stream exists — from
+    # then on it cannot change anything.
+    assert "function collapseMicPicker() {" in main_js
+    assert "collapseMicPicker();" in main_js
 
 
 def test_capture_page_treats_host_stop_as_expected_control_flow():
@@ -493,7 +645,10 @@ def test_capture_page_plan_loop_derives_named_screens_for_every_outcome():
     # fallback strings themselves are unchanged.
     assert '`Measurement ${index} of ${target} ✓`' in main_js
     assert '`Measurement ${index} of ${target} needs another try`' in main_js
-    assert "await runPlanCapture(ctx, { index, attempt: attempt + 1 });" in main_js
+    # The same-slot retry keeps its slot; `retake` rides along so a rejected
+    # VOLUNTARY retake's retry stays a retake (§2.6 — without the marker the
+    # runner refuses it as out-of-order, which ends the session).
+    assert "await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });" in main_js
     assert "await runPlanCapture(ctx, { index: index + 1, attempt: attempt + 1 });" in main_js
     assert '"All measurements done — the speaker continues automatically."' in main_js
     assert 'text: "Measurement refused"' in main_js
@@ -546,7 +701,9 @@ def test_capture_page_plan_loop_post_arm_errors_are_terminal_pre_arm_retries():
     pins keep the wiring from silently regressing."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    start = main_js.index("async function runPlanCapture(ctx, { index, attempt }) {")
+    start = main_js.index(
+        "async function runPlanCapture(ctx, { index, attempt, retake = false }) {"
+    )
     end = main_js.index("async function onPlanStart(ctx)", start)
     run_body = main_js[start:end]
     assert "let armedPosted = false;" in run_body

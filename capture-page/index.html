@@ -92,6 +92,24 @@
         line-height: 1.2;
         margin: 0 0 1rem;
       }
+      /* The step-screen grammar (flow-simplification §2.1): the counter is a
+         small eyebrow ABOVE the instruction, never the headline. */
+      .cap-eyebrow {
+        margin: 0 0 0.35rem;
+        color: var(--cap-muted);
+        font-size: 0.85rem;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      /* The plan announcement on the consent screen (§2.3) — what is about to
+         happen, before the first tone. */
+      .cap-announce {
+        margin: 0 0 1rem;
+        font-size: 1.05rem;
+        font-weight: 650;
+        line-height: 1.4;
+      }
       .cap-steps {
         margin: 0 0 1.5rem;
         padding-left: 1.25rem;
@@ -170,6 +188,55 @@
       .cap-button--danger {
         background: oklch(0.55 0.19 25);
       }
+      /* Stop, demoted (§2.1): a small text link under the primary instead of
+         a full-weight danger button competing with it on every step screen.
+         The destructiveness moved to the confirm dialog below. */
+      .cap-stop {
+        display: flex;
+        justify-content: center;
+        margin-top: 1.5rem;
+      }
+      .cap-stop-link {
+        appearance: none;
+        border: 0;
+        background: none;
+        padding: 0.5rem 0.75rem;
+        color: var(--cap-muted);
+        font: inherit;
+        font-size: 0.95rem;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      /* The page's OWN minimal confirm. The capture page shares nothing with
+         the Pi's /assets/shared/js/dialog.js — different origin, different
+         bundle, and the CSP admits no external anything. <dialog>.showModal()
+         cannot be suppressed by the browser the way window.confirm() can. */
+      .cap-dialog {
+        width: min(22rem, calc(100vw - 2.5rem));
+        border: 0;
+        border-radius: 0.9rem;
+        padding: 1.25rem;
+        color: var(--cap-fg);
+        background: var(--cap-bg);
+        font-family: var(--cap-font);
+      }
+      .cap-dialog::backdrop {
+        background: rgba(0, 0, 0, 0.45);
+      }
+      .cap-dialog-title {
+        margin: 0 0 0.5rem;
+        font-size: 1.15rem;
+      }
+      .cap-dialog-message {
+        margin: 0 0 1.1rem;
+        color: var(--cap-muted);
+        font-size: 0.95rem;
+        line-height: 1.45;
+      }
+      .cap-dialog-actions {
+        display: grid;
+        gap: 0.65rem;
+      }
       #status {
         margin-top: 1.25rem;
         padding: 0.85rem 1rem;
@@ -178,6 +245,13 @@
         background: color-mix(in oklch, var(--cap-accent) 10%, transparent);
         color: var(--cap-fg);
         min-height: 1.2em;
+      }
+      /* `#status` is the transient-state channel only (§2.1) — a step screen
+         carries its own counter and instruction, so the status line goes
+         quiet between states and collapses rather than leaving a tinted bar
+         with nothing in it. */
+      #status:empty {
+        display: none;
       }
       #status[data-kind="error"] {
         background: oklch(0.9 0.06 25);
@@ -216,6 +290,24 @@
         the link from your speaker.
       </noscript>
     </main>
-    <script type="module" src="./js/main.js?v=20260726-1"></script>
+    <!-- The one confirm this page ever shows: Stop is a text link on every
+         step screen now (§2.1), so a stray tap must not be able to abandon a
+         session outright. Static markup + fixed copy — the page never puts
+         relay-supplied text in here. -->
+    <dialog id="stop-confirm" class="cap-dialog">
+      <h2 class="cap-dialog-title">Stop measuring?</h2>
+      <p class="cap-dialog-message">
+        This ends the session. The speaker page shows what happens next.
+      </p>
+      <div class="cap-dialog-actions">
+        <button type="button" class="cap-button cap-button--secondary" id="stop-confirm-cancel" autofocus>
+          Keep measuring
+        </button>
+        <button type="button" class="cap-button cap-button--danger" id="stop-confirm-accept">
+          Stop measuring
+        </button>
+      </div>
+    </dialog>
+    <script type="module" src="./js/main.js?v=20260727-1"></script>
   </body>
 </html>
