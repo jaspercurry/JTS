@@ -196,7 +196,10 @@ def test_capture_page_retake_offer_never_outlives_the_runners_window():
     start = main_js.index("async function runPlanCapture(ctx, { index, attempt, retake = false }) {")
     end = main_js.index("async function onPlanStart(ctx)", start)
     run_body = main_js[start:end]
-    assert "ctx.retakeSlot = null;" in run_body
+    assert "shutRetakeWindow(ctx);" in run_body
+    # …and shutting it disables the control that offered it, rather than
+    # leaving a live-looking button that does nothing (review M1).
+    assert "ctx.retakeButtonEl.disabled = true;" in main_js
     # …and only an accepted verdict re-arms it, within the plan's own budget.
     assert "armRetakeSlot(ctx, { index, attempt });" in run_body
     assert "planSupportsRetake(ctx.spec) && attempt + 1 <= maxAttempts" in main_js
@@ -207,6 +210,53 @@ def test_capture_page_retake_offer_never_outlives_the_runners_window():
     assert "function beginCapturePayload({ index, attempt, retake = false }) {" in main_js
     assert "return retake ? { index, attempt, retake: true } : { index, attempt };" in main_js
     assert "await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });" in main_js
+
+
+def test_capture_page_rejected_retake_can_keep_the_earlier_take():
+    """Review blocker B1. A voluntary retake re-measures an ALREADY-ACCEPTED
+    slot, and the design's fail-safe is that a rejected one leaves the original
+    take standing — so the retry screen cannot offer only "Try again", or the
+    household re-measures something that does not need it and can burn the
+    attempt budget until the session dies with the fit and apply never fired.
+    The forward begin is legal at that point (a rejected retake leaves
+    `accepted_count` unchanged, `attempts_used` at this attempt, and
+    `next_begin_seen` false), which is what makes the escape safe rather than
+    merely kind. Exercised end-to-end in capture_plan_loop_test.mjs against a
+    fake relay that enforces the runner's ordering."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "function keepEarlierTakeControl(ctx, { index, attempt, target }) {" in main_js
+    assert 'button("Keep the earlier measurement and continue"' in main_js
+    # Offered only on a RETAKE's rejection — an ordinary failure retry has no
+    # earlier take to keep.
+    assert (
+        "secondary: retake ? keepEarlierTakeControl(ctx, { index, attempt, target }) : null,"
+        in main_js
+    )
+    # It returns to the screen the acceptance belonged on: the group-close
+    # confirm keeps the fit + apply behind the same tap they were behind.
+    assert "ctx.retakeAwaitingConfirm = Boolean(verdict.awaitingConfirm);" in main_js
+    assert "if (ctx.retakeAwaitingConfirm) {" in main_js
+
+
+def test_capture_page_pre_arm_failure_never_strands_a_fatal_affordance():
+    """Review S2. A pre-arm failure leaves the previous screen up, which is
+    only safe when its live control re-posts a pair the Pi still accepts. Two
+    cases where it does not: during a RETAKE the visible primary is the forward
+    path (posting it while the Pi sits in awaiting_arm on the retake is
+    `begin_out_of_order` — fatal), and a countdown screen has no begin
+    affordance at all (the copy would name a button that does not exist)."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {" in main_js
+    # The retake repair re-arms the offer whose closure re-posts the IDENTICAL
+    # pair, and names that control instead of the forward primary.
+    assert "armRetakeSlot(ctx, { index, attempt: attempt - 1 });" in main_js
+    assert "return RETAKE_LABEL;" in main_js
+    # The no-affordance repair drops back to the manual screen the countdown's
+    # own Cancel produces, which has one.
+    assert "if (!hasBegin && index > 1) {" in main_js
+    assert "renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });" in main_js
 
 
 def test_capture_page_verify_confirms_after_the_hold_before_the_tone():
@@ -266,6 +316,62 @@ def test_capture_page_consent_announces_the_plan_before_the_first_tone():
     # then on it cannot change anything.
     assert "function collapseMicPicker() {" in main_js
     assert "collapseMicPicker();" in main_js
+
+
+def test_capture_page_announcement_matches_the_speakers_own_consent_line():
+    """The de-dup in `planAnnouncementText` is a CROSS-BOUNDARY claim: the page
+    stands its announcement down only because the speaker's consent copy
+    already carries the identical derived sentence. Nothing else would notice
+    if a server-side reword broke that match — the page would silently render
+    both, and the household would read one sentence twice, two lines apart
+    (which is exactly what a browser pass caught during PR-U2).
+
+    So build a REAL guided consent screen with the REAL server builder, render
+    the PAGE's announcement template against the same plan, and assert the
+    speaker's copy contains it."""
+    import re
+
+    from jasper.capture_relay.spec import (
+        CapturePlan,
+        CapturePlanEntry,
+        build_crossover_sweep_spec,
+    )
+
+    plan = CapturePlan(
+        capture_target=7,
+        max_attempts=14,
+        schema_version=2,
+        entries=tuple(
+            CapturePlanEntry(index=i, kind_label="cloud_measure", duration_ms=ms)
+            for i, ms in enumerate((23000, 41000, 16000, 16000, 16000, 16000, 16000))
+        ),
+    )
+    spec = build_crossover_sweep_spec(
+        driver_label="crossover",
+        driver_role="summed",
+        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+        capture_plan=plan,
+        guided_captures=plan.capture_target,
+        guided_tier="express",
+    )
+    steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
+
+    # The page's own template, read out of its source rather than restated.
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    template = re.search(
+        r"const sentence = `([^`]+)`;", main_js
+    )
+    assert template is not None, "the capture page no longer derives an announcement"
+    rendered = (
+        template.group(1)
+        .replace("${target}", str(plan.capture_target))
+        .replace("${minutes}", str(plan.estimated_minutes()))
+    )
+    assert any(rendered in step for step in steps), (
+        f"the speaker's consent copy no longer contains the page's announcement "
+        f"({rendered!r}); the page will now render it a second time — either "
+        f"restore the wording or revisit capture-page/js/main.js's de-dup"
+    )
 
 
 def test_capture_page_treats_host_stop_as_expected_control_flow():
@@ -644,7 +750,12 @@ def test_capture_page_plan_loop_derives_named_screens_for_every_outcome():
     # variables) rather than an inline `text:` template literal — the
     # fallback strings themselves are unchanged.
     assert '`Measurement ${index} of ${target} ✓`' in main_js
-    assert '`Measurement ${index} of ${target} needs another try`' in main_js
+    # The retry screen's entry-less fallback headline no longer counts — the
+    # eyebrow above it already carries "Measurement N of T — one more try", and
+    # saying it twice was the §2.1 double-counter in miniature.
+    assert '"Take that measurement again"' in main_js
+    # (the only surviving mention is the comment recording what it replaced)
+    assert main_js.count("needs another try") == 1
     # The same-slot retry keeps its slot; `retake` rides along so a rejected
     # VOLUNTARY retake's retry stays a retake (§2.6 — without the marker the
     # runner refuses it as out-of-order, which ends the session).
@@ -712,7 +823,7 @@ def test_capture_page_plan_loop_post_arm_errors_are_terminal_pre_arm_retries():
     # still have armed the Pi, so a failed post must classify as post-arm.
     assert run_body.index("armedPosted = true;") < run_body.index("armed: true,")
     assert "} else if (armedPosted) {" in run_body
-    assert "setStatus(captureFailureMessage(err, planRetryAffordance(ctx)), \"error\");" in run_body
+    assert "repairPreArmAffordance(ctx, { index, attempt, target, retake })" in run_body
     # The post-arm upload-cap refusal is terminal too (sweepFailed routing),
     # and the pre-arm clean-capture refusal keeps the session alive: exactly
     # the sweepFailed/deadSession/armedPosted terminal branches call

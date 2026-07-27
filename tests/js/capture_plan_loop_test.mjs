@@ -408,6 +408,17 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
   // session. Enforcing it here is what makes a retake test prove something:
   // a page that forgot the marker (or offered a retake after the window shut)
   // fails instead of quietly passing against a permissive fake.
+  //
+  // WHAT THIS MIRROR DELIBERATELY OMITS — it is STRICTER than the runner, so
+  // read a refusal here as "the page did something the runner might still
+  // tolerate", never as proof it would fail on hardware. The real
+  // `_poll_capture_plan` also keeps `processed` + a `phase`, which make a
+  // REPEAT of the in-flight (index, attempt) a no-op rather than a refusal
+  // (the phone re-posts its begin on every deferral, and the armed event
+  // re-states it). This fake has no such tolerance: every begin is judged
+  // against the ordering rule alone. A future test that exercises the polling
+  // /re-post paths will need that tolerance added here, or it will see a
+  // false-positive refusal.
   let attemptsUsed = 0;
   let nextBeginSeen = false;
   let currentRetake = false;
@@ -643,9 +654,10 @@ async function testRejectedResultOffersTryAgainSameSlot() {
   await onPlanStart(ctx);
   // §2.4 retry grammar: the eyebrow carries the counter plus "one more try",
   // the headline is the instruction (here the generic fallback — this plan
-  // has no entry copy), the detail is the reason sentence.
+  // has no entry copy), the detail is the reason sentence. The fallback
+  // headline does NOT count again: the eyebrow above it already did (M2).
   assert.equal(eyebrowText(ctx.screenEl), "Measurement 1 of 2 — one more try");
-  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 needs another try");
+  assert.equal(headingText(ctx.screenEl), "Take that measurement again");
   assert.equal(noteText(ctx.screenEl), "SNR too low.");
   let retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
   await retry._listeners.click[0]();
@@ -1360,7 +1372,9 @@ async function testCountdownNextEntryShowsVisibleCancelableCountdown() {
   assert.equal(
     ctx.captureRefs.buttons.length,
     0,
-    "the countdown owns the screen — no begin affordance until it elapses or cancels",
+    "the countdown owns the FORWARD path — no forward begin affordance until it "
+      + "elapses or cancels (the Retake secondary posts a BACKWARD begin and is "
+      + "deliberately not registered here)",
   );
   assert.notEqual(ctx.autoAdvanceInterval, null, "the countdown arms an interval");
   clearInterval(ctx.autoAdvanceInterval);
@@ -2247,10 +2261,13 @@ function primaryButton(ctx) {
 // Drain macrotasks (scheduleAutoBegin's setTimeout) as well as microtasks
 // until the screen reaches the expected state — the auto-posted VERIFY begin
 // runs OUTSIDE the promise the test awaited, so there is nothing to await.
-async function waitFor(predicate, label, rounds = 300) {
+async function waitFor(predicate, label, rounds = 600) {
   for (let i = 0; i < rounds; i += 1) {
     if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // 5 ms rather than 0: one scenario waits on a real 1 s countdown interval
+    // (the auto-begin), and a zero-delay spin never lets the clock advance far
+    // enough. Everything else resolves in a poll or two either way.
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`timed out waiting for ${label}`);
 }
@@ -2673,6 +2690,247 @@ async function testStopLinkConfirmsBeforeAbandoningTheSession() {
   ok();
 }
 
+// ============================================================================
+// 38 (review BLOCKER B1). A REJECTED voluntary retake must have a forward
+// path. The slot is ALREADY accepted, and the design's fail-safe is that a
+// rejected retake leaves the original take standing — so "Try again" cannot be
+// the only control, or the household re-measures something that does not need
+// it and can burn the attempt budget until the session dies with the fit and
+// apply never fired. "Keep the earlier measurement and continue" posts the
+// ordinary forward begin, which is exactly the pair the runner expects after a
+// rejected retake (accepted_count unchanged, next_begin_seen still false) —
+// the fake relay enforces that, so this fails if the arithmetic is wrong.
+// ============================================================================
+async function testARejectedRetakeCanKeepTheEarlierTakeAndContinue() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index, attempt) => {
+      if (attempt === 3) return { accepted: false, reason: "A truck went past." };
+      return index === 2
+        ? { accepted: true, awaiting_confirm: true }
+        : { accepted: true };
+    },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx)); // capture 2 -> the group-close confirm
+  assert.equal(headingText(ctx.screenEl), "All spots measured — ready to continue?");
+  await fire(actionButtons(ctx.screenEl)[1]); // Retake the final position -> rejected
+
+  assert.equal(eyebrowText(ctx.screenEl), "Measurement 2 of 3 — one more try");
+  // No server move-instruction on this rejection, so the primary stays the
+  // plain "Try again" — and the escape sits beside it.
+  assert.deepEqual(actionLabels(ctx.screenEl), [
+    "Try again",
+    "Keep the earlier measurement and continue",
+  ]);
+
+  // Keep the accepted take: back to the SAME group-close confirm the retake
+  // was launched from, with the offer live again (the runner's window is still
+  // open and the budget still covers it).
+  await fire(actionButtons(ctx.screenEl)[1]);
+  assert.equal(headingText(ctx.screenEl), "All spots measured — ready to continue?");
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
+
+  // …and the session still completes: Continue posts the confirming begin,
+  // VERIFY confirms, done.
+  await fire(primaryButton(ctx));
+  await waitFor(
+    () => headingText(ctx.screenEl) === VERIFY_CONFIRM_HEADLINE,
+    "the post-apply confirmation",
+  );
+  await fire(primaryButton(ctx));
+  await waitFor(() => headingText(ctx.screenEl) === "Your speaker is tuned", "the done screen");
+
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
+    [[1, 1, undefined], [2, 2, undefined], [2, 3, true], [3, 4, undefined]],
+    "the forward begin after the rejected retake is (accepted+1, attempts+1)",
+  );
+  ok();
+}
+
+// ============================================================================
+// 39 (review SHOULD-FIX S2). A pre-arm failure DURING a retake must not leave
+// the FORWARD primary as the live affordance: tapping it posts a different
+// (index, attempt) while the Pi may be sitting in awaiting_arm on the retake,
+// which the runner refuses as out-of-order — fatal. The retake offer is
+// re-armed instead, so the live control re-posts the IDENTICAL pair, and the
+// failure copy names that control.
+// ============================================================================
+async function testPreArmFailureDuringARetakeReArmsTheRetakeNotTheForwardPath() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  globalThis.__recorderError = null;
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client, posted } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  const retake = actionButtons(ctx.screenEl)[1];
+  // The mic dies between rounds — the canonical pre-arm failure — so the
+  // retake round fails after its begin was already admitted.
+  ctx.recorder = null;
+  globalThis.__recorderError = new Error("Permission denied");
+  await fire(retake);
+  globalThis.__recorderError = null;
+
+  const lastStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    lastStatus.includes("Tap Retake this measurement to try again"),
+    `the copy must name the retake control, got: ${lastStatus}`,
+  );
+  assert.equal(ctx.retakeSlot.index, 1, "the retake offer is live again");
+
+  // Re-tapping it re-posts the IDENTICAL pair (the runner tolerates that),
+  // never the forward one the visible primary would have posted.
+  await fire(retake);
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
+    [[1, 1, undefined], [1, 2, true], [1, 2, true]],
+  );
+  assert.ok(
+    !posted.some((e) => e.begin_capture && e.begin_capture.index === 2),
+    "the forward begin was never posted while the Pi awaited the retake",
+  );
+  ok();
+}
+
+// ============================================================================
+// 40 (review SHOULD-FIX S2, second half). A countdown's auto-begin IS the
+// forward path, so its screen renders no begin affordance — a pre-arm failure
+// there used to leave the household on a frozen countdown with copy naming
+// "the measurement button", which does not exist. Drop back to the manual
+// screen the countdown's own Cancel produces, and name ITS control.
+// ============================================================================
+async function testPreArmFailureOnTheCountdownScreenNamesARealControl() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  globalThis.__recorderError = null;
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({
+    target: 3,
+    maxAttempts: 6,
+    entries: [
+      { index: 0, kind_label: "check", duration_ms: 25000, screen: { progress: "Measurement 1 of 3", title: "On the mark", auto_advance: "tap" } },
+      { index: 1, kind_label: "measure", duration_ms: 16000, screen: { progress: "Measurement 2 of 3", title: "Hold still", auto_advance: "countdown", countdown_s: "1" } },
+      { index: 2, kind_label: "verify", duration_ms: 16000, screen: { progress: "Measurement 3 of 3", title: "Last one", auto_advance: "tap" } },
+    ],
+  });
+  const { client } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Hold still", "the countdown owns the screen");
+  assert.equal(ctx.captureRefs.buttons.length, 0, "…with no forward begin affordance");
+
+  // The countdown's own auto-begin fires into a dead mic.
+  ctx.recorder = null;
+  globalThis.__recorderError = new Error("Permission denied");
+  await waitFor(
+    () => statusHistory.some((s) => String(s).includes("try again")),
+    "the pre-arm failure copy",
+  );
+  globalThis.__recorderError = null;
+
+  const named = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    !named.includes("the measurement button"),
+    `the copy must not name a button that does not exist, got: ${named}`,
+  );
+  const live = primaryButton(ctx);
+  assert.ok(live, "the screen now carries a live begin affordance");
+  assert.ok(
+    named.includes(`Tap ${live.textContent} to try again`),
+    `the copy names the control now on screen, got: ${named}`,
+  );
+  ok();
+}
+
+// ============================================================================
+// 41 (review M1). The offering screen is not replaced until the new round's
+// verdict lands, so the Retake control it rendered is still on screen while
+// the next capture runs — with its window shut. It must be visibly disabled,
+// not live-looking and inert.
+// ============================================================================
+async function testTheRetakeControlIsDisabledOnceItsWindowShuts() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = guidedPlanSpec();
+  const { client } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  const retake = actionButtons(ctx.screenEl)[1];
+  assert.equal(retake.disabled, false);
+
+  await fire(primaryButton(ctx)); // the forward begin shuts the window
+  assert.equal(retake.disabled, true, "a shut retake offer leaves no live-looking control");
+  ok();
+}
+
+// ============================================================================
+// 42 (review M6). Tapping Retake on the countdown screen cancels the
+// countdown, so its live "Starting in N…" counter stops being true — it must
+// be cleared rather than frozen on screen for the whole retake.
+// ============================================================================
+async function testRetakeOnTheCountdownScreenClearsItsFrozenCounter() {
+  statusHistory.length = 0;
+  const { onPlanStart, entryForIndex } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({
+    target: 3,
+    maxAttempts: 6,
+    entries: [
+      { index: 0, kind_label: "check", duration_ms: 25000, screen: { progress: "Measurement 1 of 3", title: "On the mark", auto_advance: "tap" } },
+      { index: 1, kind_label: "measure", duration_ms: 16000, screen: { progress: "Measurement 2 of 3", title: "Hold still", auto_advance: "countdown", countdown_s: "5" } },
+      { index: 2, kind_label: "verify", duration_ms: 16000, screen: { progress: "Measurement 3 of 3", title: "Last one", auto_advance: "tap" } },
+    ],
+  });
+  assert.ok(entryForIndex(spec, 2), "fixture sanity: the countdown entry exists");
+  const { client, posted } = makeFakePlanClient({ target: 3, maxAttempts: 6 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.ok(
+    noteTexts(ctx.screenEl).some((t) => t.includes("Starting in 5")),
+    "the countdown is live before the tap",
+  );
+  const counter = ctx.screenEl.children.find(
+    (c) => c.tagName === "P" && String(c.textContent).includes("Starting in"),
+  );
+  await fire(actionButtons(ctx.screenEl)[1]); // Retake, from the countdown screen
+
+  assert.equal(counter.textContent, "", "the cancelled countdown's counter is cleared");
+  const begins = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
+    [[1, 1, undefined], [1, 2, true]],
+    "the retake posts the backward begin, never the countdown's forward one",
+  );
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -2716,6 +2974,11 @@ const tests = [
   testARejectedRetakeKeepsItsMarkerOnTheRetry,
   testPlanAnnouncementDerivesItsCountAndMinutes,
   testStopLinkConfirmsBeforeAbandoningTheSession,
+  testARejectedRetakeCanKeepTheEarlierTakeAndContinue,
+  testPreArmFailureDuringARetakeReArmsTheRetakeNotTheForwardPath,
+  testPreArmFailureOnTheCountdownScreenNamesARealControl,
+  testTheRetakeControlIsDisabledOnceItsWindowShuts,
+  testRetakeOnTheCountdownScreenClearsItsFrozenCounter,
 ];
 
 let failure = null;

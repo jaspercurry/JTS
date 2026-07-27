@@ -1548,6 +1548,10 @@ const CAPTURE_DEFERRED_RETRY_POLL_MS = 1500;
 function confirmStopMeasuring() {
   const dialog = document.getElementById("stop-confirm");
   if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(true);
+  // A confirm is already up (a double-tap on the link): showModal() would
+  // throw InvalidStateError, and stacking a second confirm is not a decision
+  // the household made. Treat the extra tap as no answer.
+  if (dialog.open) return Promise.resolve(false);
   const accept = document.getElementById("stop-confirm-accept");
   const cancel = document.getElementById("stop-confirm-cancel");
   return new Promise((resolve) => {
@@ -1614,7 +1618,7 @@ async function releasePlanSessionResources(ctx) {
   // on the confirmation tap is released rather than left suspended — the
   // terminal-path counterpart to the same release in makePlanController's
   // abort, for the terminals that never go through it.
-  ctx.retakeSlot = null;
+  shutRetakeWindow(ctx);
   resolvePendingConfirm(ctx);
   if (typeof ctx.disposeSessionVisibilityWatch === "function") {
     ctx.disposeSessionVisibilityWatch();
@@ -1853,10 +1857,15 @@ function renderStepScreen(ctx, {
 // again inside the tap (a countdown's auto-begin can win the race).
 // ---------------------------------------------------------------------------
 
-// Only the heterogeneous guided plan (schema_version 2, per-entry screens)
-// offers retakes: its host keeps per-index take retention, so an accepted
-// retake REPLACES and a rejected one leaves the original standing. The
-// pre-entries "N repeats of one spec" plan has no such contract.
+// What a retake actually depends on is HOST-SIDE per-index take retention: an
+// accepted retake must REPLACE the slot's take, and a rejected one must leave
+// the original standing. Only the v2 crossover conductor provides that, and
+// the signal this page can see for it is the heterogeneous plan that conductor
+// builds (schema_version 2, per-entry screens) — a proxy, not the guarantee
+// itself. The pre-entries "N repeats of one spec" plan has no retention
+// contract, so it gets no offer. If another host ever ships an
+// entries-carrying plan without retention, THIS predicate is the line that has
+// to change, not the screens.
 function planSupportsRetake(spec) {
   const entries = spec && spec.capture_plan && spec.capture_plan.entries;
   return Array.isArray(entries) && entries.length > 0;
@@ -1875,15 +1884,33 @@ function armRetakeSlot(ctx, { index, attempt }) {
     planSupportsRetake(ctx.spec) && attempt + 1 <= maxAttempts ? { index, attempt } : null;
 }
 
-function retakeControl(ctx, { index, attempt }) {
+// Shut the window AND kill the control that offered it. The offering screen is
+// not replaced until the new round's verdict lands, so without the second half
+// a live-looking "Retake this measurement" sits there through the next capture
+// doing nothing when tapped — exactly the dead-affordance class §2.1 removes.
+function shutRetakeWindow(ctx) {
+  ctx.retakeSlot = null;
+  if (ctx.retakeButtonEl) {
+    ctx.retakeButtonEl.disabled = true;
+    ctx.retakeButtonEl = null;
+  }
+}
+
+const RETAKE_LABEL = "Retake this measurement";
+
+// `onTap` lets the offering screen clear its own transient state before the
+// round starts — the countdown's live "Starting in N…" counter, which would
+// otherwise sit frozen through the whole retake.
+function retakeControl(ctx, { index, attempt, onTap = null }) {
   if (!canRetake(ctx, index)) return null;
-  const retake = button("Retake this measurement", async () => {
+  const retake = button(RETAKE_LABEL, async () => {
     // Re-checked inside the tap: a pending countdown may have fired its own
     // begin for the NEXT entry between render and tap, which shuts the
     // window on the Pi.
     if (!canRetake(ctx, index)) return;
     // …and stop that countdown from firing behind this tap.
     clearAutoAdvance(ctx);
+    if (onTap) onTap();
     retake.disabled = true;
     try {
       await runPlanCapture(ctx, { index, attempt: attempt + 1, retake: true });
@@ -1891,6 +1918,7 @@ function retakeControl(ctx, { index, attempt }) {
       retake.disabled = false;
     }
   }, true);
+  ctx.retakeButtonEl = retake;
   return retake;
 }
 
@@ -1968,7 +1996,12 @@ function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake =
   const guidance = prompt ? String(prompt) : "";
   const headline =
     guidance ||
-    String(screenCopy.title || `Measurement ${index} of ${target} needs another try`);
+    // The eyebrow already carries "Measurement N of T — one more try", so the
+    // entry-less fallback headline must NOT count again (it used to read
+    // "Measurement N of T needs another try" directly under it). A plan with
+    // no per-entry copy has no instruction to offer, so this is the plainest
+    // imperative that is still true.
+    String(screenCopy.title || "Take that measurement again");
   const retry = button(guidance ? STEP_PRIMARY_LABEL : "Try again", async () => {
     retry.disabled = true;
     try {
@@ -1985,8 +2018,38 @@ function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake =
     headline,
     detail: message,
     primary: retry,
+    // THE ESCAPE FROM A REJECTED VOLUNTARY RETAKE (review blocker B1). This
+    // slot is ALREADY accepted — the design's fail-safe is that a rejected
+    // retake leaves the original take standing, so the household must be able
+    // to keep it and move on. Without this the only control is "Try again",
+    // which re-measures a slot that does not need re-measuring and can burn
+    // the attempt budget until the session dies with the fit and apply never
+    // fired. The forward begin is legal here: a rejected retake leaves
+    // `accepted_count` unchanged, `attempts_used` at this attempt, and
+    // `next_begin_seen` false, so (accepted_count + 1, attempts_used + 1) —
+    // exactly what advanceAfterAccepted posts from these same args — is the
+    // pair the runner is waiting for.
+    secondary: retake ? keepEarlierTakeControl(ctx, { index, attempt, target }) : null,
   });
   clearStatus();
+}
+
+// "Keep the earlier measurement and continue" — the B1 escape. Returning
+// forward re-opens the retake offer (the runner's window is still open and the
+// budget check still applies), so the screen it lands on is the one the
+// household would have seen had they never tapped Retake.
+function keepEarlierTakeControl(ctx, { index, attempt, target }) {
+  return button("Keep the earlier measurement and continue", () => {
+    armRetakeSlot(ctx, { index, attempt });
+    if (ctx.retakeAwaitingConfirm) {
+      // The rejected retake was of the cloud's FINAL position: returning to
+      // the group-close confirm keeps the fit + apply behind the same tap
+      // they were behind before.
+      renderPlanGroupConfirm(ctx, { index, attempt, target });
+      return;
+    }
+    advanceAfterAccepted(ctx, { index, attempt, target });
+  }, true);
 }
 
 // A distinct soft-hold screen (§5.7): the Pi is between phases (e.g. parked
@@ -2170,7 +2233,16 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
     notes: [counter],
     primary: null,
     secondary: cancel,
-    extraActions: [retakeControl(ctx, { index, attempt })],
+    extraActions: [
+      retakeControl(ctx, {
+        index,
+        attempt,
+        // The counter stops being true the moment the countdown is cancelled
+        // behind this tap; blank it rather than freezing "Starting in 3…" on
+        // screen for the whole retake.
+        onTap: () => { counter.textContent = ""; },
+      }),
+    ],
   });
   // The countdown itself is on-screen; #status stops mirroring it (§2.1).
   clearStatus();
@@ -2535,6 +2607,36 @@ function planRetryAffordance(ctx) {
   return label || "the measurement button";
 }
 
+// A pre-arm failure leaves the previous screen up — which is only safe when
+// that screen's live control re-posts a pair the Pi will still accept. Two
+// cases where it does not, both repaired here before the failure copy names a
+// button (review S2):
+//
+//  - THIS ROUND WAS A RETAKE. The visible primary is the FORWARD path; tapping
+//    it posts (index + 1, attempt + 1) while the Pi may be sitting in
+//    `awaiting_arm` on the retake, which the runner refuses as out-of-order —
+//    fatal. Re-arm the retake offer instead: its closure re-posts the
+//    IDENTICAL (index, attempt) pair, which the runner tolerates (an
+//    unadmitted pair is admitted; the in-flight pair is its own `current` and
+//    is a no-op), and name that control.
+//  - THE SCREEN HAS NO BEGIN AFFORDANCE AT ALL. A countdown's auto-begin is
+//    the forward path, so its screen renders none; the copy would otherwise
+//    name a button that does not exist. Drop back to the manual screen the
+//    countdown's own Cancel produces, which has one.
+function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {
+  if (retake) {
+    armRetakeSlot(ctx, { index, attempt: attempt - 1 });
+    return RETAKE_LABEL;
+  }
+  const hasBegin = ((ctx.captureRefs && ctx.captureRefs.buttons) || []).some(
+    (entry) => entry && entry.action === "begin_capture",
+  );
+  if (!hasBegin && index > 1) {
+    renderPlanNext(ctx, { index: index - 1, attempt: attempt - 1, target });
+  }
+  return planRetryAffordance(ctx);
+}
+
 // One capture round: begin -> Pi admission -> quiet window + sweep + upload
 // (index-aware) -> Pi verdict -> the next screen. Invoked once from
 // onPlanStart (index 1, attempt 1) and thereafter from a primary tap ("I'm
@@ -2550,7 +2652,7 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
   // Posting ANY begin shuts the retake window this page offers — it re-opens
   // only on the next accepted verdict (armRetakeSlot). See retakeControl's
   // header for why an offer must never outlive the runner's own window.
-  ctx.retakeSlot = null;
+  shutRetakeWindow(ctx);
   let disposeWatch = () => {};
   // Whether this round's `armed` post was ATTEMPTED (set just before the
   // await — a lost response may still have armed the Pi). It splits the
@@ -2756,6 +2858,10 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       // The just-accepted capture becomes retakeable — until this page posts
       // its next begin (§2.6).
       armRetakeSlot(ctx, { index, attempt });
+      // …and remember WHICH screen this acceptance belongs on, so a rejected
+      // retake of it can return to the same place (B1's escape) rather than
+      // guessing. Survives the retake round; overwritten by the next accept.
+      ctx.retakeAwaitingConfirm = Boolean(verdict.awaitingConfirm);
       if (verdict.awaitingConfirm) {
         // The pre-apply cloud is walked but NOT closed: the Pi is holding the
         // fit + apply behind a begin past the group, which is exactly the
@@ -2806,7 +2912,12 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
         // button — mark the retriable-failure park (B-1, see the matching
         // guard in onPlanStart) so the re-tap re-enters capture.
         ctx.parkedAtRetriableFailure = true;
-        setStatus(captureFailureMessage(err, planRetryAffordance(ctx)), "error");
+        setStatus(
+          captureFailureMessage(
+            err, repairPreArmAffordance(ctx, { index, attempt, target, retake }),
+          ),
+          "error",
+        );
       }
     }
   } finally {
