@@ -46,7 +46,7 @@ from ._web_test_helpers import FakeHandler
 
 
 _REPO = Path(__file__).resolve().parent.parent
-_REAL_GET_MEMBER_ACTIVE_SPEAKER_SETUP = rooms_setup._get_member_active_speaker_setup
+_REAL_GET_MEMBER_GROUPING_READINESS = rooms_setup._get_member_grouping_readiness
 
 _ROOMS_SHARED_PUBLIC = {
     "self_addresses",
@@ -106,13 +106,8 @@ def _isolate_household_secret(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         rooms_setup,
-        "_get_member_active_speaker_setup",
-        lambda *a, **k: {
-            "active": False,
-            "configured": True,
-            "volume_allowed": True,
-            "grouping_allowed": True,
-        },
+        "_get_member_grouping_readiness",
+        lambda *a, **k: ({"allowed": True, "detail": "ready"}, None),
     )
 
 
@@ -1493,25 +1488,18 @@ def test_post_bond_omits_crossover_hz_when_absent(monkeypatch):
     assert all(c[1]["mains_highpass_enabled"] is True for c in calls)
 
 
-def test_post_bond_preflights_active_speaker_setup_before_fanout(monkeypatch):
-    def fake_setup(addr, *_args, **_kwargs):
+def test_post_bond_preflights_grouping_readiness_before_fanout(monkeypatch):
+    def fake_readiness(addr, *_args, **_kwargs):
         if addr == "192.168.1.9":
-            return {
-                "active": True,
-                "configured": False,
-                "volume_allowed": False,
-                "grouping_allowed": False,
-                "reason": "baseline_summed_validation_missing",
+            return ({
+                "allowed": False,
                 "detail": "validate the combined crossover before saving the active profile",
-            }
-        return {
-            "active": False,
-            "configured": True,
-            "volume_allowed": True,
-            "grouping_allowed": True,
-        }
+            }, None)
+        return {"allowed": True, "detail": "ready"}, None
 
-    monkeypatch.setattr(rooms_setup, "_get_member_active_speaker_setup", fake_setup)
+    monkeypatch.setattr(
+        rooms_setup, "_get_member_grouping_readiness", fake_readiness,
+    )
 
     h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
 
@@ -1528,6 +1516,27 @@ def test_post_bond_preflights_active_speaker_setup_before_fanout(monkeypatch):
             "detail": "validate the combined crossover before saving the active profile",
         }
     ]
+
+
+def test_post_bond_missing_readiness_explains_peer_update(monkeypatch):
+    detail = (
+        "speaker software does not provide grouping readiness — "
+        "update both speakers, then retry"
+    )
+    monkeypatch.setattr(
+        rooms_setup,
+        "_get_member_grouping_readiness",
+        lambda *_a, **_k: (None, detail),
+    )
+
+    h, calls = _post_bond(
+        {"members": _stereo_pair_members()}, monkeypatch=monkeypatch,
+    )
+
+    assert h.status == 409
+    assert calls == []
+    body = json.loads(h.wfile.getvalue())
+    assert {r["detail"] for r in body["results"]} == {detail}
 
 
 def test_post_bond_rejects_bad_csrf_without_fanning_out(monkeypatch):
@@ -1987,9 +1996,23 @@ def test_remote_json_get_rejects_oversized_peer_response(monkeypatch):
         rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: OversizedResp(),
     )
 
-    assert rooms_setup._get_remote_json(
+    assert rooms_setup._get_remote_json_result(
         "192.168.1.9", "/state", timeout=0.5,
-    ) is None
+    ) == (None, "speaker returned an oversized response")
+
+
+def test_remote_json_get_explains_unreachable_peer(monkeypatch):
+    monkeypatch.setattr(
+        rooms_setup.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            rooms_setup.urllib.error.URLError("connection refused")
+        ),
+    )
+
+    assert rooms_setup._get_remote_json_result(
+        "192.168.1.9", "/grouping", timeout=0.5,
+    ) == (None, "speaker is unreachable — check its power and network")
 
 
 def test_member_post_rejects_oversized_success_response(monkeypatch):
@@ -2079,16 +2102,16 @@ def test_member_post_redacts_echoed_credentials_from_http_error(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("status", "body"),
+    ("status", "body", "detail"),
     [
-        (503, b'{"ok": true}'),
-        (200, b"not-json"),
-        (200, b"[]"),
-        (200, b"\xff"),
+        (503, b'{"ok": true}', "speaker returned HTTP 503"),
+        (200, b"not-json", "speaker returned an invalid response"),
+        (200, b"[]", "speaker returned an invalid response"),
+        (200, b"\xff", "speaker returned an invalid response"),
     ],
 )
-def test_remote_json_get_fails_soft_on_status_decode_or_shape(
-    monkeypatch, status, body,
+def test_remote_json_get_explains_status_decode_or_shape(
+    monkeypatch, status, body, detail,
 ):
     class FakeResp:
         def __enter__(self):
@@ -2106,9 +2129,9 @@ def test_remote_json_get_fails_soft_on_status_decode_or_shape(
         rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: response,
     )
 
-    assert rooms_setup._get_remote_json(
+    assert rooms_setup._get_remote_json_result(
         "192.168.1.9", "/grouping", timeout=0.5,
-    ) is None
+    ) == (None, detail)
 
 
 def test_remote_json_get_fails_soft_on_transport_timeout(monkeypatch):
@@ -2126,9 +2149,9 @@ def test_get_member_grouping_forwards_timeout_then_parses_domain(monkeypatch):
 
     def fake_get(target, path, *, timeout):
         calls.append((target, path, timeout))
-        return {"grouping": {"bond_id": "bond-a"}}
+        return {"grouping": {"bond_id": "bond-a"}}, None
 
-    monkeypatch.setattr(rooms_setup, "_get_remote_json", fake_get)
+    monkeypatch.setattr(rooms_setup, "_get_remote_json_result", fake_get)
 
     assert rooms_setup._get_member_grouping(
         "192.168.1.9", known=set(), timeout=0.625,
@@ -2136,34 +2159,73 @@ def test_get_member_grouping_forwards_timeout_then_parses_domain(monkeypatch):
     assert calls == [("192.168.1.9", "/grouping", 0.625)]
 
 
-def test_active_setup_remote_uses_shared_get_and_domain_parser(monkeypatch):
-    expected = {"active": True, "grouping_allowed": False}
+def test_grouping_readiness_uses_shared_grouping_get_and_domain_parser(monkeypatch):
+    expected = {"allowed": False, "detail": "finish commissioning"}
     calls = []
 
     def fake_get(target, path, *, timeout):
         calls.append((target, path, timeout))
-        return {"active_speaker_setup": expected}
+        return {"readiness": expected}, None
 
-    monkeypatch.setattr(rooms_setup, "_get_remote_json", fake_get)
+    monkeypatch.setattr(rooms_setup, "_get_remote_json_result", fake_get)
 
-    assert _REAL_GET_MEMBER_ACTIVE_SPEAKER_SETUP(
+    assert _REAL_GET_MEMBER_GROUPING_READINESS(
         "192.168.1.9", known=set(), timeout=0.75,
-    ) == expected
-    assert calls == [("192.168.1.9", "/state", 0.75)]
+    ) == (expected, None)
+    assert calls == [("192.168.1.9", "/grouping", 0.75)]
 
 
-def test_active_setup_local_branch_never_uses_remote_transport(monkeypatch):
-    expected = {"active": False, "grouping_allowed": True}
+def test_grouping_readiness_self_uses_same_loopback_wire_contract(monkeypatch):
+    """Self and peers consume the same public verdict; policy cannot diverge."""
+    expected = {"allowed": True, "detail": "ready"}
+    calls = []
+
+    def fake_get(target, path, *, timeout):
+        calls.append((target, path, timeout))
+        return {"readiness": expected}, None
+
+    monkeypatch.setattr(rooms_setup, "_get_remote_json_result", fake_get)
+
+    assert _REAL_GET_MEMBER_GROUPING_READINESS(
+        "", known=set(), timeout=0.5,
+    ) == (expected, None)
+    assert calls == [("127.0.0.1", "/grouping", 0.5)]
+
+
+def test_grouping_readiness_missing_from_old_peer_explains_update(monkeypatch):
     monkeypatch.setattr(
-        rooms_setup, "read_active_speaker_setup_status", lambda: expected,
+        rooms_setup,
+        "_get_remote_json_result",
+        lambda *_a, **_k: ({"grouping": {"enabled": False}}, None),
     )
 
-    def fail_if_remote(*_args, **_kwargs):
-        raise AssertionError("loopback readiness must use the local reader")
+    readiness, error = _REAL_GET_MEMBER_GROUPING_READINESS(
+        "192.168.1.9", known=set(), timeout=0.5,
+    )
 
-    monkeypatch.setattr(rooms_setup, "_get_remote_json", fail_if_remote)
+    assert readiness is None
+    assert error == (
+        "speaker software does not provide grouping readiness — "
+        "update both speakers, then retry"
+    )
 
-    assert _REAL_GET_MEMBER_ACTIVE_SPEAKER_SETUP("", known=set()) == expected
+
+def test_grouping_readiness_null_from_current_peer_explains_diagnostics(monkeypatch):
+    monkeypatch.setattr(
+        rooms_setup,
+        "_get_remote_json_result",
+        lambda *_a, **_k: ({"grouping": None, "readiness": None}, None),
+    )
+
+    readiness, error = _REAL_GET_MEMBER_GROUPING_READINESS(
+        "192.168.1.9", known=set(), timeout=0.5,
+    )
+
+    assert readiness is None
+    assert error == (
+        "speaker could not determine grouping readiness — "
+        "open its System page for diagnostics, then retry"
+    )
 
 
 def _fake_grouping_urlopen(monkeypatch, body, *, status=200):

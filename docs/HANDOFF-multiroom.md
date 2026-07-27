@@ -378,7 +378,14 @@ Increment 6 (per-follower calibration). What exists:
   server owns the member plan, mints a `bond_id`, and fans the grouping config
   out SERVER-side to each member's `jasper-control /grouping/set` (this speaker
   → leader/left, the picked one → follower/right). Existing advanced callers
-  may still send the explicit member list for same-bond edits. The follower's
+  may still send the explicit member list for same-bond edits. **Before writing
+  any member**, `/bond` concurrently reads every enabled member's small
+  `GET /grouping` `readiness` verdict and fails closed if it is missing,
+  malformed, or blocked. The target derives that verdict through the same
+  active-speaker grouping policy seam that `POST /grouping/set` rechecks
+  immediately before mutation, so preflight and write authorization cannot
+  drift and a race still fails safely. This deliberately does not fetch the
+  catch-all `/state` aggregate for one readiness bit. The follower's
   `leader_addr` is set to the leader's
   **stable mDNS `.local` handle** (survives the leader's DHCP IP churn — see
   the reconcile bullet above). (3) `/unbond`, **dissolve the bond**: the
@@ -407,8 +414,14 @@ Increment 6 (per-follower calibration). What exists:
   /grouping/set` (validates via the shared `validate_grouping` before
   persisting — same rule the config loader applies on read) and the new
   CSRF-free **`GET /grouping`** read (the same no-auth LAN surface as
-  `/state`; fail-soft to `null`, never 500), which the unbond flow uses for
-  membership discovery. **Friendly names + identity:** each speaker
+  `/state`). Its shared envelope carries `grouping` (fail-soft to `null`) plus
+  `readiness: {allowed, detail}` (independently fail-soft to `null`); unbond
+  parses the former for membership discovery and bond preflight parses the
+  latter. Preflight distinguishes an old peer that omits `readiness` (update
+  both speakers) from a current peer returning `readiness: null` (open that
+  speaker's System diagnostics), and names unreachable, invalid, HTTP-error,
+  and oversized-response failures instead of collapsing them into one opaque
+  read error. **Friendly names + identity:** each speaker
   advertises its `/speaker` display name as a `name=` TXT on
   `_jasper-control._tcp`, rendered by `jasper/control_advert.py` from
   `deploy/avahi/jasper-control.service.template` (purely additive vs. the
@@ -1969,21 +1982,26 @@ the TRIGGER that says "extract/generalise now, not before," so we neither
 front-run the complexity nor forget where it belongs.
 
 - **Cross-speaker peer-control client.** The HTTP-to-a-peer's-control-API
-  pattern lives as two helpers in `jasper/web/rooms_setup.py`
-  (`post_grouping_to_member`, `_get_member_grouping`) sharing the
-  `lan_target` SSRF guard and the `_map_peers` bounded-concurrency primitive
-  — the right size for two call sites. (Concurrency is already DRY: `_map_peers`
-  is the one pool used by the POST fan-out AND the discovery GETs, so adding a
-  client wouldn't re-derive it.) **Trigger to extract a `PeerControlClient`:**
-  the THIRD cross-speaker call (e.g. bond-wide volume sync, status
-  aggregation). Then lift the guard + the GET/POST + the `:8780` base + the
-  `known`-set threading into one client so the SSRF policy, timeouts, and
-  never-raise contract have a single home — not three copies.
+  pattern remains local to `jasper/web/rooms_setup.py`: the grouping POST and
+  one shared `GET /grouping` transport seam use the same `lan_target` SSRF
+  guard and `_map_peers` bounded-concurrency primitive; membership and
+  readiness are merely two projections of that one GET response. This is the
+  right size for the current single-domain surface. **Trigger to extract a
+  `PeerControlClient`:** a second distinct cross-speaker API operation (e.g.
+  bond-wide volume sync or broad status aggregation). Then lift the guard +
+  GET/POST + `:8780` base + `known`-set threading into one client so the SSRF
+  policy, timeouts, and never-raise contract have a single home.
 
 - **The GET /grouping wire contract has ONE home — keep it that way.**
-  `grouping_response` / `parse_grouping_response` (+ `GROUPING_RESPONSE_KEY`)
-  in `jasper/multiroom/state.py` are the producer/consumer pair, locked by a
-  round-trip test. The C4 regression (2026-06-09) was exactly this envelope
+  `grouping_response` plus `parse_grouping_response` /
+  `parse_grouping_readiness` (and their shared response-key constants) in
+  `jasper/multiroom/state.py` are the producer/consumer pair, locked by a
+  round-trip test. A real-handler response-budget test also feeds the source a
+  >64 KiB unrelated diagnostic block and proves only the small readiness
+  projection crosses the wire with at least 8x headroom under the peer-reader
+  cap. The response has two independently fail-soft blocks: `grouping` for
+  declared/runtime membership and the small generic `readiness` verdict for
+  pre-mutation safety. The C4 regression (2026-06-09) was exactly this envelope
   drifting across daemons (producer nested under `grouping`, consumer read the
   top level). **Rule:** any NEW cross-daemon grouping payload follows the same
   builder + parser + round-trip-test shape, never hand-rolled JSON on each

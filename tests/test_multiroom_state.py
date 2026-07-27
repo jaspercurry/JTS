@@ -21,9 +21,11 @@ from __future__ import annotations
 
 from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, load_config
 from jasper.multiroom.state import (
+    GROUPING_READINESS_KEY,
     GROUPING_RESPONSE_KEY,
     derive_grouping_runtime,
     grouping_response,
+    parse_grouping_readiness,
     parse_grouping_response,
     read_grouping_state,
 )
@@ -711,21 +713,45 @@ def test_grouping_response_parse_roundtrip():
         "enabled": True, "role": "follower", "channel": "right",
         "bond_id": "bond-1", "leader_addr": "jts.local",
     }
-    built = grouping_response(snap)
-    assert built == {GROUPING_RESPONSE_KEY: snap}
+    readiness = {"allowed": True, "detail": "ready"}
+    built = grouping_response(snap, readiness=readiness)
+    assert built == {
+        GROUPING_RESPONSE_KEY: snap,
+        GROUPING_READINESS_KEY: readiness,
+    }
     assert parse_grouping_response(built) == snap
+    assert parse_grouping_readiness(built) == readiness
 
 
 def test_parse_grouping_response_unknown_cases_are_none():
     """Absent / null / non-dict grouping reads as None ('unknown'), so a
     failed read can never spuriously match a bond_id. Mirrors the fail-soft
     {'grouping': null} the producer emits when read_grouping_state() raises."""
-    assert parse_grouping_response(grouping_response(None)) is None  # fail-soft read
+    assert parse_grouping_response(
+        grouping_response(None, readiness={"allowed": True, "detail": "ready"})
+    ) is None  # fail-soft read
     assert parse_grouping_response({}) is None                       # key absent
     assert parse_grouping_response({GROUPING_RESPONSE_KEY: None}) is None   # explicit null
     assert parse_grouping_response({GROUPING_RESPONSE_KEY: "x"}) is None    # not a dict
     assert parse_grouping_response("not a dict") is None             # body not a dict
     assert parse_grouping_response(None) is None
+
+
+def test_parse_grouping_readiness_unknown_cases_are_none():
+    """Readiness requires an explicit bool verdict + string detail.
+
+    Missing/malformed data is unknown so bond preflight cannot accidentally
+    treat an old, partial, or corrupt peer response as permission to mutate.
+    """
+    assert parse_grouping_readiness({}) is None
+    assert parse_grouping_readiness({GROUPING_READINESS_KEY: None}) is None
+    assert parse_grouping_readiness({
+        GROUPING_READINESS_KEY: {"allowed": "yes", "detail": "ready"},
+    }) is None
+    assert parse_grouping_readiness({
+        GROUPING_READINESS_KEY: {"allowed": True},
+    }) is None
+    assert parse_grouping_readiness("not a dict") is None
 
 
 # ---------- stream-client truthing (the 2026-06-11 silent-bond classes) ----
