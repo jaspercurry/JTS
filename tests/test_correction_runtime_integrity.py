@@ -85,6 +85,95 @@ def test_runtime_integrity_flags_camilla_clipping_delta(monkeypatch):
     assert issues[0]["details"]["delta"] == 6
 
 
+def test_runtime_integrity_flags_outputd_content_fill_without_any_xrun(monkeypatch):
+    """The #1765 shape: outputd zero-fills a short content read mid-capture.
+
+    ``xrun_count`` never moves — that counter only advances on EPIPE/ESTRPIPE
+    — so before #1768 this capture passed its own integrity check while the
+    speaker had inserted samples into the emitted timeline.
+    """
+    from jasper.correction import runtime_integrity
+
+    outputd_statuses = iter([
+        {
+            "content": {
+                "pcm": "content", "frames_read": 1_000, "xrun_count": 2,
+                "empty_periods": 4, "partial_periods": 5,
+            },
+            "dac": {"pcm": "dac", "frames_written": 1_000, "xrun_count": 0},
+        },
+        {
+            "content": {
+                "pcm": "content", "frames_read": 2_000, "xrun_count": 2,
+                "empty_periods": 4, "partial_periods": 6,
+            },
+            "dac": {"pcm": "dac", "frames_written": 2_000, "xrun_count": 0},
+        },
+    ])
+    monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(
+        runtime_integrity,
+        "_read_outputd_status",
+        lambda: next(outputd_statuses),
+    )
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
+    report = RuntimeIntegrityReport("abc123")
+    report.record_snapshot(
+        "sweep_start",
+        capture_kind="measurement",
+        position_index=0,
+        camilla_status=None,
+    )
+
+    issues = report.record_snapshot(
+        "sweep_complete",
+        capture_kind="measurement",
+        position_index=0,
+        camilla_status=None,
+    )
+
+    codes = [issue["code"] for issue in issues]
+    assert "outputd_content_fill_increased" in codes
+    # …and specifically NOT via the xrun path, which stayed flat.
+    assert "outputd_xruns_increased" not in codes
+    fill = next(i for i in issues if i["code"] == "outputd_content_fill_increased")
+    assert fill["details"]["deltas"] == {"partial_periods": 1}
+    assert report.snapshots[-1]["outputd"]["content"]["partial_periods"] == 6
+
+
+def test_runtime_integrity_quiet_when_content_fill_counters_hold(monkeypatch):
+    from jasper.correction import runtime_integrity
+
+    content = {
+        "pcm": "content", "frames_read": 1_000, "xrun_count": 2,
+        "empty_periods": 4, "partial_periods": 5,
+    }
+    outputd_statuses = iter([
+        {"content": dict(content), "dac": {"pcm": "dac", "frames_written": 1_000, "xrun_count": 0}},
+        {
+            "content": dict(content, frames_read=2_000),
+            "dac": {"pcm": "dac", "frames_written": 2_000, "xrun_count": 0},
+        },
+    ])
+    monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(
+        runtime_integrity,
+        "_read_outputd_status",
+        lambda: next(outputd_statuses),
+    )
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
+    report = RuntimeIntegrityReport("abc123")
+    report.record_snapshot(
+        "sweep_start", capture_kind="measurement", position_index=0, camilla_status=None,
+    )
+
+    issues = report.record_snapshot(
+        "sweep_complete", capture_kind="measurement", position_index=0, camilla_status=None,
+    )
+
+    assert [i["code"] for i in issues] == []
+
+
 def test_runtime_integrity_flags_outputd_xrun_delta(monkeypatch):
     from jasper.correction import runtime_integrity
 

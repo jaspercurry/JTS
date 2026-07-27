@@ -14,7 +14,7 @@ use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 
 use crate::config::Config;
-use crate::types::CHANNELS;
+use crate::types::{CHANNELS, SAMPLE_RATE};
 
 const FORMAT: Format = Format::S16LE;
 const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
@@ -35,6 +35,87 @@ pub struct IoCounters {
     pub dac_frames_written: u64,
     pub content_xrun_count: u64,
     pub dac_xrun_count: u64,
+}
+
+/// Journal cooldown for `event=outputd.content_fill`, measured in DAC frames.
+///
+/// `dac_frames_written` is the only monotonic clock this hot path already
+/// has, and it advances at exactly the DAC rate — so a frame budget is a
+/// wall-clock cooldown without a syscall. One second: outputd's core is fixed
+/// at `SAMPLE_RATE` (config.rs bails on any other
+/// `JASPER_OUTPUTD_SAMPLE_RATE`), so this derives from that one constant
+/// rather than restating 48000.
+const FILL_LOG_COOLDOWN_FRAMES: u64 = SAMPLE_RATE as u64;
+
+/// Rate limiter for the content-fill journal line (issue #1768).
+///
+/// A short content read is zero-filled and still written to the DAC, which
+/// INSERTS `requested - frames` samples into the emitted timeline — audible as
+/// a brief tear, and it displaces everything downstream in time. Before this,
+/// only the `EPIPE`/`ESTRPIPE` branch ever printed, so the partial-period and
+/// `EAGAIN` paths — the ones that actually insert — were structurally silent:
+/// their counters surfaced only as fields on a line some OTHER condition
+/// happened to emit. That is how a corrupt measurement capture (#1765) and
+/// audible sweep tears both went unattributed.
+///
+/// The first fill after a quiet second always prints; the rest are counted and
+/// reported as `suppressed=` on the next line, so a pathological storm costs
+/// at most one journal line per second and still cannot hide.
+#[derive(Debug, Clone, Copy, Default)]
+struct FillLogGate {
+    next_log_frames: u64,
+    suppressed: u64,
+}
+
+impl FillLogGate {
+    /// `Some(suppressed_since_the_last_line)` when this fill should print.
+    fn admit(&mut self, dac_frames_written: u64) -> Option<u64> {
+        if dac_frames_written < self.next_log_frames {
+            self.suppressed += 1;
+            return None;
+        }
+        let suppressed = self.suppressed;
+        self.suppressed = 0;
+        self.next_log_frames = dac_frames_written.saturating_add(FILL_LOG_COOLDOWN_FRAMES);
+        Some(suppressed)
+    }
+}
+
+/// Journal a zero-fill that INSERTED `frames_short` samples into the emitted
+/// timeline (issue #1768).
+///
+/// Free function, not a method: BOTH transports zero-fill on exactly the same
+/// paths, and `kind="composite"` is explicitly open to further shapes — a
+/// per-transport copy would be a twin that drifts. Takes the pieces it needs
+/// so callers pass disjoint `&mut`/`&` field borrows.
+fn log_content_fill(
+    gate: &mut FillLogGate,
+    counters: &IoCounters,
+    content_pcm: &str,
+    source: &str,
+    frames_short: usize,
+) {
+    if frames_short == 0 {
+        return;
+    }
+    let Some(suppressed) = gate.admit(counters.dac_frames_written) else {
+        return;
+    };
+    eprintln!(
+        "event=outputd.content_fill source={} pcm={} frames_short={} empty_periods={} \
+partial_periods={} eagain_count={} xrun_count={} frames_read={} dac_frames_written={} \
+suppressed={}",
+        source,
+        content_pcm,
+        frames_short,
+        counters.content_empty_period_count,
+        counters.content_partial_period_count,
+        counters.content_eagain_count,
+        counters.content_xrun_count,
+        counters.content_frames_read,
+        counters.dac_frames_written,
+        suppressed,
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +144,7 @@ pub struct AlsaBackend {
     pub content_negotiated: NegotiatedPcm,
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
+    fill_log: FillLogGate,
     /// Runtime DAC/content width carried as data — a coherent single DAC reads
     /// and writes this many channels end-to-end. `2` is byte-identical to the
     /// previous compile-time `CHANNELS`; the reconciler emits wider values
@@ -85,6 +167,7 @@ pub struct PairedCompositeSink {
     pub content_negotiated: NegotiatedPcm,
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
+    fill_log: FillLogGate,
     linked: bool,
     delay_delta_baseline: Option<i64>,
     last_delay_delta: Option<i64>,
@@ -184,6 +267,7 @@ impl AlsaBackend {
             content_negotiated,
             dac_negotiated,
             counters: IoCounters::default(),
+            fill_log: FillLogGate::default(),
             channels: config.content_channels,
         })
     }
@@ -206,16 +290,40 @@ impl AlsaBackend {
 
     pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
         let requested_frames = out.len() / (self.channels as usize);
-        match self.read_content_available(out)? {
+        let read = self.read_content_available(out)?;
+        match read {
             ContentRead::Frames(frames) => {
                 if frames < requested_frames {
                     let active = frames * (self.channels as usize);
                     out[active..].fill(0);
+                    log_content_fill(
+                        &mut self.fill_log,
+                        &self.counters,
+                        &self.content_pcm,
+                        "partial",
+                        requested_frames - frames,
+                    );
                 }
                 Ok(frames)
             }
+            // Stay EXHAUSTIVE over `ContentRead` — a catch-all here would let a
+            // future variant silently inherit the "empty" label on the audio
+            // path instead of failing the build. `XrunRecovered` is labelled
+            // distinctly because it already printed its own `outputd.xrun`
+            // line; the pair should read as one event, not two unexplained ones.
             ContentRead::NoData | ContentRead::XrunRecovered => {
+                let source = match read {
+                    ContentRead::XrunRecovered => "xrun_recovered",
+                    _ => "empty",
+                };
                 out.fill(0);
+                log_content_fill(
+                    &mut self.fill_log,
+                    &self.counters,
+                    &self.content_pcm,
+                    source,
+                    requested_frames,
+                );
                 Ok(0)
             }
         }
@@ -452,6 +560,7 @@ impl PairedCompositeSink {
             content_negotiated,
             dac_negotiated: dac_a_negotiated,
             counters: IoCounters::default(),
+            fill_log: FillLogGate::default(),
             linked,
             delay_delta_baseline: None,
             last_delay_delta: None,
@@ -511,21 +620,30 @@ impl PairedCompositeSink {
 
     pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
         let requested_frames = out.len() / 4;
-        let io = self
-            .content
-            .io_i16()
-            .context("getting i16 IO handle for outputd active content input")?;
-        match io.readi(out) {
+        // `io` borrows `self.content` and has a Drop impl, so nothing inside
+        // this scope may take `&mut self`. Decide the fill here, journal it
+        // after the borrow ends.
+        let outcome = {
+            let io = self
+                .content
+                .io_i16()
+                .context("getting i16 IO handle for outputd active content input")?;
+            io.readi(out)
+        };
+        let mut fill: Option<(&'static str, usize)> = None;
+        let read = match outcome {
             Ok(frames) => {
                 self.counters.content_frames_read += frames as u64;
                 if frames == 0 {
                     self.counters.content_empty_period_count += 1;
                     out.fill(0);
+                    fill = Some(("empty", requested_frames));
                 } else if frames < requested_frames {
                     self.counters.content_partial_period_count += 1;
                     out[(frames * 4)..].fill(0);
+                    fill = Some(("partial", requested_frames - frames));
                 }
-                Ok(frames)
+                frames
             }
             Err(e) => {
                 let errno = e.errno();
@@ -533,7 +651,8 @@ impl PairedCompositeSink {
                     self.counters.content_eagain_count += 1;
                     self.counters.content_empty_period_count += 1;
                     out.fill(0);
-                    Ok(0)
+                    fill = Some(("eagain", requested_frames));
+                    0
                 } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
                     self.counters.content_xrun_count += 1;
                     self.counters.content_empty_period_count += 1;
@@ -545,15 +664,26 @@ impl PairedCompositeSink {
                         .try_recover(e, true)
                         .context("recovering outputd active content xrun")?;
                     out.fill(0);
-                    Ok(0)
+                    fill = Some(("xrun_recovered", requested_frames));
+                    0
                 } else {
-                    Err(e).context(format!(
+                    return Err(e).context(format!(
                         "reading outputd active content PCM {}",
                         self.content_pcm
-                    ))
+                    ));
                 }
             }
+        };
+        if let Some((source, frames_short)) = fill {
+            log_content_fill(
+                &mut self.fill_log,
+                &self.counters,
+                &self.content_pcm,
+                source,
+                frames_short,
+            );
         }
+        Ok(read)
     }
 
     pub fn write_dual_period(&mut self, samples_4ch: &[i16]) -> Result<()> {
@@ -802,6 +932,51 @@ fn write_dac_fail_closed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fill_log_gate_prints_the_first_fill_immediately() {
+        // A fill must never wait for a cooldown to be seen — the whole defect
+        // in #1768 was that the inserting paths printed nothing at all.
+        let mut gate = FillLogGate::default();
+        assert_eq!(gate.admit(0), Some(0));
+    }
+
+    #[test]
+    fn fill_log_gate_suppresses_within_the_cooldown_and_reports_the_count() {
+        let mut gate = FillLogGate::default();
+        assert_eq!(gate.admit(0), Some(0));
+        // Same second: suppressed, but counted.
+        assert_eq!(gate.admit(1), None);
+        assert_eq!(gate.admit(FILL_LOG_COOLDOWN_FRAMES - 1), None);
+        // Cooldown elapsed — prints, and surfaces what it swallowed so a storm
+        // is bounded to one line per second WITHOUT being able to hide.
+        assert_eq!(gate.admit(FILL_LOG_COOLDOWN_FRAMES), Some(2));
+        // The suppressed tally resets after it is reported.
+        assert_eq!(gate.admit(2 * FILL_LOG_COOLDOWN_FRAMES), Some(0));
+    }
+
+    #[test]
+    fn fill_log_gate_paces_by_dac_frames_not_call_count() {
+        // The gate's clock is `dac_frames_written`, so a quiet run of fills
+        // spread across real time each print, however few calls there were.
+        let mut gate = FillLogGate::default();
+        let mut frames = 0u64;
+        for _ in 0..5 {
+            assert_eq!(gate.admit(frames), Some(0));
+            frames += FILL_LOG_COOLDOWN_FRAMES;
+        }
+    }
+
+    #[test]
+    fn zero_short_fill_is_a_no_op_that_does_not_spend_gate_budget() {
+        // The shared logger is called from four sites; a degenerate
+        // `frames_short == 0` must neither print nor consume the one-per-second
+        // budget a REAL fill needs.
+        let mut gate = FillLogGate::default();
+        let counters = IoCounters::default();
+        log_content_fill(&mut gate, &counters, "pcm", "partial", 0);
+        assert_eq!(gate.admit(0), Some(0));
+    }
 
     #[test]
     fn negotiated_pcm_accepts_exact_contract() {
