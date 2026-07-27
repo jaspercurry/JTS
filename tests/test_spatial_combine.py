@@ -3767,10 +3767,12 @@ def test_band_deficit_separation_depends_on_the_analysis_band(
     PR-4 derives the analysis band from a driver contract rather than
     leaving it at the module default
     (``crossover_v2_flow._derive_cloud_echo_band_hz``, landed 2026-07-26 —
-    clamped inside the declared passband and clear of the crossover by
-    construction, per that function's own containment logic), so "the
-    separation was calibrated at one band" was a real limitation this test
-    keeps honest. Swept over six bands, on the 13 S0 acoustic
+    clamped inside the declared passband, and since 2026-07-27 (issue #1763)
+    clamped UP to ``ECHO_BAND_HF_REGIME_FLOOR_HZ`` as well, which is what
+    actually keeps it clear of the crossover: JTS3's tweeter correctly
+    declares a 2 kHz lower edge, so containment alone reached the dead row
+    below), so "the separation was calibrated at one band" was a real
+    limitation this test keeps honest. Swept over six bands, on the 13 S0 acoustic
     records (3 ground-plane, 10 main-leg, each against its own 150 Hz-20 kHz
     declared passband) and the 3 electrical-loopback woofer records
     (200-2000 Hz passband).

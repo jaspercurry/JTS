@@ -606,9 +606,15 @@ RAHMONIC_MARGIN = 2.0
 # a false negative, and it degrades silently to the pre-screen behaviour
 # (the confident-looking tau out of stopband residue). The 3 kHz row shows
 # the margin is already thin one octave up. **A caller must keep the
-# analysis band clear of the crossover**; deriving it from the tweeter's
-# usable range, as PR-4 intends, does that by construction. Re-derived by
-# test_band_deficit_separation_depends_on_the_analysis_band.
+# analysis band clear of the crossover.** Deriving it from the tweeter's
+# usable range does NOT do that on its own — corrected 2026-07-27 (issue
+# #1763): JTS3's cdhorn tweeter correctly declares a measurement band
+# starting at 2000 Hz, which is exactly this speaker's crossover, and the
+# first real cloud session ran the detector on the (2000, 18000) row above.
+# What makes it true by construction is the caller's own floor:
+# `crossover_v2_flow.ECHO_BAND_HF_REGIME_FLOOR_HZ` (4000 Hz, anchored to
+# this table) clamps the derived lower edge up and discloses the clamp.
+# Re-derived by test_band_deficit_separation_depends_on_the_analysis_band.
 #
 # **This is not the 49.7 dB the loopback report quotes**, and the difference
 # is entirely the metric, not the signal. Three changes separate them, and

@@ -1082,7 +1082,9 @@ WARNING log when its lower edge falls below `ECHO_BAND_HF_REGIME_FLOOR_HZ`
 (4000 Hz — the last comfortable row of `BAND_BELOW_PASSBAND_MARGIN_DB`'s
 own pinned six-band table, `test_band_deficit_separation_depends_on_the_
 analysis_band`, N-3's own note that PR-4 would derive this from the
-tweeter's declared range).
+tweeter's declared range). **The "disclosed (not overridden)" half of that
+sentence was SUPERSEDED on 2026-07-27 — the band is now clamped up to the
+floor and the clamp disclosed; see the issue #1763 annotation below.**
 
 **VERIFY-anchor join: proposed, then REJECTED (2026-07-26, architect
 reversal).** The round-1 draft of this PR joined VERIFY's own summed capture
@@ -1162,6 +1164,50 @@ brought in line with its own later correction; the `no_positions` /
 and `_geometry_verdict_from_combined` documented rather than silently left
 inconsistent; and the B1 fix's inverse (a session WITH a group phase must
 overwrite, not inherit, a stale prior cloud) pinned by test.*
+
+***Behaviour change (2026-07-27, issue #1763): disclose-don't-override was
+falsified by the first real cloud session and replaced with
+clamp-with-disclosure.*** *The PR-4 design above — warn when the derived echo
+band's lower edge falls below `ECHO_BAND_HF_REGIME_FLOOR_HZ`, then run the
+detector on the declared band anyway — was reviewed and reasoned (never
+silently trust an uncalibrated regime, never silently hide a real declared
+value). Hardware settled it: on JTS3's first cloud session (2026-07-27,
+`cap_4NUGqx3yIzSuv4ta2ozfKw`) the cdhorn tweeter's **correctly** declared
+`measurement_band_hz` [2000, 18000] produced a (2000, 18000) analysis band,
+fired the designed WARNING (`event=correction.crossover_v2_cloud_echo_band_
+below_hf_regime derived_lo_hz=2000.0 floor_hz=4000.0`), and proceeded — so
+that session's τ/r/registry outputs carry an uncalibrated-regime asterisk on
+the one measurement that mattered (the new-horn r=0.175 result). The
+derivation had been conflating two quantities: the driver's declared
+operating/measurement WINDOW (excitation + SNR scoring, `measurement_band_hz`'s
+own job) and the echo/null ANALYSIS band (a detector-calibration concern).
+Disclosure alone does not keep a session inside a calibrated regime.*
+
+*As shipped: `_derive_cloud_echo_band_hz` **clamps** the lower edge up to the
+floor, keeps the contract-derived upper edge, and discloses the clamp both
+ways — `event=correction.crossover_v2_cloud_echo_band_clamped_to_hf_regime`
+carrying `derived_lo_hz`/`clamped_lo_hz`/`floor_hz`, and a JSON
+`echo_band_provenance` block (`source`, `hf_regime_clamped`, `derived_lo_hz`,
+`floor_hz`) riding the pipeline payload beside the applied `echo_band_hz`, so
+a reader of the durable state or the bundle can tell a contract-derived band
+from a clamped one **without** the journal. The band and its provenance travel
+as one value (`_CloudEchoBand`), so they cannot be published apart. Degenerate
+case, decided from the detector's own constants rather than picked: if raising
+the edge would leave less than `GEOMETRY_MIN_RESOLUTION_STEPS * 1e6 /
+DEFAULT_ECHO_SEARCH_US[1]` = 3.0 × 1e6 / 800 µs = **3750 Hz** of width — the
+width at which `assess_geometry`'s resolution floor reaches the TOP of the
+searched window, so no delay the detector may look for could ever be
+clustered — the band falls back to `DEFAULT_ECHO_BAND_HZ` under its own
+`clamp_degenerate_default` reason. That bound dominates the detector's other
+width constraint (`MIN_ECHO_BAND_BINS`, 16 bins of a 4096-point FFT = 175.8 Hz
+at 48 kHz) by 21×, so one rule covers both. **The clamp costs no cross-session
+comparability**: (4000, 18000) is 14 kHz wide, so its cepstral resolution is
+1e6/14000 = 71.4 µs — identical to S0's (5000, 19000), also 14 kHz — and a
+clamped session's τ ladder stays directly comparable to S0's. The pure modules
+were not touched (this is a call-site derivation change); PR-2's
+`signal_band_hz` passband stays the composed swept band, and the
+passband-contains-analysis-band containment contract still holds with the
+clamped band.*
 
 *PR-5 (2026-07-27): the spec-curve SSOT lands. `combine_positions`' spec
 curve, evaluated once by `evaluate_flat_spec` against the merged honesty mask,

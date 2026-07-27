@@ -1785,10 +1785,35 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
 # re-derived by test_band_deficit_separation_depends_on_the_analysis_band.
 # 4000 Hz is the lowest edge in that pinned table with COMFORTABLE headroom
 # (10.46 dB, vs the 3 kHz row's thin 1.53 dB) -- the row printed above is
-# the one that actually justifies this constant's value. A declared
-# contract whose derived echo band dips below it is disclosed via a WARNING
-# log rather than silently trusted (an uncalibrated regime) or silently
-# overridden (hiding a real declared value) -- see _derive_cloud_echo_band_hz.
+# the one that actually justifies this constant's value.
+#
+# **A declared contract whose derived echo band dips below this floor is
+# CLAMPED up to it, and the clamp is disclosed** (event + payload). PR-4
+# shipped the reviewed disclose-don't-override design -- warn, then run the
+# detector on the declared band anyway -- and the first real cloud session
+# falsified it (2026-07-27, session cap_4NUGqx3yIzSuv4ta2ozfKw; issue
+# #1763): the JTS3 tweeter's CORRECTLY declared measurement_band_hz
+# [2000, 18000] produced a (2000, 18000) analysis band, fired the designed
+# WARNING, and proceeded -- so that session's tau/r/registry outputs carry
+# an uncalibrated-regime asterisk on the one measurement that mattered (the
+# 2 kHz row above is a false NEGATIVE, not a narrowed gap: this speaker
+# crosses over at 2 kHz, so the woofer's own passband sits inside the
+# analysed band). Disclosure alone does not keep a session inside a
+# calibrated regime; the clamp does, and the disclosure keeps the declared
+# value visible so nobody has to read the clamped band as a declaration.
+# The two quantities the derivation had been conflating are the driver's
+# declared operating/measurement WINDOW (excitation + SNR scoring, which
+# measurement_band_hz owns) and the echo/null ANALYSIS band (a
+# detector-calibration concern, which this floor owns).
+#
+# **Clamping costs no cross-session comparability**, which is why it is
+# cheap: the detector's quefrency step is 1e6 / BANDWIDTH, so the clamped
+# JTS3 band (4000, 18000) resolves at 1e6 / 14000 = 71.4 us -- identical to
+# the module default (5000, 19000), also 14 kHz wide, the band S0 was
+# measured at. A clamped session's tau ladder is directly comparable to
+# S0's rather than merely adjacent to it.
+#
+# See _derive_cloud_echo_band_hz.
 ECHO_BAND_HF_REGIME_FLOOR_HZ = 4000.0
 
 # Cloud curves decimated for persistence (bundle cloud.json + the durable v2
@@ -1816,13 +1841,104 @@ def _composed_swept_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
     return (lo, hi)
 
 
+@dataclass(frozen=True)
+class _CloudEchoBand:
+    """The echo/null analysis band the pipeline will APPLY, plus how it was
+    derived -- one value, so the band and its provenance cannot be carried
+    (or persisted) apart from each other.
+
+    ``band_hz`` is what the detector actually runs on. ``derived_lo_hz`` is
+    the lower edge the declared contract produced BEFORE the HF-regime clamp
+    (equal to ``band_hz[0]`` whenever no clamp happened), so a reader can
+    always tell a contract-derived band from a clamped one **without** the
+    journal -- the honesty rule issue #1763 turned into a requirement.
+    ``source`` names WHICH derivation path produced the band, because
+    "the module default" means something different when nothing was declared
+    than when a clamp could not produce a usable band:
+
+    * ``declared`` -- the tweeter's declared ``measurement_band_hz``,
+      possibly narrowed by the passband containment clamp, possibly raised
+      by the HF-regime clamp (``hf_regime_clamped`` tells which).
+    * ``undeclared_default`` -- no measurement band was threaded through, so
+      ``DEFAULT_ECHO_BAND_HZ`` stands in (pre-PR-4 behaviour, unchanged).
+    * ``clamp_degenerate_default`` -- the HF clamp would have left a band too
+      narrow for the detector to resolve anything in (see
+      :func:`_min_clamped_echo_band_width_hz`), so ``DEFAULT_ECHO_BAND_HZ``
+      stands in instead.
+    * ``passband_fallback`` -- the declared band sits entirely outside the
+      composed passband, so the passband itself stands in.
+    """
+
+    band_hz: tuple[float, float]
+    source: str
+    hf_regime_clamped: bool
+    derived_lo_hz: float
+
+    def disclosure(self) -> dict[str, Any]:
+        """The JSON-native provenance block the pipeline payload carries.
+
+        Deliberately does NOT repeat ``band_hz``: the payload already
+        publishes the applied band as ``echo_band_hz``, and two copies of one
+        pair is how they come to disagree.
+        """
+        return {
+            "source": self.source,
+            "hf_regime_clamped": self.hf_regime_clamped,
+            "derived_lo_hz": float(self.derived_lo_hz),
+            "floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+        }
+
+
+def _min_clamped_echo_band_width_hz() -> float:
+    """The narrowest band the HF-regime clamp may hand the detector, derived
+    from the DETECTOR's own constants rather than picked.
+
+    ``detect_echo``'s quefrency step is ``resolution_us = 1e6 / bandwidth``,
+    and two of its gates are multiples of that step: the searched window's
+    edge margin (``WINDOW_EDGE_MARGIN_STEPS``, one step above
+    ``search_us[0]``) and -- independently of the window --
+    ``assess_geometry``'s refusal to cluster any estimate whose ``tau_us``
+    is below ``GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us``. The geometry
+    floor is the binding one, and once it reaches the TOP of the searched
+    window no delay the detector is allowed to look for can be clustered at
+    all, so the band cannot produce a geometry lock however good the room is:
+
+        GEOMETRY_MIN_RESOLUTION_STEPS * 1e6 / DEFAULT_ECHO_SEARCH_US[1]
+          = 3.0 * 1e6 / 800 us
+          = 3750 Hz
+
+    (The edge margin's own bound is 1.0 * 1e6 / (800 - 120) us => 1470 Hz,
+    i.e. slacker, which is why the geometry floor is the one to read.
+    ``DEFAULT_ECHO_SEARCH_US`` is the right window to read because this
+    program's ``combine_positions`` call passes no ``echo_search_us``, so the
+    default window is the one actually searched.)
+
+    This dominates the detector's other width constraint,
+    ``MIN_ECHO_BAND_BINS`` (16 bins of ``detect_echo``'s own FFT): that FFT
+    is floored at 4096 points, so at this program's 48 kHz the coarsest bin
+    spacing is 11.72 Hz and 16 bins need only 15 * 11.72 = 175.8 Hz -- 21x
+    narrower than the bound above. One rule is therefore enough: a band that
+    clears this floor clears the bin-count refusal too.
+
+    Derived rather than hard-coded so a change to either detector constant
+    moves this bound with it instead of leaving a stale literal behind.
+    """
+    from jasper.audio_measurement.spatial_combine import (
+        DEFAULT_ECHO_SEARCH_US,
+        GEOMETRY_MIN_RESOLUTION_STEPS,
+    )
+
+    return GEOMETRY_MIN_RESOLUTION_STEPS * 1e6 / float(DEFAULT_ECHO_SEARCH_US[1])
+
+
 def _derive_cloud_echo_band_hz(
     signal_band_hz: tuple[float, float],
     tweeter_measurement_band_hz: tuple[float, float] | None,
-) -> tuple[float, float]:
+) -> _CloudEchoBand:
     """The contract-derived echo/null analysis band (PR-4): the tweeter's
     declared ``measurement_band_hz``, replacing ``DEFAULT_ECHO_BAND_HZ``'s
-    flat constant at this call site.
+    flat constant at this call site -- returned WITH its provenance (see
+    :class:`_CloudEchoBand`).
 
     Falls back to ``DEFAULT_ECHO_BAND_HZ`` when the tweeter's measurement
     band was not threaded through (an older/incomplete confirmed profile) --
@@ -1846,13 +1962,36 @@ def _derive_cloud_echo_band_hz(
     this clamp is a no-op for every declared contract exercised by this
     program's tests and only bites a genuinely malformed one.
 
-    **HF regime (inherited PR-2 constraint):** when the resulting lower edge
-    sits below :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`, this is disclosed via a
-    WARNING log (never silently trusted, never silently overridden -- see
-    that constant's own comment for the provenance).
+    **HF regime (issue #1763):** when the contained lower edge sits below
+    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`, it is RAISED to that floor and the
+    clamp is disclosed -- a WARNING event (slug suffix
+    ``cloud_echo_band_clamped_to_hf_regime``) plus the provenance this
+    returns, so neither a journal reader nor a payload reader has to infer
+    it from the band alone. The contract's
+    upper edge is kept: the floor is a statement about where the detector's
+    calibrations hold, not about how wide the driver's window is. See
+    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`'s own comment for the six-band
+    deficit table behind the number, and for why PR-4's disclose-and-proceed
+    design was replaced.
+
+    **When the clamp cannot produce a usable band** -- the surviving width
+    ``upper - floor`` is below :func:`_min_clamped_echo_band_width_hz` -- the
+    band falls back to ``DEFAULT_ECHO_BAND_HZ`` with its own disclosure
+    rather than to a stub the detector would refuse everything in. That trade
+    is stated rather than glossed: the default is NOT re-clamped into the
+    passband, so in this corner the band can sit outside a pathologically low
+    passband and leave the signal-presence screen's deficit statistic
+    uncalibrated. That is the lesser loss -- an uncontained band still runs
+    both estimators, whereas a band too narrow to resolve any delay in the
+    searched window makes every number downstream meaningless. It is also
+    unreachable from any plausible contract: it needs
+    ``min(declared_upper, passband_upper)`` below 7750 Hz, i.e. a "tweeter"
+    (or a whole 2-way system) that is not swept into the top three octaves --
+    the same malformed-contract family as the passband fallback below.
     """
     from jasper.audio_measurement.spatial_combine import DEFAULT_ECHO_BAND_HZ
 
+    declared = tweeter_measurement_band_hz is not None
     band = tweeter_measurement_band_hz or DEFAULT_ECHO_BAND_HZ
     lo = max(float(band[0]), float(signal_band_hz[0]))
     hi = min(float(band[1]), float(signal_band_hz[1]))
@@ -1868,14 +2007,50 @@ def _derive_cloud_echo_band_hz(
             declared_measurement_band_hz=list(band),
             signal_band_hz=list(signal_band_hz),
         )
-        return (float(signal_band_hz[0]), float(signal_band_hz[1]))
-    if lo < ECHO_BAND_HF_REGIME_FLOOR_HZ:
-        log_event(
-            logger, "correction.crossover_v2_cloud_echo_band_below_hf_regime",
-            level=logging.WARNING,
-            derived_lo_hz=lo, floor_hz=ECHO_BAND_HF_REGIME_FLOOR_HZ,
+        return _CloudEchoBand(
+            band_hz=(float(signal_band_hz[0]), float(signal_band_hz[1])),
+            source="passband_fallback",
+            hf_regime_clamped=False,
+            derived_lo_hz=lo,
         )
-    return (lo, hi)
+    if lo < ECHO_BAND_HF_REGIME_FLOOR_HZ:
+        min_width_hz = _min_clamped_echo_band_width_hz()
+        if hi - ECHO_BAND_HF_REGIME_FLOOR_HZ < min_width_hz:
+            log_event(
+                logger, "correction.crossover_v2_cloud_echo_band_clamp_degenerate",
+                level=logging.WARNING,
+                derived_lo_hz=lo, upper_hz=hi,
+                floor_hz=ECHO_BAND_HF_REGIME_FLOOR_HZ,
+                min_width_hz=min_width_hz,
+                fallback_band_hz=list(DEFAULT_ECHO_BAND_HZ),
+            )
+            return _CloudEchoBand(
+                band_hz=(float(DEFAULT_ECHO_BAND_HZ[0]), float(DEFAULT_ECHO_BAND_HZ[1])),
+                source="clamp_degenerate_default",
+                hf_regime_clamped=False,
+                derived_lo_hz=lo,
+            )
+        # ``clamped_lo_hz`` equals ``floor_hz`` by construction; both are
+        # logged so a journal reader does not have to know that to read the
+        # line.
+        log_event(
+            logger, "correction.crossover_v2_cloud_echo_band_clamped_to_hf_regime",
+            level=logging.WARNING,
+            derived_lo_hz=lo, clamped_lo_hz=ECHO_BAND_HF_REGIME_FLOOR_HZ,
+            floor_hz=ECHO_BAND_HF_REGIME_FLOOR_HZ, upper_hz=hi,
+        )
+        return _CloudEchoBand(
+            band_hz=(ECHO_BAND_HF_REGIME_FLOOR_HZ, hi),
+            source="declared" if declared else "undeclared_default",
+            hf_regime_clamped=True,
+            derived_lo_hz=lo,
+        )
+    return _CloudEchoBand(
+        band_hz=(lo, hi),
+        source="declared" if declared else "undeclared_default",
+        hf_regime_clamped=False,
+        derived_lo_hz=lo,
+    )
 
 
 def _decimate_curve_for_json(
@@ -2300,6 +2475,7 @@ def assemble_cloud_group_result(
     combined: Any,
     *,
     echo_band_hz: tuple[float, float],
+    echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
@@ -2336,6 +2512,18 @@ def assemble_cloud_group_result(
     and no verdict here can move. The tolerance table is untouched — the 8-16 kHz
     row still reads ±2.5 dB, applied to whatever survives the carve-out (the
     owner's decision was to disclose the carve-out, not to re-spec the band).
+
+    **``echo_band_provenance`` (issue #1763) is how a payload reader tells a
+    contract-derived band from a clamped one.** ``echo_band_hz`` publishes the
+    band the detector actually ran on, which is necessary but not sufficient:
+    a reader seeing ``[4000, 18000]`` cannot tell whether the driver declared
+    that window or whether the HF-regime clamp raised a declared 2 kHz edge
+    into it, and the difference is exactly the asterisk issue #1763 exists to
+    make visible. :meth:`_CloudEchoBand.disclosure` supplies the block (its
+    ``source`` / ``hf_regime_clamped`` / ``derived_lo_hz`` / ``floor_hz``);
+    the conductor passes it alongside the band it came from. ``None`` when a
+    caller did not state one — "not stated", never "not clamped", the same
+    unknown-vs-zero rule ``validity_floor_hz`` follows below.
 
     **``validity_floor_hz`` clamps the spec band's lower edge.** Bins below
     the group's gated validity floor (:func:`cloud_validity_floor_hz`) are
@@ -2501,6 +2689,11 @@ def assemble_cloud_group_result(
                 else None
             ),
             "echo_band_hz": list(echo_band_hz),
+            "echo_band_provenance": (
+                dict(echo_band_provenance)
+                if isinstance(echo_band_provenance, Mapping)
+                else None
+            ),
             "curve": _decimate_curve_for_json(
                 combined.freqs_hz, combined.power_mean_spec_db,
             ),
@@ -2568,7 +2761,10 @@ class CrossoverV2Conductor:
         # the SAME derived values. See _composed_swept_band_hz /
         # _derive_cloud_echo_band_hz for the derivation and their citations.
         self._cloud_signal_band_hz = _composed_swept_band_hz(roles)
-        self._cloud_echo_band_hz = _derive_cloud_echo_band_hz(
+        # The band AND its provenance travel as one value (issue #1763), so
+        # the pipeline payload can never publish an applied band without the
+        # disclosure of how it was derived.
+        self._cloud_echo_band = _derive_cloud_echo_band_hz(
             self._cloud_signal_band_hz, tweeter_measurement_band_hz,
         )
         self._caps = dict(driver_caps_dbfs)
@@ -3575,7 +3771,7 @@ class CrossoverV2Conductor:
             captured_at=time.time(),
             response=response,
             sample_rate_hz=self._verify_program.sample_rate_hz,
-            echo_band_hz=self._cloud_echo_band_hz,
+            echo_band_hz=self._cloud_echo_band.band_hz,
             signal_band_hz=self._cloud_signal_band_hz,
         )
         self._retain_cloud_position(phase, position, analysis, result)
@@ -3937,7 +4133,8 @@ class CrossoverV2Conductor:
         """
         result = assemble_cloud_group_result(
             combined,
-            echo_band_hz=self._cloud_echo_band_hz,
+            echo_band_hz=self._cloud_echo_band.band_hz,
+            echo_band_provenance=self._cloud_echo_band.disclosure(),
             validity_floor_hz=cloud_validity_floor_hz(positions),
         )
         self._group_cloud_result[phase] = result
