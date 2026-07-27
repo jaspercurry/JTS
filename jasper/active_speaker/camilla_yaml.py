@@ -27,6 +27,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
+    SHELF_Q,
+    SHELF_Q_EMIT_DECIMALS,
     FilterSpec,
     PeqFilter,
     resolve_camilla_chunksize,
@@ -840,17 +842,21 @@ MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
 _LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
-# The RBJ shelf's fixed Butterworth Q, expressed as CamillaDSP's own advanced-
-# shelf ``slope`` parametrization: mirrors jasper.sound.profile._SHELF_Q and
-# jasper.active_speaker.linearization_fit._HIGHSHELF_Q (both 1/sqrt(2)) --
-# CamillaDSP's advanced-shelf ``slope: 6.0`` realizes exactly that Q (see
-# jasper.sound.profile._biquad_coeffs's own comment: "Shelves use a fixed
-# Butterworth Q ... to mirror CamillaDSP's 6 dB/oct advanced-shelf emit").
-# BOTH shelf types the fit engine emits -- the rising-slope Highshelf and the
-# CD-horn Lowshelf backbone / trailing Highshelf taper (#1668) -- share this
-# one fixed Q, so this is the one and only slope any linearization shelf is
-# ever emitted at.
-_LINEARIZATION_SHELF_SLOPE = 6.0
+# A linearization shelf carries NO steepness of its own. Every shelf reaches
+# CamillaDSP through ``emit_filter_spec``, which spells the one Butterworth
+# ``camilla_config_contract.SHELF_Q`` -- the same Q the fit engine designed the
+# shelf at (``linearization_fit._HIGHSHELF_Q``) and scored its residual with.
+# BOTH shelf types the fit engine emits (the rising-slope Highshelf and the
+# CD-horn Lowshelf backbone / trailing Highshelf taper, #1668) share it.
+#
+# This block used to define ``_LINEARIZATION_SHELF_SLOPE = 6.0`` on the belief
+# that CamillaDSP's ``slope: 6`` realized Butterworth. It does not: CamillaDSP's
+# Butterworth is ``slope: 12`` (S = slope/12, S = 1), and at ``slope: 6`` the
+# realized Q falls with the shelf's gain -- 0.476 at the -11 dB shelf the
+# 2026-07-27 JTS3 profile carried, missing the designed curve by up to 1.7 dB
+# across the tweeter band. The fit's realization gate, residual, and VERIFY
+# prediction all evaluated the Butterworth shelf, so nothing in the loop could
+# see it. See ``SHELF_Q`` for the formula and the upstream test that pins it.
 
 
 def _driver_linearization_shelf_name(role: str) -> str:
@@ -1046,13 +1052,15 @@ def _emit_driver_linearization_definitions(
     ``emit_filter_spec`` leaf (the same primitive preference-EQ bands use) so
     a Peaking/Highshelf/Lowshelf band is spelled identically everywhere in
     this codebase. Shelf-type entries (a leading Highshelf/Lowshelf, or a
-    trailing Highshelf taper after a Lowshelf lead, #1668) always pass the
-    fixed ``_LINEARIZATION_SHELF_SLOPE`` -- see that constant's own comment
-    for why that is the one CamillaDSP slope equivalent to the fit engine's
-    fixed Butterworth Q; ``q`` is not carried onto a shelf FilterSpec since
-    ``emit_filter_spec`` reads ``slope`` (not ``q``) for shelf types. Position-
-    aware naming mirrors ``_driver_linearization_chain_names`` exactly so the
-    emitted definitions and pipeline names cannot disagree.
+    trailing Highshelf taper after a Lowshelf lead, #1668) carry NO steepness
+    on their ``FilterSpec``: ``emit_filter_spec`` spells every shelf at the one
+    Butterworth ``SHELF_Q`` the fit engine designed it at (see the shelf-Q note
+    above this function's neighbours). The entry's own ``q`` is deliberately
+    dropped for the same reason -- the fit only ever produces ``_HIGHSHELF_Q``
+    there, and honouring a stray value would emit a shelf no evaluator in the
+    fit loop can see. Position-aware naming mirrors
+    ``_driver_linearization_chain_names`` exactly so the emitted definitions
+    and pipeline names cannot disagree.
     """
 
     lines: list[str] = []
@@ -1067,7 +1075,6 @@ def _emit_driver_linearization_definitions(
                     biquad_type=entry["biquad_type"],
                     freq=entry["freq"],
                     gain=entry["gain"],
-                    slope=_LINEARIZATION_SHELF_SLOPE,
                 )
             elif slot == "taper":
                 spec = FilterSpec(
@@ -1075,7 +1082,6 @@ def _emit_driver_linearization_definitions(
                     biquad_type="Highshelf",
                     freq=entry["freq"],
                     gain=entry["gain"],
-                    slope=_LINEARIZATION_SHELF_SLOPE,
                 )
             else:
                 peak_index += 1
@@ -2665,13 +2671,31 @@ pipeline:
                 f"parent directory does not exist: {out_path.parent}"
             )
         _atomic_write_text(out_path, yaml)
+        # linearization_shelves / shelf_q make the PR-L2 emission change legible
+        # in the journal: a graph written by a build BEFORE 2026-07-27 realized
+        # its Layer-1a shelves at CamillaDSP's gain-dependent ``slope: 6`` Q
+        # (0.476 at -11 dB), not the Butterworth Q the fit designed and scored
+        # them at. Re-emitting the SAME persisted design now realizes the
+        # designed curve, so the speaker's treble audibly changes on the first
+        # write after upgrading. These two fields date that transition per
+        # speaker; ``grep event=active_speaker_baseline_config_written``.
+        shelf_count = sum(
+            1
+            for filters in safe_linearization.values()
+            for index in range(len(filters))
+            if _linearization_slot(index, len(filters), filters) in ("shelf", "taper")
+        )
         logger.info(
             "event=active_speaker_baseline_config_written "
-            "path=%s preset_id=%s way_count=%d outputs=%d",
+            "path=%s preset_id=%s way_count=%d outputs=%d "
+            "linearization_shelves=%d shelf_q=%.*f",
             out_path,
             preset.preset_id,
             preset.way_count,
             output_count,
+            shelf_count,
+            SHELF_Q_EMIT_DECIMALS,
+            SHELF_Q,
         )
     return yaml
 

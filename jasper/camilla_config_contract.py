@@ -379,6 +379,44 @@ FILTER_EPSILON_DB = 0.05
 # end; Notch is a surgical gain-less cut.
 GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
 
+# The ONE steepness every Lowshelf/Highshelf in this codebase is both MODELLED
+# at and EMITTED at: the Butterworth (non-resonant, no-overshoot) shelf Q.
+#
+# It is a single constant on purpose. Every evaluator that draws or scores a
+# shelf hardcodes this Q -- jasper.sound.profile._biquad_coeffs (the /sound/
+# preview), deploy/assets/sound-profile/js/eq-math.js (its browser twin), and
+# jasper.active_speaker.linearization_fit (the fit engine's residual/realization
+# gate). None of them reads a per-band steepness, so a per-band steepness is not
+# expressible: a shelf emitted at any other Q would be a filter no evaluator in
+# this system can see, which is exactly the PR-L2 defect (2026-07-27).
+#
+# THE DEFECT: shelves used to be emitted with CamillaDSP's ``slope: 6.0`` on the
+# belief that 6 dB/octave was Butterworth. It is not. CamillaDSP's advanced
+# shelf takes S = slope/12 and derives
+#     Q = 1 / sqrt((A + 1/A) * (1/S - 1) + 2),   A = 10**(gain/40)
+# (RBJ Audio EQ Cookbook; CamillaDSP src/filters/biquad.rs). Butterworth is
+# S = 1, i.e. ``slope: 12`` -- pinned by CamillaDSP's own ``lowshelf_slope_vs_q``
+# test, which asserts ``slope: 12.0`` and ``q: FRAC_1_SQRT_2`` produce the same
+# coefficients. At ``slope: 6`` the realized Q collapses with gain (0.476 at
+# -11 dB) and the realized curve missed the modelled one by up to 1.7 dB.
+#
+# Emitting ``q`` rather than ``slope: 12`` is deliberate: the number in the
+# emitted YAML is then literally the number the evaluators use, and unlike
+# ``slope`` its meaning does not depend on the band's gain.
+#
+# If a per-band shelf steepness is ever genuinely wanted, the MODEL must gain
+# the parameter in the SAME change. A steepness the evaluators do not read is
+# the bug this constant exists to prevent.
+SHELF_Q: float = 1.0 / math.sqrt(2.0)
+
+# Decimals used when spelling SHELF_Q into CamillaDSP YAML. The shared 4-decimal
+# ``camilla_emit.fmt`` is right for Hz / dB / ms but leaves 0.7071 -- a 1e-5
+# relative Q error, worth ~5e-5 dB of realized-vs-modelled mismatch. Seven
+# decimals put the emitted filter within ~1.3e-7 dB of the model, i.e. inside
+# the PEQ parity suite's 1e-6 dB tolerance, so "emitted == modelled" can be
+# asserted as an equality rather than an approximation.
+SHELF_Q_EMIT_DECIMALS = 7
+
 
 @dataclass(frozen=True)
 class FilterSpec:
@@ -390,6 +428,11 @@ class FilterSpec:
     (``jasper.camilla_stereo_prefix``) emits them — so this lives in the
     neutral contract layer, importable by both the sound and active-speaker
     emitters without a cross-dependency.
+
+    ``q`` carries the Q-parameterised types only (Peaking / Highpass / Lowpass /
+    Notch). Shelves carry NO steepness field: every shelf is emitted and
+    modelled at :data:`SHELF_Q` -- see that constant for why a per-band shelf
+    steepness is deliberately not expressible here.
     """
 
     name: str
@@ -397,7 +440,6 @@ class FilterSpec:
     freq: float
     gain: float
     q: float | None = None
-    slope: float | None = None
 
     def active(self) -> bool:
         if self.biquad_type in GAINLESS_BIQUAD_TYPES:

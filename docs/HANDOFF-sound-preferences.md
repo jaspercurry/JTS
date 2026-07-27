@@ -53,7 +53,9 @@ Available band types (all CamillaDSP biquads): **Lowshelf**, **Peaking**,
 **Highshelf**, **Highpass**, **Lowpass**, **Notch**. The three cut/notch
 types carry no gain — the UI hides the Gain control, the model pins gain
 to 0, and the emitted YAML omits the gain term. Shelves hide the Width
-control (their slope is fixed at 6 dB/oct in the emit). High/low-pass Q is
+control (every shelf is drawn *and* emitted at the fixed Butterworth
+`SHELF_Q` = 1/√2, so the control would be inert — see "Shelf steepness"
+below). High/low-pass Q is
 capped at `CUT_MAX_Q` (1.4) in both the model and the slider, because a
 high-Q cut is a large resonant *boost* at the corner (a Q=8 highpass peaks
 ~+18 dB) — surprising on a "pass" filter and a needless clipping source;
@@ -135,6 +137,99 @@ Discard; editing a custom profile offers Overwrite / Save as new /
 Rename / Discard; editing a preset offers Save as new / Discard. Saving
 emits `sound_current.yml` and persists only after the CamillaDSP reload
 is confirmed.
+
+### Shelf steepness — one Butterworth Q, drawn and emitted
+
+Every `Lowshelf`/`Highshelf` JTS emits — taste-EQ curve presets, Simple
+bands, Advanced bands, and the active speaker's Layer-1a linearization
+shelf / CD-horn backbone / trailing taper — is emitted at **one** constant,
+`jasper.camilla_config_contract.SHELF_Q` = 1/√2 (Butterworth), spelled into
+CamillaDSP's shelf `q` field by the single choke point
+`jasper.camilla_stereo_prefix.emit_filter_spec`. That is the same Q every
+evaluator in the codebase draws a shelf at (`profile._biquad_coeffs`,
+`eq-math.js`, `linearization_fit._HIGHSHELF_Q`), so the preview curve, the
+fit's residual, and the speaker's output are the same curve.
+
+There is deliberately **no** per-band shelf steepness. None of the
+evaluators reads one, so a band-level value would describe a filter the
+system cannot see. If a per-band steepness is ever wanted, the model gains
+the parameter in the same change.
+
+**The defect this replaced (fixed 2026-07-27, linearization-integrity
+PR-L2).** The emitter previously wrote `slope: 6.0`, on the documented-here
+belief that 6 dB/octave *was* Butterworth. It is not. CamillaDSP's advanced
+shelf takes `S = slope/12` and derives
+
+```
+Q = 1 / sqrt((A + 1/A) * (1/S - 1) + 2),   A = 10**(gain/40)
+```
+
+so Butterworth is `S = 1`, i.e. **`slope: 12`** — pinned by CamillaDSP's own
+`lowshelf_slope_vs_q` test (`slope: 12.0` ≡ `q: FRAC_1_SQRT_2`). At
+`slope: 6` the realized Q depends on the shelf's *gain* and collapses:
+0.476 at −11 dB, where the realized curve missed the drawn/designed one by
+up to 1.7 dB. Because the fit's realization gate, residual, and VERIFY
+prediction all evaluated the Butterworth shelf, nothing in the loop could
+observe the error — it was found by measuring the speaker against a
+reference monitor. `q` is now emitted rather than `slope: 12` because the
+emitted number is then literally the number the evaluators use, and unlike
+`slope` its meaning does not depend on the band's gain.
+
+**What happens to an already-applied profile.** The fix is in the
+*emission*, not in any stored design: filter frequencies, gains and Qs
+persist unchanged in the sound profile and in the active speaker's
+immutable recomposition snapshot. So nothing changes until the next
+re-emission — and then the *same stored design* is realized at the Q it was
+always modelled at. Concretely:
+
+- **`/sound/` taste EQ — changes on the next DEPLOY, with no user action.**
+  `install.sh` runs `jasper-sound reconcile-current-dsp` on every deploy;
+  `reconcile_sound_dsp_state` re-renders the graph and compares it to the
+  on-disk YAML with only the id header stripped, so `slope:` versus `q:`
+  makes them unequal → `status=reconciled` → the new graph is written *and*
+  loaded. (An earlier `/sound/` save/apply gets there first if one happens.)
+  Shelf bands move toward the curve the graph has always drawn, by an
+  amount that grows with the band's gain (peak deviation over 20 Hz–20 kHz):
+  the Harman-style and B&K-style tilt shelves 0.52 / 1.17 dB (they were the
+  only shelves carrying `slope: 3.0`), their bass shelves 0.60 / 0.45 dB,
+  and a Simple or Advanced shelf driven to the ±12 dB limit up to 1.87 dB.
+  Like every shelf change this is a *tilt* about the corner, not an offset:
+  the band above moves one way and the band below the other. A household
+  that voiced a profile by ear on an old build may want to re-touch it; the
+  graph it was voiced against did not move.
+- **Active speaker (the load-bearing case).** The next write of the
+  baseline graph — an Apply, or a recomposition triggered by saving room /
+  preference EQ — realizes the linearization shelves at their designed Q.
+  The 2026-07-27 JTS3 profile carried a **−11 dB Lowshelf at 4419 Hz**
+  (`as_tweeter_linearization_shelf`; the CD-horn backbone is a Lowshelf, not
+  a Highshelf). Its correction is antisymmetric about that corner:
+  **±1.70 dB, 3.40 dB peak-to-peak** — up to **+1.70 dB** above the corner
+  (+0.63…+1.70 dB across 5–12 kHz, +1.65 dB at 6912 Hz where `peak_2` sits)
+  and up to **−1.70 dB** below it (minimum near 2.5 kHz). So the tweeter
+  band gains up to 1.7 dB of its deficit back while the shoulder below the
+  corner comes down by as much. **This is the fix working**: the speaker
+  moves toward what the fit designed, not away from it. It is also not the
+  whole 7–11 dB deficit — the rest is tracked in
+  [linearization-integrity-plan.md](linearization-integrity-plan.md).
+- **The pre-existing drift guard fires, by design.** Until that re-emission
+  happens, a speaker still running an old-build graph will not match the
+  recomposed expectation, so
+  `setup_status._applied_layer_a_binding` reports `mismatch` and Room
+  correction is blocked with "The sound pipeline loaded on this speaker does
+  not match the applied manual profile. Apply that crossover again before
+  Room correction." That is the honest state — the loaded graph really is
+  not the one the applied profile now describes — and re-applying clears it.
+  The copy is deliberately cause-neutral: this drift comes from the emitter
+  changing under an untouched profile, not from anyone editing a crossover.
+- **Observable.** The write-time journal line carries the transition:
+  `journalctl -u jasper-control | grep event=active_speaker_baseline_config_written`
+  → `linearization_shelves=<n> shelf_q=0.7071068`. A graph written by an
+  older build has neither field. For the `/sound/` side the signal is the
+  deploy transcript itself: `event=sound.reconcile_current_dsp
+  result=reconciled` on a deploy that changed no profile means the render
+  moved, which on the first deploy after this change is the shelf-Q
+  re-emission. The live YAML is self-describing in both cases: a fixed
+  shelf reads `q: 0.7071068`, an old one `slope: 6.0000`.
 
 ### Gain staging — boosts boost
 
@@ -583,7 +678,8 @@ convention other wizards follow.
 1. Parses and clamps the posted `SoundProfile`.
 2. Returns total and per-component response previews — real RBJ biquad
    magnitude at 48 kHz, matching CamillaDSP's output (shelves are drawn
-   as a fixed Butterworth shelf to mirror the 6 dB/oct slope emit).
+   at the fixed Butterworth `SHELF_Q`, which is the `q` the emitter
+   writes — see "Shelf steepness").
 3. Does not touch CamillaDSP or disk.
 
 `/sound/profiles/save`, `/sound/profiles/rename`, and
@@ -839,7 +935,13 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-07-14 (sound writer call sites checked against bounded,
+Last verified: 2026-07-27 (shelf-steepness section added and the "slope is
+fixed at 6 dB/oct" claim corrected — emission now spells CamillaDSP's shelf
+`q` at the Butterworth `SHELF_Q`, checked against
+`jasper.camilla_stereo_prefix.emit_filter_spec`,
+`jasper.camilla_config_contract.SHELF_Q`, `jasper.sound.profile`, and
+CamillaDSP v4.1.3 `src/filters/biquad.rs`; prior
+2026-07-14 pass covered sound writer call sites checked against bounded,
 cancellation-safe shared admission; target-bound research, confirmation/revision behavior,
 active-speaker file inventory, and commission-ramp /
 summed-planner ownership checked after obsolete readiness removal; prior

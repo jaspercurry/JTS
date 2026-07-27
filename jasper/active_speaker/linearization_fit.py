@@ -157,12 +157,22 @@ _PEAKING_Q_MAX: float = 8.0
 _PEAKING_FLATNESS_TARGET_DB: float = 1.0
 
 # The RBJ Highshelf's fixed Butterworth Q — mirrors
-# jasper.sound.profile._SHELF_Q (module-private there; see this module's
-# top docstring for why it is duplicated rather than imported). CamillaDSP
-# realizes this exact biquad family for its own Highshelf/Lowshelf filters
-# (jasper.sound.profile._biquad_coeffs's Highshelf branch), so using the
-# SAME Q here keeps the modeled response this module subtracts during
-# fitting consistent with what a later APPLY stage would actually emit.
+# jasper.camilla_config_contract.SHELF_Q and jasper.sound.profile._SHELF_Q
+# (see this module's top docstring for why it is duplicated rather than
+# imported). The APPLY stage spells this SAME number into the emitted shelf's
+# CamillaDSP ``q`` field (``camilla_stereo_prefix.emit_filter_spec``), so the
+# modeled response this module subtracts during fitting — and the realization
+# gate, residual, and VERIFY prediction built on it — is the response the
+# speaker actually realizes.
+#
+# It was NOT, before 2026-07-27: the emitter wrote ``slope: 6.0`` believing
+# that was Butterworth. CamillaDSP's Butterworth is ``slope: 12`` (S = 1); at
+# ``slope: 6`` the realized Q depends on the shelf's gain and collapses to
+# 0.476 at -11 dB. Because every gate in this module evaluated the Butterworth
+# shelf, a shelf that missed its design by up to 1.7 dB scored as exact — the
+# fit could not see its own realization error. Keep the emitted parameter and
+# this constant in lockstep; ``tests/test_sound_peq_response.py`` pins them to
+# CamillaDSP's own slope↔Q formula.
 _HIGHSHELF_Q: float = 1.0 / math.sqrt(2.0)
 
 # Octave-band centers for the candidate artifact's compact reason summary

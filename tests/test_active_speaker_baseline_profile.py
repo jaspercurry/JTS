@@ -2321,7 +2321,7 @@ def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
     measurements = _measurements(topology, tmp_path)
 
     prefs = [
-        FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=8000.0, gain=4.0, slope=6.0),
+        FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=8000.0, gain=4.0),
         FilterSpec(name="pref_pk", biquad_type="Peaking", freq=120.0, gain=2.0, q=1.0),
     ]
     eq_yaml, eq_issues = recompose_baseline_yaml(

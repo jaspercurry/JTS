@@ -4071,7 +4071,8 @@ def test_sound_module_hides_uncontrollable_band_controls():
     for t in ("Lowshelf", "Peaking", "Highshelf", "Highpass", "Lowpass", "Notch"):
         assert "typeBtn('" + t + "'" in band_row
     # Gain is hidden for cut/notch (no gain term); Width is hidden for shelves
-    # (slope fixed at 6 dB/oct, so the control would be inert).
+    # (every shelf is drawn and emitted at the fixed Butterworth SHELF_Q, so
+    # the control would be inert).
     assert "gainless ? '' : rangeRow('Gain'" in band_row
     assert "shelf ? '' : rangeRow('Width'" in band_row
 

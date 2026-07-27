@@ -2334,7 +2334,7 @@ def test_baseline_with_preference_eq_stays_approved(layout, mode, way) -> None:
     # asymmetry that only manifests beyond mono-2-way.
     topology = _active_topology(layout, mode)
     prefs = (
-        FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0, slope=6.0),
+        FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0),
         FilterSpec(name="pref_pk", biquad_type="Peaking", freq=120.0, gain=3.0, q=1.0),
     )
 
@@ -2360,7 +2360,7 @@ def test_baseline_preference_boost_rides_at_unity() -> None:
         "mono",
         2,
         preference_filters=(
-            FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0, slope=6.0),
+            FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=9000.0, gain=5.0),
             FilterSpec(name="pref_pk", biquad_type="Peaking", freq=120.0, gain=3.0, q=1.0),
         ),
     )

@@ -3846,7 +3846,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var body = '';
     if (open) {
       // Gain hidden for cut/notch (no gain term); Width hidden for shelves
-      // (CamillaDSP fixes their slope at 6 dB/oct — the control would be inert).
+      // (JTS draws and emits every shelf at the fixed Butterworth SHELF_Q, so
+      // the control would be inert — see eq-math.js).
       body = '<div class="band-row__body">' +
         '<div class="range-row"><span class="range-row__label">Type</span>' +
           '<div class="segmented" data-band="' + index + '">' +

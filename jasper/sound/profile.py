@@ -29,7 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jasper.camilla_config_contract import FilterSpec, GAINLESS_BIQUAD_TYPES
+from jasper.camilla_config_contract import (
+    GAINLESS_BIQUAD_TYPES,
+    SHELF_Q,
+    FilterSpec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +73,17 @@ CUT_MAX_Q = 1.4
 # (not imported) to keep this module import-cheap and dependency-free.
 RESPONSE_SAMPLE_RATE_HZ = 48000
 
-# Advanced shelves are realised by CamillaDSP at a fixed 6 dB/oct slope (see
-# _advanced_filters). For the preview we draw a Butterworth (non-resonant,
-# no-overshoot) shelf, which is visually equivalent and has the correct
-# half-gain-at-corner knee. Q is therefore not a user control for shelves.
-_SHELF_Q = 1.0 / math.sqrt(2.0)
+# Every shelf is drawn AND emitted at the one Butterworth (non-resonant,
+# no-overshoot) shelf Q, so the preview curve is the curve CamillaDSP realises.
+# Q is therefore not a user control for shelves. Imported, not re-derived: the
+# emitter (jasper.camilla_stereo_prefix.emit_filter_spec) spells this same
+# number into the YAML, and a second literal here is how the two drift.
+#
+# Until 2026-07-27 the emitter wrote ``slope: 6.0`` believing that was
+# Butterworth; it is not (Butterworth is ``slope: 12``), so the realised shelf
+# missed this drawn one by up to 1.7 dB at -11 dB. See
+# jasper.camilla_config_contract.SHELF_Q for the full defect note.
+_SHELF_Q = SHELF_Q
 STOCK_PROFILE_PREFIX = "stock:"
 CUSTOM_PROFILE_PREFIX = "custom_"
 _CUSTOM_PROFILE_ID_RE = re.compile(r"^custom_[a-f0-9]{12}$")
@@ -145,8 +155,8 @@ CURVE_PRESETS: tuple[CurvePreset, ...] = (
         label="Harman-style",
         description="Gentle bass lift with a mild downward high-frequency tilt.",
         filters=(
-            FilterSpec("sound_curve_harman_bass", "Lowshelf", 105.0, 4.0, slope=6.0),
-            FilterSpec("sound_curve_harman_tilt", "Highshelf", 3500.0, -2.0, slope=3.0),
+            FilterSpec("sound_curve_harman_bass", "Lowshelf", 105.0, 4.0),
+            FilterSpec("sound_curve_harman_tilt", "Highshelf", 3500.0, -2.0),
         ),
     ),
     CurvePreset(
@@ -154,8 +164,8 @@ CURVE_PRESETS: tuple[CurvePreset, ...] = (
         label="B&K-style",
         description="Classic in-room downward tilt, approximated as broad shelves.",
         filters=(
-            FilterSpec("sound_curve_bk_bass", "Lowshelf", 120.0, 3.0, slope=6.0),
-            FilterSpec("sound_curve_bk_tilt", "Highshelf", 2500.0, -4.5, slope=3.0),
+            FilterSpec("sound_curve_bk_bass", "Lowshelf", 120.0, 3.0),
+            FilterSpec("sound_curve_bk_tilt", "Highshelf", 2500.0, -4.5),
         ),
     ),
 )
@@ -220,7 +230,8 @@ class SimpleEq:
 @dataclass(frozen=True)
 class SimpleBand:
     """Fixed slot for one Simple-mode band. Only gain is user-editable;
-    frequency, filter type, and Q/slope are fixed per slot."""
+    frequency, filter type, and Q are fixed per slot. Shelf slots carry no
+    ``q``: every shelf is drawn and emitted at ``SHELF_Q`` (see that constant)."""
 
     key: str
     field: str
@@ -229,7 +240,6 @@ class SimpleBand:
     biquad_type: str
     freq_hz: float
     q: float | None = None
-    slope: float | None = None
 
 
 # The five Simple-mode slots, low to high — one source of truth for the
@@ -237,7 +247,7 @@ class SimpleBand:
 # proposer. Frequencies/types match the redesigned /sound/ mockup.
 SIMPLE_BANDS: tuple[SimpleBand, ...] = (
     SimpleBand("sub_bass", "sub_bass_db", "Sub-bass", "sound_simple_sub_bass",
-               "Lowshelf", 60.0, slope=6.0),
+               "Lowshelf", 60.0),
     SimpleBand("bass", "bass_db", "Bass", "sound_simple_bass",
                "Peaking", 150.0, q=1.0),
     SimpleBand("mid", "mid_db", "Mid", "sound_simple_mid",
@@ -245,7 +255,7 @@ SIMPLE_BANDS: tuple[SimpleBand, ...] = (
     SimpleBand("presence", "presence_db", "Presence", "sound_simple_presence",
                "Peaking", 4000.0, q=1.0),
     SimpleBand("treble", "treble_db", "Treble", "sound_simple_treble",
-               "Highshelf", 10000.0, slope=6.0),
+               "Highshelf", 10000.0),
 )
 
 # Field names in canonical order. The calibration advisor's validator
@@ -490,7 +500,6 @@ def curve_payload() -> list[dict[str, Any]]:
                     "freq_hz": spec.freq,
                     "gain_db": spec.gain,
                     "q": spec.q,
-                    "slope": spec.slope,
                 }
                 for spec in preset.filters
             ],
@@ -702,7 +711,6 @@ def _simple_filters(simple: SimpleEq) -> tuple[FilterSpec, ...]:
             band.freq_hz,
             getattr(simple, band.field),
             q=band.q,
-            slope=band.slope,
         )
         for band in SIMPLE_BANDS
     )
@@ -714,13 +722,15 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
         if not band.enabled:
             continue
         if band.biquad_type in {"Lowshelf", "Highshelf"}:
+            # No steepness field: the emitter spells every shelf at SHELF_Q,
+            # which is the Q _biquad_coeffs draws it at. A band-level Q here
+            # would be a steepness no evaluator reads.
             specs.append(
                 FilterSpec(
                     f"sound_advanced_{i}",
                     band.biquad_type,
                     band.freq_hz,
                     band.gain_db,
-                    slope=6.0,
                 )
             )
         elif band.biquad_type in GAINLESS_BIQUAD_TYPES:
@@ -767,8 +777,11 @@ def _biquad_coeffs(
     https://www.w3.org/TR/audio-eq-cookbook/ — the same digital biquad
     family CamillaDSP realises, so the magnitude we draw matches the
     speaker's actual output for the Q-parameterised types (Peaking,
-    Highpass, Lowpass, Notch). Shelves use a fixed Butterworth Q (see
-    _SHELF_Q) to mirror CamillaDSP's 6 dB/oct advanced-shelf emit.
+    Highpass, Lowpass, Notch). Shelves ignore the caller's ``q`` and use the
+    fixed Butterworth ``_SHELF_Q``, which is the Q the emitter spells into
+    CamillaDSP's shelf ``q`` field — so shelves match exactly too. (Before
+    2026-07-27 the emitter wrote ``slope: 6.0``, whose realised Q is
+    gain-dependent and NOT Butterworth; Butterworth is ``slope: 12``.)
 
     This MUST stay byte-for-byte equivalent to biquadCoeffs() in
     deploy/assets/sound-profile/js/eq-math.js. Both are checked against
@@ -909,9 +922,10 @@ def response_preview(
 
     Real RBJ biquad magnitude (see _biquad_coeffs), evaluated at
     RESPONSE_SAMPLE_RATE_HZ so it matches CamillaDSP's actual output for the
-    Q-parameterised types. Shelves are drawn as a fixed Butterworth shelf to
-    mirror the 6 dB/oct slope emit. Cascading is exact in dB, so per-band
-    results sum.
+    Q-parameterised types. Shelves are drawn at the fixed Butterworth
+    ``_SHELF_Q``, which is the Q the emitter writes into the shelf's ``q``
+    field, so they match too. Cascading is exact in dB, so per-band results
+    sum.
     """
 
     freq_list = [float(freq) for freq in freqs]

@@ -144,12 +144,18 @@ def test_zero_delays_emit_nothing():
 
 
 def test_emit_filter_spec_dispatches_by_biquad_type():
-    # Both shelf types: slope + gain, no q.
+    # Both shelf types: the fixed Butterworth q + gain, never a slope.
+    # SHELF_Q is the number every evaluator in this codebase draws a shelf at,
+    # so it is the honest one to write (see camilla_config_contract.SHELF_Q).
+    # A stray `slope` would NOT be caught downstream — CamillaDSP's
+    # ShelfSteepness is #[serde(untagged)] and silently ignores it once `q`
+    # matches — so the guarantee is structural: FilterSpec carries no
+    # steepness field, so the emitter cannot write one. This asserts that.
     for kind, gain in (("Lowshelf", 4.0), ("Highshelf", -2.5)):
-        shelf = "\n".join(emit_filter_spec(FilterSpec("f", kind, 100.0, gain, slope=6.0)))
-        assert f"type: {kind}" in shelf and "slope: 6.0000" in shelf
+        shelf = "\n".join(emit_filter_spec(FilterSpec("f", kind, 100.0, gain)))
+        assert f"type: {kind}" in shelf and "\n      q: 0.7071068" in shelf
         assert f"gain: {gain:.4f}" in shelf
-        assert "\n      q:" not in shelf  # no q param line (freq: contains "q:")
+        assert "slope" not in shelf
     # Gainless (Highpass): q only, no gain term.
     hp = "\n".join(emit_filter_spec(FilterSpec("f", "Highpass", 30.0, 0.0, q=0.7)))
     assert "type: Highpass" in hp and "q: 0.7000" in hp
