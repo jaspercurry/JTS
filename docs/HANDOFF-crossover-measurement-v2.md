@@ -166,6 +166,42 @@ iMM-6C series silently ran under the UMIK's calibration curve;
 magnitude-only impact, but it makes the saved-mic serial-entry UI bug a
 correctness issue).
 
+**A glitch verdict is a timeline SPLICE, not clock drift (2026-07-27,
+issue #1765).** Across the whole 2026-07-22…27 JTS3 journal (57 MEASURE
+captures) exactly two captures tripped `glitch_detected`, and **both fired
+on the residual guard with epsilon comfortably inside `MAX_DRIFT_PPM`** —
+2026-07-23 at 30.53 ppm / 798.46 samples, 2026-07-27 at 94.12 ppm / 32.36
+samples. The 500 ppm clock-drift bound has never fired in production. Read
+`epsilon_ppm` on a *glitched* capture as an artefact, not a measurement.
+
+The 2026-07-27 capture was recovered from the retained dump and
+cross-correlated (ncc 0.92–0.99) against the two captures that PASSED
+minutes later on the same program and rig: five of its six located sweeps
+agreed within 0.8 samples while the first woofer sweep sat 64.3 samples
+apart — **one +64-sample (1.333 ms) insertion between `sweep_w` and
+`sweep_t`**. That single step predicts every reported number: the woofer
+pair straddles it (32.1 ppm true drift + 64/1_036_800 = 93.8 vs 94.118
+observed), the tweeter pair sits entirely after it (32.097 ppm = the true
+drift), demeaned residual 32.2 predicted vs 32.357 observed, and the
+primary-sweep W↔T misalignment drove `delay_us` +15 → −847.6 µs and
+`predicted_ripple_db` 4.4 → 16.8.
+
+Attribution: **capture side, not the Pi.** Zero `event=outputd.xrun`, zero
+fanin/kernel events in the playback window (50 xruns elsewhere that day, so
+the Pi-side mechanism was instrumented and simply did not fire);
+CamillaDSP's only short-read burst during that playback was ~9 s BEFORE the
+step and the same storm is present under captures that passed. The
+recorder (`JtsMonoRecorder`, `deploy/assets/shared/js/measurement-audio.js`)
+concatenates `process()` blocks with no timing accounting, so a browser-side
+timeline break is spliced in silently — and because the worklet only ever
+appends whole 128-frame quanta, a 64-sample step must originate *upstream*
+of it, in the device→AudioContext path where Chrome resamples. Open
+mitigations (neither shipped): worklet `currentFrame` accounting to catch
+worklet-level drops at source, and step-aware recovery using the N=3
+redundancy already paid for. `_locate_discontinuity` now names the step
+(size + which segment it landed after) on every capture — see the
+diagnostics section below.
+
 **Measurement-honesty gates (2026-07-22 night).** Three additive acceptance
 gates convert the corrupted-capture signatures above into honest
 refusals/retries — no selection math and no VERIFY comparison semantics
@@ -913,7 +949,7 @@ source, no drift.
 | `snr_floor` | CHECK / MEASURE | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16) |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
 | `clipped` | MEASURE / VERIFY | 1 | auto quieter retry (gain −3 dB) |
-| `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry |
+| `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped (#1765) |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
 | `locate_failed` | any | 1 | couldn't hear the speaker |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile) |
@@ -969,6 +1005,7 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `anchor_delay_us`, `snap_delta_us`, `snap_found`,
   `gate_window_ms`, `validity_floor_hz`,
   `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
+  `glitch_inputs`, `discontinuity_samples`, `discontinuity_after_segment`,
   `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`, plus
   per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
   `tweeter_snr_verdict`. (A `linearization` field rode this line until the

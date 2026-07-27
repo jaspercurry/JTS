@@ -121,6 +121,37 @@ MAX_DRIFT_PPM = 500.0
 # RMS is stable, so this tolerance stays tight.
 REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
+# Timeline-discontinuity change-point (2026-07-27 forensics, issue #1765).
+#
+# Every glitch this system has actually produced was a DISCRETE timeline step,
+# never clock drift: across the 2026-07-22..27 JTS3 journal (57 MEASURE
+# captures) both `program_analysis.glitch` events fired on the residual guard
+# with epsilon comfortably INSIDE MAX_DRIFT_PPM — 2026-07-23 at 30.53 ppm /
+# 798.46 samples, 2026-07-27 at 94.12 ppm / 32.36 samples. The 500 ppm bound
+# has never fired. The 2026-07-27 capture was recovered from JTS3's retained
+# dump and cross-correlated (ncc 0.92-0.99) against the two captures that
+# PASSED minutes later on the same program/rig: five of its six located sweeps
+# agreed within 0.8 samples while the first woofer sweep sat 64.3 samples
+# apart — a single +64-sample (1.333 ms) insertion between `sweep_w` and
+# `sweep_t`. That one step predicts every reported number (woofer pair
+# straddles it: 32.1 + 64/1_036_800 = 93.8 ppm vs 94.118 observed; tweeter
+# pair sits entirely after it, so 32.097 ppm = the TRUE drift; demeaned
+# residual 32.2 predicted vs 32.357 observed).
+#
+# So the reported `epsilon_ppm` on a glitched capture is an ARTEFACT of the
+# step, not a drift measurement, and "the baselines disagree" says nothing
+# about what actually broke. This estimator names it: fit a single-step
+# timeline model across the located sweeps and report the step's size and
+# where it landed. Diagnostic ONLY — like `per_role_epsilon_ppm` it never
+# gates `glitch_detected`, so no capture's accept/reject changes.
+#
+# Thresholds: a clean capture's integer-located residuals sit well under a
+# sample, so a fitted step this large cannot come from locate noise; the RSS
+# ratio additionally requires the step model to EXPLAIN the capture rather
+# than merely soak up one extra degree of freedom.
+DISCONTINUITY_MIN_SAMPLES = 4.0
+DISCONTINUITY_RSS_RATIO = 0.25
+
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
 DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
@@ -462,6 +493,21 @@ class DriftEstimate:
     per-role drift hardening (G2). Empty for a role with <2 occurrences (an
     old-shaped program's un-repeated tweeter, or any degenerate single-sweep
     role) and for legacy construction sites that predate this field.
+
+    ``glitch_inputs`` (issue #1765) names WHICH of the three bounds tripped —
+    ``epsilon_out_of_bound`` / ``residual_desync`` / ``repeat_level_disagree``
+    — in that fixed order, empty on a clean capture. The verdict is one
+    user-facing reason by design (§5.2's "never a new user-facing code for a
+    capture-glitch class"), but telemetry had no way to tell the three apart,
+    and the drift-flavoured name misled readers into assuming the ppm bound
+    fired when it never has (see DISCONTINUITY_MIN_SAMPLES).
+
+    ``discontinuity_samples`` / ``discontinuity_after_segment`` describe a
+    single discrete timeline step when one explains the located sweeps: its
+    signed size in samples (positive ⇒ everything after it arrived LATE, the
+    2026-07-27 shape) and the segment id it landed AFTER. ``0.0`` / ``""``
+    when no step is resolved — including on a clean capture, where this is
+    the expected value. Diagnostic only; never gates ``glitch_detected``.
     """
 
     epsilon_ppm: float
@@ -470,6 +516,9 @@ class DriftEstimate:
     glitch_detected: bool
     repeat_level_delta_db: float = 0.0
     per_role_epsilon_ppm: Mapping[str, float] = field(default_factory=dict)
+    glitch_inputs: tuple[str, ...] = ()
+    discontinuity_samples: float = 0.0
+    discontinuity_after_segment: str = ""
 
 
 @dataclass(frozen=True)
@@ -1246,6 +1295,72 @@ def _repeat_epsilon(
     return epsilon, eps_int
 
 
+def _locate_discontinuity(
+    program: ExcitationProgram,
+    stimulus_locs: Sequence[SegmentLocation],
+) -> tuple[float, str]:
+    """Fit a single discrete timeline STEP across the located sweeps (#1765).
+
+    Returns ``(step_samples, after_segment_id)``, or ``(0.0, "")`` when no
+    step is resolved. Diagnostic only — see ``DISCONTINUITY_MIN_SAMPLES`` for
+    the hardware forensics this exists to name, and ``DriftEstimate`` for the
+    fields it feeds.
+
+    Model: a sweep scheduled at ``start`` and located at ``located`` satisfies
+    ``located = acoustic_delay[role] + start·(1+ε) + step·[start > cut]``. One
+    constant per ROLE absorbs that role's own acoustic delay (the same reason
+    ``_estimate_drift``'s residual guard demeans per role — a real
+    tweeter-vs-woofer delay must not read as a glitch); ``ε`` is shared, and
+    is fitted here independently of the woofer-pair baseline precisely
+    BECAUSE a step corrupts that baseline. Every interior cut is tried and the
+    best-fitting one wins; a step must clear both a physical-size floor and an
+    explanatory-power ratio to be reported at all.
+
+    Needs enough located sweeps to leave the step model ≥2 degrees of freedom,
+    so an old-shaped 3-sweep program (2 roles ⇒ 4 parameters) resolves nothing
+    and returns ``(0.0, "")`` rather than fitting noise.
+    """
+    ordered = sorted(
+        stimulus_locs, key=lambda loc: program.segment(loc.segment_id).start_sample
+    )
+    roles = sorted({loc.role for loc in ordered}, key=str)
+    # parameters = one per role + shared drift slope + the step itself
+    if len(ordered) < len(roles) + 4:
+        return 0.0, ""
+
+    starts = np.array(
+        [float(program.segment(loc.segment_id).start_sample) for loc in ordered]
+    )
+    located = np.array([float(loc.located_start) for loc in ordered])
+    role_column = {role: idx for idx, role in enumerate(roles)}
+    base = np.zeros((len(ordered), len(roles) + 1))
+    for row, loc in enumerate(ordered):
+        base[row, role_column[loc.role]] = 1.0
+    base[:, -1] = starts
+
+    def fit(design: np.ndarray) -> tuple[np.ndarray, float]:
+        coef, *_ = np.linalg.lstsq(design, located, rcond=None)
+        resid = located - design @ coef
+        return coef, float(resid @ resid)
+
+    _, no_step_rss = fit(base)
+    best_rss = math.inf
+    best_step = 0.0
+    best_after = ""
+    for cut in range(1, len(ordered)):
+        step_column = np.zeros((len(ordered), 1))
+        step_column[cut:, 0] = 1.0
+        coef, rss = fit(np.hstack([base, step_column]))
+        if rss < best_rss:
+            best_rss, best_step, best_after = rss, float(coef[-1]), ordered[cut - 1].segment_id
+
+    if abs(best_step) < DISCONTINUITY_MIN_SAMPLES:
+        return 0.0, ""
+    if best_rss > DISCONTINUITY_RSS_RATIO * no_step_rss:
+        return 0.0, ""
+    return best_step, best_after
+
+
 def _estimate_drift(
     program: ExcitationProgram,
     capture: np.ndarray,
@@ -1364,11 +1479,27 @@ def _estimate_drift(
         if result is not None:
             per_role_epsilon_ppm[role] = result[0] * 1e6
 
-    glitch = (
-        abs(epsilon) * 1e6 > MAX_DRIFT_PPM
-        or max_residual > GLITCH_RESIDUAL_SAMPLES
-        or repeat_level_disagrees
+    # WHICH bound tripped, in a fixed order — the verdict stays one reason
+    # code (§5.2), this is telemetry's disambiguator (#1765).
+    glitch_inputs = tuple(
+        name
+        for name, tripped in (
+            ("epsilon_out_of_bound", abs(epsilon) * 1e6 > MAX_DRIFT_PPM),
+            ("residual_desync", max_residual > GLITCH_RESIDUAL_SAMPLES),
+            ("repeat_level_disagree", repeat_level_disagrees),
+        )
+        if tripped
     )
+    glitch = bool(glitch_inputs)
+
+    # Diagnostic only, never gated — and computed on EVERY capture, not just a
+    # failing one, so the clean corpus carries the same field and a future
+    # bench pass can read its distribution (the `repeat_level_delta_db`
+    # precedent). A clean capture resolves no step and reports 0.0 / "".
+    discontinuity_samples, discontinuity_after = _locate_discontinuity(
+        program, stimulus_locs
+    )
+
     if glitch:
         log_event(
             logger,
@@ -1376,9 +1507,12 @@ def _estimate_drift(
             level=logging.WARNING,
             phase=program.phase,
             program_id=program.program_id,
+            glitch_inputs=",".join(glitch_inputs),
             epsilon_ppm=round(epsilon * 1e6, 2),
             max_residual_samples=round(max_residual, 2),
             repeat_level_delta_db=round(repeat_level_delta_db, 3),
+            discontinuity_samples=round(discontinuity_samples, 2),
+            discontinuity_after_segment=discontinuity_after,
         )
     return DriftEstimate(
         epsilon_ppm=epsilon * 1e6,
@@ -1387,6 +1521,9 @@ def _estimate_drift(
         glitch_detected=glitch,
         repeat_level_delta_db=repeat_level_delta_db,
         per_role_epsilon_ppm=per_role_epsilon_ppm,
+        glitch_inputs=glitch_inputs,
+        discontinuity_samples=discontinuity_samples,
+        discontinuity_after_segment=discontinuity_after,
     )
 
 
@@ -2869,6 +3006,16 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             float(getattr(drift, "repeat_level_delta_db", 0.0)), 3
         )
         out["glitch_detected"] = bool(drift.glitch_detected)
+        # WHICH bound tripped + the discrete step, when one is resolved
+        # (#1765) — a glitched capture's `epsilon_ppm` above is an artefact of
+        # that step, not a drift measurement. See DriftEstimate's docstring.
+        out["glitch_inputs"] = ",".join(getattr(drift, "glitch_inputs", ()) or ())
+        out["discontinuity_samples"] = round(
+            float(getattr(drift, "discontinuity_samples", 0.0)), 3
+        )
+        out["discontinuity_after_segment"] = getattr(
+            drift, "discontinuity_after_segment", "",
+        )
         # Diagnostic-only, never gated (sweep-composition PR-A, #1668) — see
         # DriftEstimate.per_role_epsilon_ppm's docstring.
         for role, eps in (getattr(drift, "per_role_epsilon_ppm", None) or {}).items():

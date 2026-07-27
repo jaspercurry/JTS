@@ -540,6 +540,78 @@ def test_clean_capture_is_not_flagged_as_glitch():
     )
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
     assert not res.glitch_detected
+    # No bound tripped, and genuine drift must NOT be mistaken for a step
+    # (#1765): the estimator runs on every capture, so a clean one is the
+    # false-positive guard for `_locate_discontinuity`.
+    assert res.drift.glitch_inputs == ()
+    assert res.drift.discontinuity_samples == 0.0
+    assert res.drift.discontinuity_after_segment == ""
+
+
+def test_midcapture_splice_is_attributed_to_a_discontinuity_not_drift():
+    """The 2026-07-27 JTS3 hardware glitch (issue #1765), in fixture form.
+
+    A single +64-sample insertion between the first woofer sweep and the first
+    tweeter sweep. The capture must be rejected — but as a discrete timeline
+    STEP, not as clock drift: the reported epsilon is an artefact of the step
+    (the woofer pair straddles it, the tweeter pair does not) and stays well
+    inside ``MAX_DRIFT_PPM``, exactly as the real capture's 94.12 ppm did.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    # Splice in the quiet gap between sweep_w and sweep_t — the window the
+    # hardware forensics localised the real step to.
+    sweep_w = prog.segment("sweep_w")
+    cut = GLOBAL_OFFSET + sweep_w.start_sample + sweep_w.n_samples + 4_000
+    spliced = np.concatenate([cap[:cut], np.zeros(64), cap[cut:]])
+
+    res = analyze_program_capture(
+        prog, spliced, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res.glitch_detected
+    # The residual guard is what actually catches this class — the ppm bound
+    # never fired on either real hardware glitch.
+    assert "residual_desync" in res.drift.glitch_inputs
+    assert "epsilon_out_of_bound" not in res.drift.glitch_inputs
+    assert abs(res.drift.epsilon_ppm) < program_analysis.MAX_DRIFT_PPM
+    # …and the step itself is named, with its size and where it landed.
+    assert res.drift.discontinuity_samples == pytest.approx(64.0, abs=2.0)
+    assert res.drift.discontinuity_after_segment == "sweep_w"
+
+
+def test_discontinuity_reaches_the_durable_diagnostic_summary():
+    """`analysis_diagnostic_summary` is the per-capture record the conductor
+    persists, so the new attribution has to survive the trip (#1765)."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    sweep_w = prog.segment("sweep_w")
+    cut = GLOBAL_OFFSET + sweep_w.start_sample + sweep_w.n_samples + 4_000
+    spliced = np.concatenate([cap[:cut], np.zeros(64), cap[cut:]])
+
+    res = analyze_program_capture(
+        prog, spliced, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    summary = analysis_diagnostic_summary(res)
+    assert summary["glitch_detected"] is True
+    assert "residual_desync" in summary["glitch_inputs"]
+    assert summary["discontinuity_samples"] == pytest.approx(64.0, abs=2.0)
+    assert summary["discontinuity_after_segment"] == "sweep_w"
 
 
 # --------------------------------------------------------------------------- #
