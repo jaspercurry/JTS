@@ -21,8 +21,15 @@ program the Pi rendered at the time; the analysis kit
 ``build_verify_program``, same pilot/prelude constants read **live** from
 ``crossover_v2_flow`` (so this tracks the shipped defaults instead of
 freezing a copy), same ``fc_hz`` from the session's own ``session.json``,
-same cross-correlation offset, same ``_deconvolve_window`` on the
-``sweep_verify`` segment.
+same ``_deconvolve_window`` on the ``sweep_verify`` segment.
+
+The ALIGNMENT is deliberately no longer "same as the kit" (2026-07-27):
+every reader here anchors on the sweep it deconvolves
+(:func:`_sweep_anchor`) rather than cross-correlating the WHOLE composed
+program, because the latter makes an archived reading depend on where every
+other segment sits — so an unrelated composer edit silently re-reads
+historical evidence. See that function for the measurement that motivated
+the change and what it moved.
 """
 from __future__ import annotations
 
@@ -180,6 +187,33 @@ def _offset_of(captured: np.ndarray, reference: np.ndarray) -> int:
     return int(np.argmax(np.abs(np.fft.irfft(cross, n_fft)[:window])))
 
 
+def _sweep_anchor(captured: np.ndarray, segment: Any) -> int:
+    """Where ``segment``'s own stimulus sits inside an archived capture.
+
+    **Why not the whole rendered program** (which is what this reader used
+    until 2026-07-27): the deconvolution only ever needs the SWEEP's position,
+    but correlating the entire composed program against the capture makes that
+    position depend on every other segment's placement — so an unrelated edit
+    to the composer silently re-reads archived evidence. The
+    flow-simplification §2.5 courtesy-tone move is exactly that: relocating a
+    3.6 s prelude from the head of the program to just before the sweep shifted
+    the whole-program correlation peak, and with it the measured tau on the two
+    positions whose echo was marginal.
+
+    Anchoring on the sweep is invariant to composition by construction, and it
+    is DEMONSTRABLY the better alignment rather than merely the more
+    convenient one: on the S0 main leg it moves ``cloud_04`` from
+    tau 319.3 us at confidence **0.294** — the single weakest detection in the
+    S0 report's own table — to 315.7 us at confidence **0.949**, and
+    ``cloud_09`` from 322.6/0.851 to 333.4/0.852. The old numbers were the
+    prelude pulling the correlation off the sweep; these are the sweep.
+    """
+    from jasper.audio_measurement.program import segment_stimulus
+
+    stimulus = np.asarray(segment_stimulus(segment), dtype=np.float64)
+    return _offset_of(captured, stimulus)
+
+
 def s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
     """Era-exact deconvolution of one S0 session directory's positions.
 
@@ -197,7 +231,7 @@ def s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
             pa._deconvolve_window(
                 captured,
                 segment,
-                _offset_of(captured, reference) + segment.start_sample,
+                _sweep_anchor(captured, segment),
                 sample_rate,
             )[0]
             for _index, wav in sorted(groups[position_id])
@@ -249,7 +283,7 @@ def s0_position_captures(
             full_ir, _pre_guard = pa._deconvolve_window(
                 captured,
                 segment,
-                _offset_of(captured, reference) + segment.start_sample,
+                _sweep_anchor(captured, segment),
                 sample_rate,
             )
             response = pa._driver_response(
@@ -319,7 +353,7 @@ def s0_position_driver_response(
         full_ir, _pre_guard = pa._deconvolve_window(
             captured,
             segment,
-            _offset_of(captured, reference) + segment.start_sample,
+            _sweep_anchor(captured, segment),
             sample_rate,
         )
         occurrences.append(

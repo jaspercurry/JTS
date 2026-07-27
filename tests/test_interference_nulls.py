@@ -1107,13 +1107,23 @@ def test_s0_main_leg_identifies_the_8_to_16_khz_family(s0_main_leg):
     Measured 2026-07-25 — the numbers ``RUNG_MATCH_TOLERANCE_SPACINGS``,
     ``LADDER_ARRIVAL_TOLERANCE`` and ``R_AGREEMENT_TOLERANCE`` all quote:
 
-      tau_ladder    298.777 us      arrival tau   321.932 us
-      gap           -7.193 %        r_time        0.3750
-      r_freq        0.3490          agreement     0.0260
+      tau_ladder    298.777 us      arrival tau   321.478 us
+      gap           -7.061 %        r_time        0.3765
+      r_freq        0.3490          agreement     0.0275
 
     The ladder sits **below** the arrival, by more than the 1/6-octave
     smoothing bandwidth would allow — which is exactly why the fit takes tau
     as a free parameter rather than anchoring it on the arrival.
+
+    RE-PINNED 2026-07-27 (flow-simplification PR-U1) for the corpus-reader
+    alignment fix — ``_flat_lin_corpus._sweep_anchor``, which anchors an
+    archived capture on the sweep it deconvolves instead of on the whole
+    composed program. The IDENTIFIED FAMILY is untouched (same three rungs,
+    same centres to 0.1 Hz, same depths to 0.01 dB, same ladder tau); what
+    moved is cloud_04, whose re-aligned read clears the corroboration
+    confidence floor it used to sit below — so the ladder is now corroborated
+    by all ten positions rather than nine, and the arrival-derived numbers
+    shift in the third decimal accordingly.
     """
     report = identify_interference_nulls(
         combine_positions(s0_main_leg), band_hz=S0_BAND_HZ
@@ -1127,20 +1137,23 @@ def test_s0_main_leg_identifies_the_8_to_16_khz_family(s0_main_leg):
     depths = [null.depth_db for null in report.nulls]
     assert depths == pytest.approx([5.89, 6.33, 3.22], abs=0.05)
 
-    assert report.n_corroborating == 9, "cloud_04 sits below the confidence floor"
-    assert report.arrival_tau_us == pytest.approx(321.932, abs=0.05)
-    assert report.arrival_r_time == pytest.approx(0.3750, abs=0.001)
+    # All ten positions corroborate since the 2026-07-27 alignment fix —
+    # cloud_04 used to sit below the confidence floor purely because the
+    # whole-program correlation had mis-anchored its deconvolution window.
+    assert report.n_corroborating == 10
+    assert report.arrival_tau_us == pytest.approx(321.478, abs=0.05)
+    assert report.arrival_r_time == pytest.approx(0.3765, abs=0.001)
     assert report.tau_ladder_us == pytest.approx(298.777, abs=0.05)
 
     # The measured ladder-vs-arrival gap, and that the band admits it while a
     # smoothing-bandwidth window (about +-6 %) would not.
-    assert report.ladder_arrival_gap == pytest.approx(-0.07193, abs=0.0005)
+    assert report.ladder_arrival_gap == pytest.approx(-0.07061, abs=0.0005)
     assert abs(report.ladder_arrival_gap) > 0.06
     assert abs(report.ladder_arrival_gap) < LADDER_ARRIVAL_TOLERANCE
 
     # The plan's acceptance bar for the two-instrument agreement.
     assert report.r_freq == pytest.approx(0.3490, abs=0.001)
-    assert report.agreement == pytest.approx(0.0260, abs=0.001)
+    assert report.agreement == pytest.approx(0.0275, abs=0.001)
     assert report.agreement <= 0.05
 
 
@@ -1437,23 +1450,33 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
     ``R_AGREEMENT_TOLERANCE``, ``DEPTH_CEILING_MARGIN_DB`` and
     ``DEFAULT_MIN_NULL_DEPTH_DB`` come from, so they cannot rot silently.
 
-    Measured 2026-07-25:
+    Measured 2026-07-25, GAP AND AGREEMENT COLUMNS RE-DERIVED 2026-07-27:
 
       grouping        tau_ladder  gap %    worst rung  r_freq  agreement
-      main, 10        298.777     -7.193   0.0872      0.3490  0.0260
-      tweeter ht, 6   298.904     -7.153   0.0818      0.3506  0.0240
-      low, 4          297.961     -7.424   0.0933      0.3374  0.0410
+      main, 10        298.777     -7.061   0.0872      0.3490  0.0275
+      tweeter ht, 6   298.904     -6.671   0.0818      0.3506  0.0242
+      low, 4          297.961     -7.540   0.0933      0.3374  0.0410
       desk edge, 3    298.343     -7.058   0.0926      0.3746  0.0187
+
+    The re-derivation is the corpus-reader alignment fix
+    (``_flat_lin_corpus._sweep_anchor``, flow-simplification PR-U1): archived
+    captures are now anchored on the sweep they deconvolve rather than on the
+    whole composed program. Only ``cloud_04`` and ``cloud_09`` moved, so the
+    three groupings that contain them moved and ``desk_edge`` — which contains
+    neither — is byte-identical, which is the control on the change. The two
+    columns this table exists to calibrate, ``tau_ladder`` and ``worst rung``,
+    did not move at all; the arrival-derived gap and the agreement did, in the
+    third decimal.
     """
     groupings = {
-        "main": (s0_main_leg, 298.777, -0.07193, 0.0872, 0.3490, 0.0260),
+        "main": (s0_main_leg, 298.777, -0.07061, 0.0872, 0.3490, 0.0275),
         "tweeter_height": (
             s0_position_captures(S0_MAIN, only=S0_MAIN_TWEETER_HEIGHT),
-            298.904, -0.07153, 0.0818, 0.3506, 0.0240,
+            298.904, -0.06671, 0.0818, 0.3506, 0.0242,
         ),
         "hand_width_low": (
             s0_position_captures(S0_MAIN, only=S0_MAIN_HAND_WIDTH_LOW),
-            297.961, -0.07424, 0.0933, 0.3374, 0.0410,
+            297.961, -0.07540, 0.0933, 0.3374, 0.0410,
         ),
         "desk_edge": (
             s0_position_captures(S0_DESK_EDGE),
@@ -1503,8 +1526,8 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
     assert RUNG_MATCH_TOLERANCE_SPACINGS / worst_rung_error == pytest.approx(
         1.61, abs=0.05
     )
-    assert worst_gap == pytest.approx(0.07424, abs=0.0005)
-    assert LADDER_ARRIVAL_TOLERANCE / worst_gap == pytest.approx(2.02, abs=0.05)
+    assert worst_gap == pytest.approx(0.07540, abs=0.0005)
+    assert LADDER_ARRIVAL_TOLERANCE / worst_gap == pytest.approx(1.99, abs=0.05)
     assert worst_agreement == pytest.approx(0.0410, abs=0.001)
     assert R_AGREEMENT_TOLERANCE / worst_agreement == pytest.approx(2.44, abs=0.08)
 
