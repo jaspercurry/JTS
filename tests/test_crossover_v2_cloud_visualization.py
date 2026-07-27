@@ -8,10 +8,13 @@ callouts on jts.local.
 This module owns the concerns that are genuinely PR-7's own rather than a
 re-test of what an earlier PR already pins:
 
-* **The page shell** (:mod:`jasper.web.correction_crossover_flow`) carries the
-  container elements ``deploy/assets/correction/js/crossover/main.js``'s
-  ``els`` map and ``cloud.js``'s ``renderCloud`` read by id — a rename on
-  either side is a silent breakage this test catches.
+* **The page shell** (:mod:`jasper.web.correction_crossover_flow`) carries
+  every container element ``deploy/assets/correction/js/crossover/main.js``'s
+  ``els`` map reads by id (``cloud.js`` never calls ``getElementById``
+  itself — it only reads properties off the ``els`` object ``main.js``
+  builds and passes in) — a rename on either side is a silent breakage this
+  test catches by parsing BOTH the HTML and the JS, not asserting one side
+  alone (review N-4).
 * **Hardware-noun discipline over PR-7's OWN authored copy** — the static
   legend/heading/provenance strings this PR wrote, as opposed to the carve-out
   disclosure strings plan PR-6b's ``crossover_v2_flow.carve_outs_by_band``
@@ -55,6 +58,9 @@ _FORBIDDEN_COPY_NOUNS = (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHART_JS = REPO_ROOT / "deploy/assets/correction/js/crossover/chart.js"
 CLOUD_JS = REPO_ROOT / "deploy/assets/correction/js/crossover/cloud.js"
+MAIN_JS = REPO_ROOT / "deploy/assets/correction/js/crossover/main.js"
+
+_GET_ELEMENT_BY_ID_RE = re.compile(r"document\.getElementById\((['\"])([^'\"]+)\1\)")
 
 
 def _assert_hardware_blind(text: str, *, source: str) -> None:
@@ -63,19 +69,72 @@ def _assert_hardware_blind(text: str, *, source: str) -> None:
         assert not re.search(rf"\b{noun}s?\b", lowered), (source, noun)
 
 
+def _is_js_comment_line(line: str) -> bool:
+    """True for whole-line JS comments (mirrors
+    tests/test_web_wizard_conventions.py's own ``_is_comment_line`` — kept as
+    a separate, deliberately tiny local copy rather than a cross-test-module
+    import, the same "coincidence, not a dependency" reasoning as
+    ``_FORBIDDEN_COPY_NOUNS`` above)."""
+    stripped = line.lstrip()
+    return stripped.startswith(("//", "*", "/*"))
+
+
+def _assert_js_shipped_copy_is_hardware_blind(path: Path) -> None:
+    """The hardware-noun rule is about SHIPPED copy — what a household's
+    browser actually renders — not engineering comments explaining why the
+    code does what it does (e.g. this PR's own domain-bounding comments
+    reference "a driver's natural top-octave rolloff" as the reason the
+    y-scale is bounded to the spec's graded range, which is accurate
+    engineering documentation, never sent to a household). Comment lines are
+    excluded before scanning; a hardcoded fallback label on a CODE line
+    still fails this check."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    code_only = "\n".join(line for line in lines if not _is_js_comment_line(line))
+    _assert_hardware_blind(code_only, source=str(path))
+
+
 def test_page_shell_carries_every_element_id_the_renderer_reads():
     """A rename on either side (the Python template or the JS ``els`` map)
     is a silent, untestable-by-JS-alone breakage — cloud.js's ``renderCloud``
     would throw on a null element the first time a real envelope arrived.
-    Pins the exact ids main.js's ``els`` map + cloud.js read."""
-    html = render_page("jts.local").decode()
-    for element_id in (
+
+    Review N-4: parses BOTH sides rather than asserting the HTML side alone
+    — the earlier version of this test would have stayed green through a
+    ``main.js`` rename that orphaned an id in the HTML (or vice versa),
+    because it never looked at the JS at all. This walks
+    ``main.js``'s own ``document.getElementById(...)`` calls (the one place
+    the id-to-property wiring for this whole page lives — ``cloud.js`` never
+    calls ``getElementById`` itself, it only reads properties off the
+    ``els`` object ``main.js`` builds and passes in) and asserts every
+    PR-7-owned id it finds is BOTH read by the JS and rendered by the page,
+    in both directions.
+    """
+    main_js_ids = {
+        match.group(2)
+        for match in _GET_ELEMENT_BY_ID_RE.finditer(MAIN_JS.read_text(encoding="utf-8"))
+    }
+    cloud_ids = {
         "crossover-cloud",
         "crossover-cloud-provenance",
         "crossover-cloud-chart",
         "crossover-cloud-geometry",
         "crossover-cloud-callouts",
-    ):
+        "crossover-cloud-pending",
+        "crossover-chart-legend-measure",
+        "crossover-chart-legend-verify",
+        "crossover-chart-legend-corridor",
+        "crossover-chart-legend-excluded",
+    }
+    # Every PR-7 id this test cares about must actually be one main.js reads
+    # — a typo in either this test's own list or in main.js's
+    # getElementById call would otherwise go uncaught.
+    missing_from_js = cloud_ids - main_js_ids
+    assert not missing_from_js, (
+        f"main.js does not read these ids via getElementById: {missing_from_js}"
+    )
+
+    html = render_page("jts.local").decode()
+    for element_id in cloud_ids:
         assert f'id="{element_id}"' in html, element_id
     # The chart canvas and its wrapper — the room page's own precedent shape
     # (deploy/assets/correction/js/main.js's #chart / .chart-wrap).
@@ -93,12 +152,18 @@ def test_page_shell_carries_every_element_id_the_renderer_reads():
     # The section starts hidden — cloud.js's renderCloud() is what reveals
     # it once real curve data exists; a page that renders it visible by
     # default would flash an empty chart before the first envelope poll
-    # resolves.
+    # resolves. The progressive-legend items (review S-5) and the
+    # verify-pending caption start hidden too — renderCloud() is what shows
+    # each one once its own data exists.
     cloud_section = re.search(
         r'<section id="crossover-cloud"[^>]*>', html,
     )
     assert cloud_section is not None
     assert "hidden" in cloud_section.group(0)
+    for hidden_id in ("crossover-cloud-pending", "crossover-cloud-geometry"):
+        element = re.search(rf'<p id="{hidden_id}"[^>]*>', html)
+        assert element is not None
+        assert "hidden" in element.group(0), hidden_id
 
 
 def test_page_shells_own_authored_copy_is_hardware_blind():
@@ -111,10 +176,15 @@ def test_page_shells_own_authored_copy_is_hardware_blind():
 
 
 def test_new_js_modules_are_hardware_blind():
-    """Same discipline over the two new ES modules' own comments and any
+    """Same discipline over the two new ES modules' own SHIPPED code — any
     literal strings they carry (chart.js draws from server numbers only and
-    has no copy of its own; cloud.js's one literal is the provenance
-    fallback empty string). A future edit that hardcodes a fallback label
-    here would be exactly the device-taxonomy guess the plan forbids."""
+    has no copy of its own; cloud.js's one literal is the verify-pending
+    caption). Scoped to code lines, not comments (see
+    ``_assert_js_shipped_copy_is_hardware_blind``'s own docstring): these
+    modules' engineering comments legitimately discuss driver rolloff
+    behavior when explaining the chart's domain-bounding math, which is
+    accurate documentation, never sent to a household. A future edit that
+    hardcodes a fallback label on a CODE line would still fail this check —
+    exactly the device-taxonomy guess the plan forbids in shipped copy."""
     for path in (CHART_JS, CLOUD_JS):
-        _assert_hardware_blind(path.read_text(encoding="utf-8"), source=str(path))
+        _assert_js_shipped_copy_is_hardware_blind(path)

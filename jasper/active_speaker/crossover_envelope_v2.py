@@ -536,9 +536,13 @@ def _envelope(
         # ``jasper.web.correction_crossover_v2._chart_cloud_status`` and
         # carried here unchanged (mirrors the "cloud" key's copy-through
         # pattern one line up). Kept off the ``cloud`` key above so the
-        # dashboard-sized `/state` and doctor reads never pay for curve
-        # arrays neither consumes. ``None`` before any cloud group has
-        # closed, same rule as ``cloud``.
+        # doctor (which reads only ``cloud``) never has to parse curve-
+        # shaped data mixed into it — this key still rides the SAME envelope
+        # response as ``cloud`` (review S-1: a key split, not a smaller
+        # payload; see ``_chart_cloud_status``'s own docstring for the
+        # measured byte cost and its own re-decimation ceiling, the actual
+        # size mitigation). ``None`` before any cloud group has closed, same
+        # rule as ``cloud``.
         "cloud_chart": _v2(status).get("cloud_chart"),
     }
 

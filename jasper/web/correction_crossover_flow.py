@@ -64,11 +64,12 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
       <canvas id="crossover-cloud-chart" aria-label="Frequency response before and after correction"></canvas>
     </div>
     <ul class="crossover-chart-legend">
-      <li><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--measure"></span>Before correction</li>
-      <li><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--verify"></span>After correction</li>
-      <li><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--corridor"></span>Spec tolerance</li>
-      <li><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Excluded (interference)</li>
+      <li id="crossover-chart-legend-measure"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--measure"></span>Before correction</li>
+      <li id="crossover-chart-legend-verify"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--verify"></span>After correction</li>
+      <li id="crossover-chart-legend-corridor"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--corridor"></span>Spec tolerance</li>
+      <li id="crossover-chart-legend-excluded"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Excluded (interference)</li>
     </ul>
+    <p id="crossover-cloud-pending" class="form-hint" hidden></p>
     <p id="crossover-cloud-geometry" class="form-hint" hidden></p>
     <div id="crossover-cloud-callouts"></div>
   </section>

@@ -6,11 +6,13 @@
 // provenance caption, and geometry guidance (flat-linearization plan PR-7,
 // deploy/assets/correction/js/crossover/cloud.js). The chart's own pixel
 // output is out of reach for this harness (no browser, no canvas — see the
-// module's chart.js sibling, verified on-device instead); this file pins
-// everything that IS a DOM assertion: the exact server-owned copy strings
-// (including the "cannot classify source-fixed vs room-fixed from one
-// session" phrasing) reach the page verbatim, and the section's visibility
-// gates degrade honestly.
+// module's chart.js sibling; CI cannot see pixels, so that verification is
+// still owed to the HW product smoke — docs/flat-linearization-
+// productization-plan.md's PR-7 section, NOT done here or anywhere else in
+// this branch). This file pins everything that IS a DOM assertion: the
+// exact server-owned copy strings (including the "cannot classify
+// source-fixed vs room-fixed from one session" phrasing) reach the page
+// verbatim, and the section's visibility gates degrade honestly.
 //
 //   node tests/js/crossover_cloud_callouts_test.mjs
 
@@ -58,13 +60,23 @@ const els = {
   cloudChart: fixedElement("crossover-cloud-chart"),
   cloudGeometry: fixedElement("crossover-cloud-geometry"),
   cloudCallouts: fixedElement("crossover-cloud-callouts"),
+  cloudPending: fixedElement("crossover-cloud-pending"),
+  legendMeasure: fixedElement("crossover-chart-legend-measure"),
+  legendVerify: fixedElement("crossover-chart-legend-verify"),
+  legendCorridor: fixedElement("crossover-chart-legend-corridor"),
+  legendExcluded: fixedElement("crossover-chart-legend-excluded"),
 };
 
 // The chart's own canvas drawing needs browser APIs (getComputedStyle,
-// devicePixelRatio) this harness does not provide — stubbed as a no-op so
-// renderCloud()'s callout/provenance/geometry logic can be pinned in
+// devicePixelRatio) this harness does not provide — stubbed so
+// renderCloud()'s callout/provenance/geometry/legend logic can be pinned in
 // isolation. chart.js itself is exercised on-device (CI cannot see pixels).
-globalThis.__drawCloudChart = () => {};
+// The stub RECORDS its call so this file can also pin the payload handed to
+// it (review B-1: each phase's OWN reference_db, not one shared value).
+let lastChartPayload = null;
+globalThis.__drawCloudChart = (canvas, payload) => {
+  lastChartPayload = payload;
+};
 
 const here = dirname(fileURLToPath(import.meta.url));
 let source = readFileSync(
@@ -98,6 +110,33 @@ renderCloud(els, {
   cloud_chart: { [CLOUD_VERIFY]: { curve: null }, [CLOUD_MEASURE]: { curve: null } },
 });
 check(els.cloud.hidden === true, "curve explicitly null on both phases: still hidden");
+
+// --- measure-only (review S-5): the pre-correction cloud has closed but
+// verify has not, so there is no verify curve, no spec bands, and no
+// carve-outs yet. The legend must not advertise series that are not on the
+// canvas, and a plain caption should say more is coming. ------------------
+renderCloud(els, {
+  cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+  },
+});
+check(els.cloud.hidden === false, "measure-only: section is visible (something was measured)");
+check(els.legendMeasure.hidden === false, "measure-only: 'Before correction' swatch shown");
+check(els.legendVerify.hidden === true, "measure-only: 'After correction' swatch hidden — not on canvas yet");
+check(els.legendCorridor.hidden === true, "measure-only: 'Spec tolerance' swatch hidden — no spec bands yet");
+check(els.legendExcluded.hidden === true, "measure-only: 'Excluded' swatch hidden — no carve-outs yet");
+check(els.cloudPending.hidden === false, "measure-only: the 'still coming' caption is shown");
+check(
+  els.cloudPending.textContent ===
+    "The after-correction curve appears once the second measurement pass finishes.",
+  "the pending caption is plain-language and hardware-blind, no numeric promise",
+);
+check(els.cloudCallouts.children.length === 0, "measure-only: no callouts (verify has no carve_outs yet)");
+check(
+  lastChartPayload.measureReferenceDb === -27.3 && lastChartPayload.verifyReferenceDb === null,
+  "measure-only: chart payload carries MEASURE's own reference, VERIFY's is null",
+);
 
 // --- a real carve-outs fixture, matching the shipped schema ----------------
 // (jasper.active_speaker.crossover_v2_flow.carve_outs_by_band's exact shape:
@@ -138,20 +177,52 @@ const carveOuts = [
 
 renderCloud(els, {
   cloud: {
+    [CLOUD_MEASURE]: { reference_db: -24.1 },
     [CLOUD_VERIFY]: {
       carve_outs: carveOuts,
       provenance_note: "",
       geometry_guidance: "",
+      reference_db: -27.3,
+      spec_bands: [
+        { f_lo_hz: 250.0, f_hi_hz: 2000.0, tolerance_db: 1.5 },
+        { f_lo_hz: 2000.0, f_hi_hz: 8000.0, tolerance_db: 2.0 },
+        { f_lo_hz: 8000.0, f_hi_hz: 16000.0, tolerance_db: 2.5 },
+      ],
     },
   },
   cloud_chart: {
     [CLOUD_VERIFY]: { curve: { freqs_hz: [100, 200], magnitude_db: [-1, -2] } },
-    [CLOUD_MEASURE]: { curve: null },
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4] } },
   },
 });
 
 check(els.cloud.hidden === false, "curve present: section visible");
 check(els.cloudCallouts.children.length === 2, "two non-empty bands render two callouts (the empty 2-8kHz band is skipped)");
+
+// Review S-5: full state (both curves, spec bands, and carve-outs all
+// present) shows every legend entry — nothing progressively hidden once
+// every series actually has data.
+check(els.legendMeasure.hidden === false, "full state: 'Before correction' shown");
+check(els.legendVerify.hidden === false, "full state: 'After correction' shown");
+check(els.legendCorridor.hidden === false, "full state: 'Spec tolerance' shown (spec bands exist)");
+check(els.legendExcluded.hidden === false, "full state: 'Excluded' shown (carve-outs exist)");
+check(els.cloudPending.hidden === true, "full state: no 'still coming' caption once verify exists");
+
+// Review B-1: each curve is plotted relative to its OWN reference — the
+// payload handed to the chart carries both, never one shared value.
+check(
+  lastChartPayload.measureReferenceDb === -24.1,
+  "chart payload carries MEASURE's own reference_db",
+);
+check(
+  lastChartPayload.verifyReferenceDb === -27.3,
+  "chart payload carries VERIFY's own reference_db (they differ — cut-only correction)",
+);
+check(
+  lastChartPayload.specBands.length === 3 &&
+    lastChartPayload.specBands[2].tolerance_db === 2.5,
+  "chart payload carries the spec bands verbatim, including tolerance_db",
+);
 
 const [screenCard, nullCard] = els.cloudCallouts.children;
 check(screenCard.children[0].textContent === screenDisclosure, "position-screen callout headline is the server string verbatim");

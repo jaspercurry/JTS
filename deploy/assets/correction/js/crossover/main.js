@@ -20,6 +20,11 @@ const els = {
   cloudChart: document.getElementById('crossover-cloud-chart'),
   cloudGeometry: document.getElementById('crossover-cloud-geometry'),
   cloudCallouts: document.getElementById('crossover-cloud-callouts'),
+  cloudPending: document.getElementById('crossover-cloud-pending'),
+  legendMeasure: document.getElementById('crossover-chart-legend-measure'),
+  legendVerify: document.getElementById('crossover-chart-legend-verify'),
+  legendCorridor: document.getElementById('crossover-chart-legend-corridor'),
+  legendExcluded: document.getElementById('crossover-chart-legend-excluded'),
   action: document.getElementById('crossover-action'),
   relay: document.getElementById('crossover-relay'),
   relayStatus: document.getElementById('crossover-relay-status'),
@@ -635,13 +640,21 @@ if (typeof document !== 'undefined') {
 
 // Redraw the before/after chart on resize/orientation change — without this
 // the canvas's drawing surface stays at whatever size it had on the last
-// poll (mirrors deploy/assets/correction/js/main.js's scheduleChartRedraw).
-// Guarded separately from the `document` check above: the small per-feature
-// test harnesses for this page (tests/js/crossover_*_test.mjs) stub
-// `globalThis.document` but not `globalThis.window`.
+// poll. Debounced at 150 ms (review S-4) — mirrors
+// deploy/assets/correction/js/main.js's scheduleChartRedraw() exactly, so a
+// drag-resize does not force a style recalc + canvas buffer realloc +
+// ~1024-point redraw on every intermediate frame. Guarded separately from
+// the `document` check above: the small per-feature test harnesses for this
+// page (tests/js/crossover_*_test.mjs) stub `globalThis.document` but not
+// `globalThis.window`.
 if (typeof window !== 'undefined') {
-  window.addEventListener('resize', redrawCloudChart);
-  window.addEventListener('orientationchange', redrawCloudChart);
+  let cloudResizeTimer = null;
+  function scheduleCloudChartRedraw() {
+    if (cloudResizeTimer) clearTimeout(cloudResizeTimer);
+    cloudResizeTimer = setTimeout(redrawCloudChart, 150);
+  }
+  window.addEventListener('resize', scheduleCloudChartRedraw);
+  window.addEventListener('orientationchange', scheduleCloudChartRedraw);
 }
 
 refresh().catch((error) => {

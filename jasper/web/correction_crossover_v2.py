@@ -761,11 +761,16 @@ def _compact_cloud_status(
 
     The full per-null τ/r/evidence numbers and the decimated curve live in
     the durable state's own ``pipeline`` sub-key (:func:`_cloud_summary`) and
-    the bundle artifact (:func:`bind_cloud_publisher`) — this is the
-    dashboard-sized read, not a third owner of the same data. (PR-7's chart
-    feed is a fourth, separate projection — :func:`_chart_cloud_status` —
-    for exactly the same "never a third owner" reason: the curve is heavy
-    and only the chart needs it.)
+    the bundle artifact (:func:`bind_cloud_publisher`) — this stays a
+    shape-scoped projection, not a third owner of the same data: a consumer
+    that reads ``cloud`` alone (the doctor) never has to parse curve-shaped
+    data mixed into it. PR-7's chart feed is a fourth, separate KEY —
+    :func:`_chart_cloud_status`, riding alongside this one on
+    :func:`crossover_v2_status_block`'s own returned dict — for that same
+    shape-scoping reason. It is **not** a separate endpoint or a smaller HTTP
+    response: see that function's own docstring for the measured byte cost
+    and why the actual size mitigation is its own re-decimation ceiling, not
+    this key split.
 
     ``flatness`` (plan PR-5) is the spec-facing gauge, copied VERBATIM from
     the pipeline's own ``flatness`` key — the reduction
@@ -929,14 +934,46 @@ def _compact_cloud_status(
     return out or None
 
 
+# PR-7's own re-decimation ceiling for the polled chart feed — HALF of
+# crossover_v2_flow.CLOUD_CURVE_MAX_JSON_POINTS (512), the ceiling the
+# pipeline's own ``curve`` key (and the persisted bundle artifact it is
+# copied from) already uses. Review S-1 (2026-07-27) measured the byte cost
+# of NOT re-decimating: 41,161 bytes for both phases' ``cloud_chart`` entries
+# at the full 512-point resolution, on the real S0 ten-position cloud —
+# roughly 82% of an otherwise-typical envelope response, repeated on every
+# ~1.5 s poll while the wizard page is open. Halving to 256 points/phase
+# measured 20,653 bytes on the same corpus (a 49.8% reduction) for a chart
+# drawn into a ~640 px-wide canvas, where 256 points is already well under
+# 1 px/point — visually identical to 512 on the one dimension that matters
+# (this projection's own consumer), so nothing is lost by re-decimating
+# again here rather than raising the ceiling everywhere `curve` is used.
+CHART_CURVE_MAX_JSON_POINTS = 256
+
+
 def _chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     """PR-7's chart-feed projection of the durable ``cloud`` block — the ONE
     thing :func:`_compact_cloud_status` deliberately withholds: the decimated
     combined curve a before/after chart draws. Everything else the chart
     needs (the tolerance corridor's ``reference_db``/``tolerance_db``, the
-    carve-out disclosure once plan PR-6b lands) already rides the compact
-    block, so duplicating it here would be a second, driftable copy of the
-    same numbers — this key carries only what genuinely has no other home.
+    carve-out disclosure) already rides the compact block, so duplicating it
+    here would be a second, driftable copy of the same numbers — this key
+    carries only what genuinely has no other home.
+
+    **What the key-level separation from ``_compact_cloud_status`` does and
+    does not buy (review S-1 correction, 2026-07-27).** Both projections ride
+    the SAME returned dict (:func:`crossover_v2_status_block`) and therefore
+    the same HTTP response — ``/correction/crossover/status`` and this
+    module's envelope both carry ``cloud`` AND ``cloud_chart`` together, so
+    splitting the KEY does **not** shrink that response's byte count (an
+    earlier version of this and two sibling comments overclaimed exactly
+    that — "never pay" was wrong for this endpoint, which does carry both).
+    What the split buys is narrower: a consumer that reads ONLY ``cloud`` —
+    the doctor (:func:`~jasper.cli.doctor.correction.check_crossover_v2_cloud_pipeline`),
+    and any future reader of the compact projection alone — never has to
+    parse or skip over curve-shaped data mixed into that key's own shape.
+    See :data:`CHART_CURVE_MAX_JSON_POINTS` above for the actual byte-cost
+    mitigation (halving this key's own resolution), which is the fix that
+    matters for the endpoint's total size.
 
     Same per-phase presence and ``None``-means-unavailable rules as
     :func:`_compact_cloud_status` (mirrored rather than shared because the two
@@ -960,9 +997,11 @@ def _chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
                 freqs = raw_curve.get("freqs_hz")
                 mags = raw_curve.get("magnitude_db")
                 if isinstance(freqs, list) and isinstance(mags, list):
+                    n = min(len(freqs), len(mags))
+                    step = max(1, n // CHART_CURVE_MAX_JSON_POINTS)
                     curve = {
-                        "freqs_hz": [_finite(f) for f in freqs],
-                        "magnitude_db": [_finite(m) for m in mags],
+                        "freqs_hz": [_finite(f) for f in freqs[:n:step]],
+                        "magnitude_db": [_finite(m) for m in mags[:n:step]],
                     }
         out[str(phase)] = {"curve": curve}
     return out or None
@@ -1001,8 +1040,12 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "cloud": _compact_cloud_status(
             (state or {}).get("cloud"), current_session_id=session_id,
         ),
-        # PR-7: the chart-only curve feed, kept off the compact block above
-        # so /state and the doctor never pay for data they do not read.
+        # PR-7: the chart-only curve feed, kept off the ``cloud`` key above
+        # so the doctor (which reads only ``cloud``) never has to parse
+        # curve-shaped data mixed into it. This DOES ride the same returned
+        # dict — and so the same HTTP response — as ``cloud``; see
+        # _chart_cloud_status's own docstring for the measured byte cost and
+        # its own re-decimation ceiling, which is the actual size mitigation.
         "cloud_chart": _chart_cloud_status((state or {}).get("cloud")),
     }
     return block
@@ -1143,8 +1186,15 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
             # ``persist_conductor_state``'s own carry-forward branch below,
             # which copies this whole per-phase dict verbatim — so a stamp
             # written here survives every re-arm that does not itself close
-            # a fresh group, without a second write site.
-            "session_id": str(conductor.session_id),
+            # a fresh group, without a second write site. Guarded the same
+            # way as ``pipeline`` above (review N-3): a conductor double
+            # built only to exercise this function need not carry every
+            # attribute a real one does, and ``_compact_cloud_status``
+            # already treats a missing/non-string stamp as unknown
+            # provenance, never a fabricated one.
+            "session_id": (
+                str(conductor.session_id) if hasattr(conductor, "session_id") else None
+            ),
         }
     return out or None
 

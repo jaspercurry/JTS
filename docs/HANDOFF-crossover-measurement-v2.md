@@ -649,6 +649,59 @@ entry (3162 of 4056 JSON bytes on the S0 ten-position cloud, measured
 which also pins the copy discipline (no hardware nouns; the `position_invariant`
 wording names travels-with-the-speaker OR a fixed path, never one of the two).
 
+*The before/after chart and anomaly callouts* (flat-linearization plan PR-7).
+`jts.local`'s `/correction/` crossover page renders the gauge and the
+carve-outs above rather than only disclosing them in `expert_details` text:
+`deploy/assets/correction/js/crossover/chart.js` draws the combined cloud
+curve for both `cloud_measure` and `cloud_verify` on one canvas, and
+`cloud.js` renders the carve-outs' `disclosure`/`expert` strings verbatim as
+callout cards (server-owned copy; the frontend never phrases anomaly text
+itself). Two payload additions feed it: `_compact_cloud_status` gained
+`reference_db` (report-level) and `spec_bands[].tolerance_db` — both were
+already computed by `evaluate_flat_spec`, only not previously projected —
+and a new, separate `_chart_cloud_status`/`cloud_chart` key carries the
+decimated curve at its OWN 256-point ceiling (half of
+`crossover_v2_flow.CLOUD_CURVE_MAX_JSON_POINTS`'s persisted-artifact
+resolution, since this key rides every ~1.5 s envelope poll — measured
+20,653 bytes for both phases on the S0 corpus, against 41,161 unhalved).
+Kept off the compact `cloud` key so the doctor (which reads only `cloud`)
+never has to parse curve-shaped data mixed into it; it still rides the same
+envelope response as `cloud`, so the split does not reduce that response's
+byte cost, only its shape for a `cloud`-only reader.
+
+**The chart plots each phase relative to its OWN `reference_db`, never a
+shared one.** Linearization is cut-only, so `cloud_verify`'s reference is
+always at or below `cloud_measure`'s; an early draft plotted both curves in
+absolute dB against `cloud_verify`'s reference alone, which displaced the
+whole "Before" curve by a level change the spec never grades, under a
+corridor that was not testing what it claimed to (caught by review,
+2026-07-27). The corridor is `0 ± tolerance_db` per band in this deviation
+frame — the same window for both curves — with the y-domain bounded to the
+spec's own GRADED frequency range (derived from `specBands`, e.g.
+250–16,000 Hz, never hardcoded): the curve's worst point sits inside
+`flat_spec.BEST_EFFORT_ABOVE_HZ`'s "never specced" region on real hardware
+data (a driver's natural top-octave rolloff), and letting an ungraded
+extreme set the y-scale reproduces the same failure one band further out.
+The wider displayed range (20 Hz–20 kHz) is still drawn at full resolution
+and canvas-clipped where it exceeds that bound.
+
+**Provenance.** A re-armed verify-only session can carry a `cloud` group
+forward from an earlier session verbatim (see "Session binding" above) —
+`_cloud_summary` stamps each closed group with its producing session id,
+and `_compact_cloud_status` compares it against the caller's current
+session to render a `provenance_note` (empty unless the data is genuinely
+stale, mirroring `_geometry_guidance_copy`'s own "silent unless actionable"
+rule). Geometry's own "spread the mic further" guidance
+(`geometry_guidance`) renders as a plain caption; `thin_evidence` softens
+the copy server-side, so the frontend never branches on it. Contract tests:
+[`tests/test_crossover_v2_cloud_visualization.py`](../tests/test_crossover_v2_cloud_visualization.py)
+(page-shell ids, hardware-noun discipline over this PR's own authored copy)
+and [`tests/js/crossover_cloud_callouts_test.mjs`](../tests/js/crossover_cloud_callouts_test.mjs)
+(rendered-HTML pins for the callout/provenance/geometry text, including the
+`position_invariant` cannot-classify phrasing, verbatim). The chart's own
+pixel rendering is verified on-device only — CI cannot see pixels — and is
+still owed to the HW product smoke below.
+
 *The gate-validity clamp.* `cloud_validity_floor_hz` takes the WORST
 (highest) reflection-gate floor across the group's positions — the same
 "worse of the two" rule `_measure_validity_floor_hz` applies to the driver

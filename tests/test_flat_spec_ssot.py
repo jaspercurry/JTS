@@ -467,11 +467,27 @@ def _assert_one_number_everywhere(views: dict) -> None:
     # max_deviation_db/passed) — this pins the reference alongside it.
     assert views["state_reference_db"] == spec["reference_db"]
     assert views["envelope_reference_db"] == spec["reference_db"]
-    # The chart's decimated curve is copied byte-for-byte from the pipeline's
-    # own ``curve`` key onto BOTH the chart-feed compact projection and the
-    # envelope key that carries it — never re-decimated downstream.
-    assert views["state_cloud_chart_curve"] == views["pipeline_curve"]
-    assert views["envelope_cloud_chart_curve"] == views["pipeline_curve"]
+    # Review S-1 (2026-07-27): the chart feed re-decimates the pipeline's own
+    # 512-point ``curve`` down to its own 256-point ceiling
+    # (``_chart_cloud_status``'s own ``CHART_CURVE_MAX_JSON_POINTS`` —
+    # measured 41,161 bytes for both phases at the full resolution, halved to
+    # 20,653 by this re-decimation), so it is no longer byte-identical to the
+    # pipeline curve — but every point it DOES carry must still be an actual
+    # point of the pipeline curve, at the same stride
+    # ``_chart_cloud_status`` computes, never an interpolation or a
+    # re-derivation.
+    pipeline_freqs = views["pipeline_curve"]["freqs_hz"]
+    pipeline_mags = views["pipeline_curve"]["magnitude_db"]
+    n = len(pipeline_freqs)
+    step = max(1, n // 256)
+    expected_chart_curve = {
+        "freqs_hz": pipeline_freqs[:n:step],
+        "magnitude_db": pipeline_mags[:n:step],
+    }
+    assert views["state_cloud_chart_curve"] == expected_chart_curve
+    # The envelope carries the chart-feed projection through unchanged — one
+    # re-decimation, not two.
+    assert views["envelope_cloud_chart_curve"] == views["state_cloud_chart_curve"]
 
 
 def test_the_gauge_the_ledger_the_spec_report_and_verify_are_one_number(monkeypatch):
