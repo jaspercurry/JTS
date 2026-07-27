@@ -56,6 +56,24 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-review-body"></div>
   </section>
 
+  <section id="crossover-cloud" class="info-card" aria-label="Before and after measurement" hidden>
+    <p class="eyebrow">Before and after</p>
+    <h2 class="section__title">What the microphone heard</h2>
+    <p id="crossover-cloud-provenance" class="form-hint"></p>
+    <div class="crossover-chart-wrap">
+      <canvas id="crossover-cloud-chart" aria-label="Frequency response before and after correction"></canvas>
+    </div>
+    <ul class="crossover-chart-legend">
+      <li id="crossover-chart-legend-measure"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--measure"></span>Before correction</li>
+      <li id="crossover-chart-legend-verify"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--verify"></span>After correction</li>
+      <li id="crossover-chart-legend-corridor"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--corridor"></span>Spec tolerance</li>
+      <li id="crossover-chart-legend-excluded"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Excluded (interference)</li>
+    </ul>
+    <p id="crossover-cloud-pending" class="form-hint" hidden></p>
+    <p id="crossover-cloud-geometry" class="form-hint" hidden></p>
+    <div id="crossover-cloud-callouts"></div>
+  </section>
+
   <section class="info-card" aria-live="polite">
     <div id="crossover-action" class="measurement-row__actions"></div>
     <div id="crossover-relay" hidden>

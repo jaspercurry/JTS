@@ -725,15 +725,52 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     return PHASE_DONE
 
 
-def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
+def _provenance_note(measured_this_session: bool | None) -> str:
+    """PR-7's household-facing provenance caption — one owner of the copy, so
+    the chart never has to (or may) phrase this itself.
+
+    A re-armed session's ``persist_conductor_state`` can carry a group's
+    ``cloud`` entry forward from an EARLIER session verbatim (see
+    ``_cloud_summary``'s own comment and the B1 fix above it) — so
+    ``/state.crossover_v2.cloud`` and the envelope can describe a measurement
+    that did not happen in the session currently open on the page. Silently
+    charting it as fresh would be exactly the kind of measured-narrow-
+    stated-wide claim this program exists to avoid.
+
+    ``""`` for both "definitely current" and "unknown" (a durable state
+    written before this marker existed, or the whole entry unavailable) —
+    mirrors :func:`~jasper.active_speaker.crossover_v2_flow._geometry_guidance_copy`'s
+    "empty string when nothing to say" rule rather than asserting freshness
+    it cannot prove. Only the one state worth interrupting the household
+    for — data that is KNOWN to be stale — gets a sentence.
+    """
+    if measured_this_session is False:
+        return (
+            "This chart is from a previous session's measurement — "
+            "re-measure to see this session's own result."
+        )
+    return ""
+
+
+def _compact_cloud_status(
+    cloud_state: Any, *, current_session_id: str | None = None,
+) -> dict[str, Any] | None:
     """PR-4's ``/state`` projection of the durable ``cloud`` block — compact:
     per band, only ``passed``; the excluded-interval COUNT, not the
     intervals; the geometry verdict's two household-relevant bits.
 
     The full per-null τ/r/evidence numbers and the decimated curve live in
     the durable state's own ``pipeline`` sub-key (:func:`_cloud_summary`) and
-    the bundle artifact (:func:`bind_cloud_publisher`) — this is the
-    dashboard-sized read, not a third owner of the same data.
+    the bundle artifact (:func:`bind_cloud_publisher`) — this stays a
+    shape-scoped projection, not a third owner of the same data: a consumer
+    that reads ``cloud`` alone (the doctor) never has to parse curve-shaped
+    data mixed into it. PR-7's chart feed is a fourth, separate KEY —
+    :func:`_chart_cloud_status`, riding alongside this one on
+    :func:`crossover_v2_status_block`'s own returned dict — for that same
+    shape-scoping reason. It is **not** a separate endpoint or a smaller HTTP
+    response: see that function's own docstring for the measured byte cost
+    and why the actual size mitigation is its own re-decimation ceiling, not
+    this key split.
 
     ``flatness`` (plan PR-5) is the spec-facing gauge, copied VERBATIM from
     the pipeline's own ``flatness`` key — the reduction
@@ -746,6 +783,13 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     when the pipeline never became available — the same "never a fabricated
     clean reading" rule as ``excluded_interval_count`` below.
 
+    ``reference_db`` (PR-7) rides alongside ``flatness`` for the same reason
+    ``spec_bands`` carries ``max_deviation_db``: it is the one report-level
+    number a chart needs to draw the tolerance corridor
+    (``reference_db ± tolerance_db`` per band) and PR-5 already computed it
+    once, inside ``spec`` — copied verbatim, never re-derived. ``None`` under
+    the same unavailable-pipeline rule as everything else here.
+
     ``validity_floor_hz`` rides alongside it for one reason: without it a
     live surface cannot tell WHY ``flatness.n_excluded`` is large. The
     interference instruments and the gate-validity clamp both remove
@@ -756,8 +800,9 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     no position reported a usable floor or the pipeline never ran; it never
     means zero.
 
-    ``spec_bands`` carries each band's own ``max_deviation_db`` (N-3): the
-    per-band numbers are what a chart labels, and their absence from the
+    ``spec_bands`` carries each band's own ``max_deviation_db`` (N-3) AND
+    ``tolerance_db`` (PR-7 — the corridor half-width a chart draws per band):
+    the per-band numbers are what a chart labels, and their absence from the
     only projection a page reads is exactly the pressure that grows a second
     derivation somewhere downstream. Copied from the report like everything
     else here — this stays a projection, never an owner.
@@ -801,6 +846,17 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     ``_close_cloud_group``) — a locked group's "spread the mic further"
     guidance must survive an unrelated downstream DSP failure, not disappear
     with it.
+
+    ``provenance_note`` (PR-7) is the household-facing half of the same
+    marker: ``current_session_id`` is the session the CALLER currently has
+    open (``crossover_v2_status_block``'s own ``state["session_id"]``);
+    ``_cloud_summary`` now stamps each phase's dict with the session that
+    actually produced it. When the two disagree — a group carried forward
+    from an earlier session (see that function's own comment) — the note
+    says so via :func:`_provenance_note`; a durable state written before the
+    stamp existed (no ``session_id`` on the block) reads as unknown, not
+    stale, so an upgrade does not manufacture a false "this is old" warning
+    for data nobody ever mis-attributed.
     """
     from jasper.active_speaker.crossover_v2_flow import _geometry_guidance_copy
 
@@ -814,6 +870,10 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
         geometry = geometry if isinstance(geometry, Mapping) else {}
         pipeline = block.get("pipeline")
         pipeline = pipeline if isinstance(pipeline, Mapping) else {}
+        produced_by = block.get("session_id")
+        measured_this_session: bool | None = None
+        if isinstance(produced_by, str) and produced_by and current_session_id:
+            measured_this_session = produced_by == current_session_id
         entry: dict[str, Any] = {
             "geometry_locked": bool(geometry.get("locked")),
             "thin_evidence": bool(geometry.get("thin_evidence")),
@@ -822,8 +882,10 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             "overall_passed": None,
             "excluded_interval_count": None,
             "flatness": None,
+            "reference_db": None,
             "validity_floor_hz": None,
             "carve_outs": [],
+            "provenance_note": _provenance_note(measured_this_session),
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")
@@ -835,11 +897,13 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
                     "f_hi_hz": b.get("f_hi_hz"),
                     "passed": b.get("passed"),
                     "max_deviation_db": b.get("max_deviation_db"),
+                    "tolerance_db": b.get("tolerance_db"),
                 }
                 for b in bands
                 if isinstance(b, Mapping)
             ] if isinstance(bands, list) else []
             entry["overall_passed"] = spec.get("overall_passed")
+            entry["reference_db"] = _finite(spec.get("reference_db"))
             merged = pipeline.get("merged_excluded_bands_hz")
             entry["excluded_interval_count"] = (
                 len(merged) if isinstance(merged, list) else 0
@@ -870,6 +934,79 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     return out or None
 
 
+# PR-7's own re-decimation ceiling for the polled chart feed — HALF of
+# crossover_v2_flow.CLOUD_CURVE_MAX_JSON_POINTS (512), the ceiling the
+# pipeline's own ``curve`` key (and the persisted bundle artifact it is
+# copied from) already uses. Review S-1 (2026-07-27) measured the byte cost
+# of NOT re-decimating: 41,161 bytes for both phases' ``cloud_chart`` entries
+# at the full 512-point resolution, on the real S0 ten-position cloud —
+# roughly 82% of an otherwise-typical envelope response, repeated on every
+# ~1.5 s poll while the wizard page is open. Halving to 256 points/phase
+# measured 20,653 bytes on the same corpus (a 49.8% reduction) for a chart
+# drawn into a ~640 px-wide canvas, where 256 points is already well under
+# 1 px/point — visually identical to 512 on the one dimension that matters
+# (this projection's own consumer), so nothing is lost by re-decimating
+# again here rather than raising the ceiling everywhere `curve` is used.
+CHART_CURVE_MAX_JSON_POINTS = 256
+
+
+def _chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
+    """PR-7's chart-feed projection of the durable ``cloud`` block — the ONE
+    thing :func:`_compact_cloud_status` deliberately withholds: the decimated
+    combined curve a before/after chart draws. Everything else the chart
+    needs (the tolerance corridor's ``reference_db``/``tolerance_db``, the
+    carve-out disclosure) already rides the compact block, so duplicating it
+    here would be a second, driftable copy of the same numbers — this key
+    carries only what genuinely has no other home.
+
+    **What the key-level separation from ``_compact_cloud_status`` does and
+    does not buy (review S-1 correction, 2026-07-27).** Both projections ride
+    the SAME returned dict (:func:`crossover_v2_status_block`) and therefore
+    the same HTTP response — ``/correction/crossover/status`` and this
+    module's envelope both carry ``cloud`` AND ``cloud_chart`` together, so
+    splitting the KEY does **not** shrink that response's byte count (an
+    earlier version of this and two sibling comments overclaimed exactly
+    that — "never pay" was wrong for this endpoint, which does carry both).
+    What the split buys is narrower: a consumer that reads ONLY ``cloud`` —
+    the doctor (:func:`~jasper.cli.doctor.correction.check_crossover_v2_cloud_pipeline`),
+    and any future reader of the compact projection alone — never has to
+    parse or skip over curve-shaped data mixed into that key's own shape.
+    See :data:`CHART_CURVE_MAX_JSON_POINTS` above for the actual byte-cost
+    mitigation (halving this key's own resolution), which is the fix that
+    matters for the endpoint's total size.
+
+    Same per-phase presence and ``None``-means-unavailable rules as
+    :func:`_compact_cloud_status` (mirrored rather than shared because the two
+    projections serve different consumers and have no other logic in common):
+    a phase key is present whenever the durable block has one, ``curve`` is
+    ``None`` until the pipeline becomes available, and it is never a
+    fabricated empty curve.
+    """
+    if not isinstance(cloud_state, Mapping):
+        return None
+    out: dict[str, Any] = {}
+    for phase, block in cloud_state.items():
+        if not isinstance(block, Mapping):
+            continue
+        pipeline = block.get("pipeline")
+        pipeline = pipeline if isinstance(pipeline, Mapping) else {}
+        curve = None
+        if pipeline.get("available") is True:
+            raw_curve = pipeline.get("curve")
+            if isinstance(raw_curve, Mapping):
+                freqs = raw_curve.get("freqs_hz")
+                mags = raw_curve.get("magnitude_db")
+                if isinstance(freqs, list) and isinstance(mags, list):
+                    n = min(len(freqs), len(mags))
+                    step = max(1, n // CHART_CURVE_MAX_JSON_POINTS)
+                    curve = {
+                        "freqs_hz": [_finite(f) for f in freqs[:n:step]],
+                        "magnitude_db": [_finite(m) for m in mags[:n:step]],
+                    }
+        out[str(phase)] = {"curve": curve}
+    return out or None
+
+
 def crossover_v2_status_block() -> dict[str, Any] | None:
     """The ``status["crossover_v2"]`` block.
 
@@ -879,6 +1016,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
     draining before a new session).
     """
     state = load_v2_state()
+    session_id = (state or {}).get("session_id")
     try:
         needs_recovery = bool(session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
@@ -891,12 +1029,24 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "apply_blocked": (state or {}).get("apply_blocked"),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
-        "session_id": (state or {}).get("session_id"),
+        "session_id": session_id,
         # Flat-linearization plan PR-4: the compact per-group honesty
         # verdict. ``None`` when no group has closed yet — never a fabricated
         # "clean" reading (mirrors every other honesty-instrument field's own
-        # "not yet run" rule).
-        "cloud": _compact_cloud_status((state or {}).get("cloud")),
+        # "not yet run" rule). ``current_session_id`` lets the compact block
+        # tell a fresh group apart from one carried forward from an earlier
+        # session (PR-7's provenance marker) — see ``_cloud_summary``'s and
+        # ``_compact_cloud_status``'s own comments.
+        "cloud": _compact_cloud_status(
+            (state or {}).get("cloud"), current_session_id=session_id,
+        ),
+        # PR-7: the chart-only curve feed, kept off the ``cloud`` key above
+        # so the doctor (which reads only ``cloud``) never has to parse
+        # curve-shaped data mixed into it. This DOES ride the same returned
+        # dict — and so the same HTTP response — as ``cloud``; see
+        # _chart_cloud_status's own docstring for the measured byte cost and
+        # its own re-decimation ceiling, which is the actual size mitigation.
+        "cloud_chart": _chart_cloud_status((state or {}).get("cloud")),
     }
     return block
 
@@ -1027,6 +1177,23 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
                 conductor.group_cloud_result(phase)
                 if hasattr(conductor, "group_cloud_result")
                 else None
+            ),
+            # PR-7: the PRODUCING session's id, stamped once here (not
+            # re-derived downstream) — the provenance marker
+            # ``_compact_cloud_status`` needs to tell "measured in the
+            # currently active session" apart from "carried forward from an
+            # earlier one". Carried forward unconditionally by
+            # ``persist_conductor_state``'s own carry-forward branch below,
+            # which copies this whole per-phase dict verbatim — so a stamp
+            # written here survives every re-arm that does not itself close
+            # a fresh group, without a second write site. Guarded the same
+            # way as ``pipeline`` above (review N-3): a conductor double
+            # built only to exercise this function need not carry every
+            # attribute a real one does, and ``_compact_cloud_status``
+            # already treats a missing/non-string stamp as unknown
+            # provenance, never a fabricated one.
+            "session_id": (
+                str(conductor.session_id) if hasattr(conductor, "session_id") else None
             ),
         }
     return out or None

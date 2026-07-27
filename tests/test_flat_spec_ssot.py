@@ -46,7 +46,10 @@ from jasper.active_speaker.flat_spec import (
     spec_flatness_gauge,
 )
 from jasper.audio_measurement.spatial_combine import PositionCapture, combine_positions
-from jasper.web.correction_crossover_v2 import _compact_cloud_status
+from jasper.web.correction_crossover_v2 import (
+    _chart_cloud_status,
+    _compact_cloud_status,
+)
 
 from tests import _flat_lin_corpus as corpus
 
@@ -368,6 +371,7 @@ def _walk_every_surface(result, monkeypatch) -> dict:
     — rather than by handing it a pre-built block.
     """
     compact = _compact_cloud_status(_durable_cloud_block(result))
+    chart = _chart_cloud_status(_durable_cloud_block(result))
     envelope = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -375,6 +379,7 @@ def _walk_every_surface(result, monkeypatch) -> dict:
             "phase": "done",
             "verify": {"outcome": "pass"},
             "cloud": compact,
+            "cloud_chart": chart,
         },
     })
 
@@ -400,6 +405,15 @@ def _walk_every_surface(result, monkeypatch) -> dict:
         "doctor_detail": doctor.detail,
         "spec": result["spec"],
         "pipeline_validity_floor_hz": result.get("validity_floor_hz"),
+        # PR-7: the tolerance-corridor reference, and the chart's own curve
+        # feed — same "one construction, copied everywhere" contract.
+        "state_reference_db": compact[PHASE_CLOUD_VERIFY]["reference_db"],
+        "envelope_reference_db": envelope["cloud"][PHASE_CLOUD_VERIFY]["reference_db"],
+        "state_cloud_chart_curve": chart[PHASE_CLOUD_VERIFY]["curve"],
+        "envelope_cloud_chart_curve": (
+            envelope["cloud_chart"][PHASE_CLOUD_VERIFY]["curve"]
+        ),
+        "pipeline_curve": result.get("curve"),
     }
 
 
@@ -446,6 +460,34 @@ def _assert_one_number_everywhere(views: dict) -> None:
 
     # N-1: the doctor quotes the same worst deviation, to the digit.
     assert f"worst={gauge['max_db']:+.2f}dB" in views["doctor_detail"]
+
+    # PR-7: the before/after chart's own inputs are the SAME report, not a
+    # fourth derivation. reference_db is the corridor's center line;
+    # spec_bands already carries tolerance_db (asserted above via
+    # max_deviation_db/passed) — this pins the reference alongside it.
+    assert views["state_reference_db"] == spec["reference_db"]
+    assert views["envelope_reference_db"] == spec["reference_db"]
+    # Review S-1 (2026-07-27): the chart feed re-decimates the pipeline's own
+    # 512-point ``curve`` down to its own 256-point ceiling
+    # (``_chart_cloud_status``'s own ``CHART_CURVE_MAX_JSON_POINTS`` —
+    # measured 41,161 bytes for both phases at the full resolution, halved to
+    # 20,653 by this re-decimation), so it is no longer byte-identical to the
+    # pipeline curve — but every point it DOES carry must still be an actual
+    # point of the pipeline curve, at the same stride
+    # ``_chart_cloud_status`` computes, never an interpolation or a
+    # re-derivation.
+    pipeline_freqs = views["pipeline_curve"]["freqs_hz"]
+    pipeline_mags = views["pipeline_curve"]["magnitude_db"]
+    n = len(pipeline_freqs)
+    step = max(1, n // 256)
+    expected_chart_curve = {
+        "freqs_hz": pipeline_freqs[:n:step],
+        "magnitude_db": pipeline_mags[:n:step],
+    }
+    assert views["state_cloud_chart_curve"] == expected_chart_curve
+    # The envelope carries the chart-feed projection through unchanged — one
+    # re-decimation, not two.
+    assert views["envelope_cloud_chart_curve"] == views["state_cloud_chart_curve"]
 
 
 def test_the_gauge_the_ledger_the_spec_report_and_verify_are_one_number(monkeypatch):
@@ -496,6 +538,10 @@ def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():
     assert entry["flatness"] is None
     assert entry["overall_passed"] is None
     assert entry["excluded_interval_count"] is None
+    # PR-7: same honesty rule for the corridor reference and the chart curve.
+    assert entry["reference_db"] is None
+    chart = _chart_cloud_status(_durable_cloud_block(result))
+    assert chart[PHASE_CLOUD_VERIFY]["curve"] is None
     envelope = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},

@@ -973,9 +973,14 @@ executing session updates per-PR status here as merges land.*
 *Ladder status: **PR-2 merged as #1749**; **PR-1 merged as #1751**;
 **PR-6a merged as #1753** (the owner-approved fit-side fast-track
 described below); **PR-3b merged as #1755**; **PR-4 merged as #1756**
-(closing issue #1742); **PR-5 merged as #1757**; **PR-6b** ships the
-carve-out disclosure and reports its blocked half (see its own paragraph
-below). **PR-3a** raises the relay capture-plan cap 8 → 32
+(closing issue #1742); **PR-5 merged as #1757**; **PR-6b merged as #1760**
+— both halves: the carve-out disclosure (own paragraph below) AND the
+blocker it hit, resolved by the owner's timing-move decision (the fit now
+runs at CLOUD_MEASURE group close instead of MEASURE accept), not left
+reported-and-blocked; **PR-7** (this branch — see its own paragraph below
+for the two review-confirmed deviations from its section's literal
+wording) not yet merged at time of writing. **PR-3a** raises the relay
+capture-plan cap 8 → 32
 and ships a **mechanism deviation** from its pre-registered design
 contract: the gate is the Worker's own `GET /capabilities` document
 (absence = pre-capacity relay), not the negotiated protocol version,
@@ -1370,5 +1375,99 @@ arrival the apply already sat one capture before VERIFY and that budget shipped;
 what the cloud briefly did was insert nine captures of slack in front of it, so
 the hold stopped mattering. The move restores the arrangement the budget was
 derived for rather than newly stressing it.*
+
+*PR-7 (2026-07-27): the before/after visualization + anomaly callouts land.
+Rebased onto PR-6b/#1760 mid-implementation (it merged while this branch was
+in progress) to consume the real `carve_outs_by_band` schema rather than a
+reference-worktree approximation — verified byte-for-byte identical once
+merged, zero rendering-code changes needed. Two deviations from the
+section's literal wording, both raised as judgment calls in the
+implementer's own report and independently confirmed by review rather than
+silently taken.
+
+**(a) `json_island` is not used.** The section's "decimated data ships in
+the envelope payload via `json_island`" is self-contradictory on inspection:
+`json_island` is the mechanism for embedding untrusted JSON inside a
+server-rendered `<script>` element at PAGE LOAD (guarding the HTML-breakout
+risk of an inline island); this page's architecture — established before
+this PR, unchanged by it — ships cloud/curve/carve-out data through the
+POLLED `GET /correction/crossover/envelope` JSON endpoint (the same pattern
+the room page's own chart already uses for its curve data), which carries
+no inline-embedding step for `json_island` to guard. A negative-guard test
+pins this non-vacuously (asserting zero `type="application/json"`
+occurrences across the page's module graph, not merely that the helper was
+never called).
+
+**(b) `analysis.before_after_delta`/`before_after_fill_segments` are not
+reused.** The section's "reuse … where they fit" is conditional, and they
+do not: that machinery grades ONE fixed-band EXTERNAL target curve (the
+room correction's modal PEQ target) against measured/predicted, while the
+flat spec has no external target at all — each phase's own `reference_db`
+is self-referential (a power mean of its OWN curve), spans three
+differently-toleranced bands, and the corridor it licenses is
+`0 ± tolerance_db` in the deviation frame, not a value external to the
+curve being graded. The chart draws the corridor directly from disclosed
+`reference_db`/`tolerance_db` instead — confirmed by a full arithmetic
+inventory to derive no new spec-facing number (every screen quantity is
+either copied verbatim or the exact subtraction `evaluate_flat_spec`
+itself already documents).
+
+Also confirmed on review: the corridor's derivation-free arithmetic (full
+inventory); VERIFY-only sourcing of the corridor/callouts/hatching (MEASURE
+exists to be out of spec and never earns one); and keeping the shared
+`h()`/`escapeHtml` helpers out of the two new ES modules (every string
+lands via `textContent`, verified line-by-line as XSS-safe by construction
+either way; avoiding `h()` kept `cloud.js`'s only import a same-directory
+relative one, simplifying its Node harness). The provenance marker
+(`_cloud_summary` stamps each closed group with its producing session id;
+`_compact_cloud_status` compares it to the caller's current session and
+renders a plain caption only for the genuinely-stale case) was the
+review's own pick for the strongest part of the PR.
+
+**Round 2 (2026-07-27): 2 blockers, 5 should-fixes, 4 nits, all fixed on the
+same branch.** The reviewer hand-executed the chart's own domain arithmetic
+against the real S0 main-leg cloud to find both blockers. **(B-1)** both
+curves were plotted in absolute dB against ONE shared reference (VERIFY's);
+linearization's cut-only invariant means VERIFY's reference is always at or
+below MEASURE's, so the "Before" curve was displaced by a level change the
+spec never grades, under a corridor labeled "Spec tolerance" that was not
+testing what it claimed to. Fixed by plotting each curve relative to its
+OWN `reference_db` (already on the wire for every phase — no new server
+data), corridor at `0 ± tolerance_db`, the same window for both curves now
+that each is normalized to its own reference. **(B-2)** the y-domain was
+computed over the FULL curve (measured 0.71–23,953 Hz on the real S0
+curve), collapsing the corridor to 6.9% of plot height; restricting to the
+displayed 20–20,000 Hz range alone was still not enough — the worst
+DISPLAYED point (19,969 Hz) sits inside `flat_spec.BEST_EFFORT_ABOVE_HZ`'s
+own "best-effort, disclosed, never specced" region, a driver's natural
+top-octave rolloff, not a defect. The domain is now bounded to the spec's
+own GRADED frequency range (derived from `specBands`, e.g. 250–16,000 Hz —
+never a hardcoded constant), measured at 20.96% corridor height on the same
+corpus (up from 6.9%); the wider displayed range is still drawn at full
+resolution and canvas-clipped where it exceeds that bound, so the ungraded
+rolloff is shown, just does not set the scale.
+
+Should-fixes: the chart feed's byte cost is now measured and stated —
+41,161 bytes for both phases' curves at the persisted 512-point resolution
+(82% of an otherwise-typical envelope poll, repeated every ~1.5 s) — and
+two docstrings' "the doctor/`/state` never pays for this" claims corrected
+(the KEY split from the compact block does not shrink that response, since
+both keys ride the same returned dict; it only spares a `cloud`-only reader
+from parsing curve-shaped data). A new, feed-specific 256-point
+re-decimation ceiling (distinct from `crossover_v2_flow`'s own 512-point
+persisted-artifact ceiling) measured 20,653 bytes on the same corpus, under
+1 px/point on the chart's own ~640 px canvas. The legend now renders
+progressively — a measure-only window (verify not yet closed) shows only
+the "Before correction" swatch plus a plain, hardware-blind caption that
+the after-correction curve is still coming, rather than three swatches for
+series that are not on the canvas. The resize redraw is now debounced
+150 ms, mirroring the room page's own `scheduleChartRedraw` exactly. Nits:
+`_cloud_summary`'s new `session_id` stamp is guarded the same way its
+sibling `pipeline` key already was (a conductor test double need not carry
+every attribute a real one does); stale forward-looking comments referring
+to carve-outs as landing "once PR-6b lands" were resolved by the same
+rewrite that fixed B-1 (PR-6b having since merged); and test/comment prose
+claiming on-device verification had already happened was corrected to
+name it as owed to the HW product smoke (CI cannot see pixels).*
 
 *Last verified: 2026-07-27*

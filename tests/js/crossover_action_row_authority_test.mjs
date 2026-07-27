@@ -86,6 +86,11 @@ let postResponse = { status: "ok" };
 globalThis.__getJSON = async () => nextEnvelope;
 globalThis.__postJSON = async () => postResponse;
 globalThis.__renderRelayQr = () => {};
+// PR-7's before/after visualization (./cloud.js) is out of scope for this
+// harness — it only pins the action-row authority — so a no-op stands in,
+// same shape as the __renderRelayQr stub above.
+globalThis.__renderCloud = () => {};
+globalThis.__redrawCloudChart = () => {};
 
 const here = dirname(fileURLToPath(import.meta.url));
 let source = readFileSync(
@@ -98,7 +103,9 @@ source = source.replace(
 );
 source =
   "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON; " +
-  "const renderRelayQr = globalThis.__renderRelayQr;\n" + source;
+  "const renderRelayQr = globalThis.__renderRelayQr; " +
+  "const renderCloud = globalThis.__renderCloud; " +
+  "const redrawCloudChart = globalThis.__redrawCloudChart;\n" + source;
 const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
 if (bootStart < 0) throw new Error("crossover module boot call not found");
 source = source.slice(0, bootStart).concat(
