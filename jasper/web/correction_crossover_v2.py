@@ -310,12 +310,21 @@ def observe_restore() -> None:
     loaded state in place, unlike :func:`reset_v2_journey_state`, which writes
     a whole fresh dict and so drops unlisted fields for free. That asymmetry is
     a standing trap: a new durable field added anywhere else must be added to
-    this list by hand or it survives an Undo. Two already did — ``session_phases``
-    left a re-verify session's ``["verify"]`` behind, which
+    this list by hand or it survives an Undo. Three already did —
+    ``session_phases`` left a re-verify session's ``["verify"]`` behind, which
     ``_phase_from_state`` resolved to the VERIFY screen ("The crossover is
     applied. Put the microphone back where it started…") moments after the
-    household removed it; and ``cloud`` left a geometry verdict describing an
-    undone session for PR-4 to consume as if it were live."""
+    household removed it; ``cloud`` left a geometry verdict describing an
+    undone session for PR-4 to consume as if it were live; and ``evidence``
+    (SF-2 review finding, 2026-07-27) left a stale ``cloud_artifacts`` fingerprint
+    map behind for ``persist_conductor_state``'s own group-phase-less carry-
+    forward (the B1 fix) to resurrect on the very next verify-only re-arm.
+    Cleared wholesale, not by surgically deleting ``cloud_artifacts`` alone —
+    :func:`reset_v2_journey_state` already treats the WHOLE ``evidence`` key
+    as journey-scoped (nulled there unconditionally, applied or not), no other
+    reader expects it to survive past the live measurement/apply flow it is
+    written during, and a key-by-key deletion would leave this exact hole open
+    for the next field someone adds under ``evidence``."""
     state = load_v2_state()
     if state is None:
         return
@@ -329,6 +338,7 @@ def observe_restore() -> None:
     state["session_phases"] = []
     state["cloud"] = None
     state["gain_plan_db"] = None
+    state["evidence"] = None
     save_v2_state(state)
 
 
@@ -715,6 +725,73 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     return PHASE_DONE
 
 
+def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
+    """PR-4's ``/state`` projection of the durable ``cloud`` block — compact:
+    per band, only ``passed``; the excluded-interval COUNT, not the
+    intervals; the geometry verdict's two household-relevant bits.
+
+    The full per-null τ/r/evidence numbers and the decimated curve live in
+    the durable state's own ``pipeline`` sub-key (:func:`_cloud_summary`) and
+    the bundle artifact (:func:`bind_cloud_publisher`) — this is the
+    dashboard-sized read, not a third owner of the same data.
+
+    ``excluded_interval_count`` is ``None`` — not ``0`` — when the pipeline
+    never successfully became available (SF-1 review finding, 2026-07-27):
+    ``0`` reads as "the honest-instrument pipeline looked and found no
+    interference", a fabricated-clean claim this program forbids when the
+    pipeline simply never ran (a combine or DSP-step failure — see
+    :func:`~jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`'s
+    own ``available: False`` shape). ``geometry_guidance`` is computed
+    directly from the ``geometry`` verdict via
+    :func:`~jasper.active_speaker.crossover_v2_flow._geometry_guidance_copy`
+    rather than read out of the pipeline's own copy of it, because geometry
+    locking is decided and RECORDED before the pipeline ever runs (see
+    ``_close_cloud_group``) — a locked group's "spread the mic further"
+    guidance must survive an unrelated downstream DSP failure, not disappear
+    with it.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _geometry_guidance_copy
+
+    if not isinstance(cloud_state, Mapping):
+        return None
+    out: dict[str, Any] = {}
+    for phase, block in cloud_state.items():
+        if not isinstance(block, Mapping):
+            continue
+        geometry = block.get("geometry")
+        geometry = geometry if isinstance(geometry, Mapping) else {}
+        pipeline = block.get("pipeline")
+        pipeline = pipeline if isinstance(pipeline, Mapping) else {}
+        entry: dict[str, Any] = {
+            "geometry_locked": bool(geometry.get("locked")),
+            "thin_evidence": bool(geometry.get("thin_evidence")),
+            "geometry_guidance": _geometry_guidance_copy(geometry),
+            "spec_bands": [],
+            "overall_passed": None,
+            "excluded_interval_count": None,
+        }
+        if pipeline.get("available") is True:
+            spec = pipeline.get("spec")
+            spec = spec if isinstance(spec, Mapping) else {}
+            bands = spec.get("bands")
+            entry["spec_bands"] = [
+                {
+                    "f_lo_hz": b.get("f_lo_hz"),
+                    "f_hi_hz": b.get("f_hi_hz"),
+                    "passed": b.get("passed"),
+                }
+                for b in bands
+                if isinstance(b, Mapping)
+            ] if isinstance(bands, list) else []
+            entry["overall_passed"] = spec.get("overall_passed")
+            merged = pipeline.get("merged_excluded_bands_hz")
+            entry["excluded_interval_count"] = (
+                len(merged) if isinstance(merged, list) else 0
+            )
+        out[str(phase)] = entry
+    return out or None
+
+
 def crossover_v2_status_block() -> dict[str, Any] | None:
     """The ``status["crossover_v2"]`` block.
 
@@ -737,6 +814,11 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
         "session_id": (state or {}).get("session_id"),
+        # Flat-linearization plan PR-4: the compact per-group honesty
+        # verdict. ``None`` when no group has closed yet — never a fabricated
+        # "clean" reading (mirrors every other honesty-instrument field's own
+        # "not yet run" rule).
+        "cloud": _compact_cloud_status((state or {}).get("cloud")),
     }
     return block
 
@@ -850,6 +932,17 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
             # an id and only one is in the cloud; the attempt is what joins
             # this to the per-take evidence artifacts.
             "positions": list(conductor.group_position_takes(phase)),
+            # PR-4: the honest-instrument pipeline result for this group —
+            # merged mask, null registry, evaluated spec, geometry guidance
+            # copy, decimated curve (assemble_cloud_group_result's own JSON
+            # shape, so this is verbatim what the bundle artifact carries
+            # too). ``None`` only if the conductor double has no such method
+            # (a pre-PR-4 test seam) — never "the pipeline was fine".
+            "pipeline": (
+                conductor.group_cloud_result(phase)
+                if hasattr(conductor, "group_cloud_result")
+                else None
+            ),
         }
     return out or None
 
@@ -932,6 +1025,51 @@ def persist_conductor_state(
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
         if prior.get("session_id") == snap.session_id:
             state["evidence"] = dict(prior["evidence"])
+    # B1 fix (flat-linearization plan PR-4 review, 2026-07-26): ``cloud``
+    # carries the SAME session-id-gated shape as ``candidate``/``evidence``
+    # above, which is the WRONG guard for it — a verify-only re-arm's
+    # conductor (``prepare_v2_verify``'s ``index_phase_map={1: PHASE_VERIFY}``)
+    # has NO group phase in ITS OWN session, so ``_cloud_summary`` always
+    # returns ``None`` for it: not because nothing closed, but because there
+    # is nothing to close in this session. A session-id gate would never
+    # carry the prior cloud verdict forward — exactly the same shape of bug
+    # ``pre_apply_profile``'s own comment below documents ("the deferred
+    # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
+    # relay session id"), and it hit on the very first tap of "Try again"
+    # (the PRIMARY next_action after a failed verify): the cloud verdict a
+    # household had just walked a session for went blank on `/state`, the
+    # envelope, and the doctor's read, all three at once.
+    #
+    # Carry ``cloud`` forward UNCONDITIONALLY whenever THIS conductor's own
+    # session has no group phase to report on — mirroring
+    # ``pre_apply_profile``'s unconditional carry-forward below, not
+    # ``candidate``/``evidence``'s session-scoped one above, which is the
+    # wrong shape for this path. A conductor that DOES have a group phase in
+    # its own session is left alone: ``_cloud_summary``'s own ``None`` there
+    # honestly means "this session's group has not closed yet" and must not
+    # be papered over with a stale prior verdict.
+    from jasper.active_speaker.crossover_v2_flow import GROUP_PHASES
+
+    conductor_session_phases = set(getattr(conductor, "session_phases", ()) or ())
+    if not (conductor_session_phases & GROUP_PHASES):
+        if state["cloud"] is None and isinstance(prior.get("cloud"), Mapping):
+            state["cloud"] = dict(prior["cloud"])
+        # The cloud bundle-artifact fingerprints ride inside `evidence`
+        # (`refs["cloud_artifacts"]`) — a group-phase-less session's own
+        # `publish_cloud` seam is never wired (nothing to publish), so its
+        # own `evidence` dict never carries this key forward on its own.
+        # Restore it from prior rather than losing it to whatever this
+        # session's own evidence looks like.
+        prior_evidence = prior.get("evidence")
+        if (
+            isinstance(prior_evidence, Mapping)
+            and "cloud_artifacts" in prior_evidence
+        ):
+            merged_evidence = dict(state["evidence"] or {})
+            merged_evidence.setdefault(
+                "cloud_artifacts", prior_evidence["cloud_artifacts"]
+            )
+            state["evidence"] = merged_evidence
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
     # handle_v2_restore) and ``apply_blocked`` (the auto-apply-failed nudge,
     # layered onto the "applying"-phase fix_and_retry screen — owner ruling,
@@ -1484,6 +1622,47 @@ def bind_position_retention(
         })
 
     return retain_position
+
+
+def bind_cloud_publisher(
+    store: Any, relay_session_id: str, refs: dict[str, Any]
+) -> Callable[[str, Mapping[str, Any]], None]:
+    """The real ``publish_cloud`` seam (flat-linearization plan PR-4).
+
+    One JSON artifact PER CLOSED GROUP — ``crossover_v2/<session>/<phase>.json``
+    (``cloud_measure.json`` / ``cloud_verify.json``), never a single shared
+    ``cloud.json`` across both groups. The evidence store is write-once (a
+    repeated path is a ``PATH_CONFLICT`` refusal — see
+    :func:`bind_position_retention`'s own docstring), and the pre-apply and
+    post-apply groups close at genuinely different times in the SAME
+    session, so a single shared path would collide on the second group's
+    write. This is a mechanism deviation from the work order's literal
+    ``crossover_v2/<session>/cloud.json`` path, recorded here rather than
+    silently matched — the per-group content (mask/registry/spec/geometry)
+    is exactly what was asked for either way.
+
+    Fail-soft at the CALLER (``CrossoverV2Conductor._run_cloud_pipeline``):
+    like :func:`bind_position_retention`, this function does not swallow
+    failures itself — a full disk or a write-once conflict must surface as
+    an exception here so the conductor's own boundary can log and continue
+    rather than every OTHER caller of this store losing its strictness.
+    """
+
+    def publish_cloud(phase: str, result: Mapping[str, Any]) -> None:
+        artifact = store.publish_json_artifact(
+            f"crossover_v2/{relay_session_id}/{phase}.json",
+            {
+                "schema_version": 1,
+                "kind": "jts_crossover_v2_cloud_evidence",
+                "relay_session_id": relay_session_id,
+                "phase": phase,
+                **dict(result),
+            },
+        )
+        cloud_artifacts = refs.setdefault("cloud_artifacts", {})
+        cloud_artifacts[phase] = artifact.fingerprint
+
+    return publish_cloud
 
 
 def bind_production_play(
@@ -2205,6 +2384,14 @@ class V2ConductorContext:
     # ctor param, landed by #1668 PR-C ahead of this resolver populating it).
     # A role absent here fits under the conservative "unknown" class default.
     driver_class_by_role: dict[str, str] = field(default_factory=dict)
+    # Flat-linearization plan PR-4: the tweeter's confirmed
+    # ``measurement_band_hz`` — the contract-derived echo/null analysis band
+    # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
+    # pipeline's call site (crossover_v2_flow.CrossoverV2Conductor's own
+    # tweeter_measurement_band_hz ctor param). ``None`` degrades to that
+    # module default, never a refused session — a declared-metadata gap here
+    # is not a reason to block a measurement the household is entitled to run.
+    tweeter_measurement_band_hz: tuple[float, float] | None = None
 
 
 def ensure_crossover_preview_ready() -> dict[str, Any]:
@@ -2321,6 +2508,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
         resolve_driver_excitation_ceilings,
+        resolve_driver_measurement_band_hz,
     )
     from jasper.active_speaker.playback_route import resolve_active_playback_device
     from jasper.audio_measurement.program import RoleBand
@@ -2397,6 +2585,21 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             ) from exc
         roles_bands.append(RoleBand(role, channel, band))
         caps[role] = float(cap)
+    # Flat-linearization plan PR-4: the tweeter's confirmed measurement band —
+    # by the time this loop above has succeeded for role="tweeter",
+    # resolve_driver_excitation_ceilings has ALREADY validated this exact
+    # field on the same confirmed record (see its "Band-edge asymmetry"
+    # docstring paragraph), so this call is not expected to raise here; it is
+    # still wrapped, because a declared-metadata gap on this NEW, optional
+    # surface must never turn into a refused measurement session — the
+    # conductor's own tweeter_measurement_band_hz ctor param degrades to the
+    # module default on None.
+    try:
+        tweeter_measurement_band_hz = resolve_driver_measurement_band_hz(
+            safety_profile, role_targets["tweeter"],
+        )
+    except (ExcitationSafetyPlanError, ValueError):
+        tweeter_measurement_band_hz = None
     region = preset.crossover_regions[0]
     fc_hz = float(region.fc_hz)
     session_volume_db = derive_session_volume_db(
@@ -2439,6 +2642,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         role_channels={"woofer": 0, "tweeter": 1},
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,
+        tweeter_measurement_band_hz=tweeter_measurement_band_hz,
     )
 
 
@@ -2617,6 +2821,9 @@ def prepare_v2_session(
                 retain_position=bind_position_retention(
                     evidence_store, relay_session_id, refs
                 ),
+                publish_cloud=bind_cloud_publisher(
+                    evidence_store, relay_session_id, refs
+                ),
             ),
             # The conductor's index→phase map is built from the SAME function
             # the emitted plan used, so the prompt an entry carries and the
@@ -2624,6 +2831,7 @@ def prepare_v2_session(
             index_phase_map=build_v2_cloud_index_phase_map(),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
+            tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(
@@ -2785,6 +2993,15 @@ def prepare_v2_verify(
             ),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
+            # No retain_position/publish_cloud seam here either (mirrors the
+            # pre-existing omission above): this session's index_phase_map is
+            # {1: PHASE_VERIFY} only, so it has no cloud group of any kind —
+            # the conductor's own group_indexes/group_positions dicts for this
+            # session are empty, and _close_cloud_group/_run_cloud_pipeline
+            # never run. Still threaded for correctness (a verify-only
+            # re-arm's conductor computes the same derived bands, even though
+            # nothing here exercises them).
+            tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
             applied=True,
             gain_plan_db=state.get("gain_plan_db"),

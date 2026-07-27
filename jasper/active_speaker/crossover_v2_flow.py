@@ -284,9 +284,11 @@ MIN_CLOUD_VERIFY_POSITIONS = 5
 # defect (S0's source-fixed horn-rim comb — see the plan doc's "S0 executed"
 # §b) would never terminate, because no amount of mic movement decorrelates a
 # source-fixed null. Two retakes, then proceed and RECORD the verdict — it
-# lands in the journal and the durable v2 state's `cloud` block. Calling
-# that "disclosed" would overstate it: no household-facing surface renders
-# it yet. PR-4 owns that.
+# lands in the journal and the durable v2 state's `cloud` block. PR-4 carries
+# it further: `_geometry_guidance_copy`'s plain-language guidance rides the
+# envelope's own `cloud` key and `/state`'s compact projection
+# (`crossover_v2_status_block`) — but no household-facing surface renders it
+# yet (zero JS/asset changes in PR-4). PR-7 renders it.
 GEOMETRY_RETRY_POSITIONS = 2
 
 # Retake headroom a cloud plan carries ABOVE its entry count and its geometry
@@ -634,7 +636,8 @@ REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # geometry instrument can say ("spread the mic further"), so the group asks for
 # that position again from a wider spot, at most ``GEOMETRY_RETRY_POSITIONS``
 # times, and then proceeds with the verdict RECORDED (journal + durable
-# state; PR-4 owns the household surface) rather than blocking a
+# state; PR-4 carries it on the envelope and `/state` — no household-facing
+# surface renders it yet, PR-7 renders it) rather than blocking a
 # measurement on a defect no mic move can decorrelate.
 REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 
@@ -1487,6 +1490,14 @@ class V2FlowSeams:
     # artifact, which is the correct behaviour for a conductor with no evidence
     # store rather than a reason to fail a capture.
     retain_position: Callable[[str, Any, Mapping[str, Any]], None] | None = None
+    # PR-4: the cloud honesty-pipeline bundle publisher, called once per
+    # CLOSED group with ``(phase, cloud_group_result_dict)``. Optional for the
+    # same reason ``retain_position`` is: every pre-PR-4 construction site
+    # (and every conductor unit test) stays valid, and ``None`` means the
+    # group's result is computed and readable via
+    # :meth:`CrossoverV2Conductor.group_cloud_result` but not published as a
+    # bundle artifact.
+    publish_cloud: Callable[[str, Mapping[str, Any]], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -1574,6 +1585,21 @@ class _CloudPosition:
     captured_at: float
     response: Any
     sample_rate_hz: int
+    # PR-4: the contract-derived analysis bands this position's GROUP should be
+    # combined/searched with — spatial_combine.combine_positions's own
+    # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
+    # threaded as a separate call-site argument. Carrying them on the position
+    # (every position in one group shares the same conductor-derived values —
+    # see ``CrossoverV2Conductor.__init__``) is what lets
+    # :func:`combine_cloud_positions` derive the right bands from
+    # ``positions`` alone, with no caller (``_close_cloud_group``'s single
+    # combine, ``cloud_geometry_verdict``'s convenience wrapper) needing to
+    # pass them explicitly or risk two call sites drifting apart.
+    # ``None`` means "use the module defaults" — the pre-PR-4 behaviour, still
+    # exercised by every corpus/unit test that builds a ``_CloudPosition``
+    # without these two kwargs.
+    echo_band_hz: tuple[float, float] | None = None
+    signal_band_hz: tuple[float, float] | None = None
 
 
 def cloud_position_capture(position: _CloudPosition) -> Any:
@@ -1621,23 +1647,49 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
 
     Returns a :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`,
     or ``None`` when the group cannot be combined (no positions, or a malformed
-    one). PR-3b reads exactly one field off it (``geometry``, via
-    :func:`cloud_geometry_verdict`); PR-4's pipeline — the power-vs-median
-    exclusion screen, the null-identification gate, the spec curve — reads the
-    rest of the SAME object, so wiring it is a second reader of this call, never
-    a second combine.
+    one). Called exactly ONCE per group-close event, from
+    :meth:`CrossoverV2Conductor._close_cloud_group`: PR-3b reads one field off
+    the result (``geometry``, via :func:`_geometry_verdict_from_combined`);
+    PR-4's pipeline (:func:`assemble_cloud_group_result`) reads the rest of
+    the SAME object. Never a second combine — see S3 review finding
+    (2026-07-26): an earlier revision of this wiring called this function
+    TWICE per close attempt (once through :func:`cloud_geometry_verdict` for
+    the retry gate, once more from the pipeline) — measured seconds-per-combine
+    (3-6 s across runs/hosts on the S0 ten-position corpus; interpreter-bound
+    ``smooth_fractional_octave``, worse on a Pi 5 — N2 review finding,
+    2026-07-27: an earlier "5.6-6.2 s" point figure did not reproduce across
+    hosts, so this states the regime instead of a false-precision number).
+    ``GEOMETRY_RETRY_POSITIONS = 2`` allows up to 3 close attempts per group
+    (2 retries + the accepting close), so the pre-fix worst case was 3 × 2 =
+    6 combines, not the earlier "4x" claim — real operator seconds for a
+    claim (byte-for-byte determinism) that was true but not worth paying for.
 
     Never raises. A group's captures are already-accepted evidence and a
     combiner failure must not retroactively fail them, so an unusable cloud is
     a ``None`` the caller turns into an honest "unknown" rather than an
     exception that would strand the session.
     """
-    from jasper.audio_measurement.spatial_combine import combine_positions
+    from jasper.audio_measurement.spatial_combine import (
+        DEFAULT_ECHO_BAND_HZ,
+        combine_positions,
+    )
 
     if not positions:
         return None
+    # Every position in one group carries the SAME conductor-derived bands
+    # (set once at construction — see ``_CloudPosition``'s docstring), so
+    # reading them off the first position is reading the group's own bands,
+    # not an arbitrary one. ``None`` (a position built before PR-4, or by a
+    # caller that never declared a driver contract) falls back to the
+    # module's own long-standing default, unchanged from pre-PR-4 behaviour.
+    echo_band_hz = positions[0].echo_band_hz or DEFAULT_ECHO_BAND_HZ
+    signal_band_hz = positions[0].signal_band_hz
     try:
-        return combine_positions([cloud_position_capture(p) for p in positions])
+        return combine_positions(
+            [cloud_position_capture(p) for p in positions],
+            echo_band_hz=echo_band_hz,
+            signal_band_hz=signal_band_hz,
+        )
     except (ValueError, TypeError, IndexError, AttributeError) as exc:
         log_event(
             logger, "correction.crossover_v2_cloud_combine_failed",
@@ -1647,22 +1699,26 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
         return None
 
 
-def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
-    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+def _geometry_verdict_from_combined(
+    combined: Any, n_positions: int,
+) -> dict[str, Any]:
+    """The geometry-verdict dict from an ALREADY-COMBINED result.
 
-    A plain JSON-native dict, because the host persists it verbatim into the
-    durable v2 state. ``locked`` is ``False`` on every degraded path — but the
-    ``reason`` says WHICH degraded path, so "no credible echo estimates"
-    never reads the same as "the cloud combined and its nulls move".
+    Split out of :func:`cloud_geometry_verdict` (S3 review finding,
+    2026-07-26) so :meth:`CrossoverV2Conductor._close_cloud_group` can
+    combine a group's positions exactly ONCE and derive both the retry-gating
+    verdict and the honest-instrument pipeline from that ONE object, rather
+    than each deriving its own combine. A plain JSON-native dict, because the
+    host persists it verbatim into the durable v2 state. ``locked`` is
+    ``False`` on every degraded path — but the ``reason`` says WHICH degraded
+    path, so "no credible echo estimates" never reads the same as "the cloud
+    combined and its nulls move".
     """
-    if not positions:
-        return {"locked": False, "reason": "no_positions", "n_positions": 0}
-    combined = combine_cloud_positions(positions)
     if combined is None:
         return {
             "locked": False,
             "reason": "combine_failed",
-            "n_positions": len(positions),
+            "n_positions": n_positions,
         }
     geometry = combined.geometry
     return {
@@ -1674,6 +1730,351 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
         "clustered_fraction": float(geometry.clustered_fraction),
         "thin_evidence": bool(geometry.thin_evidence),
     }
+
+
+def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
+    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+
+    A convenience wrapper around :func:`combine_cloud_positions` +
+    :func:`_geometry_verdict_from_combined` for callers that only have
+    ``positions`` (the corpus acceptance test; any future direct caller) —
+    the conductor itself does NOT call this (see
+    :meth:`CrossoverV2Conductor._close_cloud_group`'s own single combine).
+
+    **Reason-string divergence, documented not silently left (N4 review
+    finding, 2026-07-27).** An empty ``positions`` short-circuits HERE with
+    ``reason="no_positions"`` before ever reaching the combiner, while
+    :func:`_geometry_verdict_from_combined` called directly with a
+    ``combined=None`` and ``n_positions=0`` (e.g. because
+    ``combine_cloud_positions([])`` was called some other way) reports
+    ``reason="combine_failed"`` for the exact same "there were zero
+    positions" fact. Unreachable through the conductor today (a group only
+    closes with at least its just-captured position already retained), but
+    the two functions disagree on naming WHICH degraded path a caller hit —
+    the entire point of a ``reason`` field — so this wrapper owns disclosing
+    the split rather than leaving a future reader to discover it by diffing
+    the two bodies.
+    """
+    if not positions:
+        return {"locked": False, "reason": "no_positions", "n_positions": 0}
+    combined = combine_cloud_positions(positions)
+    return _geometry_verdict_from_combined(combined, len(positions))
+
+
+# --------------------------------------------------------------------------- #
+# PR-4: contract-derived analysis bands + the live-flow honesty pipeline
+# --------------------------------------------------------------------------- #
+#
+# docs/flat-linearization-productization-plan.md, PR-4: "The echo/detector
+# band and PR-2's signal_band_hz derive from the declared contract: the
+# summed system's swept band (RoleBand.band as composed) for the passband;
+# the tweeter's usable_frequency_range_hz / measurement_band_hz for the upper
+# echo band -- replacing DEFAULT_ECHO_BAND_HZ's flat constant at the call
+# site." This section is that derivation, plus the single result-assembly
+# function issue #1742 item 4 asks for.
+
+# The contract-derived echo/null analysis band's LOWER edge must not drift
+# below this floor without disclosure. Provenance, not a new calibration:
+# spatial_combine.py's BAND_BELOW_PASSBAND_MARGIN_DB comment (PR-2, N-3) pins
+# a six-band sweep of the SAME JTS3 cdhorn corpus this program's corpus tests
+# already use --
+#
+#   band            residue deficit    screen catches it?
+#   (5000, 19000)   40.43-41.98 dB     yes  (the module default)
+#   (4000, 20000)   35.46-35.58 dB     yes, by 10.46 dB -- comfortable
+#   (3000, 19000)   26.53-27.05 dB     yes, by only 1.53 dB -- "already thin
+#                                      one octave up"
+#   (2000, 19000)   18.21-18.23 dB     NO -- a false negative, not a
+#                                      narrowed gap (this speaker's crossover
+#                                      sits at 2 kHz; the woofer's own
+#                                      passband is inside the analysed band)
+#
+# re-derived by test_band_deficit_separation_depends_on_the_analysis_band.
+# 4000 Hz is the lowest edge in that pinned table with COMFORTABLE headroom
+# (10.46 dB, vs the 3 kHz row's thin 1.53 dB) -- the row printed above is
+# the one that actually justifies this constant's value. A declared
+# contract whose derived echo band dips below it is disclosed via a WARNING
+# log rather than silently trusted (an uncalibrated regime) or silently
+# overridden (hiding a real declared value) -- see _derive_cloud_echo_band_hz.
+ECHO_BAND_HF_REGIME_FLOOR_HZ = 4000.0
+
+# Cloud curves decimated for persistence (bundle cloud.json + the durable v2
+# state's compact cloud block) -- mirrors
+# jasper.web.correction_crossover_v2.MAX_PERSISTED_SUM_POINTS (512), which
+# this module cannot import without a circular dependency (that module
+# imports THIS one). Kept as an independent constant rather than a shared one
+# for that reason; if the two ever need to diverge, they now can.
+CLOUD_CURVE_MAX_JSON_POINTS = 512
+
+
+def _composed_swept_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
+    """The summed system's swept band -- the union of every declared
+    ``RoleBand.band`` -- PR-4's contract-derived ``signal_band_hz``.
+
+    No existing function composes across roles (each ``RoleBand.band`` is one
+    driver's own excitation-ceiling band, from
+    ``excitation_safety_plan.resolve_driver_excitation_ceilings``); this is
+    that composition, added here because it is conductor-owned wiring policy
+    (which roles participate in the passband), not a pure-DSP concern that
+    belongs in ``spatial_combine`` or ``program.py``.
+    """
+    lo = min(float(r.band.lower_hz) for r in roles)
+    hi = max(float(r.band.upper_hz) for r in roles)
+    return (lo, hi)
+
+
+def _derive_cloud_echo_band_hz(
+    signal_band_hz: tuple[float, float],
+    tweeter_measurement_band_hz: tuple[float, float] | None,
+) -> tuple[float, float]:
+    """The contract-derived echo/null analysis band (PR-4): the tweeter's
+    declared ``measurement_band_hz``, replacing ``DEFAULT_ECHO_BAND_HZ``'s
+    flat constant at this call site.
+
+    Falls back to ``DEFAULT_ECHO_BAND_HZ`` when the tweeter's measurement
+    band was not threaded through (an older/incomplete confirmed profile) --
+    that constant is the module's own long-standing default, not a new
+    invention, and every existing corpus test that validated
+    ``identify_interference_nulls`` against the S0 corpus did so at exactly
+    this band (``S0_BAND_HZ`` in ``tests/test_interference_nulls.py``).
+
+    **Containment (inherited PR-2/PR-6a constraint):** clamped to sit INSIDE
+    ``signal_band_hz`` (the derived passband), never wider. A band that
+    neither contains nor sits clear of the analysis band leaves
+    ``detect_echo``'s signal-presence screen uncalibrated
+    (``spatial_combine.BAND_BELOW_PASSBAND_MARGIN_DB``'s docstring: "What is
+    NOT calibrated: a passband narrower than the analysis band, or
+    overlapping it"). Since ``signal_band_hz`` is the union of BOTH roles'
+    excitation bands (always at least as wide as one driver's own
+    measurement window in the ordinary 2-way case -- the woofer's lower edge
+    sits well below the tweeter's, and the tweeter's own excitation ceiling
+    upper edge is never narrower than its measurement band, per
+    ``resolve_driver_excitation_ceilings``'s "Band-edge asymmetry" rule),
+    this clamp is a no-op for every declared contract exercised by this
+    program's tests and only bites a genuinely malformed one.
+
+    **HF regime (inherited PR-2 constraint):** when the resulting lower edge
+    sits below :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`, this is disclosed via a
+    WARNING log (never silently trusted, never silently overridden -- see
+    that constant's own comment for the provenance).
+    """
+    from jasper.audio_measurement.spatial_combine import DEFAULT_ECHO_BAND_HZ
+
+    band = tweeter_measurement_band_hz or DEFAULT_ECHO_BAND_HZ
+    lo = max(float(band[0]), float(signal_band_hz[0]))
+    hi = min(float(band[1]), float(signal_band_hz[1]))
+    if lo >= hi:
+        # A genuinely malformed declared contract -- the tweeter's own
+        # measurement band sits entirely outside the composed passband.
+        # Fall back to the passband itself rather than hand a caller an
+        # inverted/degenerate pair that would raise deep inside
+        # combine_positions with no context about why.
+        log_event(
+            logger, "correction.crossover_v2_cloud_echo_band_degenerate",
+            level=logging.WARNING,
+            declared_measurement_band_hz=list(band),
+            signal_band_hz=list(signal_band_hz),
+        )
+        return (float(signal_band_hz[0]), float(signal_band_hz[1]))
+    if lo < ECHO_BAND_HF_REGIME_FLOOR_HZ:
+        log_event(
+            logger, "correction.crossover_v2_cloud_echo_band_below_hf_regime",
+            level=logging.WARNING,
+            derived_lo_hz=lo, floor_hz=ECHO_BAND_HF_REGIME_FLOOR_HZ,
+        )
+    return (lo, hi)
+
+
+def _decimate_curve_for_json(
+    freqs_hz: np.ndarray, magnitude_db: np.ndarray,
+) -> dict[str, list[float]]:
+    """Stride-decimate one combined curve to at most
+    :data:`CLOUD_CURVE_MAX_JSON_POINTS`, for disclosure only -- mirrors
+    ``jasper.web.correction_crossover_v2._decimate_sum``'s exact shape
+    (floor-division stride, identity when already short enough) so the two
+    persisted curve payloads (VERIFY's predicted sum, the cloud's combined
+    spec curve) read the same way to a consumer.
+    """
+    n = len(freqs_hz)
+    step = max(1, n // CLOUD_CURVE_MAX_JSON_POINTS)
+    return {
+        "freqs_hz": [float(f) for f in freqs_hz[::step]],
+        "magnitude_db": [float(m) for m in magnitude_db[::step]],
+    }
+
+
+def _null_registry_to_dict(report: Any) -> dict[str, Any]:
+    """``InterferenceNullReport`` -> a plain JSON dict.
+
+    PR-1 shipped no ``to_dict`` (the module docstring's own words: "zero
+    production callers by design until the plan's PR-4 wires it into the
+    conductor's cloud-group analysis") -- this is that wiring layer's owned
+    serialization, mirroring ``FlatSpecReport.to_dict``'s shape so the two
+    persisted reports read consistently.
+    """
+    return {
+        "nulls": [
+            {
+                "f_lo_hz": n.f_lo_hz, "f_hi_hz": n.f_hi_hz,
+                "f_center_hz": n.f_center_hz, "n": n.n, "tau_us": n.tau_us,
+                "r_time": n.r_time, "r_freq": n.r_freq,
+                "agreement": n.agreement, "depth_db": n.depth_db,
+                "classification": n.classification,
+                "evidence": dict(n.evidence),
+            }
+            for n in report.nulls
+        ],
+        "excluded_bands_hz": [list(b) for b in report.excluded_bands_hz],
+        "excluded_fraction": float(report.excluded_fraction),
+        "refusals": [
+            {
+                "f_center_hz": r.f_center_hz, "depth_db": r.depth_db,
+                "reason": r.reason, "evidence": dict(r.evidence),
+            }
+            for r in report.refusals
+        ],
+        "reason": report.reason,
+        "classification": report.classification,
+        "band_hz": list(report.band_hz),
+        "tau_ladder_us": float(report.tau_ladder_us),
+        "arrival_tau_us": float(report.arrival_tau_us),
+        "arrival_r_time": float(report.arrival_r_time),
+        "arrival_r_max": float(report.arrival_r_max),
+        "n_corroborating": int(report.n_corroborating),
+        "r_freq": float(report.r_freq),
+        "agreement": float(report.agreement),
+        "ladder_arrival_gap": float(report.ladder_arrival_gap),
+        "capped": bool(report.capped),
+        "min_depth_db": float(report.min_depth_db),
+        "n_candidates": int(report.n_candidates),
+    }
+
+
+def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
+    """Plain-language "spread the mic further" guidance from a geometry
+    verdict dict (:func:`cloud_geometry_verdict`'s own shape) -- the
+    household-facing surface issue #1742 item 2 asked for. Recorded since
+    PR-3b (the durable v2 state's ``cloud`` block, ``GEOMETRY_RETRY_POSITIONS``'s
+    own comment). PR-4 carries this copy onto the envelope and `/state`
+    (`crossover_v2_status_block`'s compact projection); no household-facing
+    surface renders it yet (zero JS/asset changes in PR-4) -- PR-7 renders
+    it.
+
+    Softened, never suppressed, when ``thin_evidence`` -- and the softened
+    copy names the qualitative floor ("the bare minimum of positions"),
+    never a discrete number or a percentage, because thin_evidence is a
+    cliff at an exact confident-estimate count, not a gradient
+    (spatial_combine.GeometryLock's own docstring) -- naming the actual
+    count would read as a gradient the instrument does not claim. Empty
+    string when not locked -- nothing to say.
+    """
+    if not geometry.get("locked"):
+        return ""
+    if geometry.get("thin_evidence"):
+        return (
+            "The measured echo pattern looks the same at every microphone "
+            "position, but only the bare minimum of positions gave a "
+            "confident enough reading to tell. Spreading the microphone "
+            "further apart next time would make this more certain."
+        )
+    return (
+        "The measured echo pattern did not change between microphone "
+        "positions. Spreading the microphone further apart next time may "
+        "help JTS tell the speaker's own sound apart from the room's."
+    )
+
+
+def assemble_cloud_group_result(
+    combined: Any, *, echo_band_hz: tuple[float, float],
+) -> dict[str, Any]:
+    """The wiring contract (issue #1742 item 4) -- THE single function that
+    consumes the exclusion mask, ``geometry.locked``, and the null registry
+    TOGETHER. No other code in this program may read
+    ``combined.excluded``/``combined.geometry.locked`` and treat that as the
+    honesty verdict on its own; doing so is reading the mask alone, the hole
+    this item exists to close (see the plan doc's "Architecture" table: "the
+    mask alone is a hole").
+
+    Runs :func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
+    on ``combined`` at ``echo_band_hz``, unions its excluded bins with the
+    combiner's own power-vs-median screen (``combined.excluded``), and
+    evaluates :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`
+    against the merged mask -- the plan's "merged honesty mask = screen ∪
+    identified nulls" line, made executable.
+
+    ``combined`` may be ``None`` (the group could not be combined at all --
+    :func:`combine_cloud_positions`'s own honest "unknown") or a
+    :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`.
+
+    **Fail-soft, named, not absolute** (S4 review finding, 2026-07-26 --
+    corrected from an earlier "any exception is caught" overclaim). Catches
+    exactly ``(ValueError, TypeError, IndexError, AttributeError)`` --
+    the documented raise surface of every function this calls
+    (:func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
+    and :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` both
+    raise only ``ValueError`` on malformed input;
+    :func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`
+    raises ``ValueError`` via ``zip(strict=True)`` on a length mismatch or
+    ``IndexError`` on an out-of-bounds index; a malformed/incomplete
+    ``combined``-like object raises ``TypeError``/``AttributeError`` reading
+    its fields). ``_run_cloud_pipeline`` relies on exactly this bounded set --
+    a downstream DSP failure inside it is diagnostic/disclosure machinery,
+    never a capture-accept gate, so this bounded family is caught and
+    reported as ``available: False`` rather than surfacing to the caller.
+    Any OTHER exception -- ``KeyError``/``RuntimeError``/``OSError`` (none
+    observed on this call surface today; would indicate a genuine bug in a
+    callee) or ``MemoryError``/``KeyboardInterrupt`` -- propagates
+    uncaught, by design: it should reach the caller rather than silently
+    become an honest-looking "unavailable".
+    """
+    if combined is None:
+        return {"available": False, "reason": "combine_failed"}
+    try:
+        from jasper.active_speaker.flat_spec import evaluate_flat_spec
+        from jasper.audio_measurement.interference_nulls import (
+            identify_interference_nulls,
+        )
+        from jasper.audio_measurement.spatial_combine import merged_true_intervals
+
+        null_report = identify_interference_nulls(combined, band_hz=echo_band_hz)
+        merged_mask = np.asarray(combined.excluded, dtype=bool) | np.asarray(
+            null_report.excluded, dtype=bool
+        )
+        spec_report = evaluate_flat_spec(
+            combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
+        )
+        geometry_dict = {
+            "locked": bool(combined.geometry.locked),
+            "reason": str(combined.geometry.reason),
+            "n_confident": int(combined.geometry.n_confident),
+            "n_positions": int(combined.geometry.n_positions),
+            "median_tau_us": float(combined.geometry.median_tau_us),
+            "clustered_fraction": float(combined.geometry.clustered_fraction),
+            "thin_evidence": bool(combined.geometry.thin_evidence),
+        }
+        return {
+            "available": True,
+            "geometry": geometry_dict,
+            "geometry_guidance": _geometry_guidance_copy(geometry_dict),
+            "screen_excluded_bands_hz": [
+                list(b) for b in combined.excluded_bands_hz
+            ],
+            "merged_excluded_bands_hz": [
+                list(b) for b in merged_true_intervals(combined.freqs_hz, merged_mask)
+            ],
+            "null_registry": _null_registry_to_dict(null_report),
+            "spec": spec_report.to_dict(),
+            "echo_band_hz": list(echo_band_hz),
+            "curve": _decimate_curve_for_json(
+                combined.freqs_hz, combined.power_mean_spec_db,
+            ),
+        }
+    except (ValueError, TypeError, IndexError, AttributeError) as exc:
+        log_event(
+            logger, "correction.crossover_v2_cloud_pipeline_failed",
+            level=logging.WARNING, error=str(exc),
+        )
+        return {"available": False, "reason": "pipeline_failed"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1715,6 +2116,7 @@ class CrossoverV2Conductor:
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_baseline: Mapping[str, float] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
+        tweeter_measurement_band_hz: tuple[float, float] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -1724,6 +2126,15 @@ class CrossoverV2Conductor:
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
         self._fc_hz = float(fc_hz)
+        # PR-4: the contract-derived analysis bands for the cloud-group
+        # honesty pipeline (combine's echo/signal bands, the null gate's
+        # search band) -- computed once here so every group-close event uses
+        # the SAME derived values. See _composed_swept_band_hz /
+        # _derive_cloud_echo_band_hz for the derivation and their citations.
+        self._cloud_signal_band_hz = _composed_swept_band_hz(roles)
+        self._cloud_echo_band_hz = _derive_cloud_echo_band_hz(
+            self._cloud_signal_band_hz, tweeter_measurement_band_hz,
+        )
         self._caps = dict(driver_caps_dbfs)
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
@@ -1784,6 +2195,13 @@ class CrossoverV2Conductor:
         # The group's closing geometry verdict, as a plain dict for the host to
         # persist/disclose. ``None`` until the group closes.
         self._group_geometry: dict[str, dict[str, Any]] = {}
+        # PR-4: the group's closing honest-instrument pipeline result (mask ∪
+        # null registry, evaluated spec, geometry guidance copy) -- see
+        # assemble_cloud_group_result. Populated the SAME moment as
+        # ``_group_geometry`` above, in ``_close_cloud_group``. ``None`` until
+        # the group closes, mirroring that dict's own "never confuse
+        # not-yet-run with a clean verdict" rule.
+        self._group_cloud_result: dict[str, dict[str, Any]] = {}
 
         # Programs — CHECK is composable now; MEASURE waits on the gain solve,
         # VERIFY on Fc (composable now, played only after apply).
@@ -2046,6 +2464,15 @@ class CrossoverV2Conductor:
         """
         verdict = self._group_geometry.get(phase)
         return dict(verdict) if verdict is not None else None
+
+    def group_cloud_result(self, phase: str) -> dict[str, Any] | None:
+        """PR-4's honest-instrument pipeline result for one closed group, or
+        ``None`` when the group has not closed yet (mirrors
+        :meth:`group_geometry`'s own "never confuse not-yet-run with a clean
+        verdict" rule).
+        """
+        result = self._group_cloud_result.get(phase)
+        return dict(result) if result is not None else None
 
     def group_positions(self, phase: str) -> tuple[str, ...]:
         """Accepted position ids in one group, in capture order."""
@@ -2653,6 +3080,8 @@ class CrossoverV2Conductor:
             captured_at=time.time(),
             response=response,
             sample_rate_hz=self._verify_program.sample_rate_hz,
+            echo_band_hz=self._cloud_echo_band_hz,
+            signal_band_hz=self._cloud_signal_band_hz,
         )
         self._retain_cloud_position(phase, position, analysis, result)
         if index != self._group_indexes[phase][-1]:
@@ -2710,8 +3139,24 @@ class CrossoverV2Conductor:
     def _close_cloud_group(
         self, phase: str, position: _CloudPosition
     ) -> PhaseVerdict:
-        """The group-end combine, and the one bounded retake it can ask for."""
-        verdict = cloud_geometry_verdict(self._group_positions[phase])
+        """The group-end combine, and the one bounded retake it can ask for.
+
+        Combines the group's retained positions exactly ONCE (S3 review
+        finding, 2026-07-26: an earlier revision called
+        ``combine_cloud_positions`` a second time from the pipeline step
+        below — measured seconds-per-combine, 3-6 s across runs/hosts on the
+        S0 ten-position corpus, worse on a Pi 5 (N2 review finding,
+        2026-07-27: restated from an earlier "5.6-6.2 s" point figure that
+        did not reproduce across hosts). With ``GEOMETRY_RETRY_POSITIONS = 2``
+        allowing up to 3 close attempts per group, the pre-fix worst case was
+        3 × 2 = 6 combines, not the earlier "4x" claim — real operator
+        seconds this wiring does not need to spend). Both the retry-gating
+        verdict AND the honest-instrument pipeline read the SAME ``combined``
+        object.
+        """
+        positions = self._group_positions[phase]
+        combined = combine_cloud_positions(positions)
+        verdict = _geometry_verdict_from_combined(combined, len(positions))
         retries = self._geometry_retries_used[phase]
         retry_warranted = (
             verdict.get("locked") is True
@@ -2759,6 +3204,34 @@ class CrossoverV2Conductor:
             thin_evidence=bool(verdict.get("thin_evidence")),
             geometry_retries=retries,
         )
+        # S4 review finding (2026-07-26): the group's ACCEPT is already
+        # decided above (the log line just fired) — the honesty pipeline
+        # below is diagnostic/disclosure machinery layered on TOP of that
+        # decision, and must never be able to cost the group its accept.
+        # assemble_cloud_group_result's own try/except (ValueError, TypeError,
+        # IndexError, AttributeError -- the documented raise surface of
+        # everything it calls) and _run_cloud_pipeline's own try/except around
+        # the publish_cloud seam (OSError, RuntimeError, TypeError, ValueError
+        # -- the same family every other evidence-publish boundary in this
+        # file uses) each guard their own step; this wrap is the outer
+        # backstop for that SAME six-member named family (N1 review finding,
+        # 2026-07-27: the prior wording claimed this was unconditional --
+        # "structurally true rather than merely usually true" -- which
+        # overclaimed past what the code does. A KeyError, or anything else
+        # outside these six names, is NOT caught here either and propagates
+        # uncaught exactly as assemble_cloud_group_result's own docstring
+        # discloses -- pinned by
+        # test_an_unnamed_exception_family_still_propagates_through_the_outer_wrap).
+        # Scoped claim: a NAMED-family exception cannot cost the accept; the
+        # residual propagates by design.
+        try:
+            self._run_cloud_pipeline(phase, combined)
+        except (OSError, RuntimeError, TypeError, ValueError, IndexError, AttributeError):
+            log_event(
+                logger, "correction.crossover_v2_cloud_pipeline_call_failed",
+                level=logging.WARNING,
+                session_id=self.session_id, phase=phase, exc_info=True,
+            )
         return PhaseVerdict(
             True,
             payload={
@@ -2767,6 +3240,35 @@ class CrossoverV2Conductor:
                 "geometry": dict(verdict),
             },
         )
+
+    def _run_cloud_pipeline(self, phase: str, combined: Any) -> None:
+        """PR-4: the honest-instrument pipeline, run once per CLOSED group.
+
+        ``combined`` is the SAME object ``_close_cloud_group`` just derived
+        its retry-gating verdict from — ONE combine per group close (S3
+        review finding, 2026-07-26), never a second call to
+        :func:`combine_cloud_positions`.
+
+        Never raises and never affects the accepted verdict already decided
+        above — this is diagnostic/disclosure machinery, not a capture gate.
+        """
+        self._group_cloud_result[phase] = assemble_cloud_group_result(
+            combined, echo_band_hz=self._cloud_echo_band_hz,
+        )
+        if self._seams.publish_cloud is not None:
+            try:
+                self._seams.publish_cloud(
+                    phase, self._group_cloud_result[phase]
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                # Mirrors _retain_cloud_position's fail-soft boundary: evidence
+                # publication is forensics, never a gate, so a full disk or a
+                # write-once conflict must not undo the group's own accept.
+                log_event(
+                    logger, "correction.crossover_v2_cloud_publish_failed",
+                    level=logging.WARNING,
+                    session_id=self.session_id, phase=phase, exc_info=True,
+                )
 
     def _log_cloud_diag(
         self,

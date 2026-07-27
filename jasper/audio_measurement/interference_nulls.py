@@ -78,9 +78,10 @@ never about hardware. Nothing in this module knows what a horn is.
 
 Pure computation: numpy plus
 :mod:`jasper.audio_measurement.spatial_combine`. No I/O, no logging, no
-globals, no randomness, no product policy — and, like the module it builds
-on, **zero production callers by design** until the plan's PR-4 wires it into
-the conductor's cloud-group analysis.
+globals, no randomness, no product policy. Shipped with zero production
+callers by design; wired in by the plan's PR-4
+(:func:`jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`,
+landed 2026-07-26) into the conductor's cloud-group analysis.
 
 **Detection only.** Nothing here removes an echo or fills a null; the plan's
 guardrail ("No EQ of interference-flagged bins, ever; they are reported

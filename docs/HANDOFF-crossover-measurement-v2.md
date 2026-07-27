@@ -447,13 +447,20 @@ together. Design rationale:
   `MIN_CLOUD_MEASURE_POSITIONS − 1` entries or the LF half of the
   measurement quietly disappears. Pinned by test.
 - **Geometry-locked retake.** At group end the conductor runs
-  `combine_positions` and reads ONE field: `geometry`. A `locked`
+  `combine_cloud_positions` once and reads its `geometry` field for this
+  retake decision (N3 review finding, 2026-07-27: this bullet's prior
+  "reads ONE field" wording was stale against the "Landed as shipped"
+  paragraph further down, which is the current, accurate description — the
+  SAME combined result also feeds PR-4's honest-instrument pipeline, not
+  just this retake gate). A `locked`
   verdict that is not `thin_evidence`-qualified rejects the group's last
   position with `cloud_geometry_locked` and a wider-spot instruction —
   at most `GEOMETRY_RETRY_POSITIONS` times, then it accepts and
   RECORDS the verdict — journal plus the durable state's `cloud` block.
-  No household surface renders it yet; PR-4 owns that, so do not read
-  "records" as "discloses". Bounded because a source-fixed comb (S0's horn
+  PR-4 carries the verdict (and its plain-language guidance copy) onto the
+  envelope and `/state`; no household-facing surface renders it yet — PR-7
+  does — so do not read "records" (or "carries") as "discloses". Bounded
+  because a source-fixed comb (S0's horn
   rim) never decorrelates no matter how far the mic moves. The replaced
   take is dropped from the cloud — that is what the protocol's retake
   lever means (the same index is measured again), not a claim that
@@ -487,15 +494,41 @@ together. Design rationale:
   (`MIN_FREE_SPACE_AFTER_PUBLISH_BYTES`) was deliberately *decoupled*
   and frozen at 256 MiB — see its comment.
 - **PR-4's seam** is `combine_cloud_positions(positions)` →
-  `CombinedResponse | None`. PR-3b reads exactly one field off it
-  (`geometry`, via `cloud_geometry_verdict`); PR-4's pipeline — null
-  gate, spec curve, persistence — becomes a second reader of the same
-  call, never a second combine. `cloud_position_capture` is the
+  `CombinedResponse | None`. `cloud_position_capture` is the
   per-position assembly underneath and does not change. The
   gated-IR reconstruction those functions perform is validated against
   the S0 corpus by
   [`tests/test_crossover_v2_cloud_geometry_corpus.py`](../tests/test_crossover_v2_cloud_geometry_corpus.py)
   (`JTS_FLAT_LIN_S0`-gated), not asserted.
+
+  **Landed as shipped (2026-07-26).** `_close_cloud_group` calls
+  `combine_cloud_positions` exactly ONCE per group close and derives BOTH
+  the retry-gating verdict (`_geometry_verdict_from_combined`, a pure
+  function of the already-combined result) and the honest-instrument
+  pipeline (`assemble_cloud_group_result`) from that single object — the
+  contract this section's opening paragraph states. An earlier revision of
+  this wiring called `combine_cloud_positions` a SECOND time from the
+  pipeline step (justified then as "byte-for-byte deterministic, so it
+  agrees with the retry-gating call anyway"); round-1 review measured the
+  actual cost — seconds-per-combine, 3-6 s across runs/hosts on the S0
+  ten-position corpus (interpreter-bound `smooth_fractional_octave`, worse
+  on a Pi 5) — and reversed it: real operator seconds are not worth
+  spending on a claim that was true but unnecessary to rely on. With
+  `GEOMETRY_RETRY_POSITIONS = 2` allowing up to 3 close attempts per group
+  (2 retries + the accepting close), the pre-fix worst case was 3 × 2 = 6
+  combines (round-2 review, 2026-07-27, correcting an earlier "up to 4x"
+  claim, and restating the earlier "5.6-6.2 s" point figure as a regime —
+  it did not reproduce across hosts/runs).
+  `cloud_geometry_verdict(positions)` (PR-3b's original seam) is now a
+  positions-only convenience wrapper the conductor itself does not call
+  (kept for `test_crossover_v2_cloud_geometry_corpus.py` and any other
+  direct caller); `test_crossover_v2_conductor.py`'s `_lock` monkeypatch was
+  updated to patch `_geometry_verdict_from_combined` instead (the seam the
+  conductor actually calls now), with the real (unmocked) combine still
+  running underneath it. The wiring contract itself — the mask/geometry/
+  registry consumed TOGETHER — is `assemble_cloud_group_result`, issue
+  #1742 item 4's single result-assembly function, called once per closed
+  group and never read from in pieces.
 
 **Flatness-verify (#1668 PR-D) — a SIBLING claim, report-only.** The same
 VERIFY capture also computes `ProgramAnalysis.flatness_tracking`: gated
@@ -573,7 +606,7 @@ most visible thing on the screen.
 
 | File | Responsibility |
 |---|---|
-| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the PR-4 combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). |
+| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). PR-4 adds the contract-derived bands (`_composed_swept_band_hz`, `_derive_cloud_echo_band_hz`, `ECHO_BAND_HF_REGIME_FLOOR_HZ`) and the wiring-contract assembly (`assemble_cloud_group_result`, `group_cloud_result`). |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. Also owns flatness-verify (#1668 PR-D): `_flatness_tracking` / `FLATNESS_VERIFY_HI_HZ` / `FLATNESS_VERIFY_TOLERANCE_DB` — see "Flatness-verify" above. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
@@ -1301,4 +1334,4 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-07-26
+Last verified: 2026-07-27

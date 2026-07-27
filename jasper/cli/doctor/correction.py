@@ -404,3 +404,58 @@ def check_capture_relay() -> CheckResult:
         "(cd relay && npx wrangler deploy); other phone-mic measurements are "
         "unaffected",
     )
+
+
+@doctor_check(order=32.6, group="correction")
+def check_crossover_v2_cloud_pipeline() -> CheckResult:
+    """Flat-linearization plan PR-4: the last session's honest-instrument
+    cloud verdict — per group, the spec pass/fail, the excluded-interval
+    count, and whether the geometry locked.
+
+    "Not yet run" (no household has ever closed a cloud group — a fresh
+    install, or one still on a pre-PR-3b build) is a distinct, non-failing
+    state, never misreported as a clean pass — mirrors every other
+    honesty-instrument surface's own rule (crossover_v2_flow's own
+    ``group_geometry``/``group_cloud_result``: "None means not yet run, never
+    a clean verdict"). A closed group whose spec FAILED is a WARN, not a
+    FAIL: an out-of-spec speaker is a measurement finding for the household to
+    act on at ``/correction/``, not a broken daemon.
+
+    Only ``PHASE_CLOUD_VERIFY``'s spec verdict gates the warn (BLOCKER review
+    finding, 2026-07-27). ``PHASE_CLOUD_MEASURE`` is the PRE-APPLY cloud — the
+    uncorrected baseline that EXISTS in order to be out of spec — so gating
+    on "any phase" meant a perfectly corrected speaker warned FOREVER: the
+    pre-apply grade never changes no matter how good the fix is (reviewer
+    reproduced against the real S0 corpus through this exact check). VERIFY's
+    grade is the post-apply, household-actionable one. MEASURE's own verdict
+    is still reported in the detail text below — never hidden, it just does
+    not drive the warn.
+    """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
+    from jasper.web.correction_crossover_v2 import crossover_v2_status_block
+
+    label = "crossover v2 cloud pipeline"
+    block = crossover_v2_status_block()
+    cloud = (block or {}).get("cloud")
+    if not isinstance(cloud, dict) or not cloud:
+        return CheckResult(label, "ok", "no cloud-measurement session recorded yet")
+    parts: list[str] = []
+    any_fail = False
+    for phase in sorted(cloud):
+        entry = cloud[phase]
+        if not isinstance(entry, dict):
+            continue
+        overall = entry.get("overall_passed")
+        spec_text = "pass" if overall is True else "fail" if overall is False else "n/a"
+        if phase == PHASE_CLOUD_VERIFY and overall is False:
+            any_fail = True
+        excluded = entry.get("excluded_interval_count")
+        excluded_text = "n/a" if excluded is None else str(excluded)
+        parts.append(
+            f"{phase}: spec={spec_text} "
+            f"excluded_intervals={excluded_text} "
+            f"geometry_locked={bool(entry.get('geometry_locked'))}"
+        )
+    if not parts:
+        return CheckResult(label, "ok", "no closed cloud groups recorded yet")
+    return CheckResult(label, "warn" if any_fail else "ok", "; ".join(parts))

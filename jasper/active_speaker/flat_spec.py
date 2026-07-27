@@ -14,14 +14,17 @@ meet the flat-linearization spec?" -- and nothing more.
 :func:`spec_convergence_residual` is a second reading of that same
 evaluation, not a second question: it pools the report's own per-band
 numbers into the one scalar the plan's S3 closed loop converges on, and
-holds no threshold or loop policy of its own. Wiring either into
-`/state`, a wizard, or the conductor is later work; this module ships as a
+holds no threshold or loop policy of its own. This module shipped as a
 pure, uncalled evaluator, mirroring
 :mod:`jasper.active_speaker.linearization_envelope`'s shape (a pure module
 with zero production callers at the time it shipped -- and one now, which is
 the whole arc of the pattern: ships pure and uncalled, gets wired later, and
-its docstring says which of the two it is TODAY. This one is still uncalled;
-check that sentence rather than trusting this one).
+its docstring says which of the two it is TODAY). `evaluate_flat_spec` is
+now called by the plan's PR-4
+(:func:`jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`,
+landed 2026-07-26) against the cloud's merged honesty mask;
+`spec_convergence_residual` remains uncalled -- S3's closed loop is not yet
+built. Check the current call graph rather than trusting this sentence.
 
 See docs/flat-linearization-plan.md, section "The spec -- what 'flat' means
 here," for the adopted definition this module implements: reference = power

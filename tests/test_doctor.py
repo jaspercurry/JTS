@@ -6058,6 +6058,176 @@ def test_correction_doctor_checks_registered():
     assert "check_sound_profile" in names
     assert "check_dsp_apply_state" in names
     assert "check_correction_latest_bundle" in names
+    assert "check_crossover_v2_cloud_pipeline" in names
+
+
+def test_check_crossover_v2_cloud_pipeline_ok_when_never_run(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(v2host, "load_v2_state", lambda: None)
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "no cloud-measurement session" in r.detail
+
+
+def test_check_crossover_v2_cloud_pipeline_reports_per_group_verdict(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": True},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {
+                            "overall_passed": True,
+                            "bands": [
+                                {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True},
+                            ],
+                        },
+                        "merged_excluded_bands_hz": [[8000.0, 9000.0]],
+                    },
+                },
+                "cloud_verify": {
+                    "geometry": {"locked": False},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {"overall_passed": False, "bands": []},
+                        "merged_excluded_bands_hz": [],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    # cloud_verify (the post-apply, household-actionable grade) failed its
+    # spec -- WARN, not FAIL (an out-of-spec speaker is a measurement
+    # finding, not a broken daemon). BLOCKER review finding (2026-07-27):
+    # only cloud_verify's own verdict gates the warn -- cloud_measure's PASS
+    # here is incidental to this fixture, not what drives the status.
+    assert r.status == "warn"
+    assert "cloud_measure: spec=pass excluded_intervals=1 geometry_locked=True" in r.detail
+    assert "cloud_verify: spec=fail excluded_intervals=0 geometry_locked=False" in r.detail
+
+
+def test_check_crossover_v2_cloud_pipeline_ok_when_pre_apply_fails_but_post_apply_passes(
+    monkeypatch,
+):
+    """BLOCKER review finding (2026-07-27): ``cloud_measure`` is the
+    PRE-APPLY cloud -- the uncorrected baseline that EXISTS in order to be
+    out of spec. Gating the warn on ANY phase's verdict meant a perfectly
+    corrected speaker warned forever (reviewer reproduced against the real
+    S0 corpus through this exact doctor check: the pre-apply grade never
+    changes no matter how good the fix is). Only ``cloud_verify`` -- the
+    post-apply, household-actionable grade -- may gate the warn;
+    ``cloud_measure``'s own verdict still appears in the detail text, never
+    hidden."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": False},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {"overall_passed": False, "bands": []},
+                        "merged_excluded_bands_hz": [[8000.0, 9000.0]],
+                    },
+                },
+                "cloud_verify": {
+                    "geometry": {"locked": False},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {"overall_passed": True, "bands": []},
+                        "merged_excluded_bands_hz": [],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "cloud_measure: spec=fail" in r.detail
+    assert "cloud_verify: spec=pass" in r.detail
+
+
+def test_check_crossover_v2_cloud_pipeline_ok_when_every_group_passes(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": False},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {"overall_passed": True, "bands": []},
+                        "merged_excluded_bands_hz": [],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "cloud_measure: spec=pass" in r.detail
+
+
+def test_check_crossover_v2_cloud_pipeline_reports_n_a_when_pipeline_unavailable(
+    monkeypatch,
+):
+    """N4 review finding (2026-07-26): a group that CLOSED (geometry
+    decided) but whose honest-instrument pipeline never became available
+    (``combine_failed`` / ``pipeline_failed``) must read as ``spec=n/a`` —
+    distinct from both ``pass`` and ``fail`` — and must not flip the
+    overall check status to warn (an unavailable reading is not itself a
+    spec failure). ``excluded_intervals=n/a``, not ``=0`` (SF-1 review
+    finding, 2026-07-27): ``0`` would read as "the pipeline looked and found
+    no interference" — a fabricated-clean claim for a pipeline that never
+    ran at all."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": True},
+                    "pipeline": {"available": False, "reason": "combine_failed"},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "cloud_measure: spec=n/a excluded_intervals=n/a geometry_locked=True" in r.detail
 
 
 def test_web_design_assets_warns_when_manifest_missing(
