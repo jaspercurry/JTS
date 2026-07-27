@@ -166,6 +166,75 @@ iMM-6C series silently ran under the UMIK's calibration curve;
 magnitude-only impact, but it makes the saved-mic serial-entry UI bug a
 correctness issue).
 
+**A glitch verdict is a timeline SPLICE, not clock drift (2026-07-27,
+issue #1765).** Across the whole 2026-07-22…27 JTS3 journal (57 MEASURE
+captures) exactly two captures tripped `glitch_detected`, and **both fired
+on the residual guard with epsilon comfortably inside `MAX_DRIFT_PPM`** —
+2026-07-23 at 30.53 ppm / 798.46 samples, 2026-07-27 at 94.12 ppm / 32.36
+samples. The 500 ppm clock-drift bound has never fired in production. Read
+`epsilon_ppm` on a *glitched* capture as an artefact, not a measurement.
+
+The 2026-07-27 capture was recovered from the retained dump and
+cross-correlated (ncc 0.92–0.99) against the two captures that PASSED
+minutes later on the same program and rig: five of its six located sweeps
+agreed within 0.8 samples while the first woofer sweep sat 64.3 samples
+apart — **one +64-sample (1.333 ms) insertion between `sweep_w` and
+`sweep_t`**. That single step predicts every reported number: the woofer
+pair straddles it (32.1 ppm true drift + 64/1_036_800 = 93.8 vs 94.118
+observed), the tweeter pair sits entirely after it (32.097 ppm = the true
+drift), demeaned residual 32.2 predicted vs 32.357 observed, and the
+primary-sweep W↔T misalignment drove `delay_us` +15 → −847.6 µs and
+`predicted_ripple_db` 4.4 → 16.8.
+
+Attribution: **the leading hypothesis is Pi-side playback fill — and
+`event=outputd.xrun` does NOT rule it out.** An earlier pass on this issue
+concluded "capture side" from the absence of xrun lines in the playback
+window; that inference is invalid, and the owner refuted it directly by
+hearing audible tears during sweeps launched from the **command line**,
+with no browser in the path at all.
+
+The mechanism: on a short content read `jasper-outputd` zero-fills the
+deficit and still writes a full period to the DAC
+(`read_content_period` → `out[active..].fill(0)`,
+`rust/jasper-outputd/src/alsa_backend.rs`). That INSERTS
+`requested − frames` samples into the emitted timeline — audible as a brief
+tear, and an *arbitrary* frame count rather than a fixed granule, so a
+64-frame fill is entirely ordinary. Production confirms the insertion is
+real: `dac_frames_written` exceeds `frames_read` by thousands of frames
+(8,576 → 10,752 → 12,928 across three consecutive log lines on 2026-07-27).
+
+**Why the journal looked clean: the `event=outputd.xrun` eprintln fires ONLY
+in the `EPIPE`/`ESTRPIPE` branch.** Partial-period fills and `EAGAIN` empty
+periods increment `content_partial_period_count` /
+`content_empty_period_count` and log *nothing* — those counters surface only
+as fields on a later line that some other condition happened to emit
+(visible in the data: `empty_periods` climbs by 2 while `count` climbs by 1).
+The exact sample-inserting event is structurally silent. Compounding it,
+`jasper/correction/runtime_integrity.py` — the layer whose whole job is
+"did the audio path glitch during this capture?" — gates on `xrun_count`
+and never reads the partial/empty period counters, so a measurement that
+spans a fill passes its integrity check.
+
+The fill is periodic on this box, and the cadence + its clock-offset cause
+are owned by
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+§G ("What `direct` mode costs today") — not restated here. What matters for
+*this* doc: the last fill event before the 2026-07-27 session was 12:39:40
+and the next was due inside the failing capture's playback window. That is
+NOT proof for that capture — outputd restarted around the session (counter
+reset 89 → 1) and the counters were never sampled then — but the signature,
+the arbitrary fill size, and the audible tears all fit.
+
+The fill is no longer silent: `event=outputd.content_fill` plus the
+`outputd_content_fill_increased` gate in
+[`jasper/correction/runtime_integrity.py`](../jasper/correction/runtime_integrity.py)
+mean a capture that spans one is now flagged rather than passing its own
+integrity check (#1768). Still open: step-aware recovery using the N=3
+redundancy already paid for — a located step lets the analysis pick a
+step-free sub-window instead of retrying. `_locate_discontinuity` now names
+the step (size + which segment it landed after) on every MEASURE capture,
+which is the input that work needs — see the diagnostics section below.
+
 **Measurement-honesty gates (2026-07-22 night).** Three additive acceptance
 gates convert the corrupted-capture signatures above into honest
 refusals/retries — no selection math and no VERIFY comparison semantics
@@ -913,7 +982,7 @@ source, no drift.
 | `snr_floor` | CHECK / MEASURE | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16) |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
 | `clipped` | MEASURE / VERIFY | 1 | auto quieter retry (gain −3 dB) |
-| `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry |
+| `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped (#1765) |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
 | `locate_failed` | any | 1 | couldn't hear the speaker |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile) |
@@ -969,6 +1038,7 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `anchor_delay_us`, `snap_delta_us`, `snap_found`,
   `gate_window_ms`, `validity_floor_hz`,
   `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
+  `glitch_inputs`, `discontinuity_samples`, `discontinuity_after_segment`,
   `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`, plus
   per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
   `tweeter_snr_verdict`. (A `linearization` field rode this line until the
