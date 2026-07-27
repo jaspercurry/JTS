@@ -8,7 +8,8 @@ Two layers:
 
 * **Synthetic (always runs).** ``_composed_swept_band_hz`` /
   ``_derive_cloud_echo_band_hz``'s band-derivation contract (containment, the
-  HF-regime floor, graceful degradation on a malformed contract), and
+  HF-regime floor — clamped up to, and the clamp disclosed, since issue
+  #1763 — and graceful degradation on a malformed contract), and
   ``assemble_cloud_group_result``'s wiring contract (issue #1742 item 4: mask
   ∪ geometry ∪ registry consumed TOGETHER) on a small constructed two-path
   cloud — no corpus needed to prove the UNION happens.
@@ -38,6 +39,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     _composed_swept_band_hz,
     _derive_cloud_echo_band_hz,
     _geometry_guidance_copy,
+    _min_clamped_echo_band_width_hz,
     assemble_cloud_group_result,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
@@ -159,13 +161,20 @@ def test_derive_cloud_echo_band_hz_falls_back_to_module_default_when_undeclared(
     confirmed profile) -- the module's own long-standing default, clamped
     inside whatever passband was declared."""
     signal_band = (45.0, 20000.0)
-    assert _derive_cloud_echo_band_hz(signal_band, None) == DEFAULT_ECHO_BAND_HZ
+    derived = _derive_cloud_echo_band_hz(signal_band, None)
+    assert derived.band_hz == DEFAULT_ECHO_BAND_HZ
+    assert derived.source == "undeclared_default"
+    assert derived.hf_regime_clamped is False
 
 
 def test_derive_cloud_echo_band_hz_uses_the_declared_measurement_band():
     signal_band = (45.0, 20000.0)
     declared = (5000.0, 20000.0)
-    assert _derive_cloud_echo_band_hz(signal_band, declared) == declared
+    derived = _derive_cloud_echo_band_hz(signal_band, declared)
+    assert derived.band_hz == declared
+    assert derived.source == "declared"
+    assert derived.hf_regime_clamped is False
+    assert derived.derived_lo_hz == declared[0]
 
 
 def test_derive_cloud_echo_band_hz_clamps_to_the_declared_passband():
@@ -176,7 +185,9 @@ def test_derive_cloud_echo_band_hz_clamps_to_the_declared_passband():
     calibrated" paragraph)."""
     signal_band = (150.0, 18000.0)
     declared = (5000.0, 20000.0)  # upper edge exceeds the passband
-    assert _derive_cloud_echo_band_hz(signal_band, declared) == (5000.0, 18000.0)
+    assert _derive_cloud_echo_band_hz(signal_band, declared).band_hz == (
+        5000.0, 18000.0,
+    )
 
 
 def test_derive_cloud_echo_band_hz_falls_back_to_the_passband_when_degenerate(
@@ -188,35 +199,122 @@ def test_derive_cloud_echo_band_hz_falls_back_to_the_passband_when_degenerate(
     signal_band = (150.0, 2000.0)
     declared = (5000.0, 20000.0)  # sits entirely above the passband
     with caplog.at_level(logging.WARNING):
-        result = _derive_cloud_echo_band_hz(signal_band, declared)
-    assert result == signal_band
+        derived = _derive_cloud_echo_band_hz(signal_band, declared)
+    assert derived.band_hz == signal_band
+    assert derived.source == "passband_fallback"
     assert any(
         "cloud_echo_band_degenerate" in r.message for r in caplog.records
     )
 
 
-def test_derive_cloud_echo_band_hz_warns_below_the_hf_regime_floor(caplog):
-    """Disclosed, never silently trusted or silently overridden -- see
-    ECHO_BAND_HF_REGIME_FLOOR_HZ's own citation of
-    test_band_deficit_separation_depends_on_the_analysis_band."""
+def test_derive_cloud_echo_band_hz_clamps_up_to_the_hf_regime_floor(caplog):
+    """Issue #1763: CLAMPED to the floor with disclosure, not disclosed and
+    proceeded-with.
+
+    The first real cloud session (2026-07-27) declared a correct [2000,
+    18000] tweeter window, fired PR-4's designed warning, and ran the
+    detector at 2 kHz anyway -- outside the regime its calibrations were
+    measured in (ECHO_BAND_HF_REGIME_FLOOR_HZ's own six-band deficit table,
+    re-derived by test_band_deficit_separation_depends_on_the_analysis_band,
+    shows the residue screen DEAD at a 2 kHz lower edge). The contract's
+    upper edge is kept: the floor says where the detector is calibrated, not
+    how wide the driver's window is.
+    """
     signal_band = (150.0, 20000.0)
     declared = (2000.0, 20000.0)  # below the floor, but well inside the passband
     with caplog.at_level(logging.WARNING):
-        result = _derive_cloud_echo_band_hz(signal_band, declared)
-    # Disclosed, not overridden: the declared value is what is returned.
-    assert result == declared
+        derived = _derive_cloud_echo_band_hz(signal_band, declared)
+
+    assert derived.band_hz == (ECHO_BAND_HF_REGIME_FLOOR_HZ, 20000.0)
+    assert derived.hf_regime_clamped is True
+    assert derived.source == "declared"
+    # The declared edge survives the clamp as disclosure, so a reader can
+    # always recover what the contract actually said.
+    assert derived.derived_lo_hz == 2000.0
+    assert derived.disclosure() == {
+        "source": "declared",
+        "hf_regime_clamped": True,
+        "derived_lo_hz": 2000.0,
+        "floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+    }
+    clamped = [
+        r for r in caplog.records
+        if "cloud_echo_band_clamped_to_hf_regime" in r.message
+    ]
+    assert clamped
+    assert "derived_lo_hz=2000.0" in clamped[0].message
+    assert f"clamped_lo_hz={ECHO_BAND_HF_REGIME_FLOOR_HZ}" in clamped[0].message
+    assert f"floor_hz={ECHO_BAND_HF_REGIME_FLOOR_HZ}" in clamped[0].message
+
+
+def test_derive_cloud_echo_band_hz_falls_back_when_the_clamp_would_be_degenerate(
+    caplog,
+):
+    """The clamp's own degenerate case: raising the lower edge to the floor
+    would leave a band too narrow for the detector to resolve anything in
+    (``_min_clamped_echo_band_width_hz`` -- 3750 Hz, the width at which
+    ``GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us`` reaches the top of the
+    searched window, so no delay the detector may look for could ever be
+    clustered). DEFAULT_ECHO_BAND_HZ stands in, with its own disclosure
+    reason, rather than a stub band that would refuse everything.
+    """
+    signal_band = (150.0, 7000.0)
+    declared = (1500.0, 7000.0)  # clamp would leave (4000, 7000) -- 3000 Hz
+    with caplog.at_level(logging.WARNING):
+        derived = _derive_cloud_echo_band_hz(signal_band, declared)
+
+    assert derived.band_hz == DEFAULT_ECHO_BAND_HZ
+    assert derived.source == "clamp_degenerate_default"
+    assert derived.hf_regime_clamped is False
+    assert derived.derived_lo_hz == 1500.0
+    # The documented trade, asserted rather than left implicit: in THIS
+    # corner the fallback is not re-contained inside the passband, so the
+    # signal-presence screen's deficit statistic goes uncalibrated. That is
+    # the lesser loss against a band too narrow to resolve any delay, and it
+    # needs a 2-way system swept no higher than 7.75 kHz to reach at all.
+    assert derived.band_hz[1] > signal_band[1]
     assert any(
-        "cloud_echo_band_below_hf_regime" in r.message for r in caplog.records
+        "cloud_echo_band_clamp_degenerate" in r.message for r in caplog.records
     )
+    # ... and the ordinary clamp event is NOT also emitted: one path, one
+    # disclosure.
+    assert not any(
+        "cloud_echo_band_clamped_to_hf_regime" in r.message
+        for r in caplog.records
+    )
+
+
+def test_min_clamped_echo_band_width_dominates_the_detector_bin_floor():
+    """The one rule is enough, and it is derived rather than picked: the
+    geometry-resolution bound (3.0 steps * 1e6 / 800 us = 3750 Hz) sits far
+    above MIN_ECHO_BAND_BINS' own width need (16 bins of a 4096-point FFT at
+    48 kHz = 15 * 11.72 = 175.8 Hz), so a band clearing the former clears the
+    latter."""
+    from jasper.audio_measurement.spatial_combine import (
+        DEFAULT_ECHO_SEARCH_US,
+        GEOMETRY_MIN_RESOLUTION_STEPS,
+        MIN_ECHO_BAND_BINS,
+    )
+
+    width = _min_clamped_echo_band_width_hz()
+    assert width == pytest.approx(3750.0)
+    # Derived from the detector's constants, not a literal beside them.
+    assert width == pytest.approx(
+        GEOMETRY_MIN_RESOLUTION_STEPS * 1e6 / DEFAULT_ECHO_SEARCH_US[1]
+    )
+    bin_floor_hz = (MIN_ECHO_BAND_BINS - 1) * (SAMPLE_RATE / N_FFT)
+    assert bin_floor_hz == pytest.approx(175.78, abs=0.01)
+    assert width > 10.0 * bin_floor_hz
 
 
 def test_derive_cloud_echo_band_hz_above_the_floor_is_silent(caplog):
     signal_band = (150.0, 20000.0)
     declared = (ECHO_BAND_HF_REGIME_FLOOR_HZ, 20000.0)
     with caplog.at_level(logging.WARNING):
-        _derive_cloud_echo_band_hz(signal_band, declared)
+        derived = _derive_cloud_echo_band_hz(signal_band, declared)
+    assert derived.hf_regime_clamped is False
     assert not any(
-        "cloud_echo_band_below_hf_regime" in r.message for r in caplog.records
+        "cloud_echo_band_clamped" in r.message for r in caplog.records
     )
 
 
@@ -237,7 +335,7 @@ def test_a_plausible_jts3_like_contract_stays_inside_the_hf_regime_and_the_passb
         RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
     ]
     signal_band = _composed_swept_band_hz(roles)
-    echo_band = _derive_cloud_echo_band_hz(signal_band, (5000.0, 20000.0))
+    echo_band = _derive_cloud_echo_band_hz(signal_band, (5000.0, 20000.0)).band_hz
 
     assert signal_band[0] <= echo_band[0] and echo_band[1] <= signal_band[1]
     assert echo_band[0] >= ECHO_BAND_HF_REGIME_FLOOR_HZ
@@ -245,6 +343,49 @@ def test_a_plausible_jts3_like_contract_stays_inside_the_hf_regime_and_the_passb
     # already validated the null gate against (S0_BAND_HZ in
     # test_interference_nulls.py == DEFAULT_ECHO_BAND_HZ == (5000, 19000)).
     assert echo_band[0] == pytest.approx(DEFAULT_ECHO_BAND_HZ[0])
+
+
+def test_the_real_jts3_contract_is_clamped_into_the_hf_regime_and_disclosed():
+    """The JTS3-shaped contract test (issue #1763), using the box's own
+    numbers rather than a plausible fixture: the cdhorn tweeter's confirmed
+    ``measurement_band_hz`` is [2000, 18000] and the crossover sits at
+    2000 Hz, which is exactly the case the first real cloud session
+    (2026-07-27, session cap_4NUGqx3yIzSuv4ta2ozfKw) ran outside the
+    detector's calibrated regime.
+
+    Two properties, both load-bearing:
+
+    * the APPLIED band is (4000, 18000) -- clamped, contained, and above the
+      floor -- rather than the declared (2000, 18000);
+    * the clamp is DISCLOSED on the value itself, so a payload reader can
+      tell this band from one a driver actually declared.
+
+    And the regime note the clamp is cheap because of: the detector's
+    quefrency step is ``1e6 / bandwidth``, so this 14 kHz band resolves at
+    71.43 us -- the SAME step as DEFAULT_ECHO_BAND_HZ's (5000, 19000), also
+    14 kHz wide, which is the band S0 was measured at. Cross-session tau/r
+    comparisons stay clean.
+    """
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(45.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
+    ]
+    signal_band = _composed_swept_band_hz(roles)
+    derived = _derive_cloud_echo_band_hz(signal_band, (2000.0, 18000.0))
+
+    assert derived.band_hz == (4000.0, 18000.0)
+    assert derived.hf_regime_clamped is True
+    assert derived.derived_lo_hz == 2000.0
+    assert derived.disclosure()["hf_regime_clamped"] is True
+    assert derived.disclosure()["derived_lo_hz"] == 2000.0
+    # Containment survives the clamp.
+    assert signal_band[0] <= derived.band_hz[0]
+    assert derived.band_hz[1] <= signal_band[1]
+
+    resolution_us = 1e6 / (derived.band_hz[1] - derived.band_hz[0])
+    s0_resolution_us = 1e6 / (DEFAULT_ECHO_BAND_HZ[1] - DEFAULT_ECHO_BAND_HZ[0])
+    assert resolution_us == pytest.approx(71.43, abs=0.01)
+    assert resolution_us == pytest.approx(s0_resolution_us)
 
 
 # --------------------------------------------------------------------------- #
@@ -314,12 +455,46 @@ def test_assemble_cloud_group_result_reports_geometry_and_registry_for_a_locked_
         "position_invariant", "position_dependent",
     )
     assert result["echo_band_hz"] == list(SYNTHETIC_BAND_HZ)
+    # Not stated by this caller -- "unknown", never "not clamped" (issue
+    # #1763's own unknown-vs-zero rule, the one validity_floor_hz follows).
+    assert result["echo_band_provenance"] is None
     # Floor-division stride (mirrors _decimate_sum's exact shape): a grid
     # size not evenly divisible by its own stride yields ceil(n/step), which
     # can land one OVER the nominal cap — not <=, but never far past it.
     assert len(result["curve"]["freqs_hz"]) <= CLOUD_CURVE_MAX_JSON_POINTS + 1
     assert len(result["curve"]["freqs_hz"]) == len(result["curve"]["magnitude_db"])
     assert isinstance(result["spec"]["overall_passed"], bool)
+
+
+def test_assemble_cloud_group_result_publishes_the_clamp_to_a_payload_reader():
+    """Issue #1763's honesty rule made executable: a consumer of the payload
+    must be able to tell a contract-derived band from a clamped one WITHOUT
+    the journal. ``echo_band_hz`` alone cannot answer that -- (4000, 18000)
+    looks the same whether a driver declared it or a clamp produced it -- so
+    the provenance the derivation returns rides alongside it, and it is
+    JSON-native because the whole payload is persisted verbatim into the
+    durable v2 state and the bundle artifact."""
+    signal_band = (45.0, 20000.0)
+    derived = _derive_cloud_echo_band_hz(signal_band, (2000.0, 19_000.0))
+    combined = combine_positions(_locked_cloud(), echo_band_hz=derived.band_hz)
+
+    result = assemble_cloud_group_result(
+        combined,
+        echo_band_hz=derived.band_hz,
+        echo_band_provenance=derived.disclosure(),
+    )
+
+    assert result["echo_band_hz"] == [ECHO_BAND_HF_REGIME_FLOOR_HZ, 19_000.0]
+    assert result["echo_band_provenance"] == {
+        "source": "declared",
+        "hf_regime_clamped": True,
+        "derived_lo_hz": 2000.0,
+        "floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+    }
+    # Persisted verbatim — so it has to survive a JSON round-trip.
+    assert json.loads(json.dumps(result["echo_band_provenance"])) == (
+        result["echo_band_provenance"]
+    )
 
 
 def test_assemble_cloud_group_result_no_geometry_guidance_when_not_locked():

@@ -1094,6 +1094,29 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
         assert pipeline["available"] in (True, False)
         if pipeline["available"]:
             assert "spec" in pipeline and "null_registry" in pipeline
+            # Issue #1763: the applied analysis band NEVER reaches the durable
+            # state without the disclosure of how it was derived — a reader
+            # here can tell a contract-derived band from an HF-regime-clamped
+            # one without going to the journal.
+            provenance = pipeline["echo_band_provenance"]
+            assert set(provenance) == {
+                "source", "hf_regime_clamped", "derived_lo_hz", "floor_hz",
+            }
+            assert provenance["source"] in {
+                "declared", "undeclared_default",
+                "clamp_degenerate_default", "passband_fallback",
+            }
+            assert isinstance(provenance["hf_regime_clamped"], bool)
+            unclamped_contract = (
+                not provenance["hf_regime_clamped"]
+                and provenance["source"] in {"declared", "undeclared_default"}
+            )
+            if unclamped_contract:
+                # No clamp on this path, so the applied lower edge IS the
+                # contract-derived one. (The two fallback sources publish the
+                # band they fell back TO, so their derived edge legitimately
+                # differs — see _CloudEchoBand.)
+                assert provenance["derived_lo_hz"] == pipeline["echo_band_hz"][0]
         assert conductor.group_cloud_result(phase) == pipeline
     compact = v2host.crossover_v2_status_block()["cloud"]
     assert set(compact) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
