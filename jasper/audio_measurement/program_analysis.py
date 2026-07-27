@@ -1319,6 +1319,15 @@ def _locate_discontinuity(
     Needs enough located sweeps to leave the step model ≥2 degrees of freedom,
     so an old-shaped 3-sweep program (2 roles ⇒ 4 parameters) resolves nothing
     and returns ``(0.0, "")`` rather than fitting noise.
+
+    Limitation worth knowing before trusting a reported step: with only 6
+    points and one extra parameter chosen as the best of 5 candidate cuts,
+    a capture whose per-segment LOCATE noise is itself several samples can
+    fit a spurious step. That is bounded — this value is diagnostic and gates
+    nothing — and the same diag record carries
+    ``sweep_locate_confidence_min`` / ``sweep_residual_ms_worst``, which is
+    where a reader checks whether the locations were trustworthy in the first
+    place. Read a step alongside those, not on its own.
     """
     ordered = sorted(
         stimulus_locs, key=lambda loc: program.segment(loc.segment_id).start_sample

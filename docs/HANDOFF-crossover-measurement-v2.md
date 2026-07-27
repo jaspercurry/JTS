@@ -215,19 +215,25 @@ The exact sample-inserting event is structurally silent. Compounding it,
 and never reads the partial/empty period counters, so a measurement that
 spans a fill passes its integrity check.
 
-On this box the fills are metronomic: an xrun event every ~17.5 minutes all
-day (2176 frames per event ≈ 43 ppm of accumulated clock offset between the
-content producer and the DAC). The last event before the 2026-07-27 session
-was 12:39:40; +17.5 min lands inside the failing capture's playback window.
+The fill is periodic on this box, and the cadence + its clock-offset cause
+are owned by
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+§G ("What `direct` mode costs today") — not restated here. What matters for
+*this* doc: the last fill event before the 2026-07-27 session was 12:39:40
+and the next was due inside the failing capture's playback window. That is
 NOT proof for that capture — outputd restarted around the session (counter
 reset 89 → 1) and the counters were never sampled then — but the signature,
 the arbitrary fill size, and the audible tears all fit.
 
-Open work: **make the fill observable** (log partial/empty fills; expose the
-counters so `runtime_integrity` can gate a capture on them) — issue #1768 —
-and step-aware recovery using the N=3 redundancy already paid for.
-`_locate_discontinuity` now names the step (size + which segment it landed
-after) on every capture — see the diagnostics section below.
+The fill is no longer silent: `event=outputd.content_fill` plus the
+`outputd_content_fill_increased` gate in
+[`jasper/correction/runtime_integrity.py`](../jasper/correction/runtime_integrity.py)
+mean a capture that spans one is now flagged rather than passing its own
+integrity check (#1768). Still open: step-aware recovery using the N=3
+redundancy already paid for — a located step lets the analysis pick a
+step-free sub-window instead of retrying. `_locate_discontinuity` now names
+the step (size + which segment it landed after) on every MEASURE capture,
+which is the input that work needs — see the diagnostics section below.
 
 **Measurement-honesty gates (2026-07-22 night).** Three additive acceptance
 gates convert the corrupted-capture signatures above into honest
