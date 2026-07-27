@@ -781,6 +781,7 @@ docs = [
   "docs/flat-linearization-plan.md",
   "docs/flat-linearization-productization-plan.md",
   "docs/flat-linearization-flow-simplification-plan.md",
+  "docs/linearization-integrity-plan.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
