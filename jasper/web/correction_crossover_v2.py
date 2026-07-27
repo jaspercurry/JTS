@@ -999,6 +999,51 @@ def persist_conductor_state(
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
         if prior.get("session_id") == snap.session_id:
             state["evidence"] = dict(prior["evidence"])
+    # B1 fix (flat-linearization plan PR-4 review, 2026-07-26): ``cloud``
+    # carries the SAME session-id-gated shape as ``candidate``/``evidence``
+    # above, which is the WRONG guard for it — a verify-only re-arm's
+    # conductor (``prepare_v2_verify``'s ``index_phase_map={1: PHASE_VERIFY}``)
+    # has NO group phase in ITS OWN session, so ``_cloud_summary`` always
+    # returns ``None`` for it: not because nothing closed, but because there
+    # is nothing to close in this session. A session-id gate would never
+    # carry the prior cloud verdict forward — exactly the same shape of bug
+    # ``pre_apply_profile``'s own comment below documents ("the deferred
+    # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
+    # relay session id"), and it hit on the very first tap of "Try again"
+    # (the PRIMARY next_action after a failed verify): the cloud verdict a
+    # household had just walked a session for went blank on `/state`, the
+    # envelope, and the doctor's read, all three at once.
+    #
+    # Carry ``cloud`` forward UNCONDITIONALLY whenever THIS conductor's own
+    # session has no group phase to report on — mirroring
+    # ``pre_apply_profile``'s unconditional carry-forward below, not
+    # ``candidate``/``evidence``'s session-scoped one above, which is the
+    # wrong shape for this path. A conductor that DOES have a group phase in
+    # its own session is left alone: ``_cloud_summary``'s own ``None`` there
+    # honestly means "this session's group has not closed yet" and must not
+    # be papered over with a stale prior verdict.
+    from jasper.active_speaker.crossover_v2_flow import GROUP_PHASES
+
+    conductor_session_phases = set(getattr(conductor, "session_phases", ()) or ())
+    if not (conductor_session_phases & GROUP_PHASES):
+        if state["cloud"] is None and isinstance(prior.get("cloud"), Mapping):
+            state["cloud"] = dict(prior["cloud"])
+        # The cloud bundle-artifact fingerprints ride inside `evidence`
+        # (`refs["cloud_artifacts"]`) — a group-phase-less session's own
+        # `publish_cloud` seam is never wired (nothing to publish), so its
+        # own `evidence` dict never carries this key forward on its own.
+        # Restore it from prior rather than losing it to whatever this
+        # session's own evidence looks like.
+        prior_evidence = prior.get("evidence")
+        if (
+            isinstance(prior_evidence, Mapping)
+            and "cloud_artifacts" in prior_evidence
+        ):
+            merged_evidence = dict(state["evidence"] or {})
+            merged_evidence.setdefault(
+                "cloud_artifacts", prior_evidence["cloud_artifacts"]
+            )
+            state["evidence"] = merged_evidence
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
     # handle_v2_restore) and ``apply_blocked`` (the auto-apply-failed nudge,
     # layered onto the "applying"-phase fix_and_retry screen — owner ruling,
@@ -2924,11 +2969,12 @@ def prepare_v2_verify(
             driver_class_by_role=context.driver_class_by_role,
             # No retain_position/publish_cloud seam here either (mirrors the
             # pre-existing omission above): this session's index_phase_map is
-            # {1: PHASE_VERIFY} only, so it has no cloud-verify group to join
-            # or publish — see _retain_verify_anchor_as_cloud_position's own
-            # guard. Still threaded for correctness (a verify-only re-arm's
-            # conductor computes the same derived bands, even though nothing
-            # here exercises them).
+            # {1: PHASE_VERIFY} only, so it has no cloud group of any kind —
+            # the conductor's own group_indexes/group_positions dicts for this
+            # session are empty, and _close_cloud_group/_run_cloud_pipeline
+            # never run. Still threaded for correctness (a verify-only
+            # re-arm's conductor computes the same derived bands, even though
+            # nothing here exercises them).
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
             applied=True,

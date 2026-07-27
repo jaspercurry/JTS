@@ -891,15 +891,23 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     last_cloud_measure_index = DEFAULT_CLOUD_MEASURE_POSITIONS + 1
     locks = {"n": 0}
 
-    def one_lock(_positions):
+    def one_lock(_combined, n_positions):
         locks["n"] += 1
         return {
             "locked": locks["n"] == 1, "reason": "geometry_locked",
-            "thin_evidence": False, "n_positions": len(_positions),
+            "thin_evidence": False, "n_positions": n_positions,
             "median_tau_us": 320.0, "clustered_fraction": 1.0, "n_confident": 6,
         }
 
-    monkeypatch_target = "jasper.active_speaker.crossover_v2_flow.cloud_geometry_verdict"
+    # S3 review finding (2026-07-26): _close_cloud_group combines a group's
+    # positions exactly ONCE and derives its retry-gating verdict via
+    # _geometry_verdict_from_combined — the seam to patch, not
+    # cloud_geometry_verdict (a positions-only convenience wrapper no longer
+    # called on this path). The real (unmocked) combine still runs; this
+    # patch only replaces what verdict is derived from its result.
+    monkeypatch_target = (
+        "jasper.active_speaker.crossover_v2_flow._geometry_verdict_from_combined"
+    )
     published: list = []
     retained: list = []
     conductor = _conductor(
@@ -935,12 +943,8 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     assert len(conductor.group_positions(PHASE_CLOUD_MEASURE)) == (
         DEFAULT_CLOUD_MEASURE_POSITIONS - 1
     )
-    # PR-4: VERIFY's own summed capture now JOINS the cloud-verify combine (it
-    # is the one anchor that DOES carry a real summed response — MEASURE's
-    # anchor never does, which is why CLOUD_MEASURE stays at N-1 above), so M
-    # positions yield M curves, not M-1.
     assert len(conductor.group_positions(PHASE_CLOUD_VERIFY)) == (
-        DEFAULT_CLOUD_VERIFY_POSITIONS
+        DEFAULT_CLOUD_VERIFY_POSITIONS - 1
     )
     # The replaced take left no position behind; the accepted retake did.
     ids = conductor.group_positions(PHASE_CLOUD_MEASURE)
@@ -1222,6 +1226,117 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
 def test_state_cloud_block_is_none_before_any_group_closes():
     v2host.save_v2_state({"session_id": "cap_fresh"})
     assert v2host.crossover_v2_status_block()["cloud"] is None
+
+
+def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):
+    """B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
+    (``prepare_v2_verify``'s ``index_phase_map={1: PHASE_VERIFY}``) has no
+    group phase in ITS OWN session, so ``_cloud_summary`` honestly returns
+    ``None`` for it — but the OLD session-id-gated carry-forward turned that
+    ``None`` into a destructive overwrite of a real prior cloud verdict.
+    One tap of "Try again" (the PRIMARY next_action after a failed verify)
+    used to blank `/state.crossover_v2.cloud`, the envelope's ``cloud`` key,
+    AND make the doctor report "no cloud-measurement session recorded yet"
+    for a session that very much ran.
+
+    Walks: a completed cloud session (durable state seeded, mirroring what
+    ``persist_conductor_state`` would have written) -> the REAL re-arm
+    conductor + the REAL ``persist_conductor_state`` call (the exact
+    production seam ``prepare_v2_verify``'s ``_open`` uses, mirroring
+    ``test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm``'s
+    own pattern for ``pre_apply_profile``) -> asserts all three surfaces
+    (`/state`, the envelope, the doctor) still see the cloud verdict.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+    from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
+
+    cloud_block = {
+        PHASE_CLOUD_MEASURE: {
+            "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
+            "positions": [{"position_id": "cloud_measure_09", "index": 9, "attempt": 9}],
+            "pipeline": {
+                "available": True,
+                "geometry_guidance": "Spread the mic further.",
+                "merged_excluded_bands_hz": [[8000.0, 9000.0]],
+                "spec": {
+                    "overall_passed": False,
+                    "bands": [{"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False}],
+                },
+            },
+        },
+    }
+    v2host.save_v2_state({
+        "session_id": "cap_original_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": "fp-original"},
+        "applied": True,
+        "cloud": cloud_block,
+        "evidence": {
+            "bundle_session_id": "bundle-1",
+            "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"},
+        },
+    })
+
+    # The real production seam: prepare_v2_verify's _open mints a fresh
+    # conductor bound to a NEW relay session id and immediately persists it
+    # ("Keep the durable candidate/applied facts; rebind the session id.").
+    conductor = CrossoverV2Conductor(
+        session_id="cap_rearm_session",
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=V2FlowSeams(
+            play=lambda *a, **k: None,
+            analyze=lambda *a, **k: None,
+            publish_check=lambda *a, **k: None,
+            publish_candidate=lambda *a, **k: None,
+            apply_complete=v2host._applied_gate,
+            apply_failed=v2host._apply_failure_gate,
+        ),
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        index_phase_map={1: PHASE_VERIFY},
+    )
+    v2host.persist_conductor_state(
+        conductor, failure_code=None, evidence={"bundle_session_id": "bundle-2"},
+    )
+
+    # Surface 1: the durable state itself.
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["cloud"] == cloud_block
+    assert state["evidence"]["cloud_artifacts"] == {
+        PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"
+    }
+
+    # Surface 2: /state's compact projection.
+    compact = v2host.crossover_v2_status_block()["cloud"]
+    assert compact is not None
+    assert compact[PHASE_CLOUD_MEASURE]["geometry_locked"] is True
+    assert compact[PHASE_CLOUD_MEASURE]["overall_passed"] is False
+
+    # Surface 3: the envelope.
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+    status = {
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": v2host.crossover_v2_status_block(),
+    }
+    envelope = build_crossover_envelope_v2(status)
+    assert envelope["cloud"] is not None
+    assert envelope["cloud"][PHASE_CLOUD_MEASURE]["geometry_locked"] is True
+
+    # Surface 4 (named "all three" in the review, the doctor makes four):
+    # the doctor no longer reports "no cloud-measurement session recorded".
+    monkeypatch.setattr(v2host, "load_v2_state", lambda: state)
+    r = check_crossover_v2_cloud_pipeline()
+    assert "no cloud-measurement session" not in r.detail
+    assert f"{PHASE_CLOUD_MEASURE}: spec=fail" in r.detail
 
 
 def test_a_corrupt_session_phases_list_never_reads_as_done():

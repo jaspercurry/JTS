@@ -284,10 +284,11 @@ MIN_CLOUD_VERIFY_POSITIONS = 5
 # defect (S0's source-fixed horn-rim comb — see the plan doc's "S0 executed"
 # §b) would never terminate, because no amount of mic movement decorrelates a
 # source-fixed null. Two retakes, then proceed and RECORD the verdict — it
-# lands in the journal and the durable v2 state's `cloud` block, and PR-4
-# renders it: `_geometry_guidance_copy`'s plain-language guidance on the
+# lands in the journal and the durable v2 state's `cloud` block. PR-4 carries
+# it further: `_geometry_guidance_copy`'s plain-language guidance rides the
 # envelope's own `cloud` key and `/state`'s compact projection
-# (`crossover_v2_status_block`).
+# (`crossover_v2_status_block`) — but no household-facing surface renders it
+# yet (zero JS/asset changes in PR-4). PR-7 renders it.
 GEOMETRY_RETRY_POSITIONS = 2
 
 # Retake headroom a cloud plan carries ABOVE its entry count and its geometry
@@ -635,7 +636,8 @@ REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # geometry instrument can say ("spread the mic further"), so the group asks for
 # that position again from a wider spot, at most ``GEOMETRY_RETRY_POSITIONS``
 # times, and then proceeds with the verdict RECORDED (journal + durable
-# state; PR-4 owns the household surface) rather than blocking a
+# state; PR-4 carries it on the envelope and `/state` — no household-facing
+# surface renders it yet, PR-7 renders it) rather than blocking a
 # measurement on a defect no mic move can decorrelate.
 REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 
@@ -1589,10 +1591,10 @@ class _CloudPosition:
     # threaded as a separate call-site argument. Carrying them on the position
     # (every position in one group shares the same conductor-derived values —
     # see ``CrossoverV2Conductor.__init__``) is what lets
-    # ``cloud_geometry_verdict`` (PR-3b's seam, still called with ONLY
-    # ``positions`` so its existing test doubles keep working unmodified) and
-    # PR-4's own second reader of :func:`combine_cloud_positions` reach the
-    # SAME derived bands without a second call-site parameter to keep in sync.
+    # :func:`combine_cloud_positions` derive the right bands from
+    # ``positions`` alone, with no caller (``_close_cloud_group``'s single
+    # combine, ``cloud_geometry_verdict``'s convenience wrapper) needing to
+    # pass them explicitly or risk two call sites drifting apart.
     # ``None`` means "use the module defaults" — the pre-PR-4 behaviour, still
     # exercised by every corpus/unit test that builds a ``_CloudPosition``
     # without these two kwargs.
@@ -1645,11 +1647,17 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
 
     Returns a :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`,
     or ``None`` when the group cannot be combined (no positions, or a malformed
-    one). PR-3b reads exactly one field off it (``geometry``, via
-    :func:`cloud_geometry_verdict`); PR-4's pipeline — the power-vs-median
-    exclusion screen, the null-identification gate, the spec curve — reads the
-    rest of the SAME object, so wiring it is a second reader of this call, never
-    a second combine.
+    one). Called exactly ONCE per group-close event, from
+    :meth:`CrossoverV2Conductor._close_cloud_group`: PR-3b reads one field off
+    the result (``geometry``, via :func:`_geometry_verdict_from_combined`);
+    PR-4's pipeline (:func:`assemble_cloud_group_result`) reads the rest of
+    the SAME object. Never a second combine — see S3 review finding
+    (2026-07-26): an earlier revision of this wiring called this function
+    twice per group close (once through :func:`cloud_geometry_verdict`, once
+    from the pipeline), which measured at 5.6-6.2 s per call on a laptop
+    (interpreter-bound ``smooth_fractional_octave``), duplicated per close and
+    up to 4x with geometry retries — real operator seconds for a claim
+    (byte-for-byte determinism) that was true but not worth paying for.
 
     Never raises. A group's captures are already-accepted evidence and a
     combiner failure must not retroactively fail them, so an unusable cloud is
@@ -1686,22 +1694,26 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
         return None
 
 
-def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
-    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+def _geometry_verdict_from_combined(
+    combined: Any, n_positions: int,
+) -> dict[str, Any]:
+    """The geometry-verdict dict from an ALREADY-COMBINED result.
 
-    A plain JSON-native dict, because the host persists it verbatim into the
-    durable v2 state. ``locked`` is ``False`` on every degraded path — but the
-    ``reason`` says WHICH degraded path, so "no credible echo estimates"
-    never reads the same as "the cloud combined and its nulls move".
+    Split out of :func:`cloud_geometry_verdict` (S3 review finding,
+    2026-07-26) so :meth:`CrossoverV2Conductor._close_cloud_group` can
+    combine a group's positions exactly ONCE and derive both the retry-gating
+    verdict and the honest-instrument pipeline from that ONE object, rather
+    than each deriving its own combine. A plain JSON-native dict, because the
+    host persists it verbatim into the durable v2 state. ``locked`` is
+    ``False`` on every degraded path — but the ``reason`` says WHICH degraded
+    path, so "no credible echo estimates" never reads the same as "the cloud
+    combined and its nulls move".
     """
-    if not positions:
-        return {"locked": False, "reason": "no_positions", "n_positions": 0}
-    combined = combine_cloud_positions(positions)
     if combined is None:
         return {
             "locked": False,
             "reason": "combine_failed",
-            "n_positions": len(positions),
+            "n_positions": n_positions,
         }
     geometry = combined.geometry
     return {
@@ -1713,6 +1725,21 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
         "clustered_fraction": float(geometry.clustered_fraction),
         "thin_evidence": bool(geometry.thin_evidence),
     }
+
+
+def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
+    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+
+    A convenience wrapper around :func:`combine_cloud_positions` +
+    :func:`_geometry_verdict_from_combined` for callers that only have
+    ``positions`` (the corpus acceptance test; any future direct caller) —
+    the conductor itself does NOT call this (see
+    :meth:`CrossoverV2Conductor._close_cloud_group`'s own single combine).
+    """
+    if not positions:
+        return {"locked": False, "reason": "no_positions", "n_positions": 0}
+    combined = combine_cloud_positions(positions)
+    return _geometry_verdict_from_combined(combined, len(positions))
 
 
 # --------------------------------------------------------------------------- #
@@ -1735,6 +1762,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
 #
 #   band            residue deficit    screen catches it?
 #   (5000, 19000)   40.43-41.98 dB     yes  (the module default)
+#   (4000, 20000)   35.46-35.58 dB     yes, by 10.46 dB -- comfortable
 #   (3000, 19000)   26.53-27.05 dB     yes, by only 1.53 dB -- "already thin
 #                                      one octave up"
 #   (2000, 19000)   18.21-18.23 dB     NO -- a false negative, not a
@@ -1744,10 +1772,11 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
 #
 # re-derived by test_band_deficit_separation_depends_on_the_analysis_band.
 # 4000 Hz is the lowest edge in that pinned table with COMFORTABLE headroom
-# (the next band up from the thin 3 kHz row); a declared contract whose
-# derived echo band dips below it is disclosed via a WARNING log rather than
-# silently trusted (an uncalibrated regime) or silently overridden (hiding a
-# real declared value) -- see _derive_cloud_echo_band_hz.
+# (10.46 dB, vs the 3 kHz row's thin 1.53 dB) -- the row printed above is
+# the one that actually justifies this constant's value. A declared
+# contract whose derived echo band dips below it is disclosed via a WARNING
+# log rather than silently trusted (an uncalibrated regime) or silently
+# overridden (hiding a real declared value) -- see _derive_cloud_echo_band_hz.
 ECHO_BAND_HF_REGIME_FLOOR_HZ = 4000.0
 
 # Cloud curves decimated for persistence (bundle cloud.json + the durable v2
@@ -1907,14 +1936,18 @@ def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
     verdict dict (:func:`cloud_geometry_verdict`'s own shape) -- the
     household-facing surface issue #1742 item 2 asked for. Recorded since
     PR-3b (the durable v2 state's ``cloud`` block, ``GEOMETRY_RETRY_POSITIONS``'s
-    own comment) but rendered nowhere until this function.
+    own comment). PR-4 carries this copy onto the envelope and `/state`
+    (`crossover_v2_status_block`'s compact projection); no household-facing
+    surface renders it yet (zero JS/asset changes in PR-4) -- PR-7 renders
+    it.
 
     Softened, never suppressed, when ``thin_evidence`` -- and the softened
-    copy names the discrete count (GEOMETRY_MIN_CONFIDENT-ish) rather than
-    hedging with a word like "somewhat", because thin_evidence is a cliff at
-    an exact confident-estimate count, not a gradient
-    (spatial_combine.GeometryLock's own docstring). Empty string when not
-    locked -- nothing to say.
+    copy names the qualitative floor ("the bare minimum of positions"),
+    never a discrete number or a percentage, because thin_evidence is a
+    cliff at an exact confident-estimate count, not a gradient
+    (spatial_combine.GeometryLock's own docstring) -- naming the actual
+    count would read as a gradient the instrument does not claim. Empty
+    string when not locked -- nothing to say.
     """
     if not geometry.get("locked"):
         return ""
@@ -1953,9 +1986,27 @@ def assemble_cloud_group_result(
     ``combined`` may be ``None`` (the group could not be combined at all --
     :func:`combine_cloud_positions`'s own honest "unknown") or a
     :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`.
-    Never raises: a downstream DSP failure here is diagnostic/disclosure
-    machinery, never a capture-accept gate, so any exception is caught and
+
+    **Fail-soft, named, not absolute** (S4 review finding, 2026-07-26 --
+    corrected from an earlier "any exception is caught" overclaim). Catches
+    exactly ``(ValueError, TypeError, IndexError, AttributeError)`` --
+    the documented raise surface of every function this calls
+    (:func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
+    and :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` both
+    raise only ``ValueError`` on malformed input;
+    :func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`
+    raises ``ValueError`` via ``zip(strict=True)`` on a length mismatch or
+    ``IndexError`` on an out-of-bounds index; a malformed/incomplete
+    ``combined``-like object raises ``TypeError``/``AttributeError`` reading
+    its fields). ``_run_cloud_pipeline`` relies on exactly this bounded set --
+    a downstream DSP failure inside it is diagnostic/disclosure machinery,
+    never a capture-accept gate, so this bounded family is caught and
     reported as ``available: False`` rather than surfacing to the caller.
+    Any OTHER exception -- ``KeyError``/``RuntimeError``/``OSError`` (none
+    observed on this call surface today; would indicate a genuine bug in a
+    callee) or ``MemoryError``/``KeyboardInterrupt`` -- propagates
+    uncaught, by design: it should reach the caller rather than silently
+    become an honest-looking "unavailable".
     """
     if combined is None:
         return {"available": False, "reason": "combine_failed"}
@@ -2743,7 +2794,7 @@ class CrossoverV2Conductor:
                 phase, index, attempt, analysis, result
             )
         else:
-            verdict = self._consume_verify(analysis, index, attempt, result)
+            verdict = self._consume_verify(analysis)
         if verdict.accepted:
             # A position group's PHASE is accepted only when its last index is
             # in; a single-capture phase closes on its own acceptance. Both
@@ -3069,8 +3120,19 @@ class CrossoverV2Conductor:
     def _close_cloud_group(
         self, phase: str, position: _CloudPosition
     ) -> PhaseVerdict:
-        """The group-end combine, and the one bounded retake it can ask for."""
-        verdict = cloud_geometry_verdict(self._group_positions[phase])
+        """The group-end combine, and the one bounded retake it can ask for.
+
+        Combines the group's retained positions exactly ONCE (S3 review
+        finding, 2026-07-26: an earlier revision called
+        ``combine_cloud_positions`` a second time from the pipeline step
+        below, measured at 5.6-6.2 s per call on a laptop and up to 4x per
+        group with geometry retries — real operator seconds this wiring
+        does not need to spend). Both the retry-gating verdict AND the
+        honest-instrument pipeline read the SAME ``combined`` object.
+        """
+        positions = self._group_positions[phase]
+        combined = combine_cloud_positions(positions)
+        verdict = _geometry_verdict_from_combined(combined, len(positions))
         retries = self._geometry_retries_used[phase]
         retry_warranted = (
             verdict.get("locked") is True
@@ -3118,7 +3180,26 @@ class CrossoverV2Conductor:
             thin_evidence=bool(verdict.get("thin_evidence")),
             geometry_retries=retries,
         )
-        self._run_cloud_pipeline(phase)
+        # S4 review finding (2026-07-26): the group's ACCEPT is already
+        # decided above (the log line just fired) — the honesty pipeline
+        # below is diagnostic/disclosure machinery layered on TOP of that
+        # decision, and must never be able to cost the group its accept.
+        # assemble_cloud_group_result's own try/except (ValueError, TypeError,
+        # IndexError, AttributeError -- the documented raise surface of
+        # everything it calls) and _run_cloud_pipeline's own try/except around
+        # the publish_cloud seam (OSError, RuntimeError, TypeError, ValueError
+        # -- the same family every other evidence-publish boundary in this
+        # file uses) each guard their own step; this wrap is the outer
+        # backstop making the invariant structurally true rather than merely
+        # usually true, at the one call site that matters.
+        try:
+            self._run_cloud_pipeline(phase, combined)
+        except (OSError, RuntimeError, TypeError, ValueError, IndexError, AttributeError):
+            log_event(
+                logger, "correction.crossover_v2_cloud_pipeline_call_failed",
+                level=logging.WARNING,
+                session_id=self.session_id, phase=phase, exc_info=True,
+            )
         return PhaseVerdict(
             True,
             payload={
@@ -3128,25 +3209,17 @@ class CrossoverV2Conductor:
             },
         )
 
-    def _run_cloud_pipeline(self, phase: str) -> None:
+    def _run_cloud_pipeline(self, phase: str, combined: Any) -> None:
         """PR-4: the honest-instrument pipeline, run once per CLOSED group.
 
-        A second reader of :func:`combine_cloud_positions` (the SAME derived
-        bands, carried on every retained position — see ``_CloudPosition``'s
-        docstring), never a second implementation of the combine: this is a
-        SEPARATE call from the one :func:`cloud_geometry_verdict` just made
-        above for the retry decision, deterministic on the same
-        (positions, bands) pair, so the two agree byte-for-byte in
-        production. The two calls stay independent on purpose — the retry
-        decision above must keep working when a test double replaces
-        ``cloud_geometry_verdict`` (PR-3b's own seam, still called with only
-        ``positions``), and this pipeline's own inputs (echo/null gate, spec
-        evaluation) have no equivalent test double to preserve.
+        ``combined`` is the SAME object ``_close_cloud_group`` just derived
+        its retry-gating verdict from — ONE combine per group close (S3
+        review finding, 2026-07-26), never a second call to
+        :func:`combine_cloud_positions`.
 
         Never raises and never affects the accepted verdict already decided
         above — this is diagnostic/disclosure machinery, not a capture gate.
         """
-        combined = combine_cloud_positions(self._group_positions[phase])
         self._group_cloud_result[phase] = assemble_cloud_group_result(
             combined, echo_band_hz=self._cloud_echo_band_hz,
         )
@@ -3185,58 +3258,10 @@ class CrossoverV2Conductor:
             glitch=analysis.glitch_detected,
         )
 
-    def _consume_verify(
-        self, analysis: ProgramAnalysis, index: int, attempt: int, result: Any,
-    ) -> PhaseVerdict:
+    def _consume_verify(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         verdict = self._verify_verdict(analysis)
-        if verdict.accepted:
-            # PR-4: VERIFY's own summed capture is captured in the same
-            # post-apply DSP state as the cloud-verify group, so it JOINS
-            # that group's combine — M positions yield M curves, not M-1
-            # (fundamental 1's floor is a count of CURVES). Additive only:
-            # the tracking verdict above (pass/fail, evidence, flatness) is
-            # computed and returned completely unchanged; this only retains
-            # the SAME response as one more position in the group a cloud
-            # session actually has (a verify-only re-arm has none — see the
-            # guard below).
-            self._retain_verify_anchor_as_cloud_position(
-                index, attempt, analysis, result,
-            )
         self._safe_log_diag(self._log_verify_diag, analysis, verdict)
         return verdict
-
-    def _retain_verify_anchor_as_cloud_position(
-        self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
-    ) -> None:
-        if PHASE_CLOUD_VERIFY not in self._group_positions:
-            # A verify-only re-arm session (index_phase_map={1: PHASE_VERIFY})
-            # has no cloud-verify group to join — nothing to do.
-            return
-        response = analysis.summed_response
-        if response is None:
-            return
-        # The anchor's OWN index (VERIFY's fixed capture-plan index) sorts
-        # before every CLOUD_VERIFY index by construction (VERIFY always
-        # precedes its position group — see CAPTURE_PHASES), so
-        # _retain_cloud_position's index-sort naturally places the anchor
-        # first without any special-casing here. A VERIFY retry (out of
-        # tolerance, then re-measured) reuses the same index, so a later
-        # PASSING attempt correctly REPLACES an earlier attempt's entry —
-        # the same idempotent-per-index rule every other retained position
-        # already gets.
-        position = _CloudPosition(
-            position_id=f"{PHASE_CLOUD_VERIFY}_{index:02d}",
-            index=index,
-            attempt=attempt,
-            prompt="",
-            wide=False,
-            captured_at=time.time(),
-            response=response,
-            sample_rate_hz=self._verify_program.sample_rate_hz,
-            echo_band_hz=self._cloud_echo_band_hz,
-            signal_band_hz=self._cloud_signal_band_hz,
-        )
-        self._retain_cloud_position(PHASE_CLOUD_VERIFY, position, analysis, result)
 
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call — a stale value from a PRIOR attempt must never

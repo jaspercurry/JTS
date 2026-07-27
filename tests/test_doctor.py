@@ -6144,6 +6144,38 @@ def test_check_crossover_v2_cloud_pipeline_ok_when_every_group_passes(monkeypatc
     assert "cloud_measure: spec=pass" in r.detail
 
 
+def test_check_crossover_v2_cloud_pipeline_reports_n_a_when_pipeline_unavailable(
+    monkeypatch,
+):
+    """N4 review finding (2026-07-26): a group that CLOSED (geometry
+    decided) but whose honest-instrument pipeline never became available
+    (``combine_failed`` / ``pipeline_failed``) must read as ``spec=n/a`` —
+    distinct from both ``pass`` and ``fail`` — and must not flip the
+    overall check status to warn (an unavailable reading is not itself a
+    spec failure)."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": True},
+                    "pipeline": {"available": False, "reason": "combine_failed"},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "cloud_measure: spec=n/a excluded_intervals=0 geometry_locked=True" in r.detail
+
+
 def test_web_design_assets_warns_when_manifest_missing(
     monkeypatch, tmp_path: Path,
 ):

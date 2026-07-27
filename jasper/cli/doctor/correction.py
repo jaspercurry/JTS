@@ -405,6 +405,7 @@ def check_capture_relay() -> CheckResult:
         "unaffected",
     )
 
+
 @doctor_check(order=32.6, group="correction")
 def check_crossover_v2_cloud_pipeline() -> CheckResult:
     """Flat-linearization plan PR-4: the last session's honest-instrument

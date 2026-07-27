@@ -1535,6 +1535,84 @@ def test_cloud_measure_group_closes_only_after_its_last_position():
     assert c.current_phase == PHASE_APPLYING
 
 
+def test_a_cloud_pipeline_exception_never_costs_the_group_its_accept(monkeypatch):
+    """S4 review finding (2026-07-26): the honest-instrument pipeline is
+    diagnostic/disclosure machinery layered on TOP of an ALREADY-DECIDED
+    accept — a bug in ``assemble_cloud_group_result`` (or the
+    ``publish_cloud`` seam) must never flip that decision.
+    ``_close_cloud_group``'s own wrap around ``_run_cloud_pipeline`` is the
+    structural guarantee; this proves it holds even for a raise OUTSIDE
+    ``assemble_cloud_group_result``'s own try/except (a genuinely unexpected
+    pipeline bug, not the bounded family it already handles internally).
+    """
+    import jasper.active_speaker.crossover_v2_flow as flow
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("synthetic pipeline bug")
+
+    monkeypatch.setattr(flow, "assemble_cloud_group_result", _boom)
+
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+
+    verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+
+    assert verdict["accepted"] is True
+    assert verdict["group_complete"] == PHASE_CLOUD_MEASURE
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+    # The geometry verdict (PR-3b's own field, decided BEFORE the pipeline
+    # ever runs) is unaffected either way.
+    assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
+    # The pipeline result is honestly None ("never successfully ran"), not a
+    # fabricated availability of any kind.
+    assert c.group_cloud_result(PHASE_CLOUD_MEASURE) is None
+
+
+def test_close_cloud_group_calls_the_combiner_exactly_once(monkeypatch):
+    """S3 review finding, 2026-07-26 (timing sanity). The round-1 draft of
+    this wiring called :func:`combine_cloud_positions` TWICE per group close
+    — once for the retry-gating verdict via the old ``cloud_geometry_verdict``
+    seam, once more from the honest-instrument pipeline. The two calls were
+    byte-for-byte identical, but measured at 5.6-6.2 s per call on a laptop
+    (interpreter-bound ``smooth_fractional_octave``), so the second call was
+    pure operator wait with no evidentiary value — the fix (``_close_cloud_
+    group`` combines once and both consumers read the same ``combined``
+    object) is what this test pins.
+
+    Wraps the REAL combiner (unlike ``_lock`` below, which stubs out
+    ``_geometry_verdict_from_combined`` entirely) so the call COUNT is the
+    only thing under test; the wrapped function still returns the genuine
+    combined result, so the rest of the group-close path (geometry verdict,
+    pipeline result) runs exactly as it would in production.
+    """
+    import jasper.active_speaker.crossover_v2_flow as flow
+
+    calls: list[int] = []
+    real_combine = flow.combine_cloud_positions
+
+    def _counting_combine(positions):
+        calls.append(len(positions))
+        return real_combine(positions)
+
+    monkeypatch.setattr(flow, "combine_cloud_positions", _counting_combine)
+
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+
+    verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+
+    assert verdict["accepted"] is True
+    assert verdict["group_complete"] == PHASE_CLOUD_MEASURE
+    # The group-end combine ran exactly ONCE for this close — not once for
+    # the retry gate and again for the pipeline.
+    assert len(calls) == 1
+    assert calls[0] == len(CLOUD_MEASURE_INDEXES)
+
+
 def test_cloud_position_retry_budget_is_per_position_not_per_group():
     """Eight prompted positions are eight independent captures. Collapsing them
     onto the phase's cumulative counter would let retakes early in a group
@@ -1576,18 +1654,31 @@ def test_cloud_position_qc_rejects_a_capture_with_no_usable_summed_response():
 def _lock(monkeypatch, *, thin: bool = False):
     """Force the group-end geometry verdict.
 
-    ``cloud_geometry_verdict`` is a pure function of the retained positions;
-    manufacturing a genuinely position-invariant echo across a synthetic cloud
-    is ``spatial_combine``'s own test territory (and is covered there). What
-    this file owns is the CONDUCTOR's response to a verdict, so the verdict is
-    injected."""
+    ``_geometry_verdict_from_combined`` is a pure function of an already-
+    combined result; manufacturing a genuinely position-invariant echo across
+    a synthetic cloud is ``spatial_combine``'s own test territory (and is
+    covered there). What this file owns is the CONDUCTOR's response to a
+    verdict, so the verdict is injected.
+
+    Patches ``_geometry_verdict_from_combined`` rather than
+    ``cloud_geometry_verdict`` (S3 review finding, 2026-07-26:
+    ``_close_cloud_group`` combines each group's positions exactly ONCE and
+    derives its retry-gating verdict from that single ``combined`` object via
+    ``_geometry_verdict_from_combined`` — it no longer calls
+    ``cloud_geometry_verdict`` at all, which stays a positions-only
+    convenience wrapper for other callers, e.g. the corpus acceptance test).
+    The real (unmocked) ``combine_cloud_positions`` still runs underneath —
+    this lambda ignores its ``combined`` argument entirely, so whatever the
+    fake seams' synthetic captures actually combine to is irrelevant to the
+    injected verdict.
+    """
     import jasper.active_speaker.crossover_v2_flow as flow
 
     monkeypatch.setattr(
-        flow, "cloud_geometry_verdict",
-        lambda positions: {
+        flow, "_geometry_verdict_from_combined",
+        lambda combined, n_positions: {
             "locked": True, "reason": "geometry_locked", "thin_evidence": thin,
-            "n_positions": len(positions), "median_tau_us": 320.0,
+            "n_positions": n_positions, "median_tau_us": 320.0,
         },
     )
 

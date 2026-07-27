@@ -108,6 +108,23 @@ def _unlocked_cloud(n: int = 6) -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Drift guard (N5 review finding, 2026-07-26)
+# --------------------------------------------------------------------------- #
+
+
+def test_cloud_curve_max_json_points_mirrors_the_verify_priors_decimation_cap():
+    """``CLOUD_CURVE_MAX_JSON_POINTS``'s own comment states the mirror is
+    deliberate (independent constant only because importing
+    ``correction_crossover_v2.MAX_PERSISTED_SUM_POINTS`` would be a
+    circular import) — pinned so the two curve-decimation caps cannot drift
+    apart silently, the same way ``tests/test_env_load_mirrors_unit.py``
+    pins ``ENV_FILES`` against the units that source it."""
+    from jasper.web.correction_crossover_v2 import MAX_PERSISTED_SUM_POINTS
+
+    assert CLOUD_CURVE_MAX_JSON_POINTS == MAX_PERSISTED_SUM_POINTS
+
+
+# --------------------------------------------------------------------------- #
 # _composed_swept_band_hz
 # --------------------------------------------------------------------------- #
 
@@ -393,8 +410,13 @@ def test_the_real_s0_cloud_is_identified_and_excluded_by_the_full_assembly():
         if b["f_lo_hz"] == 8000.0 and b["f_hi_hz"] == 16000.0
     )
     # The union DOES exclude bins in 8-16 kHz — the screen alone (asserted
-    # zero above) could not have produced this on its own.
-    assert band_8_16k["n_excluded"] > 0
+    # zero above) could not have produced this on its own. Pinned to the
+    # exact figures (N2 review finding, 2026-07-26), not just >0/==0: 5462
+    # total bins in this band on the S0 corpus's analysis grid, 2949 of them
+    # excluded by the union -- the same numbers this module's docstrings and
+    # the plan doc's "S0 executed" section quote.
+    assert band_8_16k["n_bins"] == 5462
+    assert band_8_16k["n_excluded"] == 2949
     merged_excluded_in_band = band_8_16k["n_excluded"]
 
     # The "delete one input" collapse, made explicit: screen-only accounting

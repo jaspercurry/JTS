@@ -1027,9 +1027,27 @@ WARNING log when its lower edge falls below `ECHO_BAND_HF_REGIME_FLOOR_HZ`
 (4000 Hz — the last comfortable row of `BAND_BELOW_PASSBAND_MARGIN_DB`'s
 own pinned six-band table, `test_band_deficit_separation_depends_on_the_
 analysis_band`, N-3's own note that PR-4 would derive this from the
-tweeter's declared range). The VERIFY anchor now JOINS the cloud-verify
-group (`_retain_verify_anchor_as_cloud_position`) — M positions yield M
-curves, not M-1; the tracking verdict is untouched. Persisted to
+tweeter's declared range).
+
+**VERIFY-anchor join: proposed, then REJECTED (2026-07-26, architect
+reversal).** The round-1 draft of this PR joined VERIFY's own summed capture
+into the cloud-verify combine (M positions yielding M curves instead of
+M-1), reasoning fundamental 1's floor is a count of curves. Reversed on
+review: the post-apply cloud would then contain the on-axis design
+point — the exact axis the fit optimizes — at 1/6 weight while the
+pre-apply cloud contains none, an undisclosed asymmetry in precisely the
+two curves PR-5 re-bases and PR-7 charts as before/after. The evidence
+gain (+1 curve of 6) does not outweigh biasing the comparison surface, and
+M is deliberately sized BELOW the "more is better" floor for wall-clock
+reasons (see `DEFAULT_CLOUD_VERIFY_POSITIONS`'s own "smaller on purpose"
+comment) — fundamental 1 does not actually require this. The post-apply
+cloud combines the M-1 prompted curves exactly as PR-3b shipped; the
+anchor stays tracking-only. A future SYMMETRIC design — adding an anchor
+summed sweep to MEASURE too, so both clouds carry the on-axis point at the
+same weight — is a legitimate follow-up if ever wanted, but asymmetric
+inclusion (post-apply only) is not.
+
+Persisted to
 `crossover_v2/<session>/cloud_measure.json` / `cloud_verify.json` (**a
 mechanism deviation from the work order's literal singular `cloud.json`**:
 the evidence store is write-once and the two groups close at genuinely
@@ -1040,5 +1058,22 @@ the second write — `bind_cloud_publisher`'s own docstring). Surfaced at
 projection plus the geometry guidance copy), and a new flat `jasper-doctor`
 check (`check_crossover_v2_cloud_pipeline`). Closes issue #1742 (items 2-3
 landed in PR-2, item 1 pre-program in #1746, item 4 here).*
+
+*Round-1 review (2026-07-26) — 1 blocker, 4 should-fixes, 6 nits, all fixed
+on the same branch; the VERIFY-anchor join was reversed (see above). B1
+(blocker): the verify re-arm's conductor has no group phase in its own
+session, so the durable `cloud` block's session-id-gated carry-forward
+(mirroring `candidate`/`evidence`) blanked a real prior cloud verdict on
+the first "Try again" tap — fixed with an unconditional carry-forward when
+the conductor's own session has no group phase, mirroring
+`pre_apply_profile`'s existing unconditional pattern instead. S3: the
+pipeline's "second combine, deterministically identical" design was
+measured at 5.6-6.2 s per combine and reversed to a single combine per
+group close. S4: `assemble_cloud_group_result`'s "any exception is caught"
+docstring overclaim corrected to name the actual caught family and state
+the residual honestly; an outer wrap at the `_close_cloud_group` call site
+makes "a pipeline exception cannot cost the group its accept" structurally
+true. S5: two more "PR-4 renders it" overclaims (this doc and the module)
+corrected to "PR-4 carries it; PR-7 renders it".*
 
 *Last verified: 2026-07-26*
