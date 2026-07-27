@@ -710,6 +710,14 @@ Per interpretation call (A):
   (`candidate.json` + bundle), thread τ/r/classification through to
   the report payloads. A registry entry is *why* a band was excluded;
   the UI and any future session can read it.
+  *(PR-6b, 2026-07-27: the **report-payload half shipped** — τ/r/rung/
+  classification per carved range, per spec band, on the pipeline result,
+  `/state`, the envelope, and the expert disclosure. The **`candidate.json`
+  half did not**, and neither did the fit wiring below: `_fit_linearization`
+  runs at capture index 2 and the pre-apply cloud group closes at index 10,
+  so no shipped session order gives the fit — or the candidate publish — a
+  registry to consume. Blocker + the three options in the PR-6b status
+  paragraph at the foot of this doc.)*
 - **Carve-out mechanics (owner decision 1):** `evaluate_flat_spec`
   already excludes masked bins from reference + deviation; the
   report's per-band verdict discloses carved-out intervals with
@@ -965,7 +973,10 @@ executing session updates per-PR status here as merges land.*
 
 *Ladder status: **PR-2 merged as #1749**; **PR-1 merged as #1751**;
 **PR-6a merged as #1753** (the owner-approved fit-side fast-track
-described below). **PR-3a** raises the relay capture-plan cap 8 → 32
+described below); **PR-3b merged as #1755**; **PR-4 merged as #1756**
+(closing issue #1742); **PR-5 merged as #1757**; **PR-6b** ships the
+carve-out disclosure and reports its blocked half (see its own paragraph
+below). **PR-3a** raises the relay capture-plan cap 8 → 32
 and ships a **mechanism deviation** from its pre-registered design
 contract: the gate is the Worker's own `GET /capabilities` document
 (absence = pre-capacity relay), not the negotiated protocol version,
@@ -978,7 +989,10 @@ terms + convergence guard) fast-tracked as **PR-6a** ahead of W2 to
 unblock the corpus-derived profile; registry persistence, carve-out
 disclosure surfaces, and the spec-table/open-question-8 annotations
 remain **PR-6b** in ladder order. The PR-6 section body below is
-unchanged and still describes the whole of PR-6.*
+unchanged and still describes the whole of PR-6. (PR-6b shipped the
+carve-out disclosure and both annotations; the registry-into-the-candidate
+and fit-wiring items are blocked on session ordering — see the PR-6b
+paragraph below and the section's own annotation.)*
 
 *PR-3b (2026-07-26): the position-group choreography lands, and the
 **shipped main-session plan becomes the 16-entry cloud** — the intended
@@ -1195,5 +1209,62 @@ one collapsed gate meaningfully shrinks the graded band. The S0 `cloud_04` case
 above already IS that evidence, so this is queued on measured grounds rather
 than speculation; it is a scope call, not a doubt about whether it is worth
 doing.*
+
+*PR-6b (2026-07-27): owner decision 1's disclosure half lands, and the two
+plan-doc annotations it owed are recorded. `carve_outs_by_band` re-reads the
+SAME null registry and the SAME `evaluate_flat_spec` report
+`assemble_cloud_group_result` already holds — per spec band, which ranges left
+that band's grading, each row tagged with the instrument that carved it
+(`identified_null` / `position_screen`), the registry's rows carrying
+τ/r/rung/classification as the exclusion reason of record. It is a third
+reading of one evaluation, never a second one: the bins are gone from `spec`
+before it runs and no verdict can move. The rows ride the pipeline result into
+`cloud_measure.json` / `cloud_verify.json`, through `_compact_cloud_status` onto
+`/state` and the envelope (the one surface PR-7 will render from), and — the
+part a household sees TODAY, without waiting for PR-7 — into the envelope's
+`<details>` expert disclosure, where the excluded-bin COUNT that PR-5 shipped
+now has the ranges and their τ/r beside it. The copy has ONE owner
+(`crossover_v2_flow`, beside `_geometry_guidance_copy`) in two registers, a
+plain-language `disclosure` headline and an `expert` line carrying τ/r, so a
+chart callout and the expert disclosure cannot say different things about the
+same range; a copy-discipline test pins the `position_invariant` wording to the
+pre-registered travels-with-the-speaker-OR-fixed-path phrasing and keeps every
+hardware noun out. The gate-validity clamp stays deliberately OUT of the
+carve-out rows, disclosed separately as `validity_floor_hz` exactly as PR-5 left
+it. Docs: the spec table's 8–16 kHz annotation and open question 8 both record
+owner decision 1 as their resolution (annotated, never rewritten; the ±2.5 dB
+number is untouched — the carve-out is disclosed, not re-specified).*
+
+*PR-6b, continued — **PR-6's remaining half is BLOCKED on a session-ordering
+fact this work order did not account for, and is NOT shipped here.** The
+section's null-registry
+bullet asks for the registry to ride `candidate.json` "whenever a fit consumed
+cloud-derived exclusions", and PR-6a's own commit message names PR-6b as the PR
+that makes its two optional `compose_envelope` arguments live. **No shipped
+session order reaches that state.** `build_v2_cloud_index_phase_map`'s running
+order is CHECK 1, MEASURE 2, CLOUD_MEASURE 3–10, VERIFY 11, CLOUD_VERIFY 12–16,
+and `_fit_linearization` is called from `_build_candidate` ← `_measure_verdict`
+← index 2 only — so the pre-apply cloud group closes at index 10, **eight
+captures AFTER the fit that would consume it**, and `candidate.json` is
+published (and auto-apply fired) before any registry exists. A `_measure_verdict`
+re-arm re-runs index 2, never a later index; a verify-only re-arm has no MEASURE
+at all; and §5.6's session-binding rule forbids carrying a prior session's cloud
+into a new one. Wiring the arguments anyway would have added a branch to a live
+correction path that no production ordering can enter, provable only by a test
+that constructs the state by hand — the dead-code-with-a-passing-test shape this
+work order's own doctrine rejects. **Architect decision needed** before the fit
+side of PR-6 can land; the shapes are (a) a re-fit stage after the pre-apply
+cloud closes, which means a second apply and is close to S3's closed loop
+("Not in this program"), (b) moving the fit/auto-apply after the cloud group,
+which reopens the 2026-07-20 auto-apply owner ruling and the pre/post-apply
+framing of both clouds, or (c) accepting that PR-6a's terms stay pure until S3
+and saying so in this doc. **A second, separable observation surfaced by the
+same trace, for the architect rather than for this PR:** auto-apply fires on its
+own thread the moment MEASURE is accepted (`_fire_auto_apply`, only VERIFY is
+held by `authorize_begin`), so the CLOUD_MEASURE positions at indexes 3–10 are
+captured while, or after, the correction lands. Whether the "pre-apply cloud"
+is pre-apply in wall-clock terms is not something this PR could establish from
+the code alone, and PR-4's own VERIFY-anchor-join reversal turns on that
+pre/post-apply asymmetry being real.*
 
 *Last verified: 2026-07-27*

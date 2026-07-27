@@ -569,6 +569,33 @@ it, and the tolerances are now the spec table's own per-band values
 (`flat_spec.SPEC_BANDS`) instead of one provisional constant. Contract test:
 [`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py).
 
+*The carve-out disclosure* (flat-linearization plan PR-6b, owner decision 1 of
+2026-07-25). The gauge says how flat the speaker measured and how many
+spec-band bins left grading; `carve_outs_by_band` — same registry, same
+`evaluate_flat_spec` report, published as the pipeline's `carve_outs` key —
+says WHICH ranges left and why. One entry per spec band, always all of them and
+in the report's own order, each holding the ranges that overlap that band
+tagged with the instrument that carved them: `identified_null` rows carry
+τ/r/rung/depth/classification (the exclusion reason of record), `position_screen`
+rows carry none of that because the screen measures disagreement, not an
+arrival. The two are listed separately rather than merged, so "both instruments
+flagged this range" stays visible; `merged_excluded_bands_hz` remains the merged
+view for counting. Two copy registers per band, both owned in
+`crossover_v2_flow` beside `_geometry_guidance_copy` so a chart callout and the
+expert disclosure cannot diverge: a plain-language `disclosure` headline, and an
+`expert` line carrying τ and both r estimates. The rows ride the same chain the
+gauge does (`_compact_cloud_status` → `/state` + the envelope's `cloud` block →
+`_flatness_details_lines`' `expert_details`), `PHASE_CLOUD_VERIFY` only for the
+rendered lines, for the same pre-apply-baseline reason. **The spec table is not
+changed by any of this** — 8–16 kHz still reads ±2.5 dB, applied to whatever
+survives the carve-out. `carve_outs` is the largest key on a `/state` cloud
+entry (3162 of 4056 JSON bytes on the S0 ten-position cloud, measured
+2026-07-27) because the copy strings ARE the disclosure; that cost is stated in
+`_compact_cloud_status`'s docstring and pinned by
+[`tests/test_crossover_v2_cloud_pipeline.py`](../tests/test_crossover_v2_cloud_pipeline.py),
+which also pins the copy discipline (no hardware nouns; the `position_invariant`
+wording names travels-with-the-speaker OR a fixed path, never one of the two).
+
 *The gate-validity clamp.* `cloud_validity_floor_hz` takes the WORST
 (highest) reflection-gate floor across the group's positions — the same
 "worse of the two" rule `_measure_validity_floor_hz` applies to the driver

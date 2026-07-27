@@ -51,6 +51,22 @@ reference and the deviation metric:
 > S0 data is attached (§ e.2) and the table number is deliberately left
 > as-is pending the owner's carve-out-vs-source-fix decision (open
 > question 8) rather than silently edited here.
+>
+> **Resolved 2026-07-25 by owner decision 1 — the carve-out is adopted**
+> (recorded here 2026-07-27; the "in progress, not resolved" paragraph
+> above is superseded by this one, kept per the documentation paradigm's
+> annotate-don't-delete rule). Identified interference nulls — the ones
+> the null-ID gate attributes to a measured arrival, with τ and r recorded
+> — are excluded from spec evaluation **and** from correction. The ±2.5 dB
+> tolerance applies to the **surviving envelope** around them, and the
+> report discloses the carved-out ranges with their numbers ("EQ cannot
+> fill these"). **The table number above is not changed**: the carve-out
+> is disclosed, not re-specified. A source fix (horn redesign) proceeds in
+> parallel as the owner's hardware project and is not a precondition for
+> anything here. The same decision resolves open question 8; its product
+> mechanics are the work order's PR-6
+> ([`flat-linearization-productization-plan.md`](flat-linearization-productization-plan.md)),
+> shipped as the per-band carve-out disclosure in PR-6b.
 
 Rationale, briefly: run 7's single-point 2–7 kHz spread at 1/3-oct was
 2.6 dB total (fits ±1.5 only about a band-local center; 3.3 dB at 1/6-oct)
@@ -829,6 +845,17 @@ lulls so the echo lands in silence, excise, stitch"). Verdict, adopted:
    carve-out for identified interference nulls in the 8–16 kHz band now,
    or hold the spec open until the horn's source fix (redesign) lands?
    See "S0 executed" § e.2.
+   **Resolved 2026-07-25 by owner decision 1 — adopt the carve-out now
+   (recorded 2026-07-27; the OWNER-PENDING tag above is superseded by this
+   line, not deleted).** Identified interference nulls (τ/r recorded) are
+   excluded from spec evaluation AND from correction; the band's ±2.5 dB
+   tolerance applies to the surviving envelope; the report discloses the
+   carved-out ranges with the numbers. The spec table's number is
+   unchanged — see the table's own 8–16 kHz annotation. Horn redesign
+   proceeds in parallel as the owner's hardware project rather than as the
+   alternative this question posed; it is no longer what the spec waits
+   on. Product mechanics: the work order's PR-6, shipped as the per-band
+   carve-out disclosure in PR-6b.
 
 ## References
 

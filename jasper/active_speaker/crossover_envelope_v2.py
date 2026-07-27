@@ -279,6 +279,13 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     yet", and saying nothing is the honest rendering of it; the fallback
     vocabulary lives in :func:`_flatness_unavailable_line` for the states
     that DO have something to say.
+
+    **The carve-out lines close the sentence** (plan PR-6b, owner decision 1).
+    The excluded-bin count below says how much of the spectrum left grading;
+    :func:`_carve_out_expert_lines` says which ranges and why, with τ/r. Owner
+    decision 1 is explicit that the tolerance applies to the surviving
+    envelope AND that the report discloses the carve-out with the numbers —
+    a bin count alone satisfies only the first half.
     """
     flatness = _mapping(_cloud_verify_block(status).get("flatness"))
     if not flatness:
@@ -286,11 +293,14 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     if not flatness.get("evaluable"):
         # The gauge ran and could not measure — see
         # ``flat_spec.SpecFlatness.passed``'s own "read it with evaluable"
-        # rule. Never render this as a pass or a fail.
+        # rule. Never render this as a pass or a fail. The carve-out lines
+        # ride along because in this exact state they ARE the explanation:
+        # if the honesty instruments took every spec band's bins, the ranges
+        # and their τ/r are the answer to "excluded by what?".
         return [
             "flatness could not be measured — every spec band was excluded "
             "or out of range"
-        ]
+        ] + _carve_out_expert_lines(status)
     lines: list[str] = []
     max_db = _finite(flatness.get("max_db"))
     max_hz = _finite(flatness.get("max_hz"))
@@ -321,6 +331,49 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
             f"{excluded} of {graded + excluded} spec-band bins excluded from "
             "grading (interference, or below the measurement's validity floor)"
         )
+    lines.extend(_carve_out_expert_lines(status))
+    return lines
+
+
+def _carve_out_expert_lines(status: Mapping[str, Any]) -> list[str]:
+    """The carve-out τ/r lines (plan PR-6b, owner decision 1).
+
+    This is the "expert layer" the owner's decision names — the line above says
+    HOW MANY spec-band bins left grading; these say WHICH ranges and WHY, with
+    the delay and reflection ratio that identified them. One line per band that
+    carved anything, in band order; nothing at all when nothing was carved,
+    which is the honest rendering of a clean band rather than a "no
+    interference found" sentence.
+
+    **The strings are copied, not composed here.** ``carve_outs_by_band`` in
+    ``crossover_v2_flow`` owns the carve-out copy (both registers — the plain
+    ``disclosure`` headline and this ``expert`` line), so this expert
+    disclosure and PR-7's chart callouts render the same words about the same
+    range. This function only prefixes the band the line belongs to.
+
+    CLOUD-VERIFY only, inheriting :func:`_flatness_details_lines`' own reason:
+    the pre-apply cloud exists in order to be out of spec, and its carve-outs
+    describe a measurement the household is not being shown a verdict on.
+    """
+    lines: list[str] = []
+    carve_outs = _cloud_verify_block(status).get("carve_outs")
+    if not isinstance(carve_outs, list):
+        return lines
+    for band in carve_outs:
+        if not isinstance(band, Mapping):
+            continue
+        expert = band.get("expert")
+        if not isinstance(expert, str) or not expert:
+            continue
+        edges = band.get("band_hz")
+        lo = _finite(edges[0]) if isinstance(edges, (list, tuple)) and edges else None
+        hi = (
+            _finite(edges[1])
+            if isinstance(edges, (list, tuple)) and len(edges) == 2
+            else None
+        )
+        where = f"{lo:.0f}–{hi:.0f} Hz " if lo is not None and hi is not None else ""
+        lines.append(f"{where}{expert}")
     return lines
 
 

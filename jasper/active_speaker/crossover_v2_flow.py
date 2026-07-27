@@ -1958,6 +1958,279 @@ def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Carve-out disclosure (owner decision 1, 2026-07-25; plan PR-6b)
+#
+# The owner's decision of record: identified interference nulls are excluded
+# from spec evaluation AND from correction, the band's tolerance applies to the
+# SURVIVING envelope, and "the report discloses 'EQ cannot fill these' with the
+# numbers." ``evaluate_flat_spec`` already does the excluding -- the masked bins
+# leave both the reference level and every band's deviation. What it does not
+# do, and must not, is say WHY: it is a pure evaluator that takes a bool mask
+# and holds no product policy (its own module docstring). So the "why" is
+# assembled here, in the wiring layer that already holds the registry and the
+# spec report side by side, next to ``_geometry_guidance_copy`` -- the other
+# household-facing copy derived from a pipeline verdict.
+#
+# **This module owns the carve-out copy strings; PR-7 renders them.** One
+# owner, so a chart callout and the envelope's expert disclosure cannot say
+# different things about the same carved range.
+# --------------------------------------------------------------------------- #
+
+# Which honesty instrument carved a range. Snake_case and self-identifying,
+# mirroring the vocabulary rule interference_nulls.py states for its own slugs.
+CARVE_OUT_SOURCE_IDENTIFIED_NULL = "identified_null"
+CARVE_OUT_SOURCE_POSITION_SCREEN = "position_screen"
+
+
+def _format_carve_out_hz(hz: float) -> str:
+    """One frequency as household copy — kHz at and above 1 kHz, Hz below.
+
+    Deliberately NOT the ``f"{hz:.0f} Hz"`` form the envelope's flatness lines
+    use: those quote a single worst bin, while these copy strings list several
+    frequencies in one sentence, where five-digit Hz figures read as noise.
+    """
+    return f"{hz / 1000.0:.1f} kHz" if hz >= 1000.0 else f"{hz:.0f} Hz"
+
+
+def _join_carve_out_phrases(parts: Sequence[str]) -> str:
+    """``["a", "b", "c"]`` -> ``"a, b and c"``. No serial comma, matching the
+    house copy elsewhere in this flow."""
+    parts = tuple(parts)
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _null_classification_copy(classification: str) -> str:
+    """The classification's own household sentence, or ``""`` for a
+    classification this copy does not cover.
+
+    **The ``position_invariant`` wording is load-bearing and pre-registered**
+    (plan PR-1's classification vocabulary, PR-7's callout copy): a single
+    session cannot separate "travels with the speaker" from "a path in the room
+    that did not change while measuring", and the output must not claim it can
+    — S0 separated them only by MOVING the speaker. So the copy names both and
+    names the experiment that would tell them apart.
+
+    No hardware noun appears here, in either branch. The classification is
+    evidence about how a null behaved across a mic cloud; it is not evidence
+    about what part of a speaker or room produced it, and naming one would be
+    the device-taxonomy guess this program forbids in shipped copy (the JTS3
+    rim-wave attribution is session knowledge, not measured general truth).
+    """
+    from jasper.audio_measurement.interference_nulls import (
+        CLASSIFICATION_POSITION_DEPENDENT,
+        CLASSIFICATION_POSITION_INVARIANT,
+    )
+
+    if classification == CLASSIFICATION_POSITION_INVARIANT:
+        return (
+            " It sat at the same frequencies at every microphone position — "
+            "consistent with something that travels with the speaker, or with "
+            "a path that did not change while measuring; moving the speaker "
+            "and measuring again would tell those apart."
+        )
+    if classification == CLASSIFICATION_POSITION_DEPENDENT:
+        return (
+            " It appeared at some microphone positions and not others, so "
+            "whatever causes it does not travel with the speaker."
+        )
+    return ""
+
+
+def _carve_out_records(
+    null_report: Any, screen_bands_hz: Sequence[Sequence[float]],
+) -> list[dict[str, Any]]:
+    """Every carved range, tagged with the instrument that carved it.
+
+    The two honesty instruments are listed SEPARATELY rather than merged: a
+    merged interval loses which instrument found it, and the registry's rows
+    are the only ones carrying τ/r — the exclusion *reason of record*. Ranges
+    from the two sources may overlap each other; that is reported as two rows
+    (one per instrument's own evidence), not silently collapsed, because "both
+    instruments flagged this" is a stronger statement than either alone.
+    ``merged_excluded_bands_hz`` remains the merged view for anyone counting.
+
+    A registry row's interval is the null's OWN ``f_lo_hz``/``f_hi_hz`` (its
+    half-depth width), unclipped to any spec band — τ and r describe the whole
+    null, so clipping the interval to a band edge would attach the numbers to a
+    fragment of what was measured.
+
+    Ordered by lower edge, then by source, so two rows starting at the same
+    frequency come out in a stable order rather than an input-order one.
+    """
+    records: list[dict[str, Any]] = []
+    for null in null_report.nulls:
+        records.append(
+            {
+                "f_lo_hz": float(null.f_lo_hz),
+                "f_hi_hz": float(null.f_hi_hz),
+                "source": CARVE_OUT_SOURCE_IDENTIFIED_NULL,
+                "f_center_hz": float(null.f_center_hz),
+                "n": int(null.n),
+                "tau_us": float(null.tau_us),
+                "r_time": float(null.r_time),
+                "r_freq": float(null.r_freq),
+                "depth_db": float(null.depth_db),
+                "classification": str(null.classification),
+                "reason": (
+                    "A delayed copy of the sound cancels this range, and EQ "
+                    "cannot fill a cancellation, so it is left out of "
+                    "correction and out of grading."
+                    + _null_classification_copy(str(null.classification))
+                ),
+            }
+        )
+    for band in screen_bands_hz:
+        records.append(
+            {
+                "f_lo_hz": float(band[0]),
+                "f_hi_hz": float(band[1]),
+                "source": CARVE_OUT_SOURCE_POSITION_SCREEN,
+                "reason": (
+                    "The microphone positions disagreed about this range much "
+                    "more than about the rest of the spectrum, so it reads as "
+                    "interference rather than the speaker's own response and "
+                    "is left out of correction and out of grading."
+                ),
+            }
+        )
+    records.sort(key=lambda record: (record["f_lo_hz"], record["source"]))
+    return records
+
+
+def _carve_out_disclosure_copy(records: Sequence[Mapping[str, Any]]) -> str:
+    """The band's household-facing headline — plain language, no τ/r.
+
+    ``""`` when nothing was carved in the band, mirroring
+    :func:`_geometry_guidance_copy`'s "empty string when not locked — nothing
+    to say" rule rather than rendering a "no interference found" sentence a
+    reader could mistake for a measurement.
+
+    The delay is quoted in **milliseconds** here because it is the one number
+    that makes the sentence mean something to a household ("a delayed copy
+    arrives 0.32 ms later"); τ stays in microseconds in the structured record,
+    which is the registry's own unit and the one owner of it.
+    """
+    nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
+    screened = [r for r in records if r["source"] == CARVE_OUT_SOURCE_POSITION_SCREEN]
+    sentences: list[str] = []
+    if nulls:
+        where = _join_carve_out_phrases(
+            [_format_carve_out_hz(float(r["f_center_hz"])) for r in nulls]
+        )
+        # One ladder, one τ (IdentifiedNull.tau_us is "the same value on every
+        # rung of one report" — its own docstring), so the first row's delay
+        # describes them all.
+        delay_ms = float(nulls[0]["tau_us"]) / 1000.0
+        plural = len(nulls) > 1
+        sentences.append(
+            f"{'Interference nulls at' if plural else 'An interference null at'} "
+            f"{where} — a delayed copy of the sound arrives {delay_ms:.2f} ms "
+            f"later. EQ cannot fill {'these' if plural else 'this'}, so "
+            f"{'they are' if plural else 'it is'} left out of correction and "
+            "out of this band's grading."
+        )
+    if screened:
+        plural = len(screened) > 1
+        # "One range" rather than "1 range": this is prose, and the frequency
+        # figures are the numerals a reader should be counting in it.
+        count = f"{len(screened)}" if plural else "One"
+        subject = f"{count} {'further ' if nulls else ''}"
+        subject += "ranges are" if plural else "range is"
+        tail = (
+            "left out because the microphone positions disagreed about "
+            if nulls
+            else (
+                "left out of correction and out of this band's grading "
+                "because the microphone positions disagreed about "
+            )
+        )
+        sentences.append(
+            f"{subject} {tail}{'them' if plural else 'it'} too much to grade."
+        )
+    return " ".join(sentences)
+
+
+def _carve_out_expert_copy(records: Sequence[Mapping[str, Any]]) -> str:
+    """The expert-layer line — the same carve-outs WITH τ and r.
+
+    Separated from :func:`_carve_out_disclosure_copy` rather than folded into
+    it because the two registers have different readers and the plan puts τ/r
+    behind a disclosure ("τ/r vocabulary lives in an expert disclosure, not the
+    headline"). Both are produced here so a chart callout and the envelope's
+    ``<details>`` cannot drift into saying different things.
+
+    ``r`` is reported as the pair the registry actually holds — the
+    time-domain and frequency-domain estimates — rather than one averaged
+    figure, because their AGREEMENT is what admitted the null in the first
+    place, and an average would hide it.
+    """
+    nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
+    if not nulls:
+        return ""
+    where = _join_carve_out_phrases(
+        [
+            f"{_format_carve_out_hz(float(r['f_center_hz']))} (rung {int(r['n'])}, "
+            f"{float(r['depth_db']):.1f} dB deep)"
+            for r in nulls
+        ]
+    )
+    first = nulls[0]
+    return (
+        f"carved out of grading: {where}; delay τ {float(first['tau_us']):.0f} µs, "
+        f"reflection ratio r {float(first['r_time']):.3f} measured in time / "
+        f"{float(first['r_freq']):.3f} implied by null depth"
+    )
+
+
+def carve_outs_by_band(
+    spec_report: Any,
+    null_report: Any,
+    screen_bands_hz: Sequence[Sequence[float]],
+) -> list[dict[str, Any]]:
+    """Per spec band: which ranges were carved out, why, and with what numbers.
+
+    Owner decision 1 (2026-07-25) in payload form. One entry per band of
+    ``spec_report``, **always all of them, in the report's own order**, so a
+    consumer can join to ``spec["bands"]`` by index or by ``band_hz`` and can
+    render "nothing carved here" without having to infer it from an absence.
+
+    A record is included in a band when its interval OVERLAPS the band's
+    ``[f_lo_hz, f_hi_hz)`` span, so a null straddling a band edge appears under
+    both bands it actually carves — it removes bins from both.
+
+    **What this does NOT include: the gate-validity clamp.** Bins below the
+    group's ``validity_floor_hz`` also leave the spec evaluation (plan PR-5),
+    but they are not an interference verdict and PR-5 deliberately keeps them
+    out of the honesty instruments' own accounting, disclosed separately as
+    ``validity_floor_hz``. So a band's ``n_excluded`` on the spec report can
+    exceed what these records cover, and the floor is the difference — the same
+    separation ``_compact_cloud_status`` carries for exactly this reason.
+    """
+    records = _carve_out_records(null_report, screen_bands_hz)
+    out: list[dict[str, Any]] = []
+    for band in spec_report.bands:
+        f_lo, f_hi = float(band.f_lo_hz), float(band.f_hi_hz)
+        in_band = [
+            record
+            for record in records
+            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > f_lo
+        ]
+        out.append(
+            {
+                "band_hz": [f_lo, f_hi],
+                "intervals": [dict(record) for record in in_band],
+                "disclosure": _carve_out_disclosure_copy(in_band),
+                "expert": _carve_out_expert_copy(in_band),
+            }
+        )
+    return out
+
+
 def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None:
     """The group's own gated validity floor — the WORST (highest) of its
     positions' floors, or ``None`` when no position reported a usable one.
@@ -2013,6 +2286,15 @@ def assemble_cloud_group_result(
     envelope all render ``flatness`` (:func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge`
     of that same report) rather than deriving a number of their own. Nothing
     downstream re-evaluates the curve.
+
+    **The carve-out disclosure (plan PR-6b, owner decision 1).** ``carve_outs``
+    is :func:`carve_outs_by_band` of the SAME registry and the SAME spec report
+    — per band, which ranges left this band's grading, in plain language, with
+    τ/r behind an expert string. It is a third reading of one evaluation, never
+    a second one: the bins are already gone from ``spec`` by the time this runs,
+    and no verdict here can move. The tolerance table is untouched — the 8-16 kHz
+    row still reads ±2.5 dB, applied to whatever survives the carve-out (the
+    owner's decision was to disclose the carve-out, not to re-spec the band).
 
     **``validity_floor_hz`` clamps the spec band's lower edge.** Bins below
     the group's gated validity floor (:func:`cloud_validity_floor_hz`) are
@@ -2097,7 +2379,11 @@ def assemble_cloud_group_result(
     raises ``ValueError`` via ``zip(strict=True)`` on a length mismatch or
     ``IndexError`` on an out-of-bounds index; a malformed/incomplete
     ``combined``-like object raises ``TypeError``/``AttributeError`` reading
-    its fields). ``_run_cloud_pipeline`` relies on exactly this bounded set --
+    its fields; :func:`carve_outs_by_band` adds no new family -- it reads
+    already-built records by keys it set itself, and its only external reads
+    are attribute lookups on the two reports and indexing/``float()`` on the
+    screen intervals, i.e. ``AttributeError``/``IndexError``/``TypeError``/
+    ``ValueError``). ``_run_cloud_pipeline`` relies on exactly this bounded set --
     a downstream DSP failure inside it is diagnostic/disclosure machinery,
     never a capture-accept gate, so this bounded family is caught and
     reported as ``available: False`` rather than surfacing to the caller.
@@ -2155,6 +2441,14 @@ def assemble_cloud_group_result(
             ],
             "null_registry": _null_registry_to_dict(null_report),
             "spec": spec_report.to_dict(),
+            # PR-6b: owner decision 1's disclosure half — the SAME registry
+            # and the SAME spec report above, re-read per band as "what was
+            # carved out of this band's grading, and why". Not a second
+            # evaluation: `evaluate_flat_spec` already removed these bins, and
+            # nothing here can change a verdict.
+            "carve_outs": carve_outs_by_band(
+                spec_report, null_report, combined.excluded_bands_hz,
+            ),
             # PR-5: the spec-facing gauge — a pure reduction of the SAME
             # ``spec`` report above, carried here so no downstream surface
             # has to (or may) derive its own. Byte-identical wherever it is

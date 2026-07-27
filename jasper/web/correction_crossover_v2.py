@@ -762,6 +762,31 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     derivation somewhere downstream. Copied from the report like everything
     else here — this stays a projection, never an owner.
 
+    ``carve_outs`` (plan PR-6b) rides the compact block for that same reason,
+    and it is the one place this projection is deliberately NOT reduced: the
+    τ/r numbers and the copy strings ARE the disclosure owner decision 1
+    committed to, so summarising them to a count here would leave the only
+    surface a page reads unable to say why a band lost bins — and would grow
+    the second copy owner the producer
+    (:func:`~jasper.active_speaker.crossover_v2_flow.carve_outs_by_band`)
+    exists to prevent. **It is the largest thing on the entry, and that is
+    stated rather than glossed:** measured 2026-07-27 on the S0 ten-position
+    cloud (the widest real case this program has — three identified nulls plus
+    the one screened range that falls inside a graded band, four rows), the
+    carve-outs are **3162 of the entry's 4056 JSON bytes**, against 291 for
+    ``spec_bands``, 217 for ``flatness`` and 186 for ``geometry_guidance`` — a
+    dated snapshot, since any copy edit moves the digits by tens of bytes; what
+    the corpus test pins is the structural claim (four rows, and this key
+    larger than every other on the entry combined), not the digits. The copy
+    strings are the bulk of it. What bounds it is the instruments
+    themselves: three bands, one row per carved range that lands in one, and a
+    range outside every spec band produces no row at all. Copied verbatim, like
+    ``flatness``. ``[]`` when the pipeline never became
+    available — an empty LIST, not ``None``, is safe here because the entry it
+    sits in already reports ``overall_passed``/``excluded_interval_count`` as
+    ``None`` for that state, so an empty carve-out list cannot be read as "we
+    looked and found nothing" without contradicting its own neighbours.
+
     ``excluded_interval_count`` is ``None`` — not ``0`` — when the pipeline
     never successfully became available (SF-1 review finding, 2026-07-27):
     ``0`` reads as "the honest-instrument pipeline looked and found no
@@ -798,6 +823,7 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             "excluded_interval_count": None,
             "flatness": None,
             "validity_floor_hz": None,
+            "carve_outs": [],
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")
@@ -824,6 +850,21 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             floor = pipeline.get("validity_floor_hz")
             entry["validity_floor_hz"] = (
                 float(floor) if isinstance(floor, (int, float)) else None
+            )
+            carve_outs = pipeline.get("carve_outs")
+            # Copied, never re-derived — same rule as ``flatness`` above. A
+            # durable state written by a build BETWEEN PR-4 and PR-6b has an
+            # available pipeline but no ``carve_outs`` key, and keeps the empty
+            # default — indistinguishable here from a group that genuinely
+            # carved nothing. ``excluded_interval_count`` is the tell for a
+            # reader who needs to know: > 0 alongside an empty carve-out list
+            # is the pre-PR-6b era, since a group that carved nothing has a
+            # count of 0. No repair is attempted from this projection: it is
+            # not an owner of the pipeline's data (see the docstring).
+            entry["carve_outs"] = (
+                [dict(band) for band in carve_outs if isinstance(band, Mapping)]
+                if isinstance(carve_outs, list)
+                else []
             )
         out[str(phase)] = entry
     return out or None
