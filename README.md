@@ -988,6 +988,15 @@ reference. Currently:
   runbooks (per-driver lobing discriminator, flush-capsule ground plane).
   Strategy and evidence stay in `flat-linearization-plan.md`; this doc is the
   work order implementer sessions execute.
+- [`flat-linearization-flow-simplification-plan.md`](docs/flat-linearization-flow-simplification-plan.md)
+  — **Design work order (2026-07-27)** for the flow-simplification phase after
+  the first real cloud session: the express commission tier (7 captures,
+  4 prompted positions with both wide offsets, no post-apply cloud, honestly
+  degraded claims table) and the one-instruction-per-step screen grammar
+  (instruction as the headline, a single session counter, confirm-then-tone
+  including the VERIFY hold-then-tap fix, upfront plan announcement with
+  derived duration). Executes as its own small PR ladder on top of the
+  shipped instrument.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
