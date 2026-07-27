@@ -620,23 +620,30 @@ suppressed={}",
 
     pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
         let requested_frames = out.len() / 4;
-        let io = self
-            .content
-            .io_i16()
-            .context("getting i16 IO handle for outputd active content input")?;
-        match io.readi(out) {
+        // `io` borrows `self.content` and has a Drop impl, so nothing inside
+        // this scope may take `&mut self`. Decide the fill here, journal it
+        // after the borrow ends.
+        let outcome = {
+            let io = self
+                .content
+                .io_i16()
+                .context("getting i16 IO handle for outputd active content input")?;
+            io.readi(out)
+        };
+        let mut fill: Option<(&'static str, usize)> = None;
+        let read = match outcome {
             Ok(frames) => {
                 self.counters.content_frames_read += frames as u64;
                 if frames == 0 {
                     self.counters.content_empty_period_count += 1;
                     out.fill(0);
-                    self.log_content_fill("empty", requested_frames);
+                    fill = Some(("empty", requested_frames));
                 } else if frames < requested_frames {
                     self.counters.content_partial_period_count += 1;
                     out[(frames * 4)..].fill(0);
-                    self.log_content_fill("partial", requested_frames - frames);
+                    fill = Some(("partial", requested_frames - frames));
                 }
-                Ok(frames)
+                frames
             }
             Err(e) => {
                 let errno = e.errno();
@@ -644,8 +651,8 @@ suppressed={}",
                     self.counters.content_eagain_count += 1;
                     self.counters.content_empty_period_count += 1;
                     out.fill(0);
-                    self.log_content_fill("eagain", requested_frames);
-                    Ok(0)
+                    fill = Some(("eagain", requested_frames));
+                    0
                 } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
                     self.counters.content_xrun_count += 1;
                     self.counters.content_empty_period_count += 1;
@@ -657,15 +664,20 @@ suppressed={}",
                         .try_recover(e, true)
                         .context("recovering outputd active content xrun")?;
                     out.fill(0);
-                    Ok(0)
+                    fill = Some(("xrun_recovered", requested_frames));
+                    0
                 } else {
-                    Err(e).context(format!(
+                    return Err(e).context(format!(
                         "reading outputd active content PCM {}",
                         self.content_pcm
-                    ))
+                    ));
                 }
             }
+        };
+        if let Some((source, frames_short)) = fill {
+            self.log_content_fill(source, frames_short);
         }
+        Ok(read)
     }
 
     pub fn write_dual_period(&mut self, samples_4ch: &[i16]) -> Result<()> {
