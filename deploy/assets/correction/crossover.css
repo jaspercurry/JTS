@@ -165,6 +165,16 @@
   font-weight: 600;
 }
 
+/* Title + Recommended badge, gap 0.6rem — mirrors wake_setup.py's
+ * `.wake-row__head` convention (deploy/assets/wake/wake.css) rather than a
+ * zero-gap badge nested inside the title paragraph (S2 fix, adversarial
+ * review of PR #1780, crossover/js/main.js's `wrapChoice`). */
+.measurement-row__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
 .measurement-row__meta,
 .capture-status {
   color: var(--muted);
@@ -180,6 +190,21 @@
   gap: 0.5rem;
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+/* The microphone_check tier chooser (flow-simplification PR-U3): two
+ * `.measurement-row` choice cards as first-class, equal-weight peers — one
+ * column, equal width, flush-left at every breakpoint (S1 fix, adversarial
+ * review of PR #1780). `#crossover-action`'s own `.measurement-row__actions`
+ * flex row sizes children to their own content and right-aligns them, which
+ * rendered the shorter card (often the Recommended one) narrower and
+ * visibly indented next to the other — this dedicated grid container is
+ * `main.js`'s `renderActions()` routing choice-card actions into instead. */
+.tier-choices {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.6rem;
+  width: 100%;
 }
 
 .action-form {

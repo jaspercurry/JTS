@@ -352,4 +352,89 @@ check(
   "tier-unknown (pre-tier durable state) keeps the ordinary 'still coming' wording, not the express one",
 );
 
+// --- B1 (adversarial review of PR #1780): express's spec corridor, carve-out
+// callouts, and provenance/geometry copy come from CLOUD_MEASURE — the ONLY
+// cloud express ever produces — never from CLOUD_VERIFY (which express never
+// closes, so reading it there would silently show nothing). -----------------
+const expressCarveOuts = [
+  {
+    band_hz: [2000.0, 8000.0],
+    intervals: [{ f_lo_hz: 8300.0, f_hi_hz: 8600.0 }],
+    disclosure: "A range is left out of correction.",
+    expert: "carved out of grading: 8.4 kHz (rung 26, 6.2 dB deep)",
+  },
+];
+renderCloud(els, {
+  cloud: {
+    [CLOUD_MEASURE]: {
+      reference_db: -24.1,
+      carve_outs: expressCarveOuts,
+      provenance_note: "",
+      geometry_guidance: "Spread the microphone further apart next time.",
+      spec_bands: [{ f_lo_hz: 2000.0, f_hi_hz: 8000.0, tolerance_db: 2.0 }],
+    },
+  },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4] } },
+  },
+  tier: "express",
+});
+check(els.cloud.hidden === false, "express: section visible with only a measure-phase curve");
+check(
+  els.cloudGeometry.hidden === false
+    && els.cloudGeometry.textContent === "Spread the microphone further apart next time.",
+  "express: geometry guidance is read from CLOUD_MEASURE (never silently dropped)",
+);
+check(
+  els.legendCorridor.hidden === false,
+  "express: the spec-tolerance legend swatch shows — the corridor draws against the BEFORE curve",
+);
+check(
+  els.legendExcluded.hidden === false,
+  "express: the excluded-interval legend swatch shows from CLOUD_MEASURE's own carve-outs",
+);
+check(
+  els.cloudCallouts.children.length === 1
+    && els.cloudCallouts.children[0].children[0].textContent === "A range is left out of correction.",
+  "express: the carve-out callout renders VERBATIM from CLOUD_MEASURE — owner decision 1 applies to every tier",
+);
+check(
+  lastChartPayload.specBands.length === 1 && lastChartPayload.specBands[0].tolerance_db === 2.0,
+  "express: the chart payload's spec bands come from CLOUD_MEASURE, drawn on the before curve",
+);
+check(
+  lastChartPayload.excludedIntervals.length === 1
+    && lastChartPayload.excludedIntervals[0].f_lo_hz === 8300.0,
+  "express: the chart payload's excluded intervals come from CLOUD_MEASURE",
+);
+
+// A full-tier session with an equivalent CLOUD_MEASURE-only shape (mid pre-
+// apply cloud, its own group already closed with carve-outs) must NOT show
+// them — Full's spec surface is VERIFY's, the current graded truth, and the
+// pre-apply cloud exists to be out of spec (unchanged by this fix).
+renderCloud(els, {
+  cloud: {
+    [CLOUD_MEASURE]: {
+      reference_db: -24.1,
+      carve_outs: expressCarveOuts,
+      provenance_note: "",
+      geometry_guidance: "Spread the microphone further apart next time.",
+      spec_bands: [{ f_lo_hz: 2000.0, f_hi_hz: 8000.0, tolerance_db: 2.0 }],
+    },
+  },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [100, 200], magnitude_db: [-3, -4] } },
+  },
+  tier: "full",
+});
+check(
+  els.cloudGeometry.hidden === true,
+  "full tier: CLOUD_MEASURE's geometry guidance stays silent — Full's surface is VERIFY's, unchanged",
+);
+check(
+  els.legendCorridor.hidden === true && els.legendExcluded.hidden === true,
+  "full tier: no corridor/excluded legend from a pre-apply cloud that exists to be out of spec",
+);
+check(els.cloudCallouts.children.length === 0, "full tier: no callouts from CLOUD_MEASURE's carve-outs");
+
 console.log(JSON.stringify({ ok: true, passed }));

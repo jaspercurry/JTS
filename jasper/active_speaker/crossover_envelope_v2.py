@@ -272,54 +272,14 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
-    """The spec-facing flatness disclosure — "how flat is the speaker" —
-    distinctly labeled from :func:`_verify_expert_details`'s
-    integration-verify lines above, which answer "did the crossover integrate
-    as predicted" and are what gates.
-
-    **Re-based onto the spec-curve SSOT (flat-linearization plan PR-5).**
-    Until PR-5 these lines rendered a per-VERIFY-capture number (one mic
-    position, its own grid, its own band mean, no interference exclusion),
-    persisted under ``verify.flatness``. They now read the CLOUD-VERIFY
-    group's spec gauge — ``spec_flatness_gauge`` of the same
-    ``evaluate_flat_spec`` report `/state`, the doctor check, and the bundle
-    artifact read (and PR-7's chart will) — copied through
-    ``_compact_cloud_status``. One construction, so the number here and the
-    number in the report are the same bytes.
-
-    ``PHASE_CLOUD_VERIFY`` only, never ``PHASE_CLOUD_MEASURE``: the pre-apply
-    cloud is the UNCORRECTED baseline that exists in order to be out of spec
-    (the same distinction PR-4's ``check_crossover_v2_cloud_pipeline`` blocker
-    fix drew), so rendering it as "how flat is your speaker" would report a
-    correct speaker as bad forever.
-
-    Empty when no cloud-verify group has closed. That is "nothing measured
-    yet", and saying nothing is the honest rendering of it; the fallback
-    vocabulary lives in :func:`_flatness_unavailable_line` for the states
-    that DO have something to say.
-
-    **The carve-out lines close the sentence** (plan PR-6b, owner decision 1).
-    The excluded-bin count below says how much of the spectrum left grading;
-    :func:`_carve_out_expert_lines` says which ranges and why, with τ/r. Owner
-    decision 1 is explicit that the tolerance applies to the surviving
-    envelope AND that the report discloses the carve-out with the numbers —
-    a bin count alone satisfies only the first half.
-    """
-    flatness = _mapping(_cloud_verify_block(status).get("flatness"))
-    if not flatness:
-        return _flatness_unavailable_line(status)
-    if not flatness.get("evaluable"):
-        # The gauge ran and could not measure — see
-        # ``flat_spec.SpecFlatness.passed``'s own "read it with evaluable"
-        # rule. Never render this as a pass or a fail. The carve-out lines
-        # ride along because in this exact state they ARE the explanation:
-        # if the honesty instruments took every spec band's bins, the ranges
-        # and their τ/r are the answer to "excluded by what?".
-        return [
-            "flatness could not be measured — every spec band was excluded "
-            "or out of range"
-        ] + _carve_out_expert_lines(status)
+def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
+    """The numeric flatness lines shared by both tiers' expert disclosure —
+    max/avg deviation plus the excluded-bin count. Extracted (B1 fix, adversarial
+    review of PR #1780) so the Full tier's CURRENT-STATE claim
+    (:func:`_flatness_details_lines`, reading CLOUD-VERIFY) and Express's
+    BEFORE-TUNING claim (:func:`_express_pre_apply_flatness_lines`, reading
+    CLOUD-MEASURE) compute the identical arithmetic from whichever compact
+    ``flatness`` block they were handed — one construction, not two."""
     lines: list[str] = []
     max_db = _finite(flatness.get("max_db"))
     max_hz = _finite(flatness.get("max_hz"))
@@ -350,11 +310,120 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
             f"{excluded} of {graded + excluded} spec-band bins excluded from "
             "grading (interference, or below the measurement's validity floor)"
         )
-    lines.extend(_carve_out_expert_lines(status))
     return lines
 
 
-def _carve_out_expert_lines(status: Mapping[str, Any]) -> list[str]:
+def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
+    """The spec-facing flatness disclosure — "how flat is the speaker" —
+    distinctly labeled from :func:`_verify_expert_details`'s
+    integration-verify lines above, which answer "did the crossover integrate
+    as predicted" and are what gates.
+
+    **Re-based onto the spec-curve SSOT (flat-linearization plan PR-5).**
+    Until PR-5 these lines rendered a per-VERIFY-capture number (one mic
+    position, its own grid, its own band mean, no interference exclusion),
+    persisted under ``verify.flatness``. They now read the CLOUD-VERIFY
+    group's spec gauge — ``spec_flatness_gauge`` of the same
+    ``evaluate_flat_spec`` report `/state`, the doctor check, and the bundle
+    artifact read (and PR-7's chart will) — copied through
+    ``_compact_cloud_status``. One construction, so the number here and the
+    number in the report are the same bytes.
+
+    ``PHASE_CLOUD_VERIFY``, never ``PHASE_CLOUD_MEASURE``, for the FULL
+    tier: the pre-apply cloud is the UNCORRECTED baseline that exists in
+    order to be out of spec (the same distinction PR-4's
+    ``check_crossover_v2_cloud_pipeline`` blocker fix drew), so rendering it
+    as "how flat is your speaker" would report a correct speaker as bad
+    forever.
+
+    **Express (B1 fix, adversarial review of PR #1780) delegates to
+    :func:`_express_pre_apply_flatness_lines` instead.** Express (M=1) never
+    produces a CLOUD-VERIFY entry — not "not yet", but PERMANENTLY, by the
+    tier's own shape — so reading ``_cloud_verify_block`` for it would always
+    return empty and silently withhold the honesty-instrument disclosure
+    (spec bands, carve-outs) that owner decision 1 requires on every tier.
+    ``_compact_cloud_status`` already projects the SAME flatness/spec_bands/
+    carve_outs shape onto the CLOUD-MEASURE entry (the pipeline runs there
+    too — see ``_close_cloud_group``), so express reads that block instead,
+    under an explicit BEFORE-TUNING frame: the pre-apply cloud is still the
+    uncorrected baseline, so its numbers are reported as "what was measured
+    before tuning", never as "how flat your speaker is now".
+
+    Empty when no cloud-verify group has closed (Full) or no cloud-measure
+    group has closed (Express — cannot happen once MEASURE's cloud group is
+    reached, but the shape is defensive regardless). That is "nothing
+    measured yet", and saying nothing is the honest rendering of it; the
+    fallback vocabulary for FULL's "measured but not evaluable" states lives
+    in :func:`_flatness_unavailable_line`.
+
+    **The carve-out lines close the sentence** (plan PR-6b, owner decision 1).
+    The excluded-bin count below says how much of the spectrum left grading;
+    :func:`_carve_out_expert_lines` says which ranges and why, with τ/r. Owner
+    decision 1 is explicit that the tolerance applies to the surviving
+    envelope AND that the report discloses the carve-out with the numbers —
+    a bin count alone satisfies only the first half — **on every tier**,
+    since carve-outs are a post-apply-persistent fact ("EQ cannot fill
+    these") regardless of which cloud measured them.
+    """
+    if str(_v2(status).get("tier") or "") == TIER_EXPRESS:
+        return _express_pre_apply_flatness_lines(status)
+    block = _cloud_verify_block(status)
+    flatness = _mapping(block.get("flatness"))
+    if not flatness:
+        return _flatness_unavailable_line(status)
+    if not flatness.get("evaluable"):
+        # The gauge ran and could not measure — see
+        # ``flat_spec.SpecFlatness.passed``'s own "read it with evaluable"
+        # rule. Never render this as a pass or a fail. The carve-out lines
+        # ride along because in this exact state they ARE the explanation:
+        # if the honesty instruments took every spec band's bins, the ranges
+        # and their τ/r are the answer to "excluded by what?".
+        return [
+            "flatness could not be measured — every spec band was excluded "
+            "or out of range"
+        ] + _carve_out_expert_lines(block)
+    lines = _flatness_lines_from_block(flatness)
+    lines.extend(_carve_out_expert_lines(block))
+    return lines
+
+
+def _express_pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
+    """Express's flatness/carve-out disclosure (B1 fix, adversarial review of
+    PR #1780) — the household surface :func:`_flatness_details_lines`
+    delegates to for ``TIER_EXPRESS``.
+
+    **Design direction (coordinator ruling on the review).** Reads the
+    CLOUD-MEASURE compact block (:func:`_cloud_measure_block`) — the ONLY
+    cloud express ever produces — and frames its numbers explicitly as the
+    BEFORE-TUNING state: "Measured before tuning: …. The applied correction
+    targets these; the result was confirmed at the mark only." Never
+    presented as "how flat your speaker is now" (that claim needs a
+    post-apply cloud, which express does not make — see the degraded-claims
+    table, flow-simplification plan §1.3). Carve-out lines render VERBATIM
+    from the same block, unprefixed by the before-tuning frame, because they
+    are a distinct, post-apply-persistent fact ("EQ cannot fill these") that
+    owner decision 1 requires disclosed on every tier, not a claim about the
+    CURRENT state.
+    """
+    block = _cloud_measure_block(status)
+    flatness = _mapping(block.get("flatness"))
+    if not flatness:
+        return []
+    if not flatness.get("evaluable"):
+        return [
+            "measured before tuning: flatness could not be measured — every "
+            "spec band was excluded or out of range"
+        ] + _carve_out_expert_lines(block)
+    numeric = "; ".join(_flatness_lines_from_block(flatness))
+    lines = [
+        f"Measured before tuning: {numeric}. The applied correction targets "
+        "these; the result was confirmed at the mark only"
+    ]
+    lines.extend(_carve_out_expert_lines(block))
+    return lines
+
+
+def _carve_out_expert_lines(block: Mapping[str, Any]) -> list[str]:
     """The carve-out τ/r lines (plan PR-6b, owner decision 1).
 
     This is the "expert layer" the owner's decision names — the line above says
@@ -370,12 +439,15 @@ def _carve_out_expert_lines(status: Mapping[str, Any]) -> list[str]:
     disclosure and PR-7's chart callouts render the same words about the same
     range. This function only prefixes the band the line belongs to.
 
-    CLOUD-VERIFY only, inheriting :func:`_flatness_details_lines`' own reason:
-    the pre-apply cloud exists in order to be out of spec, and its carve-outs
-    describe a measurement the household is not being shown a verdict on.
+    Takes a compact cloud-phase BLOCK directly (B1 fix, adversarial review of
+    PR #1780) rather than ``status`` — the caller picks CLOUD-VERIFY for the
+    Full tier or CLOUD-MEASURE for Express (:func:`_flatness_details_lines`),
+    since carve-outs are a post-apply-persistent fact disclosed from
+    whichever cloud each tier actually produces, not read from one hardcoded
+    phase.
     """
     lines: list[str] = []
-    carve_outs = _cloud_verify_block(status).get("carve_outs")
+    carve_outs = block.get("carve_outs")
     if not isinstance(carve_outs, list):
         return lines
     for band in carve_outs:
@@ -405,13 +477,33 @@ def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_VERIFY))
 
 
+def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The compact CLOUD-MEASURE entry of the ``cloud`` block, or empty.
+
+    Express's only cloud group (B1 fix, adversarial review of PR #1780) —
+    see :func:`_express_pre_apply_flatness_lines`. ``PHASE_CLOUD_MEASURE`` is
+    spelled through the shared phase constant for the same reason
+    :func:`_cloud_verify_block` does.
+    """
+    return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
+
+
 def _flatness_unavailable_line(status: Mapping[str, Any]) -> list[str]:
-    """The honest cloud-absent rendering (plan PR-5) — three distinguishable
-    states, told apart rather than collapsed into one message.
+    """The honest cloud-absent rendering (plan PR-5) for the FULL tier's
+    CLOUD-VERIFY block — three distinguishable states, told apart rather
+    than collapsed into one message.
 
     * **No cloud-verify entry at all** — the group has not closed (or this
       session never had one, e.g. a verify-only re-arm whose prior cloud was
-      also absent). Nothing measured, nothing to say: empty.
+      also absent). Nothing measured, nothing to say: empty. **On Express
+      this is not a transient "not yet" — it is PERMANENT** (M=1 never
+      produces a CLOUD-VERIFY entry, by the tier's own shape), which is why
+      :func:`_flatness_details_lines` never reaches this function for
+      Express at all: it delegates to
+      :func:`_express_pre_apply_flatness_lines`, which reads CLOUD-MEASURE
+      instead, before this "nothing to say" fallback would otherwise render
+      Express's done/verify screens permanently silent on flatness (B1 fix,
+      adversarial review of PR #1780).
     * **The entry exists and its pipeline DID run, but carries no gauge** —
       a durable state written by a build between PR-4 and PR-5, read after
       an upgrade without a new session. The pipeline was fine; only the
@@ -499,35 +591,58 @@ def _setup_ready(status: Mapping[str, Any]) -> bool:
 
 _TIER_LABELS = {TIER_FULL: "Full measurement", TIER_EXPRESS: "Quick tune"}
 _TIER_CLAIMS = {
-    TIER_FULL: "re-checks the result across the room",
+    # B2 fix (adversarial review of PR #1780): "across the room" overclaimed
+    # past what the post-apply cloud actually samples — a handful of prompted
+    # spots around the mark, never the room at large. "at several spots
+    # around the mark" is the honest description of the same cloud.
+    TIER_FULL: "re-checks the result at several spots around the mark",
     TIER_EXPRESS: "confirms the result at the mark",
 }
 
 
 def _recommended_tier(status: Mapping[str, Any]) -> str:
-    """Full on a first-ever commission for this topology, Quick on a re-tune
-    (flow-simplification §3 — the choice is always the household's; history
-    decides only which option carries the Recommended badge).
+    """Full recommended UNTIL a Full-tier commission has completed on this
+    topology (coordinator ruling, adversarial review of PR #1780, S4) — the
+    choice is always the household's; history decides only which option
+    carries the Recommended badge, never a silent default.
 
-    ``_applied_chip``'s ``"automatic"`` state is EXACTLY "an automatic
-    (v2-measured) crossover is currently valid for this topology" —
-    ``crossover_snapshot_state`` (the contract behind ``applied_crossover``)
-    is topology-scoped, refusing as ``active_applied_profile_snapshot_topology_stale``
-    the moment the topology changes — so this reuses an existing signal
-    rather than inventing new persisted state.
+    Keyed on TWO signals, both required:
+
+    1. ``_applied_chip``'s ``"automatic"`` state — an automatically-tuned
+       crossover is currently valid for THIS topology.
+       ``crossover_snapshot_state`` (the contract behind
+       ``applied_crossover``) is topology-scoped, refusing as
+       ``active_applied_profile_snapshot_topology_stale`` the moment the
+       topology changes, so reaching "automatic" here already means this
+       exact topology — no new persisted state needed.
+    2. The durable v2 state's own ``tier`` being ``TIER_FULL`` specifically
+       (N5a fix: an earlier revision of this docstring glossed
+       ``"automatic"`` as "(v2-measured)", which overclaims —
+       ``_snapshot_owner`` also reads a LEGACY per-driver flow's measured
+       result as ``"automatic"`` via its ``level_match``/
+       ``corrections_source`` fallback, and that flow predates tiers
+       entirely). Requiring BOTH signals is what keeps an express-only
+       household seeing Full recommended — the §1.3 HF-null mitigation
+       this ruling exists to preserve: a Quick-tune-only topology has never
+       actually had the wider, comb-decorrelating walk, so Full stays
+       recommended until one completes.
     """
-    return TIER_EXPRESS if _applied_chip(status)["state"] == "automatic" else TIER_FULL
+    if _applied_chip(status)["state"] != "automatic":
+        return TIER_FULL
+    return TIER_EXPRESS if str(_v2(status).get("tier") or "") == TIER_FULL else TIER_FULL
 
 
-def _tier_action(tier: str, *, recommended: bool) -> dict[str, Any]:
-    info = tier_display_info()[tier]
+def _tier_action(
+    tier: str, info: Mapping[str, Mapping[str, int]], *, recommended: bool,
+) -> dict[str, Any]:
+    detail = info[tier]
     return {
         "id": f"start_v2_session_{tier}",
         "label": _TIER_LABELS[tier],
         # One-line claims difference (§1.3/§3), derived from the plan shape —
         # never a hand-written prettier figure (§1.1).
         "description": (
-            f"About {info['estimated_minutes']} min — {info['capture_target']} "
+            f"About {detail['estimated_minutes']} min — {detail['capture_target']} "
             f"measurements; {_TIER_CLAIMS[tier]}."
         ),
         "recommended": recommended,
@@ -540,12 +655,18 @@ def _tier_choice_actions(
     status: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The microphone_check screen's tier chooser: both tiers first-class,
-    the recommended one primary — never a silent default (§3)."""
+    the recommended one primary — never a silent default (§3).
+
+    ``tier_display_info()`` is called ONCE here (N1 fix, adversarial review
+    of PR #1780) rather than once per action — it is memoized, so this is a
+    minor cleanup, not a correctness fix.
+    """
+    info = tier_display_info()
     recommended = _recommended_tier(status)
     other = TIER_FULL if recommended == TIER_EXPRESS else TIER_EXPRESS
     return (
-        _tier_action(recommended, recommended=True),
-        [_tier_action(other, recommended=False)],
+        _tier_action(recommended, info, recommended=True),
+        [_tier_action(other, info, recommended=False)],
     )
 
 
@@ -995,6 +1116,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             verdict=verdict,
             next_action=None,
             status=status,
+            # B1 fix (adversarial review of PR #1780): Express's pre-apply
+            # cloud has already closed by the time this screen renders (it
+            # walks BEFORE VERIFY), so its before-tuning flatness/carve-out
+            # disclosure is available here too, not just on the done screen.
+            # Empty for Full at this point (its post-apply cloud has not
+            # started yet) — harmless, same as before this fix.
+            expert_details=_flatness_details_lines(status),
         )
     elif phase == PHASE_CLOUD_VERIFY:
         env = _envelope(
@@ -1019,11 +1147,15 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # Express disclosure (flow-simplification §1.3): the household is
         # told exactly what was verified ("confirmed at the mark") and named
         # the upgrade path — never a claim wider than what express measured
-        # (no cross-position post-apply check exists for this tier).
+        # (no cross-position post-apply check exists for this tier). B2 fix
+        # (adversarial review of PR #1780): "the verified-everywhere result"
+        # overclaimed past what a Full measurement actually re-checks — a
+        # handful of prompted spots around the mark, never every point in
+        # the room.
         done_verdict = (
             "Your speaker is tuned and confirmed at the mark. If it sounds "
             "worse than before, you can undo. Run a Full measurement for "
-            "the verified-everywhere result."
+            "the result checked at several spots around the mark."
             if is_express
             else "Your speaker is tuned. If it sounds worse than before, you can undo."
         )

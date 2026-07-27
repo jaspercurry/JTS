@@ -31,9 +31,12 @@ this doc is the current operational truth.
   apply → verify`. The one-liner: place the mic ~1 m in front of the
   speaker at tweeter height, choose Quick tune or Full measurement (the
   `microphone_check` screen's tier chooser, flow-simplification PR-U3 —
-  both first-class, whichever the household has never run on this
-  topology carries the Recommended badge), tap Start, then follow the
-  phone — apply is automatic (owner ruling, 2026-07-20; gotcha #18), no
+  both first-class; **Full carries the Recommended badge until a Full
+  commission has completed on this topology** — S4, adversarial review of
+  PR #1780 — then Quick tune does, so an express-only household is never
+  nudged away from the wider walk that mitigates §1.3's HF-null row), tap
+  Start, then follow the phone — apply is automatic (owner ruling,
+  2026-07-20; gotcha #18), no
   browser-tab step in between. Since flat-linearization PR-3b the phone
   also prompts a series of small mic moves inside the measure and verify
   steps (the spatial cloud); the wizard's five screens are unchanged,
@@ -325,9 +328,12 @@ is no post-apply cross-position claim (see
 [`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
 §1.3's degraded-claims table). `resolve_plan_shape` in
 `crossover_v2_flow.py` is the single place both counts are resolved from
-a tier id; `express_cloud_measure_positions()` derives the 4 from
-`CLOUD_POSITION_PROMPTS`' wide-offset guarantee, never a hardcoded
-literal.
+a tier id; `express_cloud_measure_positions()` derives the 5 (the
+`cloud_measure` group's total captures — the anchor plus 4 prompted
+positions) from `CLOUD_POSITION_PROMPTS`' wide-offset guarantee, never a
+hardcoded literal (N3 fix, adversarial review of PR #1780: the function
+derives the position COUNT, not the curve count the anchor is excluded
+from — see "Positions are not curves" below).
 
 The two `cloud_*` phases are **position groups** (flat-linearization
 PR-3b): one phase spanning many capture indexes, one prompted mic move

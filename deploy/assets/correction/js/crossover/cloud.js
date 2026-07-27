@@ -56,21 +56,39 @@ const EXPRESS_NO_AFTER_CURVE_TEXT =
 // eyeball on real hardware.
 let lastChart = null;
 
-function chartPayloadFor(cloud, cloudChart) {
+// B1 fix (adversarial review of PR #1780): which compact cloud-phase block
+// carries the household-facing honesty-instrument surface (spec bands,
+// carve-outs, provenance, geometry guidance) — VERIFY for Full (the
+// current, graded truth), MEASURE for Express (the ONLY cloud it ever
+// produces; M=1 never closes a CLOUD-VERIFY group, permanently, not "not
+// yet"). `_compact_cloud_status` (jasper.web.correction_crossover_v2)
+// already projects the identical shape onto every phase entry, so this is
+// a read-side selection, not new server data.
+function specSourceFor(cloud, tier) {
   const measure = (cloud && cloud[PHASE_CLOUD_MEASURE]) || null;
   const verify = (cloud && cloud[PHASE_CLOUD_VERIFY]) || null;
+  return tier === TIER_EXPRESS ? measure : verify;
+}
+
+function chartPayloadFor(cloud, cloudChart, tier) {
+  const measure = (cloud && cloud[PHASE_CLOUD_MEASURE]) || null;
+  const verify = (cloud && cloud[PHASE_CLOUD_VERIFY]) || null;
+  const specSource = specSourceFor(cloud, tier);
   const chartMeasure = (cloudChart && cloudChart[PHASE_CLOUD_MEASURE]) || null;
   const chartVerify = (cloudChart && cloudChart[PHASE_CLOUD_VERIFY]) || null;
   const measureCurve = (chartMeasure && chartMeasure.curve) || null;
   const verifyCurve = (chartVerify && chartVerify.curve) || null;
   if (!measureCurve && !verifyCurve) return null;
 
-  // Excluded intervals come from VERIFY's own carve-out disclosure (the
-  // current, graded truth — the same reason _flatness_details_lines and the
-  // geometry guidance are read from PHASE_CLOUD_VERIFY, never
-  // PHASE_CLOUD_MEASURE, throughout this flow).
+  // Excluded intervals come from the spec source's own carve-out disclosure
+  // (the current, graded truth for Full; the ONLY cloud Express ever
+  // produces, framed as the before-tuning state by the envelope's own
+  // expert_details — carve-outs themselves render VERBATIM here, since they
+  // are a post-apply-persistent fact ("EQ cannot fill these") regardless of
+  // which cloud measured them, owner decision 1).
   const excludedIntervals = [];
-  const carveOuts = Array.isArray(verify && verify.carve_outs) ? verify.carve_outs : [];
+  const carveOuts = Array.isArray(specSource && specSource.carve_outs)
+    ? specSource.carve_outs : [];
   carveOuts.forEach((band) => {
     const intervals = Array.isArray(band && band.intervals) ? band.intervals : [];
     intervals.forEach((interval) => {
@@ -84,19 +102,21 @@ function chartPayloadFor(cloud, cloudChart) {
   return {
     measureCurve,
     verifyCurve,
-    // Review B-1: each curve is plotted relative to its OWN reference —
-    // linearization is cut-only, so VERIFY's reference is always at or
-    // below MEASURE's, and a single shared reference displaced the whole
-    // "Before" curve by a level change the spec never grades. Both
-    // reference_db values already ride the compact block (every phase entry
-    // carries its own — jasper.web.correction_crossover_v2's
-    // _compact_cloud_status), so no new server data is needed.
+    // Review B-1 (PR-7): each curve is plotted relative to its OWN
+    // reference — linearization is cut-only, so VERIFY's reference is
+    // always at or below MEASURE's, and a single shared reference
+    // displaced the whole "Before" curve by a level change the spec never
+    // grades. Both reference_db values already ride the compact block
+    // (every phase entry carries its own), so no new server data is needed.
     measureReferenceDb: measure ? measure.reference_db : null,
     verifyReferenceDb: verify ? verify.reference_db : null,
-    // Spec bands (and therefore the corridor) are VERIFY's own — the
-    // current, graded truth; MEASURE exists to be out of spec, so it never
-    // gets a corridor.
-    specBands: (verify && verify.spec_bands) || [],
+    // Spec bands (and therefore the corridor) come from the spec source:
+    // VERIFY's for Full (the current, graded truth — MEASURE exists to be
+    // out of spec there, so it never gets a corridor); MEASURE's for
+    // Express, drawn against the BEFORE curve — express has no after curve
+    // to grade, and showing the corridor there is what makes its carve-outs
+    // legible on the chart at all (B1).
+    specBands: (specSource && specSource.spec_bands) || [],
     excludedIntervals,
   };
 }
@@ -128,8 +148,9 @@ function buildCallout(disclosure, expert) {
   return wrap;
 }
 
-function renderCallouts(container, verify) {
-  const carveOuts = Array.isArray(verify && verify.carve_outs) ? verify.carve_outs : [];
+function renderCallouts(container, specSource) {
+  const carveOuts = Array.isArray(specSource && specSource.carve_outs)
+    ? specSource.carve_outs : [];
   const rows = [];
   carveOuts.forEach((band) => {
     const disclosure = band && band.disclosure;
@@ -170,8 +191,9 @@ function updateLegend(els, payload, tier) {
 export function renderCloud(els, env) {
   const cloud = env && env.cloud;
   const cloudChart = env && env.cloud_chart;
-  const verify = (cloud && cloud[PHASE_CLOUD_VERIFY]) || null;
-  const payload = chartPayloadFor(cloud, cloudChart);
+  const tier = env && env.tier;
+  const specSource = specSourceFor(cloud, tier);
+  const payload = chartPayloadFor(cloud, cloudChart, tier);
 
   const visible = Boolean(payload);
   els.cloud.hidden = !visible;
@@ -180,16 +202,16 @@ export function renderCloud(els, env) {
     return;
   }
 
-  const provenance = (verify && verify.provenance_note) || '';
+  const provenance = (specSource && specSource.provenance_note) || '';
   els.cloudProvenance.textContent = provenance;
   els.cloudProvenance.hidden = !provenance;
 
-  const guidance = (verify && verify.geometry_guidance) || '';
+  const guidance = (specSource && specSource.geometry_guidance) || '';
   els.cloudGeometry.textContent = guidance;
   els.cloudGeometry.hidden = !guidance;
 
-  updateLegend(els, payload, env && env.tier);
-  renderCallouts(els.cloudCallouts, verify);
+  updateLegend(els, payload, tier);
+  renderCallouts(els.cloudCallouts, specSource);
 
   lastChart = { canvas: els.cloudChart, payload };
   drawCloudChart(els.cloudChart, payload);

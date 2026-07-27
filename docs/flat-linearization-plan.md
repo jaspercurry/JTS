@@ -929,6 +929,4 @@ JASA 1955 (sinc(kr) correlation); Müller & Massarani, JAES 2001;
 ANSI/CTA-2034; Devantier AES 5638; Olive AES 6113/6190 + US 8,311,232;
 Toole, *Sound Reproduction* 3rd ed.
 
-Last verified: 2026-07-27 (flow-simplification PR-U3 — added the dated
-new-horn pointer note above; the 5.4–7.0 dB comb figures and the carve-out
-policy are otherwise unchanged)
+Last verified: 2026-07-25

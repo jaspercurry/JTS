@@ -176,9 +176,12 @@ named plan shape** with its own validation:
 The disclosure rule follows the program's standing prose discipline:
 never claim wider than measured. Express copy says what it verified
 ("tuned and confirmed at the mark") and names the upgrade path ("run a
-Full measurement for the verified-everywhere result"). Nothing is
-silently weakened: every row above is either the existing machinery
-scaling itself down, or an absence that is stated.
+Full measurement for the result checked at several spots around the
+mark" — B2 fix, adversarial review of PR #1780: "the verified-everywhere
+result" overclaimed past what a Full measurement actually re-checks, a
+handful of prompted spots around the mark, never every point in the
+room). Nothing is silently weakened: every row above is either the
+existing machinery scaling itself down, or an absence that is stated.
 
 ### 1.4 Consent for express
 
@@ -221,15 +224,19 @@ every time:
 ```
 
 **Stop demotion is a deliberate reversal of a documented decision.**
-`render.js` and `stopButtonEl` style Stop as the page's one danger-red
-button *on purpose* ("the one button … whose tap is destructive to the
-in-progress measurement"). The redesign keeps the destructiveness
-honored but moves it to the right layer: the always-present control
-shrinks to a text link (it appears 16× per full session and competes
-with the primary at equal weight today), and the tap opens a
-danger-styled confirm ("Stop measuring? This abandons the session")
-so a stray tap can't kill a session — which the current full-weight
-button actually can. Owner-reversible (§5).
+`render.js` styles Stop as the page's one danger-red button *on purpose*
+("the one button … whose tap is destructive to the in-progress
+measurement") — this stays true for the consent-screen Stop `render.js`
+still renders (room-sweep, level-ramp), where nothing is in progress yet
+(nit fix, adversarial review of PR #1780: the earlier draft also named
+the page-owned screens' Stop helper by its pre-redesign function name,
+which PR-U2's own implementation removed). The redesign keeps the
+destructiveness honored but moves it to the right layer: the
+always-present control shrinks to a text link (it appears 16× per full
+session and competes with the primary at equal weight today), and the
+tap opens a danger-styled confirm ("Stop measuring? This abandons the
+session") so a stray tap can't kill a session — which the current
+full-weight button actually can. Owner-reversible (§5).
 
 Server side: `CapturePlanEntry.screen` (an opaque `str → str` dict — no
 relay/protocol change) carries `progress`, `title` (now the
@@ -438,15 +445,29 @@ durations and a one-line claims difference:
 > **Quick tune** (about 5 min) — 7 measurements; confirms the result
 > at the mark.
 > **Full measurement** (about 11 min) — 16 measurements; re-checks the
-> result across the room.
+> result at several spots around the mark.
+
+(B2 fix, adversarial review of PR #1780: "across the room" overclaimed
+past what the post-apply cloud actually samples — a handful of prompted
+spots around the mark, never the room at large. This is the sentence
+that sourced the same overclaim in the shipped wizard copy;
+implementation and this example must read the same honest phrase.)
 
 (Both durations are the page estimator's derived numbers — §1.1 — and
 the wizard copy derives them the same way rather than hand-writing
 prettier ones.) History picks only which option carries the
-"Recommended" badge (never a silent default): first-ever commission on
-this topology → Full recommended — this is the §1.3 HF-null row's
-mitigation, since the comb-free premise for express is measured on
-JTS3, not on every speaker; re-tune → Quick recommended.
+"Recommended" badge (never a silent default). **Implemented rule (S4,
+coordinator ruling on the adversarial review of PR #1780): Full stays
+recommended UNTIL a Full-tier commission has completed on this
+topology** — keyed on the applied crossover being automatic AND the
+durable v2 state's own tier recording "full" specifically. An
+express-only household (an applied automatic crossover whose recorded
+tier is "express", or no tier at all) still sees Full recommended —
+this is the §1.3 HF-null row's mitigation, since the comb-free premise
+for express is measured on JTS3, not on every speaker, and a
+Quick-tune-only topology has never actually walked the wider,
+comb-decorrelating cloud. Only once a Full commission has completed
+does Quick tune become the recommended re-tune.
 
 Where the choice lives, and why the wizard rather than the capture
 page: the capture plan is baked into the HMAC-bound spec at session

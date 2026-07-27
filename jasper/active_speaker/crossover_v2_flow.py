@@ -79,6 +79,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -5668,10 +5669,16 @@ WALL_CLOCK_CEILING_PER_ENTRY_S = 120.0
 
 # A fixed, representative 2-way RoleBand pair for :func:`tier_display_info`
 # ONLY — never the household's actual excitation ceilings/topology. See that
-# function's docstring for why a representative pair is honest here.
+# function's docstring for why a representative pair is honest here. The
+# tweeter's lower edge is deliberately the CONSERVATIVE end of a physically
+# plausible tweeter (~1.5-2 kHz, not the 300 Hz woofer/midrange territory an
+# earlier revision used) — S3 review finding, adversarial review of PR #1780:
+# a too-low f1 biased the estimated sweep duration (and so the displayed
+# minutes) SHORT, the wrong failure direction for a number the household
+# reads as a promise.
 _DISPLAY_ROLES_BANDS = (
     RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
-    RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
+    RoleBand("tweeter", 1, FrequencyBand(1800.0, 20000.0)),
 )
 _DISPLAY_FC_HZ = 1600.0
 
@@ -5690,16 +5697,58 @@ def tier_display_info() -> dict[str, dict[str, int]]:
     poll of the ``microphone_check`` screen, which must render the chooser
     regardless of whether that heavier resolution would currently succeed.
 
-    A fixed representative :class:`RoleBand` pair is honest here because
-    :func:`~jasper.audio_measurement.program.build_measure_program`'s own
-    docstring: MEASURE/VERIFY sweep durations are constants keyed by ROLE
-    NAME (``DEFAULT_WOOFER_SWEEP_S`` / ``DEFAULT_TWEETER_SWEEP_S``), not by
-    the swept band's edges or ``fc_hz`` — so any valid 2-way ``RoleBand``
-    pair reproduces the same displayed minutes any real commission on this
-    household's speaker would show. ``capture_target`` needs no audio
+    **A fixed representative :class:`RoleBand` pair is honest here, but NOT
+    because program length is invariant to the band (S3 fix, adversarial
+    review of PR #1780 — an earlier revision of this docstring overclaimed
+    that).** The realized sweep length genuinely varies with the swept
+    band's edges: each sweep's MESM inter-sweep gap
+    (:func:`~jasper.audio_measurement.program.mesm_gap_samples`) and its own
+    Novak-synchronized sample count both depend on ``f1``/``f2`` — a
+    narrower or differently-centered band realizes a measurably different
+    duration, not the same one. The invariant that actually makes a fixed
+    pair honest is narrower: :meth:`CapturePlan.estimated_minutes`'s
+    ceil-to-whole-minutes quantum absorbs that variance across the
+    PLAUSIBLE 2-way band space. Swept empirically across several genuinely
+    different plausible topologies (varying woofer/tweeter bands and
+    ``fc_hz`` — see ``tests/test_crossover_v2_conductor.py``'s
+    ``test_tier_display_info_minutes_hold_across_plausible_topologies``),
+    Full displays 11 minutes and Express displays 5 minutes in every case
+    checked, with Express the tighter margin (on the order of 10-15 s of
+    headroom before the next minute boundary, at this representative pair —
+    the number that would need re-deriving if a future change genuinely
+    widened the plausible band space). ``capture_target`` needs no audio
     program at all — it is pure arithmetic on the resolved
     :class:`V2PlanShape`.
+
+    **Memoized (N1 fix, adversarial review of PR #1780).** The representative
+    inputs are fixed module constants, so the result never changes within a
+    process — computing it fresh cost 4 :func:`build_v2_capture_plan` calls
+    per envelope render (:func:`~jasper.active_speaker.crossover_envelope_v2._tier_choice_actions`
+    calls this once per tier action) on every ~1.5 s wizard poll, ~8 ms on a
+    fast Mac and worse on a Pi 5. :func:`functools.lru_cache` does not cache
+    an exception, so a genuine regression in the representative build would
+    otherwise re-raise on every poll forever; the try/except below is a
+    one-time fallback specifically for that residual path (N5b), not a
+    per-poll retry.
     """
+    try:
+        return _tier_display_info_cached()
+    except (CrossoverV2FlowError, ValueError) as exc:
+        log_event(
+            logger, "correction.tier_display_info_failed",
+            level=logging.WARNING, error=str(exc),
+        )
+        return {
+            tier: {
+                "capture_target": resolve_plan_shape(tier).capture_target,
+                "estimated_minutes": 0,
+            }
+            for tier in TIERS
+        }
+
+
+@lru_cache(maxsize=1)
+def _tier_display_info_cached() -> dict[str, dict[str, int]]:
     out: dict[str, dict[str, int]] = {}
     for tier in TIERS:
         shape = resolve_plan_shape(tier)

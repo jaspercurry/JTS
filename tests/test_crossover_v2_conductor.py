@@ -92,6 +92,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     open_measurement_volume,
     resolve_plan_shape,
     session_wall_clock_ceiling_s,
+    tier_display_info,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -2740,6 +2741,39 @@ def test_the_consent_tier_line_derives_its_counts_and_duration():
         build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS).estimated_minutes()
         == 5
     )
+
+
+def test_tier_display_info_minutes_hold_across_plausible_topologies():
+    """S3 fix (adversarial review of PR #1780): ``tier_display_info``'s fixed
+    representative ``RoleBand`` pair does NOT make the realized sweep
+    duration invariant to the band (an earlier docstring overclaimed that —
+    MESM gaps and Novak sample-count rounding both depend on the swept
+    band's edges). What actually holds is narrower: the displayed WHOLE
+    MINUTES stay the same across the plausible 2-way band space, because
+    ``CapturePlan.estimated_minutes``'s ceil-to-minute quantum absorbs the
+    real (small) variance. Swept here across several genuinely different
+    plausible topologies — varying woofer/tweeter bands and ``fc_hz`` — each
+    built through the REAL ``build_v2_capture_plan``, never re-deriving the
+    arithmetic."""
+    info = tier_display_info()
+    topologies = [
+        # (woofer band, tweeter band, fc_hz)
+        (FrequencyBand(150.0, 6000.0), FrequencyBand(1800.0, 20000.0), 1600.0),
+        (FrequencyBand(80.0, 3000.0), FrequencyBand(1200.0, 20000.0), 1800.0),
+        (FrequencyBand(200.0, 4500.0), FrequencyBand(1500.0, 22000.0), 2200.0),
+    ]
+    for woofer_band, tweeter_band, fc_hz in topologies:
+        roles = [
+            RoleBand("woofer", 0, woofer_band),
+            RoleBand("tweeter", 1, tweeter_band),
+        ]
+        for tier in (TIER_FULL, TIER_EXPRESS):
+            plan = build_v2_capture_plan(roles, fc_hz, tier=tier)
+            assert plan.estimated_minutes() == info[tier]["estimated_minutes"], (
+                f"tier={tier} woofer={woofer_band} tweeter={tweeter_band} "
+                f"fc={fc_hz}: displayed minutes drifted from tier_display_info()"
+            )
+            assert plan.capture_target == info[tier]["capture_target"]
 
 
 def test_cloud_prompts_front_load_the_wide_offsets():
