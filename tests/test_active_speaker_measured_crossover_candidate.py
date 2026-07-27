@@ -53,6 +53,7 @@ def _candidate(
     program_id: str = "prog-abc123",
     linearization: dict | None = None,
     linearization_outcome: str | None = None,
+    exclusion_evidence: dict | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
@@ -63,6 +64,8 @@ def _candidate(
         kwargs["linearization"] = linearization
     if linearization_outcome is not None:
         kwargs["linearization_outcome"] = linearization_outcome
+    if exclusion_evidence is not None:
+        kwargs["exclusion_evidence"] = exclusion_evidence
     return MeasuredCrossoverCandidate(
         program_id=program_id,
         analysis={"drift_ppm": 12.5, "sweeps": ["w", "t", "w"]},
@@ -559,6 +562,107 @@ def test_from_mapping_accepts_shape_missing_linearization_outcome_key():
 
     assert reopened.linearization_outcome == ""
     assert reopened.fingerprint == original_fingerprint
+
+
+def test_from_mapping_accepts_shape_missing_exclusion_evidence_key():
+    """Era tolerance, third of three (the P1 this file's :418 test names,
+    reintroduced verbatim by the flat-linearization plan's PR-6b and caught in
+    review): a candidate.json published by a build that predates
+    "exclusion_evidence" must load cleanly — not refuse candidate_malformed,
+    and NOT refuse candidate_tampered on the reopen comparison — default to
+    exclusion_evidence=={}, and its RECOMPUTED fingerprint must equal the
+    ORIGINAL persisted one.
+
+    The tampered refusal is the sharp edge: ``to_dict()`` always writes the
+    key, so an older ``raw`` that omits it fails the equality check in
+    ``from_mapping`` unless the comparison setdefaults it. That route is LIVE
+    (``handle_v2_apply`` → ``_reopen_candidate_artifact``), and its failure
+    tells a household their persisted correction was tampered with when the
+    file is merely older than the field."""
+    candidate = _candidate()
+    raw = candidate.to_dict()
+    original_fingerprint = raw["fingerprint"]
+    # to_dict is always the current, full shape.
+    assert "exclusion_evidence" in raw
+    del raw["exclusion_evidence"]  # simulate the pre-PR-6b persisted shape
+
+    reopened = MeasuredCrossoverCandidate.from_mapping(raw)
+
+    assert reopened.exclusion_evidence == {}
+    assert reopened.fingerprint == original_fingerprint
+
+
+def test_every_optional_field_is_setdefaulted_in_the_reopen_comparison():
+    """The structural guard behind the three era tests above.
+
+    ``from_mapping`` compares ``candidate.to_dict()`` against the raw payload,
+    and ``to_dict()`` always writes every optional field — so each one needs a
+    ``setdefault`` at the comparison site or every older candidate refuses as
+    tampered. Rather than trusting three hand-written era tests to keep pace
+    with a growing field set, this drops EACH optional key in turn and
+    requires a clean reopen, so a fourth optional field added without its
+    ``setdefault`` line fails here even if nobody writes its era test.
+
+    Walks the EMPTY-field candidate, because that is what the era case
+    actually is: a payload predating a field never carried a value for it. A
+    NON-empty optional field is fingerprinted, so deleting or editing one of
+    those is real tampering and must still refuse — covered in the other
+    direction by ``test_linearization_outcome_tampering_trips_the_tamper_check``
+    and ``test_exclusion_evidence_tampering_trips_the_tamper_check``."""
+    full = _candidate().to_dict()
+    optional = {"linearization", "linearization_outcome", "exclusion_evidence"}
+    # The set this walks must be exactly what from_mapping calls optional, so
+    # a new field cannot be added to one and forgotten in the other.
+    assert all(not full[key] for key in optional), "the era case is the empty one"
+
+    for key in sorted(optional):
+        raw = {k: v for k, v in full.items() if k != key}
+        reopened = MeasuredCrossoverCandidate.from_mapping(raw)
+        assert reopened.fingerprint == full["fingerprint"], key
+
+
+def test_exclusion_evidence_tampering_trips_the_tamper_check():
+    """The other direction of the era tolerance above, and the claim
+    ``_core()``'s docstring makes: a NON-empty ``exclusion_evidence`` is
+    fingerprinted, so the recorded reason for refusing to correct a band
+    cannot be edited out of — or narrowed inside — a persisted candidate.
+
+    Widening an excluded interval would be the interesting attack (it hides
+    correction that WAS applied); narrowing it is the same mechanism and is
+    what this checks."""
+    evidence = {
+        "phase": "cloud_measure",
+        "excluded_bands_hz": [[8000.0, 9400.0]],
+        "n_positions": 8,
+        "band_spread": [],
+        "null_registry": {"classification": "position_invariant"},
+    }
+    candidate = _candidate(exclusion_evidence=evidence)
+    raw = dict(candidate.to_dict())
+    assert raw["exclusion_evidence"]["excluded_bands_hz"] == [[8000.0, 9400.0]]
+
+    narrowed = dict(raw)
+    narrowed["exclusion_evidence"] = {
+        **evidence, "excluded_bands_hz": [[8000.0, 8100.0]],
+    }
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(narrowed)
+    assert excinfo.value.code == "candidate_tampered"
+
+    # And removing it wholesale is caught too — that is NOT the era case,
+    # because the era case never had a value to remove.
+    stripped = {k: v for k, v in raw.items() if k != "exclusion_evidence"}
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(stripped)
+    assert excinfo.value.code == "candidate_tampered"
+
+
+def test_from_mapping_rejects_non_mapping_exclusion_evidence():
+    candidate = _candidate()
+    raw = {**candidate.to_dict(), "exclusion_evidence": "not-a-mapping"}
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+    assert excinfo.value.code == "exclusion_evidence_malformed"
 
 
 def test_from_mapping_rejects_non_string_linearization_outcome():

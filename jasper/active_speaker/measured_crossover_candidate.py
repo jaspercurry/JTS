@@ -269,6 +269,18 @@ class MeasuredCrossoverCandidate:
     omitted from the fingerprint when empty, accepted absent on
     ``from_mapping``. Empty means "no cloud evidence entered this fit", which
     is what every candidate produced before PR-6b implicitly claimed.
+
+    **What it costs, measured rather than hand-waved** (2026-07-27, the S0
+    ten-position cloud — this program's reference corpus, and the widest real
+    case it has): **5,294 bytes** of ``candidate.json``, of which the null
+    registry is 3,307 (3 identified nulls plus 5 recorded refusals, each
+    carrying its own evidence mapping), ``band_spread`` 1,596 (10 octave
+    bands x 6 numbers), and the merged intervals 287 (7 intervals). It scales
+    with what the honesty instruments actually found, not with capture length,
+    so a clean room writes a fraction of that and nothing writes an unbounded
+    amount. Stated here for the same reason the `/state` projection states its
+    own: this is the largest thing PR-6b adds to a persisted artifact, and a
+    reader deciding whether to keep it should see the number.
     """
 
     program_id: str
@@ -548,15 +560,25 @@ class MeasuredCrossoverCandidate:
             raise MeasuredCrossoverCandidateError(
                 "candidate_malformed", str(exc)
             ) from exc
-        # candidate.to_dict() always carries "linearization" and
-        # "linearization_outcome" (forward-shape consistency — see its own
-        # docstring); an older `raw` implicitly claimed {} / "" by never
-        # mentioning either field, so compare against that same claim made
-        # explicit — otherwise a payload that predates these fields would
-        # spuriously fail its own honest round trip and refuse as tampered.
+        # candidate.to_dict() always carries "linearization",
+        # "linearization_outcome" and "exclusion_evidence" (forward-shape
+        # consistency — see its own docstring); an older `raw` implicitly
+        # claimed {} / "" / {} by never mentioning the field, so compare
+        # against that same claim made explicit — otherwise a payload that
+        # predates the field would spuriously fail its own honest round trip
+        # and refuse as tampered.
+        #
+        # **Every optional field in `to_dict()` needs a line here.** Adding one
+        # without it makes EVERY previously-persisted candidate refuse as
+        # `candidate_tampered` the moment a deploy straddles the change — the
+        # live `handle_v2_apply` → `_reopen_candidate_artifact` route tells a
+        # household their correction was tampered with when the file is merely
+        # older. That is not hypothetical: `exclusion_evidence` shipped without
+        # its line and this is the fix. Each is pinned by its own era test.
         raw_for_comparison = dict(raw)
         raw_for_comparison.setdefault("linearization", {})
         raw_for_comparison.setdefault("linearization_outcome", "")
+        raw_for_comparison.setdefault("exclusion_evidence", {})
         if candidate.to_dict() != raw_for_comparison:
             _refuse(
                 "candidate_tampered",

@@ -265,9 +265,25 @@ gate stays at index 2 (they read the analysis, not the candidate), so a
 doomed session still fails at sweep two rather than after a nine-position
 walk. A session with **no** pre-apply group — the pre-cloud 3-entry shape
 the conductor defaults to, and the 1-entry re-verify path — still builds
-at MEASURE, byte-identically: the rule is "the fit runs at the last
-capture before the apply". No wire bytes, screens, or plan entries
-changed; only conductor-internal timing.
+at MEASURE with the same accept, payload keys and apply timing it had
+before: the rule is "the fit runs at the last capture before the apply".
+No wire bytes, screens, or plan entries changed; only conductor-internal
+timing. (Those shapes' `candidate.json` does gain an always-empty
+`exclusion_evidence` key, which is omitted from the fingerprinted core
+when empty, so the fingerprint is unchanged.)
+
+The deferring shape holds MEASURE's analysis across the prompted walk,
+because it is the fit's input. That retention is scoped tightly on
+purpose: the object is dominated by per-occurrence float64/complex128
+arrays on the analysis FFT grid — one two-occurrence `DriverResponse`
+measured **33.6 MB** on the S0 corpus's own grid (524,289 bins;
+production MEASURE uses a different program and grid, so read this as
+the order of magnitude, not the number) — so a session that never defers
+does not store it at all, and a group close releases it as soon as the
+fit has consumed it. Re-consumption cannot strand on the release: the
+relay admits a begin only at `(accepted_count + 1, attempts_used + 1)`
+and dedupes processed pairs, so a group closes for the last time exactly
+once.
 
 1. **CHECK** (~25 s, one tap). Ambient silence + two band-limited pilot
    chirps per driver at two levels (−10 dB apart). Yields the ambient
@@ -320,7 +336,13 @@ from `candidate.json` alone; it deliberately duplicates data in
 `cloud_measure.json`, because that file is prunable session evidence while this
 travels with the correction it justifies. Same optional-field conventions as
 `linearization` (omitted from the fingerprint when empty, fingerprinted when
-present, accepted absent on `from_mapping`). Design and fitting-policy SSOT:
+present, accepted absent on `from_mapping` — that last one is load-bearing
+and was a caught blocker: `to_dict()` always writes the key, so the reopen
+comparison must `setdefault` it or every pre-PR-6b candidate refuses as
+`candidate_tampered` on the live apply path). Measured cost: **5,294 bytes**
+of `candidate.json` on the S0 ten-position cloud — registry 3,307,
+`band_spread` 1,596, intervals 287 — scaling with what the honesty
+instruments found, not with capture length. Design and fitting-policy SSOT:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 "Layer 1a concretely"; engine at
 [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py),

@@ -1304,6 +1304,52 @@ before the fit and could only ever report `""`) for a new
 `correction.crossover_v2_candidate_built` event, the same treatment PR-5 gave
 the per-capture `flatness_*` fields when their subject moved to the cloud.*
 
+*Round-1 review of the two PR-6b commits (2026-07-27) — 1 blocker, 1
+should-fix, 7 nits, all fixed on the same branch; the timing move itself was
+walked against six race/ordering scenarios and came back clean.
+**BLOCKER: era tolerance.** `to_dict()` always writes `exclusion_evidence`, but
+`from_mapping`'s reopen comparison only `setdefault`ed the two OLDER optional
+fields — so every pre-PR-6b `candidate.json` straddling a deploy refused as
+`candidate_tampered` on the LIVE apply route, telling a household their
+correction had been altered when the file was merely older. Three docstrings
+promised the tolerance the code did not deliver, and it is a verbatim
+reintroduction of the P1 the candidate test module names at its own `:418`.
+Fixed with the missing `setdefault`, the third era test mirroring the existing
+two, an end-to-end apply test through the real `apply_baseline_profile` path,
+and — because three hand-written era tests will not keep pace with a growing
+field set — a structural guard that drops EACH optional key in turn, so a
+fourth field added without its `setdefault` fails even if nobody writes its era
+test. All four verified to fail with the fix reverted.
+**SHOULD-FIX: retention.** The retained MEASURE analysis was stored on both
+arms and never released. It is not small — one two-occurrence `DriverResponse`
+measured 33.6 MB of ndarray payload on the S0 corpus grid — so it is now stored
+only on the arm that defers, and released once the fit consumes it. Releasing
+changes what a re-delivered close would do, which is safe because the relay
+admits a begin only at `(accepted_count + 1, attempts_used + 1)` and dedupes
+processed pairs; a geometry retake returns rejected long before the build. Both
+facts are documented at the site.
+**Nits, all seven:** the "accept is already decided" wrap comment now scopes
+itself to the pipeline and names the honest journalled-but-unaccepted state a
+candidate-build raise leaves (with a test); `exclusion_evidence`'s measured
+`candidate.json` cost is disclosed (5,294 bytes on S0 — registry 3,307,
+band_spread 1,596, intervals 287) as the `/state` projection's was; two
+stale-spine design records annotated (`correction-journey-design.md`,
+`bass-commissioning-ux.md` — the latter's own staleness correction had itself
+gone stale); the "~40 s analyses" figure replaced with a measured 2.7-2.8 s
+combine and 0.02-0.04 s pipeline; the standalone "byte-identical" phrase scoped
+(the pre-cloud arm's candidate DOES gain an always-empty, non-fingerprinted
+key); and the carve-out clamp-exclusion claim pinned structurally.
+**One of the nits found a defect in this session's own test.** The severing
+test claimed "the correction itself differs"; measured, the emitted biquads and
+trims are IDENTICAL wired and severed — what the cloud changes on that fixture
+is the fit's permitted band, its residual accounting, and which term the 8 kHz
+octave reports as binding. The test now asserts `fit_band_hz` (a real fit
+change, and the assertion that would fail if the wiring degraded to
+reporting-only), asserts the filter equality explicitly, and says so. The
+sibling positive test's no-filter-inside-a-null assertion is likewise annotated
+as a standing invariant rather than that test's proof, because it holds in the
+severed case too on this fixture.*
+
 *Labels that were aspirational became true with no edit — "the pre-apply cloud
 is the UNCORRECTED baseline", the doctor's premise, PR-5's before/after framing,
 and PR-4's VERIFY-anchor-join reversal all now describe what the code does. The

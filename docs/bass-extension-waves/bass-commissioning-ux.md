@@ -374,7 +374,16 @@ externalized for translation, no idioms; localized numeric units.
   spine is `CHECK → gain solve → MEASURE → candidate → APPLYING (auto) →
   VERIFY` (`jasper/active_speaker/crossover_v2_flow.py` docstring: "no human
   mid-flow Apply gate… a trusted candidate… is applied by the conductor
-  itself"). Bass's explicit Accept is a deliberate safety commit on its own
+  itself").
+  *(Re-stale 2026-07-27: the correction above is itself now out of date —
+  the flat-linearization plan's PR-3b added two prompted position groups
+  and the 2026-07-27 owner timing decision moved the fit and the candidate
+  to the pre-apply group's close. Current spine: `CHECK → gain solve →
+  MEASURE → pre-apply position group → fit + candidate → APPLYING (auto) →
+  VERIFY → post-apply position group`. The point this bullet is making —
+  that Crossover has no human Apply gate and Bass's Accept is therefore not
+  tab mirroring — is unaffected.)*
+  Bass's explicit Accept is a deliberate safety commit on its own
   terms, not tab mirroring — Bass drives real speakers into thermal/
   mechanical stress in a way Crossover's alignment measurement does not, so
   an independent human-accept gate is independently justified.

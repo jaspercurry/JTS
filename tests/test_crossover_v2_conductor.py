@@ -1541,6 +1541,40 @@ def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
     assert c.current_phase == PHASE_APPLYING
 
 
+def test_only_the_pre_apply_group_close_fires_a_candidate_across_a_whole_session():
+    """The `phase == PHASE_CLOUD_MEASURE` guard in ``_close_cloud_group`` is
+    load-bearing and gets its own pin: ``_close_cloud_group`` is shared by BOTH
+    position groups, so without it the POST-apply cloud's close would build a
+    second candidate and fire a second auto-apply — re-applying over an
+    already-applied speaker, on evidence gathered through the correction it
+    would be re-deriving.
+
+    Walks all 16 captures and asserts ``auto_apply`` appears on exactly one
+    verdict, at index 10, with exactly one publish for the whole session.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+
+    auto_apply_at: list[int] = []
+    attempt = 1
+    for index in sorted(CLOUD_MAP):
+        if index == VERIFY_INDEX:
+            fakes.apply_done = True  # the host's auto-apply landed
+        verdict = _run_phase(c, index, attempt)
+        attempt += 1
+        assert verdict["accepted"] is True, index
+        if verdict.get("auto_apply"):
+            auto_apply_at.append(index)
+
+    assert auto_apply_at == [CLOUD_MEASURE_INDEXES[-1]] == [10]
+    assert len(fakes.published_candidates) == 1
+    # The post-apply group DID close — this is not a vacuous pass.
+    assert PHASE_CLOUD_VERIFY in c.accepted_phases
+    assert c.group_geometry(PHASE_CLOUD_VERIFY) is not None
+    assert c.current_phase == PHASE_DONE
+
+
 def test_a_session_with_no_cloud_group_still_builds_the_candidate_at_measure():
     """The pre-cloud 3-entry shape has nothing to wait for, so it must behave
     EXACTLY as it did before the timing move — same accept, same payload keys,
@@ -1598,7 +1632,14 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
     }
     assert "envelope_limited_by_spatial_exclusion" in reasons
 
-    # (b) no correction is placed inside an identified null.
+    # (b) no correction is placed inside an identified null. NOTE: on THIS
+    # fixture this assertion does not discriminate — it holds in the severed
+    # case too, because the fit places every filter at 150-1485 Hz and the
+    # nulls sit at 7.3-18.3 kHz, so there was never a filter up there to
+    # remove (measured 2026-07-27; PR-6a's own corpus acceptance records the
+    # same shape — the exclusion punches holes rather than moving filters).
+    # It is kept as a standing invariant, not as this test's proof; (a) and
+    # (c) plus the sibling severing test are what carry that.
     for fit in c.candidate.linearization.values():
         for biquad in fit["filters"]:
             for lo, hi in intervals:
@@ -1614,15 +1655,27 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
     assert [band["center_hz"] for band in evidence["band_spread"]]
 
 
-def test_severing_the_cloud_wiring_changes_the_emitted_correction(monkeypatch):
+def test_severing_the_cloud_wiring_changes_the_fit(monkeypatch):
     """The "delete the input, the test must fail" half of the acceptance.
 
     Same cloud, same MEASURE analysis — but with ``_cloud_fit_evidence``
     severed the fit never learns what the cloud found, the exclusion term is
-    absent from every reason summary, and the candidate carries no reason of
-    record. If a future edit quietly stopped threading the cloud into
-    ``compose_envelope``, THIS is the state the passing test above would
-    collapse into.
+    absent from every reason summary, the fit's own permitted band is wider,
+    and the candidate carries no reason of record. If a future edit quietly
+    stopped threading the cloud into ``compose_envelope``, THIS is the state
+    the passing test above would collapse into.
+
+    **What does NOT change on this fixture, stated because the honest scope
+    matters** (measured 2026-07-27): the emitted biquads and the trims are
+    IDENTICAL wired and severed. The nulls sit at 7.3-18.3 kHz and this fit
+    places every filter at 150-1485 Hz, so the exclusion removes no filter —
+    it narrows the fit's permitted band (``fit_band_hz``), moves its residual
+    accounting, and changes which term the 8 kHz octave reports as binding.
+    That is the same shape PR-6a's corpus acceptance measured ("the exclusion
+    punches holes rather than truncating"), and it is why this test asserts
+    the fit's own account of itself rather than a filter diff: a fixture where
+    the correction reached into a null would prove more, but claiming this one
+    does would be false.
     """
     def _run(sever: bool):
         fakes = FakeSeams()
@@ -1648,8 +1701,20 @@ def test_severing_the_cloud_wiring_changes_the_emitted_correction(monkeypatch):
     assert "envelope_limited_by_spatial_exclusion" in wired_reasons
     assert "envelope_limited_by_spatial_exclusion" not in severed_reasons
     assert wired.exclusion_evidence and severed.exclusion_evidence == {}
-    # The correction itself differs — this is not a disclosure-only change.
-    assert wired.linearization != severed.linearization
+    # The FIT differs, not only its disclosure: the cloud's exclusion narrows
+    # the band the fit was permitted to work in. This is the assertion that
+    # would fail if the wiring were reduced to a reporting-only change.
+    wired_band = wired.linearization["tweeter"]["fit_band_hz"]
+    severed_band = severed.linearization["tweeter"]["fit_band_hz"]
+    assert wired_band != severed_band, (wired_band, severed_band)
+    # And the emitted correction is unchanged on this fixture — asserted, not
+    # assumed, so the scope in the docstring stays honest.
+    for role in sorted(wired.linearization):
+        assert (
+            wired.linearization[role]["filters"]
+            == severed.linearization[role]["filters"]
+        ), role
+    assert wired.role_attenuations_db == severed.role_attenuations_db
 
 
 def test_abandoning_the_walk_before_the_group_closes_leaves_the_speaker_untouched():
@@ -1701,6 +1766,42 @@ def test_a_group_close_with_no_retained_measure_analysis_fails_honestly():
     attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], 1)
     with pytest.raises(CrossoverV2FlowError, match="no retained MEASURE analysis"):
         _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+
+
+def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(caplog):
+    """N1: the exact forensic state a candidate-build raise leaves behind.
+
+    ``_close_cloud_group``'s wrap protects the diagnostic PIPELINE, not the
+    candidate build — the build is the session's product and is allowed to
+    fail the capture. But ``_note_accepted`` runs in ``consume_capture`` AFTER
+    ``_close_cloud_group`` returns, so a raise unwinds before the phase is
+    marked accepted. The result is honest and non-durable, and this pins it so
+    nobody later reads the wrap's "the accept is already decided" comment as a
+    promise it does not make: the group-complete line IS in the journal, the
+    geometry verdict IS on the conductor, and the phase is NOT accepted.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+
+    def _boom(_candidate):
+        raise RuntimeError("synthetic publish-seam failure")
+
+    c = _cloud_conductor(fakes)
+    c._seams = replace(c._seams, publish_candidate=_boom)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+
+    with pytest.raises(RuntimeError, match="synthetic publish-seam failure"):
+        _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+
+    assert "event=correction.crossover_v2_cloud_group_complete" in caplog.text
+    assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
+    assert PHASE_CLOUD_MEASURE not in c.accepted_phases
+    # No half-published candidate is left readable on the conductor either:
+    # the seam raised before it could be handed anywhere, and the fingerprint
+    # never reached a verdict payload.
+    assert fakes.published_candidates == []
 
 
 def test_a_failed_cloud_pipeline_fits_without_cloud_terms_and_says_so(

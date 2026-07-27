@@ -4071,6 +4071,48 @@ def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
     assert saved_state["apply_blocked"] is None
 
 
+def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
+    """Era tolerance at the LIVE surface, not just in ``from_mapping``.
+
+    The blocker this pins: ``to_dict()`` always writes ``exclusion_evidence``,
+    so a ``candidate.json`` published by a build that predates the field fails
+    ``from_mapping``'s reopen comparison unless it is setdefaulted — and that
+    comparison is on the apply path (``handle_v2_apply`` →
+    ``_reopen_candidate_artifact`` → ``from_mapping``). The household-visible
+    symptom was a ``candidate_tampered`` refusal telling them their persisted
+    correction had been altered when the file was merely older than the field.
+
+    Drives the SAME real ``apply_baseline_profile`` path as the sibling test
+    above, with the key deleted from the payload — it must load, keep its
+    fingerprint, and apply.
+    """
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+
+    pre_pr6b_payload = dict(candidate.to_dict())
+    assert "exclusion_evidence" in pre_pr6b_payload
+    del pre_pr6b_payload["exclusion_evidence"]  # the pre-PR-6b persisted shape
+
+    v2host.save_v2_state({
+        "session_id": "cap_run6",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": pre_pr6b_payload,
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+
+    assert payload["status"] == "applied", payload.get("issues")
+    assert v2host._applied_gate() is True
+
+
 def test_apply_refuses_when_composition_is_no_longer_bound_to_reviewed_candidate(
     monkeypatch, tmp_path,
 ):

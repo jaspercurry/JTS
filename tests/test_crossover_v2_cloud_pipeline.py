@@ -726,6 +726,40 @@ def test_severing_the_registry_costs_the_carve_out_its_reason_of_record():
     assert without["disclosure"], "the screen's own carve-out is still disclosed"
 
 
+def test_the_gate_validity_clamp_never_appears_as_a_carve_out():
+    """``carve_outs_by_band``'s docstring says the clamp is NOT included and
+    that a band's ``n_excluded`` can therefore exceed what the carve-outs
+    cover. Pinned structurally rather than left as prose.
+
+    The clamp has no path into the records by construction —
+    ``carve_outs_by_band`` is handed the registry and the SCREEN's intervals,
+    and never sees ``validity_floor_hz`` at all — so this drives the real
+    assembly with a clamp high enough to remove a whole spec band's worth of
+    bins and checks both halves of the claim: the carve-outs are unmoved, and
+    the divergence it creates between ``n_excluded`` and the carved intervals
+    is real (which is exactly why ``validity_floor_hz`` is disclosed
+    separately)."""
+    combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
+    unclamped = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
+    clamped = assemble_cloud_group_result(
+        combined, echo_band_hz=SYNTHETIC_BAND_HZ, validity_floor_hz=3000.0,
+    )
+
+    # The clamp moved real bins out of grading...
+    assert clamped["validity_floor_hz"] == 3000.0
+    excluded_before = sum(b["n_excluded"] for b in unclamped["spec"]["bands"])
+    excluded_after = sum(b["n_excluded"] for b in clamped["spec"]["bands"])
+    assert excluded_after > excluded_before
+
+    # ...and changed NOTHING about the carve-outs, which speak only for the
+    # honesty instruments.
+    assert json.dumps(clamped["carve_outs"], sort_keys=True) == json.dumps(
+        unclamped["carve_outs"], sort_keys=True
+    )
+    # Nor did it reach ``merged_excluded_bands_hz`` (PR-5's own separation).
+    assert clamped["merged_excluded_bands_hz"] == unclamped["merged_excluded_bands_hz"]
+
+
 def test_carve_outs_survive_a_registry_that_identified_nothing():
     """A report whose ``reason`` is non-empty has no nulls at all. The payload
     must still be complete (one entry per band) rather than absent — an absent

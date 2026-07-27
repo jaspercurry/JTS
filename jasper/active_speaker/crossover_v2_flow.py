@@ -26,7 +26,10 @@ keeps every trust gate it owned: they read the analysis, not the candidate, so
 a session doomed at sweep two still fails at sweep two rather than after a nine
 -position walk. A session with no pre-apply group (the pre-cloud 3-entry shape
 this class still defaults to) has nothing to wait for and still builds at
-MEASURE, byte-identically. See :meth:`CrossoverV2Conductor._measure_verdict`.
+MEASURE, with the same accept, the same payload keys and the same apply timing
+it had before the move — its ``candidate.json`` does gain an always-empty
+``exclusion_evidence`` key, which leaves the fingerprint unchanged.
+See :meth:`CrossoverV2Conductor._measure_verdict`.
 
 **Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
 session proved the prior REVIEW/APPLY human tap a dead end — phone-only
@@ -2666,14 +2669,31 @@ class CrossoverV2Conductor:
         # rehydrates both from the persisted state (§5.2 re-verify).
         self._measure_predicted_sum: Any = measure_predicted_sum
         self._measure_gate_window_ms: float | None = measure_gate_window_ms
-        # The accepted MEASURE capture's analysis, held from its own accept
-        # until the CLOUD_MEASURE group closes and the fit consumes it (timing
-        # move, 2026-07-27 — see ``_measure_verdict``). Exactly one is ever
-        # held: a MEASURE re-arm overwrites it. ``None`` means no MEASURE has
-        # been accepted in THIS conductor's lifetime, which is also the state a
-        # same-session ``hydrate`` lands in — see
-        # ``_close_measure_cloud_candidate`` for why that is unreachable in
-        # production and what it does if it ever is not.
+        # The accepted MEASURE capture's analysis, held ONLY while something
+        # still needs it: from MEASURE's accept until the CLOUD_MEASURE group
+        # closes and the fit consumes it (timing move, 2026-07-27 — see
+        # ``_measure_verdict``), then released. A session with no cloud group
+        # never sets it at all, because that shape fits at MEASURE and consumes
+        # the analysis in the same call.
+        #
+        # **The lifetime is deliberately tight, because the object is not
+        # small.** It is dominated by per-occurrence float64/complex128 arrays
+        # on the analysis FFT grid, so its size scales with capture length via
+        # ``program_analysis._n_fft_for``. Measured 2026-07-27 on the S0
+        # corpus's own grid (524,289 bins — a long summed capture): ONE
+        # two-occurrence ``DriverResponse`` is 33.6 MB of ndarray payload
+        # (4.19 freqs + 4.19 magnitude + 8.39 complex_tf per occurrence). A
+        # MEASURE analysis holds one per role with its in-capture repeats
+        # attached. That regime is the S0 corpus's, not a production MEASURE's
+        # (different program, different grid), and it is quoted to establish
+        # the ORDER — tens of megabytes, not kilobytes — on a 1 GB Pi that also
+        # retains every cloud position's response for the combine.
+        #
+        # ``None`` therefore means one of three things, all fine: no MEASURE
+        # accepted yet, a session shape that never retains, or an analysis
+        # already consumed. Only the FIRST can reach
+        # ``_close_measure_cloud_candidate``, and only via a same-session
+        # ``hydrate`` — see that method for why production cannot.
         self._measure_analysis: Any = None
         self._candidate: Any = None
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
@@ -3451,20 +3471,27 @@ class CrossoverV2Conductor:
         #   pre-registered phase order. See ``_close_measure_cloud_candidate``.
         # * a session with no such group (the pre-cloud 3-entry shape this
         #   class still defaults to) has nothing to wait for, so it builds here
-        #   and behaves EXACTLY as it did before the move — same accept, same
-        #   payload keys, same auto-apply timing, byte for byte.
+        #   and behaves as it did before the move: same accept, same payload
+        #   keys, same auto-apply timing. Scoped precisely, because the
+        #   unqualified phrase would be wrong — the candidate it publishes
+        #   DOES gain an always-empty ``exclusion_evidence`` key, which is
+        #   omitted from ``_core()`` when empty and so leaves the fingerprint
+        #   byte-identical. The FLOW is unchanged; the artifact gains one
+        #   empty, non-fingerprinted field.
         #
         # The 2026-07-20 "no human Apply gate" ruling is untouched by either
         # branch: apply is still automatic and still needs no tap; only its
         # trigger point moves, and only for a session that has a cloud.
         #
-        # On the deferring branch the analysis is RETAINED rather than
+        # On the deferring branch ONLY, the analysis is retained rather than
         # consumed — it is the fit's input and must outlive the prompted cloud
-        # walk. Exactly one is ever held (a MEASURE re-arm overwrites it), and
-        # it sits alongside the per-position responses the group already
-        # retains for its own combine.
-        self._measure_analysis = analysis
+        # walk. The non-deferring branch consumes it in this same call and
+        # never stores it: keeping a tens-of-megabytes reference that nothing
+        # will ever read is not free on a 1 GB Pi (see the field's own comment
+        # in ``__init__`` for the measurement). Exactly one is ever held; a
+        # MEASURE re-arm overwrites it, and the group close releases it.
         if PHASE_CLOUD_MEASURE in self._phases:
+            self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
         return PhaseVerdict(
             True,
@@ -3502,10 +3529,20 @@ class CrossoverV2Conductor:
 
         **Per-position work is deliberately light** (the PR-3b design
         contract): the same locate/linearity screens every phase runs, plus
-        "did this capture yield a usable summed response". The ~40 s analyses —
-        combine, null identification, spec evaluation — run ONCE per group,
-        not once per position, or an 8-position cloud would add five minutes of
-        pure compute to a session already bounded by operator patience.
+        "did this capture yield a usable summed response". The group analyses —
+        combine, null identification, spec evaluation — run ONCE per group, not
+        once per position, so their cost is paid once instead of N times.
+
+        Measured 2026-07-27 on the S0 ten-position corpus (this laptop; a Pi 5
+        is slower — :func:`combine_cloud_positions` states the 3-6 s
+        across-hosts regime): the **combine is 2.7-2.8 s and dominates
+        completely**, while everything layered on it — the null gate, the spec
+        evaluation, the carve-out assembly — totals **0.02-0.04 s**. Running
+        the set per position would multiply that by N instead of paying it
+        once. (This paragraph previously said "~40 s analyses" and "five
+        minutes" for an 8-position cloud; no measurement supports either, and
+        the real argument does not need them — 2.7 s x 9 is still worth not
+        spending.)
 
         Two VERIFY gates are deliberately NOT applied here, because both assume
         a stationary mic replaying the identical program:
@@ -3662,10 +3699,25 @@ class CrossoverV2Conductor:
             thin_evidence=bool(verdict.get("thin_evidence")),
             geometry_retries=retries,
         )
-        # S4 review finding (2026-07-26): the group's ACCEPT is already
-        # decided above (the log line just fired) — the honesty pipeline
-        # below is diagnostic/disclosure machinery layered on TOP of that
-        # decision, and must never be able to cost the group its accept.
+        # S4 review finding (2026-07-26): the group's accept is decided above
+        # (the log line just fired) — the honesty pipeline below is
+        # diagnostic/disclosure machinery layered on TOP of that decision, and
+        # must never be able to cost the group its accept.
+        #
+        # **Scope, corrected 2026-07-27 (N1):** "decided" is not "recorded".
+        # ``_note_accepted`` runs in ``consume_capture`` AFTER this method
+        # returns, so a raise anywhere below — including the candidate build,
+        # which is deliberately NOT wrapped — unwinds before the phase is
+        # marked accepted. The resulting state is honest but worth naming:
+        # ``event=correction.crossover_v2_cloud_group_complete`` is in the
+        # journal, the group's geometry verdict is on the conductor, and the
+        # phase is NOT in ``accepted_phases`` — so nothing durable claims a
+        # completed group, and the host maps the raise to a terminal
+        # ``internal_error`` screen. The claim this wrap makes is therefore
+        # about the PIPELINE only: a named-family pipeline exception cannot
+        # cost the accept. It says nothing about the candidate build below,
+        # which is allowed to fail the capture, because it is the session's
+        # product rather than its disclosure.
         # assemble_cloud_group_result's own try/except (ValueError, TypeError,
         # IndexError, AttributeError -- the documented raise surface of
         # everything it calls) and _run_cloud_pipeline's own try/except around
@@ -3724,24 +3776,47 @@ class CrossoverV2Conductor:
         ``None`` and the fit runs exactly as it did before this move —
         disclosed, not silent (see :func:`_cloud_fit_evidence`).
 
-        ``_measure_analysis`` is ``None`` only if MEASURE was accepted by a
-        DIFFERENT conductor instance — the same-session ``hydrate`` branch,
-        which carries ``accepted_phases`` but no analysis. **Production cannot
-        reach it**: ``prepare_v2_session`` hydrates against a freshly MINTED
-        relay session id, so the id never matches and hydrate always takes the
-        fresh-start-at-CHECK branch (§5.6's own rule). If it is ever reached,
-        this raises rather than returning a payload without ``auto_apply``:
-        a session with no candidate can never release VERIFY's ``on_apply``
-        hold, so the alternative is a silent stall until the relay times out,
-        and an honest ``internal_error`` screen beats that.
+        Reaching this with ``_measure_analysis`` already ``None`` means MEASURE
+        was accepted by a DIFFERENT conductor instance — the same-session
+        ``hydrate`` branch, which carries ``accepted_phases`` but no analysis.
+        (The tail of this method releases the analysis, but that release
+        happens strictly AFTER this check and only once per group, so it can
+        never be what this branch is seeing — see the release comment for why
+        a second close of one group is structurally impossible.)
+        **Production cannot reach it**: ``prepare_v2_session`` hydrates against
+        a freshly MINTED relay session id, so the id never matches and hydrate
+        always takes the fresh-start-at-CHECK branch (§5.6's own rule). If it
+        is ever reached, this raises rather than returning a payload without
+        ``auto_apply``: a session with no candidate can never release VERIFY's
+        ``on_apply`` hold, so the alternative is a silent stall until the relay
+        times out, and an honest ``internal_error`` screen beats that.
         """
         if self._measure_analysis is None:
             raise CrossoverV2FlowError(
                 "cloud-measure group closed with no retained MEASURE analysis"
             )
-        return self._publish_measure_candidate(
+        payload = self._publish_measure_candidate(
             self._measure_analysis, self._cloud_fit_evidence(combined)
         )
+        # Released on success: the fit has consumed it and nothing reads it
+        # again, so a tens-of-megabytes reference should not survive to the end
+        # of a session that still has six captures to go (see the field's
+        # comment in ``__init__``).
+        #
+        # **Why releasing cannot strand a re-delivered capture.** Releasing
+        # makes a SECOND close of this group raise instead of rebuilding, so it
+        # is only safe if a second close cannot happen — and it cannot: the
+        # relay's plan loop admits a begin only at
+        # ``(accepted_count + 1, attempts_used + 1)`` and dedupes already-
+        # ``processed`` (index, attempt) pairs, so once this close is accepted
+        # the index never goes backwards. The geometry retake is not a
+        # counter-example either: a retried close returns REJECTED from
+        # ``_close_cloud_group`` well before this method is reached, so a
+        # retaken group reaches here exactly once, on the close that accepts.
+        # Left in place on a raise — that session is already failing, and the
+        # conductor is about to be discarded.
+        self._measure_analysis = None
+        return payload
 
     def _publish_measure_candidate(
         self, analysis: ProgramAnalysis, cloud: "_CloudFitEvidence | None",
