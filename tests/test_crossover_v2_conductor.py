@@ -1426,6 +1426,419 @@ def test_cloud_measure_group_closes_only_after_its_last_position():
     assert c.current_phase == PHASE_APPLYING
 
 
+# --- the timing move + the cloud→fit wiring (flat-linearization PR-6b) -------
+#
+# Owner decision (2026-07-27): the fit, the candidate build, and the auto-apply
+# trigger move from MEASURE's accept to the CLOUD_MEASURE group close, so the
+# fit consumes the cloud's honesty verdict instead of preceding it by eight
+# captures. These walk the REAL conductor for both halves of that: WHEN the
+# candidate appears, and WHAT reaches the envelope when it does.
+
+_COMB_N_FFT = 8192
+_COMB_RATE = 48_000
+
+
+def _comb_summed_response(seed: int, *, r: float = 0.37, delay_samples: int = 15):
+    """A two-path summed response — the shape a position-invariant
+    interference comb has, and the ONE shape the power-vs-median screen
+    structurally cannot catch on its own (plan "S0 executed" § e.1).
+
+    Built as a real rfft-grid transfer function because
+    ``cloud_position_capture`` derives the IR the echo detector reads by
+    inverting exactly this array; the coarse 64-bin ``_driver_response`` above
+    cannot carry an invertible one.
+    """
+    freqs = np.fft.rfftfreq(_COMB_N_FFT, 1.0 / _COMB_RATE)
+    rng = np.random.default_rng(seed)
+    tf = 1.0 + r * np.exp(-2j * np.pi * freqs * (delay_samples / _COMB_RATE))
+    tf = tf + rng.normal(0.0, 1e-6, tf.shape)
+    return DriverResponse(
+        role="summed", freqs_hz=freqs,
+        magnitude_db=20.0 * np.log10(np.maximum(np.abs(tf), 1e-12)),
+        complex_tf=tf.astype(complex),
+        gating={"applied": True, "window_ms": 8.0},
+        snr=None, validity_floor_hz=140.0,
+    )
+
+
+def _comb_cloud_analysis_factory():
+    """A ``verify``-program analysis factory whose every capture carries the
+    same comb — one per call, so a group of them is position-INVARIANT."""
+    counter = {"n": 0}
+
+    def factory(program) -> ProgramAnalysis:
+        counter["n"] += 1
+        return ProgramAnalysis(
+            phase="verify",
+            program_id=program.program_id,
+            locations=(_loc("sweep_verify", "summed_sweep", confidence=0.9),),
+            summed_response=_comb_summed_response(4000 + counter["n"]),
+            summed_ripple_db=1.1,
+            verify_tracking={
+                "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
+            },
+            linearity_ok=True,
+        )
+
+    return factory
+
+
+def _walk_measure_cloud_to_close(c, *, start_attempt: int = 1) -> dict:
+    """CHECK → MEASURE → every pre-apply cloud position, returning the CLOSING
+    verdict.
+
+    A position-invariant cloud legitimately trips PR-3b's geometry-locked
+    retake (that is the point of the verdict), so the last index is re-walked
+    until it is accepted — bounded by ``GEOMETRY_RETRY_POSITIONS``' own budget
+    rather than looping forever.
+    """
+    attempt = _walk(c, (1, 2), start_attempt)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    for _ in range(GEOMETRY_RETRY_POSITIONS + 1):
+        verdict = _run_phase(c, last, attempt)
+        attempt += 1
+        if verdict["accepted"]:
+            return verdict
+    raise AssertionError("the cloud-measure group never closed")
+
+
+def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
+    """The timing move, at the conductor's own surface.
+
+    MEASURE still ACCEPTS — every trust gate it owns is unchanged and still
+    fires there — but it no longer produces a candidate, a fingerprint, or the
+    ``auto_apply`` flag. All three appear on the verdict that closes the
+    pre-apply cloud, eight captures later, which is the first moment the fit
+    has a cloud verdict to consume.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+
+    measure_verdict = _run_phase(c, 1, 1) and _run_phase(c, 2, 2)
+    assert measure_verdict["accepted"] is True
+    assert measure_verdict["measurement_phase"] == PHASE_MEASURE
+    assert "candidate_fingerprint" not in measure_verdict
+    assert "auto_apply" not in measure_verdict
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+
+    attempt = 3
+    for index in CLOUD_MEASURE_INDEXES[:-1]:
+        verdict = _run_phase(c, index, attempt)
+        attempt += 1
+        assert "auto_apply" not in verdict
+        assert c.candidate is None, index
+
+    verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+    assert verdict["accepted"] is True
+    assert verdict["group_complete"] == PHASE_CLOUD_MEASURE
+    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] == c.candidate.fingerprint
+    assert len(fakes.published_candidates) == 1
+    # And the apply hold is next, exactly as it was when this fired at MEASURE.
+    assert c.current_phase == PHASE_APPLYING
+
+
+def test_only_the_pre_apply_group_close_fires_a_candidate_across_a_whole_session():
+    """The `phase == PHASE_CLOUD_MEASURE` guard in ``_close_cloud_group`` is
+    load-bearing and gets its own pin: ``_close_cloud_group`` is shared by BOTH
+    position groups, so without it the POST-apply cloud's close would build a
+    second candidate and fire a second auto-apply — re-applying over an
+    already-applied speaker, on evidence gathered through the correction it
+    would be re-deriving.
+
+    Walks all 16 captures and asserts ``auto_apply`` appears on exactly one
+    verdict, at index 10, with exactly one publish for the whole session.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+
+    auto_apply_at: list[int] = []
+    attempt = 1
+    for index in sorted(CLOUD_MAP):
+        if index == VERIFY_INDEX:
+            fakes.apply_done = True  # the host's auto-apply landed
+        verdict = _run_phase(c, index, attempt)
+        attempt += 1
+        assert verdict["accepted"] is True, index
+        if verdict.get("auto_apply"):
+            auto_apply_at.append(index)
+
+    assert auto_apply_at == [CLOUD_MEASURE_INDEXES[-1]] == [10]
+    assert len(fakes.published_candidates) == 1
+    # The post-apply group DID close — this is not a vacuous pass.
+    assert PHASE_CLOUD_VERIFY in c.accepted_phases
+    assert c.group_geometry(PHASE_CLOUD_VERIFY) is not None
+    assert c.current_phase == PHASE_DONE
+
+
+def test_a_session_with_no_cloud_group_still_builds_the_candidate_at_measure():
+    """The pre-cloud 3-entry shape has nothing to wait for, so it must behave
+    EXACTLY as it did before the timing move — same accept, same payload keys,
+    same auto-apply timing. The rule is "the fit runs at the last capture
+    before the apply", and for this shape that capture is MEASURE."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)  # the default {1: check, 2: measure, 3: verify}
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+
+    assert verdict["accepted"] is True
+    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] == c.candidate.fingerprint
+    assert len(fakes.published_candidates) == 1
+    # No cloud exists, so no cloud evidence can ride the candidate — the
+    # pre-move shape, byte for byte.
+    assert c.candidate.exclusion_evidence == {}
+    assert c.current_phase == PHASE_APPLYING
+
+
+def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
+    """THE wiring acceptance (plan PR-6, interpretation call (A)): the merged
+    honesty mask a closed cloud produced actually binds the correction
+    envelope, on the live path.
+
+    A position-invariant comb cloud identifies real nulls; those intervals must
+    (a) reach ``compose_envelope``'s ``spatial_exclusion_limit`` term, visible
+    in the persisted fit's own per-octave reason summary, (b) cost the fit ALL
+    correction depth inside them — zero gain spent where EQ cannot help — and
+    (c) ride the candidate as the exclusion reason of record, with the τ/r
+    registry that justifies them.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    fakes.verify = _comb_cloud_analysis_factory()
+    c = _cloud_conductor(fakes)
+    verdict = _walk_measure_cloud_to_close(c)
+    assert verdict["auto_apply"] is True
+
+    pipeline = c.group_cloud_result(PHASE_CLOUD_MEASURE)
+    assert pipeline["available"] is True
+    registry = pipeline["null_registry"]
+    assert registry["classification"] == "position_invariant"
+    assert registry["nulls"], "the fixture must identify nulls to prove anything"
+    intervals = [tuple(band) for band in pipeline["merged_excluded_bands_hz"]]
+    assert intervals
+
+    # (a) the term bound at least one octave of the driver that reaches these
+    # frequencies — the fit's OWN persisted account of why.
+    reasons = {
+        reason
+        for fit in c.candidate.linearization.values()
+        for reason in fit["reason_summary"].values()
+    }
+    assert "envelope_limited_by_spatial_exclusion" in reasons
+
+    # (b) no correction is placed inside an identified null. NOTE: on THIS
+    # fixture this assertion does not discriminate — it holds in the severed
+    # case too, because the fit places every filter at 150-1485 Hz and the
+    # nulls sit at 7.3-18.3 kHz, so there was never a filter up there to
+    # remove (measured 2026-07-27; PR-6a's own corpus acceptance records the
+    # same shape — the exclusion punches holes rather than moving filters).
+    # It is kept as a standing invariant, not as this test's proof; (a) and
+    # (c) plus the sibling severing test are what carry that.
+    for fit in c.candidate.linearization.values():
+        for biquad in fit["filters"]:
+            for lo, hi in intervals:
+                assert not (lo <= float(biquad["freq"]) <= hi), (biquad, (lo, hi))
+
+    # (c) the reason of record rides the candidate — the same intervals, the
+    # same registry, the cloud's own N.
+    evidence = c.candidate.exclusion_evidence
+    assert [tuple(b) for b in evidence["excluded_bands_hz"]] == intervals
+    assert evidence["null_registry"]["nulls"] == registry["nulls"]
+    assert evidence["n_positions"] == len(c.group_positions(PHASE_CLOUD_MEASURE))
+    assert evidence["phase"] == PHASE_CLOUD_MEASURE
+    assert [band["center_hz"] for band in evidence["band_spread"]]
+
+
+def test_severing_the_cloud_wiring_changes_the_fit(monkeypatch):
+    """The "delete the input, the test must fail" half of the acceptance.
+
+    Same cloud, same MEASURE analysis — but with ``_cloud_fit_evidence``
+    severed the fit never learns what the cloud found, the exclusion term is
+    absent from every reason summary, the fit's own permitted band is wider,
+    and the candidate carries no reason of record. If a future edit quietly
+    stopped threading the cloud into ``compose_envelope``, THIS is the state
+    the passing test above would collapse into.
+
+    **What does NOT change on this fixture, stated because the honest scope
+    matters** (measured 2026-07-27): the emitted biquads and the trims are
+    IDENTICAL wired and severed. The nulls sit at 7.3-18.3 kHz and this fit
+    places every filter at 150-1485 Hz, so the exclusion removes no filter —
+    it narrows the fit's permitted band (``fit_band_hz``), moves its residual
+    accounting, and changes which term the 8 kHz octave reports as binding.
+    That is the same shape PR-6a's corpus acceptance measured ("the exclusion
+    punches holes rather than truncating"), and it is why this test asserts
+    the fit's own account of itself rather than a filter diff: a fixture where
+    the correction reached into a null would prove more, but claiming this one
+    does would be false.
+    """
+    def _run(sever: bool):
+        fakes = FakeSeams()
+        fakes.measure = lambda program: _eligible_measure_analysis(program)
+        fakes.verify = _comb_cloud_analysis_factory()
+        c = _cloud_conductor(fakes)
+        if sever:
+            monkeypatch.setattr(c, "_cloud_fit_evidence", lambda combined: None)
+        _walk_measure_cloud_to_close(c)
+        return c.candidate
+
+    wired = _run(sever=False)
+    severed = _run(sever=True)
+
+    wired_reasons = {
+        reason for fit in wired.linearization.values()
+        for reason in fit["reason_summary"].values()
+    }
+    severed_reasons = {
+        reason for fit in severed.linearization.values()
+        for reason in fit["reason_summary"].values()
+    }
+    assert "envelope_limited_by_spatial_exclusion" in wired_reasons
+    assert "envelope_limited_by_spatial_exclusion" not in severed_reasons
+    assert wired.exclusion_evidence and severed.exclusion_evidence == {}
+    # The FIT differs, not only its disclosure: the cloud's exclusion narrows
+    # the band the fit was permitted to work in. This is the assertion that
+    # would fail if the wiring were reduced to a reporting-only change.
+    wired_band = wired.linearization["tweeter"]["fit_band_hz"]
+    severed_band = severed.linearization["tweeter"]["fit_band_hz"]
+    assert wired_band != severed_band, (wired_band, severed_band)
+    # And the emitted correction is unchanged on this fixture — asserted, not
+    # assumed, so the scope in the docstring stays honest.
+    for role in sorted(wired.linearization):
+        assert (
+            wired.linearization[role]["filters"]
+            == severed.linearization[role]["filters"]
+        ), role
+    assert wired.role_attenuations_db == severed.role_attenuations_db
+
+
+def test_abandoning_the_walk_before_the_group_closes_leaves_the_speaker_untouched():
+    """The fail-safe direction of the timing move, stated as a property.
+
+    An operator who walks away part-way through the prompted cloud never
+    reaches the group close, so no candidate is built, no ``auto_apply`` is
+    ever returned, and nothing is handed to the apply transaction — the
+    speaker is exactly as it was. This is STRICTLY safer than the pre-move
+    flow, where the apply fired at MEASURE and abandoning the walk left a
+    household with a corrected speaker that was never verified.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    # Every prompted position except the last — then the operator stops.
+    for index in CLOUD_MEASURE_INDEXES[:-1]:
+        verdict = _run_phase(c, index, attempt)
+        attempt += 1
+        assert verdict["accepted"] is True
+        assert "auto_apply" not in verdict
+
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+    assert PHASE_CLOUD_MEASURE not in c.accepted_phases
+    # Nothing to apply, so the flow is still IN the cloud — never APPLYING.
+    assert c.current_phase == PHASE_CLOUD_MEASURE
+
+
+def test_a_group_close_with_no_retained_measure_analysis_fails_honestly():
+    """The one state that could reach the group close without a fit input:
+    a conductor carrying ``accepted_phases`` from a snapshot but none of the
+    MEASURE analysis behind them — the same-session ``hydrate`` branch.
+
+    **Production cannot construct it.** ``prepare_v2_session`` hydrates
+    against a freshly MINTED relay session id, so ``snapshot.session_id ==
+    session_id`` is never true there and hydrate always takes the
+    fresh-start-at-CHECK branch (§5.6). This pins what happens if that ever
+    stops being true: an honest raise (the host maps it to
+    ``internal_error``, a real terminal screen) rather than a group accept
+    with no ``auto_apply``, which would leave VERIFY's ``on_apply`` hold
+    waiting on an apply that can never come.
+    """
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes, accepted_phases=(PHASE_CHECK, PHASE_MEASURE))
+    assert c.current_phase == PHASE_CLOUD_MEASURE
+
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], 1)
+    with pytest.raises(CrossoverV2FlowError, match="no retained MEASURE analysis"):
+        _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+
+
+def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(caplog):
+    """N1: the exact forensic state a candidate-build raise leaves behind.
+
+    ``_close_cloud_group``'s wrap protects the diagnostic PIPELINE, not the
+    candidate build — the build is the session's product and is allowed to
+    fail the capture. But ``_note_accepted`` runs in ``consume_capture`` AFTER
+    ``_close_cloud_group`` returns, so a raise unwinds before the phase is
+    marked accepted. The result is honest and non-durable, and this pins it so
+    nobody later reads the wrap's "the accept is already decided" comment as a
+    promise it does not make: the group-complete line IS in the journal, the
+    geometry verdict IS on the conductor, and the phase is NOT accepted.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+
+    def _boom(_candidate):
+        raise RuntimeError("synthetic publish-seam failure")
+
+    c = _cloud_conductor(fakes)
+    c._seams = replace(c._seams, publish_candidate=_boom)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+
+    with pytest.raises(RuntimeError, match="synthetic publish-seam failure"):
+        _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+
+    assert "event=correction.crossover_v2_cloud_group_complete" in caplog.text
+    assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
+    assert PHASE_CLOUD_MEASURE not in c.accepted_phases
+    # No half-published candidate is left readable on the conductor either:
+    # the seam raised before it could be handed anywhere, and the fingerprint
+    # never reached a verdict payload.
+    assert fakes.published_candidates == []
+
+
+def test_a_failed_cloud_pipeline_fits_without_cloud_terms_and_says_so(
+    monkeypatch, caplog,
+):
+    """Honest degradation, named at the site: a group whose honesty pipeline
+    never became available hands the fit NO cloud evidence — not the screen's
+    intervals alone.
+
+    That all-or-nothing rule is the wiring contract (issue #1742 item 4): the
+    screen structurally cannot see a position-invariant null, so a screen-only
+    mask would exclude the interference the cloud CAN see while silently
+    correcting the interference it cannot. The session still produces a
+    candidate and still auto-applies — a diagnostic failure is not a
+    measurement failure — and the fallback is logged rather than silent.
+    """
+    import jasper.active_speaker.crossover_v2_flow as flow
+
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    monkeypatch.setattr(
+        flow, "assemble_cloud_group_result",
+        lambda *a, **k: {"available": False, "reason": "pipeline_failed"},
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    fakes.verify = _comb_cloud_analysis_factory()
+    c = _cloud_conductor(fakes)
+    verdict = _walk_measure_cloud_to_close(c)
+
+    assert verdict["accepted"] is True
+    assert verdict["auto_apply"] is True
+    assert c.candidate is not None
+    assert c.candidate.exclusion_evidence == {}
+    assert "event=correction.crossover_v2_fit_without_cloud" in caplog.text
+    assert "reason=pipeline_failed" in caplog.text
+
+
 def test_a_cloud_pipeline_exception_never_costs_the_group_its_accept(monkeypatch):
     """S4 review finding (2026-07-26): the honest-instrument pipeline is
     diagnostic/disclosure machinery layered on TOP of an ALREADY-DECIDED
@@ -3859,7 +4272,7 @@ def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    def _boom(analysis, cand):
+    def _boom(analysis, cand, cloud=None):
         raise ValueError("simulated fit engine bug")
 
     monkeypatch.setattr(c, "_fit_linearization", _boom)
@@ -3887,7 +4300,7 @@ def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, mon
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    def _boom(analysis, cand):
+    def _boom(analysis, cand, cloud=None):
         raise RuntimeError("linearization fit emitted a boost")
 
     monkeypatch.setattr(c, "_fit_linearization", _boom)
@@ -3900,8 +4313,13 @@ def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, mon
     assert "linearization=fit_failed" in caplog.text
 
 
-def test_measure_diag_linearization_field_fitted(caplog):
-    """SF3: the fitted outcome."""
+def test_candidate_built_linearization_field_fitted(caplog):
+    """SF3: the fitted outcome.
+
+    The field lives on ``correction.crossover_v2_candidate_built`` since the
+    2026-07-27 timing move; it could not stay on ``..._measure_diag``, which is
+    emitted before the candidate exists whenever a session runs a cloud group.
+    """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -3909,15 +4327,22 @@ def test_measure_diag_linearization_field_fitted(caplog):
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "event=correction.crossover_v2_candidate_built" in caplog.text
     assert "linearization=fitted" in caplog.text
+    # The retired location must not quietly come back carrying a value it
+    # cannot know on a cloud session.
+    measure_diag = next(
+        line for line in caplog.text.splitlines()
+        if "event=correction.crossover_v2_measure_diag" in line
+    )
+    assert "linearization=" not in measure_diag
     # Gauge fix (2026-07-24): the SAME outcome is now stamped onto the
     # persisted candidate — this is the single writer's value threading all
     # the way to the artifact, not just the log line.
     assert c.candidate.linearization_outcome == "fitted"
 
 
-def test_measure_diag_linearization_field_ineligible_mic_tier(caplog):
+def test_candidate_built_linearization_field_ineligible_mic_tier(caplog):
     """SF3: the ineligible_mic_tier outcome."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
@@ -3930,7 +4355,7 @@ def test_measure_diag_linearization_field_ineligible_mic_tier(caplog):
     assert c.candidate.linearization_outcome == "ineligible_mic_tier"
 
 
-def test_measure_diag_linearization_field_ineligible_repeats(caplog):
+def test_candidate_built_linearization_field_ineligible_repeats(caplog):
     """SF3: the ineligible_repeats outcome."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
@@ -3945,7 +4370,7 @@ def test_measure_diag_linearization_field_ineligible_repeats(caplog):
     assert c.candidate.linearization_outcome == "ineligible_repeats"
 
 
-def test_measure_diag_linearization_field_trim_rejected(caplog, monkeypatch):
+def test_candidate_built_linearization_field_trim_rejected(caplog, monkeypatch):
     """SF3: the trim_rejected outcome (fit succeeded, but the ripple-optimal
     tweeter re-solve drifted implausibly far from its band-average seed and
     fell back to the seed pair -- distinct from "fitted" even though
@@ -3967,14 +4392,17 @@ def test_measure_diag_linearization_field_trim_rejected(caplog, monkeypatch):
     assert c.candidate.linearization_outcome == "trim_rejected"
 
 
-def test_measure_diag_linearization_field_empty_when_verdict_rejected_before_candidate(
-    caplog,
-):
-    """SF3: a MEASURE verdict rejected before _build_candidate ever runs
-    (here, the pre-existing glitch check) must log linearization="" -- never
-    a stale value from a prior attempt, and never a guess about a path that
-    was never taken. Mirrors the `guard` field's own empty-on-reject
-    convention."""
+def test_no_linearization_claim_at_all_when_the_verdict_is_rejected(caplog):
+    """SF3, in its post-timing-move shape: a MEASURE verdict rejected before
+    the candidate is ever built (here, the pre-existing glitch check) makes NO
+    linearization claim anywhere.
+
+    Before the move this was a ``linearization=""`` field on the measure diag —
+    "never a stale value from a prior attempt, and never a guess about a path
+    that was never taken." The field moved to the candidate-built event, which
+    simply does not fire on a rejection, so the same promise is now kept by
+    silence rather than by an empty string. What must NOT happen either way is
+    a value: a rejected MEASURE has no linearization outcome to report."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(program, glitch=True)
@@ -3982,7 +4410,9 @@ def test_measure_diag_linearization_field_empty_when_verdict_rejected_before_can
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is False
-    assert 'linearization=""' in caplog.text
+    assert "event=correction.crossover_v2_candidate_built" not in caplog.text
+    assert "linearization=" not in caplog.text
+    assert c.candidate is None
 
 
 # --------------------------------------------------------------------------- #
@@ -4128,7 +4558,7 @@ def test_measure_predicted_sum_unchanged_when_fit_engine_raises(monkeypatch):
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    def _boom(analysis, cand):
+    def _boom(analysis, cand, cloud=None):
         raise ValueError("simulated fit engine bug")
 
     monkeypatch.setattr(c, "_fit_linearization", _boom)

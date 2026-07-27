@@ -252,6 +252,35 @@ class MeasuredCrossoverCandidate:
     it. Era-tolerant exactly like ``linearization``: omitted from the
     fingerprint when empty, and accepted absent on ``from_mapping`` (every
     candidate persisted before this field existed implicitly claimed "").
+
+    ``exclusion_evidence`` (flat-linearization plan PR-6b) is the **exclusion
+    reason of record** for the fit above: when the Layer-1a fit consumed a
+    spatial cloud's honesty verdict, this carries exactly what it consumed —
+    the excluded frequency intervals handed to ``spatial_exclusion_limit``, the
+    cross-position ``band_spread`` and ``n_positions`` behind
+    ``position_stability_limit``, and the identified-null registry with its
+    τ/r/classification per null. A reader with this record can answer "why was
+    this band not corrected" and re-derive the envelope terms without the
+    session's captures. It deliberately DUPLICATES data also written to the
+    session's ``cloud_measure.json`` artifact: that file is session evidence
+    and can be pruned by bundle retention, while this travels with the
+    correction it justifies and is re-read at every apply. Same optional-field
+    conventions as ``linearization`` — frozen through the exact-JSON-data walk,
+    omitted from the fingerprint when empty, accepted absent on
+    ``from_mapping``. Empty means "no cloud evidence entered this fit", which
+    is what every candidate produced before PR-6b implicitly claimed.
+
+    **What it costs, measured rather than hand-waved** (2026-07-27, the S0
+    ten-position cloud — this program's reference corpus, and the widest real
+    case it has): **5,294 bytes** of ``candidate.json``, of which the null
+    registry is 3,307 (3 identified nulls plus 5 recorded refusals, each
+    carrying its own evidence mapping), ``band_spread`` 1,596 (10 octave
+    bands x 6 numbers), and the merged intervals 287 (7 intervals). It scales
+    with what the honesty instruments actually found, not with capture length,
+    so a clean room writes a fraction of that and nothing writes an unbounded
+    amount. Stated here for the same reason the `/state` projection states its
+    own: this is the largest thing PR-6b adds to a persisted artifact, and a
+    reader deciding whether to keep it should see the number.
     """
 
     program_id: str
@@ -261,6 +290,7 @@ class MeasuredCrossoverCandidate:
     alignment: MeasuredCrossoverAlignment = _NO_ALIGNMENT
     linearization: Mapping[str, Any] = field(default_factory=dict)
     linearization_outcome: str = ""
+    exclusion_evidence: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -331,6 +361,20 @@ class MeasuredCrossoverCandidate:
                 "linearization_invalid", f"linearization must be exact JSON data: {exc}"
             )
         object.__setattr__(self, "linearization", frozen_linearization)
+        if not isinstance(self.exclusion_evidence, Mapping):
+            _refuse(
+                "exclusion_evidence_invalid", "exclusion_evidence must be a mapping"
+            )
+        try:
+            frozen_exclusion = DspPredecessor(
+                {"exclusion_evidence": dict(self.exclusion_evidence)}
+            ).state["exclusion_evidence"]
+        except NullWalkError as exc:
+            _refuse(
+                "exclusion_evidence_invalid",
+                f"exclusion_evidence must be exact JSON data: {exc}",
+            )
+        object.__setattr__(self, "exclusion_evidence", frozen_exclusion)
         if self.linearization_outcome not in _LINEARIZATION_OUTCOME_VALUES:
             _refuse(
                 "linearization_outcome_invalid",
@@ -359,10 +403,14 @@ class MeasuredCrossoverCandidate:
         refusal. ``to_dict()`` does NOT mirror this omission (see its own
         docstring) — the two intentionally disagree.
 
-        ``linearization_outcome`` (gauge fix, 2026-07-24) follows the exact
-        same omit-when-empty convention, for the same era-tolerance reason:
-        an empty string means "not evaluated," identical to every candidate
-        produced before this field existed.
+        ``linearization_outcome`` (gauge fix, 2026-07-24) and
+        ``exclusion_evidence`` (plan PR-6b) follow the exact same
+        omit-when-empty convention, for the same era-tolerance reason: an empty
+        value means "not evaluated" / "no cloud evidence entered this fit,"
+        identical to every candidate produced before those fields existed. A
+        NON-empty ``exclusion_evidence`` is fingerprinted like everything else,
+        so the recorded reason for refusing to correct a band cannot be edited
+        out of a persisted candidate without tripping ``candidate_tampered``.
         """
         core: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -377,11 +425,13 @@ class MeasuredCrossoverCandidate:
             core["linearization"] = dict(self.linearization)
         if self.linearization_outcome:
             core["linearization_outcome"] = self.linearization_outcome
+        if self.exclusion_evidence:
+            core["exclusion_evidence"] = dict(self.exclusion_evidence)
         return core
 
     def to_dict(self) -> dict[str, Any]:
-        """The full persisted shape — ALWAYS carries ``linearization`` and
-        ``linearization_outcome``.
+        """The full persisted shape — ALWAYS carries ``linearization``,
+        ``linearization_outcome`` and ``exclusion_evidence``.
 
         Unlike ``_core()`` (the fingerprint input), this never omits either
         key, even when empty — every freshly-serialized candidate has the
@@ -396,6 +446,7 @@ class MeasuredCrossoverCandidate:
             **self._core(),
             "linearization": dict(self.linearization),
             "linearization_outcome": self.linearization_outcome,
+            "exclusion_evidence": dict(self.exclusion_evidence),
             "fingerprint": self.fingerprint,
         }
 
@@ -414,8 +465,9 @@ class MeasuredCrossoverCandidate:
     def from_mapping(cls, raw: Any) -> "MeasuredCrossoverCandidate":
         """Strictly reopen one persisted candidate without re-deriving evidence.
 
-        ``linearization`` (#1668 PR-C) and ``linearization_outcome`` (gauge
-        fix, 2026-07-24) are the two OPTIONAL fields: every candidate
+        ``linearization`` (#1668 PR-C), ``linearization_outcome`` (gauge
+        fix, 2026-07-24) and ``exclusion_evidence`` (plan PR-6b) are the
+        OPTIONAL fields: every candidate
         persisted before those changes lacks the keys entirely, and
         ``jasper.web.correction_crossover_v2._reopen_candidate_artifact``
         can hand this method exactly that older ``candidate.json`` shape
@@ -424,7 +476,9 @@ class MeasuredCrossoverCandidate:
         newer shape. Absent ``linearization`` means the same thing an
         explicit ``{}`` means: "no linearization was fit." Absent
         ``linearization_outcome`` means the same thing an explicit ``""``
-        means: "not evaluated." Every other field stays strictly required,
+        means: "not evaluated." Absent ``exclusion_evidence`` means the same
+        thing an explicit ``{}`` means: "no cloud evidence entered this fit."
+        Every other field stays strictly required,
         matching every prior era of this schema.
         """
 
@@ -438,7 +492,7 @@ class MeasuredCrossoverCandidate:
             "alignment",
             "fingerprint",
         }
-        optional = {"linearization", "linearization_outcome"}
+        optional = {"linearization", "linearization_outcome", "exclusion_evidence"}
         if not isinstance(raw, Mapping) or set(raw) - optional != required:
             _refuse(
                 "candidate_malformed",
@@ -479,6 +533,14 @@ class MeasuredCrossoverCandidate:
                 "linearization_outcome_malformed",
                 "candidate linearization_outcome is malformed",
             )
+        # Absent -> {} (era tolerance, see the docstring above); present ->
+        # validated by __post_init__'s exact-JSON walk.
+        exclusion_evidence_raw = raw.get("exclusion_evidence", {})
+        if not isinstance(exclusion_evidence_raw, Mapping):
+            _refuse(
+                "exclusion_evidence_malformed",
+                "candidate exclusion_evidence is malformed",
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -492,20 +554,31 @@ class MeasuredCrossoverCandidate:
                 ),
                 linearization=dict(linearization_raw),
                 linearization_outcome=linearization_outcome_raw,
+                exclusion_evidence=dict(exclusion_evidence_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(
                 "candidate_malformed", str(exc)
             ) from exc
-        # candidate.to_dict() always carries "linearization" and
-        # "linearization_outcome" (forward-shape consistency — see its own
-        # docstring); an older `raw` implicitly claimed {} / "" by never
-        # mentioning either field, so compare against that same claim made
-        # explicit — otherwise a payload that predates these fields would
-        # spuriously fail its own honest round trip and refuse as tampered.
+        # candidate.to_dict() always carries "linearization",
+        # "linearization_outcome" and "exclusion_evidence" (forward-shape
+        # consistency — see its own docstring); an older `raw` implicitly
+        # claimed {} / "" / {} by never mentioning the field, so compare
+        # against that same claim made explicit — otherwise a payload that
+        # predates the field would spuriously fail its own honest round trip
+        # and refuse as tampered.
+        #
+        # **Every optional field in `to_dict()` needs a line here.** Adding one
+        # without it makes EVERY previously-persisted candidate refuse as
+        # `candidate_tampered` the moment a deploy straddles the change — the
+        # live `handle_v2_apply` → `_reopen_candidate_artifact` route tells a
+        # household their correction was tampered with when the file is merely
+        # older. That is not hypothetical: `exclusion_evidence` shipped without
+        # its line and this is the fix. Each is pinned by its own era test.
         raw_for_comparison = dict(raw)
         raw_for_comparison.setdefault("linearization", {})
         raw_for_comparison.setdefault("linearization_outcome", "")
+        raw_for_comparison.setdefault("exclusion_evidence", {})
         if candidate.to_dict() != raw_for_comparison:
             _refuse(
                 "candidate_tampered",

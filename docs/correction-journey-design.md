@@ -22,6 +22,17 @@ A household calibrates a JTS speaker in a fixed physical order:
    human mid-flow Apply gate; a trusted candidate is applied by the
    conductor itself, per `crossover_v2_flow.py`). Makes the drivers
    coherent. Passive speakers skip this step entirely.
+   > **Spine annotation (2026-07-27).** The line above predates the
+   > spatial cloud and is stale twice over. Since PR-3b the flow is
+   > 16 captures with two prompted position groups, and since the
+   > 2026-07-27 owner timing decision the fit and the candidate happen at
+   > the PRE-APPLY group's close rather than at MEASURE. Current spine:
+   > `CHECK → gain solve → MEASURE → pre-apply position group → fit +
+   > candidate → APPLYING (auto) → VERIFY → post-apply position group`.
+   > Automatic-with-no-human-tap is unchanged, which is all this
+   > three-step journey actually depends on. Current truth:
+   > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+   > "The capture flow" / "When the fit runs".
 2. **Room** — measure and apply room correction at the listening
    position. Already **gated on step 1** by the shipped Active-to-Room
    eligibility receipt.

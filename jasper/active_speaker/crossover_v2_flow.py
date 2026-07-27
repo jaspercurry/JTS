@@ -11,8 +11,25 @@ excitation program per phase, plays it as one continuous stream, and analyzes
 phase state machine that drives the relay session — 16 captures at the shipped
 defaults, since the spatial cloud replaced the original three:
 
-    CHECK → gain solve → MEASURE → candidate → the pre-apply position group
-      → APPLYING (auto) → VERIFY → the post-apply position group → done
+    CHECK → gain solve → MEASURE → the pre-apply position group → fit +
+      candidate → APPLYING (auto) → VERIFY → the post-apply position group
+      → done
+
+**Owner decision (2026-07-27): the fit is the last thing before the apply.**
+The candidate used to be built the moment MEASURE was accepted, which put it
+eight captures BEFORE the pre-apply cloud whose honesty verdict it is supposed
+to consume — so the two optional cloud terms in ``compose_envelope`` had no
+reachable production caller. Building it at the group close instead lets the
+fit correct the envelope around the interference the cloud identified and
+refuse to fill it (flat-linearization plan, interpretation call (A)). MEASURE
+keeps every trust gate it owned: they read the analysis, not the candidate, so
+a session doomed at sweep two still fails at sweep two rather than after a nine
+-position walk. A session with no pre-apply group (the pre-cloud 3-entry shape
+this class still defaults to) has nothing to wait for and still builds at
+MEASURE, with the same accept, the same payload keys and the same apply timing
+it had before the move — its ``candidate.json`` does gain an always-empty
+``exclusion_evidence`` key, which leaves the fingerprint unchanged.
+See :meth:`CrossoverV2Conductor._measure_verdict`.
 
 **Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
 session proved the prior REVIEW/APPLY human tap a dead end — phone-only
@@ -1438,8 +1455,10 @@ AnalyzeCapture = Callable[
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
 ApplyGate = Callable[[], bool]
-# Reads whether the conductor's own auto-apply (triggered by the host after a
-# trusted MEASURE accept, §owner ruling 2026-07-20) hit a TERMINAL failure —
+# Reads whether the conductor's own auto-apply (triggered by the host off the
+# candidate-carrying verdict — the CLOUD_MEASURE group close on a cloud
+# session, MEASURE's own accept on the pre-cloud shape; §owner rulings
+# 2026-07-20 and 2026-07-27) hit a TERMINAL failure —
 # returns the reason code (e.g. REASON_APPLY_FAILED) or "" while still
 # pending/never attempted. Distinct from ``apply_complete`` (success only) so
 # ``authorize_begin`` can REFUSE the deferred VERIFY with an honest reason
@@ -1958,6 +1977,301 @@ def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Carve-out disclosure (owner decision 1, 2026-07-25; plan PR-6b)
+#
+# The owner's decision of record: identified interference nulls are excluded
+# from spec evaluation AND from correction, the band's tolerance applies to the
+# SURVIVING envelope, and "the report discloses 'EQ cannot fill these' with the
+# numbers." ``evaluate_flat_spec`` already does the excluding -- the masked bins
+# leave both the reference level and every band's deviation. What it does not
+# do, and must not, is say WHY: it is a pure evaluator that takes a bool mask
+# and holds no product policy (its own module docstring). So the "why" is
+# assembled here, in the wiring layer that already holds the registry and the
+# spec report side by side, next to ``_geometry_guidance_copy`` -- the other
+# household-facing copy derived from a pipeline verdict.
+#
+# **This module owns the carve-out copy strings; PR-7 renders them.** One
+# owner, so a chart callout and the envelope's expert disclosure cannot say
+# different things about the same carved range.
+# --------------------------------------------------------------------------- #
+
+# Which honesty instrument carved a range. Snake_case and self-identifying,
+# mirroring the vocabulary rule interference_nulls.py states for its own slugs.
+CARVE_OUT_SOURCE_IDENTIFIED_NULL = "identified_null"
+CARVE_OUT_SOURCE_POSITION_SCREEN = "position_screen"
+
+
+def _format_carve_out_hz(hz: float) -> str:
+    """One frequency as household copy — kHz at and above 1 kHz, Hz below.
+
+    Deliberately NOT the ``f"{hz:.0f} Hz"`` form the envelope's flatness lines
+    use: those quote a single worst bin, while these copy strings list several
+    frequencies in one sentence, where five-digit Hz figures read as noise.
+    """
+    return f"{hz / 1000.0:.1f} kHz" if hz >= 1000.0 else f"{hz:.0f} Hz"
+
+
+def _join_carve_out_phrases(parts: Sequence[str]) -> str:
+    """``["a", "b", "c"]`` -> ``"a, b and c"``. No serial comma, matching the
+    house copy elsewhere in this flow."""
+    parts = tuple(parts)
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _null_classification_copy(classification: str) -> str:
+    """The classification's own household sentence, or ``""`` for a
+    classification this copy does not cover.
+
+    **The ``position_invariant`` wording is load-bearing and pre-registered**
+    (plan PR-1's classification vocabulary, PR-7's callout copy): a single
+    session cannot separate "travels with the speaker" from "a path in the room
+    that did not change while measuring", and the output must not claim it can
+    — S0 separated them only by MOVING the speaker. So the copy names both and
+    names the experiment that would tell them apart.
+
+    No hardware noun appears here, in either branch. The classification is
+    evidence about how a null behaved across a mic cloud; it is not evidence
+    about what part of a speaker or room produced it, and naming one would be
+    the device-taxonomy guess this program forbids in shipped copy (the JTS3
+    rim-wave attribution is session knowledge, not measured general truth).
+    """
+    from jasper.audio_measurement.interference_nulls import (
+        CLASSIFICATION_POSITION_DEPENDENT,
+        CLASSIFICATION_POSITION_INVARIANT,
+    )
+
+    if classification == CLASSIFICATION_POSITION_INVARIANT:
+        return (
+            " It sat at the same frequencies at every microphone position — "
+            "consistent with something that travels with the speaker, or with "
+            "a path that did not change while measuring; moving the speaker "
+            "and measuring again would tell those apart."
+        )
+    if classification == CLASSIFICATION_POSITION_DEPENDENT:
+        return (
+            " It appeared at some microphone positions and not others, so "
+            "whatever causes it does not travel with the speaker."
+        )
+    return ""
+
+
+def _carve_out_records(
+    null_report: Any, screen_bands_hz: Sequence[Sequence[float]],
+) -> list[dict[str, Any]]:
+    """Every carved range, tagged with the instrument that carved it.
+
+    The two honesty instruments are listed SEPARATELY rather than merged: a
+    merged interval loses which instrument found it, and the registry's rows
+    are the only ones carrying τ/r — the exclusion *reason of record*. Ranges
+    from the two sources may overlap each other; that is reported as two rows
+    (one per instrument's own evidence), not silently collapsed, because "both
+    instruments flagged this" is a stronger statement than either alone.
+    ``merged_excluded_bands_hz`` remains the merged view for anyone counting.
+
+    A registry row's interval is the null's OWN ``f_lo_hz``/``f_hi_hz`` (its
+    half-depth width), unclipped to any spec band — τ and r describe the whole
+    null, so clipping the interval to a band edge would attach the numbers to a
+    fragment of what was measured.
+
+    Ordered by lower edge, then by source, so two rows starting at the same
+    frequency come out in a stable order rather than an input-order one.
+    """
+    records: list[dict[str, Any]] = []
+    for null in null_report.nulls:
+        records.append(
+            {
+                "f_lo_hz": float(null.f_lo_hz),
+                "f_hi_hz": float(null.f_hi_hz),
+                "source": CARVE_OUT_SOURCE_IDENTIFIED_NULL,
+                "f_center_hz": float(null.f_center_hz),
+                "n": int(null.n),
+                "tau_us": float(null.tau_us),
+                "r_time": float(null.r_time),
+                "r_freq": float(null.r_freq),
+                "depth_db": float(null.depth_db),
+                "classification": str(null.classification),
+                "reason": (
+                    "A delayed copy of the sound cancels this range, and EQ "
+                    "cannot fill a cancellation, so it is left out of "
+                    "correction and out of grading."
+                    + _null_classification_copy(str(null.classification))
+                ),
+            }
+        )
+    for band in screen_bands_hz:
+        records.append(
+            {
+                "f_lo_hz": float(band[0]),
+                "f_hi_hz": float(band[1]),
+                "source": CARVE_OUT_SOURCE_POSITION_SCREEN,
+                "reason": (
+                    "The microphone positions disagreed about this range much "
+                    "more than about the rest of the spectrum, so it reads as "
+                    "interference rather than the speaker's own response and "
+                    "is left out of correction and out of grading."
+                ),
+            }
+        )
+    records.sort(key=lambda record: (record["f_lo_hz"], record["source"]))
+    return records
+
+
+def _carve_out_disclosure_copy(records: Sequence[Mapping[str, Any]]) -> str:
+    """The band's household-facing headline — plain language, no τ/r.
+
+    ``""`` when nothing was carved in the band, mirroring
+    :func:`_geometry_guidance_copy`'s "empty string when not locked — nothing
+    to say" rule rather than rendering a "no interference found" sentence a
+    reader could mistake for a measurement.
+
+    The delay is quoted in **milliseconds** here because it is the one number
+    that makes the sentence mean something to a household ("a delayed copy
+    arrives 0.32 ms later"); τ stays in microseconds in the structured record,
+    which is the registry's own unit and the one owner of it.
+    """
+    nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
+    screened = [r for r in records if r["source"] == CARVE_OUT_SOURCE_POSITION_SCREEN]
+    sentences: list[str] = []
+    if nulls:
+        where = _join_carve_out_phrases(
+            [_format_carve_out_hz(float(r["f_center_hz"])) for r in nulls]
+        )
+        # One ladder, one τ (IdentifiedNull.tau_us is "the same value on every
+        # rung of one report" — its own docstring), so the first row's delay
+        # describes them all.
+        delay_ms = float(nulls[0]["tau_us"]) / 1000.0
+        plural = len(nulls) > 1
+        sentences.append(
+            f"{'Interference nulls at' if plural else 'An interference null at'} "
+            f"{where} — a delayed copy of the sound arrives {delay_ms:.2f} ms "
+            f"later. EQ cannot fill {'these' if plural else 'this'}, so "
+            f"{'they are' if plural else 'it is'} left out of correction and "
+            "out of this band's grading."
+        )
+    if screened:
+        plural = len(screened) > 1
+        # "One range" rather than "1 range": this is prose, and the frequency
+        # figures are the numerals a reader should be counting in it.
+        count = f"{len(screened)}" if plural else "One"
+        subject = f"{count} {'further ' if nulls else ''}"
+        subject += "ranges are" if plural else "range is"
+        tail = (
+            "left out because the microphone positions disagreed about "
+            if nulls
+            else (
+                "left out of correction and out of this band's grading "
+                "because the microphone positions disagreed about "
+            )
+        )
+        sentences.append(
+            f"{subject} {tail}{'them' if plural else 'it'} too much to grade."
+        )
+    return " ".join(sentences)
+
+
+def _carve_out_expert_copy(records: Sequence[Mapping[str, Any]]) -> str:
+    """The expert-layer line — the same carve-outs WITH τ and r.
+
+    Separated from :func:`_carve_out_disclosure_copy` rather than folded into
+    it because the two registers have different readers and the plan puts τ/r
+    behind a disclosure ("τ/r vocabulary lives in an expert disclosure, not the
+    headline"). Both are produced here so a chart callout and the envelope's
+    ``<details>`` cannot drift into saying different things.
+
+    ``r`` is reported as the pair the registry actually holds — the
+    time-domain and frequency-domain estimates — rather than one averaged
+    figure, because their AGREEMENT is what admitted the null in the first
+    place, and an average would hide it.
+    """
+    nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
+    if not nulls:
+        return ""
+    where = _join_carve_out_phrases(
+        [
+            f"{_format_carve_out_hz(float(r['f_center_hz']))} (rung {int(r['n'])}, "
+            f"{float(r['depth_db']):.1f} dB deep)"
+            for r in nulls
+        ]
+    )
+    first = nulls[0]
+    return (
+        f"carved out of grading: {where}; delay τ {float(first['tau_us']):.0f} µs, "
+        f"reflection ratio r {float(first['r_time']):.3f} measured in time / "
+        f"{float(first['r_freq']):.3f} implied by null depth"
+    )
+
+
+def carve_outs_by_band(
+    spec_report: Any,
+    null_report: Any,
+    screen_bands_hz: Sequence[Sequence[float]],
+) -> list[dict[str, Any]]:
+    """Per spec band: which ranges were carved out, why, and with what numbers.
+
+    Owner decision 1 (2026-07-25) in payload form. One entry per band of
+    ``spec_report``, **always all of them, in the report's own order**, so a
+    consumer can join to ``spec["bands"]`` by index or by ``band_hz`` and can
+    render "nothing carved here" without having to infer it from an absence.
+
+    A record is included in a band when its interval OVERLAPS the band's
+    ``[f_lo_hz, f_hi_hz)`` span, so a null straddling a band edge appears under
+    both bands it actually carves — it removes bins from both.
+
+    **What this does NOT include: the gate-validity clamp.** Bins below the
+    group's ``validity_floor_hz`` also leave the spec evaluation (plan PR-5),
+    but they are not an interference verdict and PR-5 deliberately keeps them
+    out of the honesty instruments' own accounting, disclosed separately as
+    ``validity_floor_hz``. So a band's ``n_excluded`` on the spec report can
+    exceed what these records cover, and the floor is the difference — the same
+    separation ``_compact_cloud_status`` carries for exactly this reason.
+    """
+    records = _carve_out_records(null_report, screen_bands_hz)
+    out: list[dict[str, Any]] = []
+    for band in spec_report.bands:
+        f_lo, f_hi = float(band.f_lo_hz), float(band.f_hi_hz)
+        in_band = [
+            record
+            for record in records
+            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > f_lo
+        ]
+        out.append(
+            {
+                "band_hz": [f_lo, f_hi],
+                "intervals": [dict(record) for record in in_band],
+                "disclosure": _carve_out_disclosure_copy(in_band),
+                "expert": _carve_out_expert_copy(in_band),
+            }
+        )
+    return out
+
+
+@dataclass(frozen=True)
+class _CloudFitEvidence:
+    """What a closed spatial cloud contributes to the correction envelope.
+
+    The three optional arguments of
+    :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`,
+    travelling together as one value so the fit cannot be handed a half-supplied
+    pair (``compose_envelope`` raises on ``band_spread`` without
+    ``n_positions``, and this makes that unreachable from this module).
+
+    ``excluded_bands_hz`` is the MERGED honesty mask — the power-vs-median
+    screen union the identified-null registry, as
+    :func:`assemble_cloud_group_result` merged it. Not the screen's intervals
+    and not the registry's: the wiring contract (issue #1742 item 4) is that
+    the instruments are consumed together.
+    """
+
+    excluded_bands_hz: tuple[tuple[float, float], ...]
+    band_spread: tuple[Any, ...]
+    n_positions: int
+
+
 def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None:
     """The group's own gated validity floor — the WORST (highest) of its
     positions' floors, or ``None`` when no position reported a usable one.
@@ -2013,6 +2327,15 @@ def assemble_cloud_group_result(
     envelope all render ``flatness`` (:func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge`
     of that same report) rather than deriving a number of their own. Nothing
     downstream re-evaluates the curve.
+
+    **The carve-out disclosure (plan PR-6b, owner decision 1).** ``carve_outs``
+    is :func:`carve_outs_by_band` of the SAME registry and the SAME spec report
+    — per band, which ranges left this band's grading, in plain language, with
+    τ/r behind an expert string. It is a third reading of one evaluation, never
+    a second one: the bins are already gone from ``spec`` by the time this runs,
+    and no verdict here can move. The tolerance table is untouched — the 8-16 kHz
+    row still reads ±2.5 dB, applied to whatever survives the carve-out (the
+    owner's decision was to disclose the carve-out, not to re-spec the band).
 
     **``validity_floor_hz`` clamps the spec band's lower edge.** Bins below
     the group's gated validity floor (:func:`cloud_validity_floor_hz`) are
@@ -2097,7 +2420,11 @@ def assemble_cloud_group_result(
     raises ``ValueError`` via ``zip(strict=True)`` on a length mismatch or
     ``IndexError`` on an out-of-bounds index; a malformed/incomplete
     ``combined``-like object raises ``TypeError``/``AttributeError`` reading
-    its fields). ``_run_cloud_pipeline`` relies on exactly this bounded set --
+    its fields; :func:`carve_outs_by_band` adds no new family -- it reads
+    already-built records by keys it set itself, and its only external reads
+    are attribute lookups on the two reports and indexing/``float()`` on the
+    screen intervals, i.e. ``AttributeError``/``IndexError``/``TypeError``/
+    ``ValueError``). ``_run_cloud_pipeline`` relies on exactly this bounded set --
     a downstream DSP failure inside it is diagnostic/disclosure machinery,
     never a capture-accept gate, so this bounded family is caught and
     reported as ``available: False`` rather than surfacing to the caller.
@@ -2155,6 +2482,14 @@ def assemble_cloud_group_result(
             ],
             "null_registry": _null_registry_to_dict(null_report),
             "spec": spec_report.to_dict(),
+            # PR-6b: owner decision 1's disclosure half — the SAME registry
+            # and the SAME spec report above, re-read per band as "what was
+            # carved out of this band's grading, and why". Not a second
+            # evaluation: `evaluate_flat_spec` already removed these bins, and
+            # nothing here can change a verdict.
+            "carve_outs": carve_outs_by_band(
+                spec_report, null_report, combined.excluded_bands_hz,
+            ),
             # PR-5: the spec-facing gauge — a pure reduction of the SAME
             # ``spec`` report above, carried here so no downstream surface
             # has to (or may) derive its own. Byte-identical wherever it is
@@ -2334,6 +2669,32 @@ class CrossoverV2Conductor:
         # rehydrates both from the persisted state (§5.2 re-verify).
         self._measure_predicted_sum: Any = measure_predicted_sum
         self._measure_gate_window_ms: float | None = measure_gate_window_ms
+        # The accepted MEASURE capture's analysis, held ONLY while something
+        # still needs it: from MEASURE's accept until the CLOUD_MEASURE group
+        # closes and the fit consumes it (timing move, 2026-07-27 — see
+        # ``_measure_verdict``), then released. A session with no cloud group
+        # never sets it at all, because that shape fits at MEASURE and consumes
+        # the analysis in the same call.
+        #
+        # **The lifetime is deliberately tight, because the object is not
+        # small.** It is dominated by per-occurrence float64/complex128 arrays
+        # on the analysis FFT grid, so its size scales with capture length via
+        # ``program_analysis._n_fft_for``. Measured 2026-07-27 on the S0
+        # corpus's own grid (524,289 bins — a long summed capture): ONE
+        # two-occurrence ``DriverResponse`` is 33.6 MB of ndarray payload
+        # (4.19 freqs + 4.19 magnitude + 8.39 complex_tf per occurrence). A
+        # MEASURE analysis holds one per role with its in-capture repeats
+        # attached. That regime is the S0 corpus's, not a production MEASURE's
+        # (different program, different grid), and it is quoted to establish
+        # the ORDER — tens of megabytes, not kilobytes — on a 1 GB Pi that also
+        # retains every cloud position's response for the combine.
+        #
+        # ``None`` therefore means one of three things, all fine: no MEASURE
+        # accepted yet, a session shape that never retains, or an analysis
+        # already consumed. Only the FIRST can reach
+        # ``_close_measure_cloud_candidate``, and only via a same-session
+        # ``hydrate`` — see that method for why production cannot.
+        self._measure_analysis: Any = None
         self._candidate: Any = None
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
         # The VERIFY tracking numbers behind the verify_fail screen's collapsed
@@ -2597,9 +2958,15 @@ class CrossoverV2Conductor:
     def current_phase(self) -> str:
         for phase in self._phases:
             if phase not in self._accepted:
-                # MEASURE accepted but not yet applied ⇒ the conductor's own
-                # auto-apply is in flight (or has failed) — no human control
-                # page, just a brief machine-paced window before VERIFY arms.
+                # Everything before VERIFY accepted but not yet applied ⇒ the
+                # conductor's own auto-apply is in flight (or has failed) — no
+                # human control page, just a brief machine-paced window before
+                # VERIFY arms. The MEASURE test is the cheap stand-in for
+                # "a candidate should exist by now": on a cloud session the
+                # pre-apply group sits between the two and is filtered out by
+                # the loop above before this branch is ever reached, so this
+                # only fires once the group has closed and the candidate has
+                # been built (2026-07-27 timing move).
                 if phase == PHASE_VERIFY and PHASE_MEASURE in self._accepted and not self._applied:
                     return PHASE_APPLYING
                 return phase
@@ -3079,34 +3446,58 @@ class CrossoverV2Conductor:
         ):
             self._last_measure_guard = "ripple_ceiling"
             return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
-        candidate = self._build_candidate(analysis)
-        self._candidate = candidate
-        # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
-        # PR-D): when this attempt fitted Layer-1a linearization (fitted OR
-        # trim_rejected — both emit the correction filters, see
-        # ``_fit_linearization``'s tail), the persisted prediction VERIFY
-        # compares against must be the LINEARIZED model, the exact thing the
-        # emitted graph now carries — never the raw-branch one. The
-        # ineligible/fit_failed path is untouched: ``_last_linearized_
-        # predicted_sum`` stays ``None`` there, so this stays byte-identical
-        # to ``analysis.predicted_sum``, exactly as before this fix.
-        self._measure_predicted_sum = (
-            self._last_linearized_predicted_sum
-            if self._last_linearized_predicted_sum is not None
-            else analysis.predicted_sum
-        )
+        if analysis.candidate is None:
+            # Fail FAST, at the capture that produced the unusable analysis.
+            # Until the 2026-07-27 timing move this raise happened one call
+            # deeper and one line later (``_build_candidate``'s own identical
+            # check, still there as the residual) — same exception, same
+            # message, same phase, so the host's ``internal_error`` mapping is
+            # unchanged. Hoisting it is what keeps that behaviour at MEASURE:
+            # the candidate build now happens eight captures later, and a
+            # household must not walk the whole cloud for a session that was
+            # already unable to produce a candidate at sweep two.
+            raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
         self._measure_gate_window_ms = self._measure_gate(analysis)
-        self._seams.publish_candidate(candidate)
+        # **The fit runs at the last capture before the apply.** Which capture
+        # that is depends on the session's own phase list, and there are
+        # exactly two shapes:
+        #
+        # * a session that runs a CLOUD_MEASURE group (every production
+        #   measurement session since PR-3b — ``prepare_v2_session`` passes
+        #   ``build_v2_cloud_index_phase_map()``) defers the fit, the candidate
+        #   build, and the auto-apply trigger to that group's close, so the fit
+        #   consumes the cloud's honesty verdict instead of preceding it by
+        #   eight captures. Owner decision, 2026-07-27 — the work order's own
+        #   pre-registered phase order. See ``_close_measure_cloud_candidate``.
+        # * a session with no such group (the pre-cloud 3-entry shape this
+        #   class still defaults to) has nothing to wait for, so it builds here
+        #   and behaves as it did before the move: same accept, same payload
+        #   keys, same auto-apply timing. Scoped precisely, because the
+        #   unqualified phrase would be wrong — the candidate it publishes
+        #   DOES gain an always-empty ``exclusion_evidence`` key, which is
+        #   omitted from ``_core()`` when empty and so leaves the fingerprint
+        #   byte-identical. The FLOW is unchanged; the artifact gains one
+        #   empty, non-fingerprinted field.
+        #
+        # The 2026-07-20 "no human Apply gate" ruling is untouched by either
+        # branch: apply is still automatic and still needs no tap; only its
+        # trigger point moves, and only for a session that has a cloud.
+        #
+        # On the deferring branch ONLY, the analysis is retained rather than
+        # consumed — it is the fit's input and must outlive the prompted cloud
+        # walk. The non-deferring branch consumes it in this same call and
+        # never stores it: keeping a tens-of-megabytes reference that nothing
+        # will ever read is not free on a 1 GB Pi (see the field's own comment
+        # in ``__init__`` for the measurement). Exactly one is ever held; a
+        # MEASURE re-arm overwrites it, and the group close releases it.
+        if PHASE_CLOUD_MEASURE in self._phases:
+            self._measure_analysis = analysis
+            return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
         return PhaseVerdict(
             True,
             payload={
                 "measurement_phase": PHASE_MEASURE,
-                "candidate_fingerprint": candidate.fingerprint,
-                # Tells the host to trigger auto-apply immediately (§owner
-                # ruling) — every candidate that reaches this point already
-                # passed the trust gate above, so this is unconditionally True
-                # here, not a second decision.
-                "auto_apply": True,
+                **self._publish_measure_candidate(analysis, None),
             },
         )
 
@@ -3138,10 +3529,20 @@ class CrossoverV2Conductor:
 
         **Per-position work is deliberately light** (the PR-3b design
         contract): the same locate/linearity screens every phase runs, plus
-        "did this capture yield a usable summed response". The ~40 s analyses —
-        combine, null identification, spec evaluation — run ONCE per group,
-        not once per position, or an 8-position cloud would add five minutes of
-        pure compute to a session already bounded by operator patience.
+        "did this capture yield a usable summed response". The group analyses —
+        combine, null identification, spec evaluation — run ONCE per group, not
+        once per position, so their cost is paid once instead of N times.
+
+        Measured 2026-07-27 on the S0 ten-position corpus (this laptop; a Pi 5
+        is slower — :func:`combine_cloud_positions` states the 3-6 s
+        across-hosts regime): the **combine is 2.7-2.8 s and dominates
+        completely**, while everything layered on it — the null gate, the spec
+        evaluation, the carve-out assembly — totals **0.02-0.04 s**. Running
+        the set per position would multiply that by N instead of paying it
+        once. (This paragraph previously said "~40 s analyses" and "five
+        minutes" for an 8-position cloud; no measurement supports either, and
+        the real argument does not need them — 2.7 s x 9 is still worth not
+        spending.)
 
         Two VERIFY gates are deliberately NOT applied here, because both assume
         a stationary mic replaying the identical program:
@@ -3298,10 +3699,25 @@ class CrossoverV2Conductor:
             thin_evidence=bool(verdict.get("thin_evidence")),
             geometry_retries=retries,
         )
-        # S4 review finding (2026-07-26): the group's ACCEPT is already
-        # decided above (the log line just fired) — the honesty pipeline
-        # below is diagnostic/disclosure machinery layered on TOP of that
-        # decision, and must never be able to cost the group its accept.
+        # S4 review finding (2026-07-26): the group's accept is decided above
+        # (the log line just fired) — the honesty pipeline below is
+        # diagnostic/disclosure machinery layered on TOP of that decision, and
+        # must never be able to cost the group its accept.
+        #
+        # **Scope, corrected 2026-07-27 (N1):** "decided" is not "recorded".
+        # ``_note_accepted`` runs in ``consume_capture`` AFTER this method
+        # returns, so a raise anywhere below — including the candidate build,
+        # which is deliberately NOT wrapped — unwinds before the phase is
+        # marked accepted. The resulting state is honest but worth naming:
+        # ``event=correction.crossover_v2_cloud_group_complete`` is in the
+        # journal, the group's geometry verdict is on the conductor, and the
+        # phase is NOT in ``accepted_phases`` — so nothing durable claims a
+        # completed group, and the host maps the raise to a terminal
+        # ``internal_error`` screen. The claim this wrap makes is therefore
+        # about the PIPELINE only: a named-family pipeline exception cannot
+        # cost the accept. It says nothing about the candidate build below,
+        # which is allowed to fail the capture, because it is the session's
+        # product rather than its disclosure.
         # assemble_cloud_group_result's own try/except (ValueError, TypeError,
         # IndexError, AttributeError -- the documented raise surface of
         # everything it calls) and _run_cloud_pipeline's own try/except around
@@ -3326,13 +3742,181 @@ class CrossoverV2Conductor:
                 level=logging.WARNING,
                 session_id=self.session_id, phase=phase, exc_info=True,
             )
-        return PhaseVerdict(
-            True,
-            payload={
-                "position_id": position.position_id,
-                "group_complete": phase,
-                "geometry": dict(verdict),
-            },
+        payload: dict[str, Any] = {
+            "position_id": position.position_id,
+            "group_complete": phase,
+            "geometry": dict(verdict),
+        }
+        if phase == PHASE_CLOUD_MEASURE:
+            # The pre-apply cloud is closed and its honesty verdict is in hand;
+            # THIS is where the correction is now fitted, published, and handed
+            # to auto-apply. Deliberately OUTSIDE the fail-soft wrap above: the
+            # pipeline is diagnostic machinery and must never cost the group
+            # its accept, but the candidate build is the session's product —
+            # a failure there is a real failure and propagates, exactly as it
+            # did when this ran at MEASURE.
+            payload.update(self._close_measure_cloud_candidate(combined))
+        return PhaseVerdict(True, payload=payload)
+
+    def _close_measure_cloud_candidate(self, combined: Any) -> dict[str, Any]:
+        """Fit, build, publish, and hand the candidate to auto-apply.
+
+        The relocated tail of :meth:`_measure_verdict` (owner decision,
+        2026-07-27). It runs once, at the CLOUD_MEASURE group close, and
+        returns the two payload keys the host's ``consume()`` seam reads —
+        which keys on ``accepted`` plus ``auto_apply`` and never on a phase, so
+        it fires here with no host change at all.
+
+        **The fit now consumes the cloud** (plan interpretation call (A), the
+        wiring half of PR-6): :func:`_cloud_fit_evidence` turns this group's
+        closed pipeline result into the merged honesty intervals and the
+        cross-position spread that :func:`compose_envelope`'s
+        ``spatial_exclusion_limit`` / ``position_stability_limit`` terms
+        consume. A group whose pipeline did not become available yields
+        ``None`` and the fit runs exactly as it did before this move —
+        disclosed, not silent (see :func:`_cloud_fit_evidence`).
+
+        Reaching this with ``_measure_analysis`` already ``None`` means MEASURE
+        was accepted by a DIFFERENT conductor instance — the same-session
+        ``hydrate`` branch, which carries ``accepted_phases`` but no analysis.
+        (The tail of this method releases the analysis, but that release
+        happens strictly AFTER this check and only once per group, so it can
+        never be what this branch is seeing — see the release comment for why
+        a second close of one group is structurally impossible.)
+        **Production cannot reach it**: ``prepare_v2_session`` hydrates against
+        a freshly MINTED relay session id, so the id never matches and hydrate
+        always takes the fresh-start-at-CHECK branch (§5.6's own rule). If it
+        is ever reached, this raises rather than returning a payload without
+        ``auto_apply``: a session with no candidate can never release VERIFY's
+        ``on_apply`` hold, so the alternative is a silent stall until the relay
+        times out, and an honest ``internal_error`` screen beats that.
+        """
+        if self._measure_analysis is None:
+            raise CrossoverV2FlowError(
+                "cloud-measure group closed with no retained MEASURE analysis"
+            )
+        payload = self._publish_measure_candidate(
+            self._measure_analysis, self._cloud_fit_evidence(combined)
+        )
+        # Released on success: the fit has consumed it and nothing reads it
+        # again, so a tens-of-megabytes reference should not survive to the end
+        # of a session that still has six captures to go (see the field's
+        # comment in ``__init__``).
+        #
+        # **Why releasing cannot strand a re-delivered capture.** Releasing
+        # makes a SECOND close of this group raise instead of rebuilding, so it
+        # is only safe if a second close cannot happen — and it cannot: the
+        # relay's plan loop admits a begin only at
+        # ``(accepted_count + 1, attempts_used + 1)`` and dedupes already-
+        # ``processed`` (index, attempt) pairs, so once this close is accepted
+        # the index never goes backwards. The geometry retake is not a
+        # counter-example either: a retried close returns REJECTED from
+        # ``_close_cloud_group`` well before this method is reached, so a
+        # retaken group reaches here exactly once, on the close that accepts.
+        # Left in place on a raise — that session is already failing, and the
+        # conductor is about to be discarded.
+        self._measure_analysis = None
+        return payload
+
+    def _publish_measure_candidate(
+        self, analysis: ProgramAnalysis, cloud: "_CloudFitEvidence | None",
+    ) -> dict[str, Any]:
+        """Build, publish, and hand one candidate to auto-apply.
+
+        The single build/publish path, called from whichever capture is the
+        last before the apply for this session's shape — the CLOUD_MEASURE
+        group close when the session runs one, MEASURE's own accept when it
+        does not (see :meth:`_measure_verdict`). Returns the two payload keys
+        the host's ``consume()`` seam reads; that seam keys on ``accepted``
+        plus ``auto_apply`` and never on a phase, which is why the timing move
+        needed no host change.
+        """
+        candidate = self._build_candidate(analysis, cloud)
+        self._candidate = candidate
+        # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
+        # PR-D): when this attempt fitted Layer-1a linearization (fitted OR
+        # trim_rejected — both emit the correction filters, see
+        # ``_fit_linearization``'s tail), the persisted prediction VERIFY
+        # compares against must be the LINEARIZED model, the exact thing the
+        # emitted graph now carries — never the raw-branch one. The
+        # ineligible/fit_failed path is untouched: ``_last_linearized_
+        # predicted_sum`` stays ``None`` there, so this stays byte-identical
+        # to ``analysis.predicted_sum``, exactly as before this fix. It is set
+        # here rather than at MEASURE because the fit is here; nothing reads it
+        # in between (``_cloud_priors`` deliberately carries no
+        # ``predicted_sum``, and VERIFY is the next capture after this close).
+        self._measure_predicted_sum = (
+            self._last_linearized_predicted_sum
+            if self._last_linearized_predicted_sum is not None
+            else analysis.predicted_sum
+        )
+        self._seams.publish_candidate(candidate)
+        log_event(
+            logger, "correction.crossover_v2_candidate_built",
+            session_id=self.session_id,
+            candidate_fingerprint=candidate.fingerprint,
+            # Which linearization path this candidate's build took. This field
+            # lived on ``correction.crossover_v2_measure_diag`` until the
+            # timing move; it could not stay there, because that line is
+            # emitted eight captures before the fit now runs and would report
+            # "" forever (the retired-field treatment PR-5 gave the per-capture
+            # ``flatness_*`` fields, for the same reason).
+            linearization=self._last_linearization_outcome,
+            # Did the cloud's honesty verdict actually reach the envelope?
+            cloud_evidence=cloud is not None,
+            excluded_bands=len(cloud.excluded_bands_hz) if cloud else 0,
+            cloud_positions=cloud.n_positions if cloud else 0,
+        )
+        return {
+            "candidate_fingerprint": candidate.fingerprint,
+            # Tells the host to trigger auto-apply immediately (§owner ruling,
+            # 2026-07-20 — automatic, never a human tap). Every candidate that
+            # reaches this point cleared MEASURE's trust gates already (at its
+            # own capture, however many captures back this session's shape puts
+            # it), so this is unconditionally True here, not a second decision.
+            "auto_apply": True,
+        }
+
+    def _cloud_fit_evidence(self, combined: Any) -> "_CloudFitEvidence | None":
+        """This group's honesty verdict, in the shape the fit envelope takes.
+
+        ``None`` — the fit runs with no cloud terms, byte-identical to every
+        candidate built before the timing move — in exactly two cases, and both
+        are disclosed rather than silent:
+
+        * the positions could not be combined at all (``combined is None``);
+        * the combine succeeded but the honesty pipeline did not become
+          available (a null-gate or spec-evaluator failure, already logged as
+          ``correction.crossover_v2_cloud_pipeline_failed``).
+
+        The second is **all-or-nothing on purpose.** A failed pipeline still
+        leaves ``combined.excluded_bands_hz`` — the power-vs-median screen's
+        own intervals — and it would be easy to hand the fit those. That is
+        precisely the mask-alone read issue #1742 item 4 forbids: the screen
+        structurally cannot see a position-invariant null (plan "S0 executed"
+        § e.1 — 0 of 5462 bins in 8-16 kHz on the S0 corpus), so a
+        screen-only mask would exclude the interference the cloud CAN see while
+        silently correcting the interference it cannot, which is worse than
+        excluding nothing and being honest about it. One verdict, or none.
+        """
+        if combined is None:
+            return None
+        result = self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {}
+        if result.get("available") is not True:
+            log_event(
+                logger, "correction.crossover_v2_fit_without_cloud",
+                level=logging.WARNING, session_id=self.session_id,
+                reason=str(result.get("reason") or "no_pipeline_result"),
+            )
+            return None
+        intervals = tuple(
+            (float(band[0]), float(band[1]))
+            for band in result.get("merged_excluded_bands_hz") or ()
+        )
+        return _CloudFitEvidence(
+            excluded_bands_hz=intervals,
+            band_spread=tuple(combined.band_spread),
+            n_positions=int(combined.n_positions),
         )
 
     def _run_cloud_pipeline(
@@ -3673,11 +4257,14 @@ class CrossoverV2Conductor:
             # shares its reused reason code (see __init__'s comment on
             # ``_last_measure_guard``).
             guard=self._last_measure_guard,
-            # SF3 (adversarial review): which linearization path this
-            # attempt's candidate build took — "" when the verdict was
-            # rejected before ``_build_candidate`` ever ran (see __init__'s
-            # comment on ``_last_linearization_outcome``).
-            linearization=self._last_linearization_outcome,
+            # (A ``linearization`` field lived here until the 2026-07-27
+            # timing move. It reported which path the candidate build took,
+            # and the candidate build now happens eight captures later, at the
+            # cloud-measure group close — so this line could only ever have
+            # reported "". It moved to ``correction.crossover_v2_candidate_built``
+            # rather than being kept as a permanently-empty field, the same
+            # treatment PR-5 gave the per-capture ``flatness_*`` fields when
+            # their subject moved to the cloud.)
         )
 
     def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
@@ -3739,7 +4326,9 @@ class CrossoverV2Conductor:
         finite = [w for w in windows if w is not None]
         return min(finite) if finite else None
 
-    def _build_candidate(self, analysis: ProgramAnalysis) -> Any:
+    def _build_candidate(
+        self, analysis: ProgramAnalysis, cloud: _CloudFitEvidence | None = None,
+    ) -> Any:
         from jasper.active_speaker.measured_crossover_candidate import (
             MeasuredCrossoverAlignment,
             MeasuredCrossoverCandidate,
@@ -3747,6 +4336,9 @@ class CrossoverV2Conductor:
 
         cand = analysis.candidate
         if cand is None:
+            # The residual. ``_measure_verdict`` hoisted this same check to the
+            # capture that produces the analysis (2026-07-27 timing move), so
+            # reaching it here means a caller that did not walk that path.
             raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
         delay_us, delay_role, polarity = alignment_to_candidate_fields(
             analysis, woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
@@ -3768,7 +4360,7 @@ class CrossoverV2Conductor:
         if self._linearization_eligible(analysis):
             try:
                 role_attenuations_db, linearization = self._fit_linearization(
-                    analysis, cand
+                    analysis, cand, cloud
                 )
             except (
                 ArithmeticError, AttributeError, RuntimeError, TypeError, ValueError,
@@ -3807,6 +4399,16 @@ class CrossoverV2Conductor:
             role_attenuations_db=role_attenuations_db,
             alignment=alignment,
             linearization=linearization,
+            # The exclusion reason of record (plan PR-6b). Empty — the
+            # pre-move shape — whenever no cloud evidence reached the fit,
+            # INCLUDING when the fit itself failed above: a record of what the
+            # envelope consumed must not ride a candidate whose corrections
+            # came from the trims-only fallback instead.
+            exclusion_evidence=(
+                self._exclusion_evidence_json(cloud)
+                if cloud is not None and linearization
+                else {}
+            ),
             # Gauge fix (2026-07-24): the single writer's own verdict,
             # stamped verbatim onto the candidate at the exact moment it
             # reaches its final value for this attempt — see
@@ -3814,6 +4416,46 @@ class CrossoverV2Conductor:
             # docstring for why this module never re-derives it.
             linearization_outcome=self._last_linearization_outcome,
         )
+
+    def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
+        """The fit's cloud inputs, as the candidate's exclusion reason of record.
+
+        Everything the two cloud envelope terms actually consumed, plus the
+        registry that justifies the intervals — enough that a reader holding
+        only ``candidate.json`` can re-derive ``spatial_exclusion_limit`` and
+        ``position_stability_limit`` and see WHY a band went uncorrected. The
+        registry is re-read from this group's own pipeline result and
+        serialized by :func:`_null_registry_to_dict`, the one owner of that
+        shape, so the candidate's copy and ``cloud_measure.json``'s cannot
+        disagree.
+
+        ``band_spread`` is carried as the plain per-band numbers rather than
+        the dataclass: this is persisted JSON, and the two fields the term
+        reads (``sigma_db`` and the band edges it applies over) are the two a
+        reader needs to check it. ``max_sigma_db`` rides along because
+        ``position_stability_limit``'s docstring turns on the distinction
+        between the two spreads, and a reader auditing the choice needs to see
+        the number that was NOT used.
+        """
+        result = self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {}
+        registry = result.get("null_registry")
+        return {
+            "phase": PHASE_CLOUD_MEASURE,
+            "excluded_bands_hz": [list(band) for band in cloud.excluded_bands_hz],
+            "n_positions": cloud.n_positions,
+            "band_spread": [
+                {
+                    "center_hz": float(band.center_hz),
+                    "f_lo": float(band.f_lo),
+                    "f_hi": float(band.f_hi),
+                    "sigma_db": float(band.sigma_db),
+                    "max_sigma_db": float(band.max_sigma_db),
+                    "n_bins": int(band.n_bins),
+                }
+                for band in cloud.band_spread
+            ],
+            "null_registry": dict(registry) if isinstance(registry, Mapping) else {},
+        }
 
     def _linearization_eligible(self, analysis: ProgramAnalysis) -> bool:
         """HARD GATE for the Layer-1a fit path: reference-tier mic AND both
@@ -3843,7 +4485,10 @@ class CrossoverV2Conductor:
         return False
 
     def _fit_linearization(
-        self, analysis: ProgramAnalysis, cand: Any,
+        self,
+        analysis: ProgramAnalysis,
+        cand: Any,
+        cloud: _CloudFitEvidence | None = None,
     ) -> tuple[dict[str, float], dict[str, Any]]:
         """Fit both drivers, apply the correction in the linear domain, and
         re-solve the trim from the LINEARIZED branch pair — the ordering
@@ -3906,12 +4551,23 @@ class CrossoverV2Conductor:
                 resp, siblings[role],
                 tier=mic_tier, valid_band_hz=excited_band_hz[role],
             )
+            # The cloud seam (plan PR-6a's two optional terms, wired here by
+            # the 2026-07-27 timing move — this is the ONLY production caller
+            # that supplies them). All three arguments are ``None`` when no
+            # cloud verdict was available, and ``compose_envelope`` documents
+            # that case as byte-identical to an envelope composed before the
+            # terms existed. They can only ever NARROW allowed depth: they
+            # enter the same ``np.min`` as every other term, so no cloud can
+            # buy the fit permission it did not already have.
             envelope = compose_envelope(
                 role, resp,
                 excited_band_hz=excited_band_hz[role],
                 mic_tier=mic_tier,
                 driver_class=self._driver_class_by_role.get(role, "unknown"),
                 sigma_db=sigma_db,
+                excluded_bands_hz=cloud.excluded_bands_hz if cloud else None,
+                band_spread=cloud.band_spread if cloud else None,
+                n_positions=cloud.n_positions if cloud else None,
             )
             fit = fit_driver_linearization(resp, envelope)
             fits[role] = fit

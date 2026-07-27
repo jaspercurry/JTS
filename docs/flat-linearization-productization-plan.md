@@ -710,6 +710,13 @@ Per interpretation call (A):
   (`candidate.json` + bundle), thread τ/r/classification through to
   the report payloads. A registry entry is *why* a band was excluded;
   the UI and any future session can read it.
+  *(PR-6b, 2026-07-27: shipped in two steps on one branch. The report-payload
+  half went first. The `candidate.json` half and the fit wiring below were
+  BLOCKED on a session-ordering fact this work order did not account for —
+  `_fit_linearization` ran at capture index 2 while the pre-apply cloud group
+  closes at index 10 — and are now unblocked by the owner-approved timing move
+  that follows. Both halves are shipped; full accounting in the PR-6b
+  paragraphs at the foot of this doc.)*
 - **Carve-out mechanics (owner decision 1):** `evaluate_flat_spec`
   already excludes masked bins from reference + deviation; the
   report's per-band verdict discloses carved-out intervals with
@@ -965,7 +972,10 @@ executing session updates per-PR status here as merges land.*
 
 *Ladder status: **PR-2 merged as #1749**; **PR-1 merged as #1751**;
 **PR-6a merged as #1753** (the owner-approved fit-side fast-track
-described below). **PR-3a** raises the relay capture-plan cap 8 → 32
+described below); **PR-3b merged as #1755**; **PR-4 merged as #1756**
+(closing issue #1742); **PR-5 merged as #1757**; **PR-6b** ships the
+carve-out disclosure and reports its blocked half (see its own paragraph
+below). **PR-3a** raises the relay capture-plan cap 8 → 32
 and ships a **mechanism deviation** from its pre-registered design
 contract: the gate is the Worker's own `GET /capabilities` document
 (absence = pre-capacity relay), not the negotiated protocol version,
@@ -978,7 +988,10 @@ terms + convergence guard) fast-tracked as **PR-6a** ahead of W2 to
 unblock the corpus-derived profile; registry persistence, carve-out
 disclosure surfaces, and the spec-table/open-question-8 annotations
 remain **PR-6b** in ladder order. The PR-6 section body below is
-unchanged and still describes the whole of PR-6.*
+unchanged and still describes the whole of PR-6. (PR-6b shipped all of it —
+the carve-out disclosure and both annotations first, then, after an
+owner-approved timing move cleared a session-ordering blocker, the fit wiring
+and the registry-into-the-candidate. See the PR-6b paragraphs below.)*
 
 *PR-3b (2026-07-26): the position-group choreography lands, and the
 **shipped main-session plan becomes the 16-entry cloud** — the intended
@@ -1195,5 +1208,167 @@ one collapsed gate meaningfully shrinks the graded band. The S0 `cloud_04` case
 above already IS that evidence, so this is queued on measured grounds rather
 than speculation; it is a scope call, not a doubt about whether it is worth
 doing.*
+
+*PR-6b (2026-07-27): owner decision 1's disclosure half lands, and the two
+plan-doc annotations it owed are recorded. `carve_outs_by_band` re-reads the
+SAME null registry and the SAME `evaluate_flat_spec` report
+`assemble_cloud_group_result` already holds — per spec band, which ranges left
+that band's grading, each row tagged with the instrument that carved it
+(`identified_null` / `position_screen`), the registry's rows carrying
+τ/r/rung/classification as the exclusion reason of record. It is a third
+reading of one evaluation, never a second one: the bins are gone from `spec`
+before it runs and no verdict can move. The rows ride the pipeline result into
+`cloud_measure.json` / `cloud_verify.json`, through `_compact_cloud_status` onto
+`/state` and the envelope (the one surface PR-7 will render from), and — the
+part a household sees TODAY, without waiting for PR-7 — into the envelope's
+`<details>` expert disclosure, where the excluded-bin COUNT that PR-5 shipped
+now has the ranges and their τ/r beside it. The copy has ONE owner
+(`crossover_v2_flow`, beside `_geometry_guidance_copy`) in two registers, a
+plain-language `disclosure` headline and an `expert` line carrying τ/r, so a
+chart callout and the expert disclosure cannot say different things about the
+same range; a copy-discipline test pins the `position_invariant` wording to the
+pre-registered travels-with-the-speaker-OR-fixed-path phrasing and keeps every
+hardware noun out. The gate-validity clamp stays deliberately OUT of the
+carve-out rows, disclosed separately as `validity_floor_hz` exactly as PR-5 left
+it. Docs: the spec table's 8–16 kHz annotation and open question 8 both record
+owner decision 1 as their resolution (annotated, never rewritten; the ±2.5 dB
+number is untouched — the carve-out is disclosed, not re-specified).*
+
+*PR-6b, the blocker it hit, and the owner decision that cleared it
+(2026-07-27). The section's null-registry bullet asks for the registry to ride
+`candidate.json` "whenever a fit consumed cloud-derived exclusions", and PR-6a's
+own commit message names PR-6b as the PR that makes its two optional
+`compose_envelope` arguments live. **Neither was reachable as the flow stood.**
+`build_v2_cloud_index_phase_map`'s running order is CHECK 1, MEASURE 2,
+CLOUD_MEASURE 3–10, VERIFY 11, CLOUD_VERIFY 12–16, and `_fit_linearization` was
+called from `_build_candidate` ← `_measure_verdict` ← index 2 only — so the
+pre-apply cloud group closed at index 10, **eight captures AFTER the fit that
+was supposed to consume it**, and `candidate.json` was published (and auto-apply
+fired) before any registry existed. A `_measure_verdict` re-arm re-runs index 2,
+never a later index; a verify-only re-arm has no MEASURE at all; and §5.6's
+session-binding rule forbids carrying a prior session's cloud into a new one.
+The implementer refused to wire the arguments into a branch no production
+ordering could enter, and reported instead — the finding was independently
+re-traced and taken to the owner.*
+
+***Owner decision (2026-07-27): move the fit.*** *The fit, the candidate build,
+and the auto-apply trigger relocate from MEASURE's accept to the CLOUD_MEASURE
+group close — the work order's own pre-registered phase order. The root cause is
+recorded as a **criteria conflict inside this document**: the pre-registered
+architecture puts the fit downstream of the combined cloud
+("fit engine: envelope terms from mask + spread"), while PR-3b's acceptance line
+said "no behavior change to CHECK/MEASURE/apply/restore paths" — and the second
+was read as binding when the two met. **Resolved in favour of the
+pre-registered shape.** The 2026-07-20 auto-apply ruling's INTENT is preserved
+in full: apply is still automatic, still needs no human tap, still fires off the
+host's existing `consume()` seam — only the trigger point moves.*
+
+*As shipped: `_measure_verdict` keeps **every** gate it owned (locate, glitch,
+sweep-schedule, clip, linearity, alignment status, the alignment-confidence
+trust floor, Fix-3 plausibility, and G1's predicted-ripple ceiling) because
+every one of them reads the ANALYSIS, not the candidate — a session doomed at
+sweep two still fails at sweep two rather than after a nine-position walk. The
+one candidate-coupled failure that used to surface there, an analysis with no
+`candidate` at all, is hoisted to the same capture as an identical raise, so its
+observable behaviour (`internal_error`, at MEASURE) is unchanged.
+`_close_cloud_group` then calls `_publish_measure_candidate` — the single
+build/publish path,
+shared with the pre-cloud shape — OUTSIDE the fail-soft wrap that protects the
+diagnostic pipeline, because the candidate is the session's product and a
+failure there is a real failure. **A session with no CLOUD_MEASURE phase (the
+pre-cloud 3-entry shape the conductor still defaults to, and the 1-entry
+re-verify path) is byte-identical to before:** the rule is "the fit runs at the
+last capture before the apply", and for those shapes that capture is MEASURE.
+Wire bytes, screens, plan entries, and the golden pins are all untouched — only
+conductor-internal timing moved.*
+
+*The wiring that was blocked now runs: `_cloud_fit_evidence` turns the closed
+group's pipeline result into the merged honesty intervals plus the cloud's
+`band_spread`/`n_positions`, and `compose_envelope` receives all three. It is
+**all-or-nothing on the pipeline's availability**, deliberately: a failed
+pipeline still leaves the power-vs-median screen's own intervals, and handing
+the fit those alone is exactly the mask-alone read issue #1742 item 4 forbids —
+the screen structurally cannot see a position-invariant null (0 of 5462 bins in
+8–16 kHz on the S0 corpus), so a screen-only mask would exclude the interference
+the cloud CAN see while silently correcting the interference it cannot. No
+cloud verdict means no cloud terms, logged as
+`event=correction.crossover_v2_fit_without_cloud` rather than degrading
+silently. The registry rides the candidate as the new optional
+`MeasuredCrossoverCandidate.exclusion_evidence` field — the excluded intervals,
+the band spread, N, and the τ/r registry, enough to re-derive both envelope
+terms from `candidate.json` alone — following `linearization`'s own
+omit-when-empty / fingerprinted-when-present / era-tolerant conventions
+exactly. Telemetry: the `linearization` field left
+`correction.crossover_v2_measure_diag` (which is now emitted eight captures
+before the fit and could only ever report `""`) for a new
+`correction.crossover_v2_candidate_built` event, the same treatment PR-5 gave
+the per-capture `flatness_*` fields when their subject moved to the cloud.*
+
+*Round-1 review of the two PR-6b commits (2026-07-27) — 1 blocker, 1
+should-fix, 7 nits, all fixed on the same branch; the timing move itself was
+walked against six race/ordering scenarios and came back clean.
+**BLOCKER: era tolerance.** `to_dict()` always writes `exclusion_evidence`, but
+`from_mapping`'s reopen comparison only `setdefault`ed the two OLDER optional
+fields — so every pre-PR-6b `candidate.json` straddling a deploy refused as
+`candidate_tampered` on the LIVE apply route, telling a household their
+correction had been altered when the file was merely older. Three docstrings
+promised the tolerance the code did not deliver, and it is a verbatim
+reintroduction of the P1 the candidate test module names at its own `:418`.
+Fixed with the missing `setdefault`, the third era test mirroring the existing
+two, an end-to-end apply test through the real `apply_baseline_profile` path,
+and — because three hand-written era tests will not keep pace with a growing
+field set — a structural guard that drops EACH optional key in turn, so a
+fourth field added without its `setdefault` fails even if nobody writes its era
+test. All four verified to fail with the fix reverted.
+**SHOULD-FIX: retention.** The retained MEASURE analysis was stored on both
+arms and never released. It is not small — one two-occurrence `DriverResponse`
+measured 33.6 MB of ndarray payload on the S0 corpus grid — so it is now stored
+only on the arm that defers, and released once the fit consumes it. Releasing
+changes what a re-delivered close would do, which is safe because the relay
+admits a begin only at `(accepted_count + 1, attempts_used + 1)` and dedupes
+processed pairs; a geometry retake returns rejected long before the build. Both
+facts are documented at the site.
+**Nits, all seven:** the "accept is already decided" wrap comment now scopes
+itself to the pipeline and names the honest journalled-but-unaccepted state a
+candidate-build raise leaves (with a test); `exclusion_evidence`'s measured
+`candidate.json` cost is disclosed (5,294 bytes on S0 — registry 3,307,
+band_spread 1,596, intervals 287) as the `/state` projection's was; two
+stale-spine design records annotated (`correction-journey-design.md`,
+`bass-commissioning-ux.md` — the latter's own staleness correction had itself
+gone stale); the "~40 s analyses" figure replaced with a measured 2.7-2.8 s
+combine and 0.02-0.04 s pipeline; the standalone "byte-identical" phrase scoped
+(the pre-cloud arm's candidate DOES gain an always-empty, non-fingerprinted
+key); and the carve-out clamp-exclusion claim pinned structurally.
+**One of the nits found a defect in this session's own test.** The severing
+test claimed "the correction itself differs"; measured, the emitted biquads and
+trims are IDENTICAL wired and severed — what the cloud changes on that fixture
+is the fit's permitted band, its residual accounting, and which term the 8 kHz
+octave reports as binding. The test now asserts `fit_band_hz` (a real fit
+change, and the assertion that would fail if the wiring degraded to
+reporting-only), asserts the filter equality explicitly, and says so. The
+sibling positive test's no-filter-inside-a-null assertion is likewise annotated
+as a standing invariant rather than that test's proof, because it holds in the
+severed case too on this fixture.*
+
+*Labels that were aspirational became true with no edit — "the pre-apply cloud
+is the UNCORRECTED baseline", the doctor's premise, PR-5's before/after framing,
+and PR-4's VERIFY-anchor-join reversal all now describe what the code does. The
+one that had stated the old timing explicitly, this module's own flow diagram
+(`CHECK → MEASURE → candidate → the pre-apply position group`), is corrected.
+**And a real defect closed on the way:** before the move, auto-apply fired the
+instant MEASURE was accepted while positions 3–10 were still being walked, so
+the "pre-apply cloud" was being captured through a speaker that was already, or
+about to be, corrected — the asymmetry PR-4's VERIFY-anchor-join reversal
+explicitly refused to introduce, present all along on the other side. The move
+removes it: the pre-apply cloud now closes BEFORE the apply starts, and VERIFY's
+`on_apply` hold becomes a real wait rather than a formality. **That hold's
+budget was checked, not assumed.** `REVIEW_HOLD_BUDGET_S` is 30 s and its own
+comment sizes it on "the auto-apply TRANSACTION's own latency (a CamillaDSP
+set-config + confirm round trip, typically well under a few seconds)" — which
+is exactly the wait it now covers. Between the 2026-07-20 ruling and the cloud's
+arrival the apply already sat one capture before VERIFY and that budget shipped;
+what the cloud briefly did was insert nine captures of slack in front of it, so
+the hold stopped mattering. The move restores the arrangement the budget was
+derived for rather than newly stressing it.*
 
 *Last verified: 2026-07-27*
