@@ -28,6 +28,20 @@ positions was HF-null decorrelation; with the comb gone, a small cloud's
 remaining job is LF support and outlier rejection, which fewer — but
 wide — positions can carry, with the degradation disclosed.
 
+**Owner feedback round (2026-07-27 evening, on the draft):**
+
+4. The express-vs-full choice belongs to the **user**, explicitly —
+   not just a history-picked default (→ §3, revised).
+5. The courtesy tones' pacing is wrong on hardware: three beeps, then
+   "quite a long gap", then the sweep. Expected: beeps → a few seconds
+   → sweep (→ §2.5).
+6. After each measurement the user should be able to **retake that
+   measurement** (just because they want to), go **next**, or **stop**
+   (→ §2.6).
+7. The sweep glitch the last session logged ("The capture glitched —
+   measuring again") needs a root-cause investigation — tracked
+   separately, not in this ladder (§5; a dedicated session owns it).
+
 ---
 
 ## 1. Express tier — shape decision
@@ -247,23 +261,99 @@ is stated before the first tone and never only implied:
   current set (no new terminal states), restyled to the grammar. The
   express done screen carries the tier disclosure (§1.3).
 
+### 2.5 Courtesy-tone pacing (owner-observed defect)
+
+Observed on hardware (2026-07-27): three courtesy beeps, then a long
+gap, then the sweep. Located composition: the #1677 prelude is
+*prepended to the whole program* — beeps, then the owner-specified
+~3 s settle (`COURTESY_TONE_TRAILING_SILENCE_S = 3.0`,
+`jasper/audio_measurement/program.py`), then the program's own lead-in
+(the per-capture behavioral-linearity pilot pair with its trailing gaps,
+`_append_leading_pilot_pair`) before the first sweep — so the
+beep-to-sweep interval stacks well past the intended ~3 s, and any
+host-side room-listening wait adds on top.
+
+**Required outcome (acceptance criterion, not a prescribed diff):** the
+interval from the last courtesy beep to the first audible measurement
+content is the ~3 s settle and nothing more. Everything the program
+needs that is not the stimulus itself (pilot pair, any listening
+window) moves *ahead of* the beeps — the beeps' whole meaning is "the
+sweep is imminent, go quiet now". Candidate reorder: pilots → beeps →
+settle → sweeps (the pilot reader locates segments by recorded offsets,
+so order should be free — the implementer verifies, and the analysis
+tests plus a program-composition test deriving the beep-to-stimulus
+interval pin it). Golden wire pins re-derive (program durations shift).
+On-device listen required before merge (this defect was only audible,
+never visible in tests).
+
+### 2.6 Per-measurement control: Retake / Next / Stop
+
+Every post-capture screen offers three controls, in the standard
+grammar slots:
+
+- **Next** (primary) — the confirm-then-tone advance, as in §2.1.
+- **Retake this measurement** (secondary, quieter) — re-capture the
+  measurement that *just completed*, because the user wants to (they
+  sneezed, a truck passed, they weren't where they meant to be). Copy:
+  "Hold still at the same spot" → tap → tone.
+- **Stop** (small text link) — abandon the session (existing semantics:
+  volume restored; pre-apply abandonment leaves the speaker untouched).
+
+Retake design (wire-compatible, no relay/Worker change):
+
+- A `begin_capture` for the **already-accepted just-completed index** is
+  the retake request — no new event kind. The conductor authorizes it
+  (budget permitting) and **drops the old take only when the
+  replacement capture is ACCEPTED**; a rejected or abandoned retake
+  keeps the original (fail-safe: you can never end up with less
+  evidence than you had).
+- Budget: retakes ride the existing per-slot attempt budget
+  (`CLOUD_RETAKE_ALLOWANCE`), shared with failure retries — bounded by
+  construction. The page hides the Retake control when the budget is
+  exhausted.
+- Scope: only the just-completed capture — no arbitrary-history
+  retakes, no retake across a closed group. VERIFY retake is the
+  existing `verify_retry` path, unchanged.
+
+**Group-close timing consequence (deliberate change):** today the final
+cloud position's *acceptance* closes the group and fires fit + apply
+immediately, which would make the final position un-retakeable. The
+group close therefore moves from "final position accepted" to "user
+confirms past the final position": a "All {N} spots done — continue"
+screen with Retake still available. No trust gate moves — the fit still
+runs only after the full cloud (PR-6b semantics), apply still runs
+under the same gates; one extra user tap now sits in front of it, which
+also gives a natural pause before the walk-back to the mark.
+
 ---
 
 ## 3. Tier selection (wizard)
 
-The `/correction/` wizard's `microphone_check` screen offers both tiers
-with derived durations, defaulting by history:
+**The choice is the user's, made explicitly every session** (owner
+feedback item 4) — a two-option chooser on the `/correction/` wizard's
+`microphone_check` screen, both tiers first-class with derived
+durations and a one-line claims difference:
 
-- **No confirmed profile has ever existed on this topology** → primary
-  "Full measurement (~12 min)", alternate "Quick tune (~4 min)". First
-  runs deserve the full instrument.
-- **Re-tune** (a profile exists or a prior session completed) → primary
-  "Quick tune", alternate "Full measurement".
+> **Quick tune** (~4 min) — 7 measurements; confirms the result at the
+> mark.
+> **Full measurement** (~12 min) — 16 measurements; re-checks the
+> result across the room.
 
-The choice posts `tier` to `/correction/crossover/v2/session`; the
-envelope (`crossover_envelope_v2.py`) grows the second action on that one
-screen. No new wizard steps — the cloud phases already map onto the
-existing 5-step strip.
+History picks only which option carries the "Recommended" badge (never
+a silent default): first-ever commission on this topology → Full
+recommended; re-tune → Quick recommended.
+
+Where the choice lives, and why the wizard rather than the capture
+page: the capture plan is baked into the HMAC-bound spec at session
+mint time (`prepare_v2_session`), so the shape must be known before the
+phone link/QR exists. Putting the chooser on the page would mean
+minting after a page→Pi round trip (new endpoint, new session states)
+for zero UX gain — the user is already looking at the wizard screen
+that starts the session. The wizard posts `tier` to
+`/correction/crossover/v2/session`; the phone simply renders whichever
+plan the spec carries (it already derives all counts and durations from
+the plan, §2.3). No new wizard steps — the cloud phases already map
+onto the existing 5-step strip.
 
 ---
 
@@ -284,20 +374,24 @@ reaches them.
   screen grammar keys (`progress` / instruction-as-`title` / `body`
   detail) and the `CloudPositionPrompt` headline/detail split; the
   VERIFY hold-then-tap contract (screen key + whatever timeout tolerance
-  the acceptance criterion needs); tier in durable state / pipeline
-  payload / `/state`; consent tier line; re-verify "no re-walk" copy;
-  `/crossover/v2/session` tier parameter. Golden wire pins re-derived by
-  their documented procedure (dated notes) — full and 1-entry digests
-  change (screen copy), and a third `"express"` pin is added.
+  the acceptance criterion needs); **the voluntary-retake semantics and
+  the group-close-on-confirm move (§2.6)**; **the courtesy-tone
+  reorder (§2.5, with its composition test)**; tier in durable state /
+  pipeline payload / `/state`; consent tier line; re-verify "no
+  re-walk" copy; `/crossover/v2/session` tier parameter. Golden wire
+  pins re-derived by their documented procedure (dated notes) — full
+  and 1-entry digests change (screen copy + program durations), and a
+  third `"express"` pin is added.
 - **PR-U2 — capture page (Opus).** The step-screen grammar renderer
-  (eyebrow/headline/detail/primary/stop-link); counter unification
-  (`#status` decounted); consent restructure with the derived
-  announcement line; mic-picker collapse; dead-meter removal
-  (page side renders whatever spec sends — the builder change is U1);
-  VERIFY tap screen after the hold; version stamps
-  (`version.json` + `?v=` + per-module, with the contract test);
-  Node harness updates (`capture_plan_loop_test.mjs` + the
-  screen-literal pins in `test_capture_page_js.py`).
+  (eyebrow/headline/detail/primary/stop-link); **the
+  Retake/Next/Stop control row and the retake + "all spots done —
+  continue" screens (§2.6)**; counter unification (`#status`
+  decounted); consent restructure with the derived announcement line;
+  mic-picker collapse; dead-meter removal (page side renders whatever
+  spec sends — the builder change is U1); VERIFY tap screen after the
+  hold; version stamps (`version.json` + `?v=` + per-module, with the
+  contract test); Node harness updates (`capture_plan_loop_test.mjs` +
+  the screen-literal pins in `test_capture_page_js.py`).
 - **PR-U3 — wizard + docs (Sonnet).** Envelope tier picker with
   history-based default; express done/verify disclosure copy; chart +
   callouts handle the absent post-apply cloud; `/state` tier surfacing;
@@ -331,11 +425,26 @@ Fences (do not do):
   defaults — full dominates express, so no change; noted here so the
   next reader doesn't "fix" it.
 
+Tracked outside this ladder:
+- **The sweep glitch** (owner feedback item 7; `glitch_detected` =
+  |ε| > 500 ppm in-capture clock-drift verdict,
+  `program_analysis.glitch`, surfaced as "The capture glitched —
+  measuring again"). Root cause unknown — could be phone-side capture
+  discontinuity (browser audio thread) or Pi-side playback — and it
+  needs evidence-first diagnosis against the 2026-07-27 session's
+  journal and bundle. A dedicated session owns it (GitHub issue +
+  spawned task); this ladder only keeps the retry UX honest.
+
 Owner-reversible decisions taken in this doc (flag, don't block):
 1. Express prompted positions = **4**, not 3 (rationale §1.1 — both wide
    offsets + `thin_evidence` semantics; costs ~35 s over a literal 3).
 2. Express M = 1: no post-apply cloud, VERIFY-at-mark only (§1.3 table).
 3. MEASURE keeps its cancelable countdown (§2.2 — no move to confirm).
-4. Tier default by history (§3): first-run → full, re-tune → express.
+4. The tier chooser lives on the wizard, not the capture page (§3 —
+   plan minting owns the shape; the recommended badge is the only
+   history-driven part).
+5. Retakes share the existing per-slot attempt budget rather than
+   getting their own (§2.6 — bounded by construction; revisit only if
+   real sessions exhaust it).
 
 Last verified: 2026-07-27
