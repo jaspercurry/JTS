@@ -59,6 +59,21 @@ The page **reuses** the canonical JTS browser capture helper
 (`deploy/assets/shared/js/measurement-audio.js`) — the build copies it into the
 bundle rather than forking it (single source of truth).
 
+## Step-screen grammar (capture plans)
+
+Every page-owned screen of a v3 capture-plan session renders one grammar, in
+the same DOM slots each time (`renderStepScreen` in `js/main.js`;
+[`docs/flat-linearization-flow-simplification-plan.md`](../docs/flat-linearization-flow-simplification-plan.md)
+§2.1): a small **eyebrow** carrying the ONE counter (`screen.progress`, always
+server-derived), the **instruction** as the headline (`screen.title`), at most
+one supporting clause (`screen.body`), a single full-width **primary**, an
+optional quieter **Retake this measurement** (§2.6), and **Stop** as a text
+link behind the page's own `<dialog>` confirm in `index.html`. `#status` is the
+transient-state channel only — it carries no counters. The page adds nothing
+to the screen vocabulary: keys it does not know are ignored, and keys the Pi
+stops sending fall back, which is what keeps a cached bundle and a newer
+speaker compatible in both directions.
+
 ## Build + deploy
 
 ```sh
