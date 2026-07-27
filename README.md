@@ -1005,6 +1005,15 @@ reference. Currently:
   defect, the missing accountability assertions (inter-driver realized
   level, prediction-gated auto-apply, applied-implies-graded), and the
   evidence-gated boost doctrine with delta-probe verification.
+- [`tuning-bench-design.md`](docs/tuning-bench-design.md)
+  — **Design work order (2026-07-27, pending review)** for the agent tuning
+  bench: productizing the measure → chart → discuss → attribute → fix →
+  verify → restore loop the iLoud comparison session ran by hand. Audit
+  synthesis (the measurement kernel is complete, the workbench layer is
+  not; the calibration agent is right-shape/wrong-scope), the two-LLM-seat
+  architecture, the bench verb set + canonical analysis JSON, the overlay
+  safety envelope, the layer-attribution vocabulary and perceptual
+  lexicon, the recorded Seat-2 widening plan, and the PR-B ladder.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
