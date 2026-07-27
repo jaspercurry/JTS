@@ -96,9 +96,9 @@ paragraph above — this closes a known-bad comparison, it does not by
 itself confirm an audible result.
 
 Waves W1–W6 complete (PRs #1578–#1604). Hardware-validated on JTS3 +
-UMIK-2: first fully-calibrated run 2026-07-19. **Legacy is deprecated**
-and scheduled for deletion in W5b (see Future work). The v2 acoustic
-playback binding
+UMIK-2: first fully-calibrated run 2026-07-19. **W5b deleted the legacy
+flow** (2026-07-24) — v2 is the only flow, per "Only flow — v2" above.
+The v2 acoustic playback binding
 (`bind_program_playback_seams`) is exercised on real CamillaDSP
 hardware; every orchestration test injects fakes. T2's summed-flatness
 delay refinement merged via PR #1647 on 2026-07-22. Its first JTS3 run failed
