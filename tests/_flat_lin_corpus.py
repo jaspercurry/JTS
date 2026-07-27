@@ -30,6 +30,15 @@ program, because the latter makes an archived reading depend on where every
 other segment sits — so an unrelated composer edit silently re-reads
 historical evidence. See that function for the measurement that motivated
 the change and what it moved.
+
+The same hazard SURVIVES, deliberately, in ``tests/test_spatial_combine``'s
+bespoke cdhorn loader, whose ``find_offset`` still registers against a
+freshly composed program. It is benign there — that corpus's captures are
+read against a program whose composition those tests pin themselves — and it
+is not shared with this module on purpose (one caller, its own session
+parameters). Named here so the next reader recognises the shape instead of
+"fixing" it blind, and so that a future composer edit that DOES disturb it
+has somewhere to be traced from.
 """
 from __future__ import annotations
 
@@ -126,14 +135,19 @@ def _load_wav_mono(path: Path) -> np.ndarray:
     return samples[::channels] if channels > 1 else samples
 
 
-def _session_program(session_dir: Path) -> tuple[Any, np.ndarray, Any, int, float]:
-    """``(program, mono reference PCM, sweep_verify segment, rate, fc_hz)``."""
+def _session_program(session_dir: Path) -> tuple[Any, Any, int, float]:
+    """``(program, sweep_verify segment, rate, fc_hz)``.
+
+    No rendered reference PCM: every reader anchors on the sweep alone
+    (:func:`_sweep_anchor`), so rendering the whole ~681k-sample program on
+    each call bought nothing but time.
+    """
     from jasper.active_speaker.crossover_v2_flow import (
         BASE_STIMULUS_PEAK_DBFS,
         COURTESY_PRELUDE_ENABLED,
         PILOT_LEVEL_DELTA_DB,
     )
-    from jasper.audio_measurement.program import build_verify_program, render_program_pcm
+    from jasper.audio_measurement.program import build_verify_program
 
     session = json.loads((session_dir / "session.json").read_text())
     fc_hz = float(session["fc_hz"])
@@ -145,14 +159,8 @@ def _session_program(session_dir: Path) -> tuple[Any, np.ndarray, Any, int, floa
         ),
         courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
-    reference = np.asarray(render_program_pcm(program), dtype=np.float64)
-    if reference.ndim == 2:
-        if reference.shape[0] < reference.shape[1]:
-            reference = reference.T
-        reference = reference.sum(axis=1)
     return (
         program,
-        reference,
         program.segment("sweep_verify"),
         int(session["sample_rate_hz"]),
         fc_hz,
@@ -192,21 +200,38 @@ def _sweep_anchor(captured: np.ndarray, segment: Any) -> int:
 
     **Why not the whole rendered program** (which is what this reader used
     until 2026-07-27): the deconvolution only ever needs the SWEEP's position,
-    but correlating the entire composed program against the capture makes that
-    position depend on every other segment's placement — so an unrelated edit
-    to the composer silently re-reads archived evidence. The
-    flow-simplification §2.5 courtesy-tone move is exactly that: relocating a
-    3.6 s prelude from the head of the program to just before the sweep shifted
-    the whole-program correlation peak, and with it the measured tau on the two
-    positions whose echo was marginal.
+    but correlating the ENTIRE composed program against the capture makes the
+    registration depend on every other segment's placement — so an unrelated
+    edit to the composer silently re-reads archived evidence.
 
-    Anchoring on the sweep is invariant to composition by construction, and it
-    is DEMONSTRABLY the better alignment rather than merely the more
-    convenient one: on the S0 main leg it moves ``cloud_04`` from
-    tau 319.3 us at confidence **0.294** — the single weakest detection in the
-    S0 report's own table — to 315.7 us at confidence **0.949**, and
-    ``cloud_09`` from 322.6/0.851 to 333.4/0.852. The old numbers were the
-    prelude pulling the correlation off the sweep; these are the sweep.
+    Note precisely what the §2.5 courtesy-tone move did and did not do. It did
+    NOT move the sweep: ``sweep_verify.start_sample`` is 369324 under both
+    compositions, because relocating the prelude from the head of the program
+    to just before the sweep is a PERMUTATION of the head block, not a shift.
+    What it changed is the shape the whole-program correlation matches
+    against, and under that old anchor the registration disagreed with the
+    sweep-only one by 1-5 samples on 8 of the corpus's 26 captures.
+
+    A 1-5 sample disagreement is mostly harmless, and the control for that is
+    the pattern of which positions actually moved: a position whose two
+    repeats shifted SYMMETRICALLY (``cloud_05``, ``cloud_07``, ``cloud_10``
+    — the same offset on both) still averages to a bit-identical IR, while a
+    position whose repeats shifted ASYMMETRICALLY averages two differently
+    registered IRs together and smears the echo. Exactly the two asymmetric
+    positions are the two that changed — which is the strongest evidence that
+    this is a registration fix rather than the reader reading something else.
+
+    What they changed to, on the S0 main leg::
+
+        cloud_04   319.3 us @ 0.294   ->   315.7 us @ 0.949
+        cloud_09   322.6 us @ 0.851   ->   333.4 us @ 0.852
+
+    ``cloud_04`` is the decisive one: it was the single weakest detection in
+    the S0 report's own table, low enough that ``test_interference_nulls``
+    pinned it as sitting below the corroboration confidence floor, and
+    de-smeared it corroborates like its neighbours. ``cloud_09``'s confidence
+    is flat (0.851 → 0.852) — its tau moved without its confidence improving,
+    so it is evidence that the registration changed, not that it got better.
     """
     from jasper.audio_measurement.program import segment_stimulus
 
@@ -223,7 +248,7 @@ def s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
     """
     from jasper.audio_measurement import program_analysis as pa
 
-    _program, reference, segment, sample_rate, _fc = _session_program(session_dir)
+    _program, segment, sample_rate, _fc = _session_program(session_dir)
     groups = _session_groups(session_dir)
     irs: dict[str, np.ndarray] = {}
     for position_id in sorted(groups):
@@ -268,7 +293,7 @@ def s0_position_captures(
     from jasper.audio_measurement.calibration import parse_calibration_text
 
     calibration = parse_calibration_text(S0_CALIBRATION.read_text())
-    _program, reference, segment, sample_rate, fc_hz = _session_program(session_dir)
+    _program, segment, sample_rate, fc_hz = _session_program(session_dir)
     groups = _session_groups(session_dir)
 
     captures: list[PositionCapture] = []
@@ -346,7 +371,7 @@ def s0_position_driver_response(
     from jasper.audio_measurement.calibration import parse_calibration_text
 
     calibration = parse_calibration_text(S0_CALIBRATION.read_text())
-    _program, reference, segment, sample_rate, fc_hz = _session_program(session_dir)
+    _program, segment, sample_rate, fc_hz = _session_program(session_dir)
     occurrences = []
     for _index, wav in sorted(_session_groups(session_dir)[position_id]):
         captured = _load_wav_mono(wav)

@@ -39,7 +39,7 @@ WAV channels so the CamillaDSP commissioning graph stays static and provable.
 
 **Courtesy-tone prelude (issue #1677).** Each composer takes an opt-in
 ``courtesy_prelude`` flag that splices a short "beep beep beep" + ~3 s of
-silence in DIRECTLY AHEAD OF THE PROGRAM'S FIRST STIMULUS -- a pre-capture
+silence in DIRECTLY AHEAD OF THE SOUND THE BEEPS ANNOUNCE -- a pre-capture
 "quiet please" warning played from the speaker under test itself, once per
 capture group (CHECK/MEASURE/VERIFY each get their own).
 
@@ -48,10 +48,17 @@ to be prepended to the WHOLE program, which left the CHECK ambient window,
 the behavioural-linearity pilot pair, and the pre-sweep guard sitting between
 the beeps and the sound they announce -- on hardware, "three beeps, a long
 gap, then the sweep". Each composer now names the cursor in front of its own
-first stimulus, so the interval from the last beep to the first audible
+first SWEEP, so the interval from the last beep to the first audible
 measurement content is :data:`COURTESY_TONE_TRAILING_SILENCE_S` and nothing
 more (:func:`courtesy_beep_to_stimulus_gap_s` derives it from any composed
-program; a composition test pins it). It rides the SAME admitted
+program; a composition test pins it).
+
+"First sweep" rather than "first stimulus" is exact and deliberate: on
+MEASURE and VERIFY the leading pilot pair is itself stimulus-kind, and it
+sits AHEAD of the beeps as lead-in, because it is behavioural-linearity
+evidence rather than the measurement the warning is about. Only on CHECK,
+whose pilots ARE the measurement, do the beeps precede a pilot. It rides the
+SAME admitted
 playback as the stimulus that follows it -- never a second, unguarded
 playback path (see AGENTS.md's ``/sound/`` Combined-test-wedge cautionary
 tale) -- because the prelude is just more segments on the one
@@ -723,6 +730,10 @@ def courtesy_beep_to_stimulus_gap_s(program: ExcitationProgram) -> float | None:
     Derived from the schedule rather than from the constants, so a composer
     that quietly reinstated a lead-in between the beeps and the stimulus fails
     the test that reads this instead of silently lengthening the wait again.
+
+    "The first stimulus AFTER the beeps" is the sweep on MEASURE/VERIFY and
+    the first pilot on CHECK — the leading pilot pair on the other two sits
+    ahead of the prelude by design, so it is not what this measures.
     """
     beeps = [seg for seg in program.segments if seg.kind == KIND_COURTESY_TONE]
     if not beeps:
@@ -763,8 +774,15 @@ def _insert_courtesy_prelude(
     as "three beeps, a long gap, then the sweep", which is exactly what the
     beeps must not mean: their whole message is "the sweep is imminent, go
     quiet now". Each composer therefore hands the cursor that sits directly in
-    front of its first STIMULUS content, so the interval from the last beep to
-    the first audible measurement content is the settle and nothing else.
+    front of its first SWEEP, so the interval from the last beep to the first
+    audible measurement content is the settle and nothing else.
+
+    "First sweep", not "first stimulus": on MEASURE and VERIFY the leading
+    pilot pair is stimulus-kind but is deliberately LEFT AHEAD of the beeps,
+    because it is behavioural-linearity evidence rather than the measurement
+    the warning announces. CHECK is the exception whose pilots ARE the
+    measurement, so there the cursor lands in front of them.
+
     Composition order is free for the analysis, which locates every segment by
     its recorded offset (``program_analysis._locate_segments``) and anchors on
     whichever stimulus segment comes first — still the pilot pair in every

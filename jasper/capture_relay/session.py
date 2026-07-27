@@ -1673,6 +1673,11 @@ def _poll_capture_plan(
                             session_id=session.session_id,
                             index=index,
                             attempt=attempt,
+                            # An admitted retake and an ordinary begin look
+                            # identical by (index, attempt) alone once you are
+                            # reading a journal after the fact — say which it
+                            # was at ADMISSION time, not only in plan_result.
+                            retake=is_retake,
                         )
                         client.post_host_event(
                             session.session_id,

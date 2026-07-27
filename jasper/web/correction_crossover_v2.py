@@ -2371,24 +2371,17 @@ def build_v2_run_and_consume(
                 failure_code=code if not verdict.get("accepted") else None,
                 evidence=evidence_refs,
             )
-            if (
-                isinstance(verdict, Mapping)
-                and verdict.get("accepted")
-                and verdict.get("auto_apply")
-            ):
-                # The conductor's own trust gates already passed (owner
-                # ruling, 2026-07-20) — fire the auto-apply now, AFTER the
-                # verdict is persisted so the background thread's own
-                # persist_conductor_state calls always see the accepting phase
-                # already recorded as accepted.
-                #
-                # This branch keys on ``accepted`` + ``auto_apply`` and never
-                # on WHICH phase produced them, which is why the 2026-07-27
-                # timing move (the fit/candidate/auto-apply relocating from
-                # MEASURE's accept to the CLOUD_MEASURE group close) needed no
-                # change here: the flag simply arrives on a later verdict.
-                # Pinned by the endpoint tests rather than left to inference.
-                _fire_auto_apply(conductor.candidate)
+            # (An ``auto_apply``-keyed branch lived here until
+            # flow-simplification PR-U1. It fired the apply off whichever
+            # capture verdict carried the flag — MEASURE's accept originally,
+            # the CLOUD_MEASURE group close after the 2026-07-27 timing move.
+            # §2.6 moved the trigger off a capture verdict entirely and onto
+            # the household's confirmation past the walked cloud, so the flag
+            # no longer reaches any verdict a production session emits and the
+            # branch became unreachable. It is DELETED rather than left as a
+            # comment-that-lies: ``authorize`` above is now the only place that
+            # fires ``_fire_auto_apply``, which is the whole point of putting
+            # the confirm seam at the host boundary.)
             return verdict
 
         async def _purge_best_effort() -> None:

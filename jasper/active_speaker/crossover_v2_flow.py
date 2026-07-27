@@ -3954,6 +3954,15 @@ class CrossoverV2Conductor:
         if PHASE_CLOUD_MEASURE in self._phases:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
+        # The pre-cloud 3-entry shape, which NO production caller constructs
+        # any more (``prepare_v2_session`` always builds a cloud map,
+        # ``prepare_v2_verify`` maps VERIFY alone). It keeps folding the
+        # candidate payload into this verdict, but note that since
+        # flow-simplification §2.6 moved the trigger onto the confirm seam,
+        # the host no longer reads ``auto_apply`` off a capture verdict — so a
+        # future caller reviving this shape has to wire its own apply trigger
+        # rather than inherit one. Kept honest here rather than discovered
+        # later by a session that measures and never applies.
         return PhaseVerdict(
             True,
             payload={

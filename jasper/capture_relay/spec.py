@@ -86,7 +86,8 @@ SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
 # is capture_target=16 against `crossover_v2_flow.cloud_plan_max_attempts()` =
 # 23, i.e. ~45 % headroom — tighter than the 167 % the pre-cloud 3-entry plan
 # carried, and deliberately so. The express tier (flow-simplification §1.1) is
-# a strictly smaller draw on the same ceiling: capture_target=7 against 14. Longer sets get proportionally fewer retakes
+# a strictly smaller draw on the same ceiling: capture_target=7 against 14.
+# Longer sets get proportionally fewer retakes
 # each, which is the intended direction: a 21-position session that needs 11
 # retakes has a problem retries will not fix. (The 3-entry plan itself still
 # exists only as the 1-entry re-verify re-arm, which keeps

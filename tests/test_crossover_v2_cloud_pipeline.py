@@ -1050,12 +1050,21 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
     data. Measured 2026-07-27 on the S0 main leg (10 positions, JTS3 — the same
     cloud PR-4's own corpus acceptance uses, at the same band): the null gate
     identifies THREE rungs of one ladder inside 8-16 kHz — 8.7, 11.6 and
-    15.0 kHz — at a fitted τ of 299 µs, with r 0.375 in the time domain against
+    15.0 kHz — at a fitted τ of 299 µs, with r 0.376 in the time domain against
     0.349 implied by the null depths. All three classify
     ``position_invariant``. (These are this pipeline's own figures on this
     grouping; the plan doc's § b quotes the S0 kit's independently-computed
     0.373/0.342 for the same session, which is a different construction and
     not the number pinned here.)
+
+    RE-PINNED 2026-07-27 (flow-simplification PR-U1), same cause as the two
+    sites in ``test_spatial_combine`` and ``test_interference_nulls``: the
+    corpus reader now anchors an archived capture on the sweep it deconvolves
+    rather than on the whole composed program
+    (``_flat_lin_corpus._sweep_anchor``). Only ``r_time`` moved, 0.375 →
+    0.376, and only because ``cloud_04`` re-registers and joins the
+    corroborating set. The identified ladder is untouched — same three rungs,
+    same centres, same τ, same ``r_freq``, same disclosure sentence.
 
     Two properties beyond the numbers:
 
@@ -1082,7 +1091,7 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
     assert [r["n"] for r in nulls] == [2, 3, 4]
     assert all(r["classification"] == "position_invariant" for r in nulls)
     assert round(nulls[0]["tau_us"]) == 299
-    assert round(nulls[0]["r_time"], 3) == 0.375
+    assert round(nulls[0]["r_time"], 3) == 0.376
     assert round(nulls[0]["r_freq"], 3) == 0.349
     assert top["disclosure"] == (
         "Interference nulls at 8.7 kHz, 11.6 kHz and 15.0 kHz — a delayed copy "
