@@ -131,6 +131,7 @@ from jasper.audio_measurement.program_analysis import (
     GainPlan,
     PilotObservation,
     ProgramAnalysis,
+    RoleGainSolve,
     SegmentLocation,
     predicted_branch_sum,
     solve_branch_trims,
@@ -3917,6 +3918,141 @@ def test_check_diag_logs_full_numbers_on_accept(caplog):
     assert "woofer_programmed_delta_db=10.0" in caplog.text
     assert "woofer_channel_map_target_rise_db=18.0" in caplog.text
     assert "tweeter_channel_map_cross_rise_db=2.0" in caplog.text
+
+
+def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True):
+    """A CHECK analysis whose gain plan carries #1825 per-role solves."""
+    return ProgramAnalysis(
+        phase="check", program_id=program.program_id,
+        locations=(_loc("pilot_woofer_hi", "pilot"),),
+        ambient_report={"bands": [{"level_dbfs": -70.0}]},
+        pilots=(_pilot_obs("woofer"), _pilot_obs("tweeter")),
+        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=pilot_snr_ok,
+        gain_plan=GainPlan(
+            gain_db={"woofer": -19.0, "tweeter": -31.0},
+            predicted_peak_dbfs=-19.0, snr_floor_ok=snr_floor_ok,
+            role_solves={
+                "woofer": RoleGainSolve(
+                    role="woofer", gain_db=-19.0, flat_target_gain_db=-11.0,
+                    bound_by="room_snr", band_hz=(150.0, 2000.0),
+                    ambient_dbfs=-60.0, required_snr_db=41.0,
+                    required_capture_dbfs=-19.0,
+                ),
+                "tweeter": RoleGainSolve(
+                    role="tweeter", gain_db=-31.0, flat_target_gain_db=-13.0,
+                    bound_by="room_snr", band_hz=(1500.0, 20000.0),
+                    ambient_dbfs=-72.0, required_snr_db=41.0,
+                    required_capture_dbfs=-31.0,
+                ),
+            },
+        ),
+    )
+
+
+def test_check_priors_carry_fc_for_the_measure_level_solve():
+    """#1825: CHECK's gain solve scopes each band's SNR requirement by whether
+    the band sits inside the crossover overlap window, so Fc has to reach the
+    CHECK analysis. It used to run on bare defaults."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    phase, _result, priors, _geometry = fakes.analyzed[0]
+    assert phase == "check"
+    assert priors.crossover_fc_hz == pytest.approx(FC_HZ)
+
+
+def test_check_diag_discloses_the_per_driver_measure_level_solve(caplog):
+    """#1825 honesty: the solved MEASURE level and the ambient evidence it
+    rests on land in the journal, one event per driver."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.check = _check_analysis_with_solves
+    c = _conductor(fakes)
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    text = caplog.text
+    assert text.count("event=correction.crossover_v2_measure_level_solve") == 2
+    for fragment in (
+        "role=woofer", "solved_gain_db=-19.0", "flat_target_gain_db=-11.0",
+        "reduction_db=8.0", "bound_by=room_snr", "ambient_dbfs=-60.0",
+        "required_snr_db=41.0", "band_lo_hz=150.0", "band_hi_hz=2000.0",
+        "role=tweeter", "solved_gain_db=-31.0", "reduction_db=18.0",
+        "ambient_dbfs=-72.0",
+    ):
+        assert fragment in text
+
+
+def test_check_diag_discloses_the_level_solve_on_a_rejected_check_too(caplog):
+    """Knowing what level the solve WOULD have chosen is exactly what an
+    `snr_floor` refusal needs read beside it — so the disclosure rides the
+    diagnostic path, not the accept path."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis_with_solves(
+        program, snr_floor_ok=False,
+    )
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is False and verdict["code"] == "snr_floor"
+    assert caplog.text.count("event=correction.crossover_v2_measure_level_solve") == 2
+
+
+def test_check_diag_survives_a_gain_plan_without_solves(caplog):
+    """A legacy/fixture plan carries no ``role_solves``; the disclosure must
+    simply not fire rather than crash the diagnostic path."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)  # default _check_analysis, no role_solves
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert "event=correction.crossover_v2_check_diag" in caplog.text
+    assert "event=correction.crossover_v2_measure_level_solve" not in caplog.text
+    assert "event=correction.crossover_v2_diag_log_failed" not in caplog.text
+
+
+def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
+    """#1825's pilot floor reserves `hi_seg.gain_db - lo_seg.gain_db` read off
+    the CHECK program — because that is what MEASURE's own leading pair will
+    drop its quiet side by (`_pilot_gains` / `PILOT_LEVEL_DELTA_DB`). If the
+    two ever diverged the floor would be mis-sized in silence, so pin them
+    equal at the composers that produce them."""
+    from jasper.active_speaker.crossover_v2_flow import PILOT_LEVEL_DELTA_DB
+
+    fakes = FakeSeams()
+    fakes.check = _check_analysis_with_solves
+    c = _conductor(fakes)
+
+    check = c._program_for_phase("check")
+    for role in ("woofer", "tweeter"):
+        lo = check.segment(f"pilot_{role}_lo")
+        hi = check.segment(f"pilot_{role}_hi")
+        assert hi.gain_db - lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
+
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    measure = c._program_for_phase("measure")
+    m_lo = measure.segment("pilot_woofer_lo")
+    m_hi = measure.segment("pilot_woofer_hi")
+    assert m_hi.gain_db - m_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
+
+
+def test_measure_program_keeps_solved_gains_per_role_and_identical_per_repeat():
+    """Constraint the drift estimator depends on: the CHECK solve moves each
+    ROLE's gain independently, but every repeat of a role stays bit-identical
+    (`program.build_measure_program`'s own promise) — per-ROLE differs,
+    per-REPEAT must not."""
+    fakes = FakeSeams()
+    fakes.check = _check_analysis_with_solves
+    c = _conductor(fakes)
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    measure = c._program_for_phase("measure")
+    w_gains = {
+        measure.segment(sid).gain_db
+        for sid in ("sweep_w", "sweep_w_rep", "sweep_w_rep2")
+    }
+    t_gains = {
+        measure.segment(sid).gain_db
+        for sid in ("sweep_t", "sweep_t_rep", "sweep_t_rep2")
+    }
+    assert len(w_gains) == 1 and len(t_gains) == 1
+    assert w_gains != t_gains
 
 
 def test_check_diag_logs_full_numbers_on_rejection_too(caplog):

@@ -25,6 +25,7 @@ Runtime is kept low with short (≥0.5 s) sweeps and 48 kHz mono buffers.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 from fractions import Fraction
@@ -62,8 +63,15 @@ from jasper.audio_measurement.program_analysis import (
     GCC_UPSAMPLE,
     IR_POST_MS,
     IR_PRE_MS,
+    GAIN_BOUND_CAPTURE_FLOOR,
+    GAIN_BOUNDS,
+    GAIN_BOUND_FLAT_TARGET,
+    GAIN_BOUND_NO_AMBIENT_EVIDENCE,
+    GAIN_BOUND_PILOT_SNR,
+    GAIN_BOUND_ROOM_SNR,
     LINEARITY_SNR_BIAS_BUDGET_FRACTION,
     LINEARITY_TOLERANCE_DB,
+    MEASURE_SNR_SOLVE_MARGIN_DB,
     PILOT_MIN_SNR_DB,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
@@ -73,6 +81,7 @@ from jasper.audio_measurement.program_analysis import (
     AlignmentEstimate,
     MeasurementGeometry,
     MeasurementPriors,
+    PilotObservation,
     _aligned_branch_tf,
     _band_average_db,
     _band_exclusive_pieces,
@@ -87,6 +96,7 @@ from jasper.audio_measurement.program_analysis import (
     _n_fft_for,
     _peak_dbfs,
     _ripple_db,
+    _solve_gain_plan,
     _sweep_occurrence_index,
     analysis_diagnostic_summary,
     analyze_program_capture,
@@ -1238,11 +1248,16 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
     capture-PEAK target hotter than intended. `_solve_gain_plan` must read
     the separate, non-ambient-subtracted `peak_*_dbfs` instead.
 
-    This fixture's solved gains land comfortably away from the ≥6 dB
+    This fixture's flat targets land comfortably away from the ≥6 dB
     digital-guard cap (confirmed below) — unlike
     `test_check_gain_plan_targets_measure_window_with_guard`, whose gains
     land exactly AT the cap either way, so a same-vs-swapped-consumer bug
     would have been invisible there (the guard clamps away the divergence).
+
+    Read against `RoleGainSolve.flat_target_gain_db` since #1825: that field
+    IS ``min(target_capture_dbfs - k, GAIN_MAX_DIGITAL_PEAK_DBFS)``, the
+    quantity this test was written to pin, while `gain_db` is now that value
+    after the SNR solve backs it off. The `k`-consumer promise is unchanged.
     """
     prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog)
@@ -1265,7 +1280,8 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
         # a real margin, or this assertion would pass for ANY k (correct or
         # buggy) once both clamp to the same -6 dB ceiling.
         assert expected_gain < GAIN_MAX_DIGITAL_PEAK_DBFS - 0.5
-        assert plan.gain_db[role] == pytest.approx(expected_gain, abs=1e-6)
+        solve = plan.role_solves[role]
+        assert solve.flat_target_gain_db == pytest.approx(expected_gain, abs=1e-6)
 
         # And: the solved gain must NOT match what the ambient-subtracted
         # level would have produced (the pre-fix bug) — a >2 dB divergence
@@ -1276,7 +1292,364 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
             + (pilot.level_hi_dbfs - hi_seg.gain_db)
         ) / 2.0
         buggy_gain = min(-10.5 - buggy_k, GAIN_MAX_DIGITAL_PEAK_DBFS)
-        assert abs(plan.gain_db[role] - buggy_gain) > 2.0
+        assert abs(solve.flat_target_gain_db - buggy_gain) > 2.0
+
+
+# --------------------------------------------------------------------------- #
+# MEASURE level solve — as quiet as the fit's SNR need allows (issue #1825)
+# --------------------------------------------------------------------------- #
+#
+# Before #1825 the CHECK gain solve drove every driver's MEASURE sweep until
+# its capture peak hit `DEFAULT_TARGET_CAPTURE_DBFS` (-10.5 dBFS) — the ADC's
+# headroom, not the room's noise floor. Since MEASURE is the only phase whose
+# level is solved (CHECK's pilots and every summed-sweep phase ride
+# `BASE_STIMULUS_PEAK_DBFS` clamped by the driver cap), that made capture 2 of
+# a v2 session structurally the loudest thing the household hears — the
+# 2026-07-28 owner report. These fixtures drive `_solve_gain_plan` directly so
+# `k`, the ambient report, and Fc are all controlled: the synthetic-capture
+# fixtures above cannot express "a quiet room" and "a noisy room" as separate
+# cases.
+#
+# Constraint 5 of the work order — per-ROLE gains may differ, per-REPEAT must
+# not (bit-identical stimulus is the drift estimator's input) — is a composer
+# property and is already pinned by
+# `test_audio_measurement_program.py::test_measure_program_layout_is_n3_interleaved_repeats_bit_identical`,
+# whose fixture plan already carries DIFFERENT woofer/tweeter gains.
+
+# `DRIVER.peak_too_low_dbfs`, spelled out so a silent retune of the shared
+# quality model shows up here as a failure rather than as a moved goalpost.
+DRIVER_PEAK_TOO_LOW_DBFS = -45.0
+
+_SOLVE_BANDS = (
+    ("sub_bass", 20.0, 80.0),
+    ("bass", 80.0, 160.0),
+    ("upper_bass", 160.0, 350.0),
+    ("transition", 350.0, 1000.0),
+    ("mid", 1000.0, 4000.0),
+    ("treble", 4000.0, 12000.0),
+)
+
+
+def _ambient(**levels: float) -> dict[str, object]:
+    """An ambient report shaped like `snr_policy.framed_ambient_band_report`.
+
+    Any band not named defaults to -100 dBFS (effectively silent), so a
+    fixture states only the bands it cares about.
+    """
+    return {
+        "schema_version": 1,
+        "bands": [
+            {
+                "band_id": band_id,
+                "band_hz": [lo, hi],
+                "level_dbfs": levels.get(band_id, -100.0),
+            }
+            for band_id, lo, hi in _SOLVE_BANDS
+        ],
+    }
+
+
+def _solve_pilots(program, *, k_db: dict[str, float]) -> list[PilotObservation]:
+    """Pilots whose peak levels encode an exact per-role chain gain ``k``.
+
+    `_solve_gain_plan` recovers ``k = peak - segment.gain_db`` from each
+    pilot, so writing ``peak = gain_db + k`` inverts it exactly and lets a
+    fixture name the chain gain it wants to test (a real sensitive tweeter
+    behind a pad has a very different ``k`` from a woofer).
+    """
+    pilots: list[PilotObservation] = []
+    for role, k in k_db.items():
+        lo_seg = program.segment(f"pilot_{role}_lo")
+        hi_seg = program.segment(f"pilot_{role}_hi")
+        pilots.append(
+            PilotObservation(
+                role=role,
+                level_lo_dbfs=lo_seg.gain_db + k,
+                level_hi_dbfs=hi_seg.gain_db + k,
+                programmed_delta_db=hi_seg.gain_db - lo_seg.gain_db,
+                captured_delta_db=hi_seg.gain_db - lo_seg.gain_db,
+                linearity_ok=True,
+                channel_map_ok=True,
+                peak_lo_dbfs=lo_seg.gain_db + k,
+                peak_hi_dbfs=hi_seg.gain_db + k,
+            )
+        )
+    return pilots
+
+
+def _solve(
+    ambient_report,
+    *,
+    k_db: dict[str, float] | None = None,
+    fc_hz: float | None = 2000.0,
+    pilot_levels_db: tuple[float, float] = (-10.0, 0.0),
+    roles=None,
+):
+    program = build_check_program(
+        roles or _check_roles(), ambient_s=2.0, pilot_duration_s=0.6,
+        pilot_levels_db=pilot_levels_db,
+    )
+    pilots = _solve_pilots(
+        program, k_db=k_db or {"woofer": 0.0, "tweeter": 0.0}
+    )
+    return _solve_gain_plan(
+        program, pilots, ambient_report,
+        MeasurementPriors(target_capture_dbfs=-10.5, crossover_fc_hz=fc_hz),
+    )
+
+
+def test_measure_level_solve_backs_off_in_a_quiet_room():
+    """The headline behavior: a room quiet enough that the fit's SNR need is
+    met well below the flat capture target gets a QUIETER MEASURE."""
+    # Woofer band 150-1200 Hz, tweeter 2500-20000 Hz (`_check_roles`). Fc
+    # 2000 Hz ⇒ overlap window [1000, 4000], so the woofer's `transition`
+    # band and the tweeter's `mid` band both carry the alignment requirement.
+    plan = _solve(_ambient(upper_bass=-62.0, transition=-64.0, mid=-70.0, treble=-78.0))
+    for role in ("woofer", "tweeter"):
+        solve = plan.role_solves[role]
+        assert solve.bound_by == GAIN_BOUND_ROOM_SNR
+        assert solve.gain_db < solve.flat_target_gain_db
+        assert solve.reduction_db > 0.0
+        # The solve landed exactly on "worst overlapping band + that band's
+        # requirement" — a solve, not a fixed offset. (``k`` is 0 in this
+        # fixture, so the digital gain IS the targeted capture peak.)
+        assert solve.gain_db == pytest.approx(solve.required_capture_dbfs)
+    # Both drivers still get a real signal: nothing near the capture floor.
+    assert plan.predicted_peak_dbfs > DRIVER_PEAK_TOO_LOW_DBFS
+
+
+def test_measure_level_solve_never_goes_louder_than_todays_flat_target():
+    """The one-way guarantee: a room noisy enough that the SNR requirement
+    wants MORE level than the flat target keeps today's behavior exactly,
+    and says so (`bound_by == flat_target`)."""
+    plan = _solve(_ambient(upper_bass=-20.0, transition=-22.0, mid=-24.0, treble=-26.0))
+    for role in ("woofer", "tweeter"):
+        solve = plan.role_solves[role]
+        assert solve.bound_by == GAIN_BOUND_FLAT_TARGET
+        assert solve.gain_db == pytest.approx(solve.flat_target_gain_db)
+        assert solve.reduction_db == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "ambient_report",
+    [
+        pytest.param({}, id="empty-report"),
+        pytest.param({"schema_version": 1, "bands": []}, id="no-bands"),
+        pytest.param(
+            {"schema_version": 1, "bands": [{"band_id": "mid", "level_dbfs": -70.0}]},
+            id="rows-without-edges",
+        ),
+    ],
+)
+def test_measure_level_solve_falls_back_with_a_disclosed_reason(ambient_report):
+    """No usable ambient evidence ⇒ today's flat target, WITH a reason. Never
+    a silent guess, and never a refusal: this is a comfort optimization, so
+    losing the evidence must cost the session nothing but the reduction."""
+    plan = _solve(ambient_report)
+    for role in ("woofer", "tweeter"):
+        solve = plan.role_solves[role]
+        assert solve.bound_by == GAIN_BOUND_NO_AMBIENT_EVIDENCE
+        assert solve.gain_db == pytest.approx(solve.flat_target_gain_db)
+        # A missing number is None, never a zero that reads as evidence.
+        assert solve.ambient_dbfs is None
+        assert solve.required_snr_db is None
+        assert solve.required_capture_dbfs is None
+
+
+def test_measure_level_solve_falls_back_for_a_band_the_report_cannot_reach():
+    """The reachable no-evidence case: a driver measured entirely above the
+    ambient table's top band (`CROSSOVER_SNR_BANDS_HZ` stops at 12 kHz) has
+    no ambient row to solve against, so it keeps the flat target and says so
+    — while its sibling, which does have evidence, still backs off."""
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 1200.0)),
+        RoleBand("tweeter", 1, FrequencyBand(13_000.0, 20_000.0)),
+    ]
+    plan = _solve(_ambient(upper_bass=-60.0, transition=-62.0), roles=roles)
+    assert plan.role_solves["tweeter"].bound_by == GAIN_BOUND_NO_AMBIENT_EVIDENCE
+    assert plan.role_solves["tweeter"].reduction_db == pytest.approx(0.0)
+    assert plan.role_solves["woofer"].bound_by == GAIN_BOUND_ROOM_SNR
+    assert plan.role_solves["woofer"].reduction_db > 0.0
+
+
+def test_ambient_rows_in_band_skips_rows_it_cannot_read():
+    """`_ambient_rows_in_band` is fed by more than one report producer (see
+    `snr_policy.unwrap_noise_report`'s legacy bare-band shape), so a row it
+    cannot read must cost it that row's evidence — never raise inside CHECK's
+    accept path."""
+    rows = program_analysis._ambient_rows_in_band(
+        (150.0, 1200.0),
+        [
+            {"band_id": "upper_bass", "band_hz": [160.0, 350.0], "level_dbfs": -60.0},
+            "not-a-mapping",
+            {"band_id": "no-edges", "level_dbfs": -10.0},
+            {"band_id": "bad-level", "band_hz": [160.0, 350.0], "level_dbfs": "loud"},
+            {"band_id": "nan", "band_hz": [160.0, 350.0], "level_dbfs": float("nan")},
+            {"band_id": "treble", "band_hz": [4000.0, 12000.0], "level_dbfs": -70.0},
+        ],
+    )
+    assert rows == [(160.0, 350.0, -60.0)]
+
+
+def test_measure_level_solve_holds_the_capture_quality_floor():
+    """A near-silent ambient report would let the SNR math alone propose an
+    inaudible sweep; `DRIVER.peak_too_low_dbfs` is the backstop."""
+    plan = _solve(_ambient())  # every band at -100 dBFS
+    for role in ("woofer", "tweeter"):
+        solve = plan.role_solves[role]
+        assert solve.bound_by == GAIN_BOUND_CAPTURE_FLOOR
+        # k == 0 in this fixture, so the gain IS the capture target.
+        assert solve.gain_db == pytest.approx(DRIVER_PEAK_TOO_LOW_DBFS)
+        assert solve.gain_db < solve.flat_target_gain_db
+
+
+def test_measure_level_solve_reports_the_room_demand_even_when_a_floor_wins():
+    """`required_capture_dbfs` is the ROOM-SNR demand specifically, not the
+    capture peak finally aimed at. Pinned because the two diverge exactly when
+    a floor wins, and a reader of the disclosure event must not mistake one
+    for the other — `bound_by` is what says which number bound the level."""
+    # Near-silent room ⇒ the capture floor wins, and the room demand it
+    # overrode stays visible and stays BELOW the level actually scheduled.
+    plan = _solve(_ambient())
+    for solve in plan.role_solves.values():
+        assert solve.bound_by == GAIN_BOUND_CAPTURE_FLOOR
+        assert solve.required_capture_dbfs == pytest.approx(
+            solve.ambient_dbfs + solve.required_snr_db
+        )
+        assert solve.required_capture_dbfs < solve.gain_db  # k == 0 here
+        assert solve.gain_db == pytest.approx(DRIVER_PEAK_TOO_LOW_DBFS)
+
+
+def test_measure_level_solve_respects_the_pilot_snr_floor():
+    """Constraint 3: MEASURE opens on a two-level pilot pair, and the quiet
+    side sits the pair's delta below the sweep gain. Backing a driver off far
+    enough to sink its own pilots under `PILOT_MIN_SNR_DB` (issue #1816's
+    guard) would trade a loud capture for a failing one.
+
+    At the shipped 10 dB pilot delta the room-SNR requirement is the stricter
+    of the two, so this widens the pair to 30 dB to make the pilot floor bind
+    — pinning that the guard is live rather than accidentally satisfied.
+    """
+    ambient = _ambient(upper_bass=-62.0, transition=-64.0, mid=-70.0, treble=-78.0)
+    shipped = _solve(ambient, pilot_levels_db=(-10.0, 0.0))
+    widened = _solve(ambient, pilot_levels_db=(-30.0, 0.0))
+    for role in ("woofer", "tweeter"):
+        assert shipped.role_solves[role].bound_by == GAIN_BOUND_ROOM_SNR
+        solve = widened.role_solves[role]
+        assert solve.bound_by == GAIN_BOUND_PILOT_SNR
+        # The floor is exactly "the pair's worst ambient, plus the delta the
+        # quiet pilot loses, plus the guard's own floor and this solve's
+        # margin" — computed against the role's own band.
+        worst_ambient = max(
+            band["level_dbfs"]
+            for band in ambient["bands"]
+            if band["band_hz"][1] > solve.band_hz[0]
+            and band["band_hz"][0] < solve.band_hz[1]
+        )
+        assert solve.gain_db == pytest.approx(
+            worst_ambient + 30.0 + PILOT_MIN_SNR_DB + MEASURE_SNR_SOLVE_MARGIN_DB
+        )
+        # …and still quieter than today, never louder.
+        assert solve.gain_db < solve.flat_target_gain_db
+
+
+def test_measure_level_solve_demands_alignment_snr_inside_the_overlap_band():
+    """The requirement is the shipped split-SNR policy, not one number: a
+    band inside the crossover overlap feeds MEASURE's delay/polarity estimate
+    (an alignment-class decision, `DRIVER.alignment_snr_ok_db`), everything
+    else feeds magnitude/trim decisions (`DRIVER.snr_ok_db`)."""
+    # One loud band well OUTSIDE the Fc=2000 overlap window [1000, 4000] and
+    # inside the woofer's own 150-1200 Hz band: `upper_bass` (160-350 Hz).
+    outside = _solve(_ambient(upper_bass=-60.0), fc_hz=2000.0).role_solves["woofer"]
+    assert outside.required_snr_db == pytest.approx(25.0 + MEASURE_SNR_SOLVE_MARGIN_DB)
+
+    # Drop Fc to 320 Hz ⇒ overlap [160, 640], which now covers that same
+    # band, so the SAME room demands 10 dB more and solves 10 dB louder.
+    inside = _solve(_ambient(upper_bass=-60.0), fc_hz=320.0).role_solves["woofer"]
+    assert inside.required_snr_db == pytest.approx(35.0 + MEASURE_SNR_SOLVE_MARGIN_DB)
+    assert inside.gain_db == pytest.approx(outside.gain_db + 10.0)
+
+
+def test_measure_level_solve_without_fc_takes_the_conservative_requirement():
+    """No Fc prior ⇒ the alignment requirement everywhere. Withholding Fc must
+    not buy a quieter measurement on a technicality."""
+    known = _solve(_ambient(upper_bass=-60.0), fc_hz=2000.0).role_solves["woofer"]
+    unknown = _solve(_ambient(upper_bass=-60.0), fc_hz=None).role_solves["woofer"]
+    assert unknown.required_snr_db == pytest.approx(35.0 + MEASURE_SNR_SOLVE_MARGIN_DB)
+    assert unknown.gain_db > known.gain_db
+
+
+def test_measure_level_solve_is_per_driver_on_the_jts3_shape():
+    """Regression anchor for the field report (JTS3, 2026-07-28).
+
+    The rig: a direct-driven B&C DE250 compression tweeter (108.5 dB/W behind
+    a 14.4 dB physical pad) beside a far less sensitive woofer, in a room
+    whose noise is LF-dominated as every room's is. Two independent things
+    then differ per driver, and the solve must honour both:
+
+      * ``k`` — the tweeter's chain gain is far higher, which the PRE-#1825
+        solve already handled (it aimed both at one capture peak);
+      * the ROOM in each driver's own band — which it did not. The tweeter is
+        measured from 2.5 kHz up, where this room is ~16 dB quieter than the
+        woofer's 150-1200 Hz span, so the tweeter genuinely needs less drive.
+
+    The asserted outcome is the MECHANISM (the tweeter gets the larger
+    reduction, because its band is quieter), not a specific dB figure. The
+    issue's "~11.5 dB hotter" reading came from `branch_level_match`'s
+    `level_w`/`level_t`, which are DECONVOLVED transfer-function levels —
+    `program.segment_stimulus` regenerates the reference at the segment's own
+    `gain_db` and `deconv.regularized_deconvolution_full`'s epsilon is
+    relative to ``|X|**2``, so the drive cancels mathematically exactly. That
+    11.5 dB is a sensitivity delta, not a drive delta, and cannot be this
+    change's acceptance target.
+    """
+    ambient = _ambient(
+        sub_bass=-48.0, bass=-52.0, upper_bass=-58.0,
+        transition=-62.0, mid=-74.0, treble=-80.0,
+    )
+    plan = _solve(ambient, k_db={"woofer": -6.0, "tweeter": 12.0}, fc_hz=2000.0)
+    woofer, tweeter = plan.role_solves["woofer"], plan.role_solves["tweeter"]
+
+    # Both got quieter than today, and neither is at the flat target.
+    for solve in (woofer, tweeter):
+        assert solve.bound_by == GAIN_BOUND_ROOM_SNR
+        assert solve.reduction_db > 0.0
+
+    # The tweeter's band is the quieter one, so it backs off further — the
+    # per-driver behavior the flat target could not express.
+    assert tweeter.ambient_dbfs < woofer.ambient_dbfs
+    assert tweeter.reduction_db > woofer.reduction_db
+
+    # And the two roles' gains genuinely differ (a shared reduction would
+    # have preserved the pre-existing skew instead of solving it away).
+    assert plan.gain_db["woofer"] != pytest.approx(plan.gain_db["tweeter"])
+
+
+def test_measure_level_solve_leaves_the_snr_floor_gate_untouched():
+    """`snr_floor_ok` is the room-QUALITY gate (asked of the reference target
+    against the whole ambient report, sub-bass included). The solve answers a
+    different question, and must not move which sessions CHECK accepts."""
+    quiet = _ambient(upper_bass=-62.0, transition=-64.0, mid=-70.0, treble=-78.0)
+    noisy = _ambient(sub_bass=-20.0)
+    assert _solve(quiet).snr_floor_ok is True
+    assert _solve(noisy).snr_floor_ok is False
+    # …even though sub-bass (20-80 Hz) overlaps NEITHER driver's measurement
+    # band, so it never entered a per-role solve.
+    for solve in _solve(noisy).role_solves.values():
+        assert solve.ambient_dbfs is not None
+        assert solve.ambient_dbfs < -20.0
+
+
+def test_measure_level_solve_publishes_a_json_safe_disclosure():
+    """`RoleGainSolve.to_dict` is what lands in the session's check.json — it
+    must round-trip through JSON (the evidence store re-opens artifacts)."""
+    plan = _solve(_ambient(upper_bass=-62.0, mid=-70.0))
+    for role, solve in plan.role_solves.items():
+        payload = json.loads(json.dumps(solve.to_dict()))
+        assert payload["role"] == role
+        assert payload["bound_by"] in GAIN_BOUNDS
+        assert payload["reduction_db"] >= 0.0
+        assert payload["band_hz"] is not None
 
 
 def test_check_ambient_report_present():

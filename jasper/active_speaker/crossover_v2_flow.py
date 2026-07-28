@@ -3751,6 +3751,20 @@ class CrossoverV2Conductor:
 
     # --- priors per phase ----------------------------------------------------
 
+    def _check_priors(self) -> MeasurementPriors:
+        """CHECK's priors — Fc only, for the MEASURE level solve (#1825).
+
+        CHECK used to run on bare defaults. Its gain solve now scopes each
+        band's SNR requirement by whether that band lies inside the crossover
+        overlap window (an alignment-class decision needs materially more SNR
+        than a magnitude one — see ``program_analysis._band_required_snr_db``),
+        and that window is derived from Fc. Withholding it is not neutral: the
+        solve then applies the ALIGNMENT requirement everywhere, i.e. solves
+        louder, so this prior can only make MEASURE quieter, never louder.
+        Nothing else in ``_analyze_check`` reads priors.
+        """
+        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+
     def _measure_priors(self) -> MeasurementPriors:
         return MeasurementPriors(
             crossover_fc_hz=self._fc_hz,
@@ -4169,6 +4183,7 @@ class CrossoverV2Conductor:
             self._measure_priors() if phase == PHASE_MEASURE
             else self._verify_priors() if phase == PHASE_VERIFY
             else self._cloud_priors() if phase in GROUP_PHASES
+            else self._check_priors() if phase == PHASE_CHECK
             else MeasurementPriors()
         )
         # The whole CaptureResult crosses the seam (not just wav bytes): the
@@ -5646,6 +5661,47 @@ class CrossoverV2Conductor:
             tweeter_channel_map_target_rise_db=tweeter["channel_map_target_rise_db"],
             tweeter_channel_map_cross_rise_db=tweeter["channel_map_cross_rise_db"],
         )
+        self._log_measure_level_solve(analysis)
+
+    def _log_measure_level_solve(self, analysis: ProgramAnalysis) -> None:
+        """One event per driver disclosing its solved MEASURE level (#1825).
+
+        A separate event rather than more fields on the CHECK diag above:
+        this is a per-ROLE record with its own evidence (the ambient band it
+        was solved against and the SNR it demanded there), and flattening two
+        roles × six fields into the already-wide diag line would bury it.
+        Emitted from the diagnostic path, so it lands on a REJECTED check too
+        — knowing what level the solve WOULD have chosen is exactly what a
+        `snr_floor` refusal needs read beside it.
+        """
+        gain_plan = analysis.gain_plan
+        if gain_plan is None:
+            return
+        for role, solve in (gain_plan.role_solves or {}).items():
+            band = solve.band_hz
+            log_event(
+                logger, "correction.crossover_v2_measure_level_solve",
+                session_id=self.session_id,
+                role=role,
+                solved_gain_db=round(float(solve.gain_db), 3),
+                flat_target_gain_db=round(float(solve.flat_target_gain_db), 3),
+                reduction_db=round(float(solve.reduction_db), 3),
+                bound_by=solve.bound_by,
+                band_lo_hz=round(band[0], 1) if band else None,
+                band_hi_hz=round(band[1], 1) if band else None,
+                ambient_dbfs=(
+                    round(float(solve.ambient_dbfs), 2)
+                    if solve.ambient_dbfs is not None else None
+                ),
+                required_snr_db=(
+                    round(float(solve.required_snr_db), 2)
+                    if solve.required_snr_db is not None else None
+                ),
+                required_capture_dbfs=(
+                    round(float(solve.required_capture_dbfs), 2)
+                    if solve.required_capture_dbfs is not None else None
+                ),
+            )
 
     def _log_measure_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
         drift = analysis.drift
