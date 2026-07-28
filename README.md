@@ -1006,7 +1006,7 @@ reference. Currently:
   level, prediction-gated auto-apply, applied-implies-graded), and the
   evidence-gated boost doctrine with delta-probe verification.
 - [`llm-native-tuning-workbench-plan.md`](docs/llm-native-tuning-workbench-plan.md)
-  — **Current design and execution direction (2026-07-27)** for the
+  — **Current design and execution direction (2026-07-28)** for the
   agent-assisted tuning workbench: expose existing measurements and DSP
   capabilities through a factual context packet, linked domain-owned
   evidence, and a reversible cross-layer experiment workspace. The host owns
