@@ -1046,6 +1046,15 @@ reference. Currently:
   SSOT (issue #1787), evidence-gated LF boosts on room-instrument
   evidence, and the recorded FIR/phase rejection. Same research
   directory as above.
+- [`two-stage-commission-flow-plan.md`](docs/two-stage-commission-flow-plan.md)
+  — **Adopted work order (2026-07-28, issue #1806)** splitting commission
+  into a measure session and a separate verify session with an untimed
+  review interlude between them: auto-apply is removed, the review screen
+  becomes the household's apply decision point (measurement, proposal,
+  predicted response, and an honest spec verdict before any apply), the
+  predicted response is projected onto the wire, verify-failed demotes
+  with Undo primary, and the phone gains an orientation/pattern preview
+  plus honest time-budget and CHECK copy.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
