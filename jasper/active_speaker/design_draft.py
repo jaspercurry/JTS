@@ -28,6 +28,7 @@ from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     DriverSafetyProfileError,
     build_driver_safety_profile,
+    driver_research_targets,
     evaluate_driver_safety_profile,
     finalise_research_result,
     normalise_driver_safety_fields,
@@ -35,7 +36,6 @@ from .driver_safety import (
     validate_driver_research_request,
     validate_driver_research_result_shape,
 )
-from .measurement import active_driver_targets
 from .profile import SUPPORTED_POLARITY
 
 SCHEMA_VERSION = 1
@@ -926,7 +926,7 @@ def _summary(
 ) -> dict[str, Any]:
     topology_roles = _topology_roles(topology)
     required_roles = _required_driver_info_roles(topology)
-    required_targets = active_driver_targets(topology)
+    required_targets = driver_research_targets(topology)
     required_target_ids = [str(target["target_id"]) for target in required_targets]
     target_role = {
         str(target["target_id"]): str(target["role"]) for target in required_targets
@@ -1063,7 +1063,7 @@ def build_design_draft(
     target_models = inputs.get("target_models")
     if isinstance(target_models, Mapping):
         current_target_ids = {
-            str(target["target_id"]) for target in active_driver_targets(topology)
+            str(target["target_id"]) for target in driver_research_targets(topology)
         }
         unknown_target_ids = sorted(set(target_models) - current_target_ids)
         if unknown_target_ids:
@@ -1220,6 +1220,42 @@ def build_design_draft(
     }
 
 
+def _demote_legacy_driver_research_binding(
+    draft: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop obsolete v2 prompt bindings while preserving visible manual values.
+
+    Older builds included the now-hidden per-driver ``operator_notes`` field in
+    a request fingerprint. Revalidating that request against the current,
+    visible-only prompt contract makes the next save fail as stale. The
+    research result is inseparable from its v2 request fingerprint, so demote
+    both on load; the normalized manual settings and safety profile remain
+    available, and the operator can copy a fresh prompt if more research is
+    wanted.
+    """
+
+    request = draft.get("driver_research_request")
+    targets = request.get("targets") if isinstance(request, Mapping) else None
+    has_legacy_notes = isinstance(targets, list) and any(
+        isinstance(target, Mapping)
+        and isinstance(target.get("operator_declared_context"), Mapping)
+        and "operator_notes" in target["operator_declared_context"]
+        for target in targets
+    )
+    if not has_legacy_notes:
+        return draft
+    out = dict(draft)
+    out["driver_research_request"] = None
+    research = out.get("driver_research")
+    if (
+        isinstance(research, Mapping)
+        and research.get("artifact_schema_version")
+        == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
+    ):
+        out["driver_research"] = None
+    return out
+
+
 def load_design_draft(
     path: str | Path | None = None,
     *,
@@ -1326,7 +1362,7 @@ def load_design_draft(
             }
         )
         return out
-    raw = {**raw, "revision": revision}
+    raw = _demote_legacy_driver_research_binding({**raw, "revision": revision})
     if topology is None:
         return raw
     out = dict(raw)

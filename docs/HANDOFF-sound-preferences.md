@@ -366,8 +366,8 @@ tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
 tones, or authorizes playback; the audible safe-session path remains separate.
 The same `/sound/` card renders a lightweight **Active crossover setup**
 surface over that endpoint as collapsible task cards: **Choose speaker
-layout**, **Add driver and crossover values**, **Confirm outputs**, **Test each
-driver**, and **Validate and apply**.
+layout**, **Add your components**, **Confirm outputs**, **Test combined
+drivers**, and **Validate and apply**.
 The layout card opens by default on page load. Explicit Next/manual-open
 actions use transient browser intent only; no persisted wizard-progress state
 exists. The UI keeps one card open at a time, prevents opening future
@@ -412,28 +412,61 @@ detected passive hardware draft, kicks audio-hardware reconcile, and clears the
 active-speaker setup/evidence JSON artifacts so stale staged configs,
 measurements, or baseline candidates cannot masquerade as current after the
 topology reset. It does not emit sound or delete generated CamillaDSP YAML.
-The crossover-settings card stores a versioned working draft per physical
-output. Visible fields include driver identity/sensitivity, hard never-test-
-beyond frequency edges, narrower measurement and crossover-search bands,
-required high/low-pass cutoff and slope, cabinet facts, level/duration limits,
-trim, crossover candidates, and build notes. The operator can explicitly
-confirm the current safety profile; confirmation records the confirmation time,
-is invalidated by a visible safety edit or topology change, and still grants no
-playback authority. Saves use an optimistic revision. If another tab wins, the
-browser keeps local unsaved edits, adopts the fresh server revision, and asks
-the operator to review and save again instead of silently replacing their work.
+The component card stores a versioned working draft per physical output. Its
+default flow starts with one compact card for every independently amplified
+driver. Each card asks for make/model plus the physical choice the research
+assistant cannot infer: low-frequency drivers expose enclosure/acoustic loading,
+tweeters expose their topology-owned exact driver/loading type, and every driver
+can declare an optional in-line L-pad or resistor. One optional **Build notes**
+field follows the complete component list and captures any shared enclosure,
+passive-radiator, amplifier, mounting, or other whole-speaker context. There are
+no per-driver free-text configuration boxes. These values use the existing
+`manual_settings.drivers` owners except tweeter `driver_style`, which uses the
+existing `SpeakerChannel` owner and auto-saves through the output-topology
+writer. The page does not maintain a second component store. A passive
+one-driver layout receives a research-only physical target through
+`driver_research_targets`; measurement and commissioning remain restricted to
+independently amplified active drivers.
 
-**Use AI to fill these settings** asks the server to generate one exact,
-fingerprinted request from the current topology, per-output models, visible
-safety context, cabinet facts, and build notes. The bounded v2 response must
-echo that request and every physical target; additions, removals, or edits to
-the current request context make old research stale. Imported research remains
+After the component cards and Build notes, **Copy prompt** asks the server to generate one
+exact, fingerprinted request from the current topology, per-output models,
+visible safety context, cabinet facts, and build notes. The operator pastes the
+JSON response and selects **Load information**. A compact proposed-crossover
+summary appears before a single collapsed **Advanced** editor. Advanced groups
+driver specifications, hard never-test-beyond frequency edges, narrower
+measurement and crossover-search bands, required high/low-pass cutoff and
+slope, cabinet geometry, level/duration limits, trim, crossover candidates,
+provenance, and unknowns. All editable values and research evidence are rendered
+as labeled sections directly inside Advanced; it contains no second-level
+disclosures.
+
+The research prompt treats operator-declared physical installation choices as
+authoritative. The browser import boundary also refuses to replace enclosure
+kind, the topology-owned tweeter type, an explicit product-technology
+`driver_class`, or an operator-declared resistor pad; research can still fill
+missing product and safety values. Legacy per-driver `notes` values remain
+readable in the design/safety record but are not sent as invisible prompt
+context; the visible Build notes field is the only free-text build context.
+On load, an older v2 request/result fingerprint that included that hidden text
+is demoted while its normalized manual values and safety profile are preserved,
+so the next save cannot fail against an obsolete prompt contract. The bounded
+v2 response must echo that request and every physical target; additions,
+removals, or edits to the current request context make old research stale.
+Imported research remains
 advisory: it prefills visible fields and preserves bounded provenance/unknowns
 for review, while operator-edited targets stop displaying stale provenance. A
 routed local subwoofer remains owned by the subwoofer card's bass-management
-corner and is not required research for the active-main preview. Per-driver
-notes are capped at 2048 characters; full reports belong outside the draft.
+corner and is not required research for the active-main preview. The optional
+whole-speaker Build notes field is capped at 1000 characters. Research-produced
+per-driver safety summaries remain capped at 2048 characters; full reports
+belong outside the draft.
 Nothing in this flow applies filters, reloads CamillaDSP, or authorizes sound.
+The operator can explicitly confirm the current safety profile; confirmation
+records the confirmation time, is invalidated by a visible safety edit or
+topology change, and still grants no playback authority. Saves use an
+optimistic revision. If another tab wins, the browser keeps local unsaved
+edits, adopts the fresh server revision, and asks the operator to review and
+save again instead of silently replacing their work.
 Choosing an active driver in **Confirm outputs** calls the commission
 route family: `commission-load`, `commission-ramp-step`,
 `commission-ramp-ack`, and `commission-ramp-abort`. The browser does not expose
@@ -935,7 +968,11 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-07-27 (shelf-steepness section added and the "slope is
+Last verified: 2026-07-28 (component-first speaker setup, one whole-speaker
+Build notes field, topology-owned tweeter type, research-only passive full-range
+target, flat collapsed Advanced editor, and responsive field layout verified against the browser module,
+driver-research contracts, targeted/full suites, and deployed JTS3 desktop
+and phone surfaces; prior 2026-07-27 shelf-steepness section added and the "slope is
 fixed at 6 dB/oct" claim corrected — emission now spells CamillaDSP's shelf
 `q` at the Butterworth `SHELF_Q`, checked against
 `jasper.camilla_stereo_prefix.emit_filter_spec`,
