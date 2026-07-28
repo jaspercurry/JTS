@@ -1,0 +1,13 @@
+[Unit]
+Description=Reconcile enhanced AEC after a verified JTS deploy
+Documentation=file:/opt/jasper/docs/HANDOFF-enhanced-aec.md
+
+[Path]
+# build.txt is deliberately the final successful-deploy mutation. Watching it
+# prevents the optional job from racing a half-installed source/venv and keeps
+# enhancement failure entirely outside the core deploy transaction.
+PathChanged=/var/lib/jasper/build.txt
+Unit=jasper-enhanced-aec-install.service
+
+[Install]
+WantedBy=multi-user.target

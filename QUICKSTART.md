@@ -448,9 +448,11 @@ onboarding script tell you if the image needs anything unusual.
 
 **What about a custom JTS-branded OS image?**
 
-Intentionally not shipped. Custom images carry a maintenance tax
-(firmware version drift, kernel security fixes, etc.) and the
-quickstart works from stock Raspberry Pi OS Lite + `install.sh`.
+Not shipped yet. The supported path is still stock Raspberry Pi OS
+Lite + `install.sh`, while the release-artifact and optional-feature
+foundations are being built for a future fast-start image. The staged
+plan, redistribution boundary, and release gates live in
+[docs/HANDOFF-pi-image-delivery.md](docs/HANDOFF-pi-image-delivery.md).
 
 **Does this work without Claude Code?**
 

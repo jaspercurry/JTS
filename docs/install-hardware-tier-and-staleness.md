@@ -9,6 +9,13 @@
 > plus the operational docs it updates (`install.sh`, the deploy script,
 > the test files) are the truth. Sibling workstreams: A (memory-safe
 > builds), B (atomic/recoverable updates), C (hot-plug resilience).
+>
+> **2026-07-27 resolution of the WebRTC-build question:** keep the small,
+> distro-linked AEC3 v1 binding as the unconditional software fallback, but
+> move vendored v2/BEST_A into an explicit, contained background install.
+> [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md) is current operational
+> truth. Statements below about `build_webrtc_v2_for_aec3` describe the
+> 2026-06-21 incident-era installer, not current code.
 
 ## Bottom line up front
 
@@ -43,12 +50,11 @@
    deploy preflight** so the operator sees the dangerous quadrant before
    pulling the trigger.
 
-4. **Don't conditionally skip the WebRTC AEC3 build on chip-AEC boxes.**
-   It is the *software-AEC fallback* the reconciler selects when the
-   chip is not on 6-ch firmware, and the install cannot know the runtime
-   AEC profile (hardware is dynamic — Workstream C). The lever for its
-   cost is *cheap/safe build* + *prebuilt artifact* (A), not a skip that
-   silently deletes the fallback.
+4. **Never conditionally skip the software-AEC fallback.** That invariant is
+   now satisfied by building the small distro-linked v1 binding on every full
+   install. The several-minute vendored v2/BEST_A build is an optional
+   enhancement, because removing v2 does not remove the fallback. Hardware
+   remains dynamic and the reconciler may still move a chip-AEC box onto v1.
 
 5. **The cross-SKU test matrix needs almost no hardware.** The
    decision layer (tier → build strategy, arch guard, dry-run plan)
@@ -112,31 +118,20 @@ correct in isolation; together they are a thresholds-can-drift hazard
 and there is no single place that says "this is a `low` / `constrained`
 / `standard` box."
 
-### The WebRTC AEC3 build is unconditional on `full`
+### The WebRTC fallback is unconditional; the slow enhancement is not
 
-In `deploy/lib/install/python-runtime.sh` `install_jasper`, the AEC3
-build path is gated only on the source tree existing:
+Current `deploy/lib/install/python-runtime.sh` builds
+`JASPER_AEC3_BUILD_MODE=v1-only` on every full-profile install. That
+preserves the `xvf_software_aec3` fallback the reconciler needs if firmware,
+mic, or DAC readiness changes, while removing the vendored v2 compile from
+time-to-first-value.
 
-```sh
-if [[ -d "${INSTALL_DIR}/jasper_aec3" ]]; then
-    build_webrtc_v2_for_aec3   # ~3-5 min on Pi 5; OOM-prone on 1 GB
-    ...
-fi
-```
-
-`jasper_aec3/` always ships on `full`, so a chip-AEC (XVF3800 6-ch)
-speaker — the *recommended* production profile, where the runtime
-`JASPER_AUDIO_INPUT_PROFILE=auto` resolves to the chip's hardware AEC
-and never calls the software binding — still pays the full build. That
-build is **not dead weight**: it is the `xvf_software_aec3` engine the
-AEC reconciler falls back to when the chip is not on 6-ch firmware (see
-AGENTS.md "AEC bridge"). The installer cannot know at build time which
-runtime profile the box will land in (firmware can be reflashed, the
-mic can be swapped — Workstream C's whole premise), so a build-time
-skip trades a real fallback for build cost. `streambox` *already*
-skips AEC3/Rust-AEC entirely, which is correct (no mic brain) — and a
-Zero 2 W defaults to `streambox`, so the "is AEC3 relevant on a Zero?"
-question is already answered *no* by the profile, not the tier.
+An operator can later request v2/BEST_A from the advanced Software surface.
+Its root oneshot uses the same RAM-bounded containment policy, activates only
+after source/ABI/digest verification, and never makes the core deploy fail.
+Durable intent is retried after a successful build-manifest change, which
+keeps it compatible with fast-moving `main`. `streambox` still omits the full
+mic/AEC brain by product profile, not hardware tier.
 
 ### Architecture is implicitly arm64, with no guard
 
@@ -205,7 +200,8 @@ topology is the target topology regardless of skew.
 
 ### (b) Cold / invalidated build caches — **the real amplifier**
 
-`build_webrtc_v2_for_aec3` keys its cache on a provenance marker:
+At the time of the incident, `build_webrtc_v2_for_aec3` keyed its cache on a
+provenance marker:
 
 ```sh
 local source_id="${WEBRTC_AEC3_COMMIT}:${WEBRTC_AEC3_SHA256}"
@@ -218,7 +214,7 @@ if [[ -f "${static_archive}" ]]; then
 fi
 ```
 
-Over 748 commits the pinned `WEBRTC_AEC3_COMMIT` is very likely to have
+Over 748 commits the pinned `WEBRTC_AEC3_COMMIT` was very likely to have
 changed at least once, so the far-behind box does the full ~3-5 min,
 OOM-prone rebuild a current box skips. The same shape applies to:
 
@@ -229,11 +225,12 @@ OOM-prone rebuild a current box skips. The same shape applies to:
   change forces wheel rebuilds of the heavy scientific deps
   (scipy/numpy/onnxruntime).
 
-So being far behind **disproportionately triggers exactly the expensive
-build steps that wreck a low-RAM box** — which is precisely what
-happened to jts2. This is a build-path risk: it is mitigated by making
-the build memory-safe and prefer prebuilt artifacts (Workstream A), not
-by anything stepwise.
+So being far behind **disproportionately triggered exactly the expensive
+build steps that wreck a low-RAM box** — precisely what happened to jts2.
+The current split removes vendored v2 from the core transaction; if durable
+enhancement intent exists, it rebuilds asynchronously and remains contained.
+Cargo/Python cache invalidation still makes staleness a core build-path risk,
+so the broader conclusion (safe builds, not stepwise updates) remains.
 
 ### (c) Crossing multiple breaking topology changes at once — **low risk by design**
 
@@ -298,10 +295,10 @@ system files + sourced-helper invocation. Extend it to a tier table:
 | 8 GB | 4 | aarch64 | `standard` | release | 4 | pass |
 | 1 GB | 4 | armv7l | `constrained` | — | — | **fail (overridable)** |
 
-The `webrtc -j` and `rust profile` columns are *already* pinned by
-`_webrtc_compile_jobs` and `rust_*` tests; the new columns (tier label,
-arch guard) get the same treatment. Pure unit tests, every SKU, no
-hardware.
+The `webrtc -j` and `rust profile` columns are pinned by the shared
+`build_sandbox_jobs` / installed `jasper-contained-build --jobs-cpp` and
+`rust_*` tests; the new columns (tier label, arch guard) get the same
+treatment. Pure unit tests, every SKU, no hardware.
 
 ### Execution layer — does a contained build actually fit?
 
@@ -336,9 +333,10 @@ Pi for periodic ground truth and the things only hardware reveals.
 - The new dry-run "Hardware tier" line is covered automatically by
   `test_install_plan_covers_main.py`'s ratchet (a new `main()` step must
   be marked or exempted) — see the PR.
-- Keep the existing `_webrtc_compile_jobs` / `rust_*` threshold tests;
-  the tier helper does not change their values (it *names* the regions
-  they already act in).
+- Keep the shared C++ `build_sandbox_jobs` / `rust_*` threshold tests; the
+  tier helper does not change their values (it *names* the regions they
+  already act in). Optional v2 reaches the C++ budget through the installed
+  `jasper-contained-build` helper.
 
 ---
 
@@ -384,9 +382,9 @@ and a dedicated test pins that the guard does *not* fire during
 
 - `rust_low_memory_build_enabled` now covers 1 GB hosts, and low-memory
   installs provision temporary high-priority build swap plus park runtime
-  units before Rust builds. Remaining Workstream A cleanup is converging
-  `_webrtc_compile_jobs` / memory-resilience readers onto the one tier
-  helper.
+  units before Rust builds. Optional v2 uses the canonical installed
+  containment helper; memory-resilience readers can still converge further
+  on the tier vocabulary.
 - Gating the build manifest on verified success; rollback; broadening
   post-deploy verification beyond the management surface → **Workstream B
   (landed)**, see
@@ -394,8 +392,9 @@ and a dedicated test pins that the guard does *not* fire during
 - Pairing the deploy preflight's skew advisory with the detected tier
   (the "dangerous quadrant" warning) → small follow-up once the tier is
   available remotely; depends on B's richer verification surface.
-- Conditional AEC3 skip → **rejected** (removes the software-AEC
-  fallback; see above). The AEC3 cost is A's to contain/prebuild.
+- Conditional software-AEC fallback skip → **rejected**. Conditional vendored
+  v2 → **landed as explicit opt-in** without removing mandatory v1; see
+  [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md).
 
 ---
 
@@ -408,4 +407,6 @@ and a dedicated test pins that the guard does *not* fire during
 | No build step can starve/kill a live daemon | Diagnosed (staleness × low-RAM forces the OOM-prone rebuilds); containment is A. |
 | The whole flow is testable without owning every SKU | Test strategy above: synthetic-`/proc` decision matrix + cgroup smoke + canary. |
 
-Last verified: 2026-06-21
+Last verified: 2026-07-27 (historical WebRTC-build recommendation reconciled
+with the shipped mandatory-v1 / optional-v2 split; broader tier/staleness
+analysis remains the 2026-06-21 design note)

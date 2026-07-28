@@ -220,6 +220,16 @@ build_install_rust_daemon() {
 }
 
 build_install_jasper_fanin() {
+    # A staged image/bootstrap bundle installs all coupled first-party runtime
+    # files together. Invalid configured bundles fail closed; an unset bundle
+    # preserves the existing source-build path.
+    if declare -F prepare_first_party_runtime_bundle >/dev/null; then
+        prepare_first_party_runtime_bundle || return 1
+        if first_party_runtime_artifact_installed "jasper-fanin"; then
+            echo "  jasper-fanin: using verified first-party ARM64 runtime bundle"
+            return 0
+        fi
+    fi
     # Fan-in is the production renderer topology; older experimental
     # branches may not carry rust/jasper-fanin, so absence remains a
     # non-fatal skip for compatibility with that historical shape.
@@ -227,6 +237,13 @@ build_install_jasper_fanin() {
 }
 
 build_install_jasper_outputd() {
+    if declare -F prepare_first_party_runtime_bundle >/dev/null; then
+        prepare_first_party_runtime_bundle || return 1
+        if first_party_runtime_artifact_installed "jasper-outputd"; then
+            echo "  jasper-outputd: using verified first-party ARM64 runtime bundle"
+            return 0
+        fi
+    fi
     # outputd is the mainline final-output owner and is required.
     build_install_rust_daemon "jasper-outputd" "1"
 }

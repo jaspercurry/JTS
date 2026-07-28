@@ -10,6 +10,9 @@
 > legs and AEC engine lives in
 > [HANDOFF-aec.md](HANDOFF-aec.md) and
 > [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md).
+> The current opt-in install/activation contract for the vendored BEST_A
+> engine lives in
+> [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md).
 
 **Audience:** fresh Claude / Codex session picking up the mic-quality work
 after the wake-telemetry subsystem (PR #191) landed on main.
@@ -1243,6 +1246,6 @@ distribute JTS to other operators (different rooms, mics, voices)
 and want to automate the per-environment configuration that we're
 doing manually here.
 
-Last verified: 2026-06-19 (targeted recheck of the chip-side AEC row
-against the geometry-aware profile-first input policy; broader mic-quality
-roadmap remains from the prior pass.)
+Last verified: 2026-07-27 (historical status and current operational links
+rechecked, including the opt-in enhanced-AEC lifecycle; the experimental
+mic-quality narrative itself remains the dated 2026-05-22/23 snapshot.)

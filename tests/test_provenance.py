@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-provenance.py"
+WEBRTC_NOTICE_BUNDLE = ROOT / "LICENSES" / "WebRTC-AEC3-v2.1-NOTICES.txt"
 
 
 def _load_check_module():
@@ -28,12 +29,54 @@ def test_provenance_manifest_covers_known_fetches() -> None:
     assert check_provenance.check_manifest() == []
 
 
+def test_webrtc_notice_bundle_inventory_matches_audited_archive() -> None:
+    """Pin every distinct notice found in the exact v2.1 source archive."""
+
+    text = WEBRTC_NOTICE_BUNDLE.read_text(encoding="utf-8")
+    headings = [
+        line.removeprefix("== ").removesuffix(" ==")
+        for line in text.splitlines()
+        if line.startswith("== ") and line.endswith(" ==")
+    ]
+    assert headings == [
+        "COPYING",
+        "webrtc/LICENSE",
+        "webrtc/PATENTS",
+        "webrtc/common_audio/third_party/ooura/LICENSE",
+        "webrtc/common_audio/third_party/spl_sqrt_floor/LICENSE",
+        "webrtc/modules/third_party/fft/LICENSE",
+        "webrtc/third_party/pffft/LICENSE",
+        "webrtc/third_party/rnnoise/COPYING",
+        "webrtc/third_party/rnnoise/src/rnn_activations.h",
+    ]
+    assert "Copyright (c) 2008-2011 Octasic Inc." in text
+    assert "2012-2017 Jean-Marc Valin" in text
+
+
 def test_provenance_check_scans_aec3_build_requirements() -> None:
     check_provenance = _load_check_module()
 
     discovered = check_provenance.discovered_fetch_urls()
 
     assert "jasper_aec3/pyproject.toml" in discovered
+    assert "jasper_aec3/enhanced-aec-source.env" in discovered
+
+
+def test_enhanced_aec_target_manifest_is_provenance_source_of_truth() -> None:
+    check_provenance = _load_check_module()
+    data = copy.deepcopy(check_provenance.load_manifest())
+    for artifact in data["artifact"]:
+        if artifact["id"] == "webrtc-audio-processing-v2":
+            artifact["sha256"] = "0" * 64
+            break
+
+    errors = check_provenance.validate_source_consistency(data)
+
+    assert any(
+        "webrtc-audio-processing-v2" in error
+        and "jasper_aec3/enhanced-aec-source.env WEBRTC_AEC3_SHA256" in error
+        for error in errors
+    )
 
 
 def test_provenance_check_detects_install_constant_drift() -> None:

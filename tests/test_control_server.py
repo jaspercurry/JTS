@@ -1689,6 +1689,71 @@ def test_aec_firmware_update_refuses_when_not_available(
     assert starts == []
 
 
+def test_enhanced_aec_get_uses_dedicated_status(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    expected = {
+        "schema_version": 1,
+        "feature": "enhanced_aec",
+        "state": "not_installed",
+        "action": {"enabled": True, "label": "Install enhancement"},
+    }
+    monkeypatch.setattr(srv_mod, "_enhanced_aec_status", lambda: expected)
+
+    status, body = _get(f"{base}/aec/enhanced-aec")
+
+    assert status == 200
+    assert body == expected
+
+
+def test_enhanced_aec_post_persists_then_starts_allowlisted_oneshot(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+    from jasper import enhanced_aec
+
+    statuses = iter([
+        {
+            "state": "not_installed",
+            "action": {"enabled": True, "label": "Install enhancement"},
+        },
+        {
+            "state": "installing",
+            "requested": True,
+            "action": {"enabled": False, "label": "Install enhancement"},
+        },
+    ])
+    calls: list[tuple] = []
+    monkeypatch.setattr(srv_mod, "_enhanced_aec_status", lambda: next(statuses))
+    monkeypatch.setattr(
+        enhanced_aec,
+        "request_install",
+        lambda: calls.append(("intent",)),
+    )
+
+    def fake_manage(*units, **kwargs):
+        calls.append(("broker", units, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage)
+
+    status, body = _post(f"{base}/aec/enhanced-aec/install", {})
+
+    assert status == 200
+    assert body["state"] == "installing"
+    assert calls[0] == ("intent",)
+    assert calls[1][0:2] == (
+        "broker",
+        ("jasper-enhanced-aec-install.service",),
+    )
+    assert calls[1][2]["verb"] == "start"
+    assert calls[1][2]["no_block"] is True
+
+
 # ---------- POST /grouping/set (the bond-forming control endpoint) ----------
 
 
@@ -5830,9 +5895,10 @@ def test_grouping_set_stays_in_token_gated_routes():
         "/system/restart/audio",
         "/usb-forensics",
         "/mic/mute",
-        "/aec/usb-mic",
-        "/aec/usb-mic-leg",
-        "/grouping/set",
+            "/aec/usb-mic",
+            "/aec/usb-mic-leg",
+            "/aec/enhanced-aec/install",
+            "/grouping/set",
         "/aec/firmware/update",
     })
 

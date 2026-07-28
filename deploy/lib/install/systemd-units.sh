@@ -71,6 +71,9 @@ install_jasper_support_files() {
     install -m 0644 \
         "${REPO_DIR}"/deploy/lib/install/*.sh \
         /usr/local/lib/jasper/install/
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-contained-build" \
+        /usr/local/sbin/jasper-contained-build
 }
 
 # Core audio-graph unit + helper-binary install table. One row per file:
@@ -887,6 +890,10 @@ install_systemd_units() {
     # owners before any profile-specific units are staged or started.
     install_jasper_support_files
     install_local_audio_graph_unit_files
+    # The enhanced-AEC installed marker authorizes loading native code. Keep
+    # its containing directory outside group-writable StateDirectory=jasper so
+    # a non-root service in the shared `jasper` group cannot replace the proof.
+    install -d -m 0755 -o root -g root /var/lib/jasper-enhanced-aec
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
         "${SYSTEMD_DIR}/jasper-voice.service"
@@ -978,6 +985,12 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-aec-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-aec-reconcile.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-enhanced-aec-install.service" \
+        "${SYSTEMD_DIR}/jasper-enhanced-aec-install.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-enhanced-aec-reconcile.path" \
+        "${SYSTEMD_DIR}/jasper-enhanced-aec-reconcile.path"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
@@ -1316,6 +1329,15 @@ install_systemd_units() {
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
+    # Boot retries durable opt-in once. The path unit handles later successful
+    # deploys asynchronously after build.txt is published; neither is awaited
+    # by install.sh, so an enhancement failure cannot fail the core deploy.
+    systemctl enable jasper-enhanced-aec-install.service \
+        >/dev/null 2>&1 || \
+        echo "  WARN: enhanced-AEC boot retry could not be enabled"
+    systemctl enable --now jasper-enhanced-aec-reconcile.path \
+        >/dev/null 2>&1 || \
+        echo "  WARN: enhanced-AEC deploy reconcile path could not start"
 
     # Stop currently-running audio clients before outputd/Camilla claim the
     # direct DAC and fan-in graph. On outputd deploys, old voice/renderers may

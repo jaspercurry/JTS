@@ -24,10 +24,14 @@ Both engines take 16 kHz mono int16 mic + ref byte buffers (multiple
 of 10 ms = 160 samples = 320 bytes) and return AEC'd mic bytes the
 same size.
 
-``Aec3V2`` is only importable when ``deploy/install.sh``'s
-``build_webrtc_v2_for_aec3()`` has successfully produced the vendored
-static archive — i.e. on the Pi after a deploy. On dev laptops (no
-v2 build) only ``Aec3`` will import; ``HAS_V2`` reflects this.
+``Aec3V2`` is installed by the opt-in ``jasper-enhanced-aec-install``
+background job.  The package deliberately does not import that native
+module while loading ``Aec3``: runtime authorization first verifies the
+installed marker, source fingerprint, and extension digest.  This lazy
+boundary ensures an orphan or stale ``_aec3_v2`` file can never be loaded
+as a side effect of constructing the mandatory v1 fallback. ``HAS_V2``
+only reports whether a v2 module is discoverable; it is not authorization
+to use that module.
 
 Usage:
     from jasper_aec3 import Aec3V2  # preferred (BEST_A)
@@ -39,14 +43,38 @@ Usage:
     aec = Aec3()
     clean_mic = aec.process(mic_bytes, ref_bytes)
 """
+from __future__ import annotations
+
+import importlib
+import importlib.util
+from typing import TYPE_CHECKING, Any
+
 from ._aec3 import Aec3
 
-try:
+if TYPE_CHECKING:
     from ._aec3_v2 import Aec3V2
 
-    HAS_V2 = True
-except ImportError:
-    Aec3V2 = None  # type: ignore[assignment, misc]
-    HAS_V2 = False
+# ``find_spec`` inspects the package path without executing the extension.
+# The control plane and bridge must still call
+# ``jasper.enhanced_aec.runtime_v2_verified`` before accessing ``Aec3V2``.
+HAS_V2 = importlib.util.find_spec(f"{__name__}._aec3_v2") is not None
+
+
+def __getattr__(name: str) -> Any:
+    if name != "Aec3V2":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if not HAS_V2:
+        raise ImportError(
+            "optional jasper_aec3._aec3_v2 extension is not installed"
+        )
+    module = importlib.import_module(f"{__name__}._aec3_v2")
+    value = module.Aec3V2
+    # Cache only after the explicit lazy access succeeds.
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), "Aec3V2"})
 
 __all__ = ["Aec3", "Aec3V2", "HAS_V2"]

@@ -68,13 +68,13 @@ def _compute_min_free_kbytes(memtotal_kb: int) -> int:
     return int(result.stdout.strip())
 
 
-def _webrtc_compile_jobs(memtotal_kb: int, ncpu: int) -> int:
-    """Invoke the bash `_webrtc_compile_jobs` helper (MemTotal kB,
-    nproc) and return the bounded job count it prints."""
+def _cpp_compile_jobs(memtotal_kb: int, ncpu: int) -> int:
+    """Invoke the canonical C++ job-budget policy used by the runtime helper."""
     result = subprocess.run(
         ["bash", "-c",
-         f"source {_INSTALL_SH} >/dev/null && "
-         f"_webrtc_compile_jobs {memtotal_kb} {ncpu}"],
+         f"source {_BUILD_SANDBOX_LIB} >/dev/null && "
+         f"_ram_bounded_jobs {memtotal_kb} {ncpu} "
+         '"${BUILD_SANDBOX_KB_PER_JOB_CPP}"'],
         capture_output=True,
         text=True,
         timeout=5,
@@ -244,44 +244,45 @@ def test_compute_rejects_negative_or_garbage_input():
     assert result == 8192
 
 
-# --- _webrtc_compile_jobs: RAM-bounded WebRTC AEC3 build parallelism ---
+# --- optional enhanced-AEC: canonical C++ build parallelism -----------
 # Regression: the unbounded `meson compile` fanned out to nproc (4 on a
 # Pi 5) -O3 cc1plus jobs and the OOM killer aborted the deploy on a 1 GB
-# Pi (jts2, 2026-06-21), taking nginx + jasper-voice down with it. The
-# helper budgets ~1.5 GB/job and clamps to [1, nproc].
+# Pi (jts2, 2026-06-21), taking nginx + jasper-voice down with it. The optional
+# installer now calls jasper-contained-build, which owns this same shared
+# ~1.5 GB/job budget and clamps to [1, nproc].
 
-def test_webrtc_jobs_1gb_pi_is_single_job():
+def test_enhanced_aec_jobs_1gb_pi_is_single_job():
     """The load-bearing case: a 1 GB Pi must build at -j1 (the OOM we
     fixed). 991 MB / 1.5 GB-per-job floors to 0 → clamped up to 1."""
-    assert _webrtc_compile_jobs(_PI5_1GB_MEMTOTAL_KB, 4) == 1
+    assert _cpp_compile_jobs(_PI5_1GB_MEMTOTAL_KB, 4) == 1
 
 
-def test_webrtc_jobs_2gb_pi_is_single_job():
+def test_enhanced_aec_jobs_2gb_pi_is_single_job():
     """2 GB / 1.5 GB-per-job = 1."""
-    assert _webrtc_compile_jobs(_PI5_2GB_MEMTOTAL_KB, 4) == 1
+    assert _cpp_compile_jobs(_PI5_2GB_MEMTOTAL_KB, 4) == 1
 
 
-def test_webrtc_jobs_4gb_pi_is_two_jobs():
+def test_enhanced_aec_jobs_4gb_pi_is_two_jobs():
     """4 GB / 1.5 GB-per-job = 2 (under the 4-core cap)."""
-    assert _webrtc_compile_jobs(_PI5_4GB_MEMTOTAL_KB, 4) == 2
+    assert _cpp_compile_jobs(_PI5_4GB_MEMTOTAL_KB, 4) == 2
 
 
-def test_webrtc_jobs_8gb_pi_uses_full_nproc():
+def test_enhanced_aec_jobs_8gb_pi_uses_full_nproc():
     """A roomy Pi isn't throttled: 8 GB budgets 5 jobs, clamped to the
     4 cores available."""
-    assert _webrtc_compile_jobs(_PI5_8GB_MEMTOTAL_KB, 4) == 4
+    assert _cpp_compile_jobs(_PI5_8GB_MEMTOTAL_KB, 4) == 4
 
 
-def test_webrtc_jobs_clamped_to_nproc_not_ram():
+def test_enhanced_aec_jobs_clamped_to_nproc_not_ram():
     """RAM allows more jobs than cores → clamp to nproc."""
-    assert _webrtc_compile_jobs(_PI5_16GB_MEMTOTAL_KB, 2) == 2
+    assert _cpp_compile_jobs(_PI5_16GB_MEMTOTAL_KB, 2) == 2
 
 
-def test_webrtc_jobs_never_zero_on_garbage_input():
+def test_enhanced_aec_jobs_never_zero_on_garbage_input():
     """A meson `-j0` would be invalid (or unbounded). Zero/garbage
     MemTotal must still floor to 1 job."""
-    assert _webrtc_compile_jobs(0, 4) == 1
-    assert _webrtc_compile_jobs(1024, 4) == 1
+    assert _cpp_compile_jobs(0, 4) == 1
+    assert _cpp_compile_jobs(1024, 4) == 1
 
 
 def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
@@ -801,11 +802,20 @@ def test_base_source_builds_use_hash_checked_archives():
         "NQPTP_SHA256",
         "SHAIRPORT_SYNC_ARCHIVE_URL",
         "SHAIRPORT_SYNC_SHA256",
-        "WEBRTC_AEC3_ARCHIVE_URL",
-        "WEBRTC_AEC3_SHA256",
         "fetch_verified_source_archive",
     ]:
         assert expected in text
+
+    enhanced_target = (
+        REPO_ROOT / "jasper_aec3" / "enhanced-aec-source.env"
+    ).read_text(encoding="utf-8")
+    enhanced_installer = (
+        REPO_ROOT / "jasper" / "cli" / "enhanced_aec_install.py"
+    ).read_text(encoding="utf-8")
+    assert "WEBRTC_AEC3_ARCHIVE_URL=https://" in enhanced_target
+    assert "WEBRTC_AEC3_SHA256=" in enhanced_target
+    assert "_download_archive(" in enhanced_installer
+    assert "extension_sha256(destination)" in enhanced_installer
 
     for path, source_text in _installer_shell_texts().items():
         for forbidden in [
@@ -1552,15 +1562,13 @@ def test_ram_bounded_jobs_clamps_to_nproc_and_floors_to_one():
     assert _ram_bounded_jobs(1024, 4, 1_500_000) == 1
 
 
-def test_webrtc_compile_jobs_delegates_to_ram_bounded_jobs():
-    """The point-fix function stays value-identical to the generalized
-    helper at the C++ budget across the SKU range — so the existing
-    _webrtc_compile_jobs regression tests keep meaning the same thing."""
+def test_enhanced_aec_jobs_use_the_shared_cpp_budget():
+    """The runtime helper stays value-identical to the shared C++ policy."""
     for m in (
         _PI5_1GB_MEMTOTAL_KB, _PI5_2GB_MEMTOTAL_KB,
         _PI5_4GB_MEMTOTAL_KB, _PI5_8GB_MEMTOTAL_KB,
     ):
-        assert _webrtc_compile_jobs(m, 4) == _ram_bounded_jobs(m, 4, 1_500_000)
+        assert _cpp_compile_jobs(m, 4) == _ram_bounded_jobs(m, 4, 1_500_000)
 
 
 # --- build_sandbox_props: the inverse-of-audio-daemon policy -----------
@@ -1790,11 +1798,18 @@ def test_install_sources_build_sandbox_lib():
 
 
 def test_heavy_builds_route_through_run_contained_build():
-    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
     renderers = _RENDERERS_LIB.read_text(encoding="utf-8")
     python_runtime = _PYTHON_RUNTIME_LIB.read_text(encoding="utf-8")
     rust = _RUST_DAEMONS_LIB.read_text(encoding="utf-8")
-    assert 'run_contained_build "webrtc-aec3"' in install_sh
+    runtime_helper = (
+        REPO_ROOT / "deploy" / "bin" / "jasper-contained-build"
+    ).read_text(encoding="utf-8")
+    enhanced_installer = (
+        REPO_ROOT / "jasper" / "cli" / "enhanced_aec_install.py"
+    ).read_text(encoding="utf-8")
+    assert 'run_contained_build "${label}"' in runtime_helper
+    assert '"webrtc-aec3"' in enhanced_installer
+    assert "_run_contained(" in enhanced_installer
     assert 'run_contained_build "jasper-aec3"' in python_runtime
     assert 'run_contained_build "nqptp"' in renderers
     assert 'run_contained_build "shairport-sync"' in renderers
@@ -1819,8 +1834,11 @@ def test_build_sandbox_budget_constants_are_named_once():
     lib = _BUILD_SANDBOX_LIB.read_text(encoding="utf-8")
     assert "BUILD_SANDBOX_KB_PER_JOB_CPP=1500000" in lib
     assert "BUILD_SANDBOX_KB_PER_JOB_C=400000" in lib
-    # _webrtc_compile_jobs uses the named C++ budget, not a bare literal.
-    assert 'BUILD_SANDBOX_KB_PER_JOB_CPP' in _INSTALL_SH.read_text(encoding="utf-8")
+    # The installed helper uses the named C++ budget, not a bare literal.
+    helper = (
+        REPO_ROOT / "deploy" / "bin" / "jasper-contained-build"
+    ).read_text(encoding="utf-8")
+    assert 'BUILD_SANDBOX_KB_PER_JOB_CPP' in helper
 
 
 def test_build_sandbox_lib_parses():

@@ -535,6 +535,7 @@ JTS ladder, descending priority:
 | `jasper-mux`, `jasper-input`, `jasper-usbmic`, `jasper-wiim-remote-mic`, `jasper-snapclient`, `jasper-snapserver` | -300 | Restartable control/accessory and managed grouping daemons; mux outage is user-visible because fan-in starts safe/closed; USB mic export stops safely and systemd restarts it; WiiM falls back to the normal mic; Snapcast is reconciler-recoverable |
 | `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
 | `jasper-usbsink-volume` | +100 | Optional long-running, non-real-time volume observer; deliberately preferred over audio/control owners |
+| `jasper-enhanced-aec-install` | +900 | Explicitly requested background compiler; standard AEC remains available, so kill this before live audio/control daemons |
 
 Critical: **nothing operator-launched through SSH should inherit
 -1000** because that fully disables OOM-kill for that PID. This was

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Runtime entry point for the same low-memory build containment policy used by
+# deploy/install.sh. The optional enhanced-AEC oneshot invokes this helper so
+# an opt-in compile yields CPU/I/O and is the preferred OOM victim just like an
+# installer build.
+
+set -euo pipefail
+
+# shellcheck source=deploy/lib/install/build-sandbox.sh
+source /usr/local/lib/jasper/install/build-sandbox.sh
+
+# Unlike deploy-time builds, every invocation of this optional-job helper has
+# an independent wall-clock ceiling.  The Python caller and outer oneshot are
+# also bounded, but killing `systemd-run` does not necessarily kill a transient
+# scope that it already created.  RuntimeMaxSec makes the scope self-expiring;
+# the direct-mode branch below uses GNU timeout without --foreground so the
+# whole command process group receives TERM/KILL.
+enhanced_build_runtime_max="${JASPER_ENHANCED_AEC_BUILD_RUNTIME_MAX:-14m}"
+case "${enhanced_build_runtime_max}" in
+    *[!0-9smhd.]*|"")
+        echo "invalid JASPER_ENHANCED_AEC_BUILD_RUNTIME_MAX: use a duration such as 14m" >&2
+        exit 2
+        ;;
+esac
+export JASPER_BUILD_SANDBOX_RUNTIME_MAX="${JASPER_BUILD_SANDBOX_RUNTIME_MAX:-${enhanced_build_runtime_max}}"
+
+if [[ "${1:-}" == "--jobs-cpp" && $# -eq 1 ]]; then
+    build_sandbox_jobs "${BUILD_SANDBOX_KB_PER_JOB_CPP}"
+    exit 0
+fi
+
+if [[ $# -lt 3 || "${2:-}" != "--" ]]; then
+    echo "usage: jasper-contained-build --jobs-cpp | <label> -- <command> [args...]" >&2
+    exit 2
+fi
+
+label="$1"
+shift 2
+
+setup_build_swap_if_needed
+trap cleanup_build_swap EXIT
+if _build_sandbox_active; then
+    run_contained_build "${label}" -- "$@"
+else
+    if ! command -v timeout >/dev/null 2>&1; then
+        echo "bounded direct build requires GNU timeout" >&2
+        exit 127
+    fi
+    _build_sandbox_log "uncontained_bounded" \
+        "label=${label} runtime_max=${enhanced_build_runtime_max}"
+    timeout --signal=TERM --kill-after=20s \
+        "${enhanced_build_runtime_max}" "$@"
+fi

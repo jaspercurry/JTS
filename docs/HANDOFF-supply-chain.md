@@ -171,6 +171,24 @@ fails deploy instead of resolving live. The provenance checker fails if
 either lockfile disappears or no longer covers the crate's direct
 dependencies.
 
+## First-Party ARM64 Release Bundle
+
+The manual first-party ARM64 lane turns the locked Rust daemons and JTS ALSA
+ring plugin into a narrow, self-verifying release bundle. Its BUILD-INFO
+records the exact clean Git commit, active Cargo graphs, lockfile hashes,
+compiler versions, complete Debian build-root package inventory, ELF dynamic
+dependencies, and stable build environment. Its checksum manifest covers the
+complete bundle, including exact Cargo license files and derived/system
+notices.
+
+The install seam additionally requires the bundle's commit to equal the exact
+source revision being installed. An invalid, dirty, unknown, or mismatched
+identity fails closed instead of falling back to a different source build.
+
+Exact mechanics and the important non-hermetic apt boundary live in
+[`HANDOFF-first-party-arm64-artifacts.md`](HANDOFF-first-party-arm64-artifacts.md).
+This narrow bundle is not a whole-image SBOM or redistribution clearance.
+
 ## Accepted Gaps
 
 These are real and intentionally left for later slices:
@@ -259,5 +277,4 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-07-12 (renderer apt-package ownership rechecked against
-both full and streambox install profiles)
+Last verified: 2026-07-27

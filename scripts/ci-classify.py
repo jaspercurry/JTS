@@ -42,6 +42,7 @@ LANDING_TEST_FILES = (
     "tests/test_landing_control_token.py",
     "tests/test_landing_page_html.py",
     "tests/test_sound_plumbing.py",
+    "tests/test_system_setup.py",
     "tests/test_web_design_system.py",
 )
 LANDING_INSTALL_CONTRACTS = (
@@ -189,6 +190,7 @@ DOCS_TEST_FILES = (
     "tests/test_docs_impact.py",
     "tests/test_docs_linkcheck.py",
     "tests/test_env_vars_codified.py",
+    "tests/test_first_party_arm64_release.py",
     "tests/test_launch_blocker_docs_exist.py",
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",

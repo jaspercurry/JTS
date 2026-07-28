@@ -90,7 +90,7 @@ export function actionButton(label, opts = {}) {
 
 // Collapsible section. The open state lives on the element's dataset, so a
 // poll that re-renders the body never reopens/closes it.
-export function collapsible({ title, open = true, body }) {
+export function collapsible({ title, open = true, body, onToggle = null }) {
   const root = h("section.collapsible", null,
     h("button.collapsible__toggle", {
       type: "button",
@@ -100,6 +100,7 @@ export function collapsible({ title, open = true, body }) {
         const next = host.dataset.open !== "true";
         host.dataset.open = String(next);
         this.setAttribute("aria-expanded", String(next));
+        if (onToggle) onToggle(next);
       },
     },
       svg("svg", {

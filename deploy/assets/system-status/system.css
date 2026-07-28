@@ -438,6 +438,63 @@ article.incident-row .incident-row__summary {
 .collapsible__body { display: none; margin-top: 12px; }
 .collapsible[data-open="true"] .collapsible__body { display: block; }
 
+/* Optional software stays inside the Software card and closed by default.
+   Product language is primary; implementation names live behind the nested
+   technical disclosure. */
+.optional-features {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.optional-features .collapsible__toggle { padding-inline: 0; }
+.optional-feature {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--foreground-005);
+}
+.optional-feature__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.optional-feature__title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+}
+.optional-feature__summary,
+.optional-feature__detail {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.optional-feature__detail { margin-top: 0; }
+.optional-feature__technical {
+  padding-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.optional-feature__technical > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 500;
+}
+.optional-feature__technical .deflist {
+  margin-top: 10px;
+  grid-template-columns: minmax(96px, max-content) 1fr;
+  column-gap: 14px;
+  row-gap: 5px;
+}
+.optional-feature__technical dd { overflow-wrap: anywhere; }
+@media (max-width: 559px) {
+  .optional-feature__head { flex-direction: column; gap: 10px; }
+  .optional-feature .btn { width: 100%; min-height: 44px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .live-pill__dot { animation: none; }
   .cpu-bars__fill, .collapsible__toggle svg,

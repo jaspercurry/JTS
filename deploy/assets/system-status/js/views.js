@@ -22,6 +22,7 @@ import {
 } from "./sections.js";
 import { buildDebugCard } from "./debug-card.js";
 import { buildUsbForensicsCard } from "./usb-forensics-card.js";
+import { buildEnhancedAecCard } from "./optional-features-card.js";
 
 export function buildSystemPanel(handlers) {
   const live = livePill();
@@ -29,6 +30,8 @@ export function buildSystemPanel(handlers) {
   // Data sections: title built once, body re-rendered (when changed) per poll.
   const vitals = h("section.stat-grid");
   const software = titledCard("Software");
+  const softwareDetails = h("div");
+  software.body.append(softwareDetails, buildEnhancedAecCard());
   const ha = titledCard("Home Assistant");
   const network = titledCard("Network");
 
@@ -103,7 +106,7 @@ export function buildSystemPanel(handlers) {
 
   const refs = {
     staleness: live.label,
-    vitals, software: software.body, ha: ha.body,
+    vitals, software: softwareDetails, ha: ha.body,
     network: network.body, svc: svcBody,
     actionsStatus, capabilityNote,
     actionButtons: { restartVoice, restartAudio },

@@ -65,6 +65,14 @@ build_install_jts_ring_ioplug() {
     local cache_dir="/var/cache/jts-ring-ioplug-build"
     local so_dest="${JTS_RING_ALSA_PLUGIN_DIR}/${JTS_RING_IOPLUG_SO}"
 
+    if declare -F prepare_first_party_runtime_bundle >/dev/null; then
+        prepare_first_party_runtime_bundle || return 1
+        if first_party_runtime_artifact_installed "jts-ring-ioplug"; then
+            echo "  jts_ring ioplug: using verified first-party ARM64 runtime bundle"
+            return 0
+        fi
+    fi
+
     if [[ ! -d "${src_dir}" ]]; then
         # A branch predating the ioplug source. Non-fatal: the ring
         # platform simply is not available; doctor warns.

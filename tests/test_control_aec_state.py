@@ -16,12 +16,13 @@ so a regression in parse/write logic surfaces fast.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io
+from jasper import atomic_io, enhanced_aec
 from jasper.audio_profile_state import MicProbe
 from jasper.chip_aec_policy import (
     ACTION_FIX_MIC_PROFILE,
@@ -33,6 +34,29 @@ from jasper.control import aec_endpoints
 from jasper.control import server
 from jasper.mics import xvf3800
 from jasper.web import wake_setup
+
+
+@pytest.mark.parametrize(
+    ("active_state", "expected"),
+    [
+        ("active", True),
+        ("activating", True),
+        ("reloading", True),
+        ("inactive", False),
+        ("failed", False),
+    ],
+)
+def test_foreground_maintenance_unit_activity_includes_activating(
+    monkeypatch, active_state, expected,
+):
+    monkeypatch.setattr(
+        aec_endpoints.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 3, stdout=active_state + "\n", stderr="",
+        ),
+    )
+    assert aec_endpoints._unit_active("jasper-enhanced-aec-install.service") is expected
 
 
 @pytest.fixture
@@ -519,7 +543,15 @@ def test_aec_full_status_includes_legs_and_threshold(
         "_audio_validation_summary",
         fake_validation_summary,
     )
+    monkeypatch.setattr(
+        enhanced_aec,
+        "status",
+        lambda **_kwargs: pytest.fail(
+            "ordinary /aec polling must not inspect optional enhanced AEC"
+        ),
+    )
     status = server._aec_full_status()
+    assert "enhanced_aec" not in status
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
     assert status["bridge_role"] == "software_aec3"

@@ -59,7 +59,7 @@ verification = "sha256sum -c in deploy/install.sh; JTS release asset bytes verif
 [[artifact]]
 id = "webrtc-audio-processing-v2"
 kind = "source-archive"
-consumer = "deploy/install.sh: build_webrtc_v2_for_aec3"
+consumer = "jasper-enhanced-aec-install (jasper/cli/enhanced_aec_install.py)"
 repository = "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
 url = "https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/webrtc-audio-processing-846fe90a289f.tar.gz"
 resolved_url = "https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/webrtc-audio-processing-846fe90a289f.tar.gz"
@@ -70,7 +70,7 @@ ref = "v2.1"
 # annotated tag object. The install path fetches the peeled commit archive.
 commit = "846fe90a289f58b7c9303a635142aa2c7caa93e5"
 sha256 = "ddf4e540b9f4291e140cc2ab4560f3eb4fce07ef6212a94d980843bfbf9a4588"
-verification = "sha256sum -c in deploy/install.sh; JTS release asset bytes verified against upstream commit archive"
+verification = "SHA-256 verified by jasper-enhanced-aec-install before extraction; target fields checked against jasper_aec3/enhanced-aec-source.env by scripts/check-provenance.py; JTS release asset bytes verified against upstream commit archive"
 
 [[artifact]]
 id = "camillagui-aarch64"
@@ -269,7 +269,7 @@ id = "source-archive-mirroring"
 kind = "release-asset-mirroring"
 consumer = "deploy/install.sh and deploy/provenance.toml source-archive artifacts"
 status = "pinned"
-notes = "nqptp, shairport-sync, and webrtc-audio-processing install-time source builds consume byte-exact JTS release assets under build-deps-v1. Their upstream auto-generated commit archive URLs are retained as upstream_url/upstream_resolved_url provenance."
+notes = "nqptp and shairport-sync core install builds plus the optional webrtc-audio-processing enhancement consume byte-exact JTS release assets under build-deps-v1. Their upstream auto-generated commit archive URLs are retained as upstream_url/upstream_resolved_url provenance."
 
 [[surface]]
 id = "rust-fanin-crates"

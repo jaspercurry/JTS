@@ -15,6 +15,7 @@ import os
 import re
 import time
 from pathlib import Path
+from ... import enhanced_aec
 from ...audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -234,6 +235,82 @@ def check_audio_profile_runtime() -> CheckResult:
         )
 
     return _assess_audio_profile(_audio_profile_status_for_doctor())
+
+
+def _assess_enhanced_aec_status(payload: dict) -> CheckResult:
+    """Translate the optional install lifecycle into one advisory row."""
+
+    state = str(payload.get("state") or "unavailable")
+    detail = str(payload.get("detail") or payload.get("summary") or "").strip()
+    if state in {"installed", "not_needed"}:
+        return CheckResult(
+            "Enhanced AEC",
+            "ok",
+            detail or f"optional enhancement state={state}",
+        )
+    if state == "installing":
+        return CheckResult(
+            "Enhanced AEC",
+            "ok",
+            detail or "optional enhancement is installing in the background",
+        )
+    return CheckResult(
+        "Enhanced AEC",
+        "warn",
+        (
+            detail or f"requested optional enhancement state={state}"
+        )
+        + "; standard echo cancellation remains available — retry from /system/",
+    )
+
+
+@doctor_check(order=46.5, group="aec")
+def check_enhanced_aec() -> CheckResult:
+    """Report only an explicitly requested optional enhancement.
+
+    A missing intent is healthy and deliberately avoids fingerprinting native
+    inputs on every doctor run. Once requested, failure/staleness remains an
+    advisory because mandatory v1 is still the supported fallback.
+    """
+
+    if not enhanced_aec.read_intent()["requested"]:
+        return CheckResult(
+            "Enhanced AEC",
+            "ok",
+            "not requested; standard echo cancellation is installed",
+        )
+
+    chip_active = False
+    try:
+        audio_profile = (
+            _audio_profile_status_for_doctor().get("audio_profile") or {}
+        )
+        active_profile = normalize_audio_input_profile(
+            str(audio_profile.get("active") or ""),
+            default="",
+        )
+        chip_active = active_profile in {
+            PROFILE_XVF_CHIP_AEC,
+            PROFILE_XVF_CHIP_AEC_TESTING,
+        }
+        service_state = _run(
+            ["systemctl", "is-active", "jasper-enhanced-aec-install.service"]
+        ).stdout.strip()
+        payload = enhanced_aec.status(
+            chip_aec_active=chip_active,
+            service_active=service_state
+            in {"active", "activating", "reloading"},
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return CheckResult(
+            "Enhanced AEC",
+            "warn",
+            "requested optional enhancement status could not be inspected "
+            f"({type(exc).__name__}); standard echo cancellation remains "
+            "available — retry from /system/",
+        )
+    return _assess_enhanced_aec_status(payload)
+
 
 def _assess_audio_validation_summary(
     summary: dict[str, object],

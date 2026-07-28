@@ -160,6 +160,7 @@ docs = [
   "docs/HANDOFF-runtime-memory.md",
   "docs/HANDOFF-supply-chain.md",
   "docs/HANDOFF-build-sandbox.md",
+  "docs/HANDOFF-enhanced-aec.md",
   "docs/HANDOFF-resilience.md",
   "docs/install-update-resilience-plan.md",
   "docs/HANDOFF-install-update-transaction.md",
@@ -169,11 +170,40 @@ requires_docs_when = [
   "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",
   "A build/download/provenance input or runtime install location changes.",
   "Build memory-bounding, cross-hardware-tier install behavior, update atomicity/rollback, or runtime hot-plug convergence changes (see the install-update-resilience planning brief).",
+  "The mandatory-v1 / optional-v2 boundary, enhanced-AEC build target, verified activation, or deploy/boot retry behavior changes (see HANDOFF-enhanced-aec.md).",
   "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change (see HANDOFF-install-update-transaction.md).",
 ]
 verification = [
   "bash scripts/doc-freshness.sh 90 --all",
   "python3 scripts/check-provenance.py when build/install fetches or direct URL dependencies changed",
+]
+
+[[subsystem]]
+id = "first-party-arm64-release"
+title = "First-party ARM64 runtime release artifact"
+safety = "boot-risk"
+code = [
+  ".github/workflows/first-party-arm64-release.yml",
+  "release/first-party-arm64/**",
+  "scripts/_first_party_arm64_release.py",
+  "scripts/build-first-party-arm64-release.py",
+  "scripts/verify-first-party-arm64-release.py",
+  "deploy/lib/install/first-party-runtime.sh",
+  "c/jts-ring-ioplug/Makefile",
+]
+docs = [
+  "docs/HANDOFF-first-party-arm64-artifacts.md",
+  "docs/HANDOFF-pi-image-delivery.md",
+  "docs/HANDOFF-supply-chain.md",
+  "LICENSE-third-party.md",
+]
+requires_docs_when = [
+  "The artifact set, target ABI, build environment, metadata schema, dependency/license evidence, publication lane, source-identity coupling, or install transaction changes.",
+]
+verification = [
+  "pytest -q tests/test_first_party_arm64_release.py",
+  "python3 scripts/docs-impact.py --validate-only",
+  "python3 scripts/docs-linkcheck.py --changed-file docs/HANDOFF-first-party-arm64-artifacts.md",
 ]
 
 [[subsystem]]
@@ -408,6 +438,9 @@ title = "AEC bridge, mic profiles, and XVF3800 control"
 safety = "audio-input-risk"
 code = [
   "jasper/cli/aec_*.py",
+  "jasper/cli/enhanced_aec_install.py",
+  "jasper/enhanced_aec.py",
+  "jasper_aec3/**",
   "jasper/cli/xvf_firmware_update.py",
   "jasper/aec_engines/**",
   "jasper/audio_profile_state.py",
@@ -420,6 +453,7 @@ code = [
   "deploy/bin/jasper-aec-reconcile",
   "deploy/lib/jasper-env-file.sh",
   "deploy/systemd/jasper-aec-*.service",
+  "deploy/systemd/jasper-enhanced-aec-*",
   "deploy/systemd/jasper-xvf-firmware-update.service",
   "deploy/systemd/jts-mic.slice",
   "deploy/udev/99-jasper-aec-reconcile.rules",
@@ -433,6 +467,7 @@ docs = [
   "docs/AEC-DIAG-04-timing-results.md",
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
   "docs/HANDOFF-aec.md",
+  "docs/HANDOFF-enhanced-aec.md",
   "docs/HANDOFF-runtime-memory.md",
   "docs/HANDOFF-barge-in.md",
   # The reconciler is the single writer of the mic presence-gate marker;
@@ -450,9 +485,10 @@ docs = [
 requires_docs_when = [
   "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, debug captures, or chip-AEC experiment controls change.",
   "AEC reference source, reference transport, or speaker-reference semantics change.",
+  "The mandatory-v1 / optional-v2 capability boundary, background install state, runtime authorization gate, or enhancement status API changes.",
 ]
 verification = [
-  "pytest tests/test_aec_reconcile.py tests/test_aec_bridge_systemd.py tests/test_aec_bridge_stall.py tests/test_control_aec_state.py",
+  "pytest tests/test_aec_reconcile.py tests/test_aec_bridge_systemd.py tests/test_aec_bridge_stall.py tests/test_control_aec_state.py tests/test_enhanced_aec.py tests/test_enhanced_aec_systemd.py",
 ]
 
 [[subsystem]]

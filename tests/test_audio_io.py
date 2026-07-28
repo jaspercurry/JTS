@@ -349,11 +349,16 @@ async def test_wait_drained_sleeps_until_deadline():
     wait_sec = 0.05  # keep the test fast
     await p.write(_silence_pcm(sec=wait_sec))
     start = time.monotonic()
+    remaining = p.expected_drain_at() - start
+    assert remaining > 0.0
     await p.wait_drained()
     elapsed = time.monotonic() - start
-    # Lower bound: we did wait. Upper bound: not more than 50 ms slop.
-    assert elapsed >= wait_sec - 0.005
-    assert elapsed < wait_sec + 0.05
+    # The deadline is anchored before write() hands bytes to its worker
+    # thread, so cold thread-pool startup legitimately consumes part of the
+    # PCM duration before this timer starts. Assert against the actual
+    # remaining deadline rather than pretending write() has zero latency.
+    assert elapsed >= remaining - 0.005
+    assert elapsed < remaining + 0.05
 
 
 async def test_drain_unchanged_after_empty_write():

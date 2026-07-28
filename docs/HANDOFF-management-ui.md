@@ -1,6 +1,6 @@
 # Management UI — redesign proposal + reference
 
-**Status:** Reference · created 2026-05-22 · refreshed 2026-06-14.
+**Status:** Reference · created 2026-05-22 · refreshed 2026-07-27.
 Phase 1 IA/visual reshape implemented on 2026-05-28 in
 `deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
 style, local Figtree/Outfit font assets, and a quieter one-column settings
@@ -464,7 +464,18 @@ once, so polling does not reset controls, disclosure state, or text selection.
   sparklines where history is useful. Memory also shows root cgroup-v2
   total / anon / file / kernel / other buckets when the controller is
   available.
-- Software (sha · branch · install date · uptime · voice provider)
+- Software (sha · branch · install date · uptime · voice provider), with a
+  closed **Optional features** disclosure. Enhanced echo cancellation lives
+  there—not on the landing page and not among the ordinary AEC controls on
+  `/wake/`. Opening the disclosure lazily reads the versioned
+  `/aec/enhanced-aec` control contract through `system_setup.py`; its install
+  button starts the background job and polls only while the disclosure is
+  open. The backend owns installation/chip-AEC truth. The browser only maps
+  its `not_installed|installing|installed|stale|failed|unavailable|not_needed`
+  states to product language, and keeps WebRTC/BEST_A vocabulary under
+  Technical details. A failed install keeps the ordinary summary reassuring
+  and actionable; its bounded compiler/download error tail is shown only
+  inside that technical disclosure.
 - Home Assistant connection status (including a "Checking" transient while
   the child-process probe cache refreshes)
 - Network (RX / TX bytes since boot, throttle bits)
@@ -1483,7 +1494,11 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-07-22 (USB forensics card composition, shared snapshot,
+Last verified: 2026-07-27 (`/system/` Software optional-feature disclosure,
+lazy enhanced-AEC proxy/install contract, backend-owned chip-AEC state, and
+static ES-module state projection rechecked against
+`jasper/web/system_setup.py`, `deploy/assets/system-status/js/`, and
+`tests/test_system_setup.py`). Prior 2026-07-22 (USB forensics card composition, shared snapshot,
 fixed POST proxy, CSRF/control-token path, and canonical ES-module primitives
 rechecked). Prior 2026-07-15 (source-switch desired/effective/parked/unavailable
 presentation and follower mutation guard rechecked against `sources_setup.py`,

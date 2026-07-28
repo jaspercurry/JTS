@@ -13,6 +13,7 @@ import subprocess
 import time
 from typing import Any
 
+from .. import enhanced_aec
 from ..audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -53,6 +54,7 @@ _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
+_ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
 _AEC_BRIDGE_STATS_FILE = "/run/jasper/aec_bridge_stats.json"
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
 
@@ -289,12 +291,20 @@ def _aec_bridge_active() -> bool:
 
 
 def _unit_active(unit: str) -> bool:
+    """Whether a foreground maintenance unit is live or starting.
+
+    ``systemctl is-active`` reports a long-running ``Type=oneshot`` as
+    ``activating`` until its foreground command exits. Both callers use this
+    as job-liveness truth, so treating only ``active`` as live would make a
+    real multi-minute install/update look interrupted.
+    """
+
     try:
         result = subprocess.run(
             ["systemctl", "is-active", unit],
             capture_output=True, text=True, timeout=2.0,
         )
-        return result.stdout.strip() == "active"
+        return result.stdout.strip() in {"active", "activating", "reloading"}
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -535,6 +545,30 @@ def _chip_aec_gate(
         )
     )
     return payload
+
+
+def _enhanced_aec_status(
+    *,
+    aec_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Optional-engine status using this domain's applied AEC truth."""
+
+    if aec_payload is None:
+        aec_payload = _aec_full_status()
+    audio_profile = aec_payload.get("audio_profile")
+    active_profile = (
+        str(audio_profile.get("active") or "")
+        if isinstance(audio_profile, dict)
+        else ""
+    )
+    chip_active = active_profile in {
+        PROFILE_XVF_CHIP_AEC,
+        PROFILE_XVF_CHIP_AEC_TESTING,
+    }
+    return enhanced_aec.status(
+        chip_aec_active=chip_active,
+        service_active=_unit_active(_ENHANCED_AEC_INSTALL_SERVICE),
+    )
 
 
 def _aec_full_status() -> dict:

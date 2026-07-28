@@ -7657,3 +7657,92 @@ def test_outputd_xrun_warning_reports_worst_lane():
     reason = doctor.audio._outputd_xrun_rate_warning(content, dac)
     assert reason is not None
     assert reason.startswith("dac ")
+
+
+# --- Optional enhanced AEC: requested-only advisory -----------------
+
+def test_enhanced_aec_doctor_is_quiet_and_cheap_when_not_requested(monkeypatch):
+    monkeypatch.setattr(
+        doctor.aec.enhanced_aec,
+        "read_intent",
+        lambda: {"requested": False},
+    )
+
+    def unexpected_status(**_kwargs):
+        raise AssertionError("status/fingerprint work must stay requested-only")
+
+    monkeypatch.setattr(doctor.aec.enhanced_aec, "status", unexpected_status)
+
+    result = doctor.check_enhanced_aec()
+
+    assert result.status == "ok"
+    assert "not requested" in result.detail
+
+
+@pytest.mark.parametrize("state", ["installed", "not_needed", "installing"])
+def test_enhanced_aec_doctor_accepts_non_actionable_states(
+    monkeypatch,
+    state,
+):
+    monkeypatch.setattr(
+        doctor.aec.enhanced_aec,
+        "read_intent",
+        lambda: {"requested": True},
+    )
+    monkeypatch.setattr(
+        doctor.aec,
+        "_audio_profile_status_for_doctor",
+        lambda: {"audio_profile": {"active": "xvf_software_aec3"}},
+    )
+    monkeypatch.setattr(
+        doctor.aec,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="inactive\n", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        doctor.aec.enhanced_aec,
+        "status",
+        lambda **_kwargs: {"state": state, "detail": f"state={state}"},
+    )
+
+    result = doctor.check_enhanced_aec()
+
+    assert result.status == "ok"
+    assert result.detail == f"state={state}"
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["not_installed", "failed", "stale", "unavailable"],
+)
+def test_enhanced_aec_doctor_warns_only_after_request(monkeypatch, state):
+    monkeypatch.setattr(
+        doctor.aec.enhanced_aec,
+        "read_intent",
+        lambda: {"requested": True},
+    )
+    monkeypatch.setattr(
+        doctor.aec,
+        "_audio_profile_status_for_doctor",
+        lambda: {"audio_profile": {"active": "xvf_software_aec3"}},
+    )
+    monkeypatch.setattr(
+        doctor.aec,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="inactive\n", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        doctor.aec.enhanced_aec,
+        "status",
+        lambda **_kwargs: {"state": state, "detail": f"state={state}"},
+    )
+
+    result = doctor.check_enhanced_aec()
+
+    assert result.status == "warn"
+    assert "standard echo cancellation remains available" in result.detail
+    assert "/system/" in result.detail

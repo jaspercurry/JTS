@@ -51,11 +51,11 @@ from typing import Any, Iterable
 import numpy as np
 
 try:
-    from _wake_audio_metrics import rms_amplitude as _rms
-except ModuleNotFoundError as exc:
-    if exc.name != "_wake_audio_metrics":
-        raise
     from scripts._wake_audio_metrics import rms_amplitude as _rms
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts._wake_audio_metrics"}:
+        raise
+    from _wake_audio_metrics import rms_amplitude as _rms
 
 
 _cvm_stub = _types.ModuleType("openwakeword.custom_verifier_model")

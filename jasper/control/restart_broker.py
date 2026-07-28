@@ -164,6 +164,7 @@ START_ONLY_UNITS = frozenset({
     "jasper-source-intent-reconcile.service",
     "jasper-wifi-scan-repair.service",
     "jasper-xvf-firmware-update.service",
+    "jasper-enhanced-aec-install.service",
 })
 
 POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS

@@ -390,6 +390,7 @@ _TOKEN_GATED_ROUTES = frozenset({
     "/aec/usb-mic-leg",
     "/grouping/set",
     "/aec/firmware/update",
+    "/aec/enhanced-aec/install",
 })
 
 
@@ -579,6 +580,10 @@ def _start_xvf_firmware_update() -> None:
 
 def _aec_full_status() -> dict:
     return _aec_endpoints._aec_full_status()
+
+
+def _enhanced_aec_status() -> dict:
+    return _aec_endpoints._enhanced_aec_status()
 
 
 def _schedule_usb_gadget_recompose() -> bool:
@@ -1875,6 +1880,9 @@ def _make_handler(
             # which has check_aec_bridge_dtln_engine for the
             # silent-failure case.
             self._send_json(_aec_full_status())
+
+        def _get_enhanced_aec(self) -> None:
+            self._send_json(_enhanced_aec_status())
 
         def _get_debug(self) -> None:
             # Runtime debug-logging state for the /system Debug card:
@@ -3220,6 +3228,64 @@ def _make_handler(
             self._send_json(_aec_full_status())
             return
 
+        def _post_enhanced_aec_install(self) -> None:
+            current = _enhanced_aec_status()
+            if current.get("state") in {"installed", "installing"}:
+                self._send_json(current)
+                return
+            action = current.get("action")
+            if not isinstance(action, dict) or not action.get("enabled"):
+                self._send_json(
+                    {
+                        "error": (
+                            action.get("reason")
+                            if isinstance(action, dict)
+                            else "enhanced echo cancellation is unavailable"
+                        ),
+                        "enhanced_aec": current,
+                    },
+                    status=409,
+                )
+                return
+            try:
+                from .. import enhanced_aec
+
+                enhanced_aec.request_install()
+            except (OSError, TimeoutError, ValueError) as exc:
+                self._send_json(
+                    {"error": f"enhanced-AEC request could not be saved: {exc}"},
+                    status=502,
+                )
+                return
+            started = restart_broker.manage_units(
+                "jasper-enhanced-aec-install.service",
+                verb="start",
+                reason="enhanced_aec_install",
+                no_block=True,
+                timeout=5.0,
+            )
+            if not started.get("ok"):
+                self._send_json(
+                    {
+                        "error": (
+                            "The preference was saved, but the background "
+                            "installer could not be started."
+                        ),
+                        "code": "enhanced_aec_start_failed",
+                        "intent_saved": True,
+                        "enhanced_aec": _enhanced_aec_status(),
+                    },
+                    status=502,
+                )
+                return
+            log_event(
+                logger,
+                "aec.enhanced.install_start",
+                client=self.address_string(),
+            )
+            self._send_json(_enhanced_aec_status())
+            return
+
         def _post_debug(self) -> None:
             # /system Debug card: raise one subsystem to DEBUG
             # logging. Additive-only + auto-expiring (jasper/
@@ -3456,6 +3522,7 @@ def _make_handler(
             "/mic": "_get_mic",
             "/source/state": "_get_source_state",
             "/aec": "_get_aec",
+            "/aec/enhanced-aec": "_get_enhanced_aec",
             "/debug": "_get_debug",
             "/state": "_get_state",
             "/grouping": "_get_grouping",
@@ -3483,6 +3550,7 @@ def _make_handler(
             "/aec/usb-mic-leg": "_post_aec_usb_mic_leg",
             "/aec/threshold": "_post_aec_threshold",
             "/aec/firmware/update": "_post_aec_firmware_update",
+            "/aec/enhanced-aec/install": "_post_enhanced_aec_install",
             "/debug": "_post_debug",
             "/usb-forensics": "_post_usb_forensics",
             "/system/audio-quality": "_post_system_audio_quality",

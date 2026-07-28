@@ -22,6 +22,13 @@ HANDOFF-xvf3800.md explains the *chip*.
 The `jasper/mics/xvf3800.py` profile module is the canonical
 source for chip-specific constants consumed at runtime.
 
+**Enhanced software-engine delivery**:
+[HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md) owns the mandatory
+AEC3 v1 vs. optional vendored v2/BEST_A boundary, background installer,
+verified marker/digest gate, deploy-race behavior, status API, and
+redistribution boundary. This document owns the audio topology and tuning;
+do not duplicate install-lifecycle policy here.
+
 **Barge-in decision archaeology**:
 [HANDOFF-barge-in.md](HANDOFF-barge-in.md) preserves the option analysis
 behind the current topology, including historical traps around split
@@ -56,6 +63,13 @@ new output DAC without promoting it to production, select
 `xvf_chip_aec_testing`; it runs the same physical chip-AEC path as
 `xvf_chip_aec`, surfaces the DAC gate as `testing`, and never makes
 `auto` choose that DAC.
+
+The software fallback is immediately usable with the mandatory v1 binding.
+Vendored v2 / BEST_A is now an explicit enhancement installed from the
+`/system/` Software surface. The bridge selects v2 only when its activation
+marker, current source/ABI fingerprint, and extension digest all verify;
+otherwise both `auto` and an explicit `JASPER_AEC_BINDING=v2` safely use v1.
+Importing v1 never imports an orphan/stale v2 native module.
 
 The current `xvf_chip_aec` baseline is **not** the older
 `SHF_BYPASS=1` software-AEC profile. With chip-AEC armed,
@@ -413,8 +427,10 @@ until outputd grew the XVF USB-IN reference fanout; the current
 
 ### Corpus-only AEC3 sweep knobs
 
-The production `on` leg still defaults to BEST_A. For wake-corpus
-pilot tuning, `jasper_aec3/src/aec3_binding_v2.cpp` and
+The production `on` leg uses BEST_A when the verified enhancement is
+installed and mandatory v1 otherwise. The deep sweep knobs below require v2;
+they are unavailable on a v1-only installation. For wake-corpus pilot tuning,
+`jasper_aec3/src/aec3_binding_v2.cpp` and
 `_Aec3V2Engine` in `jasper/cli/aec_bridge.py` expose a small set of
 additional WebRTC AEC3 suppressor knobs as env overrides so the corpus
 bridge can run same-utterance variants without changing the production
@@ -2449,9 +2465,11 @@ Files involved in the AEC subsystem:
   `JASPER_MIC_DEVICE`, AEC service enablement, and current mic
   hardware in sync so stale `udp:9876` does not strand voice when
   the Array is absent
-- `deploy/install.sh` — installs all of the above; builds the
-  `jasper_aec3` pybind11 binding against `libwebrtc-audio-processing-dev`;
-  installs `dfu-util` for chip firmware operations; seeds
+- `deploy/install.sh` — installs all of the above; builds mandatory
+  `jasper_aec3._aec3` against `libwebrtc-audio-processing-dev`, and installs
+  the optional-v2 background lifecycle described in
+  [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md); installs `dfu-util` for
+  chip firmware operations; seeds
   `/var/lib/jasper/aec_mode.env` and runs the reconciler once
 - `pyproject.toml` — registers `jasper-aec-bridge`,
   `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
@@ -2816,7 +2834,12 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-07-23 (the bridge's Camilla-independent runtime inputs,
+Last verified: 2026-07-27 (targeted recheck of the mandatory v1 / optional
+verified-v2 runtime selection and delivery boundary against
+`jasper/cli/aec_bridge.py`, `jasper/enhanced_aec.py`, the lazy
+`jasper_aec3` package initializer, and focused lifecycle tests; broader
+audio-topology verification remains from 2026-07-23, when the bridge's
+Camilla-independent runtime inputs,
 soft `After=`/`Wants=` startup dependency, and reconciler-owned lifecycle were
 rechecked against the unit, bridge topology, and the #1264 hardware failure;
 the active-plan-derived computer-microphone source selector, `primary` default,

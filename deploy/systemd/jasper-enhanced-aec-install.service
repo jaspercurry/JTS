@@ -1,0 +1,45 @@
+[Unit]
+Description=Install optional enhanced WebRTC echo cancellation
+Documentation=file:/opt/jasper/docs/HANDOFF-enhanced-aec.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/jasper/enhanced-aec-intent.json
+StartLimitIntervalSec=30min
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+ExecCondition=/opt/jasper/.venv/bin/jasper-enhanced-aec-install --check-profile
+ExecStart=/opt/jasper/.venv/bin/jasper-enhanced-aec-install
+TimeoutStartSec=30min
+TimeoutStopSec=10s
+KillMode=control-group
+User=root
+Group=root
+UMask=0007
+
+# Match the shared build-sandbox posture. The helper reuses the canonical
+# job-count, swap, timeout, and logging policy; this outer unit owns the cgroup
+# for download, extraction, compilation, probing, and activation.
+Nice=15
+OOMScoreAdjust=900
+CPUWeight=20
+IOWeight=20
+MemoryAccounting=yes
+MemoryHigh=85%
+
+# Keep every compiler child in this service cgroup. A nested transient scope
+# would survive `systemctl stop` long enough to race a deploy or retry.
+Environment=JASPER_BUILD_SANDBOX=0
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/jasper/.cache /opt/jasper/.venv/lib /var/lib/jasper /var/lib/jasper-enhanced-aec /var/tmp
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

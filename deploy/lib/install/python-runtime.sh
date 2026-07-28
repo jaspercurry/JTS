@@ -98,6 +98,43 @@ install_jasper() {
     # below moves any existing broad-state files into it.
     ensure_intsecrets_dir
 
+    # Stop optional work before mutating the live source/venv. Its compiler
+    # children remain in the oneshot cgroup, so a cgroup-wide KILL drains the
+    # whole tree without making a core deploy wait for nonessential work. The
+    # final manifest PathChanged event retries the still-durable intent.
+    local enhanced_aec_state
+    enhanced_aec_state="$(
+        systemctl is-active jasper-enhanced-aec-install.service 2>/dev/null \
+            || true
+    )"
+    case "${enhanced_aec_state}" in
+        active|activating|reloading|deactivating)
+            echo "  pausing optional enhanced-AEC work for core deploy"
+            systemctl kill --kill-whom=all --signal=KILL \
+                jasper-enhanced-aec-install.service 2>/dev/null || true
+            systemctl stop --no-block jasper-enhanced-aec-install.service \
+                >/dev/null 2>&1 || true
+            ;;
+    esac
+
+    # Serialize the remaining short source/package mutation with enhanced-AEC
+    # snapshot/activation. The optional build itself never holds this lock.
+    # This lock authorizes root package mutation, so its parent is deliberately
+    # outside group-writable /var/lib/jasper. Creating/healing the root-only
+    # parent before shell redirection prevents a jasper-group process from
+    # substituting a symlink or holding the deploy lock.
+    install -d -m 0755 -o root -g root /var/lib/jasper-enhanced-aec
+    local enhanced_aec_lock_fd
+    exec {enhanced_aec_lock_fd}>"/var/lib/jasper-enhanced-aec/.install.lock"
+    chmod 0600 /var/lib/jasper-enhanced-aec/.install.lock
+    if ! flock -n "${enhanced_aec_lock_fd}"; then
+        echo "  waiting for enhanced-AEC activation to finish stopping"
+    fi
+    if ! flock -w 2 "${enhanced_aec_lock_fd}"; then
+        echo "  ERROR: unmanaged root process still holds the enhanced-AEC package mutation lock" >&2
+        return 1
+    fi
+
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
         --exclude='tests' --exclude='deploy' \
@@ -179,24 +216,32 @@ install_jasper() {
     #   - _aec3      → links against Debian Trixie's apt-installed
     #                  libwebrtc-audio-processing-1 (v1.3-3). Legacy
     #                  fallback engine.
-    #   - _aec3_v2   → links statically against vendored
-    #                  webrtc-audio-processing v2.1 (built by
-    #                  build_webrtc_v2_for_aec3 below). Exposes the
-    #                  deep EchoCanceller3Config knobs the v1
-    #                  binding can't reach — required for the BEST_A
-    #                  config. Built conditionally when the vendored
-    #                  static archive exists.
+    #   - _aec3_v2   → optional enhanced engine installed later by
+    #                  jasper-enhanced-aec-install. A normal deploy never
+    #                  downloads or compiles it.
     # See docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture
     # plan" and experiments/aec3-v2-deep-tune-spike/README.md for
     # the BEST_A canonical config + per-knob rationale.
     if [[ -d "${INSTALL_DIR}/jasper_aec3" ]]; then
-        # Build vendored v2.1 first (cached after first run); exports
-        # WEBRTC_AEC3_V2_PREFIX into the env that setup.py reads.
-        build_webrtc_v2_for_aec3
-
         local marker="${INSTALL_DIR}/.cache/jasper_aec3.installed.fingerprint"
         local fingerprint
         fingerprint="$(jasper_aec3_source_fingerprint)"
+
+        # Upgrade migration: v2 used to be mandatory. Preserve that implicit
+        # preference as durable opt-in before a necessary v1 package rebuild
+        # can remove the old extension. The new root job will re-verify it
+        # against the current fingerprint; runtime uses v1 until that marker
+        # lands.
+        if [[ ! -f /var/lib/jasper/enhanced-aec-intent.json ]] \
+           && find "${INSTALL_DIR}/.venv/lib" -path \
+                '*/site-packages/jasper_aec3/_aec3_v2*.so' \
+                -type f -print -quit 2>/dev/null | grep -q .; then
+            "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+from jasper.enhanced_aec import request_install
+request_install()
+PY
+            echo "  migrated existing enhanced AEC engine to durable opt-in intent"
+        fi
 
         local needs_rebuild=1
         if [[ -f "${marker}" ]] \
@@ -216,25 +261,20 @@ install_jasper() {
         fi
 
         if [[ "${needs_rebuild}" == "1" ]]; then
-            # --force-reinstall: pip wheel cache only keys on source hash
-            # + setuptools metadata, not on env vars. Without --force-reinstall,
-            # a previously-cached wheel built without WEBRTC_AEC3_V2_PREFIX
-            # (i.e. with only the v1 extension) would be reused even after
-            # the vendored v2 build completes. Forcing a rebuild is the
-            # simplest way to guarantee setup.py sees the env var and builds
-            # both extensions.
-            # cc1plus compiles the pybind wrapper translation units; contain
-            # it so an OOM kills only this build, never a live daemon. The env
-            # is passed via `env` (part of argv) so it
-            # survives independently of systemd-run scope env inheritance.
+            # Build only mandatory v1. The optional root job builds a v2-only
+            # wheel in staging and atomically installs its one extension, so a
+            # failed enhancement can never uninstall or damage this fallback.
             run_contained_build "jasper-aec3" -- \
-                env "WEBRTC_AEC3_V2_PREFIX=${JASPER_WEBRTC_V2_PREFIX:-}" \
+                env "JASPER_AEC3_BUILD_MODE=v1-only" \
                 "${INSTALL_DIR}/.venv/bin/pip" install --force-reinstall --no-deps \
                 "${INSTALL_DIR}/jasper_aec3"
             mkdir -p "$(dirname "${marker}")"
             echo "${fingerprint}" > "${marker}"
         fi
     fi
+
+    flock -u "${enhanced_aec_lock_fd}"
+    exec {enhanced_aec_lock_fd}>&-
 
     # Stage runtime model assets through jasper.model_downloads so the
     # exists/hash/download/failure-count logic stays unit-testable.
@@ -332,19 +372,12 @@ install_jasper() {
 }
 
 jasper_aec3_import_probe() {
-    local require_v2=0
-    if [[ -n "${JASPER_WEBRTC_V2_PREFIX:-}" ]]; then
-        require_v2=1
-    fi
-    JASPER_AEC3_REQUIRE_V2="${require_v2}" "${INSTALL_DIR}/.venv/bin/python" - <<'PY' 2>/dev/null
+    "${INSTALL_DIR}/.venv/bin/python" - <<'PY' 2>/dev/null
 import importlib
-import os
 
 import jasper_aec3
 
 importlib.import_module("jasper_aec3._aec3")
-if os.environ.get("JASPER_AEC3_REQUIRE_V2") == "1":
-    importlib.import_module("jasper_aec3._aec3_v2")
 PY
 }
 
@@ -377,8 +410,8 @@ print(f"ext_suffix={sysconfig.get_config_var('EXT_SUFFIX') or ''}")
 PY
         pkg-config --modversion webrtc-audio-processing-1 2>/dev/null \
             | sed 's/^/webrtc1=/' || true
-        echo "webrtc2=${WEBRTC_AEC3_COMMIT:-}:${WEBRTC_AEC3_SHA256:-}"
-        echo "webrtc2_prefix=${JASPER_WEBRTC_V2_PREFIX:-}"
+        sha256sum "${INSTALL_DIR}/jasper_aec3/enhanced-aec-source.env" \
+            2>/dev/null || true
     ) | sha256sum | awk '{print "content-v1:" $1}'
 }
 
