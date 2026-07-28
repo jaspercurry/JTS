@@ -1005,22 +1005,22 @@ reference. Currently:
   defect, the missing accountability assertions (inter-driver realized
   level, prediction-gated auto-apply, applied-implies-graded), and the
   evidence-gated boost doctrine with delta-probe verification.
+- [`llm-native-tuning-workbench-plan.md`](docs/llm-native-tuning-workbench-plan.md)
+  — **Current design and execution direction (2026-07-27)** for the
+  agent-assisted tuning workbench: expose existing measurements and DSP
+  capabilities through a factual context packet, linked domain-owned
+  evidence, and a reversible cross-layer experiment workspace. The host owns
+  dispatch, validation, safety, and restoration; the LLM owns natural-language
+  interpretation, hypotheses, tool choice, and experimental reasoning.
 - [`tuning-bench-design.md`](docs/tuning-bench-design.md)
-  — **Design work order (2026-07-27, pending review)** for the agent tuning
-  bench: productizing the measure → chart → discuss → attribute → fix →
-  verify → restore loop the iLoud comparison session ran by hand. Audit
-  synthesis (the measurement kernel is complete, the workbench layer is
-  not; the calibration agent is right-shape/wrong-scope), the two-LLM-seat
-  architecture, the bench verb set + canonical analysis JSON, the overlay
-  safety envelope, the layer-attribution vocabulary and perceptual
-  lexicon, the recorded Seat-2 widening plan, and the PR-B ladder.
+  — **Historical design snapshot (2026-07-27)** for the original
+  prescriptive tuning-bench shape. Retained for the iLoud-session rationale
+  and audit archaeology; superseded by the LLM-native workbench plan above.
 - [`tuning-bench-execution-plan.md`](docs/tuning-bench-execution-plan.md)
-  — **Execution work order (2026-07-27)** for the tuning-bench design: the
-  prescriptive PR-B1..B4 ladder a cheaper implementer session executes —
-  verb contracts, the canonical analysis JSON, the overlay lifecycle seam
-  map, the mux-lease/voice-pause requirements, and the evidence-verified
-  trap list. The design doc holds the why; this doc holds the what,
-  exactly.
+  — **Historical execution snapshot (2026-07-27)** for the superseded
+  PR-B1..B4 ladder. Retained for repository seams and implementation traps
+  verified at the snapshot date and expected to drift, not as current
+  implementation authority.
 - [`gating-v2-plan.md`](docs/gating-v2-plan.md)
   — **Adopted work order (2026-07-28, issue #1790)** for the gating
   overhaul motivated by the collapsed-gate incident: per-position masked
