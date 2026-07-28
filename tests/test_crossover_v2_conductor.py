@@ -63,6 +63,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_DRIVER_LEVELS_DISAGREE,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
+    REASON_RELAY_TIMEOUT,
     REVERIFY_NO_REWALK_HEADLINE,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
@@ -5054,6 +5055,28 @@ def test_prediction_gate_needs_a_measured_pre_apply_number(monkeypatch):
     verdict = _run_phase(c, 2, 2)
     assert verdict["auto_apply"] is True
     assert c._measured_pre_apply_rms_db() is None
+
+
+def test_an_accountability_refusal_names_itself_to_the_host():
+    """The refusal must reach the household as ITS OWN reason, not as a
+    manufactured timeout.
+
+    The host's ``CaptureBeginRefused`` arm persists
+    ``conductor.last_failure_code`` and falls back to ``relay_timeout`` when it
+    is unset, so a refusal that raised without stamping the code would render
+    "The measurement link timed out" over a session that was deliberately
+    refused. Pinned because the exception's own code is NOT what the host
+    reads."""
+    fakes = FakeSeams()
+    far_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=far_raw_trim)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert c.last_failure_code is None
+    with pytest.raises(CaptureBeginRefused):
+        _run_phase(c, 2, 2)
+    assert c.last_failure_code == REASON_DRIVER_LEVELS_DISAGREE
+    assert c.last_failure_code != REASON_RELAY_TIMEOUT
 
 
 def test_reason_registry_covers_both_accountability_refusals():

@@ -4574,13 +4574,24 @@ class CrossoverV2Conductor:
         }
 
     def _refuse(self, code: str) -> "CaptureBeginRefused":
-        """Build the refusal for ``code``, with the registry's own copy.
+        """Build the refusal for ``code``, with the registry's own copy, and
+        record it as this conductor's failure code.
 
         One construction point so a refusal can never ship a bare code where a
         household expects a sentence (:data:`REASON_REGISTRY` is the §5.10 SSOT
         for both).
+
+        **Stamping ``_last_failure_code`` is the load-bearing half**, not
+        bookkeeping. The host's ``CaptureBeginRefused`` arm persists
+        ``conductor.last_failure_code`` and falls back to
+        :data:`REASON_RELAY_TIMEOUT` when it is unset — so a refusal that
+        raised without stamping would reach the household as "The measurement
+        link timed out", a false statement about a session that was refused on
+        purpose. Raising through this one constructor is what makes the
+        registry copy above actually the copy that renders.
         """
         spec = REASON_REGISTRY[code]
+        self._last_failure_code = code
         return CaptureBeginRefused(code, spec.message or spec.banner)
 
     def _assert_accountable(self, predicted_sum: Any) -> None:
