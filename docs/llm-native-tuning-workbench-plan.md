@@ -1,17 +1,17 @@
 # LLM-native tuning workbench — design and execution plan
 
-> **Status: proposed direction (2026-07-27).** This is the current planning
+> **Status: proposed direction (2026-07-28).** This is the current planning
 > authority for the agent-assisted tuning workbench. It supersedes the
 > prescriptive schema/lexicon approach in
 > [`tuning-bench-design.md`](tuning-bench-design.md) and
 > [`tuning-bench-execution-plan.md`](tuning-bench-execution-plan.md).
 > No implementation ships from this document.
 >
-> Amended 2026-07-27 with a verified-seam execution layer: every symbol,
-> constant, and trap named in §5 and §9 was checked against the repository
-> on that date by a dedicated four-pass code investigation. Seams can drift;
-> an implementer re-verifies a seam before building on it, but starts from
-> these names rather than re-deriving them.
+> Amended and adversarially re-reviewed 2026-07-28 with a verified-seam
+> execution layer. Existing symbols, constants, and traps cited as current in
+> §5 and §9 were checked against the repository; names explicitly assigned to
+> future PR work are proposed contracts, not claims that code already exists.
+> Seams can drift, so an implementer re-verifies before building.
 
 ## 1. Outcome
 
@@ -283,11 +283,28 @@ That flag is **declarative only** — `dispatch_tool()` runs any registered
 tool unconditionally, and `ToolDefinition`'s own docstring says the risk
 flags are not wired to runtime behavior. Enforcement is therefore
 workbench-owned: the CLI refuses to dispatch a `consequential` tool until
-its own approval ledger records the required user approval and the relevant
-measurement or experiment lifecycle is open. Failures follow the existing
-tool convention — a hard failure returns `{"error": <actionable string>}`,
-never a partial success payload. The CLI is a transport, not an alternate
-dispatch or safety path.
+its own approval ledger records an explicit operator-intent step and the
+relevant measurement or experiment lifecycle is open. Under the present
+trusted laptop-agent/SSH model this is an accidental-sequencing guard and
+audit record, **not** a security boundary: the same OS principal can issue
+both commands. `approve` is a separate command bound to the exact session,
+tool, candidate digest, and plain-language reason; a consequential `call`
+cannot mint its own approval from its input. Deterministic admission,
+hardware-safety, and restoration gates remain authoritative even after
+approval. An untrusted-agent deployment would need a genuinely
+user-mediated channel the model principal cannot write; that is outside the
+present trust boundary, not something this ledger pretends to provide.
+Failures follow the existing tool convention — a hard failure returns
+`{"error": <actionable string>}`, never a partial success payload. The CLI
+is a transport, not an alternate dispatch or safety path.
+
+Privacy flags are part of each definition's contract, not left at dispatcher
+defaults. Any tool that can carry session prose, microphone evidence, artifact
+content, credentials, or model notes sets both `log_args=False` and
+`log_payload=False`; journald keeps only stable tool/event names, timing,
+result class, and redacted identity digests. Approval reasons are stored in the
+private session ledger and omitted from logs. A captured-log regression proves
+that neither private inputs/results nor reasons appear.
 
 The initial pack is built from concrete existing capabilities. Candidate first
 entries include:
@@ -474,14 +491,90 @@ database. Its manifest records:
 - capability calls and their inputs/results;
 - artifact references;
 - candidate and validation references;
-- explicit user approvals;
+- explicit operator-intent acknowledgments (audit provenance under §5.1's
+  trusted-principal boundary, not authenticated user authorization);
 - apply/bypass/restore transitions;
 - final restoration proof;
 - optional free-form model notes clearly labeled as model-generated inference.
 
-The manifest is append-oriented and serialized through the existing neutral
-bundle machinery. Raw microphone audio keeps the repository's private-audio
-sensitivity classification.
+The manifest is append-oriented at its contract boundary, but the existing
+neutral bundle helpers deliberately do **not** serialize writers: their
+manifest update is read-modify-write and requires caller-owned exclusion.
+One `session_store` owner therefore performs every event/manifest/approval
+update under a bounded, per-session process-shared advisory lock, re-reading
+inside the lock and publishing atomically. Contention refuses with the holder
+and remediation rather than waiting without a ceiling; process death releases
+the descriptor, and incomplete temp files are never accepted as events.
+Safety-critical open/apply/bypass/volume-restore intent and terminal
+transitions use `atomic_write_text(..., durable=True)` and complete before the
+corresponding mutation; atomic rename without file + parent-directory fsync is
+not restart proof. Power-loss/order fault tests pin intent-before-effect and
+terminal-after-proof.
+
+Locks are never nested across ownership domains. In particular, no path holds
+a per-session store lock while acquiring the global DSP/experiment lease or
+the graph/volume mutation boundary: write durable intent under the session
+lock → release it → acquire the exact mutation owner/generation → mutate and
+prove → release mutation admission → publish the terminal event under the
+session lock. A crash between phases leaves an explicit recoverable intent,
+not a lock-order dependency. Apply-versus-recovery-timer and
+status/close-versus-recovery tests prove the ordering.
+
+An exact idempotent retry—same session, tool, canonical input/candidate digest,
+and idempotency key—returns the recorded event/result without re-running sound
+or mutation, even if the intent TTL later elapsed. Rebinding a consumed intent
+to a different key, input, candidate, or session is replay and refuses.
+Multiprocess, retry/rebinding, and kill-during-publication tests pin those
+promises.
+
+Session prose and raw microphone audio are sensitive. The session root is
+`root:jasper` mode `0750`; sensitive files are `0640`; neither verbatim words
+nor artifact paths appear in aggregate `/state`. One typed retention policy
+owns these default caps:
+
+- full closed/restored bundles, including raw audio: 30 days, 20 sessions,
+  and 1 GiB total, pruning oldest eligible data when any cap is exceeded.
+  Eligibility means fully closed/restored **and** unreachable from every
+  retained or protected session's `ArtifactIdentity` graph; a referenced old
+  bundle remains protected;
+- non-authoritative compact summaries: 180 days, 100 sessions, and 64 MiB
+  total. Pruning removes a full bundle's manifest and artifacts together and
+  writes a separate `rolled_off_session` record containing only session id,
+  timestamps, outcome, restoration-proof digest, roll-off time, and reason.
+  It has no artifact paths/identities and explicitly cannot be reopened; no
+  signed or identity-bearing manifest is rewritten in place;
+- open, applied, or restore-unproven sessions are never pruned. If protected
+  sessions leave no room under the cap, new capture refuses with an actionable
+  cleanup/status message rather than filling the Pi.
+
+Retention tests cover cross-session references, roll-off records versus
+corruption, and the rule that expected roll-off never masquerades as a failed
+`ArtifactIdentity` reopen.
+
+Cross-domain references do not transfer deletion ownership. W2 adds one small,
+owner-neutral `ArtifactRetentionPin` contract beside the neutral manifest:
+the workbench durably pins an exact identity + owner domain + session
+generation, and each contributing domain's existing pruner consults that pin
+before deleting its own bundle. Pins do not expire while a live reference
+exists; stale cleanup may release one only after reference reconciliation
+proves every referring session is deletion-terminal/gone. A session-attached
+external artifact is unavailable unless its adapter and owner pruner implement
+this contract; an unpinned ephemeral reference may be inspected live but
+cannot be recorded as durable session evidence. Rolling off/deleting the final
+referring session releases the pin; the workbench never deletes a
+domain-owned bundle itself. Tests run the real initial domain pruners against
+pinned/unpinned identities and cover multiple sessions sharing one artifact.
+
+`delete-session <id>` is the explicit privacy clear surface owned by
+`session_store`. It refuses open, applied, restore-unproven, or still-referenced
+sessions. Its crash-safe phases obey the no-nesting rule: publish durable
+deletion intent under the session lock → release it → atomically detach/retire
+the session under that same boundary → release final-reference pins through
+the separate pin-store boundary with no session lock held → finalize a minimal
+non-sensitive deletion audit. Every phase is idempotent and recovery resumes
+from the durable intent. `clear-eligible` applies the same check per session
+without widening the authority. Delete/retry/process-death and
+protected-session refusal are acceptance tests.
 
 ### 5.5 Reversible experiment workspace
 
@@ -504,11 +597,14 @@ It provides:
   baseline for listening comparison;
 - `status` — report live path/raw-config identity, persistence anchor, volume
   mode, drift, and restoration state;
+- `/state.tuning_workbench` — expose the same ledger reader's privacy-safe
+  projection (open/applied/restore-required state, age, and last outcome; no
+  user prose, tool inputs, model notes, or artifact paths);
 - `revert` — restore the exact baseline and remove temporary artifacts;
 - `verify-restore` — prove configuration, volume, topology, and layer
   fingerprints match the snapshot;
-- `close` — refuse unless restoration is verified or the user explicitly
-  requests a documented hold.
+- `close` — refuse unless restoration is verified or a finite documented hold
+  has a matching operator-intent acknowledgment.
 
 #### The transport and the reference transaction — decided
 
@@ -558,7 +654,7 @@ That flexibility is temporary by design:
 
 - the candidate never overwrites a canonical config;
 - it never mutates the durable source-of-truth artifacts for a layer;
-- a user-approved permanent change is translated into calls to the relevant
+- a separately reviewed permanent change is translated into calls to the relevant
   layer owners after the experiment, not committed by copying experimental
   YAML over generated state;
 - the manifest preserves the candidate and diff so the permanent proposal can
@@ -626,9 +722,11 @@ footnotes. They are acceptance contracts:
    invisible to `xrun_count`, so the gate must also read
    `content.empty_periods`/`partial_periods` and `shm_ring.empty_reads`
    (the `jasper/correction/runtime_integrity.py` lesson). The gate is a
-   fail-closed workbench primitive, not a `jasper-doctor` check — the
-   doctor's correction checks are WARN-never-FAIL by doctrine; they report
-   state and must not be the enforcement.
+   fail-closed workbench primitive, not a `jasper-doctor` check. Doctor is a
+   reporting surface, not runtime enforcement: an ordinarily open or cleanly
+   recovered experiment is WARN/OK as appropriate, while a corrupt ledger,
+   unresolved applied experiment, or unprovable/unsafe restore is FAIL with
+   remediation. There is no blanket WARN-only correction doctrine.
 2. **Temporary means restart-safe — scoped to `config_path`.** The durable
    boot anchor is `/var/lib/camilladsp/outputd-statefile.yml`
    (`jasper.active_speaker.environment.DEFAULT_CAMILLA_STATEFILE`; the
@@ -663,33 +761,120 @@ footnotes. They are acceptance contracts:
 Prefer keeping comparison level matching in the stimulus and keeping the
 household level unchanged — this is the crossover-v2 regime (derive-once,
 hold-fixed, restore-once) and the default. When an experiment truly needs a
-temporary volume resource, the composition is: pause the 1 Hz volume
-reconcilers in **both** coordinator processes (jasper-voice and
-jasper-control each run one; `note_measurement_active()` is process-local —
-`measurement_window()`'s voice pause is the cross-process half), hold a
-durable restore-once latch shaped like
+temporary volume resource, the composition is: enter a **strict** mode of the
+correction-owned measurement window that refuses volume mutation unless
+the correction owner has first published a shared, expiring pause lease that
+jasper-voice reads **before** starting wake/observer work. If the daemon is
+active, `MEASURE_PAUSE` must then be positively acknowledged; an inactive
+daemon is acceptable only because any restart consumes that same lease and
+starts paused, not because of a one-time service-state check. The acknowledged
+pause marks the voice-owned `VolumeCoordinator` measurement-active and takes
+an explicit volume-resource lease that pauses
+the **whole** `VolumeObserver` mutation surface—not only
+`maybe_reconcile_camilla`, but source-transition handling and Spotify/BT
+observations that can also change Camilla/source volume or persisted listening
+level. The observer records that a resync is needed but does not replay stale
+observations; after exact graph/volume restoration it re-reads current source,
+mode, and source volume and converges once through the normal coordinator
+owner. A source/mode change while held is visible drift and aborts the
+experiment before that resync. Loss of the pause-renewal lease aborts and
+restores; unreachable, rejected, renewal-loss, daemon-restart,
+active-source-change, and push-volume-change paths are fault-injection tests.
+Separately gate the
+jasper-control volume-mutation endpoint so **every** source refuses while the
+experiment's volume resource is held—including dial/control requests and the
+USB-sink bridge's 4 Hz host-volume writes, not merely interactive UI calls
+(jasper-control constructs a short-lived coordinator per request; it does
+not run a second observer/reconciler). Hold a durable restore-once latch shaped
+like
 `jasper.active_speaker.session_volume_plan.SessionVolumePlan` (intent
 written before the first mutation, wall-clock ceiling, emergency
 attenuation), and make every transition through
 `jasper.active_speaker.volume_latch.set_and_confirm_volume` (independent
-readback within tolerance, refusing to proceed on an unproven transition).
-No such composed primitive exists today — it is PR-W3b work, and config and
-volume restoration must be fault-injection tested together.
+readback within tolerance, refusing to proceed on an unproven numeric
+transition). That helper does not own `main_mute`; W3b adds a companion
+set-and-confirm mute boundary and composes loudness-safe ordering: prove floor
+before muting or graph mutation, restore the graph while muted/at floor, prove
+mute readback, then unmute only at floor before the admitted ramp (preserving
+an originally muted baseline). Mute readback/restore failure is a refusal.
+
+The resource is authoritative at a shared host boundary, not only in UI
+callers: `CamillaController.set_volume_db`, `set_main_mute`, and
+`adjust_volume_db` route through a lease-aware `camilla_volume_mutation`
+admission beside `camilla_graph_mutation`, with the exact experiment
+session/owner token for workbench transitions and recovery. This makes direct
+sound/correction/commissioning volume or mute writers refuse during the hold;
+the jasper-control endpoint gate remains necessary for PUSH-mode source writes
+that never touch Camilla. Direct-volume, mute, unrelated-restore, source
+transition, and USB-host-slider contention are all pinned by tests. No such
+composed primitive exists today — it is PR-W3b work, and config and volume
+restoration must be fault-injection tested together.
+
+#### Recovery has a surviving owner
+
+The CLI is one-shot, so it cannot itself guarantee lease expiry. PR-W3a ships
+the small host-owned recovery oneshot + systemd-timer skeleton **before**
+`open` can acquire a lease; it can prove unchanged anchors and clear an
+expired never-applied session. PR-W3b extends that same owner with guarded
+graph/volume restoration before `apply` exists. This is not a resident agent:
+
+- before any raw candidate load, `apply` durably records the exact baseline,
+  graph/volume/mute/source anchors, lease owner/generation, and a ten-minute
+  recovery deadline, then proves the recovery timer is active. Mutation cannot
+  begin first;
+- the timer runs the bounded oneshot at least every 30 seconds. Verified
+  revert marks the intent terminal; an explicit recorded hold may renew a
+  finite deadline for at most 30 minutes at a time, never disable recovery;
+- the same oneshot is a boot recovery prerequisite after the Camilla control
+  owner is reachable and before ordinary voice/audio mutation resumes. It
+  handles every open/applied/restore-unproven ledger: acquire the exact recovery
+  token, prove/force safe floor + mute, verify whether restart already restored
+  the anchored baseline graph, restore it if needed, then restore and prove the
+  saved volume/mute only when source/mode anchors still make that exact action
+  safe. Otherwise it remains muted and publishes FAIL/status remediation
+  rather than guessing; read-only management state stays available;
+- the recovery path contains no model call and reads no prose. It uses only
+  the canonical ledger, exact owner token, deterministic guards, and bounded
+  local daemon calls.
+
+Acceptance kills the caller after raw load with no later CLI invocation and
+proves timer-driven restoration. Reboot/power-loss tests cover intent written,
+graph loaded, volume/mute changed, health pending, and terminal-proof phases;
+expiry, failed recovery, and hold renewal are likewise pinned.
 
 #### The experiment lease and drift detection
 
 The DSP writer lock is a per-transaction admission bound, not a session
 lease — nothing today says "an experiment owns DSP mutation until it
 closes." The workspace adds a durable lease artifact (part of the
-experiment ledger) that other writers voluntarily honor:
+experiment ledger) and makes it authoritative at the existing global
+mutation boundary:
 
+- one global lease record—not one lease per session—is acquired, renewed, and
+  released while holding the canonical DSP writer lock. It carries exact
+  session owner plus monotonic generation; creation is compare-and-swap from
+  no-owner, and release/recovery requires the matching pair. Per-session locks
+  still serialize each manifest, but cannot admit two different sessions. The
+  lease is durable across one-shot command exit and laptop disconnect—not
+  PID/FD ownership and not a silently expiring lock. Before its finite recovery
+  deadline, only commands carrying the exact pair may act; after the deadline,
+  only the host recovery oneshot may restore to a proven terminal state and
+  then compare-and-swap the lease clear. Deploy/reconcile writers never clear
+  it as "stale." Simultaneous opens, normal command exit, disconnect,
+  abandoned/deadline recovery, deploy contention, and non-owner release are
+  explicit tests;
 - `jasper-sound reconcile-current-dsp` gains an open-experiment skip beside
   its existing `active_audition` skip — load-bearing because `install.sh`
   runs the reconcile on **every deploy**, and it would otherwise re-emit
   the anchor's carrier over a live experiment;
-- the wizard/correction/commissioning apply paths already funnel through
-  `apply_dsp_config`, whose writer lock serializes each transaction; the
-  lease makes the *session* visible so those owners can refuse or warn;
+- `jasper.dsp_apply.camilla_graph_mutation` checks the lease atomically while
+  holding the canonical writer lock. Every `CamillaController` graph setter
+  (`set_config_file_path`, `set_active_config_raw`, `patch_config`, and
+  `reload`) already converges there, including correction, commissioning,
+  crossover-v2, and bass-bench paths that do **not** funnel through
+  `apply_dsp_config`. An active lease makes every non-owner mutation refuse;
+  the workspace supplies an exact session/owner token for apply, bypass, and
+  recovery. A warning is not an allowed admission result;
 - `open` pre-checks the bass-extension pending fence
   (`/var/lib/jasper/bass_extension_apply_intent.json` makes the writer
   lock refuse **every** mutation, including a would-be revert); if the
@@ -769,7 +954,8 @@ model client, response schema, spend ledger, or in-speaker agent in v1.
 
 The agent receives:
 
-1. a short protocol describing safety, user approval, and evidence honesty;
+1. a short protocol describing safety, operator-intent acknowledgment and its
+   trusted-principal limit, and evidence honesty;
 2. the current context packet;
 3. capability schemas;
 4. artifact references it can open on demand;
@@ -782,9 +968,11 @@ Prompt guidance should remain thin:
 - label statements as measured, inferred, or proposed;
 - do not claim below/above an instrument's validity;
 - level-match before comparative tonal claims;
-- explain and obtain approval before sound or mutation;
+- explain and record a matching operator-intent acknowledgment before sound or
+  mutation;
 - prefer one discriminating experiment over a large speculative change;
-- close with verified restoration unless the user explicitly requests a hold.
+- close with verified restoration unless a finite hold has a matching recorded
+  acknowledgment.
 
 Those are experimental-discipline rules. They do not tell the model what
 "muddy" means or which layer must be blamed.
@@ -817,13 +1005,14 @@ diagnostic tree, cut it back.
 3. It preserves the user's words and inspects relevant existing evidence.
 4. It decides whether a new gated, near-field, or listening-position
    measurement would separate its hypotheses and explains why.
-5. The host performs the approved measurement and returns an artifact with
+5. The host performs the acknowledged measurement and returns an artifact with
    geometry, configuration fingerprint, calibration, and validity.
 6. The agent interprets the evidence. No coded dictionary is consulted.
 7. It proposes a temporary candidate that may span more than one layer,
    explains the graph diff, and states what result would support or weaken the
    hypothesis.
-8. The host validates the candidate; the user approves; the workspace applies
+8. The host validates the candidate; the user tells the agent to proceed, the
+   agent records the exact operator-intent acknowledgment, and the workspace applies
    it without changing canonical intent.
 9. The user listens and the agent optionally repeats the measurements.
 10. The agent refines, recommends a permanent layer-owned change, or concludes
@@ -881,6 +1070,8 @@ Ship:
 - `jasper-tuning-workbench tools --json`, `context --json`, and
   `call <tool-name> --input <json-file|->` (new `[project.scripts]` entry
   `jasper-tuning-workbench = "jasper.tuning_workbench.cli:main"`);
+- the initial `docs/doc-map.toml` route for
+  `jasper/tuning_workbench/**` to this plan and `PRIVACY.md`;
 - current topology, active graph identity, layer-artifact inventory,
   source/volume mode, capability availability, and evidence index;
 - stable `event=` logs for unavailable or failed capability reads.
@@ -936,6 +1127,23 @@ Ship:
   (`record_artifact`/`write_json_artifact`, own `info.json` with
   `bundle_schema_version`) plus the `ArtifactIdentity` session loader
   (§5.3);
+- one `jasper/tuning_workbench/session_store.py` owner for locked,
+  idempotent event/manifest publication under
+  `/var/lib/jasper/tuning-workbench/sessions/`, plus one `retention.py`
+  owner for the §5.4 caps and protected-session pruning rules, including
+  `delete-session` / `clear-eligible`;
+- the owner-neutral `ArtifactRetentionPin` contract plus integration with
+  every domain pruner used by an initial durable-evidence adapter; domains
+  without that integration remain live-inspection-only;
+- the matching `PRIVACY.md` update: local storage/file modes, retention and
+  explicit clear behavior, journald redaction, and the boundary that only an
+  explicit artifact-inspection call sends selected sensitive content to the
+  laptop agent's model service (not the speaker's configured voice provider);
+- the §5.1 `approve` command and durable intent ledger **before** the first
+  sound-emitting adapter: approval binds session id, canonical tool name,
+  canonical input/candidate digest, reason, issued/expiry times, and one-shot
+  idempotency key; dispatch consumes it atomically. The bounded default TTL is
+  ten minutes, and mismatch, expiry, or replay refuses;
 - **the narrow capture boundary this rung first adds to its owner**: no
   callable "capture a calibrated response" function exists today — the
   product flow is woven through `jasper/web/correction_setup.py` handlers,
@@ -944,8 +1152,9 @@ Ship:
   driving the same relay/browser machinery and quality gates), and the
   workbench adapts it. Budget this as the bulk of the rung;
 - adapters over that boundary and the existing analysis primitives;
-- `jasper.correction.coordinator.measurement_window()` reuse for
-  isolation;
+- promote `jasper.correction.coordinator.measurement_window()` from its
+  current single-process exclusion to the process-shared measurement-session
+  guard below, then reuse that owner for isolation;
 - explicit geometry, stimulus, mic calibration, config fingerprint,
   validity, units, and sensitivity on every new measurement, per the §4.1
   and §5.3 definitions;
@@ -961,14 +1170,35 @@ a later adapter only when a real session needs it.
 
 Verified seams (checked 2026-07-27; re-verify before building):
 
-- Isolation: call `measurement_window()` **as-is**. The mux lease's
-  owner/label sets are closed frozensets in `jasper/mux.py`
+- Isolation: `measurement_window()` currently protects only callers on
+  jasper-web's one event loop: its module-global `_window_active` cannot
+  exclude the standalone workbench CLI. W2 first adds a fail-fast,
+  process-shared advisory lock to that owning context manager, acquired
+  before any voice/mux mutation and held until restoration finishes. The
+  descriptor must release automatically on process death; contention must
+  raise `MeasurementWindowError` with a stable event/remediation rather than
+  queue behind an unbounded wait. Advisory-lock release alone is not proof
+  that an `aplay` child died: the owning playback boundary uses a pre-emission
+  handshake to durably record lease generation, parent/child process identity,
+  and admitted playback deadline before sound. After holder death, a new
+  caller refuses until the old child is positively absent/terminated and the
+  dirty/deadman record is safely cleared; it never overlaps stimuli merely
+  because the descriptor dropped. Keep the local guard as the same-process
+  fast path. This is one correction-owned lock used by wizard and workbench,
+  not a workbench lock layered beside it. The workbench capture path also uses
+  a strict voice-pause mode backed by the shared expiring pause lease that
+  jasper-voice reads at startup: it refuses before emitting a stimulus unless
+  an active daemon acknowledges `MEASURE_PAUSE` (or is absent after the lease
+  is durably visible to any restart), and aborts if renewal cannot be confirmed
+  before the 120 s lease expires. The mux
+  lease's owner/label sets are closed frozensets in `jasper/mux.py`
   (`FANIN_TEST_LABELS = {"correction"}`, `FANIN_TEST_OWNERS =
   {"active-speaker-commissioning", "correction-measurement"}`) — a
   workbench-specific owner id is a deliberate `jasper/mux.py` change, not
-  just a new string. Crash recovery is built in: the mux lease auto-expires
-  within 60 s and the voice pause auto-clears within 120 s if the holder
-  dies.
+  just a new string, and it would not by itself prevent a racing
+  `MEASURE_RESUME`. Crash recovery remains layered: the advisory lock drops
+  with its process, the mux lease auto-expires within 60 s, and the voice
+  pause auto-clears within 120 s if the holder dies.
 - Stimulus: `jasper.audio_measurement.sweep.synchronized_swept_sine` +
   `write_sweep_wav` (mono-enforced); the exact single-channel invariant
   for driver work is
@@ -978,8 +1208,9 @@ Verified seams (checked 2026-07-27; re-verify before building):
   `jasper.audio_measurement.quality.assess_capture` hard-fails
   `sample_rate_mismatch` / `capture_too_short` / `capture_clipped`;
   driver verdicts `silent` / `unusable_capture` live in
-  `driver_acoustics`; the splice/glitch class is
-  `drift_baselines_disagree` in program analysis.
+  `driver_acoustics`; program analysis emits `glitch_detected`, which the
+  crossover-v2 caller maps to its existing
+  `drift_baselines_disagree` refusal reason.
 - Validity floor: `jasper.audio_measurement.gating.f_valid_floor_hz`.
 
 Traps (these bit the 2026-07-27 session or its forensics):
@@ -1002,7 +1233,17 @@ Acceptance:
 - no copied DSP math;
 - exact single-channel stimulus invariant where the rig requires it;
 - contaminated/missing/silent capture refuses with actionable output;
+- missing, rejected, or expired approval and approval replay all refuse before
+  capture; a consequential call cannot self-authorize;
+- a true two-process test proves wizard/CLI contention refuses before either
+  caller can resume voice or release the other's mux gate, and proves a killed
+  holder with a live playback child cannot admit a second stimulus until the
+  child/deadman state is positively cleared;
+- initial voice-pause rejection/unreachability, daemon restart, and renewal
+  loss refuse or abort before the isolation promise expires;
 - domain payloads remain domain-owned;
+- `PRIVACY.md` accurately describes storage, clear/prune, logs, and
+  transfer to the laptop agent's model service;
 - a hardware-free fixture round-trips the neutral manifest, verifies its
   digest via `ArtifactIdentity`, and reopens its domain payload;
 - one owner-scheduled JTS3 smoke is documented before claiming the path works.
@@ -1015,10 +1256,17 @@ machinery `apply` will stand on:
 
 - the durable experiment ledger under `/var/lib/jasper/tuning-workbench/`
   (open experiments, snapshots, approvals, restart visibility);
-- the experiment lease other writers honor, including the
+- the authoritative experiment-lease admission in
+  `camilla_graph_mutation`, including raw/path/patch/reload coverage and an
+  exact owner-token bypass for workbench apply/recovery. The neutral
+  admission reader/format lives at that host boundary; `jasper/dsp_apply.py`
+  does not import the feature package or its CLI. Also add the
   `reconcile-current-dsp` open-experiment skip (one guarded branch beside
   its existing `active_audition` skip, with a test — load-bearing because
   `install.sh` runs the reconcile on every deploy);
+- the recovery oneshot/timer skeleton from §5.5, installed and active before
+  `open` is enabled; in W3a it handles only expired never-applied sessions by
+  proving every anchor unchanged before clearing the exact lease generation;
 - the four-anchor drift detector (§5.5);
 - candidate admission: `validate_camilla_config` with `MISSING` treated as
   refusal, the `graph_safety` structural/protection predicates with the
@@ -1027,21 +1275,27 @@ machinery `apply` will stand on:
   pre-check, and the new candidate-vs-snapshot routing comparator and Pi
   resource bounds;
 - the graph diff renderer with best-effort layer annotations;
-- a `jasper-doctor` *reporting* check for ledger state (WARN-style; the
-  enforcement lives in the workspace).
+- one privacy-safe `/state.tuning_workbench` projection from the canonical
+  ledger reader and a `jasper-doctor` reporting check: OK/WARN for closed/open
+  healthy state, FAIL for corruption, unresolved applied state, or unprovable
+  restoration; enforcement still lives in the mutation boundary/workspace.
 
 Acceptance is fault injection with no audio emitted and the live graph
 never touched: candidate invalid; candidate changes after validation
 (`expected_candidate_sha256` → `candidate_changed` already exists in
 `dsp_apply` — prove it end-to-end); bass-extension fence present at open;
 drift while open; restart with an open-but-never-applied session; a second
-writer's apply during an open session.
+writer's file-path, raw, patch, reload, and durable-apply mutations during an
+open session; concurrent one-shot commands and process death during ledger
+publication; expired-open recovery with unchanged versus drifted anchors;
+retention pressure with protected sessions.
 
 ### PR-W3b — apply, bypass, health, and proven restore
 
 Ship `apply`, `bypass`, `revert`, `verify-restore`, and full `close` — the
 raw transport composed per §5.5 with the guarded volume transition, the
-post-load health gate, and the volume contract.
+post-load health gate, and the volume contract. Extend W3a's recovery
+oneshot—do not add a second owner—with applied-graph and volume/mute recovery.
 
 Before implementation, re-verify the §5.5 seams against the then-current
 graph-change seam, live CamillaDSP statefile, output health surfaces, and
@@ -1057,15 +1311,20 @@ Acceptance includes fault injection:
 - candidate loads but fails settle/liveness, xrun/clipping,
   unexpected-silence-under-probe (fill-count deltas, not just xruns), or
   CPU/headroom checks;
-- process dies after apply;
-- restart while candidate is active (the ledger reports it; the anchor
-  brings up the baseline);
+- recovery timer inactive before apply (refuse before mutation);
+- process dies after apply with no later CLI invocation (the host oneshot
+  restores on deadline);
+- restart/power loss at each intent/load/volume/health/terminal phase: the
+  anchor brings up the baseline graph, and boot recovery proves safe
+  attenuation/mute plus exact volume/mute restoration or remains muted with
+  FAIL remediation;
 - CamillaDSP's crash-recovery ladder parks the service (a parked graph is
   not "restored");
 - Spotify/Bluetooth push-volume source active (no Camilla volume writes;
   the snapshot proves the mode);
 - competing DSP writer;
-- user volume change during apply/revert;
+- competing direct Camilla volume/mute/restore writer, full-observer source
+  transition, jasper-control mutation, and USB host-slider update;
 - restore response lost after landing;
 - canonical config changed legitimately while the experiment was open
   (including a pipe-guard or install-time repair of the statefile).
@@ -1086,7 +1345,8 @@ Ship:
 - worked examples that demonstrate model-chosen—not hardcoded—diagnostics;
 - README atlas and `docs/testing-tooling.md` rows ("capture a calibrated
   sweep", "run a reversible DSP experiment" — closing a known gap), and
-  `docs/doc-map.toml` routing for `jasper/tuning_workbench/**`;
+  `docs/doc-map.toml` routing for `jasper/tuning_workbench/**` to the HANDOFF,
+  this design record, and `PRIVACY.md`;
 - an end-to-end JTS3/reference run:
   inspect → measure → reason → propose → validate → apply → listen/verify →
   restore, with the user's listening feedback recorded verbatim in the
@@ -1126,7 +1386,8 @@ The workbench is successful when:
 4. A candidate may span multiple tuning layers while canonical layer intent
    remains untouched.
 5. The host shows a comprehensible diff, validates non-negotiable safety, and
-   requires user approval.
+   requires a matching, unexpired operator-intent record while making no false
+   claim that the trusted agent principal is a separate authorization domain.
 6. Apply/bypass/revert survive transport ambiguity, unhealthy post-load audio,
    process death, source-mode differences, and restart.
 7. Restoration is proven against the original snapshot.
@@ -1196,9 +1457,10 @@ When implementation begins:
 - this plan remains the design/decision record;
 - subsystem behavior continues to live in its existing canonical HANDOFF;
 - `README.md` remains the atlas;
-- `docs/doc-map.toml` routes affected measurement/DSP changes here until the
-  HANDOFF ships, then routes operational changes to the HANDOFF as well;
-- PR-W1 adds a `jasper/tuning_workbench/**` glob to `docs/doc-map.toml`
-  routing to this plan (then to the HANDOFF once it exists).
+- `PRIVACY.md` owns sensitive local storage, retention/clear, logging, and
+  model-transfer disclosure;
+- PR-W1 adds the `jasper/tuning_workbench/**` route to this plan and
+  `PRIVACY.md`; PR-W4 adds the operational HANDOFF without removing those
+  design/privacy owners.
 
-Last verified: 2026-07-27
+Last verified: 2026-07-28
