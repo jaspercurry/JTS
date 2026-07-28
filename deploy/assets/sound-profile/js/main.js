@@ -21,7 +21,7 @@
 // Do not blind-refactor it. See docs/HANDOFF-management-ui.md.
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
-import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders } from "/assets/shared/js/http.js";
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
   SUB_CROSSOVER_HZ_HI,
@@ -33,12 +33,10 @@ import {
   commissionPayloadHasIssue,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
-  humanMode,
   humanRole,
   levelMatchSummary,
   outputStatusClass,
   outputStepTitle,
-  playbackResultMessage,
   sensitivityTrimsFromGap,
   subwooferCrossoverBand,
   subwooferCrossoverFcHz,
@@ -180,8 +178,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return true;
     }
   })();
-  // csrfHeaders / jsonHeaders are imported from /assets/shared/js/http.js — the
-  // one cross-page owner of the CSRF/JSON plumbing. A conventions guard in
+  // jsonHeaders is imported from /assets/shared/js/http.js — the one
+  // cross-page owner of the CSRF/JSON plumbing. A conventions guard in
   // tests/test_web_wizard_conventions.py keeps a local re-declaration from
   // creeping back (same shared-by-promotion rule as escape.js / dialog.js).
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
@@ -6038,8 +6036,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       patchActiveSpeaker({
         calibrationLevel: payload.calibration_level || activeSpeaker.calibrationLevel,
-        combinedTestLevelDbfs: pending.levelDbfs,
-        levelDbfs: activeSpeaker.levelDbfs
+        combinedTestLevelDbfs: pending.levelDbfs
       });
     } catch (e) {
       status('Could not update combined test level: ' + e.message, true);
@@ -6087,7 +6084,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     patchActiveSpeaker({
       loading: false, action: 'Starting combined test',
       error: '',
-      levelDbfs: activeSpeaker.levelDbfs,
       combinedTestLevelDbfs: requestedLevel
     });
     render();
@@ -6100,7 +6096,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         loading: false,
         action: 'Playing combined test',
         error: '',
-        levelDbfs: activeSpeaker.levelDbfs,
         combinedTestLevelDbfs: requestedLevel
       });
       render();
@@ -6148,7 +6143,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: payload.calibration_level || activeSpeaker.calibrationLevel,
         measurements: payload.measurements || activeSpeaker.measurements,
         error: '',
-        levelDbfs: activeSpeaker.levelDbfs,
         combinedTestLevelDbfs: isFinite(appliedLevel) ? appliedLevel : requestedLevel
       });
       await refreshCommissioningView();
@@ -6174,8 +6168,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       patchActiveSpeaker({
         loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
+        error: e.message
       });
       status('Could not start the combined speaker test: ' + e.message, true);
     }
@@ -6190,8 +6183,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     summedTestLevelUpdate.pending = null;
     patchActiveSpeaker({
       loading: false, action: 'Stopping combined test',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
+      error: ''
     });
     render();
     try {
@@ -6207,8 +6199,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       patchActiveSpeaker({
         loading: false,
         action: '',
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
+        error: ''
       });
       await refreshCommissioningView();
       if (!options.quiet) {
@@ -6221,8 +6212,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       patchActiveSpeaker({
         loading: false,
         action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
+        error: e.message
       });
       status('Could not stop the combined speaker test: ' + e.message, true);
       render();
@@ -6262,8 +6252,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     patchActiveSpeaker({
       loading: false, action: 'Saving combined check',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
+      error: ''
     });
     render();
     try {
@@ -6291,8 +6280,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         action: '',
         measurements: payload,
         baselineProfile: activeSpeaker.baselineProfile,
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
+        error: ''
       });
       await refreshCommissioningView();
       try {
@@ -6318,8 +6306,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
+        error: e.message
       });
       status('Could not save combined crossover check: ' + e.message, true);
     }
@@ -6353,8 +6340,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     patchActiveSpeaker({
       loading: false, action: 'Finishing active profile',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
+      error: ''
     });
     render();
     try {
@@ -6373,8 +6359,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       patchActiveSpeaker({
         loading: false, action: '',
         baselineProfile: payload.profile || payload,
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
+        error: ''
       });
       await refreshCommissioningView();
       status(payload.status === 'applied' ?
@@ -6384,8 +6369,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
+        error: e.message
       });
       status('Could not save and apply active profile: ' + e.message, true);
     }

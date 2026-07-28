@@ -24,7 +24,7 @@
 //! Python consumer and barge-in truncation parse, plus assistant loudness
 //! decisions.
 
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read};
 
 pub mod loudness;
 
@@ -34,6 +34,11 @@ pub const CHANNELS: u16 = 2;
 /// Hard per-AUDIO-command byte cap (matches fanin: ~10.9 s of stereo
 /// S16 at 48 kHz). A malformed length header cannot OOM the daemon.
 pub const MAX_AUDIO_BYTES: usize = 2 * 1024 * 1024;
+
+/// Hard cap for one newline-delimited command header. Production commands are
+/// well under 1 KiB; this leaves generous metadata headroom while preventing a
+/// local client from growing either daemon's parser buffer without bound.
+pub const MAX_COMMAND_LINE_BYTES: usize = 8 * 1024;
 
 /// Canonical top-level JSON keys of a `FLUSH_SYNC` acknowledgement line.
 ///
@@ -181,9 +186,18 @@ pub fn command_name(command: &TtsCommand) -> &'static str {
 
 pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>> {
     let mut line = String::new();
-    let n = reader.read_line(&mut line)?;
+    let n = {
+        let mut bounded = reader.take((MAX_COMMAND_LINE_BYTES + 1) as u64);
+        bounded.read_line(&mut line)?
+    };
     if n == 0 {
         return Ok(None);
+    }
+    if n > MAX_COMMAND_LINE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TTS command line exceeds maximum length",
+        ));
     }
     let line = line.trim_end_matches(['\r', '\n']);
     match line {
@@ -198,9 +212,7 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
         _ => {}
     }
     if let Some(rest) = line.strip_prefix("GAIN ") {
-        let gain = rest
-            .parse::<f32>()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid GAIN value"))?;
+        let gain = parse_required_f32(rest, "GAIN value")?;
         return Ok(Some(TtsCommand::GainDb(gain)));
     }
     if let Some(rest) = line.strip_prefix("VOLUME_CONTEXT ") {
@@ -659,6 +671,25 @@ mod tests {
         assert!(read_command(&mut reader).is_err());
         let mut reader = Cursor::new(b"AUDIO 2\n\x01\0".to_vec()); // half a stereo frame
         assert!(read_command(&mut reader).is_err());
+    }
+
+    #[test]
+    fn parser_rejects_oversized_command_lines_before_unbounded_growth() {
+        let line = format!("GAIN {}\n", "1".repeat(MAX_COMMAND_LINE_BYTES));
+        let mut reader = Cursor::new(line.into_bytes());
+        let error = read_command(&mut reader).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("maximum length"), "{error}");
+    }
+
+    #[test]
+    fn parser_rejects_non_finite_gain() {
+        for value in ["NaN", "inf", "-inf"] {
+            let mut reader = Cursor::new(format!("GAIN {value}\n").into_bytes());
+            let error = read_command(&mut reader).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("non-finite"), "{error}");
+        }
     }
 
     #[test]

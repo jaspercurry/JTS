@@ -120,17 +120,28 @@ def cross_correlation_alignment(
     `confidence` is the normalized margin between them. `exclude_radius` defaults
     to `DEFAULT_EXCLUDE_RADIUS_S * sample_rate`; pass an override only for tests.
     """
-    cap = _normalize(captured)
-    stim = _normalize(stimulus)
-    if cap.size == 0 or stim.size == 0 or cap.size < stim.size:
+    cap_input = np.asarray(captured)
+    stim_input = np.asarray(stimulus)
+    if cap_input.size == 0 or stim_input.size == 0:
         # A capture shorter than the stimulus cannot contain it — no alignment.
         return AlignmentResult(lag_samples=0, confidence=0.0, peak=0.0, secondary=0.0)
 
-    # Cost/memory backstop: truncate a pathologically long capture (the stimulus
-    # is always within the spec window, well under the cap).
-    max_cap = max(stim.size, int(max_capture_s * sample_rate))
-    if cap.size > max_cap:
-        cap = cap[:max_cap]
+    # Apply the cost/memory backstop before normalization.  Normalization
+    # promotes to float64, so truncating afterwards would still allocate a
+    # full-sized copy of a pathological capture on the 1 GB Pi.
+    max_cap = max(stim_input.size, int(max_capture_s * sample_rate))
+    if cap_input.size > max_cap:
+        cap_input = (
+            cap_input[:max_cap]
+            if cap_input.ndim == 1
+            else cap_input.flat[:max_cap]
+        )
+
+    cap = _normalize(cap_input)
+    stim = _normalize(stim_input)
+    if cap.size < stim.size:
+        # A capture shorter than the stimulus cannot contain it — no alignment.
+        return AlignmentResult(lag_samples=0, confidence=0.0, peak=0.0, secondary=0.0)
 
     corr = np.abs(scipy_signal.correlate(cap, stim, mode="valid", method="fft"))
     if corr.size == 0:

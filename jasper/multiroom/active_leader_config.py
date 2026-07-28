@@ -132,13 +132,10 @@ def crossover_statefile_path() -> str:
 
 
 def _camilla():
-    """camilla#1 controller from env — mirrors follower_config._camilla /
-    leader_config._camilla (the oneshot does not import the web module)."""
-    from jasper.camilla import CamillaController
+    """Return camilla#1 without coupling this oneshot to a web module."""
+    from jasper.camilla import primary_controller
 
-    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
-    return CamillaController(host, port)
+    return primary_controller()
 
 
 # ---------- the fail-closed GATE: build + re-prove BOTH instances ----------

@@ -2927,7 +2927,12 @@ class WakeLoop:
             return None
         return _frame_rms_dbfs(ring[-1])
 
-    async def _telemetry_stage(self, stage: str) -> None:
+    async def _telemetry_stage(
+        self,
+        stage: str,
+        *,
+        tool_name: str | None = None,
+    ) -> None:
         """Best-effort funnel-stage UPDATE for the in-flight wake
         event. No-op when telemetry is disabled, when no event is
         currently in flight, or when the store write fails — the
@@ -2942,11 +2947,37 @@ class WakeLoop:
         if store is None or event_id is None:
             return
         try:
-            await store.update_stage(event_id, stage)
+            await store.update_stage(
+                event_id,
+                stage,
+                tool_name=tool_name,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "wake_events: update_stage(%s) failed: %s", stage, e,
             )
+
+    async def record_tool_dispatch_stage(self, stage: str, name: str) -> None:
+        """Translate the shared dispatch observer into wake-funnel stages.
+
+        ``dispatch_tool`` is the only producer, so this observes Gemini,
+        OpenAI, and Grok without provider branches. Manual / research turns
+        naturally no-op because they have no in-flight wake event id.
+        """
+        funnel_stage = {
+            "called": "tool_called",
+            "completed": "tool_completed",
+        }.get(stage)
+        if funnel_stage is None:
+            raise ValueError(f"unknown tool dispatch stage {stage!r}")
+        await self._telemetry_stage(
+            funnel_stage,
+            tool_name=name,
+        )
+
+    async def _record_response_started(self) -> None:
+        """Record the first provider-neutral assistant-audio boundary."""
+        await self._telemetry_stage("response_started")
 
     async def _telemetry_outcome(
         self, outcome: str, detail: str | None = None,
@@ -3905,6 +3936,7 @@ class WakeLoop:
         playback = asyncio.create_task(
             _play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
+                on_response_started=self._record_response_started,
             )
         )
         idle = asyncio.create_task(

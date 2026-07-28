@@ -82,6 +82,17 @@ def test_parse_env_file_missing_returns_empty(tmp_path: Path):
     assert out == {}
 
 
+def test_grouping_env_parser_uses_canonical_quote_handling():
+    out = doctor.grouping._parse_env_file(
+        '# comment\nJASPER_GROUPING_ROLE="leader"\nEMPTY=\n',
+    )
+
+    assert out == {
+        "JASPER_GROUPING_ROLE": "leader",
+        "EMPTY": "",
+    }
+
+
 def test_read_env_file_state_reports_loaded_and_missing(tmp_path: Path):
     from jasper.env_load import read_env_file_state
 

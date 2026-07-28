@@ -79,6 +79,7 @@ from ..atomic_io import atomic_write_text
 from ..control import client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
+from ..env_load import read_env_file_state
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..log_event import log_event
 from ..voice.provider_state import read_active_provider
@@ -87,6 +88,7 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_WEB_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 _IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_API_KEY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
 
 # ---------------------------------------------------------------------------
 # Cookie + header constants.
@@ -421,26 +423,27 @@ def json_island(element_id: str, payload: Any) -> str:
 
 
 def read_env_file(path: str) -> dict[str, str]:
-    """Parse a systemd-style EnvironmentFile (KEY=VALUE per line, no
-    quoting). Returns {} if the file is missing or unreadable.
+    """Read a systemd-style EnvironmentFile through the canonical parser.
 
     Same shape used by `/var/lib/jasper-intsecrets/spotify_credentials.env` and
     `/var/lib/jasper/voice_provider.env` — both are sourced into
     jasper-voice's environment via systemd's `EnvironmentFile=`."""
-    out: dict[str, str] = {}
-    try:
-        with open(path) as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                out[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.warning("could not read %s: %s", path, e)
-    return out
+    state = read_env_file_state(path)
+    if state.status == "unreadable":
+        logger.warning("could not read %s: %s", path, state.error)
+    return state.values
+
+
+def value_for_env(
+    state: dict[str, str],
+    env_var: str,
+    default: str = "",
+) -> str:
+    """Resolve wizard state using the same precedence as its daemon."""
+    value = state.get(env_var, "").strip()
+    if value:
+        return value
+    return os.environ.get(env_var, "") or default
 
 
 # 0o640 group-readable mode for wizard-written secret/config env files (vs
@@ -1213,6 +1216,12 @@ def mask_secret(value: str) -> str:
     if len(value) <= 8:
         return "…" * len(value)
     return f"{value[:4]}…{value[-4:]}"
+
+
+def api_key_token_is_valid(value: str) -> bool:
+    """Whether an API key uses the wizards' conservative token alphabet."""
+
+    return bool(_API_KEY_TOKEN_RE.fullmatch(value))
 
 
 # ---------------------------------------------------------------------------

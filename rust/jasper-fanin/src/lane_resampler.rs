@@ -79,13 +79,9 @@ use jasper_resampler::{clamp_i16, AudioRing, RateController, SincTable, RADIUS_F
 pub use decay::{CushionDecay, DecayFrozenReason, DecayParams, DecaySignals};
 
 /// Observability counters for one armed lane resampler, cloned into the STATUS
-/// snapshot. All `0` while the resampler is disabled (no instance exists).
+/// snapshot. Absence of this object means the resampler is disabled.
 #[derive(Clone)]
 pub struct LaneResamplerObservability {
-    /// Whether a resampler is armed on this lane (1) or not (0). A plain bool
-    /// would do, but the atomic keeps the STATUS read lock-free and uniform
-    /// with the rest of the per-input counters.
-    pub armed: bool,
     /// Live lock state. True only after the lane has acquired enough input to
     /// render real DAC-paced audio; false while priming, after reset, or after
     /// an underfill unlock.
@@ -182,10 +178,9 @@ pub struct LaneResampler {
     /// whatever safe depth is available, so a slow/sparse-but-real producer
     /// can never wedge in silence forever waiting for the full cushion.
     prime_periods: u32,
-    /// Max consecutive priming periods before the fall-through lock. Bounded so
-    /// the deep prefill never deadlocks on input that arrives just under the
-    /// cushion threshold. `0` disables the fall-through (prime strictly to the
-    /// full cushion) — used by tests that want the deterministic deep-prime.
+    /// Max consecutive priming periods before the fall-through lock. Always at
+    /// least one, so the deep prefill cannot deadlock on input that arrives
+    /// just under the cushion threshold.
     max_prime_periods: u32,
     /// Frames left in the startup de-click ramp. Set to one render period on
     /// every lock, then counted down to zero while rendering real audio.
@@ -363,7 +358,6 @@ impl LaneResampler {
     /// Clone the observability handles for the STATUS snapshot.
     pub fn observability(&self) -> LaneResamplerObservability {
         LaneResamplerObservability {
-            armed: true,
             locked: Arc::clone(&self.locked_state),
             input_frames: Arc::clone(&self.input_frames),
             output_frames: Arc::clone(&self.output_frames),
@@ -691,8 +685,7 @@ impl LaneResampler {
         // the full cushion depth. Gated off while floor-primed (see above) so the
         // lock can only seat at the floor — a no-op in default geometry where the
         // deep arm already wins, load-bearing only for an exotic deep floor.
-        let prime_expired =
-            self.max_prime_periods > 0 && self.prime_periods >= self.max_prime_periods;
+        let prime_expired = self.prime_periods >= self.max_prime_periods;
         let seat = if fill >= deep_prefill {
             // Enough for the full held target (the floor when floor-primed, the
             // warm-up cushion otherwise).

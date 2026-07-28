@@ -95,7 +95,7 @@ export function buildPage(root, handlers, opts = {}) {
   root.replaceChildren(
     header({ title: "Chat", backHref: "/" }),
     h(
-      "main.app-main.chat-main",
+      "main.app-main",
       null,
       live.el,
       capture.section,

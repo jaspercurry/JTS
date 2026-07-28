@@ -21,13 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from jasper.memory_policy import memory_headroom_thresholds
+
 SCHEMA_VERSION = 1
 
 Severity = Literal["warn", "fail"]
 
 LOAD_PER_CORE_WARN = 1.50
-MEM_AVAILABLE_WARN_MB = 96
-MEM_AVAILABLE_FAIL_MB = 32
 CAPTURE_EXTRA_SECONDS_WARN = 30.0
 CAPTURE_EXTRA_RATIO_WARN = 3.0
 FANIN_CONTROL_SOCKET = "/run/jasper-fanin/control.sock"
@@ -262,8 +262,10 @@ def _issues_for_snapshot(snapshot: dict[str, Any]) -> list[RuntimeIssue]:
     memory = snapshot.get("memory")
     if isinstance(memory, dict):
         available = memory.get("available_mb")
-        if isinstance(available, int):
-            if available < MEM_AVAILABLE_FAIL_MB:
+        total = memory.get("total_mb")
+        if isinstance(available, int) and isinstance(total, int):
+            warn_mb, fail_mb = memory_headroom_thresholds(total)
+            if available < fail_mb:
                 issues.append(RuntimeIssue(
                     code="memory_available_critical",
                     severity="fail",
@@ -271,10 +273,10 @@ def _issues_for_snapshot(snapshot: dict[str, Any]) -> list[RuntimeIssue]:
                     details={
                         "label": snapshot.get("label"),
                         "available_mb": available,
-                        "threshold_mb": MEM_AVAILABLE_FAIL_MB,
+                        "threshold_mb": fail_mb,
                     },
                 ))
-            elif available < MEM_AVAILABLE_WARN_MB:
+            elif available < warn_mb:
                 issues.append(RuntimeIssue(
                     code="memory_available_low",
                     severity="warn",
@@ -282,7 +284,7 @@ def _issues_for_snapshot(snapshot: dict[str, Any]) -> list[RuntimeIssue]:
                     details={
                         "label": snapshot.get("label"),
                         "available_mb": available,
-                        "threshold_mb": MEM_AVAILABLE_WARN_MB,
+                        "threshold_mb": warn_mb,
                     },
                 ))
     return issues
@@ -679,6 +681,15 @@ class RuntimeIntegrityReport:
         }
 
     def to_dict(self) -> dict[str, Any]:
+        memory_thresholds = None
+        for snapshot in reversed(self.snapshots):
+            memory = snapshot.get("memory")
+            if not isinstance(memory, dict):
+                continue
+            total = memory.get("total_mb")
+            if isinstance(total, int):
+                memory_thresholds = memory_headroom_thresholds(total)
+                break
         return {
             "artifact_schema_version": SCHEMA_VERSION,
             "session_id": self.session_id,
@@ -690,8 +701,12 @@ class RuntimeIntegrityReport:
             "issues": self.issues,
             "thresholds": {
                 "load_per_core_warn": LOAD_PER_CORE_WARN,
-                "mem_available_warn_mb": MEM_AVAILABLE_WARN_MB,
-                "mem_available_fail_mb": MEM_AVAILABLE_FAIL_MB,
+                "mem_available_warn_mb": (
+                    memory_thresholds[0] if memory_thresholds else None
+                ),
+                "mem_available_fail_mb": (
+                    memory_thresholds[1] if memory_thresholds else None
+                ),
                 "capture_extra_seconds_warn": CAPTURE_EXTRA_SECONDS_WARN,
                 "capture_extra_ratio_warn": CAPTURE_EXTRA_RATIO_WARN,
             },

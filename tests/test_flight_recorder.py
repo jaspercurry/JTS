@@ -92,6 +92,30 @@ def test_flush_empty_is_noop():
     assert fr.RingFlushHandler(3, io.StringIO()).flush_buffer("x") == 0
 
 
+def test_direct_flush_holds_handler_lock():
+    class TrackingLock:
+        def __init__(self):
+            self.calls: list[str] = []
+            self.depth = 0
+
+        def acquire(self):
+            self.calls.append("acquire")
+            self.depth += 1
+
+        def release(self):
+            self.calls.append("release")
+            self.depth -= 1
+
+    ring = fr.RingFlushHandler(3, io.StringIO())
+    ring.emit(_rec(logging.DEBUG, "context"))
+    tracking = TrackingLock()
+    ring.lock = tracking
+
+    assert ring.flush_buffer("manual") == 1
+    assert tracking.calls == ["acquire", "release"]
+    assert tracking.depth == 0
+
+
 def test_ring_stores_formatted_strings_not_records():
     """Eager formatting: the ring holds str lines, not LogRecord objects, so
     a large object passed as a log arg is rendered to text and not pinned in

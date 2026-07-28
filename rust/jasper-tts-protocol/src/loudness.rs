@@ -959,7 +959,6 @@ impl KWeightedWindow {
 
     fn short_lufs(&self) -> Option<f32> {
         self.window_lufs(SHORT_TERM_FRAMES)
-            .or_else(|| self.window_lufs(MOMENTARY_FRAMES))
     }
 
     fn full_short_lufs(&self) -> Option<f32> {

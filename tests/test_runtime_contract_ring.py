@@ -25,7 +25,11 @@ from jasper.active_speaker.runtime_contract import (
     topology_supports_shm_ring,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config, emit_flat_ring_config
+from jasper.sound.camilla_yaml import (
+    RING_FLAT_CONFIG_NAME,
+    emit_flat_outputd_cutover_config,
+    emit_flat_ring_config,
+)
 
 # Reuse the topology builders from the main runtime-contract suite.
 from tests.test_active_speaker_runtime_contract import (
@@ -442,3 +446,4 @@ def test_ring_armed_composite_box_does_not_seed_ring_config(tmp_path: Path):
 
 def test_default_ring_flat_config_path_is_named_next_to_loopback():
     assert str(DEFAULT_RING_FLAT_OUTPUTD_CONFIG) == "/etc/camilladsp/outputd-cutover-ring.yml"
+    assert DEFAULT_RING_FLAT_OUTPUTD_CONFIG.name == RING_FLAT_CONFIG_NAME

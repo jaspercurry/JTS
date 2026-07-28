@@ -83,29 +83,33 @@ class RingFlushHandler(logging.Handler):
         """Write the buffered lines to the dump stream and clear the ring.
         Returns the number of lines dumped. Best-effort — a dump must never
         crash the daemon it's recording."""
-        if self._dumping:
-            return 0
-        lines = list(self.buffer)
-        self.buffer.clear()
-        if not lines:
-            return 0
-        self._dumping = True
-        n = len(lines)
+        self.acquire()
         try:
-            self.dump_stream.write(
-                f"flightrec event=flightrec.dump reason={reason} records={n}\n"
-            )
-            for line in lines:
-                self.dump_stream.write(line + "\n")
-            self.dump_stream.write(
-                f"flightrec event=flightrec.dump.end reason={reason} records={n}\n"
-            )
-            self.dump_stream.flush()
-        except Exception:  # noqa: BLE001  # pragma: no cover - defensive
-            pass
+            if self._dumping:
+                return 0
+            lines = list(self.buffer)
+            self.buffer.clear()
+            if not lines:
+                return 0
+            self._dumping = True
+            n = len(lines)
+            try:
+                self.dump_stream.write(
+                    f"flightrec event=flightrec.dump reason={reason} records={n}\n"
+                )
+                for line in lines:
+                    self.dump_stream.write(line + "\n")
+                self.dump_stream.write(
+                    f"flightrec event=flightrec.dump.end reason={reason} records={n}\n"
+                )
+                self.dump_stream.flush()
+            except Exception:  # noqa: BLE001  # pragma: no cover - defensive
+                pass
+            finally:
+                self._dumping = False
+            return n
         finally:
-            self._dumping = False
-        return n
+            self.release()
 
 
 def _disabled() -> bool:

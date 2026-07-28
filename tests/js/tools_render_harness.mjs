@@ -26,8 +26,8 @@ const stripImports = (s) => s.replace(/^\s*import\s.*$/gm, "");
 
 const escapeSrc = stripExports(readFileSync(process.argv[2], "utf8"));
 const renderSrc = stripExports(stripImports(readFileSync(process.argv[3], "utf8")));
-const { toolCard, toolDetail, toolList } = new Function(
-  escapeSrc + "\n" + renderSrc + "\nreturn { toolCard, toolDetail, toolList };",
+const { toolRow, toolDetail, toolList } = new Function(
+  escapeSrc + "\n" + renderSrc + "\nreturn { toolRow, toolDetail, toolList };",
 )();
 globalThis.location = new URL("http://jts.local/tools/pack/spotify/");
 
@@ -108,15 +108,15 @@ const customPrompt = {
 // needs_setup with NO setup_url (the flag_recent_issue case) must render an
 // honest "Unavailable" badge, never a dead disabled checkbox.
 const noUrl = { name: "no_setup_tool", status: "needs_setup" };
-const defaultPromptCard = toolCard(defaultPrompt);
-const customPromptCard = toolCard(customPrompt);
+const defaultPromptCard = toolRow(defaultPrompt);
+const customPromptCard = toolRow(customPrompt);
 const html =
-  toolCard(evil) +
+  toolRow(evil) +
   toolList([
     evil, evilScheme, evilProtoRel, evilBackslash,
     evilTab, evilNewline, evilTabBackslash, safeUrl, noUrl,
   ]) +
-  toolCard(noUrl) +
+  toolRow(noUrl) +
   defaultPromptCard +
   customPromptCard +
   toolDetail(safeUrl) +

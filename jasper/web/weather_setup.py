@@ -49,6 +49,7 @@ from ._common import (
     send_see_other,
     guard_read_request,
     guard_mutating_request,
+    value_for_env as _value_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,13 +80,6 @@ def _owned_env_keys() -> set[str]:
 
 def _load_state(path: str = WEATHER_FILE) -> dict[str, str]:
     return read_env_file(path)
-
-
-def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:
-    val = state.get(env_var, "").strip()
-    if val:
-        return val
-    return os.environ.get(env_var, "") or default
 
 
 def _units(state: dict[str, str]) -> str:

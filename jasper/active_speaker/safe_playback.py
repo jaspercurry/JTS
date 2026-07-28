@@ -20,7 +20,7 @@ from calendar import timegm
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_json
 
 from ._common import issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
@@ -56,10 +56,12 @@ def _state_path(path: str | Path | None = None) -> Path:
     )
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    atomic_write_text(
+def _write_state(path: Path, payload: dict[str, Any]) -> None:
+    """Publish shared runtime state with the active-speaker ownership policy."""
+
+    atomic_write_json(
         path,
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        payload,
         mode=0o640,
         group_from_parent=True,
     )
@@ -307,7 +309,7 @@ def arm_safe_playback_session(
                 "issues": issues,
             }
         )
-        _atomic_write_json(path, state)
+        _write_state(path, state)
         return state
 
     expires_epoch = now_epoch + max(1, int(ttl_sec))
@@ -324,7 +326,7 @@ def arm_safe_playback_session(
             "issues": [],
         }
     )
-    _atomic_write_json(path, state)
+    _write_state(path, state)
     return state
 
 
@@ -358,7 +360,7 @@ def stop_safe_playback_session(
             "issues": [],
         }
     )
-    _atomic_write_json(_state_path(state_path), state)
+    _write_state(_state_path(state_path), state)
     return state
 
 
@@ -396,7 +398,7 @@ def record_safe_playback_result(
             "quiet_start": quiet_start,
         }
     )
-    _atomic_write_json(_state_path(state_path), state)
+    _write_state(_state_path(state_path), state)
     return state
 
 
@@ -537,7 +539,7 @@ def record_floor_audio_operator_result(
             "quiet_start": quiet,
             "issues": issues,
         })
-        _atomic_write_json(_state_path(state_path), state)
+        _write_state(_state_path(state_path), state)
         return state
 
     quiet["pending_playback_id"] = None
@@ -554,7 +556,7 @@ def record_floor_audio_operator_result(
         "quiet_start": quiet,
         "issues": issues,
     })
-    _atomic_write_json(_state_path(state_path), state)
+    _write_state(_state_path(state_path), state)
     return state
 
 

@@ -838,19 +838,11 @@ class WeatherClient:
 
     async def get_weather(self, location: str = "") -> dict:
         explicit_place = (location or "").strip()
-        if explicit_place:
-            try:
-                loc = await self._geocode(explicit_place)
-            except (httpx.HTTPError, WeatherResponseError) as e:
-                return _upstream_failure_payload(
-                    f"geocoding failed: {_upstream_summary(e)}"
-                )
-            if loc is None:
-                return {"error": f"couldn't find location: {explicit_place}"}
-        elif self._default_location is not None:
-            loc = self._default_location
-        else:
+        loc = self._default_location if not explicit_place else None
+        if loc is None:
             place = self._default.strip()
+            if explicit_place:
+                place = explicit_place
             if not place:
                 return {
                     "error": "no location specified and no weather default "

@@ -26,6 +26,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from ...install_profile import is_streambox_install_profile, read_install_profile
+from ...memory_policy import memory_headroom_thresholds
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -77,25 +78,6 @@ def check_ram() -> CheckResult:
     except Exception:  # noqa: BLE001
         pass
     return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
-
-def memory_headroom_thresholds(total_mb: int) -> tuple[int, int]:
-    """The ``(warn_mb, fail_mb)`` MemAvailable floors for a box with
-    ``total_mb`` of RAM — the single source of truth for memory-pressure
-    thresholds.
-
-    Percentage-of-RAM with absolute MB floors (the Prometheus node_exporter /
-    Pop!_OS ``pop-os/default-settings#163`` convention): warn below
-    ``max(100 MB, 10%)``, fail below ``max(30 MB, 3%)``. The ``/system/``
-    dashboard mirrors these exact numbers in
-    ``deploy/assets/system-status/js/format.js`` (``memoryHeadroomLimits``);
-    ``tests/test_system_status_thresholds.py`` pins the two together so the
-    memory tile's colour can never again disagree with this check — the drift
-    (dashboard fixed-150 MB vs this check) was the original bug."""
-    return (
-        max(100, total_mb * 10 // 100),
-        max(30, total_mb * 3 // 100),
-    )
-
 
 @doctor_check(order=34, group="memory")
 def check_memory_headroom() -> CheckResult:

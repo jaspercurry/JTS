@@ -15,13 +15,14 @@ policy).
 """
 from __future__ import annotations
 
+import errno
 import os
 import stat
 
 import pytest
 
 from jasper import atomic_io as atomic_io_module
-from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_json, atomic_write_text
 
 
 def test_write_read_round_trip(tmp_path):
@@ -34,6 +35,22 @@ def test_mode_is_applied(tmp_path):
     path = tmp_path / "secret.env"
     atomic_write_text(path, "JASPER_X=1\n", mode=0o600)
     assert (os.stat(path).st_mode & 0o777) == 0o600
+
+
+def test_atomic_write_json_uses_canonical_encoding_and_policy(tmp_path):
+    path = tmp_path / "state.json"
+
+    atomic_write_json(
+        path,
+        {"z": 1, "a": {"ready": True}},
+        mode=0o640,
+        group_from_parent=True,
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        '{\n  "a": {\n    "ready": true\n  },\n  "z": 1\n}\n'
+    )
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
 def test_durable_write_fsyncs_file_and_parent(tmp_path, monkeypatch):
@@ -58,6 +75,30 @@ def test_durable_write_fsyncs_file_and_parent(tmp_path, monkeypatch):
 
     assert path.read_text(encoding="utf-8") == "safe\n"
     assert calls == ["chmod", "fsync", "replace", "fsync"]
+
+
+def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    path = tmp_path / "boot-config.txt"
+    fsync_calls = 0
+
+    def fail_directory_fsync(_fd):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError(errno.EIO, "simulated directory fsync failure")
+
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+
+    with pytest.raises(OSError, match="simulated directory fsync failure"):
+        atomic_write_text(path, "published\n", durable=True)
+
+    assert path.read_text(encoding="utf-8") == "published\n"
+    assert list(tmp_path.iterdir()) == [path]
+    assert "event=atomic_io.temp_cleanup_failed" not in caplog.text
 
 
 def test_group_from_parent_chowns_temp_before_publish(tmp_path, monkeypatch):
@@ -92,6 +133,33 @@ def test_group_from_parent_chown_failure_cleans_up_temp(tmp_path, monkeypatch):
 
     assert not path.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_best_effort_group_failure_still_publishes_requested_mode(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    """Availability-sensitive state may keep writing after a chgrp denial."""
+    path = tmp_path / "shared-state.json"
+
+    def deny_chown(*_args, **_kwargs):
+        raise PermissionError("simulated group assignment failure")
+
+    monkeypatch.setattr(os, "chown", deny_chown)
+
+    atomic_write_text(
+        path,
+        '{"status":"ready"}\n',
+        mode=0o640,
+        group_from_parent=True,
+        best_effort_group=True,
+    )
+
+    assert path.read_text(encoding="utf-8") == '{"status":"ready"}\n'
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert list(tmp_path.iterdir()) == [path]
+    assert "event=atomic_io.group_publish_failed" in caplog.text
 
 
 def test_shared_lock_does_not_chmod_an_already_correct_root_owned_mode(
@@ -228,6 +296,29 @@ def test_failure_cleans_up_temp_and_propagates(tmp_path, monkeypatch):
     # The target was never created, and the temp file was unlinked — the
     # directory is left exactly as it was.
     assert list(tmp_path.iterdir()) == []
+
+
+def test_cleanup_failure_is_observable_without_masking_publish_error(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    path = tmp_path / "state.txt"
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("simulated rename failure")
+
+    def fail_cleanup(*_args, **_kwargs):
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(os, "unlink", fail_cleanup)
+
+    with pytest.raises(OSError, match="simulated rename failure"):
+        atomic_write_text(path, "doomed")
+
+    assert "event=atomic_io.temp_cleanup_failed" in caplog.text
+    assert list(tmp_path.glob(".state.txt.*.tmp"))
 
 
 def test_chmod_failure_also_cleans_up_temp(tmp_path, monkeypatch):

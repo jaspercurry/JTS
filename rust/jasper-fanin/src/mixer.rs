@@ -2159,11 +2159,6 @@ impl Mixer {
         probe_response_ratio: Option<f64>,
     ) {
         use crate::host_compliance::{classify_strike, HostCompliance, ProofOutcome, ProofSignals};
-        // The servo probe-result code for a PASS (see
-        // `host_clock::probe_result_code`: 0 None, 1 Pass, 2 Fail, 3 Aborted).
-        // Kept a plain literal so this method stays independent of the host_clock
-        // adapter (the pure module already inlines the FAIL value the same way).
-        const PROBE_RESULT_PASS: u64 = 1;
         let Some(mut hc) = self.host_compliance.take() else {
             return;
         };
@@ -2325,7 +2320,8 @@ impl Mixer {
         } else if hc.record.is_some()
             && !hc.pass_reset_done_this_lock
             && floor_primed_now
-            && probe_code == PROBE_RESULT_PASS
+            && probe_code
+                == crate::host_clock::probe_result_code(jasper_host_clock::ProbeResult::Pass)
             && dll_l0
         {
             // Probe-PASS strike-counter reset. A LIVE probe pass on a floor-primed

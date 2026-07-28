@@ -246,11 +246,6 @@ impl SroEstimator {
         verdict_for(self.status, self.sro_ppm)
     }
 
-    /// Human-readable one-liner explaining the current verdict.
-    pub fn verdict_reason(&self) -> String {
-        verdict_reason_for(self.status, self.sro_ppm)
-    }
-
     fn recompute(&mut self) {
         if self.len < MIN_SAMPLES {
             self.status = SroStatus::Observing;
@@ -427,7 +422,7 @@ mod tests {
         assert_eq!(status, SroStatus::Observing);
         assert!(ppm.is_none());
         assert_eq!(est.verdict(), AecClockVerdict::Fallback);
-        assert!(est.verdict_reason().contains("observing"));
+        assert!(verdict_reason_for(est.status(), est.sro_ppm()).contains("observing"));
     }
 
     #[test]

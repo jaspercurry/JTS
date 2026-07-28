@@ -455,53 +455,23 @@ def _lufs_from_energy(energy: float, frames: int) -> float:
     return BS1770_OFFSET_DB + 10.0 * math.log10(relative)
 
 
-def _seed_retry_kwargs(
-    *,
-    max_attempts: int | None,
-    retry_backoff_sec: float | None,
-) -> dict[str, int | float]:
-    kwargs: dict[str, int | float] = {}
-    if max_attempts is not None:
-        kwargs["max_attempts"] = max(1, int(max_attempts))
-    if retry_backoff_sec is not None:
-        kwargs["retry_backoff_sec"] = max(0.0, float(retry_backoff_sec))
-    return kwargs
-
-
 def _build_active_seed_backend(
     cfg: Any,
     *,
     max_attempts: int | None = None,
     retry_backoff_sec: float | None = None,
 ) -> Any | None:
-    retry_kwargs = _seed_retry_kwargs(
+    # Keep generator imports lazy on daemon startup while sharing the
+    # provider dispatch with cue rendering.
+    from .cues.factory import build_provider_tts_backend
+
+    backend, _voice_label = build_provider_tts_backend(
+        cfg,
+        getattr(cfg, "voice_provider", ""),
         max_attempts=max_attempts,
         retry_backoff_sec=retry_backoff_sec,
     )
-    provider = getattr(cfg, "voice_provider", "")
-    if provider == "openai" and getattr(cfg, "openai_api_key", ""):
-        from .cues.generator import OpenAITTSGenerator
-        return OpenAITTSGenerator(
-            api_key=cfg.openai_api_key,
-            voice=cfg.openai_voice,
-            **retry_kwargs,
-        )
-    if provider == "gemini" and getattr(cfg, "gemini_api_key", ""):
-        from .cues.generator import GEMINI_TTS_MODEL, GeminiTTSGenerator
-        return GeminiTTSGenerator(
-            api_key=cfg.gemini_api_key,
-            voice=cfg.gemini_voice,
-            model=getattr(cfg, "gemini_tts_model", "") or GEMINI_TTS_MODEL,
-            **retry_kwargs,
-        )
-    if provider == "grok" and getattr(cfg, "grok_api_key", ""):
-        from .cues.generator import GrokTTSGenerator
-        return GrokTTSGenerator(
-            api_key=cfg.grok_api_key,
-            voice=cfg.grok_voice,
-            **retry_kwargs,
-        )
-    return None
+    return backend
 
 
 def _load_payload(path: str | os.PathLike[str]) -> dict[str, Any]:

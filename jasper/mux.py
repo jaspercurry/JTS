@@ -1303,17 +1303,14 @@ class Mux:
     def _ensure_volume_coordinator(self) -> Any:
         if self._volume_coordinator is not None:
             return self._volume_coordinator
-        from .camilla import CamillaController
+        from .camilla import primary_controller
         from .assistant_volume import volume_context_publisher_for_runtime
         from .renderer import RendererClient
         from .speaker_name import runtime_name as speaker_runtime_name
         from .volume_coordinator import VolumeCoordinator
         from .volume_persistence import VolumePersistence
 
-        camilla = CamillaController(
-            host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-            port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
-        )
+        camilla = primary_controller()
         persistence = VolumePersistence(
             os.environ.get(
                 "JASPER_VOLUME_STATE_PATH",

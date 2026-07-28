@@ -35,12 +35,14 @@ Two properties are load-bearing and easy to get subtly wrong by hand:
 This module RAISES on failure (``OSError``) and cleans up the tempfile on any
 exception. Callers that want fail-soft behaviour (log-and-continue, as several
 ``/var/lib/jasper`` writers do) wrap the call themselves — error handling is a
-caller policy decision, not swallowed here. Stdlib-only (``os``, ``tempfile``)
-so it stays import-cheap for the daemons that pull it in at startup.
+caller policy decision, not swallowed here. It stays import-cheap for daemons:
+the only project import is the stdlib-only structured-log emitter.
 """
 from __future__ import annotations
 
 import errno
+import json
+import logging
 import os
 import stat
 import tempfile
@@ -48,12 +50,17 @@ import time
 from collections.abc import Mapping
 from contextlib import contextmanager
 from io import TextIOWrapper
-from typing import Callable
+from typing import Any, Callable
 
 import fcntl
 
+from jasper.log_event import log_event
+
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "advisory_file_lock",
+    "atomic_write_json",
     "atomic_write_text",
     "locked_transform_env_file",
     "locked_update_env_file",
@@ -139,6 +146,7 @@ def atomic_write_text(
     *,
     mode: int = 0o644,
     group_from_parent: bool = False,
+    best_effort_group: bool = False,
     preserve_target_stat: bool = False,
     durable: bool = False,
 ) -> None:
@@ -152,6 +160,10 @@ def atomic_write_text(
     When ``group_from_parent`` is true, the tempfile's group is set to the
     parent directory's group before chmod+rename; this keeps root-run writers
     from publishing group-readable files under the wrong group.
+    ``best_effort_group=True`` keeps publication available when that group
+    lookup or assignment fails: the failure is logged and the write continues
+    with the tempfile's existing group. The default remains strict so callers
+    cannot silently weaken a group-readable contract.
 
     ``preserve_target_stat=True`` is the REPLACE-IN-PLACE case: when the target
     already exists, its uid, gid, and mode are copied onto the tempfile before
@@ -177,7 +189,20 @@ def atomic_write_text(
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
-    parent_gid = os.stat(parent).st_gid if group_from_parent else None
+    parent_gid = None
+    if group_from_parent:
+        try:
+            parent_gid = os.stat(parent).st_gid
+        except OSError as exc:
+            if not best_effort_group:
+                raise
+            log_event(
+                logger,
+                "atomic_io.group_publish_failed",
+                level=logging.WARNING,
+                path=fspath,
+                error=exc,
+            )
     target_stat = None
     if preserve_target_stat:
         try:
@@ -196,7 +221,18 @@ def atomic_write_text(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
         if parent_gid is not None:
-            os.chown(tmp, -1, parent_gid)
+            try:
+                os.chown(tmp, -1, parent_gid)
+            except OSError as exc:
+                if not best_effort_group:
+                    raise
+                log_event(
+                    logger,
+                    "atomic_io.group_publish_failed",
+                    level=logging.WARNING,
+                    path=tmp,
+                    error=exc,
+                )
         if target_stat is not None:
             try:
                 os.chown(tmp, target_stat.st_uid, target_stat.st_gid)
@@ -235,9 +271,49 @@ def atomic_write_text(
     except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
-        except OSError:
+        except FileNotFoundError:
+            # A durable write may fail while syncing the parent directory
+            # after ``os.replace`` has already published the target. In that
+            # case the tempfile no longer exists; cleanup is complete.
             pass
+        except OSError as cleanup_exc:
+            log_event(
+                logger,
+                "atomic_io.temp_cleanup_failed",
+                level=logging.WARNING,
+                path=tmp,
+                error=cleanup_exc,
+            )
         raise
+
+
+def atomic_write_json(
+    path: str | os.PathLike,
+    payload: Any,
+    *,
+    mode: int = 0o644,
+    group_from_parent: bool = False,
+    best_effort_group: bool = False,
+    preserve_target_stat: bool = False,
+    durable: bool = False,
+) -> None:
+    """Serialize ``payload`` deterministically and publish it atomically.
+
+    This is the JSON form of :func:`atomic_write_text`; it deliberately exposes
+    the same ownership and durability policy knobs so state owners choose those
+    once without reimplementing tempfile publication. The canonical encoding is
+    UTF-8, two-space indentation, sorted keys, and one trailing newline.
+    """
+
+    atomic_write_text(
+        path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        mode=mode,
+        group_from_parent=group_from_parent,
+        best_effort_group=best_effort_group,
+        preserve_target_stat=preserve_target_stat,
+        durable=durable,
+    )
 
 
 def _parse_env_text(text: str) -> dict[str, str]:

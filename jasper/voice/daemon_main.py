@@ -1093,6 +1093,13 @@ async def run() -> None:
                 conversation_store=conversation_store,
                 manual_mics=manual_mics,
             )
+            # Host-compose the wake funnel at the single cross-provider
+            # dispatch seam. Tool implementations and provider adapters stay
+            # unaware of WakeLoop / SQLite; the narrow observer records only
+            # registered call start/completion while a wake event is active.
+            registry.set_dispatch_observer(
+                wake_loop.record_tool_dispatch_stage,
+            )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after
             # both connection and wake loop exist) because the
@@ -1128,6 +1135,7 @@ async def run() -> None:
             try:
                 await wake_loop.run()
             finally:
+                registry.set_dispatch_observer(None)
                 heartbeat.stop()
                 wake_loop.close_conversation_store()
                 control_socket.close()

@@ -57,6 +57,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from jasper.env_load import read_env_file_state
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -739,20 +740,10 @@ def read_ha_env_file(path: str = HA_ENV_FILE) -> dict[str, str]:
     aggregator and /system/snapshot endpoints) must read this file
     directly rather than `os.environ`. See `probe_status_from_env`.
     """
-    out: dict[str, str] = {}
-    try:
-        with open(path) as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                out[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.debug("ha: read_ha_env_file(%s): %r", path, e)
-    return out
+    state = read_env_file_state(path)
+    if state.status == "unreadable":
+        logger.debug("ha: read_ha_env_file(%s): %s", path, state.error)
+    return state.values
 
 
 async def probe_status_from_env(

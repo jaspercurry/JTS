@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from jasper.atomic_io import atomic_write_json
+
 SCHEMA_VERSION = 1
 CALIBRATION_LEVEL_KIND = "jts_active_speaker_calibration_level"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_calibration_level.json")
@@ -49,17 +51,6 @@ def _utc_now() -> str:
 
 def _state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.chmod(tmp, 0o640)
-    os.replace(tmp, path)
 
 
 def _default_state_payload(path: Path) -> dict[str, Any]:
@@ -341,5 +332,10 @@ def update_calibration_level_state(
         "applied_delta_db": round(next_level - current, 3),
         "issues": issues,
     })
-    _atomic_write_json(path, payload)
+    atomic_write_json(
+        path,
+        payload,
+        mode=0o640,
+        group_from_parent=True,
+    )
     return payload

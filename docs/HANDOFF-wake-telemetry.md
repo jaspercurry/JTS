@@ -91,9 +91,9 @@ Identified from `jasper/voice_daemon.py:_handle_wake_frame` and
 | `ts_gate_blocked` | Spend cap reached OR live connection paused | **terminal** (plays cue) |
 | `ts_turn_opened` | `_begin_turn()` succeeded → live session running | — |
 | `ts_speech_detected` | Silero VAD's sustained-speech threshold crossed | — |
-| `ts_response_started` | First audio/text chunk back from the LLM | — |
-| `ts_tool_called` | Model invoked a registered tool | — |
-| `ts_tool_completed` | Tool returned (success or error) | — |
+| `ts_response_started` | First non-empty assistant PCM chunk reaches the shared playout drain | — |
+| `ts_tool_called` | Model invoked the first registered tool in the turn | — |
+| `ts_tool_completed` | First registered-tool completion in the turn (success, error, or timeout) | — |
 | `ts_turn_complete` | Turn ended naturally | **terminal** |
 
 `ts_speech_detected` is the natural false-positive proxy: a wake
@@ -101,6 +101,21 @@ that opens a session but never sees sustained speech is the
 strongest signal that the wake was spurious (music transient, TTS
 bleed-through, ambient noise). PR 3's query layer surfaces this
 per leg.
+
+The response/tool hooks are provider-neutral. `_play_responses()` owns
+`response_started` at the first audio chunk it dequeues from `LiveTurn`;
+this intentionally does not guess at provider-specific transcript-only
+events. `dispatch_tool()` owns `tool_called` / `tool_completed` around
+registered execution, so Gemini, OpenAI, Grok, and a future provider get
+the same telemetry without adapter branches. Unknown tool names are not
+recorded as registered calls. Both observer boundaries are capped at 100 ms;
+a wedged telemetry callback is cancelled and logged rather than delaying
+speech or tool results. The schema is a bounded turn-level summary:
+on a multi-call turn it preserves the first registered tool's name/call
+timestamp and the first registered completion timestamp. Those timestamps
+are funnel milestones, not a correlated per-call duration when tools overlap;
+that would require a stored call id. Detailed multi-tool traces belong in the
+conversation/eval surfaces, not new unbounded wake-event columns.
 
 ### Capture trigger
 
@@ -154,7 +169,7 @@ CREATE TABLE wake_events (
                                            -- 'gate_blocked' | 'no_speech' | 'session_failed' |
                                            -- 'tool_failed' | 'in_progress'
   outcome_detail      TEXT,                -- free text or reason code
-  tool_name           TEXT,                -- if tool called, which one
+  tool_name           TEXT,                -- first registered tool called
 
   -- Context at capture time
   wake_model          TEXT NOT NULL,
@@ -190,6 +205,9 @@ CREATE INDEX idx_wake_events_label     ON wake_events(label);
 - `INSERT` on wake-detect, populating trigger fields + context +
   `outcome='in_progress'` + audio paths.
 - `UPDATE` one timestamp column at each funnel transition.
+- The shared response drain records the first returned assistant-audio
+  chunk; shared tool dispatch records first-call and first-completion
+  milestones (including shaped error/timeout results).
 - `UPDATE` `outcome` + `outcome_detail` at terminal state.
 - All writes via prepared statements; SQLite handles per-row
   atomicity in WAL mode without explicit transactions.
@@ -670,7 +688,11 @@ listens on 9877 until PR 2 ships. PR 2 alone (without PR 3) gives
 dual-stream wake triggering with no persistence — still useful
 but loses the funnel data. The full value lands with PR 3.
 
-Last verified: 2026-06-19 (chip-AEC beam-leg language rechecked against
+Last verified: 2026-07-27 (response/tool funnel hooks rechecked against
+`jasper/voice/turn_playback.py`, `jasper/tools/__init__.py`,
+`jasper/voice_daemon.py`, and `jasper/wake_events.py`; the first assistant
+PCM and first registered-tool summary semantics are pinned by hardware-free
+tests. Prior 2026-06-19 pass: chip-AEC beam-leg language rechecked against
 the geometry-aware XVF profile resolver; retention/off-loop language was
 rechecked 2026-06-10 against `jasper/wake_events.py`: WAV writes and
 `_retention_sweep` run via `asyncio.to_thread`, gated by the running

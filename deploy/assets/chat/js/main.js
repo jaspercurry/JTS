@@ -23,7 +23,6 @@ const POLL_MS = 10000;
 const root = document.getElementById("app");
 
 const state = {
-  csrfToken: readCsrfToken(),
   since: normalizeSince(new URLSearchParams(window.location.search).get("since")),
   lastError: "",
 };
@@ -80,16 +79,10 @@ const handlers = {
 };
 
 refs = buildPage(root, handlers, {
-  csrfPresent: !!state.csrfToken,
   initialDate: sinceToDateValue(state.since),
 });
 
 refreshSoon();
-
-function readCsrfToken() {
-  const meta = document.querySelector('meta[name="jts-csrf"]');
-  return meta ? meta.content : "";
-}
 
 function dataPath() {
   const params = new URLSearchParams();

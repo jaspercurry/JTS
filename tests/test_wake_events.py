@@ -326,6 +326,54 @@ async def test_update_stage_full_funnel(store: WakeEventStore):
         assert row[col] is not None, f"{col} should be set after update"
 
 
+async def test_tool_stages_preserve_bounded_turn_summary(
+    store: WakeEventStore,
+):
+    """The bounded schema keeps first-call identity and first completion.
+
+    It deliberately does not claim per-invocation correlation without a call
+    id. Detailed multi-call timing belongs in the conversation/eval trace.
+    """
+    await store.begin_event(
+        event_id="evt-multi-tool", trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.9, peak_score_aec_off=None,
+        threshold=0.5, wake_model="jarvis_v2.onnx",
+    )
+    await store.update_stage(
+        "evt-multi-tool",
+        "tool_called",
+        "2026-07-27T12:00:01Z",
+        tool_name="get_weather",
+    )
+    await store.update_stage(
+        "evt-multi-tool",
+        "tool_called",
+        "2026-07-27T12:00:02Z",
+        tool_name="get_current_time",
+    )
+    await store.update_stage(
+        "evt-multi-tool",
+        "tool_completed",
+        "2026-07-27T12:00:03Z",
+        tool_name="get_current_time",
+    )
+    row = await store.get_event("evt-multi-tool")
+    assert row["ts_tool_completed"] == "2026-07-27T12:00:03Z"
+    assert row["tool_name"] == "get_weather"
+
+    await store.update_stage(
+        "evt-multi-tool",
+        "tool_completed",
+        "2026-07-27T12:00:04Z",
+        tool_name="get_weather",
+    )
+
+    row = await store.get_event("evt-multi-tool")
+    assert row["ts_tool_called"] == "2026-07-27T12:00:01Z"
+    assert row["ts_tool_completed"] == "2026-07-27T12:00:03Z"
+    assert row["tool_name"] == "get_weather"
+
+
 # ---------------------------------------------------------------------------
 # set_outcome
 # ---------------------------------------------------------------------------

@@ -44,11 +44,14 @@ def test_path_safety_writer_inherits_parent_group(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
         path_safety,
-        "atomic_write_text",
-        lambda path, text, **kwargs: calls.append((path, text, kwargs)),
+        "atomic_write_json",
+        lambda path, payload, **kwargs: calls.append((path, payload, kwargs)),
     )
 
-    path_safety._atomic_write_json(Path("evidence.json"), {"safe": True})
+    path_safety.write_path_safety_evidence(
+        {"safe": True},
+        path=Path("evidence.json"),
+    )
 
     assert calls[0][2] == {"mode": 0o640, "group_from_parent": True}
 

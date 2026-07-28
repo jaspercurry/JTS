@@ -161,8 +161,10 @@ The conceptual stack:
    build, apply enabled/disabled state and prompt overrides, then expose
    provider schemas and dispatch handles.
 5. `dispatch_tool()` — the single runtime gate for timeout, logging,
-   redaction, scalar wrapping, errors, tracing, and eventually async job
-   handoff.
+   redaction, scalar wrapping, errors, tracing, and the narrow
+   host-injected call/completion observer used by wake telemetry
+   (unknown names are not reported as registered calls); eventually
+   async job handoff also lands here.
 
 `@tool(...)` should remain a good authoring convenience, but it should be
 sugar for "make a `ToolDefinition` plus a `PythonExecutor`." The decorator

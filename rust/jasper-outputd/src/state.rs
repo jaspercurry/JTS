@@ -25,6 +25,7 @@ use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_clock::DacClockObserver;
 use crate::dac_content::DacContentMetrics;
+use crate::json::json_string;
 use crate::tts::TtsMetrics;
 use jasper_clock::DllSnapshot;
 use jasper_ring::RingMetrics;
@@ -1823,17 +1824,17 @@ impl StateServer {
             match raw.trim().parse::<f32>() {
                 Ok(trim_db) => match self.state.set_dac_content_trim_db(trim_db) {
                     Ok(applied) => format!(r#"{{"ok":true,"trim_db":{applied:.1}}}"#),
-                    Err(e) => format!(r#"{{"error":"{}"}}"#, escape_json(&e.to_string())),
+                    Err(e) => format!(r#"{{"error":{}}}"#, json_string(&e.to_string())),
                 },
                 Err(_) => format!(
-                    r#"{{"error":"trim_db must be a number","received":"{}"}}"#,
-                    escape_json(raw.trim())
+                    r#"{{"error":"trim_db must be a number","received":{}}}"#,
+                    json_string(raw.trim())
                 ),
             }
         } else {
             format!(
-                r#"{{"error":"unknown command","received":"{}"}}"#,
-                escape_json(command)
+                r#"{{"error":"unknown command","received":{}}}"#,
+                json_string(command)
             )
         }
     }
@@ -1917,9 +1918,7 @@ fn push_kv_str(buf: &mut String, key: &str, value: &str) {
     buf.push('"');
     buf.push_str(key);
     buf.push_str(r#"":"#);
-    buf.push('"');
-    buf.push_str(&escape_json(value));
-    buf.push('"');
+    buf.push_str(&json_string(value));
 }
 
 fn push_kv_str_opt(buf: &mut String, key: &str, value: Option<&str>) {
@@ -1927,11 +1926,7 @@ fn push_kv_str_opt(buf: &mut String, key: &str, value: Option<&str>) {
     buf.push_str(key);
     buf.push_str(r#"":"#);
     match value {
-        Some(value) => {
-            buf.push('"');
-            buf.push_str(&escape_json(value));
-            buf.push('"');
-        }
+        Some(value) => buf.push_str(&json_string(value)),
         None => buf.push_str("null"),
     }
 }
@@ -2072,24 +2067,6 @@ fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
         return 0.0;
     }
     (count as f64) * 3_600_000.0 / (uptime_ms as f64)
-}
-
-fn escape_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

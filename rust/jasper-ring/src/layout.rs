@@ -104,11 +104,11 @@ pub struct Geometry {
 
 impl Geometry {
     /// Bytes per sample for this geometry's `sample_format`.
-    pub fn bytes_per_sample(&self) -> usize {
+    pub fn bytes_per_sample(&self) -> io::Result<usize> {
         match self.sample_format {
-            SAMPLE_FORMAT_S16LE => S16LE_BYTES_PER_SAMPLE,
-            SAMPLE_FORMAT_S32LE => 4,
-            _ => S16LE_BYTES_PER_SAMPLE,
+            SAMPLE_FORMAT_S16LE => Ok(S16LE_BYTES_PER_SAMPLE),
+            SAMPLE_FORMAT_S32LE => Ok(4),
+            other => Err(cfg_err(format!("unsupported ring sample format {other}"))),
         }
     }
 
@@ -118,13 +118,18 @@ impl Geometry {
     }
 
     /// Bytes in one slot payload.
-    pub fn slot_bytes(&self) -> usize {
-        self.samples_per_slot() * self.bytes_per_sample()
+    pub fn slot_bytes(&self) -> io::Result<usize> {
+        self.samples_per_slot()
+            .checked_mul(self.bytes_per_sample()?)
+            .ok_or_else(|| cfg_err("ring slot byte size overflows usize".to_string()))
     }
 
     /// Total mapped file size: header + all slots.
-    pub fn file_size(&self) -> usize {
-        HEADER_BYTES + (self.n_slots as usize) * self.slot_bytes()
+    pub fn file_size(&self) -> io::Result<usize> {
+        (self.n_slots as usize)
+            .checked_mul(self.slot_bytes()?)
+            .and_then(|slots| HEADER_BYTES.checked_add(slots))
+            .ok_or_else(|| cfg_err("ring file size overflows usize".to_string()))
     }
 
     /// Validate the geometry the caller wants BEFORE touching the filesystem.
@@ -234,11 +239,25 @@ mod tests {
             period_frames: 128,
             n_slots: 2,
         };
-        assert_eq!(g.bytes_per_sample(), 2);
+        assert_eq!(g.bytes_per_sample().unwrap(), 2);
         assert_eq!(g.samples_per_slot(), 256); // 128 frames * 2 ch
-        assert_eq!(g.slot_bytes(), 512); // 256 samples * 2 bytes
-        assert_eq!(g.file_size(), 128 + 2 * 512); // header + 2 slots = 1152
+        assert_eq!(g.slot_bytes().unwrap(), 512); // 256 samples * 2 bytes
+        assert_eq!(g.file_size().unwrap(), 128 + 2 * 512); // header + 2 slots = 1152
         g.validate_self().unwrap();
+    }
+
+    #[test]
+    fn unknown_sample_format_is_a_controlled_error() {
+        let g = Geometry {
+            rate: 48_000,
+            channels: 2,
+            sample_format: u32::MAX,
+            period_frames: 128,
+            n_slots: 2,
+        };
+        let error = g.bytes_per_sample().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("unsupported ring sample format"));
     }
 
     #[test]

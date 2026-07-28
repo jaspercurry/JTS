@@ -361,7 +361,7 @@ impl Dll {
         self.updates += 1;
         self.updates_since_retune += 1;
         self.maybe_retune_bandwidth();
-        self.update_lock(err);
+        self.update_lock();
         self.ratio
     }
 
@@ -409,7 +409,7 @@ impl Dll {
 
     /// Lock verdict: acquired (past warmup) AND the recent error is small
     /// relative to the period. Edge-triggers the lock/unlock counters.
-    fn update_lock(&mut self, _err: f64) {
+    fn update_lock(&mut self) {
         let was_locked = self.locked;
         // "Small" = within ~0.1% of a period of residual error. The DLL drives
         // the *steady-state* error to zero, so a locked loop sits well inside

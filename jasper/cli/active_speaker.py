@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -331,14 +330,12 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
 def _camilla_controller() -> Any:
     """Return a CamillaController bound to the live CamillaDSP websocket.
 
-    Mirrors the web wizard's ``_camilla`` factory so an operator running the
-    commission-load CLI reaches the same running graph the daemons drive.
+    An operator running the commission-load CLI reaches the same running graph
+    as the daemons and web wizards.
     """
-    from jasper.camilla import CamillaController
+    from jasper.camilla import primary_controller
 
-    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
-    return CamillaController(host, port)
+    return primary_controller()
 
 
 def _resolve_commission_inputs(

@@ -172,5 +172,3 @@ export function acceptedAcknowledgement(spec, refs) {
     accepted: true,
   };
 }
-
-export const _internal = { COMPONENT_TYPES, BUTTON_ACTIONS };

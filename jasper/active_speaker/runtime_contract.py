@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Literal, M
 import yaml
 
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
+from jasper.sound.camilla_yaml import RING_FLAT_CONFIG_NAME
 
 if TYPE_CHECKING:
     from jasper.bass_extension.profile import BassExtensionProfile
@@ -113,7 +114,7 @@ DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
 # jasper.sound.camilla_yaml.emit_flat_ring_config; installed by install.sh next to
 # outputd-cutover.yml. The graph selector picks between the two by the persisted
 # coupling (see ``safe_graph_for_current_topology``'s ``coupling`` argument).
-DEFAULT_RING_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover-ring.yml")
+DEFAULT_RING_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp") / RING_FLAT_CONFIG_NAME
 DEFAULT_LEGACY_FLAT_CONFIG = Path("/etc/camilladsp/v1.yml")
 DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 

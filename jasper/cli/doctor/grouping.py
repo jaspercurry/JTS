@@ -17,6 +17,7 @@ import socket
 import subprocess
 from pathlib import Path
 
+from ...env_load import parse_env_text
 from ._registry import doctor_check
 from ._shared import CheckResult, _camilla_block_field, _run
 
@@ -316,14 +317,8 @@ def check_grouping_leader_pipe() -> CheckResult:
 
 
 def _parse_env_file(text: str) -> dict[str, str]:
-    """KEY=value lines → dict (reconciler-written file; no quoting)."""
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            out[k.strip()] = v.strip()
-    return out
+    """Parse reconciler-written env text through the canonical parser."""
+    return parse_env_text(text)
 
 
 def _parse_systemd_environment(text: str) -> dict[str, str]:

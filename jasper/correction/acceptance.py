@@ -82,7 +82,6 @@ middle) — see ``tests/test_correction_acceptance.py``.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -93,9 +92,10 @@ from jasper.audio_measurement.analysis import (
     deviation_metrics,
     smooth_fractional_octave,
 )
+from jasper.env_load import bounded_env_float, bounded_env_int
 
 
-# --- env-knob helpers ---------------------------------------------------------
+# --- env knobs ---------------------------------------------------------------
 #
 # Every threshold whose true value is hardware-gated is a deploy-time knob (H1
 # supplies the real numbers on-device — the defaults here are conservative
@@ -105,30 +105,6 @@ from jasper.audio_measurement.analysis import (
 # once measured; no rebuild required. Out-of-range or unparseable values fall
 # back to the documented default — a jasper.env edit can never brick the
 # evaluator at construction time.
-
-
-def _env_float(name: str, default: float, *, lo: float, hi: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if raw:
-        try:
-            value = float(raw)
-        except ValueError:
-            return default
-        if lo <= value <= hi:
-            return value
-    return default
-
-
-def _env_int(name: str, default: int, *, lo: int, hi: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if raw:
-        try:
-            value = int(raw)
-        except ValueError:
-            return default
-        if lo <= value <= hi:
-            return value
-    return default
 
 
 class Verdict(str, Enum):
@@ -163,7 +139,7 @@ class AcceptanceThresholds:
     # system takes against the user's applied choice, so its trigger must clear
     # the *generous* end of the repeatability band, never the tight end.
     band_regression_db: float = field(
-        default_factory=lambda: _env_float(
+        default_factory=lambda: bounded_env_float(
             "JASPER_ACCEPT_BAND_REGRESSION_DB", 6.0, lo=0.5, hi=24.0,
         )
     )
@@ -173,7 +149,7 @@ class AcceptanceThresholds:
     # real whole-curve regression shows up at a lower dB. Seeded below the 4 dB
     # high-confidence std because it is an aggregate, not a single band.
     overall_rms_regression_db: float = field(
-        default_factory=lambda: _env_float(
+        default_factory=lambda: bounded_env_float(
             "JASPER_ACCEPT_OVERALL_RMS_REGRESSION_DB", 1.0, lo=0.1, hi=12.0,
         )
     )
@@ -185,7 +161,7 @@ class AcceptanceThresholds:
     # an operator setting 0 opts into ACCEPT-ON-TIE ("confirmed improved" on
     # an exactly-zero delta) — keep it > 0 unless that is the intent.
     overall_rms_improvement_db: float = field(
-        default_factory=lambda: _env_float(
+        default_factory=lambda: bounded_env_float(
             "JASPER_ACCEPT_OVERALL_RMS_IMPROVEMENT_DB", 0.5, lo=0.0, hi=12.0,
         )
     )
@@ -194,7 +170,7 @@ class AcceptanceThresholds:
     # closer to per-bin (do not raise past ~6 without re-deriving the floor —
     # finer bands have a higher repeatability std).
     smoothing_fraction: int = field(
-        default_factory=lambda: _env_int(
+        default_factory=lambda: bounded_env_int(
             "JASPER_ACCEPT_SMOOTHING_FRACTION", 3, lo=1, hi=6,
         )
     )

@@ -63,8 +63,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::core::OutputCore;
+use crate::json::json_string;
 use crate::ledger::{PlayoutEvent, SegmentId};
-use crate::mixer::DEFAULT_TTS_GAIN_DB;
+use crate::mixer::{gain_db_to_linear, DEFAULT_TTS_GAIN_DB};
 use crate::types::{SegmentKind, CHANNELS, SAMPLE_RATE};
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
@@ -121,7 +122,7 @@ impl FlushSummary {
                 e.local_segment_id.0,
                 e.kind.as_str(),
                 match &e.provider_item_id {
-                    Some(id) => format!("\"{}\"", id.replace(['\\', '"'], "")),
+                    Some(id) => json_string(id),
                     None => "null".to_string(),
                 },
                 e.queued_frames,
@@ -458,7 +459,7 @@ impl TtsBridge {
     /// ducked program too (inv-A).
     pub fn content_duck_gain(&self) -> Option<f32> {
         if self.duck_active {
-            Some(db_to_linear(self.program_duck_gain_db))
+            Some(gain_db_to_linear(self.program_duck_gain_db))
         } else {
             None
         }
@@ -655,10 +656,6 @@ impl TtsBridge {
             core.end_assistant_segment(id);
         }
     }
-}
-
-fn db_to_linear(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
 }
 
 #[cfg(test)]
@@ -902,12 +899,13 @@ mod tests {
     #[test]
     fn bridge_flush_acks_with_real_ledger_numbers() {
         let (mut bridge, mut core, tx, ftx) = bridge_with_core();
+        let provider_item_id = "cut-\"short\\\n";
         send(
             &tx,
             0,
             TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,
-                provider_item_id: Some("cut-short".into()),
+                provider_item_id: Some(provider_item_id.into()),
                 profile: None,
             },
         );
@@ -930,8 +928,9 @@ mod tests {
         // One 4-frame period at 48k ≈ 0ms (integer math) — drained is
         // reported in frames→ms; assert the JSON has the real fields.
         let line = summary.to_json_line();
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid flush ack JSON");
         assert!(line.contains("\"events\":[{"));
-        assert!(line.contains("\"provider_item_id\":\"cut-short\""));
+        assert_eq!(parsed["events"][0]["provider_item_id"], provider_item_id);
         assert!(!line.contains("\"events\":[]"));
     }
 

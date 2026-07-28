@@ -204,4 +204,5 @@ def test_golden_bundle_fixture_builds_ready_evidence_packet(tmp_path: Path):
     assert packet["agent_readiness"]["level"] == "ready"
     assert packet["capability_permissions"]["permissions"]["safe_peq"]["allowed"]
     assert packet["repeatability"]["level"] == "high"
+    assert packet["position_analysis"]["position_count"] == 1
     assert packet["missing_evidence"] == []

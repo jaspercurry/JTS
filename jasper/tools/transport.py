@@ -9,6 +9,7 @@ import logging
 import os
 import re
 
+from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from . import tool
 from ..spotify_router import airplay_client_name
@@ -139,14 +140,14 @@ async def _detect_source(renderer) -> str:
             if selected:
                 logger.debug("selected_source returned unknown source %r", selected)
     renderers = await renderer.active_renderers()
-    if renderers.get("aplactive"):
-        return "airplay"
-    if renderers.get("spotactive"):
-        return "spotify"
-    if renderers.get("btactive"):
-        return "bluetooth"
-    if renderers.get("usbsinkactive"):
-        return "usbsink"
+    for source in (
+        Source.AIRPLAY,
+        Source.SPOTIFY,
+        Source.BLUETOOTH,
+        Source.USBSINK,
+    ):
+        if renderers.get(SOURCE_TO_ACTIVE_KEY[source]):
+            return source.value
     return "none"
 
 

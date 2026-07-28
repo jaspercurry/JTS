@@ -2,8 +2,10 @@ from dataclasses import replace
 
 import pytest
 
+from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.multiroom.config import DEFAULT_CODEC, GroupingConfig
 from jasper.multiroom.runtime_balance import (
+    PAIR_BALANCE_FILTER,
     apply_local_trim,
     camilla_patch_for_trim,
     coerce_trim_db,
@@ -25,6 +27,7 @@ def _cfg(role: str = "follower", trim_db: float = -2.5) -> GroupingConfig:
 
 
 def test_camilla_patch_for_trim_updates_only_pair_balance_gain() -> None:
+    assert PAIR_BALANCE_FILTER == DRIVER_DOMAIN_PAIR_TRIM_FILTER
     assert camilla_patch_for_trim(-2.54) == {
         "filters": {
             "pair_balance_trim": {

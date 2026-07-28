@@ -1515,11 +1515,6 @@ fn notify_systemd_abstract_fd(fd: RawFd, name: &[u8], message: &[u8]) -> io::Res
     Ok(())
 }
 
-#[allow(dead_code)]
-fn _period_samples(period_frames: u32) -> usize {
-    (period_frames as usize) * (CHANNELS as usize)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

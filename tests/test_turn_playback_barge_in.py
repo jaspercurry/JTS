@@ -166,6 +166,73 @@ class _FlushRaisesTts(_ChunkBargeTts):
         raise RuntimeError("fan-in socket gone")
 
 
+# --- response lifecycle observer --------------------------------------
+
+
+def test_response_started_observed_once_before_first_playout_write():
+    turn = _FakeTurn(n_chunks=3)
+    tts = _BaseTts()
+    write_counts: list[int] = []
+
+    async def response_started() -> None:
+        write_counts.append(tts.write_calls)
+
+    asyncio.run(_play_responses(
+        turn,
+        tts,
+        on_response_started=response_started,
+    ))
+
+    assert write_counts == [0]
+    assert tts.write_calls == 3
+
+
+def test_response_observer_failure_does_not_block_playout(caplog):
+    turn = _FakeTurn(n_chunks=2)
+    tts = _BaseTts()
+
+    async def broken_observer() -> None:
+        raise OSError("telemetry disk unavailable")
+
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        asyncio.run(_play_responses(
+            turn,
+            tts,
+            on_response_started=broken_observer,
+        ))
+
+    assert tts.write_calls == 2
+    assert caplog.text.count("turn response observer failed") == 1
+
+
+def test_response_observer_timeout_does_not_block_playout(monkeypatch, caplog):
+    from jasper.voice import turn_playback
+
+    turn = _FakeTurn(n_chunks=2)
+    tts = _BaseTts()
+
+    async def stuck_observer() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        turn_playback,
+        "_RESPONSE_OBSERVER_TIMEOUT_SEC",
+        0.01,
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        asyncio.run(asyncio.wait_for(
+            _play_responses(
+                turn,
+                tts,
+                on_response_started=stuck_observer,
+            ),
+            timeout=0.2,
+        ))
+
+    assert tts.write_calls == 2
+    assert caplog.text.count("turn response observer timed out") == 1
+
+
 # --- chunk-loop window -------------------------------------------------
 
 

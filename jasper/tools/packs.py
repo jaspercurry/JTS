@@ -168,11 +168,11 @@ class PackOutcome:
       - "skipped": the pack's `gate` predicate returned False (timer with
         no scheduler, calendar/gmail with no linked account). Expected,
         not a fault.
-      - "failed": `build` or registration RAISED (ImportError in a tool
-        module, a bad explicit ToolDefinition/ToolExecutor object, a factory
-        that throws). The tool family is silently missing from voice; this is
-        the alarm condition `check_tool_packs` fails on. `error` carries the
-        exception repr.
+      - "failed": `gate`, `build`, or registration RAISED (ImportError in a
+        tool module, a bad explicit ToolDefinition/ToolExecutor object, a
+        predicate/factory that throws). The tool family is missing from voice;
+        this is the alarm condition `check_tool_packs` fails on. `error`
+        carries the exception repr.
 
     Surfaced via jasper-voice STATUS -> /state.voice.tool_packs and
     cross-checked by jasper-doctor's check_tool_packs. Mirrors and
@@ -386,7 +386,7 @@ def register_packs(
     packs: Iterable[CapabilityPack] | None = None,
 ) -> list[PackOutcome]:
     """Walk TOOL_PACKS in order; gate, build, and register each pack's
-    tools onto `registry`. Each pack's build+registration runs behind
+    tools onto `registry`. Each pack's gate+build+registration runs behind
     try/except for fault isolation — a broken pack (ImportError in a tool
     module, a bad explicit Tool object, a factory that raises) contributes
     no tools and is logged, never crashing the daemon. Mirrors
@@ -421,9 +421,6 @@ def register_packs(
     selected_packs = TOOL_PACKS if packs is None else tuple(packs)
     claimed_names = set(registry.tools)
     for pack in selected_packs:
-        if not pack.gate(deps):
-            outcomes.append(PackOutcome(pack.name, "skipped"))
-            continue
         originals: dict[str, tuple[bool, Any, bool, str | None]] = {}
         pack_claimed_names: list[str] = []
 
@@ -437,6 +434,9 @@ def register_packs(
                 )
 
         try:
+            if not pack.gate(deps):
+                outcomes.append(PackOutcome(pack.name, "skipped"))
+                continue
             # Materialize inside the guard so a factory returning a lazy
             # generator that raises mid-iteration is still fault-isolated.
             fns = list(pack.build(deps))
@@ -475,8 +475,9 @@ def register_packs(
                     continue
                 registered += 1
         except Exception as e:  # noqa: BLE001
-            # Treat build and registration as one pack transaction. A bad
-            # contributor item must not leave a half-registered pack behind.
+            # Treat gate, build, and registration as one pack transaction. A
+            # bad contributor must not stop sibling packs or leave a
+            # half-registered pack behind.
             for name, (had_tool, old_tool, had_pack, old_pack) in reversed(
                 list(originals.items()),
             ):

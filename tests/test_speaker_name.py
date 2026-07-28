@@ -4,6 +4,11 @@
 
 from __future__ import annotations
 
+import os
+import stat
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from jasper.speaker_name import (
@@ -93,6 +98,75 @@ def test_state_file_round_trips_name_and_room(tmp_path):
     assert state.name == "Kitchen"
     assert state.room == "Upstairs"
     assert state.source == "state"
+
+
+def test_write_state_applies_requested_mode_before_publish(tmp_path, monkeypatch):
+    path = tmp_path / "speaker_name.env"
+    real_replace = os.replace
+    published_modes: list[int] = []
+
+    def inspect_then_replace(source, target):
+        published_modes.append(stat.S_IMODE(os.stat(source).st_mode))
+        real_replace(source, target)
+
+    monkeypatch.setattr("jasper.atomic_io.os.replace", inspect_then_replace)
+
+    write_state("Kitchen", "Upstairs", path=str(path), mode=0o660)
+
+    assert published_modes == [0o660]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o660
+
+
+def test_concurrent_state_writes_use_distinct_complete_tempfiles(
+    tmp_path,
+    monkeypatch,
+):
+    """Overlapping wizard saves publish one complete identity, never mixed text."""
+    path = tmp_path / "speaker_name.env"
+    real_replace = os.replace
+    publish_barrier = threading.Barrier(2)
+    source_paths: list[str] = []
+    source_paths_lock = threading.Lock()
+
+    def synchronized_replace(source, target):
+        with source_paths_lock:
+            source_paths.append(os.fspath(source))
+        publish_barrier.wait(timeout=2)
+        real_replace(source, target)
+
+    monkeypatch.setattr("jasper.atomic_io.os.replace", synchronized_replace)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writes = [
+            pool.submit(write_state, "Kitchen", "Upstairs", str(path)),
+            pool.submit(write_state, "Office", "Downstairs", str(path)),
+        ]
+        assert sorted(write.result(timeout=3) for write in writes) == [
+            "Kitchen",
+            "Office",
+        ]
+
+    assert len(set(source_paths)) == 2
+    assert path.read_text(encoding="utf-8") in {
+        'JASPER_SPEAKER_NAME="Kitchen"\nJASPER_SPEAKER_ROOM="Upstairs"\n',
+        'JASPER_SPEAKER_NAME="Office"\nJASPER_SPEAKER_ROOM="Downstairs"\n',
+    }
+    assert list(tmp_path.glob(".speaker_name.env.*.tmp")) == []
+
+
+def test_write_state_cleans_temp_file_on_publish_failure(tmp_path, monkeypatch):
+    path = tmp_path / "speaker_name.env"
+
+    def fail_replace(_source, _target):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("jasper.atomic_io.os.replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        write_state("Kitchen", "Upstairs", path=str(path))
+
+    assert not path.exists()
+    assert list(tmp_path.glob(".speaker_name.env.*.tmp")) == []
 
 
 def test_write_state_preserves_existing_room_on_name_only_save(tmp_path):

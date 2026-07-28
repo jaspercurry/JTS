@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from . import librespot_state
+from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from .source_state import (
     airplay_playing,
     bluetooth_playing,
@@ -74,10 +75,10 @@ class RendererClient:
             return_exceptions=False,
         )
         return {
-            "aplactive": ap,
-            "btactive": bt,
-            "spotactive": spot,
-            "usbsinkactive": usb,
+            SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY]: ap,
+            SOURCE_TO_ACTIVE_KEY[Source.BLUETOOTH]: bt,
+            SOURCE_TO_ACTIVE_KEY[Source.SPOTIFY]: spot,
+            SOURCE_TO_ACTIVE_KEY[Source.USBSINK]: usb,
         }
 
     async def selected_source(self) -> str | None:
@@ -130,9 +131,9 @@ class RendererClient:
 
     async def get_currentsong(self) -> dict[str, Any]:
         active = await self.active_renderers()
-        if active.get("spotactive"):
+        if active.get(SOURCE_TO_ACTIVE_KEY[Source.SPOTIFY]):
             return await self._spot_currentsong()
-        if active.get("aplactive"):
+        if active.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY]):
             return await self._ap_currentsong()
         # Bluetooth A2DP doesn't expose reliable AVRCP metadata via
         # bluez-alsa, and there's no other source we can introspect.

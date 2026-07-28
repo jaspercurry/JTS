@@ -21,6 +21,7 @@ from jasper.camilla import (
     CamillaController,
     CamillaUnavailable,
     crossover_controller,
+    primary_controller,
 )
 from jasper.dsp_apply import BassExtensionApplyPending, dsp_writer_lock
 
@@ -97,6 +98,20 @@ def test_crossover_controller_defaults_to_camilla2_port(monkeypatch):
     assert isinstance(cam, CamillaController)
     assert cam._host == "127.0.0.1"
     assert cam._port == 1235
+
+
+def test_primary_controller_defaults_and_honors_env(monkeypatch):
+    monkeypatch.delenv("JASPER_CAMILLA_HOST", raising=False)
+    monkeypatch.delenv("JASPER_CAMILLA_PORT", raising=False)
+    default = primary_controller()
+    assert default._host == "127.0.0.1"
+    assert default._port == 1234
+
+    monkeypatch.setenv("JASPER_CAMILLA_HOST", "10.0.0.8")
+    monkeypatch.setenv("JASPER_CAMILLA_PORT", "1288")
+    overridden = primary_controller()
+    assert overridden._host == "10.0.0.8"
+    assert overridden._port == 1288
 
 
 def test_crossover_controller_honors_env_overrides(monkeypatch):

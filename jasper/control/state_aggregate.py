@@ -827,7 +827,13 @@ async def _get_state(
             status["clipped_samples"] = clipped
             status["active_config_path"] = active_config_path
             return status
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                logger,
+                "state.camilla_probe_failed",
+                error=exc,
+                level=logging.DEBUG,
+            )
             return status
 
     async def _airplay_playing() -> bool | None:

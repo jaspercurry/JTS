@@ -102,6 +102,46 @@ class EnvFileState:
         return self.status == "loaded"
 
 
+def bounded_env_float(
+    name: str,
+    default: float,
+    *,
+    lo: float,
+    hi: float,
+) -> float:
+    """Read an inclusive-range float knob, falling back on invalid input."""
+
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return default
+        if lo <= value <= hi:
+            return value
+    return default
+
+
+def bounded_env_int(
+    name: str,
+    default: int,
+    *,
+    lo: int,
+    hi: int,
+) -> int:
+    """Read an inclusive-range integer knob, falling back on invalid input."""
+
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+        if lo <= value <= hi:
+            return value
+    return default
+
+
 def parse_env_text(text: str) -> dict[str, str]:
     """Parse shell-style KEY=VALUE env file text.
 

@@ -50,7 +50,7 @@ import time as _time
 import types
 import typing
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Protocol
 
 if TYPE_CHECKING:
     from .packs import PackOutcome
@@ -196,6 +196,10 @@ _PY_TO_JSON = {
 # This is the ONLY place the 12s literal lives — the dispatch seams read
 # `tool.timeout`.
 DEFAULT_TOOL_TIMEOUT_SEC = 12.0
+# Observability must never become a tool-execution dependency. The production
+# callback is a local SQLite update and normally completes in well under a
+# millisecond; this bound only cuts off a wedged lock/callback.
+_DISPATCH_OBSERVER_TIMEOUT_SEC = 0.1
 
 
 # Version of the derived tool-manifest shape (Tool.to_manifest_entry).
@@ -429,6 +433,16 @@ class ToolRegistry:
     # jasper-doctor. Empty for registries built tool-by-tool (tests, the
     # voice-eval harness) that never run the pack walk.
     pack_outcomes: list["PackOutcome"] = field(default_factory=list)
+    # Optional host-injected lifecycle observer. This is deliberately a
+    # narrow callback rather than a reference to WakeLoop / telemetry
+    # storage: tool extensions still cross only the provider-neutral
+    # dispatch seam, while the host can observe a registered call's
+    # start/completion once for every provider.
+    dispatch_observer: Callable[[str, str], Awaitable[None]] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def register_tool(self, tool: Tool) -> Tool:
         """Register an already-built tool definition/executor pair.
@@ -475,6 +489,19 @@ class ToolRegistry:
 
     def get(self, name: str) -> Tool | None:
         return self.tools.get(name)
+
+    def set_dispatch_observer(
+        self,
+        observer: Callable[[str, str], Awaitable[None]] | None,
+    ) -> None:
+        """Attach the host's narrow tool-lifecycle observer.
+
+        ``stage`` is ``"called"`` or ``"completed"`` and the second
+        argument is the registered tool name. Observer failures are
+        contained by :func:`dispatch_tool`; they never change the payload
+        returned to the model.
+        """
+        self.dispatch_observer = observer
 
     def _visible_to(self, provider: str) -> list[Tool]:
         return [
@@ -771,6 +798,10 @@ async def dispatch_tool(
       * dict result    -> passed straight through
       * scalar result  -> wrapped as ``{"value": <result>}`` so the model
                           never sees a bare scalar
+      * registered call lifecycle -> the optional host observer sees
+                          ``called`` then ``completed``; observer failure
+                          never changes the model-visible payload, and
+                          unknown names are not reported as registered
     plus the structured timing logs (``tool <name> start`` / ``fn done``
     / ``TIMED OUT`` / ``RAISED``) journalctl shows for every call —
     identical across providers.
@@ -787,6 +818,7 @@ async def dispatch_tool(
         )
         return {"error": f"unknown tool {name}"}
 
+    await _notify_dispatch_observer(registry, "called", name)
     logger.info("tool %s start args=%s", name, _args_preview(tool, args))
     t_fn = _time.monotonic()
     try:
@@ -804,12 +836,46 @@ async def dispatch_tool(
         # preview entirely but keep length/timing diagnostics.
         preview = _payload_preview(tool, payload)
         logger.info("tool %s fn done in %.0fms ok payload=%s", name, fn_ms, preview)
-        return payload
     except asyncio.TimeoutError:
         fn_ms = (_time.monotonic() - t_fn) * 1000
         logger.warning("tool %s fn TIMED OUT after %.0fms", name, fn_ms)
-        return {"error": f"{name} timed out"}
+        payload = {"error": f"{name} timed out"}
     except Exception as e:  # noqa: BLE001
         fn_ms = (_time.monotonic() - t_fn) * 1000
         logger.warning("tool %s fn RAISED after %.0fms: %s", name, fn_ms, e)
-        return {"error": str(e)}
+        payload = {"error": str(e)}
+    await _notify_dispatch_observer(registry, "completed", name)
+    return payload
+
+
+async def _notify_dispatch_observer(
+    registry: ToolRegistry,
+    stage: str,
+    name: str,
+) -> None:
+    """Run the host observer without making observability a dispatch
+    dependency.
+
+    The production wake observer is already fail-soft around SQLite, but
+    this outer guard preserves the dispatch contract for any future host
+    observer too.
+    """
+    observer = registry.dispatch_observer
+    if observer is None:
+        return
+    try:
+        await asyncio.wait_for(
+            observer(stage, name),
+            timeout=_DISPATCH_OBSERVER_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "tool %s lifecycle observer timed out at %s",
+            name,
+            stage,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "tool %s lifecycle observer failed at %s: %s",
+            name, stage, e,
+        )

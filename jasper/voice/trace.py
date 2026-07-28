@@ -245,6 +245,7 @@ def traced_registry(registry: ToolRegistry) -> ToolRegistry:
     new = ToolRegistry(
         tool_packs=dict(registry.tool_packs),
         pack_outcomes=list(registry.pack_outcomes),
+        dispatch_observer=registry.dispatch_observer,
     )
     for name, tool in registry.tools.items():
         # Preserve the ToolDefinition unchanged — parameters, description,

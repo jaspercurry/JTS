@@ -44,24 +44,20 @@ pub struct PlayoutSegment {
     pub flush_monotonic_ns: Option<u64>,
 }
 
+/// Immutable snapshot emitted when a segment is flushed.
+///
+/// The newtype preserves the event/segment distinction without duplicating the
+/// segment's complete field schema. Field access transparently dereferences to
+/// the captured [`PlayoutSegment`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct PlayoutEvent {
-    pub local_segment_id: SegmentId,
-    pub provider_item_id: Option<String>,
-    pub kind: SegmentKind,
-    pub gain: f32,
-    pub queued_frames: u64,
-    pub written_frames: u64,
-    pub estimated_drained_frames: u64,
-    pub flushed_frames: u64,
-    pub audio_played_ms: u64,
-    pub output_start_frame: Option<u64>,
-    pub output_end_frame: u64,
-    pub ended: bool,
-    pub status: SegmentStatus,
-    pub start_monotonic_ns: u64,
-    pub end_monotonic_ns: Option<u64>,
-    pub flush_monotonic_ns: Option<u64>,
+pub struct PlayoutEvent(PlayoutSegment);
+
+impl std::ops::Deref for PlayoutEvent {
+    type Target = PlayoutSegment;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 pub struct PlayoutLedger {
@@ -248,24 +244,7 @@ impl PlayoutSegment {
     }
 
     fn as_event(&self) -> PlayoutEvent {
-        PlayoutEvent {
-            local_segment_id: self.local_segment_id,
-            provider_item_id: self.provider_item_id.clone(),
-            kind: self.kind,
-            gain: self.gain,
-            queued_frames: self.queued_frames,
-            written_frames: self.written_frames,
-            estimated_drained_frames: self.estimated_drained_frames,
-            flushed_frames: self.flushed_frames,
-            audio_played_ms: self.audio_played_ms,
-            output_start_frame: self.output_start_frame,
-            output_end_frame: self.output_end_frame,
-            ended: self.ended,
-            status: self.status,
-            start_monotonic_ns: self.start_monotonic_ns,
-            end_monotonic_ns: self.end_monotonic_ns,
-            flush_monotonic_ns: self.flush_monotonic_ns,
-        }
+        PlayoutEvent(self.clone())
     }
 }
 

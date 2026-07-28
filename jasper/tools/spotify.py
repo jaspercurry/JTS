@@ -11,6 +11,7 @@ from typing import Literal
 from rapidfuzz import fuzz
 
 from . import tool
+from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..spotify_routing import resolve_target, stop_renderers
 
 logger = logging.getLogger(__name__)
@@ -483,7 +484,9 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         re-derive the AirPlay→Spotify match from the renderer's
         currentsong) only run for cold-start cases."""
         renderers = await renderer.active_renderers()
-        airplay_active = bool(renderers.get("aplactive"))
+        airplay_active = bool(
+            renderers.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY])
+        )
         if airplay_active:
             client_name = await airplay_client_name()
             try:

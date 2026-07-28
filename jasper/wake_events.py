@@ -19,9 +19,9 @@ Per-wake-event flow:
                               the row's audio_*_path columns get
                               populated. Async, off the wake path.
   3. `update_stage(...)`    — each funnel transition (turn_opened,
-                              speech_detected, ...). Single-column
-                              UPDATE; safe to call any number of
-                              times per event.
+                              speech_detected, ...). Tool stages also
+                              preserve the first registered tool name;
+                              safe to call any number of times per event.
   4. `set_outcome(...)`     — terminal state. Sets the `outcome`
                               + `outcome_detail` fields.
   5. Retention sweep        — on every audio attach, total dir size is
@@ -544,10 +544,15 @@ class WakeEventStore:
         event_id: str,
         stage: str,
         ts: str | None = None,
+        *,
+        tool_name: str | None = None,
     ) -> None:
         """Set the named ts_* column to `ts` (default: now()).
-        Idempotent — calling twice just overwrites with the later
-        timestamp, which is harmless. The stage name must be one of
+        Tool stages preserve the first call timestamp/name and the first
+        completion timestamp because the schema intentionally holds one
+        bounded turn summary even when a model issues multiple calls.
+        Other stages are idempotent — calling twice overwrites with the
+        later timestamp, which is harmless. The stage name must be one of
         the keys in _STAGE_TO_COLUMN; invalid names raise ValueError."""
         column = _STAGE_TO_COLUMN.get(stage)
         if column is None:
@@ -557,12 +562,37 @@ class WakeEventStore:
             )
         self._require_open()
         async with self._lock():
-            self._conn.execute(  # type: ignore[union-attr]
-                # Column name is from a closed allowlist, not user input —
-                # safe to interpolate.
-                f"UPDATE wake_events SET {column} = ? WHERE event_id = ?",
-                (ts or _now_iso(), event_id),
-            )
+            timestamp = ts or _now_iso()
+            if stage == "tool_called":
+                self._conn.execute(  # type: ignore[union-attr]
+                    # Column name is from a closed allowlist, not user
+                    # input — safe to interpolate.
+                    f"""
+                    UPDATE wake_events
+                    SET {column} = COALESCE({column}, ?),
+                        tool_name = COALESCE(tool_name, ?)
+                    WHERE event_id = ?
+                    """,
+                    (timestamp, tool_name, event_id),
+                )
+            elif stage == "tool_completed":
+                self._conn.execute(  # type: ignore[union-attr]
+                    # This is a turn-funnel milestone, not a per-call trace:
+                    # preserve the first registered completion. Correlating
+                    # completion to one invocation would require a call id,
+                    # which this intentionally bounded schema does not store.
+                    f"""
+                    UPDATE wake_events
+                    SET {column} = COALESCE({column}, ?)
+                    WHERE event_id = ?
+                    """,
+                    (timestamp, event_id),
+                )
+            else:
+                self._conn.execute(  # type: ignore[union-attr]
+                    f"UPDATE wake_events SET {column} = ? WHERE event_id = ?",
+                    (timestamp, event_id),
+                )
 
     async def set_outcome(
         self,

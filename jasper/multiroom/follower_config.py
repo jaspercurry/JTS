@@ -104,13 +104,10 @@ def program_channel_for(channel: str) -> str:
 
 
 def _camilla():
-    """Controller from env — mirrors leader_config._camilla (the oneshot does
-    not import the web module)."""
-    from jasper.camilla import CamillaController
+    """Return camilla#1 without coupling this oneshot to a web module."""
+    from jasper.camilla import primary_controller
 
-    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
-    return CamillaController(host, port)
+    return primary_controller()
 
 
 # ---------- prior-config stash ----------

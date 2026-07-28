@@ -3873,7 +3873,7 @@ def test_single_flight_cache_does_not_cache_failures():
 
 
 def test_state_camilla_probe_times_out_fail_soft(
-    server_with_coordinator, monkeypatch, tmp_path,
+    server_with_coordinator, monkeypatch, tmp_path, caplog,
 ):
     """A wedged-but-listening CamillaDSP (TCP accepted, websocket read
     stalled) must not hang /state: the camilla probe self-bounds and its
@@ -3907,7 +3907,8 @@ def test_state_camilla_probe_times_out_fail_soft(
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"))
 
-    status, body = _get(f"{base}/state")
+    with caplog.at_level("DEBUG", logger="jasper.control.state_aggregate"):
+        status, body = _get(f"{base}/state")
 
     assert status == 200
     audio = body["audio"]
@@ -3916,6 +3917,7 @@ def test_state_camilla_probe_times_out_fail_soft(
     assert audio["clipped_samples"] is None
     # Fail-soft: the camilla stall didn't take down the whole snapshot.
     assert "renderers" in body
+    assert "event=state.camilla_probe_failed" in caplog.text
 
 
 async def test_state_aggregate_budget_fails_loud_on_runaway_probe(

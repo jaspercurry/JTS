@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import replace
@@ -24,6 +23,7 @@ from typing import Any, Callable
 
 import yaml
 
+from jasper.atomic_io import atomic_write_json
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
@@ -115,21 +115,6 @@ def staged_config_path(
     return Path(config_dir or DEFAULT_CAMILLA_CONFIG_DIR) / DEFAULT_STAGED_CONFIG_NAME
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        tmp_name = handle.name
-        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.chmod(tmp_name, 0o640)
-    os.replace(tmp_name, path)
-
-
 def load_staged_startup_config(
     *,
     metadata_path: str | Path | None = None,
@@ -198,6 +183,59 @@ def _software_guard_requested(group: SpeakerGroup | None) -> bool:
 
 def _software_guard_requested_any(groups: list[SpeakerGroup]) -> bool:
     return any(_software_guard_requested(group) for group in groups)
+
+
+def _tweeter_protected_while_audible(
+    view: gs.GraphView,
+    audible_tweeter: set[int],
+    *,
+    highpass_name: str,
+    protective_hp_hz: float | None,
+    highpass_order: int | None,
+) -> bool:
+    """Prove the audible tweeter chain retains its high-pass and limiter."""
+
+    if not audible_tweeter:
+        return True
+    hp_defined = protective_hp_hz is not None and gs.filter_param_matches(
+        view,
+        highpass_name,
+        filter_type="BiquadCombo",
+        params={
+            "type": "LinkwitzRileyHighpass",
+            "freq": protective_hp_hz,
+            "order": highpass_order,
+        },
+    )
+    limiter_defined = gs.filter_param_matches(
+        view,
+        driver_limiter_name("tweeter"),
+        filter_type="Limiter",
+        params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
+    )
+    chain_wired = gs.pipeline_contains_chain(
+        view,
+        channels=audible_tweeter,
+        required_names=(
+            highpass_name,
+            driver_limiter_name("tweeter"),
+        ),
+    )
+    return bool(hp_defined and limiter_defined and chain_wired)
+
+
+def _startup_headroom_present(
+    view: gs.GraphView,
+    expected_headroom_db: float,
+) -> bool:
+    """Prove the shared startup headroom filter has the expected gain."""
+
+    return gs.filter_param_matches(
+        view,
+        "active_startup_headroom",
+        filter_type="Gain",
+        params={"gain": -expected_headroom_db},
+    )
 
 
 def _active_mode_for_way(way_count: int) -> str:
@@ -672,41 +710,14 @@ def driver_commission_audible_evidence(
     highpass_name = highpass[0] if highpass is not None else ""
     protective_hp_hz = highpass[1] if highpass is not None else None
     highpass_order = highpass[2] if highpass is not None else None
-    if not audible_tweeter:
-        tweeter_protected = True  # vacuous: the tweeter stays muted
-    else:
-        hp_defined = protective_hp_hz is not None and gs.filter_param_matches(
-            view,
-            highpass_name,
-            filter_type="BiquadCombo",
-            params={
-                "type": "LinkwitzRileyHighpass",
-                "freq": protective_hp_hz,
-                "order": highpass_order,
-            },
-        )
-        limiter_defined = gs.filter_param_matches(
-            view,
-            driver_limiter_name("tweeter"),
-            filter_type="Limiter",
-            params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
-        )
-        hp_limiter_wired = gs.pipeline_contains_chain(
-            view,
-            channels=audible_tweeter,
-            required_names=(
-                highpass_name,
-                driver_limiter_name("tweeter"),
-            ),
-        )
-        tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)
-
-    headroom = gs.filter_param_matches(
+    tweeter_protected = _tweeter_protected_while_audible(
         view,
-        "active_startup_headroom",
-        filter_type="Gain",
-        params={"gain": -expected_headroom_db},
+        audible_tweeter,
+        highpass_name=highpass_name,
+        protective_hp_hz=protective_hp_hz,
+        highpass_order=highpass_order,
     )
+    headroom = _startup_headroom_present(view, expected_headroom_db)
     checks = {
         "audible_mask_correct": mask_correct,
         "tweeter_protected_while_audible": tweeter_protected,
@@ -800,44 +811,15 @@ def running_commission_evidence(
     # (2) Protection-while-audible: an audible tweeter keeps its protective HP +
     # limiter, wired. A muted tweeter is vacuously safe — independent of parse
     # health, which the dedicated ``running_config_parsed`` check already gates.
-    if not audible_tweeter:
-        tweeter_protected = True
-    else:
-        highpass_name = tweeter_highpass_name or protective_tweeter_hp_name(
-            "tweeter"
-        )
-        hp_defined = protective_hp_hz is not None and gs.filter_param_matches(
-            view,
-            highpass_name,
-            filter_type="BiquadCombo",
-            params={
-                "type": "LinkwitzRileyHighpass",
-                "freq": protective_hp_hz,
-                "order": tweeter_highpass_order,
-            },
-        )
-        limiter_defined = gs.filter_param_matches(
-            view,
-            driver_limiter_name("tweeter"),
-            filter_type="Limiter",
-            params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
-        )
-        hp_limiter_wired = gs.pipeline_contains_chain(
-            view,
-            channels=audible_tweeter,
-            required_names=(
-                highpass_name,
-                driver_limiter_name("tweeter"),
-            ),
-        )
-        tweeter_protected = bool(hp_defined and limiter_defined and hp_limiter_wired)
-
-    headroom = gs.filter_param_matches(
+    highpass_name = tweeter_highpass_name or protective_tweeter_hp_name("tweeter")
+    tweeter_protected = _tweeter_protected_while_audible(
         view,
-        "active_startup_headroom",
-        filter_type="Gain",
-        params={"gain": -expected_headroom_db},
+        audible_tweeter,
+        highpass_name=highpass_name,
+        protective_hp_hz=protective_hp_hz,
+        highpass_order=tweeter_highpass_order,
     )
+    headroom = _startup_headroom_present(view, expected_headroom_db)
     checks = {
         "running_config_parsed": parse_ok,
         "audible_mask_correct": mask_correct,
@@ -1755,6 +1737,73 @@ def _build_active_commissioning_context(
     }
 
 
+def _record_generated_config_classification(
+    yaml: str,
+    *,
+    candidate_gate_id: str,
+    gates: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Classify one generated active graph and record its shared safety gates."""
+
+    classification = classify_camilla_config_text(yaml)
+    gates.append(_gate(
+        candidate_gate_id,
+        label="Generated config is classified as active-speaker startup",
+        passed=classification.get("classification") == "active_startup_candidate",
+        message=classification.get("label", "classified generated config"),
+    ))
+    gates.append(_gate(
+        "volume_ceiling_preserved",
+        label="CamillaDSP volume ceiling is <= 0 dB",
+        passed=bool(classification.get("volume_limit_ok")),
+        message=(
+            "Volume ceiling is preserved"
+            if classification.get("volume_limit_ok")
+            else "Generated config did not preserve the volume ceiling"
+        ),
+    ))
+    for issue in classification.get("issues", []):
+        if isinstance(issue, dict):
+            issues.append({
+                "severity": str(issue.get("severity", "blocker")),
+                "code": str(issue.get("code", "config_issue")),
+                "message": str(issue.get("message", "generated config issue")),
+            })
+    return classification
+
+
+def _record_camilla_validation(
+    validation: dict[str, Any],
+    *,
+    blocked_subject: str,
+    failure_code: str,
+    gates: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> None:
+    """Fold CamillaDSP validation into the shared gate/issue vocabulary."""
+
+    status = str(validation.get("status") or "unknown")
+    validation_ok = status in {"valid", "missing"}
+    if status not in {"skipped", "not_generated"}:
+        gates.append(_gate(
+            "camilla_syntax_preflight",
+            label="Generated config passed CamillaDSP syntax preflight",
+            passed=validation_ok,
+            message=(
+                f"Validation status is {status}"
+                if validation_ok
+                else f"CamillaDSP validation blocked the {blocked_subject}"
+            ),
+        ))
+    if status not in {"valid", "missing", "skipped", "not_generated"}:
+        issues.append(_issue(
+            "blocker",
+            failure_code,
+            f"CamillaDSP validation status is {status}",
+        ))
+
+
 def stage_protected_startup_config(
     topology: OutputTopology,
     *,
@@ -1811,30 +1860,12 @@ def stage_protected_startup_config(
                 out_path=out_path,
                 baseline_id=f"staged-{_safe_stem(topology.topology_id)}",
             )
-            classification = classify_camilla_config_text(yaml)
-            gates.append(_gate(
-                "generated_active_startup_candidate",
-                label="Generated config is classified as active-speaker startup",
-                passed=classification.get("classification") == "active_startup_candidate",
-                message=classification.get("label", "classified generated config"),
-            ))
-            gates.append(_gate(
-                "volume_ceiling_preserved",
-                label="CamillaDSP volume ceiling is <= 0 dB",
-                passed=bool(classification.get("volume_limit_ok")),
-                message=(
-                    "Volume ceiling is preserved"
-                    if classification.get("volume_limit_ok")
-                    else "Generated config did not preserve the volume ceiling"
-                ),
-            ))
-            for issue in classification.get("issues", []):
-                if isinstance(issue, dict):
-                    issues.append({
-                        "severity": str(issue.get("severity", "blocker")),
-                        "code": str(issue.get("code", "config_issue")),
-                        "message": str(issue.get("message", "generated config issue")),
-                    })
+            classification = _record_generated_config_classification(
+                yaml,
+                candidate_gate_id="generated_active_startup_candidate",
+                gates=gates,
+                issues=issues,
+            )
             # Crash-recovery invariant: the staged boot config must start with
             # every active output muted. A reboot partway through commissioning
             # has to come up everything-muted, never a tweeter unmuted at level.
@@ -1892,25 +1923,13 @@ def stage_protected_startup_config(
                 f"could not generate protected startup config: {type(exc).__name__}",
             ))
 
-    validation_status = str(validation.get("status") or "unknown")
-    validation_ok = validation_status in {"valid", "missing"}
-    if validation_status not in {"skipped", "not_generated"}:
-        gates.append(_gate(
-            "camilla_syntax_preflight",
-            label="Generated config passed CamillaDSP syntax preflight",
-            passed=validation_ok,
-            message=(
-                f"Validation status is {validation_status}"
-                if validation_ok
-                else "CamillaDSP validation blocked the staged config"
-            ),
-        ))
-    if validation_status not in {"valid", "missing", "skipped", "not_generated"}:
-        issues.append(_issue(
-            "blocker",
-            "staged_config_validation_failed",
-            f"CamillaDSP validation status is {validation_status}",
-        ))
+    _record_camilla_validation(
+        validation,
+        blocked_subject="staged config",
+        failure_code="staged_config_validation_failed",
+        gates=gates,
+        issues=issues,
+    )
 
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
     status = "staged" if blocker_count == 0 and out_path.exists() else "blocked"
@@ -1982,7 +2001,12 @@ def stage_protected_startup_config(
         ),
     }
     try:
-        _atomic_write_json(meta_path, payload)
+        atomic_write_json(
+            meta_path,
+            payload,
+            mode=0o640,
+            group_from_parent=True,
+        )
     except OSError as exc:
         logger.warning(
             "event=active_speaker.staged_config_metadata_write_failed path=%s error=%s",
@@ -2140,32 +2164,12 @@ def prepare_driver_commissioning_config(
                 baseline_id=f"commission-{_safe_stem(topology.topology_id)}-{role}",
                 filter_mode=filter_mode,
             )
-            classification = classify_camilla_config_text(yaml)
-            gates.append(_gate(
-                "generated_active_commissioning_candidate",
-                label="Generated config is classified as active-speaker startup",
-                passed=(
-                    classification.get("classification") == "active_startup_candidate"
-                ),
-                message=classification.get("label", "classified generated config"),
-            ))
-            gates.append(_gate(
-                "volume_ceiling_preserved",
-                label="CamillaDSP volume ceiling is <= 0 dB",
-                passed=bool(classification.get("volume_limit_ok")),
-                message=(
-                    "Volume ceiling is preserved"
-                    if classification.get("volume_limit_ok")
-                    else "Generated config did not preserve the volume ceiling"
-                ),
-            ))
-            for issue in classification.get("issues", []):
-                if isinstance(issue, dict):
-                    issues.append({
-                        "severity": str(issue.get("severity", "blocker")),
-                        "code": str(issue.get("code", "config_issue")),
-                        "message": str(issue.get("message", "generated config issue")),
-                    })
+            classification = _record_generated_config_classification(
+                yaml,
+                candidate_gate_id="generated_active_commissioning_candidate",
+                gates=gates,
+                issues=issues,
+            )
             # The per-driver protection-while-audible gate (the config-level
             # form of the Stage-5 "HP present before the tweeter is unmuted").
             audible_evidence = driver_commission_audible_evidence(
@@ -2209,25 +2213,13 @@ def prepare_driver_commissioning_config(
                 f"could not generate commissioning config: {type(exc).__name__}",
             ))
 
-    validation_status = str(validation.get("status") or "unknown")
-    validation_ok = validation_status in {"valid", "missing"}
-    if validation_status not in {"skipped", "not_generated"}:
-        gates.append(_gate(
-            "camilla_syntax_preflight",
-            label="Generated config passed CamillaDSP syntax preflight",
-            passed=validation_ok,
-            message=(
-                f"Validation status is {validation_status}"
-                if validation_ok
-                else "CamillaDSP validation blocked the commissioning config"
-            ),
-        ))
-    if validation_status not in {"valid", "missing", "skipped", "not_generated"}:
-        issues.append(_issue(
-            "blocker",
-            "commissioning_config_validation_failed",
-            f"CamillaDSP validation status is {validation_status}",
-        ))
+    _record_camilla_validation(
+        validation,
+        blocked_subject="commissioning config",
+        failure_code="commissioning_config_validation_failed",
+        gates=gates,
+        issues=issues,
+    )
 
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
     status = "prepared" if blocker_count == 0 and out_path.exists() else "blocked"
