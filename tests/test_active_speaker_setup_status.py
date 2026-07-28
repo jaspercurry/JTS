@@ -815,6 +815,10 @@ def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
         # Gauge fix (2026-07-24): absent from the fixture profile dict, so
         # the "" (never evaluated) default.
         "linearization_outcome": "",
+        # PR-L4 item 8: which of `/state`'s two baseline blocks this is. The
+        # sibling `baseline_profile` block is the /sound-page staging
+        # candidate; this one reports what the speaker is actually running.
+        "role": "applied_profile",
         "layer_a_binding": {
             "status": "unverifiable",
             "matches": False,
@@ -1055,6 +1059,39 @@ def test_active_speaker_setup_rederives_baseline_freshness(
     assert stale["room_correction_allowed"] is True
     assert stale["acoustic_commissioning"]["reason"] is None
     assert stale["baseline_profile"]["revalidation"]["required"] is True
+    # PR-L4 item 8: exactly the pair that cost the 2026-07-27 forensics real
+    # time — a re-derived staging candidate reporting one thing beside an
+    # applied profile reporting another, with nothing saying they answer
+    # different questions. Both blocks now name their role, point at the one
+    # that reports what is audible, and state outright whether they agree.
+    assert stale["baseline_profile"]["role"] == "staging_candidate"
+    assert stale["baseline_profile"]["live_answer_key"] == "protected_profile"
+    assert stale["protected_profile"]["role"] == "applied_profile"
+    assert stale["baseline_profile"]["matches_applied"] is False
+    assert (
+        stale["baseline_profile"]["candidate_fingerprint"]
+        != stale["protected_profile"]["candidate_fingerprint"]
+    )
+
+
+def test_state_says_when_the_staging_candidate_is_the_applied_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The agreeing case: `matches_applied` is a real comparison, not a field
+    that is always False. Without it a reader still has to diff two
+    differently-shaped blocks to learn whether they are looking at one answer
+    or two."""
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(tmp_path / "absent.yml"),
+        baseline_state_path=tmp_path / "absent_baseline.json",
+    )
+    baseline = status.get("baseline_profile")
+    if not isinstance(baseline, dict):  # unreadable topology — nothing to compare
+        return
+    # No applied profile at all is "nothing to compare against", never a
+    # disagreement — the same unknown-vs-zero rule the cloud blocks follow.
+    assert baseline["matches_applied"] is None
+    assert baseline["role"] == "staging_candidate"
 
 
 # --- C3b-2: the two documented fail-closed branches ---

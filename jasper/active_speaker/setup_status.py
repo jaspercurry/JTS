@@ -767,6 +767,26 @@ def read_active_speaker_setup_status(
             "provisional": bool(profile.get("provisional")),
             "revalidation": dict(revalidation),
             "issues": profile_issues,
+            # PR-L4 item 8: WHICH question this block answers.
+            #
+            # `/state.active_speaker_setup` carries two baseline answers, and
+            # nothing said they were answering different questions. This one is
+            # a freshly RE-DERIVED /sound-page staging candidate — what the
+            # household could compile next — and it routinely reads
+            # `status: "blocked"` with a different `candidate_fingerprint`
+            # while a perfectly good profile is applied and audible. During the
+            # 2026-07-27 forensics that pair cost real time: an operator
+            # reading `/state` met "blocked" and a fingerprint that matched
+            # nothing, sitting beside `protected_profile`'s "ready" and the
+            # fingerprint actually running.
+            #
+            # Both blocks stay — they have different, legitimate readers — but
+            # neither may present itself as THE baseline answer any more. The
+            # discriminator names the role, points at the block that reports
+            # what is audible, and says outright whether the two agree. The
+            # live answer is `protected_profile`; this is a proposal.
+            "role": "staging_candidate",
+            "live_answer_key": "protected_profile",
         }
 
         # The mutable candidate and the graph that currently protects playback
@@ -848,7 +868,23 @@ def read_active_speaker_setup_status(
                 if isinstance(protected_profile, Mapping)
                 else ""
             ),
+            # PR-L4 item 8, the other half of the discriminator: this block is
+            # the one that reports what the speaker is ACTUALLY running.
+            "role": "applied_profile",
         }
+        # ...and whether the two agree, computed once here rather than left for
+        # every reader to work out by comparing fingerprints across two blocks
+        # with different shapes. `None` = no applied profile to compare against,
+        # which is not a disagreement.
+        profile_summary["matches_applied"] = (
+            None
+            if not isinstance(protected_profile, Mapping)
+            else bool(
+                profile.get("candidate_fingerprint")
+                and profile.get("candidate_fingerprint")
+                == protected_profile.get("candidate_fingerprint")
+            )
+        )
 
         if not protected_ready and isinstance(protected_profile, Mapping):
             if not protected_config_exists:

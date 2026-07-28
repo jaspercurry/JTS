@@ -105,6 +105,31 @@ reconciliation: `captures/iloud-comparison-20260727/trim-replay/`.
 
 ## PR-L4 — accountability: the missing assertions
 
+**Status: landed.** All nine items below are implemented with tests. Two
+dispositions differ from the work order's default and are recorded here rather
+than only in the code:
+
+- **Item 3(b)** (the two level-match estimators) is **disclosed, not
+  refused**. Unlike item 3(a), whose two frames grade the same capture against
+  a physical model, the point-at-Fc reader and the band-average solve in
+  practice read *different sittings* — the phone level match and the crossover
+  MEASURE sweep are separate sessions, and the measured-candidate branch never
+  runs the point-at-Fc path itself. Placement drift between sittings makes a
+  disagreement weaker evidence than a physical-model mismatch, so it raises an
+  issue and an event and leaves the candidate (which the item-1 assertion has
+  already graded) alone.
+- **Item 4** implements **surface, not restore**. A missing post-apply grade
+  says nothing about the correction — the commonest way to reach it is a
+  household closing the phone after the apply — and express-tier sessions omit
+  the post-apply position group by design, so an auto-restore keyed on it
+  would revert every express session ever run. Undo already exists and is the
+  primary button on the done screen.
+
+Named tolerances, with their derivations pinned by tests:
+`REALIZED_LEVEL_MATCH_TOLERANCE_DB = 3.0`,
+`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 1.5`,
+`MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB = 6.0`.
+
 From the verification-accountability audit, plus one found during
 follow-up. Each lands with its test; items 1–2 are the load-bearing
 pair.
@@ -200,4 +225,4 @@ ear is the final gauge.
   measured fact plus owner rulings from the same evening, and every
   implementation PR below it still gets the full gate.
 
-Last verified: 2026-07-27
+Last verified: 2026-07-28
