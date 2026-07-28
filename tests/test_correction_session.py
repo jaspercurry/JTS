@@ -734,6 +734,31 @@ async def test_overlong_noise_capture_is_bounded(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_noise_report_marks_the_band_snr_scale(tmp_path: Path):
+    """#1838: the noise report is persisted into the bundle and re-read
+    later, so it carries the band-power provenance marker itself rather than
+    relying on the enclosing acoustic-quality report's. A reader that finds
+    `band_noise_dbfs` with no marker must treat it as the pre-#1838 per-bin
+    scale and refuse to diff it against a marked one."""
+    from jasper.correction import acoustic_quality
+
+    sess = _make_session(tmp_path)
+    await sess.begin_noise_capture()
+    noise_path = sess.noise_capture_path_for_position(0)
+    noise_path.parent.mkdir(parents=True, exist_ok=True)
+    sr = sess.cfg.sample_rate
+    sweep.write_sweep_wav(
+        noise_path, (0.001 * np.ones(sr, dtype=np.float64)).astype(np.float32), sr
+    )
+
+    await sess.on_noise_capture_uploaded(noise_path)
+
+    report = sess.noise_reports[0]
+    assert report["band_noise_dbfs"]
+    assert report["band_snr_scale"] == acoustic_quality.BAND_SNR_SCALE
+
+
+@pytest.mark.asyncio
 async def test_repeat_and_verify_analysis_offloaded_to_worker_thread(
     tmp_path: Path, monkeypatch,
 ):

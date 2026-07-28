@@ -796,8 +796,12 @@ reference spectrum: a well-known "resonance" artifact of that kind of
 regularization, not a measurement. Independent FFT analysis of the same raw
 quiet windows put the room's true `sub_bass` ambient at about −75 dBFS,
 stable across all three sessions; the deconvolved noise term the estimator
-reported was about −25 dBFS — **the reported per-band SNR was overstated by
-roughly 40-50 dB.** Every "insufficient" verdict W2.1's escalation, W2.2's
+reported was about −25 dBFS — **the NOISE term was overstated by roughly
+40-50 dB, so the reported per-band SNR was UNDERSTATED by that much.**
+(Corrected 2026-07-28, #1838: this sentence used to say the SNR was
+overstated, which inverts it — the paragraph's own numbers, 13-16 dB
+reported against 63-66 dB true, are the understatement. Two later
+restatements inherited the error; all three are fixed.) Every "insufficient" verdict W2.1's escalation, W2.2's
 clip correction, and W2.3's completion-time correction were built to react
 to — across the runs 1-20 correction/refusal cascade this section
 documents — was chasing that phantom, not real room noise: true `sub_bass`
@@ -809,9 +813,13 @@ SNR was roughly 63-66 dB, comfortably "ok".
 > power, reading 18-39 dB low and clamping wide bands flat at
 > `DBFS_FLOOR`. The 63-66 dB SNR figure was computed with that broken raw
 > term and must be re-derived. Note also that the two defects point in
-> OPPOSITE directions — the phantom artifact overstated SNR by 40-50 dB in
-> uncovered bands; #1838's band-power defect understated every raw ambient
-> level. Do not conflate them, and do not "fix" one twice.
+> OPPOSITE directions. The phantom artifact inflated the deconvolved NOISE
+> term in uncovered bands, so it **understated** SNR by 40-50 dB (a quiet
+> room read "insufficient"). #1838's band-power defect deflated every raw
+> ambient level by 18-39 dB, so wherever that level is the noise term it
+> **overstated** SNR — and where it is read absolutely, it made the room
+> look far quieter than it was. Do not conflate them, and do not "fix" one
+> twice.
 
 Fix: `jasper.audio_measurement.snr_policy.excitation_covered_bands` flags
 any canonical band not ENTIRELY inside the reference sweep's `[f1, f2]`

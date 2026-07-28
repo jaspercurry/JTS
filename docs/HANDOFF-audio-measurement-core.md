@@ -1425,7 +1425,10 @@ reproduce**: the raw-ambient side of that subtraction was reading
 18-39 dB low, so the post-#1838 sub_bass SNR lands well below 62-66 dB.
 The phantom-fix mechanism (deconvolved artifact → raw fallback) is
 unaffected and still correct; only the numbers must be re-derived. Do not
-conflate the two stories — the phantom artifact OVERSTATED SNR by ~40-50 dB
-in uncovered bands, #1838's band-power defect UNDERSTATED every raw ambient
-level by 18-39 dB. They point in opposite directions and have separate
-causes.
+conflate the two stories, and note they point in OPPOSITE directions: the
+phantom artifact inflated the deconvolved NOISE term in uncovered bands, so
+it UNDERSTATED SNR by ~40-50 dB (13-16 dB reported against 63-66 dB true);
+#1838's band-power defect deflated every raw ambient level by 18-39 dB, so
+wherever that level is the noise term it OVERSTATED SNR, and where it is
+read absolutely it made the room look far quieter than it was. Separate
+causes, opposite signs.

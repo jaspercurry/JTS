@@ -877,7 +877,10 @@ def test_weakly_located_sweep_reads_too_quiet_not_glitched():
     )
     verdict = _run_phase(c, 2, 2)
     assert verdict["code"] == "locate_failed"
-    assert verdict["template"] != "silent_auto_retry"
+    # Positive assertion: the household is asked to fix the level and retry,
+    # not silently re-run at the same one. (`!= "silent_auto_retry"` would
+    # also pass if the template were renamed or dropped.)
+    assert verdict["template"] == "fix_and_retry"
     assert not verdict.get("auto_retry")
 
 

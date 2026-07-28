@@ -676,12 +676,22 @@ def test_helper_reports_reach_status_and_homeowner_nudge(
     sess._write_acoustic_quality_json()
     acoustic_path = tmp_path / "acoustic_quality.json"
     persisted_bytes = acoustic_path.read_bytes()
+    # Digest moved once, in #1838, when the report gained `band_snr_scale`
+    # (previously 261dd876…). That key is the whole point: bundles written
+    # either side of the band-power fix carry `band_snr` / `min_band_snr_db`
+    # on scales ~12 dB apart with identical keys and units, so the marker has
+    # to be IN the artifact for a later reader to tell them apart. The
+    # capture_quality digest above is deliberately unchanged — that report is
+    # untouched.
     assert hashlib.sha256(persisted_bytes).hexdigest() == (
-        "261dd876ca504b900b016d34ba792a77f94eae65bd6d7f4f146e9ca8328ca298"
+        "6e304273da747e59f39b977faa0d4061e4550e87d23109196011261537296bf9"
     )
     persisted = json.loads(persisted_bytes)
     persisted_capture = persisted["captures"][0]
     assert persisted_capture["snr"]["band_snr"] == band_snr
+    assert persisted_capture["snr"]["band_snr_scale"] == (
+        acoustic_quality.BAND_SNR_SCALE
+    )
     assert persisted_capture["direct_arrival"] == direct_arrival
 
     freqs_hz = np.linspace(50.0, 350.0, 20)

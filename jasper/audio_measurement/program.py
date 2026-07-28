@@ -233,8 +233,9 @@ DEFAULT_PILOT_LEVELS_DB = (-10.0, 0.0)
 # Accepted at 1 s because the residual's DIRECTION is safe and the margin
 # covers it: an inflated ambient under-estimates SNR, so the failure mode is
 # an honest, retryable `pilot_level_collapse` on a capture that was actually
-# fine — never the mic accusation (`linearity_ok` is forced True under the
-# floor), and never a pass for a genuinely collapsed pair. Margin: the
+# fine — never the mic accusation (`linearity_ok` is None, i.e. unknown,
+# under the floor since #1838; it was forced True before), and never a pass
+# for a genuinely collapsed pair. Margin: the
 # 2026-07-20 jts3 hardware captures measured ~26-30 dB of quiet-pilot in-band
 # SNR against a ~12.4 dB `PILOT_MIN_SNR_DB` floor, so ~14-18 dB of headroom
 # absorbs a worst-case ~10 dB transient inflation — comfortably, but not by

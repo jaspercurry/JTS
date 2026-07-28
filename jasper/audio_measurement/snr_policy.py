@@ -133,8 +133,23 @@ def band_levels_dbfs(
     back to two-sided energy (all but DC and, for an even-length input,
     Nyquist), and the Hann window's energy loss is divided out by its own
     ``sum(w**2)`` rather than a hard-coded 3/8, so the correction stays right
-    for any window this ever uses. Validated to <0.35 dB against closed-form
-    band power for white noise and to <0.05 dB for a full-band total.
+    for any window this ever uses. Against closed-form band power for white
+    noise it is UNBIASED; the residual spread is the chi-square variance of a
+    finite-bin estimate (up to ~0.8 dB observed on the narrowest 60-bin band
+    from a 1 s frame, shrinking as bins grow) and is not an accuracy budget.
+    A full-band total, where that variance is negligible, matches the true
+    RMS to <0.05 dB.
+
+    **Not a band-shape estimator for non-stationary input.** The Hann window
+    is correct for the stationary ambient this reads, but it re-weights a
+    swept sine's frequencies by WHEN they occur in the capture — a 4 s
+    sweep's reported band split is wrong by tens of dB, and it varies with
+    capture length. Room correction's ``capture_band_snr`` reads a sweep
+    capture through this function and inherits that bias (measured
+    ~-10 dB on ``sub_bass``, ~1.5 dB of capture-length dependence); the
+    per-band SHAPE there is not yet trustworthy even though the overall
+    scale now is. Tracked in issue #1847 — do not read this docstring as a
+    clean bill of health for that consumer.
 
     Bounds the FFT input the same way
     :func:`~jasper.audio_measurement.deconv.deconvolve` does

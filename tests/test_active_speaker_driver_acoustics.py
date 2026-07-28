@@ -953,8 +953,11 @@ def test_narrow_excitation_sweep_still_flags_a_genuinely_noisy_quiet_window(
     note for future editors: the covered bands' deconvolved readings pick up
     quiet-window energy at roughly (injected - 3 dB), and since #1838 the
     sub_bass raw fallback recovers the injected level itself (see the
-    assertion below), so the two domains now agree to within a few dB
-    instead of the raw side reading ~25 dB low. sub_bass still is not the
+    assertion below) instead of reading ~25 dB low. On THIS fixture the two
+    domains therefore land within a few dB of each other — which is a
+    coincidence of a stationary injected tone, not a general claim that the
+    raw and deconvolved domains are commensurate; they are still different
+    units joined at one seam. sub_bass still is not the
     WORST band in this synthetic shape — the per-band assertions below are
     the teeth, scoping exactly which bands a quiet 70 Hz tone degrades
     (bass) and which stay clean (upper_bass/transition/mid)."""

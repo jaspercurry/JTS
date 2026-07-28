@@ -2597,8 +2597,9 @@ def _pilot_ambient_samples(
     and meaningless for a CROSS-ERA replay of an archived capture, where the
     window lands on whatever the older schedule had at that position. The
     replay failure direction is the safe one: a too-loud "ambient" reads as
-    low SNR, which forces ``linearity_ok`` True and can never manufacture a
-    false AGC accusation.
+    low SNR, which resolves ``linearity_ok`` to ``None`` (unknown — #1838;
+    it was forced ``True`` before) and can never manufacture a false AGC
+    accusation.
 
     The window is CLIPPED to the capture, never SLID along it: ``end`` is
     computed from the window's own (possibly negative) schedule position, not
@@ -2784,7 +2785,8 @@ def _pilot_observations(
     (10 dB quieter than hi, same ambient), so its in-band SNR
     (`_pilot_in_band_snr_db`) gates trust. Below `PILOT_MIN_SNR_DB` the
     ambient-subtracted estimate isn't reliable either way —
-    ``linearity_ok`` is forced True (never a false FAILURE) and
+    ``linearity_ok`` is ``None``, i.e. UNKNOWN (never a false FAILURE, and
+    since #1838 never a false PASS either) and
     ``snr_valid=False`` lets the caller route to the honest "room/
     positioning" reason instead of blaming the phone's AGC (see
     `ProgramAnalysis.pilot_snr_ok` and `crossover_v2_flow._consume_check`).
@@ -3199,6 +3201,14 @@ def _solve_role_gain(
     required_capture_dbfs, ambient_dbfs, required_snr_db, crest_factor_db = max(
         demands, key=lambda item: item[0]
     )
+    # NAMED RESIDUAL, erring QUIET (pre-existing, unchanged by #1838): a
+    # pilot's SNR is measured over its WHOLE band, but this floor is built
+    # from the single worst overlapping ROW. A row narrower than the pilot's
+    # band understates the noise the pilot actually integrates, so this arm
+    # can sit lower than the pilot really needs. Left alone because it is not
+    # the binding arm anywhere it has been measured — on the JTS3 field room
+    # the room arm wins by 16-19 dB — and because widening it is a tuning
+    # change that wants bench data, not a correctness fix.
     worst_ambient_dbfs = max(level for _lo, _hi, level in rows)
     pilot_floor_dbfs = (
         worst_ambient_dbfs + pilot_delta_db + PILOT_MIN_SNR_DB
@@ -3338,6 +3348,15 @@ def _solve_gain_plan(
     # The solve answers a different question (how much drive this fit needs,
     # per driver, in that driver's own band), and folding the two together
     # would silently change which sessions CHECK accepts.
+    #
+    # #1838 made this gate STRICTLY HARDER, and it is the only one that got
+    # harder. Its arithmetic is unchanged, but its input stopped reading
+    # 18-39 dB too quiet: passing now genuinely requires the worst TRUE
+    # ambient band at or below `target_capture_dbfs - DRIVER.snr_ok_db`
+    # (-35.5 dBFS at the shipped target). Rooms that used to sail through on
+    # a collapsed reading can now be refused — which is the point. Headroom
+    # is not tight where it has been measured: the JTS3 field room's worst
+    # true band was -57.86 dBFS, ~22 dB inside the bound.
     snr_floor_ok = _snr_floor_ok(ambient_report, target)
     return GainPlan(
         gain_db=gains,
