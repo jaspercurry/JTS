@@ -1110,14 +1110,16 @@ source, no drift.
 | `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself |
 | `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back |
 | `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
+| `correction_rollback_failed` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the probe found one of the three defects above AND the automatic rollback could not run (no binding, a refused restore, or a seam that raised). The correction is therefore **still applied**, and this row exists so the copy says so instead of promising a restore that did not happen. Names Undo as the manual action |
 
 **Auto-apply is no longer unconditional at the confirm seam.** PR-6b's
 `_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
 MEASURE's trust gates had already decided — true about the CAPTURE, silent
-about the CORRECTION built from it. `_assert_accountable` (PR-L4, extended by
-PR-L5's level-frame gate) runs the rows above between the candidate build and
-the publish, so a refusal leaves no candidate for anything downstream to apply.
-Both raise through
+about the CORRECTION built from it. `_assert_accountable` runs its three pre-apply gates — PR-L5's level-frame
+agreement, then PR-L4's items 1 and 2, most-specific-first — between the
+candidate build and the publish, so a refusal leaves no candidate for anything
+downstream to apply. (The four `correction_*` rows are different: they fire
+after the apply, from the delta probe.) All three raise through
 `CrossoverV2Conductor._refuse`, which stamps `_last_failure_code`: the host's
 `CaptureBeginRefused` arm reads THAT, not the exception, and falls back to
 `relay_timeout` when it is unset — so raising any other way would render a

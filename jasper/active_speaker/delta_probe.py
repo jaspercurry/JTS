@@ -311,7 +311,9 @@ class DeltaProbeMap:
     origin over the probe band — 1.0 means the correction landed at full
     depth, 0.6 means it delivered 60% of what it asked for. It is reported on
     every classified map, not just the shortfall one, because it is the single
-    most legible number in this record for a human reading the journal.
+    most legible number in this record for a human reading the journal, and it
+    is ``None`` on an unavailable map: 0.0 there would read as the measured
+    claim "delivered nothing", which is the opposite of "not measured".
     """
 
     verdict: str
@@ -322,7 +324,7 @@ class DeltaProbeMap:
     rms_error_db: float
     worst_hz: float
     exceedance_octaves: float
-    gain_factor: float
+    gain_factor: float | None
     tolerance_low_db: float
     tolerance_high_db: float
     spatial: SpatialCost
@@ -357,7 +359,7 @@ def _unavailable(reason: str, spatial: SpatialCost) -> DeltaProbeMap:
     return DeltaProbeMap(
         verdict=VERDICT_UNAVAILABLE, reason=reason, probe_band_hz=(0.0, 0.0),
         n_bins=0, max_error_db=0.0, rms_error_db=0.0, worst_hz=0.0,
-        exceedance_octaves=0.0, gain_factor=0.0,
+        exceedance_octaves=0.0, gain_factor=None,
         tolerance_low_db=DELTA_PROBE_TOLERANCE_LOW_DB,
         tolerance_high_db=DELTA_PROBE_TOLERANCE_HIGH_DB,
         spatial=spatial,
@@ -405,12 +407,29 @@ def widest_exceedance_octaves(
 
 
 def _structured_exceedance(
-    freqs_hz: np.ndarray, error_db: np.ndarray, tolerance_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    error_db: np.ndarray,
+    tolerance_db: np.ndarray,
+    probe_mask: np.ndarray,
 ) -> tuple[bool, float]:
-    """``(is a real finding, widest run in octaves)`` for one error curve."""
-    widest, _ = widest_exceedance_octaves(
-        freqs_hz, np.abs(error_db) > tolerance_db,
-    )
+    """``(is a real finding, widest run in octaves)`` for one error curve.
+
+    **Every array is on the FULL grid**, and ``probe_mask`` marks the bins
+    inside the probe band. That is load-bearing, not a convenience: the width
+    rule counts a run as contiguous in GRID INDEX, so it can only tell
+    structure from texture if the grid it walks is the real one. Evaluating it
+    on the compacted ``freqs[mask]`` subarray instead silently welds bins that
+    are octaves apart in Hz into one "wide" run whenever the mask has a hole —
+    and the commanded floor puts a hole in it on every ordinary correction that
+    cuts low and boosts high. Two isolated single-bin errors either side of
+    such a gap then scored 2.9 octaves of structure and rolled the correction
+    back (adversarial review B1, reproduced). Masking the EXCEEDANCE instead
+    keeps every removed bin as a run-breaker, which is what it physically is:
+    a frequency where the correction asked for nothing, so nothing there can
+    corroborate a defect on the far side of it.
+    """
+    exceeds = probe_mask & (np.abs(error_db) > tolerance_db)
+    widest, _ = widest_exceedance_octaves(freqs_hz, exceeds)
     return widest >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES, widest
 
 
@@ -455,8 +474,11 @@ def classify_delta_probe(
     r = realized[mask]
     c = commanded[mask]
     probe_band_hz = (float(f[0]), float(f[-1]))
-    tolerance = _tolerance_curve(f)
 
+    # Scalar statistics read the probe bins only — a bin outside the band
+    # contributes to no claim. The exceedance WIDTH, by contrast, is measured
+    # on the full grid with the mask applied to the exceedance itself, so grid
+    # adjacency survives (see _structured_exceedance).
     error = r - c
     max_error_db = float(np.max(np.abs(error)))
     rms_error_db = float(np.sqrt(np.mean(error ** 2)))
@@ -466,7 +488,11 @@ def classify_delta_probe(
     # degenerate here.
     gain_factor = float(np.dot(r, c) / np.dot(c, c))
 
-    exceeded, exceedance_octaves = _structured_exceedance(f, error, tolerance)
+    tolerance_full = _tolerance_curve(freqs)
+    error_full = np.where(mask, realized - commanded, 0.0)
+    exceeded, exceedance_octaves = _structured_exceedance(
+        freqs, error_full, tolerance_full, mask,
+    )
 
     def _map(verdict: str, reason: str) -> DeltaProbeMap:
         return DeltaProbeMap(
@@ -495,8 +521,10 @@ def classify_delta_probe(
     # — the driver delivered a fraction of what it was asked for, uniformly.
     # If the residual still fails, the shape itself is wrong, which is a claim
     # about our model of the filters, not about the driver's headroom.
-    scaled_error = r - gain_factor * c
-    shape_tracks, _ = _structured_exceedance(f, scaled_error, tolerance)
+    scaled_error_full = np.where(mask, realized - gain_factor * commanded, 0.0)
+    scaled_exceeded, _ = _structured_exceedance(
+        freqs, scaled_error_full, tolerance_full, mask,
+    )
     # A *level-dependent* shortfall is a claim about a driver failing to
     # deliver LEVEL, so it requires that level was what the correction asked
     # for. A proportional undershoot of a set of CUTS is not compression —
@@ -504,7 +532,7 @@ def classify_delta_probe(
     # where someone will look at the filter math.
     commanded_is_lift = float(np.max(c)) >= DELTA_PROBE_MIN_COMMANDED_DB
     if (
-        not shape_tracks
+        not scaled_exceeded
         and commanded_is_lift
         and 0.0 <= gain_factor < DELTA_PROBE_SHORTFALL_GAIN_CEILING
     ):

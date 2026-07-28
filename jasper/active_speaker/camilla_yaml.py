@@ -855,6 +855,23 @@ MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 # 0 dB ceiling, the per-driver limiters, and tweeter protection are untouched.
 MAX_LINEARIZATION_BOOST_DB = 12.0
 
+# Ceiling on the program-domain attenuation ``active_baseline_headroom`` may
+# carry, dB. NOT a cap on the correction — it is a refusal.
+#
+# Total boost is uncapped by the owner's ruling, and the absorption mechanism
+# turns every dB of it into a dB of pre-split attenuation. Left unbounded that
+# is a silent failure mode rather than a safety one: eight filters at the
+# per-filter cap would charge 96 dB and emit a graph that is, to a household,
+# simply mute — with nothing in the journal naming why. So the emitter REFUSES
+# past this line instead of quietly muting the speaker (adversarial review N7).
+#
+# 40 dB is deliberately generous — it is the same bound
+# ``emit_active_speaker_baseline_config`` already validates
+# ``baseline_headroom_db`` against, it is far past any correction the fit's own
+# realization gates can produce, and a config asking for more has a defect
+# upstream of this file. Fail-safe stays fail-safe; it just says so.
+MAX_PROGRAM_HEADROOM_DB = 40.0
+
 _LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
 # A linearization shelf carries NO steepness of its own. Every shelf reaches
@@ -1375,8 +1392,10 @@ def _emit_baseline_filter_definitions(
     # gain because every branch sees the same program, so absorbing the worst
     # branch's total covers all of them. This is the mechanism that lets the
     # fit engine's boost stay uncapped while the 0 dB ceiling stays a hard
-    # rail — and it is exactly the "this correction costs N dB of maximum
-    # level" the fit discloses as ``LinearizationFit.headroom_cost_db``.
+    # rail. It is the SAME quantity the fit discloses as
+    # ``LinearizationFit.headroom_cost_db`` — both are the per-branch sum of
+    # positive gains — so what a household is told the correction costs is what
+    # the speaker actually gives up. Pinned by a test.
     trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
     total_headroom_db = (
         baseline_headroom_db
@@ -1384,6 +1403,13 @@ def _emit_baseline_filter_definitions(
         + linearization_headroom_db(linearization)
         + trim_db
     )
+    if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
+        raise ActiveSpeakerConfigError(
+            f"program-domain headroom {total_headroom_db:.3f} dB exceeds "
+            f"{MAX_PROGRAM_HEADROOM_DB} dB — refusing to emit a graph this "
+            "attenuated (check the linearization boost and room-correction "
+            "boost totals)"
+        )
     headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(

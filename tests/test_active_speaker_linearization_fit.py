@@ -38,6 +38,8 @@ from jasper.active_speaker.linearization_fit import (
     MAX_NORMALIZATION_SPEND_DB,
     PER_FILTER_BOOST_CAP_DB,
     PER_FILTER_CUT_CAP_DB,
+    _CUT_REDUCTION_EPS_DB,
+    _MIN_FILTER_GAIN_DB,
     FitVocabulary,
     LinearizationFilter,
     LinearizationFit,
@@ -1392,9 +1394,10 @@ def test_reduce_cuts_for_lift_shrinks_a_cut_instead_of_stacking_a_boost():
     assert len(reduced) == 1
     assert reduced[0].gain > cut.gain           # the cut shrank
     assert reduced[0].gain < 0.0                # …but is still a cut
-    assert float(np.max(delivered)) == pytest.approx(2.0, abs=0.05)
-    # Nowhere did it deliver more lift than was permitted.
-    assert float(np.max(delivered)) <= 2.0 + 1e-6
+    assert float(np.max(delivered)) == pytest.approx(2.0, abs=0.1)
+    # Nowhere did it deliver more lift than was permitted (up to the
+    # materiality slack the permitted test itself carries).
+    assert float(np.max(delivered)) <= 2.0 + _CUT_REDUCTION_EPS_DB
 
 
 def test_reduce_cuts_refuses_where_the_headroom_forbids_it():
@@ -1584,3 +1587,84 @@ def test_the_frame_offset_is_reported_per_role_on_the_fit():
     assert fit.to_dict()["level_frame_offset_db"] == pytest.approx(3.0)
     # No frame supplied -> 0.0, and the fit is otherwise unchanged.
     assert fit_driver_linearization(resp, envelope).level_frame_offset_db == 0.0
+
+
+def test_reduce_cuts_survives_a_production_shaped_headroom_array():
+    """**N2 regression.** The permitted-headroom test is per-bin over the WHOLE
+    grid, and a biquad's response never reaches exactly zero — a cut at 1 kHz
+    still leaks thousandths of a dB at 20 kHz. At a float-noise epsilon a
+    single such bin, with fractionally negative permitted headroom, vetoed the
+    entire shrink: measured 0.00 of a wanted 4.00 dB. With a materiality
+    epsilon the operation delivers.
+
+    The headroom array here is production-shaped — mostly positive, with a
+    sliver of NEGATIVE residual at the extremes, which is exactly what
+    ``target − working`` looks like after a real flattening loop.
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    cut = LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=-6.0)
+    headroom = np.full_like(grid, 4.0)
+    headroom[grid > 15_000.0] = -0.0034   # the measured leakage-scale residual
+    reduced, delivered = reduce_cuts_for_lift(
+        (cut,), np.full_like(grid, 4.0), headroom, grid,
+    )
+    assert float(np.max(delivered)) > 1.0, "a sliver of residual must not veto"
+    assert reduced[0].gain > cut.gain
+
+
+def test_reduce_cuts_still_refuses_a_material_overshoot():
+    """The materiality epsilon must not become a licence: a genuinely negative
+    headroom (an order above the epsilon) still forbids the shrink."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    cut = LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=-6.0)
+    headroom = np.full_like(grid, 4.0)
+    headroom[np.argmin(np.abs(grid - 1000.0))] = -1.0
+    reduced, delivered = reduce_cuts_for_lift(
+        (cut,), np.full_like(grid, 4.0), headroom, grid,
+    )
+    assert reduced == (cut,)
+    assert float(np.max(delivered)) == 0.0
+
+
+def test_the_cut_reduction_epsilon_is_the_modules_own_materiality_floor():
+    """One definition of "this per-bin dB figure is noise, not an allowance"
+    across the envelope and the lift stage."""
+    import jasper.active_speaker.linearization_fit as fit_mod
+
+    assert _CUT_REDUCTION_EPS_DB == fit_mod._ENVELOPE_NONZERO_EPS_DB
+    # Comfortably above real biquad leakage, comfortably below the smallest
+    # gain this module will emit — so it can mask neither a real overshoot nor
+    # a real filter.
+    assert 0.0034 < _CUT_REDUCTION_EPS_DB < _MIN_FILTER_GAIN_DB
+
+
+def test_headroom_cost_is_the_sum_the_emitter_charges_not_the_cascade_peak():
+    """**S2.** The disclosed number and the charged number are one number.
+
+    Two boosts at different centres never reach their combined height anywhere,
+    so the realized cascade PEAK understates what the graph gives up — measured
+    0.34 dB peak against a 3.38 dB charge. The SUM is the conservative bound
+    (overlapping boosts at one frequency DO add, and that is the case the
+    headroom must survive), so the charge is right and the disclosure follows
+    it. Reporting the peak would tell a household its correction cost a tenth
+    of what the speaker actually gave up.
+    """
+    from jasper.active_speaker.camilla_yaml import linearization_headroom_db
+
+    resp, envelope = _dip_response(depth_db=6.0)
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    boosts = [f.gain for f in fit.filters if f.gain > 0.0]
+    assert boosts, "this fixture must emit boost for the claim to mean anything"
+    assert fit.headroom_cost_db == pytest.approx(sum(boosts))
+    # …and it is literally the emitter's own charge for this fit.
+    charged = linearization_headroom_db(
+        {fit.role: [f.to_dict() for f in fit.filters]}
+    )
+    assert fit.headroom_cost_db == pytest.approx(charged)
+
+
+def test_headroom_cost_is_zero_for_every_cut_only_fit():
+    resp, envelope = _dip_response()
+    assert fit_driver_linearization(resp, envelope).headroom_cost_db == 0.0

@@ -3604,13 +3604,18 @@ def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
     pressed it: here the delta probe did, because it measured that the applied
     correction is not doing what its own filters commanded.
 
-    Never raises. Every refusal :func:`handle_v2_restore` can make is an
-    ordinary outcome for an automatic caller — a first-ever apply has nothing
-    stashed to go back to, and a changed output topology makes the stash
-    unsafe to reload — and in each case the correct behaviour is to report
-    "not restored" and let the conductor's refusal still reach the household
-    with the Undo button on it. A rollback that could not run must not swallow
-    the verdict that asked for it.
+    Catches :class:`CrossoverV2Refused`, which is the ordinary outcome for an
+    automatic caller — a first-ever apply has nothing stashed to go back to,
+    and a changed output topology makes the stash unsafe to reload — and
+    reports "not restored" so the conductor's refusal still reaches the
+    household with the Undo button on it. A rollback that could not run must
+    not swallow the verdict that asked for it.
+
+    It does NOT claim to catch everything: an OSError from the CamillaDSP
+    socket or a malformed stash still propagates, and the conductor's own
+    ``_delta_probe_refusal`` catches that wider family on the other side of
+    the seam (it has to — a conductor with a different binding gets the same
+    protection). Two honest halves rather than one dishonest "never raises".
     """
 
     def _rollback(reason: str) -> bool:

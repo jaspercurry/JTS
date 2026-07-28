@@ -25,9 +25,11 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
 )
+from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.camilla_yaml import (
     MAX_LINEARIZATION_BOOST_DB,
     MAX_LINEARIZATION_FILTERS_PER_DRIVER,
+    MAX_PROGRAM_HEADROOM_DB,
     driver_linearization_peak_name,
     driver_linearization_shelf_name,
     driver_linearization_taper_name,
@@ -719,3 +721,86 @@ def test_reproof_allows_unrelated_filter_name_between_crossover_and_tail():
 
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
+
+
+# --------------------------------------------------------------------------- #
+# adversarial-review regressions (round 2)
+# --------------------------------------------------------------------------- #
+
+
+def test_room_peq_boost_is_not_spendable_as_linearization_headroom():
+    """**S1 regression.** ``active_baseline_headroom`` absorbs room-correction
+    boost AND linearization boost. Reading its whole magnitude as the
+    linearization allowance let a tampered linearization filter spend headroom
+    already committed to the room PEQs — the two together could then clip while
+    the graph proved safe.
+
+    Here the emitted linearization is CUT-ONLY, so linearization's own share of
+    the headroom is zero; the 8 dB of room boost sitting in the same gain must
+    not license a tampered +5 dB linearization filter.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        room_peqs=(PeqFilter(freq=120.0, q=1.0, gain=8.0),),
+        linearization={"tweeter": [_peak(3400.0, -1.5)]},
+    )
+    payload = yaml.safe_load(text)
+    # The graph really does carry 8 dB of absorbed room boost…
+    assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
+        pytest.approx(-8.0, abs=1e-3)
+    # …and none of it is linearization's to spend.
+    payload["filters"][driver_linearization_peak_name("tweeter", 1)][
+        "parameters"
+    ]["gain"] = 5.0
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+    graph = classify_camilla_graph(topology=topology, text=tampered)
+    assert graph.allowed is False
+
+
+def test_linearization_boost_beside_room_peq_boost_still_proves():
+    """The control: when the emitter charged for BOTH, both are covered and the
+    graph proves — the fix attributes the share, it does not forbid coexistence."""
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        room_peqs=(PeqFilter(freq=120.0, q=1.0, gain=8.0),),
+        linearization={"tweeter": [_peak(6000.0, 3.0)]},
+    )
+    payload = yaml.safe_load(text)
+    assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
+        pytest.approx(-11.0, abs=1e-3)
+    graph = classify_camilla_graph(topology=topology, text=text)
+    assert graph.allowed is True, graph.issues
+
+
+def test_runaway_program_headroom_is_refused_by_name_not_silently_muted():
+    """**N7.** Total boost is uncapped, and absorption turns every dB of it into
+    a dB of pre-split attenuation — so left unbounded the failure mode is a
+    graph that is, to a household, simply mute, with nothing naming why. Past a
+    generous ceiling the emitter REFUSES instead."""
+    preset = _preset()
+    over = MAX_PROGRAM_HEADROOM_DB + 1.0
+    n = int(over // MAX_LINEARIZATION_BOOST_DB) + 1
+    filters = [
+        _peak(2000.0 + 500.0 * i, min(MAX_LINEARIZATION_BOOST_DB, over - i * MAX_LINEARIZATION_BOOST_DB))
+        for i in range(n)
+    ]
+    filters = [f for f in filters if f["gain"] > 0.0]
+    with pytest.raises(ActiveSpeakerConfigError, match="exceeds"):
+        emit_active_speaker_baseline_config(
+            preset, playback_device=ACTIVE_PCM,
+            linearization={"tweeter": filters},
+        )
+
+
+def test_a_generous_program_headroom_still_emits():
+    """The ceiling is a refusal for a defect upstream, not a cap on ordinary
+    correction — a realistic deep boost is well inside it."""
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(6000.0, 9.0), _peak(9000.0, 6.0)]},
+    )
+    assert _headroom_gain_db(text) == pytest.approx(-15.0, abs=1e-3)

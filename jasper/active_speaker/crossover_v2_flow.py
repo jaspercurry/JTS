@@ -935,6 +935,14 @@ REASON_CORRECTION_LEVEL_SHORTFALL = "correction_level_shortfall"
 # everywhere else: it fitted one position's interference rather than the
 # speaker. The remedy is placement, not a different filter.
 REASON_CORRECTION_SPATIALLY_COSTLY = "correction_spatially_costly"
+# The probe found a defect AND the automatic rollback could not run (no
+# rollback binding, a refused restore, or a seam that raised). The correction
+# is therefore STILL APPLIED, and the copy has to say so — the household is
+# listening to it right now, and telling them it was put back would be a false
+# statement about their speaker. Mirrors the room-correction acceptance
+# precedent: a failed automatic restore must continue to say the correction is
+# still applied, and name the manual action.
+REASON_CORRECTION_ROLLBACK_FAILED = "correction_rollback_failed"
 
 #: Delta-probe verdict → the reason code its rollback surfaces. Exhaustive
 #: over :data:`delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`, pinned by a test, so
@@ -1126,6 +1134,17 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "elsewhere in the room, so the previous sound has been put back. "
         "Moving the speaker away from nearby walls and surfaces, then "
         "measuring again, is what changes this.",
+    ),
+    # The three rows above all promise "the previous sound has been put back",
+    # which is only true when the rollback actually ran. When it did not, THIS
+    # is the row that renders instead — same finding, opposite state of the
+    # speaker, and it says so first.
+    REASON_CORRECTION_ROLLBACK_FAILED: ReasonSpec(
+        REASON_CORRECTION_ROLLBACK_FAILED, TEMPLATE_HARD_STOP, 0, "",
+        "JTS checked the tuning against what your speaker actually did, and "
+        "they did not match — but it could not put the previous sound back on "
+        "its own, so the new tuning is STILL APPLIED. Tap Undo on the speaker "
+        "page to restore the previous sound.",
     ),
 }
 
@@ -4779,7 +4798,37 @@ class CrossoverV2Conductor:
             # own capture, however many captures back this session's shape puts
             # it), so this is unconditionally True here, not a second decision.
             "auto_apply": True,
+            # "This correction costs N dB of maximum level" (PR-L5), on the
+            # payload the host persists and the envelope renders — the owner's
+            # ruling is that headroom spend is DISCLOSED, not limited, and a
+            # number that only ever reaches the journal is not disclosed to the
+            # household that owns the speaker. The worst branch's charge, which
+            # is the quantity the graph actually gives up (the emitter absorbs
+            # the same number). 0.0 for every cut-only correction.
+            "headroom_cost_db": self._candidate_headroom_cost_db(),
         }
+
+    def _candidate_headroom_cost_db(self) -> float:
+        """The applied correction's disclosed max-level cost, dB (PR-L5).
+
+        The WORST branch's ``headroom_cost_db``, matching
+        ``camilla_yaml.linearization_headroom_db``'s own worst-branch rule —
+        the driver chains run in parallel after the split, so no single sample
+        path sees two branches' boosts and the graph gives up the largest one,
+        not their sum. 0.0 when no fit ran or the fit was cut-only.
+        """
+        candidate = self._candidate
+        linearization = getattr(candidate, "linearization", None)
+        if not isinstance(linearization, Mapping):
+            return 0.0
+        worst = 0.0
+        for fit in linearization.values():
+            if not isinstance(fit, Mapping):
+                continue
+            cost = fit.get("headroom_cost_db")
+            if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
+                worst = max(worst, float(cost))
+        return worst
 
     def _refuse(self, code: str) -> "CaptureBeginRefused":
         """Build the refusal for ``code``, with the registry's own copy, and
@@ -4805,18 +4854,23 @@ class CrossoverV2Conductor:
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
     ) -> None:
-        """The two load-bearing PR-L4 assertions, run before the apply fires.
+        """The three pre-apply accountability assertions, run before the apply
+        fires: PR-L5's shared-level-frame agreement, then PR-L4's items 1 and 2.
 
         Raises :class:`CaptureBeginRefused` with a named
         :data:`REASON_REGISTRY` code — the host's own refusal arm then persists
         it and the envelope renders its copy, so a refusal here reaches the
-        household as a sentence rather than a stall. Returns ``None`` when both
-        assertions hold; the caller proceeds to publish.
+        household as a sentence rather than a stall. Returns ``None`` when all
+        three assertions hold; the caller proceeds to publish.
 
-        Order matters: item 1 runs first because it is the *specific* diagnosis
-        (the two drivers will not end up at matching levels) and item 2 is the
-        *general* one (this correction does not measure better). When both are
-        true, naming the specific cause is more useful to whoever reads the
+        Order is most-specific-first, and each step is a narrower diagnosis of
+        the one after it. The FRAME gate (PR-L5) leads: it asks whether the two
+        instruments a trim is derived from still agree about where the drivers
+        sit, which is upstream of any trim. Item 1 follows, grading the level
+        the committed trim actually REALIZES — the backstop for a frame that
+        agreed but a trim that still landed wrong. Item 2 is last and most
+        general: this correction does not measure better. When more than one is
+        true, naming the earliest cause is more useful to whoever reads the
         journal, and the household copy is more actionable.
         """
         # --- PR-L5: the two level FRAMES agree ---------------------------
@@ -5310,7 +5364,10 @@ class CrossoverV2Conductor:
             rms_error_db=round(probe.rms_error_db, 3),
             worst_hz=round(probe.worst_hz, 1),
             exceedance_octaves=round(probe.exceedance_octaves, 3),
-            gain_factor=round(probe.gain_factor, 4),
+            gain_factor=(
+                round(probe.gain_factor, 4)
+                if probe.gain_factor is not None else None
+            ),
             spatial_available=probe.spatial.available,
             spatial_widened=probe.spatial.widened,
             spatial_worst_center_hz=round(probe.spatial.worst_center_hz, 1),
@@ -5328,23 +5385,34 @@ class CrossoverV2Conductor:
 
         A conductor with no ``rollback`` seam still refuses — the verdict is
         real whether or not this process can act on it, and the failure screen
-        already offers Undo — but says so on its own event rather than
-        pretending the restore happened.
+        already offers Undo — but it refuses under
+        :data:`REASON_CORRECTION_ROLLBACK_FAILED`, whose copy says the
+        correction is STILL APPLIED. The three verdict-specific codes all
+        promise "the previous sound has been put back", and that promise is
+        only theirs to make when the restore actually happened; a household
+        listening to a correction while being told it was reverted is a false
+        statement about their speaker, not a rounding of one.
         """
         if probe is None or probe.verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
             return None
-        code = DELTA_PROBE_REASON_BY_VERDICT[probe.verdict]
+        verdict_code = DELTA_PROBE_REASON_BY_VERDICT[probe.verdict]
         restored = False
         error = ""
         if self._seams.rollback is not None:
             try:
-                restored = bool(self._seams.rollback(code))
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                # The same bounded family every seam boundary in this file
-                # uses. A rollback that could not run must not swallow the
-                # verdict that asked for it: the refusal still fires, and the
-                # household's Undo button is still on the screen.
+                restored = bool(self._seams.rollback(verdict_code))
+            except (OSError, RuntimeError, TypeError, ValueError, AttributeError,
+                    KeyError) as exc:
+                # A rollback that could not run must not swallow the verdict
+                # that asked for it: the refusal still fires, and the
+                # household's Undo button is still on the screen. The family is
+                # wider than this file's usual four because this call sits
+                # OUTSIDE the cloud pipeline's own wrap — nothing downstream
+                # would catch an AttributeError/KeyError from a host binding,
+                # and losing the verdict is strictly worse than reporting it
+                # with the restore marked failed.
                 error = str(exc)
+        code = verdict_code if restored else REASON_CORRECTION_ROLLBACK_FAILED
         log_event(
             logger, "correction.crossover_v2_delta_probe_rollback",
             level=logging.ERROR, session_id=self.session_id,
@@ -5855,8 +5923,21 @@ class CrossoverV2Conductor:
             if (level := driver_core_level_db(responses[role], envelopes[role]))
             is not None
         }
+        # The frame reconciles two LEVEL-MATCH estimates, so its trim term is
+        # the trim solve's own level-match result (`trim_band_average_db`) —
+        # not `trim_db`, which is that result AFTER the ripple-optimal polish
+        # moved it for summed flatness. Reading the applied trim made the gate
+        # sensitive to a refinement it is not measuring: the polish is
+        # bounded by LINEARIZATION_TRIM_SANITY_MARGIN_DB (6.0), which is
+        # DOUBLE this gate's tolerance, so an ordinary 3-6 dB polish hard-
+        # stopped an otherwise healthy session (adversarial review S5). The
+        # polish is not lost — it rides in the anchored trim below, which
+        # still starts from `raw_trim` — it is simply not evidence about where
+        # the drivers sit. Falls back to `trim_db` only for a legacy candidate
+        # constructed before the field existed.
+        frame_trims_db = dict(cand.trim_band_average_db or cand.trim_db)
         level_frame = (
-            solve_shared_level_frame(core_levels_db, dict(cand.trim_db))
+            solve_shared_level_frame(core_levels_db, frame_trims_db)
             if core_levels_db else None
         )
         # The frame's own honesty gate, and the reason it is not just applied.
@@ -5881,14 +5962,31 @@ class CrossoverV2Conductor:
             if level_frame is not None else 0.0
         )
 
-        # Boost permission is EVIDENCE-gated, and this is the gate: a fit may
-        # emit gain only in a session that will measure what the speaker
-        # actually did with it. Today every plan shape runs VERIFY, so this
-        # reads as always-on — but it is the correct condition rather than a
-        # constant, so a future plan that drops the post-apply sweep silently
-        # drops boost with it instead of silently shipping an unverified one.
+        # Boost permission is EVIDENCE-gated, and this is the gate. TWO
+        # conditions, both necessary:
+        #
+        # 1. The session will MEASURE what the speaker did with the boost
+        #    (`PHASE_VERIFY`). Today every plan shape runs VERIFY, so this reads
+        #    as always-on — but it is the correct condition rather than a
+        #    constant, so a future plan that drops the post-apply sweep drops
+        #    boost with it instead of shipping an unverified one.
+        #
+        # 2. The cloud verdict actually reached the envelope (`cloud is not
+        #    None`). This is the owner ruling's ONE retained constraint —
+        #    null-exclusion stays a measured, registry-gated fact — and without
+        #    it the ruling is unenforceable rather than merely unenforced.
+        #    `_cloud_fit_evidence` has two reachable None paths (the positions
+        #    could not be combined; the honesty pipeline was unavailable), and
+        #    on both, `compose_envelope` receives `excluded_bands_hz=None`, so
+        #    `allowed_depth_db` is NOT zeroed in the registry's interference
+        #    nulls. Granting boost there would let the fit EQ a null — and a
+        #    filled null reads `matched` at the mark while the spatial arm, the
+        #    one instrument that could contradict it, is absent on exactly
+        #    these paths. Cut-only still proceeds; only the lift vocabulary is
+        #    withheld, and the absence is already disclosed by
+        #    `event=correction.crossover_v2_fit_without_cloud`.
         vocabulary = FitVocabulary(
-            allow_boost=PHASE_VERIFY in self.session_phases,
+            allow_boost=PHASE_VERIFY in self.session_phases and cloud is not None,
         )
 
         fits: dict[str, Any] = {}
@@ -5988,9 +6086,24 @@ class CrossoverV2Conductor:
         # reference role and for any session with no frame, so a fit that
         # predates the frame anchors byte-identically.
         raw_trim = dict(cand.trim_db)
+        # The anchor's base trim is the SAME term the frame was solved on, so
+        # the two cannot disagree about which trim they are anchoring to. With
+        # a frame this is `trim_band_average_db`; without one it is the applied
+        # trim, byte-identical to the pre-PR-L5 anchor.
+        #
+        # Using the applied `trim_db` here while the frame used the band average
+        # would let the raw candidate's ripple polish survive into the anchor —
+        # which it never did before, because the trim term cancels out of
+        # `raw_trim + giveback + offset` (the offset subtracts the same trim the
+        # base adds, leaving `giveback + system − core`). That cancellation is
+        # what makes the polish a GATE sensitivity rather than a correction
+        # difference, and it is why S5 was a gate fix and not a behaviour
+        # change. The LINEARIZED ripple polish below still sets the final trim;
+        # this is only its anchor.
+        anchor_base_db = frame_trims_db if level_frame is not None else raw_trim
         anchored_unnormalized = {
             role: float(
-                raw_trim.get(role, 0.0)
+                anchor_base_db.get(role, 0.0)
                 + fits[role].correction_giveback_db
                 + fits[role].level_frame_offset_db
             )

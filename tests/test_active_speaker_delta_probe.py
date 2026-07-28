@@ -407,3 +407,138 @@ def test_the_commanded_floor_is_the_fit_engines_own_cosmetic_floor():
     from jasper.active_speaker.linearization_fit import _MIN_FILTER_GAIN_DB
 
     assert DELTA_PROBE_MIN_COMMANDED_DB == _MIN_FILTER_GAIN_DB
+
+
+# --------------------------------------------------------------------------- #
+# adversarial-review regressions (round 2)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_sub_floor_gap_breaks_the_exceedance_run():
+    """**B1 regression — the blocker, at its reproduction.**
+
+    An ordinary correction cuts low and boosts high, so the commanded floor
+    puts a HOLE in the probe mask between them. Measuring the exceedance width
+    on the compacted ``freqs[mask]`` subarray welded the bins either side of
+    that hole into one run: two isolated single-bin 2.5 dB errors, 135 grid
+    bins and nearly three octaves apart in Hz, scored 2.931 octaves of
+    "structure" and rolled the correction back.
+
+    Each of those errors is one bin wide — precisely what
+    ``test_a_single_bin_excursion_is_texture_not_a_finding`` declares to be
+    texture. Evaluating the run on the full grid keeps every removed bin as a
+    run-breaker, which is what it physically is.
+    """
+    commanded = np.zeros_like(_GRID_HZ)
+    commanded[(_GRID_HZ >= 200.0) & (_GRID_HZ <= 800.0)] = -4.0
+    commanded[(_GRID_HZ >= 6_000.0) & (_GRID_HZ <= 16_000.0)] = 5.0
+    probe_bins = np.flatnonzero(np.abs(commanded) >= DELTA_PROBE_MIN_COMMANDED_DB)
+    # One isolated bin at each edge of the sub-floor gap: the last bin of the
+    # cut region and the first bin of the boost region.
+    gap = int(np.flatnonzero(np.diff(probe_bins) != 1)[0])
+    low_edge = int(probe_bins[gap])
+    high_edge = int(probe_bins[gap + 1])
+    realized = commanded.copy()
+    realized[low_edge] += 2.5
+    realized[high_edge] += 2.5
+    assert high_edge - low_edge > 100, "the two errors must straddle the gap"
+
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert probe.verdict == VERDICT_MATCHED
+    assert probe.rollback is False
+    assert probe.exceedance_octaves < DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+
+
+def test_a_wide_error_inside_one_masked_region_is_still_caught():
+    """The control for the test above: closing the false-positive must not
+    close the true one. A genuinely wide run INSIDE a single contiguous probe
+    region still reads as structure."""
+    commanded = np.zeros_like(_GRID_HZ)
+    commanded[(_GRID_HZ >= 6_000.0) & (_GRID_HZ <= 16_000.0)] = 5.0
+    realized = commanded + np.where(
+        (_GRID_HZ >= 6_000.0) & (_GRID_HZ <= 16_000.0), 4.0, 0.0
+    )
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert probe.rollback is True
+    assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+
+
+def test_exceedance_is_measured_on_the_full_grid_not_the_masked_subarray():
+    """The mechanism, pinned directly: ``_structured_exceedance`` takes the
+    full grid plus a mask, so a caller cannot reintroduce B1 by compacting."""
+    from jasper.active_speaker.delta_probe import _structured_exceedance
+
+    freqs = np.array([100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0])
+    error = np.array([3.0, 0.0, 0.0, 0.0, 0.0, 3.0])
+    tolerance = np.full_like(freqs, 1.0)
+    # Both exceeding bins are in the probe band but are not adjacent.
+    mask = np.ones_like(freqs, dtype=bool)
+    found, width = _structured_exceedance(freqs, error, tolerance, mask)
+    assert width == 0.0 and found is False
+    # A mask hole cannot join two runs either.
+    mask_holed = np.array([True, False, False, False, False, True])
+    assert _structured_exceedance(freqs, error, tolerance, mask_holed)[1] == 0.0
+
+
+def test_an_unavailable_map_reports_no_gain_factor():
+    """**N8.** 0.0 would read as the measured claim "delivered nothing", which
+    is the opposite of "not measured"."""
+    probe = classify_delta_probe(
+        _GRID_HZ, np.zeros_like(_GRID_HZ), np.zeros_like(_GRID_HZ),
+        band_hz=_band(),
+    )
+    assert probe.verdict == VERDICT_UNAVAILABLE
+    assert probe.gain_factor is None
+    assert probe.to_dict()["gain_factor"] is None
+
+
+# --- derivation pins (N3, N5) ---------------------------------------------
+
+
+def test_the_low_tolerance_is_the_flows_own_measured_vs_predicted_bar():
+    """**N3.** The probe and the tracking check must not hold one chain to two
+    different standards in two different bands — so the constant is pinned to
+    the flow's, not merely documented as equal to it."""
+    from jasper.active_speaker.crossover_v2_flow import VERIFY_TOLERANCE_DB
+
+    assert DELTA_PROBE_TOLERANCE_LOW_DB == VERIFY_TOLERANCE_DB
+
+
+def test_the_hf_split_matches_the_fit_engines_own_tier_split():
+    """**N3.** "High frequencies" means one thing across the fit and its
+    verification."""
+    from jasper.active_speaker.linearization_fit import _HF_AGREEMENT_TIER_SPLIT_HZ
+
+    assert DELTA_PROBE_HF_SPLIT_HZ == _HF_AGREEMENT_TIER_SPLIT_HZ
+
+
+def test_the_shortfall_ceiling_agrees_with_the_low_tolerance_about_material():
+    """**N5.** 0.85 is not a taste: 15% short on the ~10 dB lift a CD-horn
+    continuation commands is 1.5 dB, exactly the low-band tolerance. So a
+    shortfall large enough to be NAMED is always large enough to have failed
+    the amplitude test that reaches that branch, and the two constants cannot
+    disagree about a correction of that size."""
+    from jasper.active_speaker.linearization_fit import HF_SINGLE_SHELF_SPEND_CAP_DB
+
+    commanded_depth_db = HF_SINGLE_SHELF_SPEND_CAP_DB  # 11.0, the realizable lift
+    shortfall_at_ceiling_db = (
+        1.0 - DELTA_PROBE_SHORTFALL_GAIN_CEILING
+    ) * commanded_depth_db
+    assert shortfall_at_ceiling_db >= DELTA_PROBE_TOLERANCE_LOW_DB
+
+
+def test_the_spread_widening_tolerance_is_well_above_what_the_cloud_licenses():
+    """**N5.** The envelope spends across-position spread as
+    ``sigma_db / sqrt(n_positions)`` when deciding how much correction depth a
+    band may have at all. At the production cloud size, 1.0 dB of RAW sigma
+    growth is several times the depth those terms would have licensed — so a
+    widening this big is not measurement scatter, it is the correction fitting
+    one microphone position."""
+    from jasper.active_speaker.crossover_v2_flow import (
+        DEFAULT_CLOUD_MEASURE_POSITIONS,
+    )
+
+    licensed_depth_db = DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB / math.sqrt(
+        DEFAULT_CLOUD_MEASURE_POSITIONS - 1
+    )
+    assert DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB > 2.0 * licensed_depth_db

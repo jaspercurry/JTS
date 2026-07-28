@@ -1443,11 +1443,23 @@ def _hf_continuation_stage(
 # and the loop runs at most MAX_FILTERS_PER_DRIVER times per fit.
 _CUT_REDUCTION_BISECTION_STEPS: int = 24
 
-# Float-noise slack (dB) on the permitted-headroom test. The constraint itself
-# is exact — a shrink may not raise any bin past what ``headroom_db`` permits —
-# so this is only here to keep bisection from rejecting a shrink over the last
-# bit at the end of a float. Matches :data:`_ENVELOPE_NONZERO_EPS_DB`'s role.
-_CUT_REDUCTION_EPS_DB: float = 1e-6
+# Materiality slack (dB) on the permitted-headroom test.
+#
+# NOT float noise, and 1e-6 was the wrong value (adversarial review N2). A
+# biquad's response never reaches exactly 0 dB: a peaking filter cut at 1 kHz
+# still leaks a few thousandths of a dB across the whole grid, so at 1e-6 a
+# SINGLE far-field bin whose permitted headroom is fractionally negative vetoes
+# the entire shrink — measured, a -0.0034 dB leakage bin delivered 0.00 of a
+# wanted 4.00 dB, and 0.62 of 3.50 on the real CD-horn fit. The operation was
+# technically correct and practically inert.
+#
+# :data:`_ENVELOPE_NONZERO_EPS_DB` is the module's existing answer to exactly
+# this question — "below this, a per-bin dB figure is float noise or a taper's
+# asymptotic tail rather than a real allowance" — so it is reused rather than
+# given a second name. It is two orders of magnitude above the leakage that
+# caused the veto and two orders below the smallest gain this module will emit
+# (:data:`_MIN_FILTER_GAIN_DB`), so it cannot mask a real overshoot.
+_CUT_REDUCTION_EPS_DB: float = _ENVELOPE_NONZERO_EPS_DB
 
 
 def reduce_cuts_for_lift(
@@ -1935,17 +1947,14 @@ def fit_driver_linearization(
             for center, code in reason_summary.items()
         }
 
-    # "This correction costs N dB of maximum level" (PR-L5). The peak positive
-    # dB of the emitted cascade — nothing when the fit is cut-only, which keeps
-    # every pre-PR-L5 fit's disclosure at a literal 0.0.
-    headroom_cost_db = 0.0
-    if any(f.gain > 0.0 for f in filters):
-        cascade_db = 20.0 * np.log10(
-            np.maximum(
-                np.abs(complex_correction_response(tuple(filters), grid_hz)), 1e-12
-            )
-        )
-        headroom_cost_db = float(max(0.0, float(np.max(cascade_db))))
+    # "This correction costs N dB of maximum level" (PR-L5) — the SUM of the
+    # positive gains, which is the number the emitter charges. See the field's
+    # own comment for why the sum and not the realized cascade peak. Nothing
+    # when the fit is cut-only, which keeps every pre-PR-L5 fit's disclosure at
+    # a literal 0.0.
+    headroom_cost_db = float(
+        max(0.0, math.fsum(f.gain for f in filters if f.gain > 0.0))
+    )
 
     return LinearizationFit(
         role=envelope.role,

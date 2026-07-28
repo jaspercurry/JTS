@@ -49,6 +49,7 @@ from jasper.output_topology import (
 
 from ._common import issue as _issue
 from .camilla_yaml import (
+    BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
@@ -1095,10 +1096,29 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
 
     The magnitude of the program-domain ``active_baseline_headroom`` gain —
     the pre-split common attenuation the emitter folds baseline headroom,
-    room-correction boost, and (since PR-L5) linearization boost into. A
-    branch whose boosts total no more than this cannot drive the chain past
-    unity, so the CamillaDSP 0 dB ceiling holds by arithmetic rather than by
-    a policy number written down twice.
+    room-correction boost, and (since PR-L5) linearization boost into —
+    **minus the contributors that are not linearization's**. A branch whose
+    boosts total no more than what is left cannot drive the chain past unity,
+    so the CamillaDSP 0 dB ceiling holds by arithmetic rather than by a policy
+    number written down twice.
+
+    Attributing the share matters, and reading the whole magnitude was wrong
+    (adversarial review S1, reproduced): that gain also absorbs room-correction
+    boost, so on a cut-only linearization sitting behind, say, 8 dB of room
+    boost, a tampered +5 dB linearization filter "spent" headroom that was
+    already committed to the room PEQs and the graph proved safe while the two
+    together could clip. Room-PEQ boost is recoverable from the graph — the
+    filters are named and their gains are readable — so it is subtracted here,
+    exactly as the emitter added it.
+
+    **Residual slack, stated rather than hidden**: ``output_trim_db`` (the
+    household's manual headroom / loudness-match attenuation) is also folded
+    into the same gain and is NOT recoverable from the graph. The emitter only
+    ever adds it when preference EQ is present, so on a graph with no
+    preference filters this allowance is exact; with preference EQ it is
+    generous by at most that trim. Generous, never tight — the failure
+    direction is a tamper spending the household's own trim as boost headroom,
+    which is bounded and far narrower than the pre-fix behaviour.
 
     Returns 0.0 when the filter is absent or non-negative — which is the
     driver-domain (follower) graph, where the leader owns Layer B/C and no
@@ -1113,7 +1133,19 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     )
     if gain is None or gain >= 0.0:
         return 0.0
-    return -float(gain)
+    absorbed_db = -float(gain)
+    filters = payload.get("filters")
+    room_boost_db = 0.0
+    if isinstance(filters, Mapping):
+        for name in filters:
+            if not isinstance(name, str) or not name.startswith("room_peq"):
+                continue
+            room_gain = _strict_finite_number(
+                _filter_params(payload, name).get("gain")
+            )
+            if room_gain is not None and room_gain > 0.0:
+                room_boost_db += float(room_gain)
+    return max(0.0, absorbed_db - BASELINE_HEADROOM_DB - room_boost_db)
 
 
 def _linearization_filter_safe(

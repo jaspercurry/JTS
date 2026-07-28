@@ -213,7 +213,11 @@ order's plain reading and are recorded here rather than only in the code:
   cuts-only flattening loop leaves the whole curve at or below its target, so
   every dip the driver has reads as a "deficit"; chasing those by unwinding
   cuts under a vocabulary that never intended to add level would silently
-  change every pre-PR-L5 fit.
+  change every pre-PR-L5 fit. **Scope recorded**: what shipped reduces the
+  cuts of the fit being built. A cross-SESSION variant — reading a previously
+  applied profile's filters as the cuts to shrink — is not built and is not
+  promised by the bullet above; it needs a prior-filters input the fit core
+  does not take today.
 - **Boost stays uncapped by making the emitter pay for it, not by removing a
   rail.** The fit discloses `headroom_cost_db`; `camilla_yaml` folds the worst
   branch's total positive boost into the existing `active_baseline_headroom`
