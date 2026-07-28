@@ -658,13 +658,22 @@ reference. Currently:
   hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
   restructure, or anything related to the `/rooms/` wake-response card.**
 - [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — **In-progress
-  grouped playback.** Stereo-pair control/observability, the music
-  dataplane, and member-local TTS are built and off by default; the
-  current handoff names the remaining calibration, wider bond UI, and
-  validation gates. Covers synchronized grouped playback across
-  speakers: stereo pair, 2.1 with a wireless sub, and multi-room,
-  using Snapcast plus the JTS peering/identity substrate. **Start here
-  for any multi-room / stereo-pair / wireless-sub work.**
+  grouped playback.** Stereo-pair control/observability and the music
+  dataplane are built and off by default; passive-member local TTS exists, but
+  the 2026-07-28 active-leader hardware observation showed TTS still entering
+  the shared grouped path. The current handoff names the remaining calibration,
+  active-leader TTS correction, wider bond UI, and validation gates. Covers
+  synchronized grouped playback across speakers: stereo pair, 2.1 with a
+  wireless sub, and multi-room, using Snapcast plus the JTS peering/identity
+  substrate. **Start here for any multi-room / stereo-pair / wireless-sub
+  work.**
+- [`multiroom-pairing-reliability-plan.md`](docs/multiroom-pairing-reliability-plan.md)
+  — **Active implementation plan and investigation record, not deployed-state
+  authority.** Captures the 2026-07-28 JTS↔JTS3 pairing failures, work already
+  completed on the branch, independent SEVA findings, ownership/SSOT model,
+  latency evidence, remaining release gates, and the path to reliable,
+  resilient, observable, low-latency pairing. Use `HANDOFF-multiroom.md` for
+  current shipped behavior.
 - [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) —
   Raspberry Pi Zero 2 W streambox: today's lab runbook (OS Lite +
   `snapclient` + the multi-room spike) and the decided product path —

@@ -9,7 +9,7 @@
 > split), **Increment 2** (the per-channel correction axis — one CamillaDSP
 > bakes L-for-leader-seat / R-for-follower-seat), **Increment 5 PR-1** (leader
 > CamillaDSP → snapserver pipe → snapclient FIFO → member outputd
-> `dac_content` lane), **Increment 5 PR-2** (member-local TTS + grouping
+> `dac_content` lane), **Increment 5 PR-2** (passive-member local TTS + grouping
 > supervisor), and the 2026-06-11 cleanup that removed the retired
 > outputd-as-producer machinery. The **P0 spike RAN on hardware** (2026-06-10,
 > jts3↔jts): resource gate passed (snapcast ≈ ~15 MB Pss / ~0.2 % CPU) and the
@@ -22,6 +22,13 @@
 > **wake arbitration only** — picking which speaker *answers* "Hey Jarvis" — a
 > different subsystem, though this design reuses its discovery/identity
 > substrate.
+>
+> **Active-leader TTS correction (2026-07-28):** hardware observation showed
+> that an active grouped leader's TTS still enters the shared program lane,
+> traverses Snapcast, and reaches every member. The leader-local pre-crossover
+> summer remains the target design, not landed behavior. See
+> [multiroom-pairing-reliability-plan.md](multiroom-pairing-reliability-plan.md)
+> for the incident evidence and delivery gates.
 >
 > Design dialogue + prior-art research: 2026-06-04. Status last reconciled with
 > code: 2026-06-26 (see §0 + the footer changelog).
@@ -1526,6 +1533,14 @@ for an asymmetric room, Camilla-legal — is a likely fast-follow.
 ---
 
 ## 6. Voice / TTS stays off the synced path
+
+> **Target contract; active-leader gap confirmed 2026-07-28.** The rule below
+> is already realized for the passive-member local TTS lane. It is not yet true
+> for an active grouped leader: observed TTS entered the shared program bake,
+> paid the group buffer, and played on every member. The safe correction is the
+> already-ratified leader-local pre-crossover summer; implementation and
+> hardware acceptance are tracked in
+> [multiroom-pairing-reliability-plan.md](multiroom-pairing-reliability-plan.md).
 
 **Synced playback is a music-only, CAMILLA_MASTER-source feature.**
 The conversational path (wake → LLM → TTS) never traverses the
