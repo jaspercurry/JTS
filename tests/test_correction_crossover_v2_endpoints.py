@@ -63,6 +63,7 @@ from jasper.active_speaker.crossover_v2_flow import (
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
     CaptureAborted,
+    CaptureBeginRefused,
     CaptureResult,
     CaptureStopped,
     CaptureTimeout,
@@ -811,6 +812,52 @@ class _ThreadingModuleWithSyncThread:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(threading, name)
+
+
+def test_a_failed_auto_apply_closes_the_session_volume_immediately(monkeypatch):
+    """#1811 part 2 (forensics finding 9): terminal failure closes the plan.
+
+    A failed auto-apply is TERMINAL — the conductor's ``apply_failed`` seam
+    turns VERIFY's deferred hold into a refusal, so no further capture will
+    ever run. Until this landed, nothing drained the held measurement volume
+    at that moment: the runner only drains on the arm that catches that
+    refusal, which needs the phone to poll one more begin, and every other
+    enforcement in this plan (the wall-clock ceiling, the stale-active
+    reconcile) is lazy-on-read. A household whose apply failed and who put the
+    phone down kept a speaker pinned at measurement volume.
+
+    Drives the REAL runner + conductor + ``_fire_auto_apply`` wiring, with
+    ``handle_v2_apply`` faked to a ``blocked`` outcome and only
+    ``threading.Thread`` swapped for a synchronous stand-in so the ordering is
+    deterministic.
+    """
+    _skip_purge_grace(monkeypatch)
+    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
+    monkeypatch.setattr(
+        v2host, "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: {"status": "blocked"},
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+    volume = VolumeRecorder()
+    runner = _build_runner(
+        conductor, volume,
+        run_async=_bg_run_async,
+        camilla_factory=lambda: None,
+    )
+    with pytest.raises(CaptureBeginRefused):
+        _run(runner, client, session)
+
+    assert v2host.load_v2_state()["failure"]["code"] == REASON_APPLY_FAILED
+    # Two drains: the proactive one this test exists for, fired the moment the
+    # apply came back blocked, and the runner's own terminal cleanup on the
+    # refusal that followed. Against the real plan the second is a no-op
+    # (``SessionVolumeRestoreResult.ALREADY_RESOLVED`` — restore-exactly-once);
+    # the recorder counts calls, not mutations.
+    assert volume.events == ["open", "abandon", "abandon"]
 
 
 def test_stop_before_apply_start_skips_the_dsp_mutation(monkeypatch):
@@ -4525,6 +4572,351 @@ def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
     assert v2host._applied_gate() is True
     saved_state = v2host.load_v2_state()
     assert saved_state["apply_blocked"] is None
+
+
+# --- #1811: the apply boundary declares its level move, and moves no level ------
+
+
+class _FakeApplyAndVolumeCam(_FakeApplyCam):
+    """``_FakeApplyCam`` plus the main-volume RPCs the session plan drives, so
+    ONE ``camilla_factory`` can both apply and hold the session volume — which
+    is what lets these tests assert the commanded level did NOT move."""
+
+    vol = -20.0
+
+    async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
+        type(self).vol = float(db)
+        return True
+
+    async def get_volume_db(self, best_effort: bool = False) -> float:
+        return type(self).vol
+
+
+# The offset the apply declares for ``_boosting_candidate(boost_db=6.0)``:
+# the PEAK-rule charge (#1808) for a +6 dB bell at 900 Hz, which sits inside
+# the woofer's own passband so the crossover credits back almost nothing while
+# the headroom margin adds ~1 dB. Rounded to 3 dp by the persist path.
+_APPLY_OFFSET_DB = -6.86
+
+
+def _boosting_candidate(preset, *, boost_db: float):
+    """The run-6 candidate plus a Layer-1a boost — the shape that charges
+    program headroom and therefore moves the chain at apply time."""
+    return replace(
+        _run6_measured_candidate(preset),
+        linearization={
+            "woofer": {
+                "filters": [
+                    {
+                        "biquad_type": "Peaking",
+                        "freq": 900.0,
+                        "q": 3.0,
+                        "gain": boost_db,
+                    },
+                ],
+                "headroom_cost_db": boost_db,
+            },
+        },
+        linearization_outcome="fitted",
+    )
+
+
+def _open_session_volume_plan(*, household_db: float, measurement_db: float = -20.0):
+    """An OPEN plan holding ``measurement_db``, as a live session would."""
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+    )
+
+    _FakeApplyAndVolumeCam.vol = household_db
+    plan = SessionVolumePlan()
+    cam = _FakeApplyAndVolumeCam()
+    assert (
+        asyncio.run(plan.open(measurement_db, cam.set_volume_db, cam.get_volume_db))
+        is SessionVolumeOpenResult.OPENED
+    )
+    assert _FakeApplyAndVolumeCam.vol == measurement_db
+    v2host.set_volume_plan_for_tests(plan)
+    return plan
+
+
+def test_apply_declares_its_level_move_and_never_touches_the_volume(
+    monkeypatch, tmp_path,
+):
+    """#1811, through the REAL apply seam.
+
+    The applied graph absorbs its correction's boost as a pre-split common
+    attenuation, so the same commanded volume drives the speaker quieter the
+    instant the config swaps. That absorption is the excitation-safety property
+    (``camilla_yaml``: the boosted band lands "at or under unity no matter how
+    deep the correction"), so the apply must **declare** the move for the
+    analysis and must **not** compensate it at the main volume — compensating
+    would put the boosted band over the driver's excitation cap by the
+    branch's own boost.
+
+    Three things must hold:
+
+    * the declared offset is the emitter's OWN delta (here −6 dB, read off the
+      applied profile, not a constant);
+    * the commanded session volume is completely untouched;
+    * it is durable BEFORE ``observe_apply_success`` returns — that call sets
+      the ``applied`` flag which releases VERIFY's deferred hold, and the
+      probe seam reads the offset off the same state one capture later.
+    """
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _boosting_candidate(preset, boost_db=6.0)
+    plan = _open_session_volume_plan(household_db=-6.0)
+
+    v2host.save_v2_state({
+        "session_id": "cap_run6",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyAndVolumeCam,
+    )
+
+    assert payload["status"] == "applied", payload.get("issues")
+    # The PEAK-rule charge (#1808) for a +6 dB bell at 900 Hz — inside the
+    # woofer's own passband, so the crossover credits back almost nothing and
+    # the headroom margin adds ~1 dB on top. Verified by running, not derived
+    # here: what this test pins is that the DECLARED number is the emitter's
+    # own, whatever the charge rule of the day makes it.
+    assert payload["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
+    # Durable, and readable through the very seam the conductor's probe uses.
+    assert v2host.load_v2_state()["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
+    assert v2host._applied_offset_gate() == _APPLY_OFFSET_DB
+    # The speaker's commanded level did not move. This is the safety claim.
+    assert _FakeApplyAndVolumeCam.vol == -20.0
+    assert plan.measurement_volume_db == -20.0
+
+
+def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_path):
+    """An apply the seam refused changed no graph, so there is no move to
+    declare — and the probe seam must keep reporting "nothing known" (0.0)
+    rather than an offset from a transaction that never landed."""
+    from jasper.active_speaker.design_draft import build_design_draft
+
+    from tests.test_active_speaker_baseline_profile import _research
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _boosting_candidate(preset, boost_db=6.0)
+    plan = _open_session_volume_plan(household_db=-6.0)
+
+    v2host.save_v2_state({
+        "session_id": "cap_run6",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    # Move the crossover design out from under the reviewed candidate, exactly
+    # as the preset-mismatch test above does, so the seam blocks.
+    moved_research = _research()
+    moved_research["crossover_candidates"][0]["frequency_hz"] = 3000
+    (tmp_path / "design_draft.json").write_text(
+        json.dumps(
+            build_design_draft(
+                topology,
+                driver_research=moved_research,
+                created_at="2026-07-18T12:30:00Z",
+            )
+        ),
+        encoding="utf-8",
+    )
+    v2host.ensure_crossover_preview_ready()
+
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyAndVolumeCam,
+    )
+
+    assert payload["status"] == "blocked"
+    assert "expected_post_apply_offset_db" not in payload
+    assert v2host._applied_offset_gate() == 0.0
+    assert _FakeApplyAndVolumeCam.vol == -20.0
+    assert plan.measurement_volume_db == -20.0
+
+
+def test_the_declared_offset_survives_persist_conductor_state(monkeypatch, tmp_path):
+    """The durable seam BETWEEN the writer and the reader (#1811 blocker).
+
+    ``observe_apply_success`` writes the offset and the probe's seam reads it,
+    and both halves were pinned — but nothing crossed the
+    ``persist_conductor_state`` call that happens on every capture in between.
+    It rebuilds the state from a fresh dict literal, so the offset was erased
+    on every single call while ``applied`` survived: the CLOUD_VERIFY probe
+    (the one with the spatial arm AND rollback authority) would have graded
+    the apply's own headroom charge blind and could roll a healthy correction
+    back, and every "Try again" re-arm — which persists under a brand-new
+    session id — would have been blind too.
+    """
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _boosting_candidate(preset, boost_db=6.0)
+    _open_session_volume_plan(household_db=-6.0)
+    v2host.save_v2_state({
+        "session_id": "cap_run6",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyAndVolumeCam,
+    )
+    assert v2host._applied_offset_gate() == _APPLY_OFFSET_DB
+
+    # One more capture in the SAME session, then the re-arm's brand-new one.
+    for session_id in ("cap_run6", "cap_rearm"):
+        v2host.persist_conductor_state(
+            _StubConductor(session_id), failure_code=None,
+        )
+        assert v2host._applied_offset_gate() == _APPLY_OFFSET_DB, session_id
+
+
+class _StubConductor:
+    """The minimum ``persist_conductor_state`` reads off a conductor."""
+
+    candidate = None
+    verify_outcome = None
+    verify_evidence = None
+    delta_probe = None
+    measure_predicted_sum = None
+    measure_gate_window_ms = None
+    verify_pilot_transfer_baseline = None
+    session_phases: tuple = ()
+
+    def __init__(self, session_id: str = "s1", *, applied: bool = True) -> None:
+        self._session_id = session_id
+        self._applied = applied
+
+    def snapshot(self):
+        return SimpleNamespace(
+            session_id=self._session_id, accepted_phases=(), session_phases=(),
+            tier="", applied=self._applied, gain_plan_db=None,
+            candidate_fingerprint=None,
+        )
+
+
+def test_every_host_owned_apply_key_survives_persist_conductor_state():
+    """The drift guard for a bug class that has now shipped THREE times.
+
+    ``persist_conductor_state`` rebuilds the durable state from a fresh dict
+    literal, so any key whose value comes from ``observe_apply_success`` —
+    which the conductor neither produces nor reads — is erased unless a
+    carry-forward line exists for it. That has been a P0 for
+    ``pre_apply_profile`` (W6.12), for ``cloud`` (PR-4 B1), and for
+    ``expected_post_apply_offset_db`` (#1811).
+
+    The host-owned set is derived MECHANICALLY rather than listed: a key is
+    host-owned when the apply path gives it a value and a persist driven by
+    the conductor ALONE (empty prior, nothing to carry) cannot regenerate one.
+    A fourth such key fails this test the moment it is written, without anyone
+    having to remember to extend a list.
+
+    **If your new key legitimately wants session scoping** — ``apply_blocked``
+    does, because a blocked apply refuses the deferred VERIFY outright and so
+    never faces a new-session rebind — put it in ``persist_conductor_state``'s
+    session-gated branch and add an exception here WITH that reason. Reaching
+    for the exception first is the mistake this guard exists to make visible.
+
+    The re-arm's brand-new session id is the hard case, and the one all three
+    bugs hit, so that is what this crosses.
+    """
+    # (1) What a persist can rebuild from the conductor alone, with an empty
+    # prior so nothing can be carried forward.
+    v2host.save_v2_state({"session_id": "s1"})
+    v2host.persist_conductor_state(_StubConductor("s1"), failure_code=None)
+    from_conductor_alone = {
+        key for key, value in (v2host.load_v2_state() or {}).items()
+        if value is not None
+    }
+
+    # (2) What the apply path establishes on top of it.
+    v2host.save_v2_state({"session_id": "s1", "applied": False})
+    v2host.observe_apply_success(
+        "fp",
+        pre_apply_profile={"kind": "prior", "config": {"path": "/tmp/x.yml"}},
+        expected_post_apply_offset_db=-22.458,
+    )
+    after_apply = dict(v2host.load_v2_state() or {})
+    host_owned = {
+        key for key, value in after_apply.items()
+        if value is not None and key not in from_conductor_alone
+    }
+    # The derivation must actually see this PR's key — a guard that derives an
+    # empty set proves nothing.
+    assert "expected_post_apply_offset_db" in host_owned
+    assert "pre_apply_profile" in host_owned
+
+    # (3) Cross the seam under the re-arm's BRAND-NEW session id.
+    v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
+    after_persist = v2host.load_v2_state() or {}
+    for key in sorted(host_owned):
+        assert after_persist.get(key) == after_apply[key], (
+            f"{key!r} is written by the apply path and erased by "
+            "persist_conductor_state — add a carry-forward line for it"
+        )
+
+
+def test_the_probe_verdict_is_persisted_even_on_a_pass():
+    """#1811 SF1: the durable record the done screen's caveat and /state read.
+
+    Persisted on EVERY outcome, not only a failing one — a ``level_mismatch``
+    only ever occurs alongside a pass (it produces no refusal), so gating this
+    on failure would have persisted it exactly never.
+    """
+    probe = SimpleNamespace(
+        verdict="level_mismatch", reason="uncommanded_level_shift",
+        expected_offset_db=-22.458, residual_offset_db=-4.0,
+    )
+    conductor = _StubConductor("s1")
+    conductor.verify_outcome = "pass"
+    conductor.delta_probe = probe
+    v2host.save_v2_state({"session_id": "s1"})
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    persisted = (v2host.load_v2_state() or {})["verify"]["delta_probe"]
+    assert persisted == {
+        "verdict": "level_mismatch",
+        "reason": "uncommanded_level_shift",
+        "expected_offset_db": -22.458,
+        "residual_offset_db": -4.0,
+    }
+    # A conductor with no probe writes no key rather than an empty claim.
+    plain = _StubConductor("s1")
+    plain.verify_outcome = "pass"
+    v2host.persist_conductor_state(plain, failure_code=None)
+    assert "delta_probe" not in (v2host.load_v2_state() or {})["verify"]
+
+
+def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
+    """``0.0`` is the honest answer for an absent or malformed value — the
+    probe then leaves the whole shift visible in ``residual_offset_db``
+    instead of claiming it was accounted for."""
+    v2host.save_v2_state({"session_id": "s", "applied": True})
+    assert v2host._applied_offset_gate() == 0.0
+    for bad in ("loud", None, True, float("nan"), float("inf")):
+        v2host.save_v2_state({
+            "session_id": "s", "applied": True,
+            "expected_post_apply_offset_db": bad,
+        })
+        assert v2host._applied_offset_gate() == 0.0
 
 
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):

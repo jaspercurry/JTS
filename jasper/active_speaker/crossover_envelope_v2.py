@@ -57,6 +57,7 @@ from .crossover_v2_flow import (
     TIER_FULL,
     tier_display_info,
 )
+from .delta_probe import VERDICT_LEVEL_MISMATCH
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +502,59 @@ def _spec_verdict(entry: Mapping[str, Any]) -> bool | None:
     """
     passed = entry.get("overall_passed")
     return passed if isinstance(passed, bool) else None
+
+
+def _done_nudges(
+    verify: Mapping[str, Any], *, spec_passed: bool | None,
+) -> list[dict[str, str]]:
+    """The done screen's badges — one claim per instrument, none overclaiming.
+
+    Two instruments already vote here: the TRACKING comparator
+    (``verify.outcome``) says whether the speaker matched its own prediction,
+    and the post-apply cloud's spec verdict says whether it is flat. A third
+    joins them (#1811): the delta probe can return ``level_mismatch``, which is
+    NOT a rollback — it is a finding about the comparison's level axis, most
+    often a level move our own offset accounting did not see — but it means the
+    probe never got to answer the shape question. That has to reach the
+    household, because everything else on this screen says "Verified."
+
+    Ordering is deliberate: the strongest claim about the SPEAKER wins the
+    badge slot (out-of-spec over verified), and the probe caveat is appended
+    beside whichever badge won rather than replacing it. They answer different
+    questions, so neither may silence the other.
+
+    A non-pass outcome gets no badge at all, exactly as before — that screen is
+    the verify_fail one and carries its own copy.
+    """
+    if verify.get("outcome") != "pass":
+        return []
+    nudges: list[dict[str, str]] = [
+        {
+            "code": "crossover_v2_out_of_spec",
+            "severity": "warn",
+            "text": "Verified against the prediction, but not flat to target.",
+        }
+        if spec_passed is False
+        else {
+            "code": "crossover_v2_verified",
+            "severity": "ok",
+            "text": "Verified.",
+        }
+    ]
+    probe = _mapping(verify.get("delta_probe"))
+    if probe.get("verdict") == VERDICT_LEVEL_MISMATCH:
+        nudges.append({
+            "code": "crossover_v2_level_mismatch",
+            "severity": "warn",
+            # No hardware noun and no instruction to act: this is a statement
+            # about what the check could and could not confirm. The household's
+            # Undo button is already the primary action on this screen.
+            "text": (
+                "The overall loudness changed by more than this check expected, "
+                "so it could not confirm the correction's shape."
+            ),
+        })
+    return nudges
 
 
 def _flatness_unavailable_line(status: Mapping[str, Any]) -> list[str]:
@@ -1251,20 +1305,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # "Verified." still means the tracking comparator passed, but a
             # speaker whose spec verdict FAILED gets the honest badge instead —
             # one claim per instrument, neither pretending to be the other.
-            nudges=(
-                [{
-                    "code": "crossover_v2_out_of_spec",
-                    "severity": "warn",
-                    "text": "Verified against the prediction, but not flat to target.",
-                }]
-                if spec_passed is False and verify.get("outcome") == "pass"
-                else [{
-                    "code": "crossover_v2_verified",
-                    "severity": "ok",
-                    "text": "Verified.",
-                }]
-                if verify.get("outcome") == "pass" else []
-            ),
+            nudges=_done_nudges(verify, spec_passed=spec_passed),
             status=status,
             candidate_review=_candidate_review_payload(candidate or None),
             # Gauge fix (2026-07-24): the flatness numbers previously never

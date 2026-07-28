@@ -92,6 +92,7 @@ from jasper.active_speaker.linearization_envelope import (
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
+    VERDICT_LEVEL_MISMATCH,
     VERDICT_MODEL_ERROR,
     VERDICT_SPATIALLY_COSTLY,
     DeltaProbeMap,
@@ -954,8 +955,17 @@ REASON_CORRECTION_SPATIALLY_COSTLY = "correction_spatially_costly"
 REASON_CORRECTION_ROLLBACK_FAILED = "correction_rollback_failed"
 
 #: Delta-probe verdict → the reason code its rollback surfaces. Exhaustive
-#: over :data:`delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`, pinned by a test, so
-#: a new non-matched verdict cannot ship without household-facing copy.
+#: over :data:`delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`, pinned by a test.
+#:
+#: The stated intent has always been "a new NON-MATCHED verdict cannot ship
+#: without a surface", and until #1811 the rollback set and the non-matched set
+#: were the same thing, so equality here enforced it. ``level_mismatch`` is the
+#: first verdict that is non-matched WITHOUT being a rollback, so the two sets
+#: diverged and this mapping alone stopped covering the intent. The guard test
+#: is now written against the non-matched set: a verdict that is not here must
+#: prove it reaches a household some OTHER way (``level_mismatch`` does — the
+#: persisted ``verify.delta_probe`` summary and the done screen's caveat
+#: nudge), never merely by being absent from a rollback list.
 DELTA_PROBE_REASON_BY_VERDICT: Mapping[str, str] = {
     VERDICT_MODEL_ERROR: REASON_CORRECTION_MODEL_ERROR,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL: REASON_CORRECTION_LEVEL_SHORTFALL,
@@ -1915,6 +1925,15 @@ class V2FlowSeams:
     # already offers), it just cannot press the button itself. That degraded
     # mode is disclosed on the verdict's own event, never silent.
     rollback: Callable[[str], bool] | None = None
+    # #1811: the whole-band level move the APPLY made and did not command as
+    # part of the correction's shape — the pre-split headroom the applied graph
+    # charges for its own boost. Read at probe time (like ``apply_complete`` /
+    # ``apply_failed``, off durable state) rather than passed at construction,
+    # because the apply happens on a background thread AFTER this conductor is
+    # built. Optional: ``None`` means "nothing known", which
+    # ``classify_delta_probe`` treats honestly — the whole shift stays visible
+    # as ``residual_offset_db`` instead of being silently claimed as accounted.
+    applied_offset_db: Callable[[], float] | None = None
 
 
 @dataclass(frozen=True)
@@ -5298,6 +5317,24 @@ class CrossoverV2Conductor:
 
     # --- delta probe (linearization-integrity PR-L5) --------------------------
 
+    def _applied_offset_db(self) -> float:
+        """The apply's own declared whole-band level move, dB (#1811).
+
+        Read through the optional seam, fail-soft to ``0.0``: an unbound seam,
+        an unreadable durable state, or a non-finite value all mean "nothing
+        known", and ``classify_delta_probe`` then leaves the entire shift
+        visible as ``residual_offset_db`` rather than absorbing it. Claiming an
+        offset we cannot read would be the one dishonest option here.
+        """
+        seam = self._seams.applied_offset_db
+        if seam is None:
+            return 0.0
+        try:
+            value = float(seam())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
+
     def _run_delta_probe(self) -> DeltaProbeMap | None:
         """Classify what the speaker actually did against what was commanded.
 
@@ -5362,11 +5399,19 @@ class CrossoverV2Conductor:
                 {"band_spread": self._group_band_spread.get(PHASE_CLOUD_MEASURE, ())},
                 {"band_spread": self._group_band_spread.get(PHASE_CLOUD_VERIFY, ())},
             ),
+            expected_offset_db=self._applied_offset_db(),
         )
         self._delta_probe = probe
         log_event(
             logger, "correction.crossover_v2_delta_probe",
-            level=logging.WARNING if probe.rollback else logging.INFO,
+            # ``level_mismatch`` produces no refusal by design, so WARNING is
+            # the only thing that puts it in front of anyone reading the
+            # journal for a session that otherwise "passed" (#1811).
+            level=(
+                logging.WARNING
+                if probe.rollback or probe.verdict == VERDICT_LEVEL_MISMATCH
+                else logging.INFO
+            ),
             session_id=self.session_id,
             verdict=probe.verdict,
             reason=probe.reason,
@@ -5380,6 +5425,11 @@ class CrossoverV2Conductor:
             gain_factor=(
                 round(probe.gain_factor, 4)
                 if probe.gain_factor is not None else None
+            ),
+            expected_offset_db=round(probe.expected_offset_db, 3),
+            residual_offset_db=(
+                None if probe.residual_offset_db is None
+                else round(probe.residual_offset_db, 3)
             ),
             spatial_available=probe.spatial.available,
             spatial_widened=probe.spatial.widened,

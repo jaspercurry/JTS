@@ -23,6 +23,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_HF_SPLIT_HZ,
     DELTA_PROBE_MIN_COMMANDED_DB,
     DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES,
+    DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB,
     DELTA_PROBE_ROLLBACK_VERDICTS,
     DELTA_PROBE_SHORTFALL_GAIN_CEILING,
     DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB,
@@ -31,6 +32,7 @@ from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_VERDICTS,
     SPATIAL_COST_UNAVAILABLE,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
+    VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_MODEL_ERROR,
     VERDICT_SPATIALLY_COSTLY,
@@ -82,7 +84,16 @@ def test_every_verdict_a_classification_can_return_is_enumerated():
 def test_rollback_verdicts_are_exactly_the_non_matched_measurable_ones():
     """``unavailable`` is deliberately NOT a rollback: an absent measurement is
     not evidence of a bad correction, and rolling back on it would revert every
-    session whose household closed the phone before the post-apply sweep."""
+    session whose household closed the phone before the post-apply sweep.
+
+    ``level_mismatch`` is not one either (#1811): it is a finding about this
+    comparison's LEVEL AXIS, not about the correction's shape, and its most
+    likely production cause is a known incompleteness in our own offset
+    accounting (an applied crossover config is emitted without room-PEQ /
+    preference EQ). Reverting a household's correction because our bookkeeping
+    was short would be a false accusation against a correction that may be
+    perfect.
+    """
     assert DELTA_PROBE_ROLLBACK_VERDICTS == {
         VERDICT_MODEL_ERROR,
         VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -90,6 +101,8 @@ def test_rollback_verdicts_are_exactly_the_non_matched_measurable_ones():
     }
     assert VERDICT_MATCHED not in DELTA_PROBE_ROLLBACK_VERDICTS
     assert VERDICT_UNAVAILABLE not in DELTA_PROBE_ROLLBACK_VERDICTS
+    assert VERDICT_LEVEL_MISMATCH not in DELTA_PROBE_ROLLBACK_VERDICTS
+    assert VERDICT_LEVEL_MISMATCH in DELTA_PROBE_VERDICTS
 
 
 def test_rollback_flag_is_derived_from_the_verdict_not_set_by_a_caller():
@@ -229,6 +242,204 @@ def test_the_shelf_q_realization_error_class_is_caught():
     # …and it is a WIDE systematic tilt, which is why a tolerance only 0.2 dB
     # under the peak error still catches it comfortably.
     assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+
+
+# --------------------------------------------------------------------------- #
+# the apply-boundary level offset (#1811)
+# --------------------------------------------------------------------------- #
+#
+# The applied graph absorbs its correction's boost as a pre-split common
+# attenuation, so every post-apply capture sits that many dB below the
+# prediction it is compared against. That attenuation is the excitation-safety
+# property and is NOT compensated at the speaker; it is declared to this
+# module, which removes it before classifying.
+
+# The charge the live session that surfaced this actually carried.
+_LIVE_APPLY_OFFSET_DB = -22.458
+
+
+def test_a_known_apply_offset_is_removed_before_classification():
+    """(a) A post-apply curve carrying exactly the declared offset MATCHES.
+
+    The contrast is the point. Undeclared, the identical curve reaches
+    ``level_mismatch``: the probe can see that the level moved (the quiet bins
+    say so) but cannot say the correction is good — and, critically, no longer
+    rolls a healthy correction back for it, which is what this module did to
+    the live session. Declared, the same evidence resolves to a clean pass.
+    """
+    commanded = _commanded_lift()
+    realized = commanded + _LIVE_APPLY_OFFSET_DB
+
+    blind = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert blind.verdict == VERDICT_LEVEL_MISMATCH
+    assert blind.rollback is False
+    assert blind.residual_offset_db == pytest.approx(_LIVE_APPLY_OFFSET_DB)
+
+    aware = classify_delta_probe(
+        _GRID_HZ, realized, commanded, band_hz=_band(),
+        expected_offset_db=_LIVE_APPLY_OFFSET_DB,
+    )
+    assert aware.verdict == VERDICT_MATCHED
+    assert aware.rollback is False
+    assert aware.max_error_db == pytest.approx(0.0, abs=1e-9)
+    assert aware.gain_factor == pytest.approx(1.0, abs=1e-9)
+    # Both halves of the accounting are on the record.
+    assert aware.expected_offset_db == pytest.approx(_LIVE_APPLY_OFFSET_DB)
+    assert aware.residual_offset_db == pytest.approx(0.0, abs=1e-9)
+
+
+def test_an_unknown_extra_offset_is_its_own_finding_not_a_model_error():
+    """(b) A level shift BEYOND what the emitter declared is named, not
+    absorbed and not misfiled — something moved that nobody commanded."""
+    commanded = _commanded_lift()
+    extra_db = -4.0
+    realized = commanded + _LIVE_APPLY_OFFSET_DB + extra_db
+
+    probe = classify_delta_probe(
+        _GRID_HZ, realized, commanded, band_hz=_band(),
+        expected_offset_db=_LIVE_APPLY_OFFSET_DB,
+    )
+    assert probe.verdict == VERDICT_LEVEL_MISMATCH
+    assert probe.reason == "uncommanded_level_shift"
+    # Named, but not an accusation against the correction.
+    assert probe.rollback is False
+    assert probe.residual_offset_db == pytest.approx(extra_db, abs=1e-9)
+
+
+def test_an_unknown_offset_inside_tolerance_still_matches():
+    """The magnitude bar means something: a residual smaller than the per-bin
+    tolerance cannot by itself have pushed any bin past that tolerance, so it
+    is disclosed and the map still matches."""
+    commanded = _commanded_lift()
+    small_db = -(DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB - 0.5)
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + small_db, commanded, band_hz=_band(),
+    )
+    assert probe.verdict == VERDICT_MATCHED
+    assert probe.residual_offset_db == pytest.approx(small_db, abs=1e-9)
+
+
+def test_the_shelf_q_keystone_still_classifies_under_a_known_offset():
+    """(c) The defect this whole module exists for must survive the new
+    arithmetic: the 2026-07-27 shelf-Q realization error, measured through a
+    chain that also carries the live session's 22.458 dB apply charge, is
+    still a model error at the same magnitude.
+    """
+    from jasper.active_speaker.linearization_fit import (
+        _HIGHSHELF_Q, _highshelf_response_db,
+    )
+
+    corner_hz, gain_db = 7_000.0, -11.0
+    commanded = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, _HIGHSHELF_Q)
+    realized = _highshelf_response_db(_GRID_HZ, corner_hz, gain_db, 0.476)
+    probe = classify_delta_probe(
+        _GRID_HZ, realized + _LIVE_APPLY_OFFSET_DB, commanded, band_hz=_band(),
+        expected_offset_db=_LIVE_APPLY_OFFSET_DB,
+    )
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    assert probe.rollback is True
+    assert probe.max_error_db == pytest.approx(1.70, abs=0.15)
+    assert probe.exceedance_octaves >= DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES
+
+
+def test_a_proportional_shortfall_is_not_stolen_by_the_level_verdict():
+    """Measuring the residual in the QUIET bins is what protects this.
+
+    A shortfall's error inside the probe band is ``(g−1)·commanded``, which has
+    a large mean — a magnitude test taken there would have filed it as a level
+    shift and lost the compression diagnostic entirely. Outside the probe band
+    it scales a command that is zero, so it moves nothing: the residual is
+    ~0 dB and the level verdict never engages.
+    """
+    commanded = _commanded_lift()
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded * 0.4, commanded, band_hz=_band(),
+    )
+    assert abs(probe.residual_offset_db) < DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
+    assert probe.verdict == VERDICT_LEVEL_DEPENDENT_SHORTFALL
+
+
+def test_an_overshoot_confined_to_the_commanded_region_is_still_a_model_error():
+    """The other half of that argument, from the opposite direction.
+
+    A correction that overshoots uniformly ACROSS ITS WHOLE commanded region
+    looks flat in every probe bin — indistinguishable from a level shift if you
+    only look there. The quiet bins settle it: nothing moved where nothing was
+    asked, so this is the chain doing the wrong thing, not the level drifting.
+    """
+    commanded = np.zeros_like(_GRID_HZ)
+    in_region = (_GRID_HZ >= 6_000.0) & (_GRID_HZ <= 16_000.0)
+    commanded[in_region] = 5.0
+    realized = commanded + np.where(in_region, 4.0, 0.0)
+    probe = classify_delta_probe(_GRID_HZ, realized, commanded, band_hz=_band())
+    assert probe.residual_offset_db == pytest.approx(0.0, abs=1e-9)
+    assert probe.verdict == VERDICT_MODEL_ERROR
+    assert probe.rollback is True
+
+
+def test_a_residual_that_cannot_be_measured_is_reported_as_not_measured():
+    """No quiet bins ⇒ ``None``, never 0.0.
+
+    A correction that commands something across the entire band leaves nowhere
+    to observe an uncommanded level, so the level verdict cannot engage and the
+    record must say the number is absent rather than claim a measured zero —
+    the same distinction ``gain_factor`` draws on an unavailable map.
+    """
+    commanded = np.full_like(_GRID_HZ, 6.0)
+    probe = classify_delta_probe(
+        _GRID_HZ, commanded + 4.0, commanded, band_hz=_band(),
+    )
+    assert probe.residual_offset_db is None
+    assert probe.verdict != VERDICT_LEVEL_MISMATCH
+    assert probe.to_dict()["residual_offset_db"] is None
+
+
+def test_a_verdict_reached_without_the_level_check_says_so():
+    """SF3: when there are no quiet bins the level discriminator never ran, so
+    the verdict below it — a ROLLBACK, in the model_error case — was decided
+    without the check that separates "the level moved" from "the shape is
+    wrong". The reason string is what a reader has in front of them, so it is
+    where that has to be said.
+    """
+    commanded = np.full_like(_GRID_HZ, 6.0)
+    blind = classify_delta_probe(
+        _GRID_HZ, commanded + 4.0, commanded, band_hz=_band(),
+    )
+    assert blind.residual_offset_db is None
+    assert blind.rollback is True
+    assert blind.reason.endswith("|level_check_unavailable")
+    assert blind.reason.startswith("realized_shape_differs_from_commanded")
+
+    # …and a verdict that DID have the discriminator carries no such caveat.
+    lift = _commanded_lift()
+    seen = classify_delta_probe(
+        _GRID_HZ, lift + 6.0 * np.sin(np.log2(_GRID_HZ)), lift, band_hz=_band(),
+    )
+    assert seen.residual_offset_db is not None
+    assert "level_check_unavailable" not in seen.reason
+
+
+def test_a_non_finite_offset_is_nothing_known_not_a_crash():
+    """"Nothing known" is 0.0, which leaves the whole shift visible in the
+    residual rather than pretending it was accounted for."""
+    commanded = _commanded_lift()
+    for bad in (float("nan"), float("inf")):
+        probe = classify_delta_probe(
+            _GRID_HZ, commanded + _LIVE_APPLY_OFFSET_DB, commanded,
+            band_hz=_band(), expected_offset_db=bad,
+        )
+        assert probe.expected_offset_db == 0.0
+        assert probe.residual_offset_db == pytest.approx(
+            _LIVE_APPLY_OFFSET_DB, abs=1e-9
+        )
+
+
+def test_the_residual_offset_tolerance_agrees_with_the_per_bin_tolerance():
+    """Numerically equal, defined separately: the same "material" bar asked of
+    a different quantity. A smaller bar here would name a shift that explains
+    nothing; a larger one would let a real shift ride inside a shape verdict.
+    """
+    assert DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB == DELTA_PROBE_TOLERANCE_LOW_DB
 
 
 def test_the_hf_tolerance_tier_tolerates_what_the_fit_engine_already_accepts():
@@ -395,6 +606,15 @@ def test_to_dict_carries_the_thresholds_it_judged_against():
     assert payload["tolerance_high_db"] == DELTA_PROBE_TOLERANCE_HIGH_DB
     assert payload["verdict"] == VERDICT_MATCHED
     assert payload["rollback"] is False
+    # #1811: the level axis is part of the record too — every scalar above was
+    # measured AFTER removing ``expected_offset_db``, so a reader cannot judge
+    # them without knowing what was removed and what was left.
+    assert payload["expected_offset_db"] == 0.0
+    assert payload["residual_offset_db"] == pytest.approx(0.0, abs=1e-9)
+    assert (
+        payload["residual_offset_tolerance_db"]
+        == DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
+    )
     assert set(payload["spatial"]) == {
         "available", "widened", "worst_center_hz", "worst_widening_db",
         "tolerance_db", "n_bands",

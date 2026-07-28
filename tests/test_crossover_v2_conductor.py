@@ -35,8 +35,11 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
+    DELTA_PROBE_VERDICTS,
+    VERDICT_LEVEL_MISMATCH,
     VERDICT_MATCHED,
     VERDICT_MODEL_ERROR,
+    VERDICT_UNAVAILABLE,
 )
 from jasper.active_speaker.crossover_v2_flow import (
     DELTA_PROBE_REASON_BY_VERDICT,
@@ -5803,6 +5806,99 @@ def test_delta_probe_verifies_the_correction_and_accepts_a_matching_one():
     assert c.delta_probe.to_dict()["rollback"] is False
 
 
+def test_delta_probe_removes_the_applys_declared_level_move(caplog):
+    """#1811 wiring: the conductor threads the apply's own declared offset into
+    the probe, and that is what keeps a healthy correction from being rolled
+    back for the pre-split headroom its own boost was charged.
+
+    The live shape: the apply charged 22.458 dB, so the post-apply capture
+    arrives that far down against a prediction carrying no such term. Blind,
+    the probe can only say the level axis is broken. Told what moved, it grades
+    the correction — and passes it.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program),
+        verify_tracking_curve=_tracking_curve(c, -22.458),
+    )
+    assert c.delta_probe is None
+    _run_phase(c, 3, 3)
+    # Seam unbound (this FakeSeams leaves it None) ⇒ "nothing known", and the
+    # shift stays visible rather than being claimed as accounted for.
+    assert c.delta_probe.verdict == VERDICT_LEVEL_MISMATCH
+    assert c.delta_probe.expected_offset_db == 0.0
+    assert c.delta_probe.residual_offset_db == pytest.approx(-22.458, abs=1e-6)
+    assert c.delta_probe.rollback is False
+
+    fakes2 = FakeSeams()
+    c2 = _probed_conductor(fakes2)
+    c2._seams = dataclasses.replace(
+        c2._seams, applied_offset_db=lambda: -22.458,
+    )
+    fakes2.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program),
+        verify_tracking_curve=_tracking_curve(c2, -22.458),
+    )
+    verdict = _run_phase(c2, 3, 3)
+    assert verdict["accepted"] is True
+    assert c2.delta_probe.verdict == VERDICT_MATCHED
+    assert c2.delta_probe.expected_offset_db == pytest.approx(-22.458)
+    assert c2.delta_probe.residual_offset_db == pytest.approx(0.0, abs=1e-6)
+    assert "expected_offset_db=-22.458" in caplog.text
+
+
+def test_a_level_mismatch_is_persisted_and_logged_at_warning(caplog):
+    """#1811 SF1: a non-rollback finding must leave a trace, on both surfaces.
+
+    ``_delta_probe_refusal`` returns ``None`` for it by design, so the session
+    passes — and until this landed the ONLY evidence was an INFO journal line
+    nobody greps. It now rides WARNING (the level a reader sweeping a
+    "successful" session actually sees) and is persisted so ``/state``, the
+    doctor, and the done screen's caveat can all read one record.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program), verify_tracking_curve=_tracking_curve(c, -22.458),
+    )
+    verdict = _run_phase(c, 3, 3)
+    # The session still passes — the no-rollback adjudication is unchanged.
+    assert verdict["accepted"] is True
+    assert c.verify_outcome == "pass"
+    assert c.delta_probe.verdict == VERDICT_LEVEL_MISMATCH
+
+    probe_lines = [
+        r for r in caplog.records
+        if "event=correction.crossover_v2_delta_probe" in r.getMessage()
+        and "verdict=level_mismatch" in r.getMessage()
+    ]
+    assert probe_lines, "the probe must log its verdict"
+    assert all(r.levelno >= logging.WARNING for r in probe_lines)
+
+
+def test_delta_probe_offset_seam_that_misbehaves_is_nothing_known():
+    """A seam that raises, or hands back a non-finite number, must degrade to
+    "nothing known" (0.0) — never to a claimed offset the emitter cannot
+    actually vouch for, and never to a crash on the VERIFY path."""
+    for broken in (
+        lambda: (_ for _ in ()).throw(RuntimeError("state unreadable")),
+        lambda: float("nan"),
+        lambda: "loud",
+    ):
+        fakes = FakeSeams()
+        c = _probed_conductor(fakes)
+        c._seams = dataclasses.replace(c._seams, applied_offset_db=broken)
+        fakes.verify = lambda program, _c=c: dataclasses.replace(
+            _verify_analysis(program), verify_tracking_curve=_tracking_curve(_c, 0.0),
+        )
+        _run_phase(c, 3, 3)
+        assert c.delta_probe.expected_offset_db == 0.0
+        assert c.delta_probe.verdict == VERDICT_MATCHED
+
+
 def test_delta_probe_model_error_rolls_back_automatically_and_refuses(caplog):
     """The load-bearing behaviour: a realized-vs-commanded map that does not
     match is undone BEFORE the household is told, so the copy ("the previous
@@ -5981,10 +6077,29 @@ def test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope():
     assert c.candidate.exclusion_evidence == {}
 
 
-def test_every_rollback_verdict_has_a_reason_code_with_household_copy():
-    """A new non-matched verdict cannot ship without a sentence for the
-    household — the mapping is exhaustive over the rollback set, and every
-    code it names is in the reason registry with real copy."""
+def test_every_non_matched_verdict_reaches_a_household_surface():
+    """A new NON-MATCHED verdict cannot ship without reaching the household.
+
+    This guard used to assert equality with the ROLLBACK set, which enforced
+    the stated intent only for as long as the two sets were the same thing.
+    ``level_mismatch`` (#1811) is the first non-matched verdict that is
+    deliberately not a rollback, so it slipped through an equality check while
+    rendering as a clean pass. The guard now walks the non-matched set: a
+    verdict either has a refusal code with real copy, or is named here with
+    the surface it does reach instead.
+    """
+    non_matched = set(DELTA_PROBE_VERDICTS) - {VERDICT_MATCHED, VERDICT_UNAVAILABLE}
+    # Verdicts that reach the household WITHOUT a refusal. Adding one here is
+    # a claim that must be true — each entry names the surface, and that
+    # surface has its own test.
+    surfaced_without_refusal = {
+        # Persisted as ``verify.delta_probe`` by ``persist_conductor_state``
+        # and rendered as the done screen's caveat nudge — see
+        # ``test_a_level_mismatch_caveats_the_pass_screen`` in
+        # tests/test_crossover_envelope_v2.py.
+        VERDICT_LEVEL_MISMATCH,
+    }
+    assert set(DELTA_PROBE_REASON_BY_VERDICT) == non_matched - surfaced_without_refusal
     assert set(DELTA_PROBE_REASON_BY_VERDICT) == set(DELTA_PROBE_ROLLBACK_VERDICTS)
     for code in DELTA_PROBE_REASON_BY_VERDICT.values():
         spec = REASON_REGISTRY[code]

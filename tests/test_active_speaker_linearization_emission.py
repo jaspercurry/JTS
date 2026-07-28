@@ -25,6 +25,10 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
 )
+from jasper.active_speaker.baseline_profile import (
+    applied_program_level_delta_db,
+    profile_program_headroom_db,
+)
 from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.camilla_yaml import (
     MAX_LINEARIZATION_BOOST_DB,
@@ -470,6 +474,144 @@ def test_the_headroom_charge_cannot_be_asked_for_without_a_branch_context():
     of them. There is no signature that lets a caller skip it by accident."""
     with pytest.raises(TypeError, match="branch_context"):
         linearization_headroom_db({"woofer": [_peak(gain=3.0)]})  # type: ignore[call-arg]
+
+
+# --------------------------------------------------------------------------- #
+# the apply-boundary level delta (#1811)
+# --------------------------------------------------------------------------- #
+
+
+def _delta_profile(linearization: dict | None, *, mirror_only: bool = False) -> dict:
+    """A profile mapping carrying what the delta reader consumes.
+
+    The snapshot carries the ``preset`` and ``corrections`` too, because since
+    #1808 the headroom charge is evaluated over the branch's WHOLE chain
+    (crossover ⊗ linearization ⊗ trim) — a fixture without them would read the
+    naked-cascade fallback and the "proven against the emitter" test below
+    would be comparing two different chains.
+    """
+    if linearization is None:
+        return {"kind": "active_speaker_baseline_profile"}
+    if mirror_only:
+        # An era-older frozen profile: the top-level convenience mirror without
+        # a snapshot copy — and so, deliberately, without a branch context.
+        return {"linearization": linearization}
+    return {
+        "linearization": linearization,
+        "recomposition_snapshot": {
+            "linearization": linearization,
+            "preset": _preset().to_dict(),
+            "corrections": {
+                role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
+                for role in ("woofer", "tweeter")
+            },
+        },
+    }
+
+
+def test_applied_program_level_delta_is_the_emitted_headroom_move():
+    """#1811's declared offset is the graph's OWN broadband move — proven
+    against the emitter, not asserted about it.
+
+    ``classify_delta_probe`` subtracts this number from the post-apply capture
+    before grading it, so a drift between this reader and
+    ``active_baseline_headroom`` would put a systematic error straight into
+    every verdict. Both sides come from ``linearization_headroom_db``; this
+    test is what keeps that true.
+    """
+    preset = _preset()
+    lin = {"woofer": [_peak(gain=3.0), _peak(freq=2200.0, gain=1.5)]}
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    boosted = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, linearization=lin,
+    )
+    emitted_move_db = _headroom_gain_db(boosted) - _headroom_gain_db(flat)
+    # The PEAK-rule value (#1808), not the old sum's -4.5: the +1.5 dB bell at
+    # 2.2 kHz sits deep in the woofer's own 1600 Hz low-pass and so adds ~0.05
+    # dB to the branch's realized peak rather than its full 1.5. The margin is
+    # already inside this number.
+    assert emitted_move_db == pytest.approx(-2.8707, abs=1e-3)
+    # Tolerance is the EMITTED config's own quantization (the gain is written
+    # to 4 dp), not slack in the agreement: the reader returns
+    # -2.8707248525…, the YAML carries -2.8707.
+    assert applied_program_level_delta_db(
+        _delta_profile({}), _delta_profile(lin),
+    ) == pytest.approx(emitted_move_db, abs=1e-4)
+
+
+def test_applied_program_level_delta_reads_any_magnitude_including_small():
+    """Read from the profiles, never assumed — whatever the charge rule of the
+    day produces, at whatever size, in either direction."""
+    big = _delta_profile({"woofer": [_peak(gain=22.458)]})
+    small = _delta_profile({"woofer": [_peak(gain=4.0)]})
+    none_ = _delta_profile({})
+    assert applied_program_level_delta_db(none_, big) == pytest.approx(
+        -22.2348, abs=1e-3
+    )
+    assert applied_program_level_delta_db(none_, small) == pytest.approx(
+        -3.8083, abs=1e-3
+    )
+    # Re-tuning a heavily-charged profile down to a light one hands headroom
+    # BACK — a positive move, and a downward correction for the probe.
+    assert applied_program_level_delta_db(big, small) == pytest.approx(
+        18.4264, abs=1e-3
+    )
+
+
+def test_applied_program_level_delta_is_era_tolerant_and_snapshot_first():
+    # First-ever apply: nothing to compare against, so the whole applied charge
+    # is the move.
+    assert applied_program_level_delta_db(
+        None, _delta_profile({"woofer": [_peak(gain=3.0)]}),
+    ) == pytest.approx(-2.8213, abs=1e-3)
+    # A pre-linearization profile on either side contributes 0.0, never a raise.
+    assert profile_program_headroom_db(_delta_profile(None)) == 0.0
+    assert profile_program_headroom_db(None) == 0.0
+    assert applied_program_level_delta_db(_delta_profile(None), _delta_profile(None)) == 0.0
+    # A cut-only correction costs nothing, so it moves nothing.
+    assert applied_program_level_delta_db(
+        _delta_profile({}), _delta_profile({"woofer": [_peak(gain=-4.0)]}),
+    ) == 0.0
+    # The snapshot copy is authoritative; the top-level mirror is the
+    # era-older fallback. Both read 4.0 here, not 2.82, because neither of
+    # these two profiles carries a preset/corrections snapshot — so the charge
+    # falls back to the naked cascade's peak plus margin, the documented
+    # over-estimate. What is under test is WHICH linearization was read.
+    lin = {"woofer": [_peak(gain=3.0)]}
+    assert profile_program_headroom_db(
+        _delta_profile(lin, mirror_only=True),
+    ) == pytest.approx(4.0, abs=1e-3)
+    assert profile_program_headroom_db({
+        "linearization": {"woofer": [_peak(gain=9.0)]},
+        "recomposition_snapshot": {"linearization": lin},
+    }) == pytest.approx(4.0, abs=1e-3)
+
+
+def test_a_profile_without_a_branch_context_over_estimates_rather_than_under():
+    """The fallback direction is load-bearing (#1811 + #1808).
+
+    A profile whose snapshot cannot yield a preset/corrections pair is charged
+    over the naked linearization cascade — no crossover credited, no trim —
+    which is a strict OVER-estimate of what the branch really does. For a
+    declared apply-boundary offset that is the safe direction: the probe
+    subtracts more than the graph moved, so the difference stays visible in
+    ``residual_offset_db`` instead of being quietly absorbed. Under-estimating
+    would hide it.
+    """
+    lin = {"woofer": [_peak(gain=3.0)]}
+    with_context = profile_program_headroom_db(_delta_profile(lin))
+    without = profile_program_headroom_db(
+        {"recomposition_snapshot": {"linearization": lin}},
+    )
+    assert without > with_context
+    # …and a snapshot whose preset cannot be parsed degrades the same way
+    # rather than raising on the apply path.
+    assert profile_program_headroom_db({
+        "recomposition_snapshot": {
+            "linearization": lin, "preset": {"nonsense": True},
+            "corrections": {"woofer": {"gain_db": 0.0}},
+        },
+    }) == pytest.approx(without, abs=1e-6)
 
 
 @pytest.mark.parametrize("bad_freq", [0.0, -100.0, float("nan"), float("inf")])

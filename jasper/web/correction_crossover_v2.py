@@ -47,6 +47,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import math
 import secrets
 import threading
 import time
@@ -247,6 +248,7 @@ def observe_apply_success(
     candidate_fingerprint: str,
     *,
     pre_apply_profile: Mapping[str, Any] | None = None,
+    expected_post_apply_offset_db: float = 0.0,
 ) -> None:
     """Mark the v2 candidate applied — the apply-complete event that arms the
     soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success.
@@ -258,6 +260,14 @@ def observe_apply_success(
     the new applied SSOT. This is the ONLY durable record of what the Undo
     path (``handle_v2_restore``) restores to; ``None`` when this was the
     speaker's first-ever applied crossover (nothing to undo back to).
+
+    ``expected_post_apply_offset_db`` (#1811) is the whole-band level move the
+    emitted graph made and did NOT command as part of the correction's shape —
+    the pre-split headroom charged for the correction's own boost. Persisted
+    alongside ``applied`` because the delta probe runs one capture later, in a
+    different thread, and reads it back off this state; ``0.0`` means "nothing
+    known", never "nothing moved" (the probe's ``residual_offset_db`` is what
+    tells those two apart).
     """
     state = load_v2_state()
     if state is None:
@@ -294,8 +304,16 @@ def observe_apply_success(
     state["pre_apply_profile"] = (
         dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
     )
+    offset_db = float(expected_post_apply_offset_db)
+    state["expected_post_apply_offset_db"] = (
+        round(offset_db, 3) if math.isfinite(offset_db) else 0.0
+    )
     save_v2_state(state)
-    log_event(logger, "correction.crossover_v2_applied")
+    log_event(
+        logger,
+        "correction.crossover_v2_applied",
+        expected_post_apply_offset_db=state["expected_post_apply_offset_db"],
+    )
 
 
 def observe_restore() -> None:
@@ -346,6 +364,29 @@ def _applied_gate() -> bool:
     """The conductor's ``apply_complete`` seam: reads the durable applied flag."""
     state = load_v2_state()
     return bool(state and state.get("applied") is True)
+
+
+def _applied_offset_gate() -> float:
+    """The conductor's ``applied_offset_db`` seam: the whole-band level move
+    the apply declared (#1811), read fresh off durable state.
+
+    Written by :func:`observe_apply_success` on the auto-apply's background
+    thread; read one capture later by the delta probe on the runner's. Durable
+    state is the only thing both sides share, which is why this is a seam
+    rather than a constructor argument — same reason ``apply_complete`` and
+    ``apply_failed`` are.
+
+    ``0.0`` for an absent, malformed, or non-finite value: "nothing known".
+    The probe treats that honestly (the whole shift stays visible in
+    ``residual_offset_db``), so a missing value degrades to today's behaviour
+    rather than to a false claim that the level was accounted for.
+    """
+    state = load_v2_state()
+    raw = (state or {}).get("expected_post_apply_offset_db")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0.0
+    value = float(raw)
+    return value if math.isfinite(value) else 0.0
 
 
 def _apply_failure_gate() -> str:
@@ -1313,6 +1354,25 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
     return out or None
 
 
+def _delta_probe_summary(probe: Any) -> dict[str, Any]:
+    """The delta probe's verdict, small enough to live in durable state (#1811).
+
+    Everything a reader needs to judge a non-rollback finding — chiefly
+    ``level_mismatch``, which by design produces no refusal and would otherwise
+    be invisible outside the journal: what the verdict was, why, the level move
+    the emitter declared, and the one it could not account for. The full map
+    (per-bin errors, exceedance width, gain factor, spatial arm) stays on
+    ``event=correction.crossover_v2_delta_probe`` — this is the durable
+    summary, not a second copy of the record.
+    """
+    return {
+        "verdict": str(getattr(probe, "verdict", "") or ""),
+        "reason": str(getattr(probe, "reason", "") or ""),
+        "expected_offset_db": getattr(probe, "expected_offset_db", 0.0),
+        "residual_offset_db": getattr(probe, "residual_offset_db", None),
+    }
+
+
 def persist_conductor_state(
     conductor: Any,
     *,
@@ -1360,6 +1420,20 @@ def persist_conductor_state(
                 # "verify" is exactly the duplicated-frame shape PR-5 exists
                 # to remove. A state file written by an older build may still
                 # carry the stale key; nothing reads it.)
+                #
+                # The delta probe's verdict, on EVERY outcome including a pass
+                # (#1811). A non-rollback non-matched verdict — today only
+                # ``level_mismatch`` — otherwise reached no surface at all: the
+                # refusal path ignores it by design, so the household saw a
+                # clean "Verified." over a shape question the probe never got
+                # to answer. Four scalars, not the whole map: the verdict, why,
+                # and the two level numbers a reader needs to judge it. The
+                # full record stays in the journal.
+                **(
+                    {"delta_probe": _delta_probe_summary(conductor.delta_probe)}
+                    if getattr(conductor, "delta_probe", None) is not None
+                    else {}
+                ),
             }
             if verify_outcome is not None else None
         ),
@@ -1449,13 +1523,26 @@ def persist_conductor_state(
             )
             state["evidence"] = merged_evidence
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
-    # handle_v2_restore) and ``apply_blocked`` (the auto-apply-failed nudge,
-    # layered onto the "applying"-phase fix_and_retry screen — owner ruling,
-    # 2026-07-20) are NOT conductor-owned fields: the conductor neither
-    # produces nor reads either one, so they are absent from the ``state``
-    # literal above and every OTHER caller of this function only ever sets
-    # the fields it does know about. They carry forward with OPPOSITE
-    # session-scoping, by design:
+    # handle_v2_restore), ``expected_post_apply_offset_db`` (the apply's own
+    # declared level move — observe_apply_success / the delta probe's
+    # ``applied_offset_db`` seam), and ``apply_blocked`` (the
+    # auto-apply-failed nudge, layered onto the "applying"-phase
+    # fix_and_retry screen — owner ruling, 2026-07-20) are NOT conductor-owned
+    # fields: the conductor neither produces nor reads any of them, so they
+    # are absent from the ``state`` literal above and every OTHER caller of
+    # this function only ever sets the fields it does know about.
+    #
+    # THREE separate P0s have now been caused by a host-owned key being added
+    # to ``observe_apply_success`` without a line here (pre_apply_profile
+    # W6.12; cloud B1; this offset, #1811).
+    # ``test_every_host_owned_apply_key_survives_persist_conductor_state``
+    # derives the host-owned set mechanically — whatever the apply path gives a
+    # value that a conductor-only persist cannot regenerate — and fails on the
+    # FOURTH. The fix is a carry-forward line here. Only a key that genuinely
+    # wants session scoping (like ``apply_blocked``) belongs in that test's
+    # exception set instead, and it has to say why.
+    #
+    # They carry forward with OPPOSITE session-scoping, by design:
     #
     #   * ``pre_apply_profile`` is carried forward UNCONDITIONALLY (not gated
     #     on a matching session_id): the deferred VERIFY that auto-arms right
@@ -1477,6 +1564,27 @@ def persist_conductor_state(
     #     session begins instead of leaking session A's blocker onto session
     #     B's apply step.
     state["pre_apply_profile"] = prior.get("pre_apply_profile")
+    # ``expected_post_apply_offset_db`` (#1811) is the THIRD field in this
+    # host-owned class and takes ``pre_apply_profile``'s unconditional shape
+    # for the identical reason: ``observe_apply_success`` writes it, the
+    # conductor neither produces nor reads it, so it is absent from the state
+    # literal above and every call to this function would otherwise erase it.
+    #
+    # It was erased, on every call, until this line existed — and the two
+    # readers that lost it are exactly the two the post-apply flow depends on.
+    # The CLOUD_VERIFY probe (the one that carries the spatial arm AND rollback
+    # authority) re-classifies after the group closes, by which time several
+    # captures have persisted: it would have graded the apply's own headroom
+    # charge blind and could roll a healthy correction back — the precise
+    # failure this key exists to prevent, one phase later. And
+    # ``prepare_v2_verify``'s re-arm persists under a brand-new session id, so
+    # every "Try again" probe would have been blind too.
+    #
+    # Session-scoping it would reintroduce that second half: like
+    # ``pre_apply_profile``, this must survive the new-session rebind.
+    state["expected_post_apply_offset_db"] = prior.get(
+        "expected_post_apply_offset_db"
+    )
     state["apply_blocked"] = (
         prior.get("apply_blocked")
         if prior.get("session_id") == snap.session_id
@@ -2336,6 +2444,56 @@ def build_v2_run_and_consume(
                 failure = (state or {}).get("failure")
                 return isinstance(failure, Mapping) and bool(failure.get("code"))
 
+            def _close_volume_on_terminal_apply_failure() -> None:
+                """Restore the household volume the moment the apply dies (#1811).
+
+                A failed auto-apply is TERMINAL for the session: the conductor's
+                ``apply_failed`` seam turns the deferred VERIFY hold into a
+                refusal, so no further capture will ever run. Until this
+                existed, the plan's ``active`` state simply sat there — the
+                runner only drains on the arm that catches that refusal, which
+                needs the phone to poll one more begin (or the whole relay
+                budget to expire) before it fires. Enforcement was lazy-on-read
+                everywhere else too: the wall-clock ceiling is only checked when
+                something asks. A household whose apply failed and who put the
+                phone down therefore kept a speaker pinned at measurement
+                volume for minutes.
+
+                Same hook, same force-restore semantics as every other drain
+                (``volume.abandon`` → ``SessionVolumePlan.abandon`` →
+                restore-exactly-once, releasing the held measurement pause), so
+                the runner's own ``_abandon_best_effort`` below stays correct
+                and simply resolves to ALREADY_RESOLVED.
+                """
+                try:
+                    run_async(
+                        volume.abandon(),
+                        timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
+                    )
+                except (
+                    concurrent.futures.TimeoutError, OSError, RuntimeError, ValueError,
+                ):
+                    # A timeout here does NOT mean the drain never ran:
+                    # ``_run_async`` cancels the loop task and then WAITS for it
+                    # to drain, so the plan's own restore-once ladder has either
+                    # completed or resolved itself to ``unresolved`` by the time
+                    # this arm is reached. What is unknown is the outcome, which
+                    # is why this is CRITICAL and why the runner's own
+                    # ``_abandon_best_effort`` still runs afterwards — it either
+                    # finishes the job or reports ALREADY_RESOLVED.
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_volume_abandon_failed",
+                        level=logging.CRITICAL,
+                        reason="auto_apply_failed",
+                    )
+                    return
+                log_event(
+                    logger,
+                    "correction.crossover_v2_apply_failure_volume_closed",
+                    level=logging.WARNING,
+                )
+
             def _worker() -> None:
                 if _session_already_ending():
                     log_event(
@@ -2359,6 +2517,7 @@ def build_v2_run_and_consume(
                         conductor, failure_code=REASON_APPLY_FAILED,
                         evidence=evidence_refs,
                     )
+                    _close_volume_on_terminal_apply_failure()
                     return
                 except Exception:  # noqa: BLE001 — background thread has no
                     # caller to reraise to; a silent auto-apply crash would
@@ -2376,6 +2535,7 @@ def build_v2_run_and_consume(
                         conductor, failure_code=REASON_APPLY_FAILED,
                         evidence=evidence_refs,
                     )
+                    _close_volume_on_terminal_apply_failure()
                     return
                 if payload.get("status") != "applied":
                     # "blocked" (handle_v2_apply already called
@@ -2387,6 +2547,7 @@ def build_v2_run_and_consume(
                         conductor, failure_code=REASON_APPLY_FAILED,
                         evidence=evidence_refs,
                     )
+                    _close_volume_on_terminal_apply_failure()
                 log_event(
                     logger, "correction.crossover_v2_auto_apply",
                     status=payload.get("status"),
@@ -3247,6 +3408,7 @@ def prepare_v2_session(
                     evidence_store, relay_session_id, refs
                 ),
                 rollback=bind_delta_probe_rollback(run_async, camilla_factory),
+                applied_offset_db=_applied_offset_gate,
             ),
             tier=plan_shape.tier,
             # The conductor's index→phase map is built from the SAME resolved
@@ -3415,6 +3577,12 @@ def prepare_v2_verify(
                 # short-circuit never reaches the apply_failed check. Supplied
                 # anyway — V2FlowSeams is a frozen dataclass with no defaults.
                 apply_failed=_apply_failure_gate,
+                # A verify-only re-arm measures the ALREADY-applied graph
+                # against the original session's prediction, so it carries the
+                # same apply-boundary offset and needs the same correction
+                # (#1811). The value survives in durable state across the
+                # re-arm, which is exactly what this seam reads.
+                applied_offset_db=_applied_offset_gate,
             ),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
@@ -3498,6 +3666,7 @@ def handle_v2_apply(
     the seam.
     """
     from jasper.active_speaker.baseline_profile import (
+        applied_program_level_delta_db,
         apply_baseline_profile,
         build_baseline_profile_candidate,
     )
@@ -3598,7 +3767,30 @@ def handle_v2_apply(
         )
     )
     if payload.get("status") == "applied":
-        observe_apply_success(expected, pre_apply_profile=pre_apply_profile)
+        # #1811 — the apply boundary. The graph that just went live absorbs its
+        # correction's boost as a pre-split common attenuation, so the same
+        # commanded volume now drives the speaker measurably quieter (−7.9 dB
+        # broadband on the session that surfaced this). That attenuation is the
+        # excitation-safety property — it is what keeps a boosted band at or
+        # under unity — so it is NOT compensated at the main volume. What it
+        # needs is to be DECLARED, because the post-apply analysis compares the
+        # capture against a prediction that carries no such term.
+        #
+        # Handed to ``observe_apply_success``, which persists it in the SAME
+        # state write as the ``applied`` flag. That is the ordering guarantee
+        # this needs: ``applied`` is what releases VERIFY's deferred hold, so
+        # the flag can never become visible without the offset beside it, and
+        # the conductor's probe seam reads a complete record the moment VERIFY
+        # lands one capture later.
+        offset_db = applied_program_level_delta_db(
+            pre_apply_profile, payload.get("profile"),
+        )
+        payload["expected_post_apply_offset_db"] = round(offset_db, 3)
+        observe_apply_success(
+            expected,
+            pre_apply_profile=pre_apply_profile,
+            expected_post_apply_offset_db=offset_db,
+        )
     issue = None
     if payload.get("status") == "blocked":
         # Finding N: name the blocker compactly (not buried in the full

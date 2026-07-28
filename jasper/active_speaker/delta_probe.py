@@ -42,6 +42,40 @@ framing earns its keep in two places the plain residual cannot reach: the
 commanded curve is the axis the shortfall-vs-model-error discriminator
 regresses against, and the spatial arm below IS two real measurements.
 
+**This comparison is NOT level-offset-invariant, and that is why
+``expected_offset_db`` exists** (issue #1811). Its sibling, the VERIFY tracking
+check, mean-centers its error (``audio_measurement.analysis.
+_offset_invariant_rms_and_max``: ``error -= float(np.mean(error))``), so a
+uniform level difference between measured and predicted cannot read as a
+tracking failure there. This probe deliberately does not, because a level
+shortfall IS one of the things it classifies. The consequence is that a level
+change the correction did not command lands directly in ``error_db``.
+
+There is exactly such a change, every session: the applied graph absorbs its
+correction's boost as a pre-split common attenuation
+(``camilla_yaml.linearization_headroom_db`` folded into
+``active_baseline_headroom``), and the emitted prediction this probe compares
+against carries no such term. On the session that surfaced this the apply moved
+that attenuation ``0 → −22.458 dB`` and the post-apply capture sat −7.9 dB
+broadband below the pre-apply cloud — a whole-band common mode that this module
+would have graded as ``model_error`` and rolled a healthy correction back for.
+
+So the caller passes the offset the EMITTER knows it applied
+(``baseline_profile.applied_program_level_delta_db``) and this module removes it
+before classifying. Whatever is left is measured **in the quiet bins** — in
+band, but below the commanded floor, where the correction asked for nothing and
+therefore any level is uncommanded by construction — and disclosed as
+``residual_offset_db``. A residual that is both material and sufficient to
+explain the failure is its own verdict, :data:`VERDICT_LEVEL_MISMATCH`, rather
+than being silently absorbed or misfiled as a shape defect.
+
+The absorption itself is NOT compensated at the speaker. It is the
+excitation-safety property that keeps a boosted band at or under unity
+(``camilla_yaml``'s ``MAX_LINEARIZATION_BOOST_DB`` note): removing it at the
+main volume would put the boosted band over the driver's excitation cap by the
+branch's own boost, on a sustained swept sine, below the per-driver limiters'
+reach. It is corrected here, in the analysis, and nowhere else.
+
 **This is not the VERIFY tracking check, and does not replace it.**
 ``crossover_v2_flow._verify_verdict`` compares the same two curves over the
 crossover handoff band alone (``[Fc/2, 2·Fc]``, ~2–4 kHz on JTS3) at 1.5 dB.
@@ -89,6 +123,17 @@ VERDICT_LEVEL_DEPENDENT_SHORTFALL = "level_dependent_shortfall"
 #: the signature of correcting a position-specific interference feature. Roll
 #: back and route the household to a placement-vs-speaker service verdict.
 VERDICT_SPATIALLY_COSTLY = "spatially_costly"
+#: The map fails ONLY because of a level shift that survives removing the
+#: offset the emitter knows it applied — measured where the correction
+#: commanded nothing, and sufficient on its own to explain the failure.
+#: Something moved the level that nobody commanded: an incompletely
+#: accounted emit (room-PEQ / output-trim attenuation the applied config drops
+#: is the known systematic case), a mic or input-chain change between captures,
+#: or a household volume touch. **Not a claim about the correction**, which is
+#: why it is not a rollback verdict — see
+#: :data:`DELTA_PROBE_ROLLBACK_VERDICTS`. It is named rather than absorbed so
+#: the journal says which of those it is worth looking for.
+VERDICT_LEVEL_MISMATCH = "level_mismatch"
 #: No verdict is available — the correction commands nothing inside the
 #: probe band, or the curves could not be compared. **Not a pass.** The
 #: conductor must treat this the way every other honesty instrument in this
@@ -103,6 +148,7 @@ DELTA_PROBE_VERDICTS: frozenset[str] = frozenset({
     VERDICT_MODEL_ERROR,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
     VERDICT_SPATIALLY_COSTLY,
+    VERDICT_LEVEL_MISMATCH,
     VERDICT_UNAVAILABLE,
 })
 
@@ -111,6 +157,17 @@ DELTA_PROBE_VERDICTS: frozenset[str] = frozenset({
 #: NOT here — an absent measurement is not evidence of a bad correction, and
 #: rolling back on it would revert every session whose household closed the
 #: phone before the post-apply sweep.
+#:
+#: :data:`VERDICT_LEVEL_MISMATCH` is not here either, for the same reason
+#: stated a different way: it is a finding about the LEVEL AXIS of this
+#: comparison, not about the correction's shape. Its most likely production
+#: cause is a known incompleteness in our own accounting — the applied
+#: crossover config is emitted without room-PEQ / preference EQ, so a
+#: household that has either can see a real level move the offset reader does
+#: not know about — and reverting a household's correction because our
+#: bookkeeping was short would be a false accusation against a correction that
+#: may be perfect. It grants no permission either: like ``unavailable``, it
+#: leaves the shape question unanswered, and it says so.
 DELTA_PROBE_ROLLBACK_VERDICTS: frozenset[str] = frozenset({
     VERDICT_MODEL_ERROR,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -198,6 +255,32 @@ DELTA_PROBE_SHORTFALL_GAIN_CEILING: float = 0.85
 # band. A correction that widens the room's spread by that much is not
 # flattening the speaker; it is fitting one microphone position.
 DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB: float = 1.0
+
+# |residual common mode| beyond which an otherwise-unexplained whole-band level
+# shift is named :data:`VERDICT_LEVEL_MISMATCH` rather than left inside the
+# shape verdict (#1811).
+#
+# Numerically equal to :data:`DELTA_PROBE_TOLERANCE_LOW_DB` and defined
+# separately on purpose — the same "material disagreement" bar, asked of a
+# different quantity (one constant over the band, versus a per-bin excursion),
+# so a future retune of either must be a deliberate decision about that
+# quantity rather than a silent inheritance. The agreement is the point: a
+# common mode smaller than the per-bin tolerance cannot by itself have pushed a
+# bin past that tolerance, so a smaller bar here would name a shift that
+# explains nothing.
+#
+# This is a magnitude bar, NOT the discriminator — see
+# :func:`classify_delta_probe` for the two conditions that actually separate
+# "the level moved" from "a shape defect that happens to have a mean".
+DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB: float = 1.5
+
+#: Appended to a non-matched verdict's ``reason`` when there were too few
+#: quiet bins to measure ``residual_offset_db`` at all (#1811). The verdict is
+#: still the honest one for the evidence available — but it was reached
+#: WITHOUT the level discriminator, so an undeclared level shift could be
+#: wearing a shape defect's clothes, and a rollback decided that way should
+#: say so in the same string a reader is already looking at.
+_LEVEL_CHECK_UNAVAILABLE_SUFFIX = "|level_check_unavailable"
 
 
 # --------------------------------------------------------------------------- #
@@ -328,6 +411,25 @@ class DeltaProbeMap:
     tolerance_low_db: float
     tolerance_high_db: float
     spatial: SpatialCost
+    #: The level move the EMITTER told us it made, dB, removed from the
+    #: realized curve before anything below was computed (#1811). Disclosed so
+    #: a reader can tell a probe that was level-corrected from one that was
+    #: not, and by how much — every scalar above is measured AFTER its removal.
+    expected_offset_db: float = 0.0
+    #: What was left over, measured where the correction commanded NOTHING —
+    #: the mean of ``(realized − expected_offset) − commanded`` across the
+    #: in-band bins BELOW the commanded floor. The ``− commanded`` term is
+    #: small but real there rather than exactly zero (the floor admits up to
+    #: :data:`DELTA_PROBE_MIN_COMMANDED_DB`, so it can bias this by up to
+    #: 0.5 dB against a 1.5 dB bar) and is subtracted rather than assumed away.
+    #: Any level in those bins is uncommanded by construction, which is what
+    #: makes it separable from a shape defect inside the probe band. ``None``
+    #: when the correction commands something almost everywhere in band and
+    #: there are too few quiet bins to measure it — "not measured", which 0.0
+    #: would misreport as "measured, and nothing moved" (the same distinction
+    #: ``gain_factor`` draws).
+    residual_offset_db: float | None = None
+    residual_offset_tolerance_db: float = DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
 
     @property
     def matched(self) -> bool:
@@ -351,11 +453,16 @@ class DeltaProbeMap:
             "gain_factor": self.gain_factor,
             "tolerance_low_db": self.tolerance_low_db,
             "tolerance_high_db": self.tolerance_high_db,
+            "expected_offset_db": self.expected_offset_db,
+            "residual_offset_db": self.residual_offset_db,
+            "residual_offset_tolerance_db": self.residual_offset_tolerance_db,
             "spatial": self.spatial.to_dict(),
         }
 
 
-def _unavailable(reason: str, spatial: SpatialCost) -> DeltaProbeMap:
+def _unavailable(
+    reason: str, spatial: SpatialCost, *, expected_offset_db: float = 0.0,
+) -> DeltaProbeMap:
     return DeltaProbeMap(
         verdict=VERDICT_UNAVAILABLE, reason=reason, probe_band_hz=(0.0, 0.0),
         n_bins=0, max_error_db=0.0, rms_error_db=0.0, worst_hz=0.0,
@@ -363,6 +470,7 @@ def _unavailable(reason: str, spatial: SpatialCost) -> DeltaProbeMap:
         tolerance_low_db=DELTA_PROBE_TOLERANCE_LOW_DB,
         tolerance_high_db=DELTA_PROBE_TOLERANCE_HIGH_DB,
         spatial=spatial,
+        expected_offset_db=expected_offset_db,
     )
 
 
@@ -440,6 +548,7 @@ def classify_delta_probe(
     *,
     band_hz: tuple[float, float],
     spatial: SpatialCost = SPATIAL_COST_UNAVAILABLE,
+    expected_offset_db: float = 0.0,
 ) -> DeltaProbeMap:
     """Classify one applied correction's realized-vs-commanded map.
 
@@ -447,6 +556,17 @@ def classify_delta_probe(
     probe band is ``band_hz`` intersected with the bins where the correction
     commands at least :data:`DELTA_PROBE_MIN_COMMANDED_DB` — outside that,
     nothing was asked for and there is nothing to verify.
+
+    ``expected_offset_db`` is the whole-band level move the EMITTER knows it
+    made across the apply and did NOT command as part of the correction's shape
+    — in production, the pre-split headroom the applied graph charges for its
+    own boost (``baseline_profile.applied_program_level_delta_db``; negative
+    when the apply made the speaker quieter). It is subtracted from the
+    realized curve before anything is measured, because this comparison is not
+    mean-centered and would otherwise read that shift as a defect (see the
+    module docstring). Default ``0.0`` — an unsupplied or non-finite offset
+    means "nothing known", which is honest and leaves the whole shift visible
+    in ``residual_offset_db`` rather than pretending it was accounted for.
 
     Topology-agnostic by construction: this function knows about a measured
     curve, a commanded curve, and a band. It has no notion of drivers, ways,
@@ -456,8 +576,17 @@ def classify_delta_probe(
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     realized = np.asarray(realized_delta_db, dtype=np.float64)
     commanded = np.asarray(commanded_delta_db, dtype=np.float64)
+    offset = float(expected_offset_db)
+    if not math.isfinite(offset):
+        offset = 0.0
     if not (freqs.shape == realized.shape == commanded.shape):
-        return _unavailable("grid_mismatch", spatial)
+        return _unavailable("grid_mismatch", spatial, expected_offset_db=offset)
+
+    # Remove the KNOWN move before any measurement below. Everything the record
+    # reports — max/rms error, worst bin, gain factor, exceedance width — is
+    # therefore a statement about what is left after the emitter's own
+    # accounting, which is the only part that could be a defect.
+    realized = realized - offset
 
     lo_hz, hi_hz = float(band_hz[0]), float(band_hz[1])
     mask = (
@@ -468,7 +597,7 @@ def classify_delta_probe(
         & (np.abs(commanded) >= DELTA_PROBE_MIN_COMMANDED_DB)
     )
     if int(mask.sum()) < DELTA_PROBE_MIN_BINS:
-        return _unavailable("nothing_commanded", spatial)
+        return _unavailable("nothing_commanded", spatial, expected_offset_db=offset)
 
     f = freqs[mask]
     r = realized[mask]
@@ -483,6 +612,30 @@ def classify_delta_probe(
     max_error_db = float(np.max(np.abs(error)))
     rms_error_db = float(np.sqrt(np.mean(error ** 2)))
     worst_hz = float(f[int(np.argmax(np.abs(error)))])
+
+    # The uncommanded remainder, measured in the QUIET bins (#1811) — inside
+    # the analysis band, but BELOW the commanded floor, so outside the probe
+    # band the statistics above were taken over.
+    #
+    # It has to be measured there. Inside the probe band, "flat across every
+    # bin we look at" is exactly what a correction that overshot its whole
+    # commanded region also looks like — the probe band IS the commanded
+    # region, so the two are indistinguishable from those bins alone. Where the
+    # correction asked for nothing, any level is uncommanded by construction.
+    # That is a different question with a clean answer, and it is the one this
+    # verdict needs.
+    quiet = (
+        (freqs >= lo_hz)
+        & (freqs <= hi_hz)
+        & np.isfinite(realized)
+        & np.isfinite(commanded)
+        & (np.abs(commanded) < DELTA_PROBE_MIN_COMMANDED_DB)
+    )
+    residual_offset_db: float | None = (
+        float(np.mean(realized[quiet] - commanded[quiet]))
+        if int(quiet.sum()) >= DELTA_PROBE_MIN_BINS
+        else None
+    )
     # Least-squares realized/commanded scale through the origin. ``c`` carries
     # only bins at or above the commanded floor, so the denominator cannot be
     # degenerate here.
@@ -504,6 +657,8 @@ def classify_delta_probe(
             tolerance_low_db=DELTA_PROBE_TOLERANCE_LOW_DB,
             tolerance_high_db=DELTA_PROBE_TOLERANCE_HIGH_DB,
             spatial=spatial,
+            expected_offset_db=offset,
+            residual_offset_db=residual_offset_db,
         )
 
     if not exceeded:
@@ -514,7 +669,45 @@ def classify_delta_probe(
             return _map(VERDICT_SPATIALLY_COSTLY, "cross_position_spread_widened")
         return _map(VERDICT_MATCHED, "")
 
-    # The map does not match. Shape or scale?
+    # The map does not match. Before asking shape-or-scale, ask whether it
+    # fails only because the level moved by something nobody commanded (#1811).
+    #
+    # Two conditions, and BOTH are required.
+    #
+    # (a) The quiet-bin residual — level where nothing was asked for — is
+    #     material on its own terms. This is the EVIDENCE that a level shift
+    #     exists at all, and it comes from bins no shape defect can reach.
+    # (b) Removing that same residual from the probe band makes the map pass.
+    #     This is what makes the shift SUFFICIENT: if the map still fails after
+    #     accounting for a shift we independently measured, then whatever else
+    #     is wrong is a shape claim and belongs in the verdicts below.
+    #
+    # Together they keep every diagnostic underneath intact. A proportional
+    # shortfall moves the quiet bins by nothing (it scales a command that is
+    # zero there), so it fails (a). A mis-realized shelf leaves structure that
+    # survives subtracting a constant, so it fails (b).
+    if residual_offset_db is not None:
+        levelled_error_full = np.where(
+            mask, realized - commanded - residual_offset_db, 0.0
+        )
+        levelled_exceeded, _ = _structured_exceedance(
+            freqs, levelled_error_full, tolerance_full, mask,
+        )
+        if (
+            abs(residual_offset_db) > DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
+            and not levelled_exceeded
+        ):
+            return _map(VERDICT_LEVEL_MISMATCH, "uncommanded_level_shift")
+        unavailable_suffix = ""
+    else:
+        # No quiet bins ⇒ the level discriminator could not run at all, so the
+        # verdicts below are being reached WITHOUT the check that would have
+        # separated "the level moved" from "the shape is wrong". An undeclared
+        # offset lands as ``model_error`` here — a rollback — and nothing else
+        # in the record would say why that call was made blind. Say it.
+        unavailable_suffix = _LEVEL_CHECK_UNAVAILABLE_SUFFIX
+
+    # Shape or scale?
     #
     # Re-measure the error against the best-fit SCALED command. If the residual
     # then passes, the correction's shape is right and only its depth is short
@@ -536,8 +729,14 @@ def classify_delta_probe(
         and commanded_is_lift
         and 0.0 <= gain_factor < DELTA_PROBE_SHORTFALL_GAIN_CEILING
     ):
-        return _map(VERDICT_LEVEL_DEPENDENT_SHORTFALL, "realized_short_of_commanded")
-    return _map(VERDICT_MODEL_ERROR, "realized_shape_differs_from_commanded")
+        return _map(
+            VERDICT_LEVEL_DEPENDENT_SHORTFALL,
+            "realized_short_of_commanded" + unavailable_suffix,
+        )
+    return _map(
+        VERDICT_MODEL_ERROR,
+        "realized_shape_differs_from_commanded" + unavailable_suffix,
+    )
 
 
 def spatial_cost_from_group_spreads(
@@ -588,6 +787,7 @@ __all__ = [
     "DELTA_PROBE_MIN_BINS",
     "DELTA_PROBE_MIN_COMMANDED_DB",
     "DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES",
+    "DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB",
     "DELTA_PROBE_ROLLBACK_VERDICTS",
     "DELTA_PROBE_SHORTFALL_GAIN_CEILING",
     "DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB",
@@ -598,6 +798,7 @@ __all__ = [
     "DeltaProbeMap",
     "SpatialCost",
     "VERDICT_LEVEL_DEPENDENT_SHORTFALL",
+    "VERDICT_LEVEL_MISMATCH",
     "VERDICT_MATCHED",
     "VERDICT_MODEL_ERROR",
     "VERDICT_SPATIALLY_COSTLY",

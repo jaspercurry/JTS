@@ -48,9 +48,11 @@ from jasper.output_topology import OutputTopology
 from ._common import issue as _issue
 from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
+    _branch_context,
     _role_polarity,
     emit_active_speaker_baseline_config,
     emit_active_speaker_driver_domain_config,
+    linearization_headroom_db,
 )
 from .crossover_contract import (
     TUNING_OWNERS,
@@ -1137,6 +1139,139 @@ def _frozen_applied_profile(
         "provisional": bool(applied.get("provisional")),
         "recomposition_snapshot": dict(snapshot) if isinstance(snapshot, Mapping) else None,
     }
+
+
+def _profile_branch_context(
+    profile: Mapping[str, Any],
+) -> dict[str, tuple[Any, float]]:
+    """The ``(crossover sections, trim_db)`` context for one profile's charge.
+
+    Rebuilt from the SAME two snapshot fields the graph was emitted from — the
+    preset's crossover regions and the per-driver ``corrections`` gains — via
+    the emitter's own :func:`~jasper.active_speaker.camilla_yaml._branch_context`,
+    so a headroom read back off a profile is evaluated over the chain that
+    profile actually carries.
+
+    ``{}`` when either field is missing or unparseable. That is the same
+    over-estimating fallback ``linearization_headroom_db`` applies to a role
+    absent from a supplied context ("no crossover, no trim"), and it is the
+    right direction here: an over-estimated headroom read makes the DECLARED
+    apply-boundary offset larger than the graph's, which under-corrects the
+    delta probe and leaves the difference visible as ``residual_offset_db``
+    rather than hiding it.
+    """
+    snapshot = profile.get("recomposition_snapshot")
+    if not isinstance(snapshot, Mapping):
+        return {}
+    corrections = snapshot.get("corrections")
+    if not isinstance(corrections, Mapping):
+        return {}
+    try:
+        preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
+    except (ActiveSpeakerConfigError, TypeError, ValueError):
+        return {}
+    return _branch_context(preset, corrections)
+
+
+def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
+    """The pre-split common attenuation one profile's linearization costs, dB.
+
+    Reads the profile's own emitter input — the reduced
+    ``{role: [filter_dict, ...]}`` linearization mapping — through
+    :func:`~jasper.active_speaker.camilla_yaml.linearization_headroom_db`, the
+    emitter's OWN reducer, so this number cannot drift from the
+    ``active_baseline_headroom`` gain the graph actually carries. Always ``>=
+    0`` (it is an attenuation); ``0.0`` for a cut-only or absent
+    linearization, which is every profile written before PR-L5.
+
+    Prefers ``recomposition_snapshot["linearization"]`` — the copy
+    :func:`recompose_applied_baseline_yaml` re-emits from — and falls back to
+    the top-level convenience mirror for an era-older frozen profile that
+    carries one without a snapshot. The two are written from a single variable
+    (see the candidate payload), so the preference is about which one is
+    AUTHORITATIVE, never about reconciling a disagreement.
+
+    **One bounded cross-era case** (#1808 landed the peak rule on 2026-07-28).
+    A profile emitted under the OLD sum rule carries a graph attenuated by
+    ``H_sum``, but this reader — evaluating the same filters through the same
+    chain the emitter uses today — returns ``H_peak``. For the one household
+    whose PREVIOUS profile predates that deploy, the first post-deploy
+    session's declared offset is therefore short by ``H_sum − H_peak`` (22.458
+    vs 4.00 dB on the JTS3 profile that motivated the rule, so potentially
+    large). Nothing is mis-levelled by it: the declared offset is an ANALYSIS
+    input, no level moves either way, and the shortfall lands in the delta
+    probe's ``residual_offset_db`` — visible, and named ``level_mismatch`` if
+    it is material. It self-clears the moment that household applies once
+    under the peak rule. Not worth an era flag; worth knowing when reading a
+    first-session residual.
+
+    Deliberately NOT the whole program-domain headroom: ``baseline_headroom_db``
+    is a module constant and the room-PEQ / preference-EQ terms are
+    recompose-time inputs that an active-crossover apply does not touch, so
+    their contributions cancel in the difference this exists to serve
+    (:func:`applied_program_level_delta_db`).
+    """
+    if not isinstance(profile, Mapping):
+        return 0.0
+    snapshot = profile.get("recomposition_snapshot")
+    linearization = (
+        snapshot.get("linearization") if isinstance(snapshot, Mapping) else None
+    )
+    if not isinstance(linearization, Mapping):
+        linearization = profile.get("linearization")
+    if not isinstance(linearization, Mapping):
+        return 0.0
+    return linearization_headroom_db(
+        linearization, branch_context=_profile_branch_context(profile),
+    )
+
+
+def applied_program_level_delta_db(
+    previous_profile: Mapping[str, Any] | None,
+    applied_profile: Mapping[str, Any] | None,
+) -> float:
+    """dB the emitted graph's BROADBAND level MOVED across one apply (#1811).
+
+    Negative when the apply made the speaker quieter — the ordinary case, and
+    the whole reason this exists: the applied correction's boost is absorbed as
+    a pre-split common attenuation, so the same commanded volume produces a
+    materially quieter speaker the instant the config swaps.
+
+    **This is an input to ANALYSIS, never to the speaker's level.** The
+    absorption is the excitation-safety property (see
+    ``camilla_yaml.MAX_LINEARIZATION_BOOST_DB``'s note: it is what keeps the
+    boosted band "at or under unity no matter how deep the correction"), so
+    compensating it at the main volume would put the boosted band over the
+    driver's excitation cap by the branch's own boost — up to the full charge,
+    on a sustained swept sine, below the per-driver limiters' reach. The
+    correct consumer is
+    :func:`~jasper.active_speaker.delta_probe.classify_delta_probe`, whose
+    realized-vs-commanded comparison is not mean-centered and would otherwise
+    read this move as a defect.
+
+    Read from the profiles, never assumed: the magnitude is whatever the fit
+    charged (22.5 dB on the session that surfaced this; a few dB once the
+    loudness-doctrine work shrinks the charge), and a correction that hands
+    headroom BACK yields a positive number.
+
+    **Two known incompletenesses, both deliberate, both caught downstream.**
+    Per-branch trims are excluded because they are per-branch SHAPE and are
+    already inside the predicted summation the probe compares against
+    (``crossover_v2_flow._fit_linearization`` builds the linearized prediction
+    at the very trims the graph emits) — counting them here would remove them
+    twice. Room-PEQ and preference-EQ headroom are excluded because an
+    active-crossover candidate is emitted without them
+    (``build_baseline_profile_candidate`` passes no ``room_peqs`` /
+    ``preference_filters``), so a household that has either can see a real
+    level move this reader cannot see. That remainder is exactly what the
+    probe's ``residual_offset_db`` measures and what
+    ``delta_probe.VERDICT_LEVEL_MISMATCH`` names — which is why this function
+    is allowed to be an honest partial account rather than having to be a
+    complete one.
+    """
+    return profile_program_headroom_db(previous_profile) - (
+        profile_program_headroom_db(applied_profile)
+    )
 
 
 def load_baseline_profile_state(
