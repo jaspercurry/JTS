@@ -1198,6 +1198,18 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "from flat than the target in at least one band. If it sounds "
                 "worse than before, you can undo."
             )
+        # PR-L4 item 4: applied implies graded, and when it does not, the
+        # household is TOLD rather than restored behind their back. See
+        # `_post_apply_grade` for why surfacing beats auto-restore here (a
+        # missing grade says nothing about the correction, and express omits
+        # the post-apply group by design). A failing grade already has its own
+        # screen; this is the case where no check finished at all.
+        elif not _mapping(v2.get("post_apply_grade")).get("graded", True):
+            done_verdict = (
+                "Your speaker is tuned, but the check that confirms it never "
+                "finished, so this result is unverified. Re-verify to confirm "
+                "it, or undo to restore the previous sound."
+            )
         alternate_actions = [
             {
                 "id": "room",

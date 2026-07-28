@@ -499,6 +499,31 @@ def test_done_headline_is_unchanged_when_no_spec_verdict_exists():
     assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
 
 
+def test_done_headline_says_so_when_the_result_was_never_graded():
+    """PR-L4 item 4: a session ending applied-but-ungraded says the words.
+
+    Surfaced rather than auto-restored — the work order allowed either, and a
+    missing grade says nothing about the correction itself (the commonest way
+    to reach it is a household closing the phone after the apply). Undo is
+    already the primary button; what was missing was being told."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={}, candidate=_candidate_summary(),
+        post_apply_grade={"state": "unverified", "graded": False},
+    ))
+    verdict = env["verdict_text"].lower()
+    assert "unverified" in verdict
+    assert "re-verify" in verdict
+    assert env["next_action"]["id"] == "verify_undo"
+
+
+def test_done_headline_trusts_a_graded_result():
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+        post_apply_grade={"state": "graded", "graded": True},
+    ))
+    assert "unverified" not in env["verdict_text"].lower()
+
+
 def test_done_gives_undo_the_primary_action_and_continue_as_alternate():
     """Undo prominent (owner ruling): the PRIMARY button is Undo, not
     Continue — the household's safety net is the most visible thing on the

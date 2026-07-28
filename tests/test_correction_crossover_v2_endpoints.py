@@ -2342,6 +2342,67 @@ def test_status_block_surfaces_apply_blocked():
     }
 
 
+def test_status_block_reports_an_applied_but_ungraded_result():
+    """PR-L4 item 4: applied implies graded, and when it does not, `/state`
+    says so in its own field rather than leaving an empty `verify` block for
+    every surface to read as "nothing to report" — which is how a 10 dB-dark
+    profile sat on JTS3 under a green tick."""
+    v2host.save_v2_state({
+        "session_id": "cap_ungraded",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": True,
+    })
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_UNVERIFIED
+    assert grade["graded"] is False
+    assert grade["verify_outcome"] is None
+
+
+def test_status_block_reports_a_graded_result_from_either_instrument():
+    """Both a passing VERIFY and a graded post-apply cloud are real checks, and
+    the tiers differ in which one they run — express omits the post-apply group
+    entirely, so keying only on the cloud would call every express session
+    ungraded."""
+    v2host.save_v2_state({
+        "session_id": "cap_graded_verify",
+        "applied": True,
+        "verify": {"outcome": "pass"},
+    })
+    by_verify = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert by_verify["state"] == v2host.GRADE_GRADED
+    assert by_verify["graded"] is True
+
+    v2host.save_v2_state({
+        "session_id": "cap_graded_cloud",
+        "applied": True,
+        "verify": {"outcome": "inconclusive"},
+        "cloud": {
+            PHASE_CLOUD_VERIFY: {
+                "geometry": {"locked": False},
+                "pipeline": {
+                    "available": True,
+                    "spec": {"overall_passed": False, "bands": []},
+                    "merged_excluded_bands_hz": [],
+                },
+                "session_id": "cap_graded_cloud",
+            },
+        },
+    })
+    by_cloud = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert by_cloud["state"] == v2host.GRADE_GRADED
+    # A grade that exists and FAILED is still a grade — "we checked and it is
+    # out of spec" is a different claim from "we never checked", and item 7's
+    # headline is what renders the first one.
+    assert by_cloud["post_apply_spec_passed"] is False
+
+
+def test_status_block_never_asks_an_unapplied_session_for_a_grade():
+    v2host.save_v2_state({"session_id": "cap_none", "applied": False})
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_NOT_APPLIED
+    assert grade["graded"] is True
+
+
 def test_apply_blocked_is_scoped_to_its_producing_session():
     """Item 1 (#1605): a blocked-apply nudge belongs to the session that
     produced it. persist_conductor_state carries apply_blocked forward while
