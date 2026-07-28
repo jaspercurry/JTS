@@ -799,6 +799,7 @@ class VolumeCoordinator:
                 # the restore level. This intentionally precedes own-echo
                 # suppression: the first observed zero is the durable barrier
                 # that makes a later nonzero observation trustworthy.
+                assert persisted_mute_token is not None
                 self._confirmed_push_mute_tokens[source] = persisted_mute_token
                 self._refresh_from_disk()
                 _, publish_needed = (
@@ -820,6 +821,7 @@ class VolumeCoordinator:
                 # this observer has seen zero for the same durable token, a
                 # nonzero renderer reading can only be the pre-push value (or
                 # an ambiguous concurrent edit). Mute intent wins that race.
+                assert persisted_mute_token is not None
                 self._refresh_from_disk()
                 logger.debug(
                     "observe %s: deferring %d%% until mute token %s reaches "
