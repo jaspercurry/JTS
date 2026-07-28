@@ -6,16 +6,18 @@
 
 set -euo pipefail
 
+# Resolve the script's own directory BEFORE the `cd`: `${BASH_SOURCE[0]}` is
+# caller-relative, so computing it afterwards resolves against the repo root
+# and a relative invocation from a subdirectory fails to find the sibling
+# resolver -- before the resolver's own error handling exists to say so.
+_lane_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 cd "$(git rev-parse --show-toplevel)"
 
-pytest_bin="${PYTEST:-}"
-if [[ -z "${pytest_bin}" ]]; then
-  if [[ -x ".venv/bin/pytest" ]]; then
-    pytest_bin=".venv/bin/pytest"
-  else
-    pytest_bin="pytest"
-  fi
-fi
+# shellcheck source=scripts/_test_lane.sh
+source "${_lane_dir}/_test_lane.sh"
+
+pytest_bin="$(resolve_lane_tool test-merge pytest PYTEST)" || exit 1
 
 export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
 

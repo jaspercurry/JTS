@@ -6,27 +6,20 @@
 
 set -euo pipefail
 
+# Resolve the script's own directory BEFORE the `cd`: `${BASH_SOURCE[0]}` is
+# caller-relative, so computing it afterwards resolves against the repo root
+# and a relative invocation from a subdirectory fails to find the sibling
+# resolver -- before the resolver's own error handling exists to say so.
+_lane_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 cd "$(git rev-parse --show-toplevel)"
 
+# shellcheck source=scripts/_test_lane.sh
+source "${_lane_dir}/_test_lane.sh"
+
 base_ref="${TEST_BASE:-origin/main}"
-pytest_bin="${PYTEST:-}"
-ruff_bin="${RUFF:-}"
-
-if [[ -z "${pytest_bin}" ]]; then
-  if [[ -x ".venv/bin/pytest" ]]; then
-    pytest_bin=".venv/bin/pytest"
-  else
-    pytest_bin="pytest"
-  fi
-fi
-
-if [[ -z "${ruff_bin}" ]]; then
-  if [[ -x ".venv/bin/ruff" ]]; then
-    ruff_bin=".venv/bin/ruff"
-  else
-    ruff_bin="ruff"
-  fi
-fi
+pytest_bin="$(resolve_lane_tool test-fast pytest PYTEST)" || exit 1
+ruff_bin="$(resolve_lane_tool test-fast ruff RUFF)" || exit 1
 
 export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
 
@@ -89,8 +82,12 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_${module}.py"
       add_globbed_tests "test_${module}_*.py" >/dev/null || true
       ;;
-    .github/workflows/tests.yml|pyproject.toml|uv.lock|CONTRIBUTING.md|AGENTS.md|scripts/test-*|scripts/rust-ci-needed)
+    .github/workflows/tests.yml|pyproject.toml|uv.lock|CONTRIBUTING.md|AGENTS.md|scripts/test-*|scripts/_test_lane.sh|scripts/rust-ci-needed)
       add_test_if_present "tests/test_dependency_groups.py"
+      # `scripts/test-*` does not match the leading-underscore resolver, and
+      # nothing else routes the lanes' own guards — so editing the lanes ran
+      # everything except the tests written for them (issue #1836).
+      add_test_if_present "tests/test_test_lane_tool_resolution.py"
       ;;
     deploy/assets/*/js/*.js|tests/js/*.mjs)
       add_test_if_present "tests/test_dialog_helper.py"
