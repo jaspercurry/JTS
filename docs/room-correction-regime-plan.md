@@ -49,13 +49,15 @@ delta).
   `audio_measurement/analysis.deviation_metrics(f_high=350.0)` that
   acceptance/verify/envelope all flow through. An eleventh shared-edge
   site exists and is deliberately **excluded from the routing**:
-  `audio_measurement/snr_policy.CROSSOVER_SNR_BANDS_HZ` is
-  identity-pinned to `acoustic_quality.SNR_BANDS_HZ`
-  (`tests/test_audio_measurement_snr_policy.py` asserts `is`) and is
-  consumed by the *gated* instrument — SNR band tables are
-  capture-quality vocabulary, not correction bands, and must stay
-  static so banded SNR remains comparable across sessions and
-  instruments (see traps).
+  `audio_measurement/snr_policy.CROSSOVER_SNR_BANDS_HZ` shares its
+  first four rows with `acoustic_quality.SNR_BANDS_HZ` — pinned by
+  `tests/test_audio_measurement_snr_policy.py`, which asserts prefix
+  value-equality between those two literals and, separately, object
+  identity between `correction_session.SNR_BANDS_HZ` and
+  `acoustic_quality.SNR_BANDS_HZ` — and is consumed by the *gated*
+  instrument. SNR band tables are capture-quality vocabulary, not
+  correction bands, and must stay static so banded SNR remains
+  comparable across sessions and instruments (see traps).
 - **`SessionConfig.peq_f_high` is a shipped defect, not a latent one.**
   `SessionConfig` carries a frozen shadow copy of `balanced`'s
   parameters that is never overridden (`SessionConfig()` is the only
@@ -252,8 +254,14 @@ selection (cuts-only remains the fit's default behavior; admitted
 dips are the only exception); the `assertive` strategy and its R5
 household-eligibility ruling are **untouched** — RC5 does not ship
 assertive; (ii) the +3.0 dB total-positive-boost ceiling → +6.0 dB
-with disclosed level cost; (iii) the Q clamp — Tier B terms need
-Q ∈ [0.4, 1.0], below the household 1.0–8.0 floor (D2). Where the HF
+with disclosed level cost — the design-of-record states +3.0 in
+**two** places (the household-contract bullet and the assertive/R5
+paragraph's "the +3.0 dB total ceiling still applies"), and the
+amendment updates the *numeric ceiling in both* while leaving the R5
+*ruling* itself (assertive stays excluded until R5 brings it inside
+household bounds) intact — otherwise the spec would contradict
+itself; (iii) the Q clamp — Tier B terms need Q ∈ [0.4, 1.0], below
+the household 1.0–8.0 floor (D2). Where the HF
 null registry IS authoritative (the gated instrument's band), it
 continues to bound the *speaker* layer's fit; nothing here touches
 that.

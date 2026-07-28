@@ -12,7 +12,9 @@
 
 ## Why (the incident, in one paragraph)
 
-In a 10-position cloud session, nine captures gated at the 7 ms search
+In a 10-position lab session (the S0 corpus — ten combined curves;
+a production 9-position plan carries N − 1 = 8), nine captures gated
+at the 7 ms search
 ceiling (floor 142.9 Hz) and one (`cloud_04`) "found" a reflection at
 ~0.56 ms — 3 samples past the search-start offset — collapsing its gate
 to 27 samples (floor 1777.8 Hz). The group floor is
@@ -93,11 +95,14 @@ that fix, plus the detector and policy work around it.
   evidence, never about hardware* — position-invariance within one
   session cannot separate a speaker-borne arrival from a stable room
   path, and the module says so). Error discipline is **not** uniform
-  and the plan does not pretend it is: `detect_echo` never raises
-  (named refusals for both bad config and bad data);
-  `combine_positions` / `identify_interference_nulls` are pure kernels
-  that raise `ValueError` on malformed input; `gating.py` itself is a
-  third shape (`detect_first_reflection` never raises — returns
+  and the plan does not pretend it is: `detect_echo` **raises**
+  `EchoInputError` (a `ValueError` subclass carrying a refusal slug)
+  on both bad config and bad data — the refusal-*shaped* results come
+  from its caller `_echo_for`, which catches the raise and converts
+  via the slug; `combine_positions` /
+  `identify_interference_nulls` are pure kernels that raise
+  `ValueError` on malformed input; `gating.py` is the different
+  shape (`detect_first_reflection` never raises — returns
   `floor_source=None`; `apply_gate_fragment` raises). Detector v2
   (D3) follows `gating.py`'s own detector shape: never raise on data,
   return the `floor_source` vocabulary; raise `ValueError` only on
@@ -165,11 +170,24 @@ artifact-vs-real action split, no speaker-vs-room inference:
   τ admission rule — `usable_echo_estimates` clustered by
   `assess_geometry`; that single instrument is the authority, no
   second one), the collapse is not a placement problem: skip the
-  retake prompt, do not gate on the arrival, and let the shipped
-  echo-detection → null-identification → carve-out chain own its
-  spectral consequence (that chain deliberately cannot say
-  speaker-vs-stable-room-path either, and does not need to — its
-  disclosure surfaces carry the finding, not a log line).
+  retake prompt, do not gate on the arrival, annotate the position's
+  gating block (`gate_anomaly: invariant_family` — a short-circuited
+  ceiling must stay distinguishable from an honest
+  `FLOOR_SEARCH_BOUND`), and let the shipped echo-detection →
+  null-identification → carve-out chain own its spectral consequence
+  (that chain deliberately cannot say speaker-vs-stable-room-path
+  either, and does not need to — its disclosure surfaces carry the
+  finding). **Operating window, stated:** gate detections start at
+  `SEARCH_T_MIN_MS` = 0.5 ms while the τ instrument's estimates come
+  from the session's `echo_search_us` window (default 120–800 µs), so
+  under defaults the short-circuit can only ever match anomalies in
+  [0.5, 0.8] ms; above that it is structurally dead and the retake
+  path handles everything — a safe fall-through, named so nobody
+  mistakes the branch for broader coverage. Sub-0.5 ms source
+  arrivals (the corpus horn rim, τ ≈ 316–333 µs) sit **below the
+  search span entirely** and never reach gating — that structural
+  fact, not this branch, is what protects the horn rim, and it is why
+  prediction 5 is satisfiable by either detector.
 - *On anomaly at accept time*: trigger one bounded retake (new reason
   code beside `REASON_CLOUD_GEOMETRY_LOCKED`, counter beside
   `_geometry_retries_used`, prompt rung beside
@@ -188,12 +206,14 @@ artifact-vs-real action split, no speaker-vs-room inference:
     content; excluding it would discard good data. The user-facing
     disclosure: "One spot kept picking up something close to the
     phone; frequencies it couldn't see cleanly came from the other
-    N − 1 spots."
-- *Persisted provenance*: a retained-anomalous capture's gating block
-  carries a `gate_anomaly` annotation so the durable record
-  distinguishes it from an honest ceiling (`FLOOR_SEARCH_BOUND`) and
-  from a clean measured floor — the review's
-  indistinguishability finding.
+    spots."
+- *Persisted provenance*: every non-normal outcome annotates the
+  gating block with a `gate_anomaly` value
+  (`retained` / `invariant_family` / the replaced-take evidence
+  note), so the durable record distinguishes a retained collapsed
+  floor from a clean measured floor, and a short-circuited ceiling
+  from an honest `FLOOR_SEARCH_BOUND` — no anomaly outcome is
+  byte-identical to a normal one.
 - *At group close*: the policy re-runs over all positions (catches
   warm-up-window anomalies); retroactively-anomalous positions are
   retained-with-mask + disclosed. The close **never stalls**: MIN_POS
@@ -330,9 +350,20 @@ file — `JTS_FLAT_LIN_S0` alone is necessary, not sufficient).
   flags.
 - **PR-G3 — detector v2 (D3), offline + corpus-gated + conditional.**
   Pure `gating.py` addition + grading harness + `detector` provenance
-  field; predictions 1, 5, 8 graded and recorded; production enable
-  (or veto demotion) decided by the recorded verdict, in the same PR
-  only if green.
+  field; predictions 1, 5, 8 graded **as restated here** (the research
+  text's versions use vocabulary this plan retired): *prediction 1* —
+  v2 yields no detection for `cloud_04`'s 0.56 ms event because its
+  matched-filter correlation falls below `MF_REL` (falsified if the
+  event correlates ≥ `MF_REL`, in which case the D2 retake path was
+  the correct treatment and v2 gains nothing on this case; the
+  research's "repeats within cloud_04's repeats" clause is dropped —
+  cloud positions have no repeats); *prediction 5* — v2 produces no
+  detection attributable to the horn-rim arrival family on `S0_MAIN`
+  (τ-family match via the one admission rule; the rim sits below the
+  search span, so any such detection would be a v2-introduced
+  artifact); *prediction 8* — unchanged (no regressions on the
+  `S0_DESK_EDGE` ceiling set). Production enable (or veto demotion)
+  decided by the recorded verdict, in the same PR only if green.
 - **PR-G4 — graded band (D4) + INV-4.** `f_valid` uncertainty model,
   `flat_spec` marginal disclosure flag (verdict composition
   untouched), envelope/chart disclosure (composes #1783's
