@@ -350,6 +350,38 @@ def test_runtime_pair_lock_is_unknown_when_clock_lock_unobservable(tmp_path):
     assert "does not expose" in clock["detail"]
 
 
+def test_runtime_pair_lock_ignores_disconnected_stale_duplicate_of_own_client(
+    tmp_path,
+):
+    """A persisted old Snapcast client id must not mask the live local client."""
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "active", SNAPCLIENT: "active"},
+        leader_tap_path="/run/jasper-snapserver/snapfifo",
+        stream_clients=[
+            {
+                "name": "jts3", "connected": True, "stream_id": "jts",
+                "muted": False, "group_muted": False, "volume_percent": 100,
+                "latency_ms": 0,
+            },
+            {
+                "name": "jts3", "connected": False, "stream_id": "jts",
+                "muted": False, "group_muted": False, "volume_percent": 100,
+                "latency_ms": 0,
+            },
+        ],
+        self_name="jts3",
+        want_stream="jts",
+        local_outputd_status={"dac_content": {"enabled": True, "serving_fifo": True}},
+    )
+
+    clients = rt["pair_lock"]["signals"]["snapcast_clients"]
+    assert clients["own_client_connected"] is True
+    assert clients["connected"] == 1
+    assert clients["audible"] == 1
+    assert rt["pair_lock"]["status"] == "unknown"
+
+
 def test_runtime_pair_lock_degrades_when_fifo_not_serving(tmp_path):
     rt = derive_grouping_runtime(
         _cfg(tmp_path, _follower_env()),
