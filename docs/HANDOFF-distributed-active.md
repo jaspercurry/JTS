@@ -23,6 +23,14 @@
 > (Snapcast transport, leader/follower role-state, inv-A/inv-B). This doc
 > OWNS the distributed-active boundary; the graph-carrier doc's "Deferred
 > — distributed active" section points here.
+>
+> **Operational correction (2026-07-28):** the active-leader TTS mechanism
+> below is a ratified target, not landed behavior. Hardware observation showed
+> grouped active-leader TTS entering the shared program path, paying the
+> Snapcast buffer, and reaching every member. The pre-crossover local summer
+> remains the safe implementation direction. Evidence and release gates live
+> in
+> [multiroom-pairing-reliability-plan.md](multiroom-pairing-reliability-plan.md).
 
 ## Why this exists
 
@@ -1116,6 +1124,12 @@ after Stage B.
 
 ## Q2 spike — active-leader (and solo-active) TTS band-limiting
 
+> **Read this section as design and historical spike evidence.** Statements
+> below that leader-local Option 3 was already realized were disproved by the
+> 2026-07-28 grouped hardware observation. Solo-active TTS remains
+> pre-crossover and driver-safe; the grouped active-leader local summer still
+> needs implementation and on-device validation.
+>
 > **Status: ratified (2026-06-20, measured on `jts3`).** This spike GATES
 > Slice 5 (the active leader) and tightens Slice 3's fail-closed cue; it does
 > NOT gate the follower core (Slices 1–4) — a follower is voice/TTS-parked

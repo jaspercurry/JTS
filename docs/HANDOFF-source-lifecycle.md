@@ -331,9 +331,12 @@ On unpair, grouping invokes the same source coordinator, which re-reads
 persisted desired state and restores only allowed sources. It owns USB's
 arm-direct → recompose-UAC2 → start-liveness order and Bluetooth's radio,
 runtime-unit, and accessory-owner order. Grouping never iterates the source
-registry or invokes accessory/coupling owners directly. If a source pass was
-already activating, grouping joins it without interruption and then runs one
-fresh pass; its own success is withheld until source convergence completes.
+registry or invokes accessory/coupling owners as part of source convergence.
+The separate pre-bond grouping gate may synchronously ask the canonical fan-in
+coupling-auto owner for one fresh pass; grouping still does not write coupling
+state or duplicate its policy. If a source pass was already activating,
+grouping joins it without interruption and then runs one fresh pass; its own
+success is withheld until source convergence completes.
 Every source unit still rechecks current intent and role at its final
 ExecCondition boundary. AirPlay latency changes use `systemctl try-restart`, so
 grouping can refresh an active receiver without resurrecting a household-
