@@ -4,7 +4,7 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`ca1845495`), including this branch:
+Last reconciled against `origin/main` (`c125993474`), including this branch:
 2026-07-27.
 
 ## Status counts
