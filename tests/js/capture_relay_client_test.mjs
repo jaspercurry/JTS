@@ -14,6 +14,7 @@ import {
   RELAY_CONTROL_TIMEOUT_MS,
   RelayClient,
   RelayError,
+  RelayTimeoutError,
 } from "../../capture-page/js/relay-client.js";
 
 let passed = 0;
@@ -173,6 +174,53 @@ async function testControlFetchTimeoutAbortsWithANamedReason() {
   ok();
 }
 
+// …and the OTHER half of that same defect (#1824 B1). Making the copy friendly
+// is exactly what made the timeout unrecognisable: the reason is a plain Error,
+// so `name === "AbortError"` and `/signal is aborted/` — the two tests every
+// caller was using — both stopped matching real timeouts, silently, for every
+// build between the run-19 change and this one. The rejection therefore carries
+// a MACHINE tag that no copy edit can break. Callers key on `relayTimeout`;
+// this pins that the production error actually has it.
+async function testControlFetchTimeoutCarriesAMachineReadableTag() {
+  const f = mockFetch((_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => {
+      reject(init.signal.reason);
+    }, { once: true });
+  }));
+  const client = makeClient(f);
+  await assert.rejects(
+    () => client.fetchPhoneStatus({ timeoutMs: 1 }),
+    (error) => {
+      assert.equal(error.relayTimeout, true, "the timeout rejection is tagged");
+      assert.ok(error instanceof RelayTimeoutError);
+      assert.equal(error.name, "RelayTimeoutError");
+      // The tag is an OWN property, so a caller in another module instance
+      // (each `?v=` import stamp is its own) can read it without instanceof.
+      assert.ok(Object.prototype.hasOwnProperty.call(error, "relayTimeout"));
+      return true;
+    },
+  );
+  // Every control request shares `_controlFetch`, so the tag must ride the
+  // event post too — that is the one #1824 retries in place after arming.
+  const g = mockFetch((_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => {
+      reject(init.signal.reason);
+    }, { once: true });
+  }));
+  const posting = makeClient(g);
+  posting.setCapturePageIdentity({
+    schema_version: 1,
+    capture_protocol_version: 3,
+    supported_capture_protocol_versions: [3],
+    capture_page_build: "20260728.1",
+  });
+  await assert.rejects(
+    () => posting.postEvent({ armed: true }, { timeoutMs: 1 }),
+    (error) => error && error.relayTimeout === true,
+  );
+  ok();
+}
+
 async function testControlFetchAbortsAStalledResponseBody() {
   const f = mockFetch((_url, init) => ({
     ok: true,
@@ -281,6 +329,7 @@ const tests = [
   testFetchPhoneStatus,
   testControlFetchAbortsBeforePiFeedLossWindow,
   testControlFetchTimeoutAbortsWithANamedReason,
+  testControlFetchTimeoutCarriesAMachineReadableTag,
   testControlFetchAbortsAStalledResponseBody,
   testPutBlob,
   testPutBlobWithCaptureIndexAppendsIndexQueryParam,

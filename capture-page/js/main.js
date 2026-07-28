@@ -17,7 +17,7 @@ import {
   acceptedAcknowledgement,
   renderScreen,
 } from "./render.js?v=20260711-1";
-import { RelayClient } from "./relay-client.js?v=20260717-1";
+import { RelayClient } from "./relay-client.js?v=20260728-1";
 import { importContentKey, encryptWav } from "./crypto.js";
 import {
   constraintDecision,
@@ -292,13 +292,21 @@ function setupValidationToken() {
 }
 
 // A control request that timed out (see relay-client.js's _controlFetch)
-// rejects with a named Error, but stays defensive here too: an older browser
-// or an AbortController used elsewhere could still surface its native
-// "signal is aborted without reason." DOMException text verbatim, which read
-// as gibberish to a household (run-19 defect). Treat ANY AbortError the same
-// way regardless of its exact message.
+// rejects with the reason it was aborted with — a TAGGED `RelayTimeoutError`
+// whose `name` is "RelayTimeoutError" and whose message says nothing about
+// aborting. `relayTimeout` is therefore the ONLY reliable test, and the two
+// legacy checks below are the fallback for a browser that ignores
+// `abort(reason)` and raises its own "signal is aborted without reason."
+// DOMException instead (the run-19 gibberish).
+//
+// Getting this wrong is not cosmetic: between the run-19 named-reason change
+// and #1824 this function returned false for every real timeout, so the
+// friendly-copy branch it exists to reach was unreachable in production.
+// Never re-derive this from `name` or the message text — the string is for
+// humans and may be reworded freely.
 function isRelayConnectivityAbort(err, message) {
   return (
+    (err && err.relayTimeout === true) ||
     (err && err.name === "AbortError") ||
     /signal is aborted/i.test(message)
   );
@@ -326,6 +334,21 @@ function captureFailureMessage(err, retryAction = "Start") {
   // Trim a trailing period so wrapping a message that is already a full
   // sentence (e.g. FragmentError's own friendly text) never produces "..".
   return `Measurement failed: ${message.replace(/\.+$/, "")}. Tap ${retryAction} to try again.`;
+}
+
+// The TERMINAL screen's copy (renderSweepFailed), where there is no retry to
+// point at. A classified failure gets the household sentence its family
+// already owns; only a genuinely unclassified error falls through to the raw
+// message. Before #1824 D2 every post-arm error printed `err.message`
+// verbatim, so a relay abort reached the household as "Measurement failed:
+// timed out waiting for the speaker's measurement relay" — the internals of a
+// 3 s fetch budget, presented as the speaker's verdict.
+function sweepFailureMessage(err) {
+  const message = err && err.message ? String(err.message) : String(err);
+  if (isRelayConnectivityAbort(err, message)) {
+    return "Lost the connection to the speaker's measurement relay during this measurement";
+  }
+  return message.replace(/\.+$/, "");
 }
 
 // Whether `err` means the relay SESSION itself is gone (expired/purged) —
@@ -561,7 +584,7 @@ function stopCapture() {
 // speaker page rather than offering a retry that cannot work. A proper fix
 // (session refresh so retry is live again) is a separate, larger change.
 function renderSweepFailed(ctx, err) {
-  const message = (err && err.message ? String(err.message) : String(err)).replace(/\.+$/, "");
+  const message = sweepFailureMessage(err);
   const returnUrl = safeReturnUrl(ctx.spec);
   const children = [
     el("h1", { class: "cap-heading", text: "Measurement failed" }),
@@ -1412,11 +1435,73 @@ async function onLevelRampStart(ctx) {
   }
 }
 
-async function waitForSweepComplete(client, spec, isAborted) {
+// What the phone says while a relay control request is timing out mid-capture.
+// The speaker is NOT waiting on the phone here — it is playing the program on
+// its own clock — so the honest line is that the measurement continues and the
+// page is reconnecting, never a failure.
+const RELAY_RECONNECTING_MESSAGE = "The speaker is still measuring — reconnecting…";
+// The same idea one step later in the round, where the speaker is analyzing an
+// uploaded capture rather than playing.
+const RELAY_RECONNECTING_RESULT_MESSAGE =
+  "The speaker is still checking this measurement — reconnecting…";
+// What the phone shows between the upload and the speaker's verdict; named so
+// the reconnect path above can put it back verbatim.
+const CAPTURE_CHECKING_MESSAGE = "Speaker is checking this measurement…";
+
+// How many times a single POST-ARM control request is re-sent after a relay
+// connectivity abort before the round is treated as lost. Four tries against
+// relay-client.js's 3 s abort absorbs ~12 s of blip — well inside the Pi's
+// 120 s hold on the armed slot, and short enough that a genuinely dead relay
+// still fails while the household is still holding the phone.
+const RELAY_RECONNECT_TRIES = 4;
+
+// Re-run one relay control request across connectivity aborts. Used where the
+// request is IDEMPOTENT on the Pi (the armed event's last-write-wins slot),
+// never where a repeat would double an effect. Any other error propagates
+// untouched on the first raise — this widens no other failure class.
+async function withRelayReconnect(request, isAborted, tries = RELAY_RECONNECT_TRIES) {
+  let lastError = null;
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    if (isAborted()) return undefined;
+    try {
+      return await request();
+    } catch (err) {
+      if (!isRelayConnectivityAbort(err, String((err && err.message) || err))) {
+        throw err;
+      }
+      lastError = err;
+      setStatus(RELAY_RECONNECTING_MESSAGE, "recording");
+    }
+  }
+  throw lastError;
+}
+
+// `armed` ({index, attempt}) is the capture this wait belongs to, supplied by
+// the plan loop. It is what makes reading a `capture_result` mid-wait safe: the
+// relay's host-event slot is last-write-wins and nothing clears it when the
+// phone consumes a verdict, so an un-matched read would see the PREVIOUS
+// attempt's stale verdict on this attempt's first poll (the same hazard
+// waitForCaptureAuthorized documents). Omitted by the single-capture path,
+// which then behaves exactly as it did before.
+async function waitForSweepComplete(client, spec, isAborted, armed = null) {
   const timeoutMs = Math.max(5000, Number(spec.duration_ms) || 20000);
   const pollMs = Math.max(100, Math.min(1000, Number(spec.progress_poll_ms) || 250));
-  const deadline = Date.now() + timeoutMs;
+  let deadline = Date.now() + timeoutMs;
   let lastPhase = "";
+  // The last true phase line, so a swallowed connectivity blip can put it back
+  // rather than leaving "reconnecting…" frozen on screen for the rest of a
+  // sweep (the sweep phase renders once, on transition — there is no later
+  // repaint to rescue it).
+  let phaseLine = "";
+  // The swallowed abort still in force, or null once the relay answers again.
+  // Held so a window that expires while the page is blind reports the honest
+  // cause (lost connectivity) rather than accusing the speaker of never
+  // finishing a sweep it may well have played.
+  let reconnecting = null;
+  const showPhase = (text) => {
+    phaseLine = text;
+    setStatus(text, "recording");
+  };
   // The Pi's own quiet-reference pause is now right-sized per driver (a short
   // tweeter sweep no longer inherits the longest driver's ~14 s pause — see
   // jasper.active_speaker.test_signal_plan.driver_ambient_duration_s), which
@@ -1428,46 +1513,150 @@ async function waitForSweepComplete(client, spec, isAborted) {
   // original static copy — no countdown, same as before.
   let ambientDeadlineMs = null;
   let lastCountdownSeconds = null;
+  // Whether THIS room-listening window is one the household should be quiet
+  // for. The two windows are opposites and only the speaker knows which is
+  // playing: MEASURE/VERIFY's 1 s pre-pilot window sits after the courtesy
+  // beeps and must be quiet, while CHECK's 12 s window is the SESSION's
+  // room-noise measurement, deliberately taken BEFORE anyone is asked to hush
+  // (jasper.audio_measurement.program's module docstring). Asking for quiet
+  // during that one would edit the floor it is measuring — the gain solve and
+  // the ambient band-floor report both read it. Absent (an older Pi) resolves
+  // to false: not asking is the harmless direction, asking is not.
+  let ambientQuietRequested = false;
   while (Date.now() < deadline) {
     if (isAborted()) return false;
-    const status = await client.fetchPhoneStatus();
+    let status;
+    try {
+      status = await client.fetchPhoneStatus();
+    } catch (err) {
+      // ONE slow control request must cost one poll interval, not the session
+      // (#1824: a single fetch out of ~60 exceeded relay-client.js's flat
+      // RELAY_CONTROL_TIMEOUT_MS on capture 5 of 7 and killed a live express
+      // run while the speaker played the whole program and held its slot for
+      // another 120 s). Swallow the connectivity abort and keep polling the
+      // SAME capture — `deadline` above is the real bound. Mirrors
+      // waitForCaptureAuthorized/waitForCaptureResult's classify-then-decide
+      // shape; every other error (a dead session, an incompatible page) still
+      // propagates to the caller's terminal handling.
+      if (!isRelayConnectivityAbort(err, String((err && err.message) || err))) {
+        throw err;
+      }
+      reconnecting = err;
+      setStatus(RELAY_RECONNECTING_MESSAGE, "recording");
+      await delayMs(pollMs);
+      continue;
+    }
+    if (reconnecting) {
+      reconnecting = null;
+      // The relay answered again: put the true phase line back. A countdown
+      // phase repaints itself on its next whole second anyway; this covers the
+      // static lines (sweep in progress, room tail) that do not.
+      if (phaseLine) setStatus(phaseLine, "recording");
+    }
     const event = status && status.host_event || {};
     const phase = String(event.phase || "");
     if (phase === "capture_incompatible") {
       throw new Error(event.error || "capture page is incompatible with this speaker");
     }
+    if (
+      phase === "capture_result" &&
+      event.accepted === false &&
+      armed &&
+      Number(event.index) === Number(armed.index) &&
+      Number(event.attempt) === Number(armed.attempt)
+    ) {
+      // A terminal refusal posted WHILE the phone was waiting for the tone
+      // (jasper.web.correction_crossover_v2's _post_terminal_failure_host_event
+      // — e.g. the play seam refused before any audio). This is the only
+      // capture_result a matching (index, attempt) can produce here: an
+      // ordinary quality verdict cannot exist yet, because this attempt's blob
+      // has not been uploaded. Until #1821 the loop ignored it, polled on into
+      // the Pi's session purge, and rendered "this link has expired" over a
+      // speaker that had said exactly why it stopped.
+      const failure = new Error(
+        event.reason || event.banner || event.error ||
+          "The speaker stopped this measurement.",
+      );
+      failure.sweepFailed = true;
+      throw failure;
+    }
     if (phase && phase !== lastPhase) {
       lastPhase = phase;
-      if (phase === "ambient_started") {
+      if (phase === "prelude_started") {
+        // The courtesy prelude (the beeps, then the settle the household is
+        // asked to go quiet in). Its own phase because it is AUDIBLE and it is
+        // not the tone: before #1824 D4 the Pi posted `sweep_started` at arm
+        // time and the phone said "Playing the measurement tone…" through
+        // ~4.6 s of beeps and silence. An older Pi that posts no prelude phase
+        // simply keeps the pre-arm line until the tone starts, as before.
+        //
+        // "three" MIRRORS jasper.audio_measurement.program's
+        // COURTESY_TONE_BEEP_COUNT. Deliberately spelled out rather than sent
+        // over the wire — a household counts beeps, it does not parse a field,
+        // and the count has one value. The pairing is pinned by
+        // test_capture_page_beep_copy_matches_the_composed_beep_count, which
+        // fails if the constant ever moves.
+        showPhase("Listen for three beeps, then stay quiet — the tone follows.");
+      } else if (phase === "ambient_started") {
         const durationS = Number(event.duration_s);
         ambientDeadlineMs =
           Number.isFinite(durationS) && durationS > 0
             ? Date.now() + durationS * 1000
             : null;
         lastCountdownSeconds = null;
+        ambientQuietRequested = event.quiet_requested === true;
         if (!ambientDeadlineMs) {
-          setStatus(
-            "Measuring room noise — stay quiet and keep the phone still.",
-            "recording",
+          showPhase(
+            ambientQuietRequested
+              ? "Measuring room noise — stay quiet and keep the phone still."
+              : "Measuring room noise — keep the phone still.",
           );
         }
       } else if (phase === "sweep_started") {
         ambientDeadlineMs = null;
-        setStatus("Playing the measurement tone…", "recording");
+        // Re-anchor the recording window on the OBSERVED start of the tone.
+        // `timeoutMs` is the whole program plus CAPTURE_ENTRY_MARGIN_MS
+        // (jasper.active_speaker.crossover_v2_flow), but the phone starts
+        // counting it at `armed` — so the Pi's arm-poll latency (~0.75 s),
+        // the host-event posts and ordinary jitter all come out of that flat
+        // 2 s margin, leaving 0.6-1.4 s of measured slack on a cloud capture
+        // (#1824 D6). Anchoring here spends at most the program's own
+        // pre-stimulus lead-in again, and only when the speaker has already
+        // told us the tone is playing.
+        deadline = Date.now() + timeoutMs;
+        showPhase("Playing the measurement tone…");
       } else if (phase === "sweep_complete") {
-        setStatus("Tone finished — capturing the room tail.", "recording");
+        showPhase("Tone finished — capturing the room tail.");
       }
     }
     if (phase === "ambient_started" && ambientDeadlineMs) {
+      // Floored at 1, not 0: the boundary tick would otherwise render "about 0
+      // seconds", which is not a duration. The phase flips to the tone (or the
+      // beeps) within one poll of here anyway, so "about 1 second" is the last
+      // thing shown and it stays true to the nearest second.
       const remaining = Math.max(
-        0,
+        1,
         Math.ceil((ambientDeadlineMs - Date.now()) / 1000),
       );
       if (remaining !== lastCountdownSeconds) {
         lastCountdownSeconds = remaining;
-        setStatus(
-          `Listening to the room… the tone starts in about ${remaining} seconds`,
-          "recording",
+        // Describes the QUIET WINDOW, not what follows it. The earlier copy
+        // ("the tone starts in about N seconds") was true only of a program
+        // whose room-listening window runs straight into the stimulus. The
+        // real CHECK program opens with a 12 s window and then plays the
+        // courtesy beeps before the tone (see
+        // jasper.audio_measurement.program's `_insert_courtesy_prelude`), so
+        // that sentence would have been wrong by the whole prelude.
+        //
+        // And the quiet REQUEST is the speaker's call, not the page's — see
+        // ambientQuietRequested. CHECK's window is measuring the room the
+        // household is actually living in; hushing them for it would change
+        // the reading.
+        const seconds = `${remaining} second${remaining === 1 ? "" : "s"}`;
+        showPhase(
+          ambientQuietRequested
+            ? `Listening to the room… stay quiet for about ${seconds}`
+            : `Listening to the room for about ${seconds}`,
         );
       }
     }
@@ -1486,6 +1675,10 @@ async function waitForSweepComplete(client, spec, isAborted) {
     }
     await delayMs(pollMs);
   }
+  // Still blind when the window ran out: the relay outage IS the failure, and
+  // its classified copy is what the household needs (a "the speaker did not
+  // finish" sentence would be a guess about a speaker we could not hear from).
+  if (reconnecting) throw reconnecting;
   throw new Error("speaker did not finish the sweep before the recording timeout");
 }
 
@@ -2211,6 +2404,17 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
   const counter = el("p", { class: "cap-note", text: `Starting in ${seconds}…` });
   const begin = () => {
     clearAutoAdvance(ctx);
+    // Blank the counter on the way out, exactly like the retake tap below
+    // (#1823 / #1824 D5). Without this the auto-begin path left "Starting
+    // in 1…" frozen on screen for the whole capture that had ALREADY started
+    // — the countdown screen's notes survive into the round, and the round's
+    // own progress goes to #status, so nothing else ever repainted it.
+    //
+    // NOTE no SHIPPED plan reaches this today: MEASURE was the only countdown
+    // entry and #1823 made it a tap. The countdown vocabulary is retained for
+    // a future same-spot transition, so the bug is fixed where it lives rather
+    // than left to come back with it.
+    counter.textContent = "";
     void runPlanCapture(ctx, { index: nextIndex, attempt: nextAttempt });
   };
   const cancel = button("Cancel", () => {
@@ -2460,6 +2664,9 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
   // (spec.duration_ms) like waitForSweepComplete's own timeout does, with a
   // floor comfortably above typical analysis time.
   const deadline = Date.now() + Math.max(30000, Number(spec.duration_ms) || 30000);
+  // The swallowed abort still in force, or null once the relay answers — same
+  // role as waitForSweepComplete's, for the same reason (see its expiry).
+  let reconnecting = null;
   while (Date.now() < deadline) {
     if (isAborted()) return { aborted: true };
     let status;
@@ -2467,7 +2674,21 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
       status = await client.fetchPhoneStatus();
     } catch (err) {
       if (isDeadSessionError(err)) return { deadSession: true };
+      // Same bound as the sweep wait (#1824 D1): a control request that
+      // outlived RELAY_CONTROL_TIMEOUT_MS costs one poll interval, never the
+      // session. This wait is squarely POST-arm — the sweep already played —
+      // so ending here would discard a capture the Pi is actively analyzing.
+      if (isRelayConnectivityAbort(err, String((err && err.message) || err))) {
+        reconnecting = err;
+        setStatus(RELAY_RECONNECTING_RESULT_MESSAGE, "info");
+        await delayMs(pollMs);
+        continue;
+      }
       throw err;
+    }
+    if (reconnecting) {
+      reconnecting = null;
+      setStatus(CAPTURE_CHECKING_MESSAGE, "info");
     }
     const event = (status && status.host_event) || {};
     const phase = String(event.phase || "");
@@ -2523,6 +2744,15 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
     }
     await delayMs(pollMs);
   }
+  // Still blind when the window ran out: report the outage, not a verdict
+  // about a speaker we could not hear from. Mirrors waitForSweepComplete's
+  // expiry — the caller's post-arm branch renders the same terminal either
+  // way, so the only thing that changes is whether the household is told the
+  // truth about WHY. Left unmarked (no `sweepFailed`) exactly like the sweep
+  // wait's: `armedPosted` is necessarily true this late, so the routing is
+  // identical, and the v1 caller reads it as the retryable connectivity case
+  // it is.
+  if (reconnecting) throw reconnecting;
   // Terminal, not a stale retry — see waitForCaptureAuthorized's matching
   // comment. By this point the blob has ALREADY been pulled/decrypted (or
   // is still being analyzed) on the Pi; a stale "Next measurement"/"Try
@@ -2780,21 +3010,35 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     );
 
     armedPosted = true;
-    await client.postEvent({
-      armed: true,
-      degraded: capture.decision.degraded,
-      device: capture.device,
-      noise_floor: { duration_ms: noise.duration_ms, rms_dbfs: noise.rms_dbfs },
-      // The armed event re-states its own begin context; carry the retake
-      // marker here too, so a Pi poll that lands on THIS event rather than the
-      // begin still reads the same (index, attempt, retake) request.
-      begin_capture: beginCapturePayload({ index, attempt, retake }),
-      setup: setupWirePayload(),
-      acknowledgement: ctx.planAcknowledgement,
-      ...ambientStatsFieldsFor(spec, noise),
-    });
+    // Retried on a relay-connectivity abort (#1824 D2) rather than ending the
+    // round: the Pi is sitting in `awaiting_arm` for this exact (index,
+    // attempt) with a 120 s budget, the relay's phone-event slot is
+    // last-write-wins, and the runner treats a repeat of the in-flight begin
+    // as a no-op — so re-posting the IDENTICAL armed event is both safe and
+    // the only way to use the slot the speaker is holding open. The recorder
+    // is already running, so this recovers in place: no screen teardown, no
+    // re-record, same capture.
+    await withRelayReconnect(
+      () => client.postEvent({
+        armed: true,
+        degraded: capture.decision.degraded,
+        device: capture.device,
+        noise_floor: { duration_ms: noise.duration_ms, rms_dbfs: noise.rms_dbfs },
+        // The armed event re-states its own begin context; carry the retake
+        // marker here too, so a Pi poll that lands on THIS event rather than the
+        // begin still reads the same (index, attempt, retake) request.
+        begin_capture: beginCapturePayload({ index, attempt, retake }),
+        setup: setupWirePayload(),
+        acknowledgement: ctx.planAcknowledgement,
+        ...ambientStatsFieldsFor(spec, noise),
+      }),
+      () => controller.aborted,
+    );
+    if (controller.aborted) return;
 
-    const sweepCompleted = await waitForSweepComplete(client, spec, () => controller.aborted);
+    const sweepCompleted = await waitForSweepComplete(
+      client, spec, () => controller.aborted, { index, attempt },
+    );
     if (sweepCompleted === false) {
       await endPlanSession(ctx);
       return;
@@ -2832,7 +3076,7 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
     await client.putBlob(blob, plaintextLen, sha256, attempt - 1);
     if (controller.aborted) return;
 
-    setStatus("Speaker is checking this measurement…", "info");
+    setStatus(CAPTURE_CHECKING_MESSAGE, "info");
     const verdict = await waitForCaptureResult(
       client, spec, index, attempt, target, () => controller.aborted,
     );
@@ -2898,6 +3142,15 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
         // again" button live would let a re-tap post a begin for the SAME
         // already-consumed (index, attempt) — see armedPosted's comment for
         // why that is never sound.
+        //
+        // A relay-connectivity abort no longer ARRIVES here in the ordinary
+        // case: both post-arm waits absorb one (waitForSweepComplete /
+        // waitForCaptureResult) and the armed post itself is re-sent by
+        // withRelayReconnect, so reaching this line means the relay stayed
+        // unreachable across the whole retry budget. It is still terminal —
+        // but renderSweepFailed classifies the copy (sweepFailureMessage), so
+        // the household reads a connectivity sentence rather than the raw
+        // text of a 3 s fetch budget expiring (#1824 D2).
         renderSweepFailed(ctx, err);
         await endPlanSession(ctx);
       } else {

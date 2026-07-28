@@ -6954,11 +6954,11 @@ def build_v2_capture_plan(
     nominal gain plan — sweep/gap lengths are gain-independent, so the duration
     is exact even before CHECK's solve) plus a lead/tail margin; each entry's
     ``screen`` carries the phase prompt AND the §5.2 auto-advance policy:
-    CHECK is the session's one required tap, MEASURE auto-advances behind a
-    visible cancelable countdown, VERIFY arms on the apply-complete host event,
-    and every prompted cloud position requires the operator's tap — the mic has
-    to be MOVED between them, so a countdown would fire into a hand still in
-    flight.
+    CHECK and MEASURE each require a tap (MEASURE is the longest and loudest
+    capture of the session — issue #1823; see the entry below), VERIFY arms on
+    the apply-complete host event, and every prompted cloud position requires
+    the operator's tap — the mic has to be MOVED between them, so a countdown
+    would fire into a hand still in flight.
 
     No phone-side mechanism is new: ``CapturePlanEntry.screen`` and
     ``AUTO_ADVANCE_TAP`` already carry per-entry copy the page renders and gates
@@ -7019,10 +7019,31 @@ def build_v2_capture_plan(
             screen={
                 "progress": capture_progress_label(2, target),
                 "title": "Keep the phone still — this spot is the mark.",
-                "body": "Measuring both drivers; you will come back here later.",
-                "auto_advance": AUTO_ADVANCE_COUNTDOWN,
-                "countdown_s": str(AUTO_ADVANCE_COUNTDOWN_S),
-                "cancelable": "1",
+                # MEASURE is the session's LONGEST capture and the one that
+                # CAN be its loudest — since #1825/#1829 each driver's level is
+                # solved to the SNR the fit needs in its own band, so a quiet
+                # room gets a quiet MEASURE and a noisy one still gets the full
+                # level. Until issue #1823 it rolled straight out of CHECK on a
+                # countdown:
+                # the household went from one capture into a much louder one
+                # with no chance to say "not yet". Same-spot auto-advance was
+                # the right instinct — no movement is needed — but it read as
+                # the speaker taking a liberty. One tap, with copy that says
+                # what is coming, buys the consent back. The countdown
+                # vocabulary stays in the plan grammar (AUTO_ADVANCE_COUNTDOWN,
+                # AUTO_ADVANCE_COUNTDOWN_S, and the page's renderPlanCountdown)
+                # for a future same-spot transition that earns it.
+                #
+                # Household language, not ours (coordinator ruling, 2026-07-28):
+                # the tail says what the level is FOR, not which internal stage
+                # asked for it. "The fit" is a word for this file, not for
+                # someone holding a phone.
+                "body": (
+                    "This one is longer, and can be the loudest — it measures "
+                    "each driver alone at the level it needs to hear each one "
+                    "clearly."
+                ),
+                "auto_advance": AUTO_ADVANCE_TAP,
             },
         ),
     ]

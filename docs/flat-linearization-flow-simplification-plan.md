@@ -268,7 +268,19 @@ transient state channel only ("Playing the measurement tone…",
 - **MEASURE keeps its 5 s cancelable countdown** — deliberate exception:
   no movement happens between CHECK and MEASURE (same mark), so there is
   no placement to confirm, and the cancel affordance preserves control.
-  Owner-reversible; flagged in §5.
+  Owner-reversible; flagged in §5. **REVERSED 2026-07-28 (issue #1823),
+  after the owner ran it:** the reasoning held for placement but missed
+  level — MEASURE is the longest capture of the session and the one that
+  can be its loudest, and rolling into it unasked contradicted the
+  confirm-then-tone grammar's spirit. It is now `AUTO_ADVANCE_TAP` with
+  copy that sets the expectation ("longer, and can be the loudest — it
+  measures each driver alone at the level it needs to hear each one
+  clearly"; the hedge is load-bearing since #1825/#1829 solve each
+  driver's level to the SNR the fit needs, so a quiet room gets a quiet
+  MEASURE — and the tail says what the level is FOR rather than naming
+  the stage that asked for it, per the 2026-07-28 plain-language ruling).
+  The countdown vocabulary stays in the plan grammar and on the page for a
+  future same-spot transition that earns it.
 - **VERIFY becomes hold-then-tap — the step-11 fix.** Today
   `AUTO_ADVANCE_ON_APPLY` fires the verify sweep with *no tap at all*
   once the apply completes, racing the user's walk back to the mark (the
@@ -621,6 +633,7 @@ Owner-reversible decisions taken in this doc (flag, don't block):
    offsets + `thin_evidence` semantics; costs ~35 s over a literal 3).
 2. Express M = 1: no post-apply cloud, VERIFY-at-mark only (§1.3 table).
 3. MEASURE keeps its cancelable countdown (§2.2 — no move to confirm).
+   **Reversed by the owner 2026-07-28 (issue #1823) — it takes a tap.**
 4. The tier chooser lives on the wizard, not the capture page (§3 —
    plan minting owns the shape; the recommended badge is the only
    history-driven part).

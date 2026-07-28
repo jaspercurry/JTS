@@ -316,7 +316,7 @@ One relay session (`crossover_v2:session`) spans **16 captures** at the
 | index | phase | gate | what it is |
 |---|---|---|---|
 | 1 | `check` | tap | microphone check |
-| 2 | `measure` | countdown | design-axis anchor, per-driver |
+| 2 | `measure` | tap | design-axis anchor, per-driver |
 | 3–10 | `cloud_measure` | tap each | 8 prompted pre-apply positions |
 | 11 | `verify` | on apply | design-axis anchor, summed |
 | 12–16 | `cloud_verify` | tap each | 5 prompted post-apply positions |
@@ -393,7 +393,9 @@ once.
    level that still clears the SNR the fit needs in that driver's own
    band (gotcha #22). Replaces the legacy per-driver level ramps and
    ambient waits.
-2. **MEASURE** (~33 s, auto-advances behind a cancelable countdown).
+2. **MEASURE** (~40 s, one tap — the longest capture of the session, and
+   the one that can be the loudest, so it asks before it plays; issue
+   #1823).
    2-channel routing: pilot pair + guard silence + **three interleaved
    woofer/tweeter sweep cycles** — `w1 → t1 → w2 → t2 → w3 → t3`
    (sweep-composition PR-A, #1668; was one woofer-only repeat, ~+15 s
@@ -931,10 +933,12 @@ window (~±0.3 m distance, ±10 cm height) for that mark. The session
 starts there, returns to it for MEASURE and VERIFY, and prompts small
 moves around it for the two position groups — so the mic is stationary
 *per sweep*, never *per session*. Taps: CHECK is the one tap before any
-measuring, CHECK auto-advances into MEASURE, a trusted candidate
-auto-arms VERIFY with no household action in between, and each prompted
-cloud position needs its own tap because the household has to move the
-mic first.
+measuring, MEASURE takes a second one (same spot, but it is the longest
+capture and the one that can be the loudest — issues #1823/#1825), a
+trusted candidate auto-arms
+VERIFY with no household action in between, and each prompted cloud
+position needs its own tap because the household has to move the mic
+first.
 
 **Pre-capture courtesy tone (issue #1677) and the program's audible
 order.** Every capture's program plays three short ~1 kHz beeps + ~3 s of
@@ -963,6 +967,38 @@ window, which is silence and must be measured *inside* the quiet the
 beeps just asked for. `courtesy_beep_to_stimulus_gap_s` derives the real
 interval from any composed program; `COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S`
 is the bound.
+
+**What the phone says while that order plays (issue #1824).** The host
+posts one phase per audible thing, on the program's own clock:
+`prelude_started` → `ambient_started` → `sweep_started` → `sweep_complete`.
+The offsets come from the composed program's segment table
+(`program_phase_schedule`), so the table above and the phone's copy cannot
+drift apart, and the ladder is anchored at the play path's WAV handoff
+(`PlaybackStartSignal`) rather than at arm time. Before this,
+`sweep_started` was posted synchronously in `on_armed`: the phone read
+"Playing the measurement tone…" for the whole ~4.6 s of beeps, settle and
+ambient window on MEASURE — silence, labelled as the tone.
+
+`ambient_started` carries **`duration_s`** (the page renders a live
+countdown) and **`quiet_requested`**, which is a measurement fact rather
+than a presentation one. The two windows in the table above are opposites:
+MEASURE/VERIFY's 1 s pre-pilot window sits after the beeps and must be
+quiet, so the phone asks; CHECK's 12 s window is the SESSION's room-noise
+measurement, *deliberately* taken before the household is asked to go
+quiet, and the ambient band-floor report and the gain solve both read it.
+A phone that asked for quiet during CHECK's window would edit the floor it
+is measuring — a copy string silently changing a measurement — so the host
+derives the flag from the composed order and the page never asks on its
+own initiative.
+
+The anchor leads real audio by the verified-source read plus the output
+prefill, so every step carries a `PHASE_LADDER_START_SKEW_S` bias
+*intended* to land late rather than early. **ON-DEVICE:** that interval has
+not been measured; the skew is a safe-direction estimate, not a guarantee,
+and is named in
+[`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py).
+Measure it on hardware before tuning, and prefer an observed playback start
+over a smaller guess.
 
 The prelude is composed as ordinary segments on the SAME
 `ExcitationProgram` the phase already plays and admits — never a second

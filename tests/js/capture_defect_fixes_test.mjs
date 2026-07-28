@@ -281,7 +281,9 @@ async function testDeadSessionDuringLevelRampRendersLinkExpired() {
 // (b) A relay control-fetch AbortError never leaks
 // "signal is aborted without reason." to the household.
 // ============================================================================
-async function testAbortErrorDuringSweepGetsFriendlyCopy() {
+async function testAbortErrorDuringSweepGetsFriendlyCopy(
+  makeError = () => new DOMException("signal is aborted without reason.", "AbortError"),
+) {
   statusHistory.length = 0;
   const { onStart } = await loadModule();
   globalThis.__recorder = makeRecorder();
@@ -292,8 +294,7 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
   const client = {
     async postEvent() {},
     async fetchPhoneStatus() {
-      const err = new DOMException("signal is aborted without reason.", "AbortError");
-      throw err;
+      throw makeError();
     },
   };
 
@@ -301,6 +302,13 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
     spec: {
       kind: "crossover_sweep",
       sample_rate_hz: 48000,
+      // #1824 D1: a single aborted poll is now absorbed and the RECORDING
+      // WINDOW is the bound, so this scenario (every poll aborts, forever)
+      // resolves when the window runs out. Pin the window at its floor so the
+      // harness spends 5 s here rather than the 20 s default — the assertion
+      // is about the copy an unrecoverable outage produces, not the length of
+      // the wait.
+      duration_ms: 5000,
       constraints: {},
       validity: { clean_capture: "refuse" },
       run_token: "run-test",
@@ -315,6 +323,13 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
     statusHistory.some((line) => line.includes("Lost the connection")),
     `expected friendly connectivity copy, got: ${JSON.stringify(statusHistory)}`,
   );
+  // …and the household is told what is happening WHILE it happens, not only
+  // at the end (#1824 D1): the page keeps polling behind a "still measuring"
+  // line instead of ending the capture on the first slow request.
+  assert.ok(
+    statusHistory.some((line) => line.includes("reconnecting")),
+    "a connectivity blip renders the reconnecting line while it retries",
+  );
   assert.ok(
     !statusHistory.some((line) => line.includes("signal is aborted")),
     "the raw DOMException text never reaches the household",
@@ -322,11 +337,41 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
   ok();
 }
 
+// …and the shape PRODUCTION actually raises (#1824 B1). The run-19 fix aborts
+// with a named reason, so fetch rejects with THAT — an ordinary Error, name
+// "Error", no "signal is aborted" text — and the classifier's two original
+// tests both stopped matching. The DOMException case above kept passing the
+// whole time, which is exactly why it never surfaced. Derive the fixture from
+// the REAL client so it cannot drift back into a fiction.
+async function testTheProductionTimeoutShapeAlsoGetsFriendlyCopy() {
+  const { RelayClient } = await import("../../capture-page/js/relay-client.js");
+  const client = new RelayClient({
+    baseUrl: "https://relay.test",
+    sessionId: "cap_harness",
+    uploadToken: "tok",
+    fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener(
+        "abort", () => reject(init.signal.reason), { once: true },
+      );
+    }),
+  });
+  let production = null;
+  try {
+    await client.fetchPhoneStatus({ timeoutMs: 1 });
+  } catch (err) {
+    production = err;
+  }
+  assert.ok(production, "the real client produced a timeout");
+  assert.notEqual(production.name, "AbortError", "fixture is the REAL shape");
+  await testAbortErrorDuringSweepGetsFriendlyCopy(() => production);
+}
+
 const tests = [
   testIsDeadSessionErrorClassifiesRelayStatusCodes,
   testDeadSessionDuringSweepRendersLinkExpiredNotRetry,
   testDeadSessionDuringLevelRampRendersLinkExpired,
   testAbortErrorDuringSweepGetsFriendlyCopy,
+  testTheProductionTimeoutShapeAlsoGetsFriendlyCopy,
 ];
 
 let failure = null;

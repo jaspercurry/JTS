@@ -665,24 +665,31 @@
   fixed 14 s pause that made every driver — including a 4 s tweeter sweep —
   sit through the longest driver's silence) and their hard deadline is 45 s;
   the phone's `duration_ms` remains only a backstop because normal completion
-  follows the Pi's `sweep_complete` event. The pre-tone quiet phase now
+  follows the Pi's `sweep_complete` event. The pre-tone quiet phase
   renders a live countdown on the phone (`ambient_started`'s host event
   carries `duration_s`) instead of an unexplained silent wait, and the phone
   can Stop a driver sweep or level ramp itself — a new "stop" screen action
   wired to the same abort() path the visibility-abort case already used
-  (`capture-page/js/main.js`'s `stopCapture`). **W2.6 (2026-07-17):**
-  `ambient_started` now fires from INSIDE the play sequence
-  (`correction_crossover_flow._play`), immediately after `prepare_play`'s
-  solve/volume-acquire work finishes and right before the real
-  `asyncio.sleep(ambient_duration_s)` — not synchronously in `on_armed`
-  before `prepare_play` even starts. PR #1552's own investigation
-  ("Countdown finding") traced hardware run 18's missing countdown plus
-  ~4-5s extra arm→tone latency to exactly this gap; the fix threads the
-  post through as a callback `_play` fires itself (backward-compatible: a
-  `play_sequence` that does not accept the callback, e.g. the
-  summed-commissioning host's own `_play_sequence` in
-  `correction_setup.py`, keeps the old eager-post ordering — see
-  `_play_sequence_accepts_ambient_ready` in `correction_crossover_flow.py`).
+  (`capture-page/js/main.js`'s `stopCapture`). **Producer, 2026-07-28
+  (issue #1824):** the crossover-v2 host
+  ([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
+  posts the whole pre-tone ladder — `prelude_started` (the courtesy beeps and
+  their settle), `ambient_started` (carrying the room-listening window's own
+  `duration_s` plus `quiet_requested`), then `sweep_started` — from
+  `start_program_phase_ladder`, on the program's own clock, anchored at the
+  play path's WAV handoff (`PlaybackStartSignal`). Offsets are read off the
+  composed program's segment table, so a composer that moves the prelude or the
+  ambient window moves the ladder with it. `quiet_requested` is what keeps the
+  countdown from asking a household to hush during CHECK's session room-noise
+  window, which is measured before the warning on purpose. This replaced an
+  eager `sweep_started` posted synchronously in `on_armed`, which announced the
+  measurement tone ~4.6 s before any sound on a courtesy-prelude program; a
+  host that wires no playback-start signal keeps that eager post as its
+  fallback. (An earlier W2.6/PR #1552 callback in
+  `correction_crossover_flow._play` did the same job for the retired
+  per-driver flow and went away with it — for a stretch afterwards
+  `ambient_started` had NO producer at all and the phone's countdown consumer
+  was dead code.)
   The generic builder retains the 30 s floor like `room_sweep`'s
   `hard_timeout_ms` (normal recorder completion is the Pi's `sweep_complete` relay
   event; the deadline is only the backstop). During the quiet interval and

@@ -2304,6 +2304,236 @@ def bind_cloud_publisher(
     return publish_cloud
 
 
+# --------------------------------------------------------------------------- #
+# pre-tone phase ladder (#1824 D3/D4)
+# --------------------------------------------------------------------------- #
+
+# The phone-visible names for what the speaker is ACTUALLY doing. Only
+# ``sweep_started``/``sweep_complete`` existed before, and ``sweep_started`` was
+# posted synchronously in ``on_armed`` — ~4.6 s before any sound on a courtesy-
+# prelude program (0.6 s of beeps + a 3.0 s settle + the 1.0 s pre-pilot
+# ambient window), so the phone said "Playing the measurement tone…" through
+# the entire quiet stretch the household is being asked to be quiet in. The two
+# names below are that missing middle. ``ambient_started`` in particular had NO
+# producer anywhere on the Pi — the capture page's countdown consumer for it
+# has been shipped-but-dead since the producer it was written against was
+# deleted (see docs/HANDOFF-correction.md).
+HOST_PHASE_PRELUDE_STARTED = "prelude_started"
+HOST_PHASE_AMBIENT_STARTED = "ambient_started"
+HOST_PHASE_SWEEP_STARTED = "sweep_started"
+HOST_PHASE_SWEEP_COMPLETE = "sweep_complete"
+
+# NAMED RESIDUAL — ON-DEVICE: the size of this bias is NOT measured. The ladder
+# is anchored where the host HANDS a program to the playback path, which leads
+# real audio by the verified-source read plus the ALSA/output prefill: tens to a
+# few hundred ms, device-dependent, and not one number we can look up. Delaying
+# every step is INTENDED to bias late, so the residual lands on the safe side —
+# a phase line appearing late is harmless, a phone claiming the tone is playing
+# while the room is silent is the failure this ladder exists to remove. It is
+# not a guarantee: a prefill longer than this value would still put the sweep
+# line marginally early.
+#
+# Two things push the same way and are worth knowing before tuning it: the
+# phone only repaints on its own poll (``progress_poll_ms``, ≤1 s), which adds
+# further late bias on the rendered line; and the household reads copy, not
+# timestamps. Measure the real anchor-to-audio interval on hardware before
+# changing this, and prefer replacing the whole estimate with an observed
+# playback start over shrinking the number from reasoning alone.
+PHASE_LADDER_START_SKEW_S = 0.35
+
+
+class PlaybackStartSignal:
+    """The seam between the play binding and the runner's phone-phase posts.
+
+    ``bind_production_play`` is built inside ``_open`` — before the runner
+    exists — so the play path cannot post to the phone itself. It fires this
+    signal at the instant a program's WAV reaches the playback call; the runner
+    installs a handler for the duration of ONE armed capture and clears it
+    afterwards, so a late fire from a play that outlived its capture is a no-op
+    rather than a phase post against the wrong capture.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._handler: Callable[[Any], None] | None = None
+
+    def install(self, handler: Callable[[Any], None]) -> None:
+        with self._lock:
+            self._handler = handler
+
+    def clear(self) -> None:
+        with self._lock:
+            self._handler = None
+
+    def fire(self, program: Any) -> None:
+        with self._lock:
+            handler = self._handler
+        if handler is None:
+            return
+        try:
+            handler(program)
+        except (
+            OSError, RuntimeError, ValueError, AttributeError, KeyError, TypeError,
+        ):
+            # Progress reporting must never be able to stop a measurement, and
+            # this fires from INSIDE the play path — an escape here would abort
+            # a sweep over a status line. The handler reads a program object it
+            # does not own (AttributeError/TypeError/KeyError on an unexpected
+            # shape) and starts a thread (RuntimeError), so the list covers what
+            # it can actually raise; pinned by
+            # test_playback_signal_handler_failure_never_stops_the_measurement.
+            logger.warning("v2 playback-start signal handler failed", exc_info=True)
+
+
+def program_phase_schedule(
+    program: Any,
+) -> tuple[tuple[float, str, dict[str, Any]], ...]:
+    """When each phone-visible phase of ``program`` actually becomes audible.
+
+    Returns ``((offset_s, phase, extra_fields), …)`` ordered by offset, where
+    ``offset_s`` is measured from the start of the program WAV and
+    ``extra_fields`` are the wire fields that phase carries (empty for phases
+    that carry none).
+
+    Offsets are read off the program's OWN segment table
+    (``start_sample``/``sample_rate_hz``), never re-derived from the composer's
+    constants: a program that stops carrying a courtesy prelude or an ambient
+    window simply stops emitting that phase, and a composer that moves either
+    one moves this schedule with it. A program with no segments (or an
+    unreadable rate) yields an empty schedule — the caller then posts nothing,
+    which is what an older/simpler program should produce.
+
+    ``ambient_started`` carries ``quiet_requested``, and it is a MEASUREMENT
+    fact, not a presentation one. The two ambient windows are opposites:
+
+    * MEASURE/VERIFY's 1 s pre-pilot window sits AFTER the courtesy beeps and
+      "MUST be measured with the room already quiet" — the phone should ask.
+    * CHECK's 12 s window is the SESSION's room-noise measurement, "deliberately
+      taken before the household is asked to go quiet" (both quotes:
+      :mod:`jasper.audio_measurement.program`'s module docstring). The ambient
+      band-floor report and the gain solve read it. A phone that asked for quiet
+      during THAT window would change the very floor it is measuring — a copy
+      string silently editing the measurement.
+
+    Derived from the composed order (is this window after the beeps?), so a
+    composer that moves either window moves the flag with it.
+    """
+    from jasper.audio_measurement.program import (
+        AMBIENT_SEGMENT_ID,
+        KIND_COURTESY_TONE,
+        STIMULUS_KINDS,
+    )
+
+    try:
+        rate = float(getattr(program, "sample_rate_hz", 0) or 0)
+    except (TypeError, ValueError):
+        return ()
+    segments = tuple(getattr(program, "segments", ()) or ())
+    if rate <= 0 or not segments:
+        return ()
+
+    steps: list[tuple[float, str, dict[str, Any]]] = []
+    beeps = [s for s in segments if s.kind == KIND_COURTESY_TONE]
+    beep_end = (
+        max(s.start_sample + s.n_samples for s in beeps) if beeps else None
+    )
+    if beeps:
+        steps.append(
+            (
+                min(s.start_sample for s in beeps) / rate,
+                HOST_PHASE_PRELUDE_STARTED,
+                {},
+            )
+        )
+    ambient = [s for s in segments if s.segment_id == AMBIENT_SEGMENT_ID]
+    if ambient:
+        first = min(ambient, key=lambda s: s.start_sample)
+        steps.append(
+            (
+                first.start_sample / rate,
+                HOST_PHASE_AMBIENT_STARTED,
+                {
+                    "duration_s": first.n_samples / rate,
+                    # No prelude at all ⇒ no warning was played ⇒ do not ask.
+                    "quiet_requested": (
+                        beep_end is not None and first.start_sample >= beep_end
+                    ),
+                },
+            )
+        )
+    stimulus = [s for s in segments if s.kind in STIMULUS_KINDS]
+    if stimulus:
+        steps.append(
+            (
+                min(s.start_sample for s in stimulus) / rate,
+                HOST_PHASE_SWEEP_STARTED,
+                {},
+            )
+        )
+    steps.sort(key=lambda step: step[0])
+    return tuple(steps)
+
+
+def start_program_phase_ladder(
+    post_phase: Callable[..., None],
+    program: Any,
+    *,
+    skew_s: float | None = None,
+) -> Callable[[], None]:
+    """Post ``program``'s phase ladder on the program's own clock.
+
+    Runs on one short-lived daemon thread (the play call owns the caller's
+    thread for the whole program) and returns a cancel callable the caller
+    invokes when playback returns — so a program that ends early, fails, or is
+    stopped cannot leave a timer behind that posts a phase for a capture that
+    is already over.
+
+    ``skew_s`` defaults to :data:`PHASE_LADDER_START_SKEW_S`, read at CALL time
+    so the constant stays the single place the bias is expressed (and a test
+    can drive the ladder without waiting it out).
+    """
+    schedule = program_phase_schedule(program)
+    if not schedule:
+        return lambda: None
+
+    skew = PHASE_LADDER_START_SKEW_S if skew_s is None else float(skew_s)
+    done = threading.Event()
+
+    def _run() -> None:
+        started = time.monotonic()
+        for offset_s, phase, extra in schedule:
+            delay = (offset_s + skew) - (time.monotonic() - started)
+            if delay > 0 and done.wait(delay):
+                return
+            if done.is_set():
+                return
+            post_phase(phase, **extra)
+
+    thread = threading.Thread(
+        target=_run, name="crossover-v2-phase-ladder", daemon=True
+    )
+    thread.start()
+
+    def _cancel() -> None:
+        done.set()
+        # UNBOUNDED join, deliberately. The relay's host-event slot is
+        # last-write-wins, so a ladder post still in flight when this returns
+        # would land AFTER whatever the caller posts next — overwriting a
+        # `sweep_complete`, or worse a terminal `capture_result`, and putting
+        # the phone back to polling a refusal it can no longer see (the
+        # expired-link pathology this PR removes elsewhere). A bounded join
+        # would leave exactly that race open on a slow post.
+        #
+        # Safe to wait: the only thing this thread does is
+        # ``client.post_host_event``, whose urllib transport carries
+        # ``capture_relay.client.DEFAULT_TIMEOUT_S`` (15 s) and whose failures
+        # the caller already swallows as OSError — so the wait is bounded by
+        # the transport, not by hope.
+        thread.join()
+
+    return _cancel
+
+
 def bind_production_play(
     *,
     run_async: Any,
@@ -2319,6 +2549,7 @@ def bind_production_play(
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
     config_dir: str | None = None,
+    on_playback_started: Callable[[Any], None] | None = None,
 ) -> Callable[[str, Any], None]:
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
 
@@ -2344,6 +2575,13 @@ def bind_production_play(
     WRONG lock identity — every other writer locks
     ``/var/lib/camilladsp/configs/.dsp_apply.lock``, so a real ``/etc``
     lock would not have serialized against them at all.
+
+    ``on_playback_started`` (optional) is fired with the program at the instant
+    its WAV reaches the playback call — the closest the host gets to "audio
+    starts now" without reaching into the shared aplay path. It is what anchors
+    the phone's pre-tone phase ladder (:func:`start_program_phase_ladder`);
+    omitted, playback is unchanged and the caller keeps whatever progress
+    reporting it had.
 
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
@@ -2379,6 +2617,8 @@ def bind_production_play(
                 # pre-apply graph for CLOUD_MEASURE and the applied one for
                 # CLOUD_VERIFY. Level safety for all three is the compose-time
                 # min-cap clamp in ``_compose_verify_program``.
+                if on_playback_started is not None:
+                    on_playback_started(program)
                 await verified_program_aplay(
                     bundle_dir, artifact, timeout_s=60.0
                 )
@@ -2406,6 +2646,18 @@ def bind_production_play(
                 session_volume_db=session_volume_db,
                 declared_sensitivities=declared_sensitivities,
             )
+            if on_playback_started is not None:
+                # Wrap the seam rather than firing before ``play_program``: the
+                # readmission, writer-lock acquisition and program-graph load
+                # all happen inside it and all precede any sound. Firing here
+                # keeps the anchor at the WAV handoff for both playback shapes.
+                inner_play_wav = seams["play_wav"]
+
+                async def _play_wav_signalling() -> Any:
+                    on_playback_started(program)
+                    return await inner_play_wav()
+
+                seams["play_wav"] = _play_wav_signalling
             await play_program(
                 program,
                 program_graph_yaml=program_yaml,
@@ -2472,6 +2724,7 @@ def build_v2_run_and_consume(
     first_begin_timeout_s: float | None = None,
     run_async: Any = None,
     camilla_factory: Any = None,
+    playback_started: PlaybackStartSignal | None = None,
 ) -> Callable[[Any, Any], Any]:
     """The async ``run_and_consume(client, pi_session)`` for one v2 session.
 
@@ -2734,18 +2987,25 @@ def build_v2_run_and_consume(
                     _fire_auto_apply(conductor.candidate)
             conductor.authorize_begin(index, attempt, entry)
 
-        def _post_sweep_phase_best_effort(phase: str) -> None:
-            """Tell the phone playback is starting/finished (§5.10 progress).
+        def _post_sweep_phase_best_effort(phase: str, **extra: Any) -> None:
+            """Post one phone-visible progress phase (§5.10 progress).
 
             The capture page's ``waitForSweepComplete``
-            (``capture-page/js/main.js``) polls ``host_event.phase`` for
-            ``"sweep_started"`` / ``"sweep_complete"`` around its own play
-            wait and otherwise sits until ITS OWN timeout elapses — the v2
-            runner posted neither (W6 run 5), so a real phone could never
-            complete a v2 capture. Mirrors the legacy per-driver capture-plan
-            flow's ``post_phase`` around its own play call
-            (``correction_crossover_flow.py``). Best-effort like that
-            sibling: a transient post failure here is a progress-only miss,
+            (``capture-page/js/main.js``) polls ``host_event.phase`` around its
+            own play wait and otherwise sits until ITS OWN timeout elapses —
+            the v2 runner posted nothing (W6 run 5), so a real phone could
+            never complete a v2 capture.
+
+            The phases this posts, in the order one capture produces them:
+            ``prelude_started`` (the courtesy beeps), ``ambient_started``
+            (the room-listening window; carries ``duration_s`` and
+            ``quiet_requested``), ``sweep_started`` (the tone) — all three from
+            :func:`start_program_phase_ladder`, on the program's own clock —
+            and finally ``sweep_complete``, the ONLY phase that makes the
+            phone's wait return. ``**extra`` carries whatever fields a phase
+            declares; the relay relays them verbatim.
+
+            Best-effort: a transient post failure here is a progress-only miss,
             not a capture failure — the existing terminal host event (or the
             phone's own wait timeout) still resolves the phone's wait on any
             real failure.
@@ -2756,7 +3016,7 @@ def build_v2_run_and_consume(
                 client.post_host_event(
                     pi_session.session_id,
                     pi_session.pull_token,
-                    {"phase": phase, "index": index, "attempt": attempt},
+                    {"phase": phase, "index": index, "attempt": attempt, **extra},
                 )
             except (OSError, RuntimeError, ValueError):
                 logger.warning(
@@ -2766,16 +3026,44 @@ def build_v2_run_and_consume(
         def on_armed(state: Any) -> None:
             if stop_event.is_set():
                 raise CaptureStopped("capture stopped")
+            # The pre-tone phase ladder (#1824 D4). ``sweep_started`` used to be
+            # posted right here, synchronously, BEFORE the play seam had done
+            # anything at all — so the phone announced the measurement tone
+            # ~4.6 s before the first sound of a courtesy-prelude program and
+            # stayed on that line through the beeps, the settle and the room-
+            # listening window. The ladder instead posts each phase when it
+            # actually becomes audible, anchored at the play path's own WAV
+            # handoff (``PlaybackStartSignal``).
+            #
+            # Backwards-compatible in the one direction that matters: when no
+            # play-start signal is wired (a host binding its own play seam, or
+            # a test fake), keep the legacy eager post so the phone's wait still
+            # resolves rather than sitting until its own timeout.
+            cancel_ladder: Callable[[], None] = lambda: None
+
+            def _start_ladder(program: Any) -> None:
+                nonlocal cancel_ladder
+                cancel_ladder = start_program_phase_ladder(
+                    _post_sweep_phase_best_effort, program
+                )
+
+            if playback_started is not None:
+                playback_started.install(_start_ladder)
+            else:
+                _post_sweep_phase_best_effort(HOST_PHASE_SWEEP_STARTED)
             # Finding G: on_armed's ``conductor.on_armed`` → ``seams.play`` is a
             # LOCAL seam (the DSP writer lock, CamillaController) — an OSError
             # here (e.g. EROFS opening the lock file) is not a relay-transport
             # death and must not be caught by the relay-death arm below.
-            _post_sweep_phase_best_effort("sweep_started")
             try:
                 conductor.on_armed(state)
             except OSError as exc:
                 raise CrossoverV2LocalSeamError(str(exc)) from exc
-            _post_sweep_phase_best_effort("sweep_complete")
+            finally:
+                if playback_started is not None:
+                    playback_started.clear()
+                cancel_ladder()
+            _post_sweep_phase_best_effort(HOST_PHASE_SWEEP_COMPLETE)
 
         def consume(index: int, attempt: int, result: Any, entry: Any = None):
             # Same local-seam boundary as on_armed, for consume_capture's
@@ -3556,6 +3844,9 @@ def prepare_v2_session(
         session_volume_plan().set_wall_clock_ceiling_s(
             session_wall_clock_ceiling_s(spec.capture_plan)
         )
+        # One signal per session, shared by the play seam (which fires it) and
+        # the runner (which installs the armed capture's phase ladder on it).
+        playback_started = PlaybackStartSignal()
         play = bind_production_play(
             run_async=run_async,
             camilla_factory=camilla_factory,
@@ -3569,6 +3860,7 @@ def prepare_v2_session(
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
             declared_sensitivities=context.declared_sensitivities,
+            on_playback_started=playback_started.fire,
         )
         conductor = CrossoverV2Conductor.hydrate(
             prior_snapshot,
@@ -3613,6 +3905,7 @@ def prepare_v2_session(
             evidence_refs=refs,
             run_async=run_async,
             camilla_factory=camilla_factory,
+            playback_started=playback_started,
         )
         return rc
 
@@ -3729,6 +4022,9 @@ def prepare_v2_verify(
         _publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
+        # One signal per session, shared by the play seam (which fires it) and
+        # the runner (which installs the armed capture's phase ladder on it).
+        playback_started = PlaybackStartSignal()
         play = bind_production_play(
             run_async=run_async,
             camilla_factory=camilla_factory,
@@ -3742,6 +4038,7 @@ def prepare_v2_verify(
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
             declared_sensitivities=context.declared_sensitivities,
+            on_playback_started=playback_started.fire,
         )
         conductor = CrossoverV2Conductor(
             session_id=relay_session_id,
@@ -3797,6 +4094,7 @@ def prepare_v2_verify(
             stop_event=stop_event,
             stop_lock=stop_lock,
             evidence_refs=refs,
+            playback_started=playback_started,
         )
         return rc
 
