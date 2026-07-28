@@ -39,26 +39,40 @@ WAV channels so the CamillaDSP commissioning graph stays static and provable.
 
 **Courtesy-tone prelude (issue #1677).** Each composer takes an opt-in
 ``courtesy_prelude`` flag that splices a short "beep beep beep" + ~3 s of
-silence in DIRECTLY AHEAD OF THE SOUND THE BEEPS ANNOUNCE -- a pre-capture
+silence in AHEAD OF EVERY SOUND THE BEEPS ANNOUNCE -- a pre-capture
 "quiet please" warning played from the speaker under test itself, once per
 capture group (CHECK/MEASURE/VERIFY each get their own).
 
-*Placement is the message* (flow-simplification plan §2.5): the prelude used
-to be prepended to the WHOLE program, which left the CHECK ambient window,
-the behavioural-linearity pilot pair, and the pre-sweep guard sitting between
-the beeps and the sound they announce -- on hardware, "three beeps, a long
-gap, then the sweep". Each composer now names the cursor in front of its own
-first SWEEP, so the interval from the last beep to the first audible
-measurement content is :data:`COURTESY_TONE_TRAILING_SILENCE_S` and nothing
-more (:func:`courtesy_beep_to_stimulus_gap_s` derives it from any composed
-program; a composition test pins it).
+*Placement is the message* (flow-simplification plan §2.5, amended
+2026-07-28 by issues #1810 / #1812). Two rules, in priority order:
 
-"First sweep" rather than "first stimulus" is exact and deliberate: on
-MEASURE and VERIFY the leading pilot pair is itself stimulus-kind, and it
-sits AHEAD of the beeps as lead-in, because it is behavioural-linearity
-evidence rather than the measurement the warning is about. Only on CHECK,
-whose pilots ARE the measurement, do the beeps precede a pilot. It rides the
-SAME admitted
+1. **Nothing audible precedes the first beep.** PR #1771 read §2.5's "move
+   every lead-in ahead of the beeps" as covering the leading pilot pair,
+   and left MEASURE/VERIFY opening on two FULL-GAIN pilot chirps at t=0,
+   with the (6 dB quieter) beeps at t≈4 s behind them. On hardware that is
+   "chirp, chirp, then beep beep beep" -- the warning arriving after the
+   sound it warns about, which the owner heard on 2026-07-28. A pilot is
+   stimulus, not lead-in: it is as loud as the sweep and it is the whole
+   input to the behavioural-linearity verdict. The beeps go first.
+2. **The beeps are followed by the settle and nothing else** -- §2.5's own
+   requirement, preserved. The single thing allowed to sit between the
+   settle and the first stimulus is the pre-pilot ambient window
+   (:data:`PILOT_AMBIENT_WINDOW_S`), which is silence by construction and
+   which MUST be measured with the room already quiet, i.e. after the
+   warning rather than before it. The bound on the interval is therefore
+   :data:`COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S` (settle + that window, and
+   nothing else); :func:`courtesy_beep_to_stimulus_gap_s` derives the
+   actual interval from any composed program, and composition tests pin
+   both rules.
+
+CHECK is the one composer whose prelude does not sit at sample 0, and it
+satisfies both rules anyway: its 12 s ``ambient`` window is the SESSION's
+room-noise measurement (the ambient band-floor report and the gain solve
+both read it), deliberately taken before the household is asked to go
+quiet, and it is silence -- so nothing audible precedes its beeps, which
+land directly in front of the pilots that ARE its measurement.
+
+The prelude rides the SAME admitted
 playback as the stimulus that follows it -- never a second, unguarded
 playback path (see AGENTS.md's ``/sound/`` Combined-test-wedge cautionary
 tale) -- because the prelude is just more segments on the one
@@ -128,6 +142,13 @@ KIND_COURTESY_TONE = "courtesy_tone"
 # program that uses it would be refused as if it leaked/tampered energy.
 KNOWN_AUDIBLE_KINDS = STIMULUS_KINDS | frozenset({KIND_COURTESY_TONE})
 
+# The one segment id a program's room-listening (noise-floor) window carries,
+# on every phase that has one. Named once here rather than spelled as a
+# literal in the composers and again in ``program_analysis``, which looks the
+# window up by id to feed the pilot SNR guard — a rename in one place without
+# the other would silently disable that guard (issue #1810's failure mode).
+AMBIENT_SEGMENT_ID = "ambient"
+
 # Measurement sweeps live in [150 Hz, 23 kHz]: long LF reach is not needed at a
 # ~250 Hz gated validity floor, and bass belongs to the room / bass-extension
 # passes (design §5.2). Each driver's swept band is its declared band
@@ -144,12 +165,16 @@ MEASURE_SWEEP_F_HI_HZ = 23_000.0
 # (sweep-composition PR-A, #1668): the first is the primary, the remaining
 # N-1 are bit-identical repeats used for the in-capture drift/glitch
 # estimator (design §3.1) — now for BOTH drivers, not just the woofer.
-# At the defaults this composes a ~35.8 s / ~3.4 MB mono-WAV MEASURE
-# capture against the 5 MB
+# At the production defaults this composes a ~38.4 s MEASURE program; the
+# capture-side mono 16-bit WAV (program + the 2 s relay entry margin) is
+# ~3.70 MiB against the 5 MiB
 # jasper.active_speaker.test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES
-# upload cap (headroom ~2.9 MB pre-#1668 → ~1.2 MB today, after the N=3
-# repeats AND the #1677 courtesy prelude's ~0.33 MB) — raising
-# repeat_count OR any role's sweep_durations must re-check that cap.
+# upload cap, i.e. ~1.30 MiB of headroom — spent down from ~2.9 MB pre-#1668
+# by the N=3 repeats, the #1677 courtesy prelude (~0.33 MB) and the #1810
+# pre-pilot ambient window (~0.09 MiB). Raising repeat_count, any role's
+# sweep_durations, or PILOT_AMBIENT_WINDOW_S must re-check that cap;
+# ``test_worst_case_measure_with_prelude_stays_under_capture_wav_cap`` is
+# where it fails if you don't.
 MEASURE_REPEAT_COUNT = 3
 
 # The unit-peak reference level the per-segment digital gain is applied ON TOP
@@ -168,6 +193,29 @@ DEFAULT_PILOT_GAP_S = 0.5
 # Two known relative levels, 10 dB apart, for the behavioral linearity check
 # (design §3.4): the captured level delta must match the programmed delta.
 DEFAULT_PILOT_LEVELS_DB = (-10.0, 0.0)
+
+# --- pre-pilot ambient window (issue #1810) ---
+# A short silence immediately BEFORE a MEASURE/VERIFY leading pilot pair, so
+# those pilots' own in-band noise floor is measurable on every phase instead
+# of on CHECK alone. Until 2026-07-28 those programs opened directly on the
+# pilots and had no such window: `program_analysis._pilot_observations` then
+# had no ambient evidence, its in-band SNR was `+inf` BY DEFINITION, and the
+# `PILOT_MIN_SNR_DB` guard on the behavioural-linearity verdict was
+# unconditionally satisfied — so a pilot pair drowned in room noise (issue
+# #1810: a freshly-applied correction dropped the pilot band 14-18 dB and
+# left the quiet pilot ~5 dB over the room floor, compressing the captured
+# two-pilot delta from 10 dB to 6 dB) failed the linearity ratio and was
+# reported to the household as the PHONE's microphone misbehaving.
+#
+# 1 s: long enough for a stable in-band RMS estimate at the lowest pilot band
+# edge (VERIFY_PILOT_F_LO_HZ = 200 Hz → ~200 cycles; a MEASURE pilot rides
+# the driver band from MEASURE_SWEEP_F_LO_HZ = 150 Hz → ~150), short enough
+# that the 15 windowed captures of a Full-tier cloud session cost ~15 s of
+# session wall clock and ~94 KiB of the 5 MiB per-capture upload budget.
+# Placed AFTER the courtesy settle (see the module docstring) so it samples
+# the room the household has already been asked to quiet — the same room the
+# pilots immediately play into.
+PILOT_AMBIENT_WINDOW_S = 1.0
 
 # --- MEASURE phase defaults ---
 DEFAULT_MEASURE_GUARD_S = 2.0
@@ -230,6 +278,15 @@ COURTESY_TONE_TRAILING_SILENCE_S = 3.0
 # courtesy_tone_gain_db). 2026-07-23 owner spec: "derive the beep gain from
 # the session's existing plan (e.g. the pilot gain − 6 dB)".
 COURTESY_TONE_MARGIN_DB = 6.0
+# §2.5's acceptance criterion as ONE number: the longest interval any composed
+# program may leave between its last courtesy beep and its first audible
+# measurement content. The settle the owner specified, plus (at most) the
+# pre-pilot ambient window that has to be measured inside the quiet the beeps
+# just asked for — and nothing else. A composer that reinstates a lead-in
+# between the beeps and the stimulus fails the test that reads this.
+COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S = (
+    COURTESY_TONE_TRAILING_SILENCE_S + PILOT_AMBIENT_WINDOW_S
+)
 
 
 @dataclass(frozen=True)
@@ -545,6 +602,27 @@ def _stimulus(
     )
 
 
+def _append_pilot_ambient_window(
+    segments: list[ProgramSegment], cursor: int,
+) -> int:
+    """Append the pre-pilot ambient window (issue #1810); return the cursor.
+
+    A plain silence segment named :data:`AMBIENT_SEGMENT_ID`, so
+    ``program_analysis`` finds it by the SAME id it already reads on CHECK
+    and the pilot SNR guard becomes live on every phase that has pilots.
+    Emitted only alongside a leading pilot pair — it exists to give those
+    pilots a noise floor, so a program with no pilots stays byte-identical
+    to the pre-#1810 shape.
+
+    See :data:`PILOT_AMBIENT_WINDOW_S` for the duration rationale and the
+    module docstring for why it sits after the courtesy settle rather than
+    before the beeps.
+    """
+    n = _seconds_to_samples(PILOT_AMBIENT_WINDOW_S, PROGRAM_SAMPLE_RATE_HZ)
+    segments.append(_silence(AMBIENT_SEGMENT_ID, cursor, n))
+    return cursor + n
+
+
 def _append_leading_pilot_pair(
     segments: list[ProgramSegment],
     cursor: int,
@@ -720,20 +798,28 @@ def courtesy_tone_stimulus(segment: ProgramSegment):
 def courtesy_beep_to_stimulus_gap_s(program: ExcitationProgram) -> float | None:
     """Seconds from the LAST courtesy beep to the first stimulus after it.
 
-    The acceptance criterion of the §2.5 pacing fix, made computable: this
-    must be :data:`COURTESY_TONE_TRAILING_SILENCE_S` — the settle the owner
-    specified — and nothing more, for every composed program that carries a
-    prelude. Returns ``None`` for a program with no courtesy prelude, or one
-    whose prelude has no stimulus after it at all (which would be a
-    composition bug, not a pacing question).
+    The acceptance criterion of the §2.5 pacing fix, made computable. Since
+    the 2026-07-28 reorder (issues #1810 / #1812) EVERY audible segment
+    follows the beeps, so "the first stimulus after them" is simply the
+    program's first stimulus: the leading pilot pair on MEASURE/VERIFY, the
+    first pilot on CHECK, the sweep on a legacy pilot-less program. Two
+    legitimate values, both bounded by
+    :data:`COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S`:
+
+    * :data:`COURTESY_TONE_TRAILING_SILENCE_S` — the settle alone, when the
+      first stimulus follows the prelude directly (CHECK; a program composed
+      without a leading pilot pair).
+    * that plus :data:`PILOT_AMBIENT_WINDOW_S` — when the pre-pilot ambient
+      window sits in between, which it must, because a noise floor measured
+      before the "go quiet" warning is not the floor the pilots play into.
+
+    Returns ``None`` for a program with no courtesy prelude, or one whose
+    prelude has no stimulus after it at all (which would be a composition
+    bug, not a pacing question).
 
     Derived from the schedule rather than from the constants, so a composer
     that quietly reinstated a lead-in between the beeps and the stimulus fails
     the test that reads this instead of silently lengthening the wait again.
-
-    "The first stimulus AFTER the beeps" is the sweep on MEASURE/VERIFY and
-    the first pilot on CHECK — the leading pilot pair on the other two sits
-    ahead of the prelude by design, so it is not what this measures.
     """
     beeps = [seg for seg in program.segments if seg.kind == KIND_COURTESY_TONE]
     if not beeps:
@@ -772,16 +858,22 @@ def _insert_courtesy_prelude(
     its first sweep — the CHECK ambient window (12 s), the behavioural-
     linearity pilot pair (~2.6 s), the pre-sweep guard. On hardware that read
     as "three beeps, a long gap, then the sweep", which is exactly what the
-    beeps must not mean: their whole message is "the sweep is imminent, go
-    quiet now". Each composer therefore hands the cursor that sits directly in
-    front of its first SWEEP, so the interval from the last beep to the first
-    audible measurement content is the settle and nothing else.
+    beeps must not mean: their whole message is "the measurement is imminent,
+    go quiet now". Each composer therefore hands the cursor that sits directly
+    in front of the first thing it is announcing, so the interval from the
+    last beep to the first stimulus is the settle (plus, where one exists, the
+    pre-pilot ambient window — see :data:`COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S`)
+    and nothing else.
 
-    "First sweep", not "first stimulus": on MEASURE and VERIFY the leading
-    pilot pair is stimulus-kind but is deliberately LEFT AHEAD of the beeps,
-    because it is behavioural-linearity evidence rather than the measurement
-    the warning announces. CHECK is the exception whose pilots ARE the
-    measurement, so there the cursor lands in front of them.
+    **What "the first thing it is announcing" means (issue #1812, 2026-07-28).**
+    Between #1771 and this change it meant the first SWEEP, on the theory
+    that a leading pilot pair is lead-in rather than measurement. That was
+    wrong on hardware: a pilot is a full-gain chirp, and MEASURE/VERIFY
+    therefore opened with two audible chirps at t=0 ahead of the quieter
+    beeps. It now means the first audible content of any kind — so on a
+    program with a leading pilot pair the cursor is sample 0, and nothing
+    audible can precede the warning. CHECK still splices after its (silent)
+    12 s session-ambient window; see the module docstring.
 
     Composition order is free for the analysis, which locates every segment by
     its recorded offset (``program_analysis._locate_segments``) and anchors on
@@ -872,12 +964,15 @@ def build_check_program(
     segments: list[ProgramSegment] = []
     cursor = 0
     ambient_n = _seconds_to_samples(ambient_s, PROGRAM_SAMPLE_RATE_HZ)
-    segments.append(_silence("ambient", cursor, ambient_n))
+    segments.append(_silence(AMBIENT_SEGMENT_ID, cursor, ambient_n))
     cursor += ambient_n
-    # The room-listening window is a LEAD-IN, so the courtesy beeps go after
-    # it (§2.5): the ambient measurement is what the program needs before its
-    # first stimulus, and putting 12 s of it between the beeps and the pilots
-    # is precisely the "long gap" the beeps promised would not be there.
+    # The room-listening window is a SILENT lead-in, so the courtesy beeps go
+    # after it (§2.5): the ambient measurement is what the program needs
+    # before its first stimulus, and putting 12 s of it between the beeps and
+    # the pilots is precisely the "long gap" the beeps promised would not be
+    # there. Nothing audible precedes the beeps either way (issue #1812's
+    # rule) — this window is silence, and it is the SESSION's room-noise
+    # measurement, deliberately taken before the household is asked to quiet.
     prelude_at = cursor
 
     gap_n = _seconds_to_samples(pilot_gap_s, PROGRAM_SAMPLE_RATE_HZ)
@@ -956,7 +1051,8 @@ def build_measure_program(
     ch0), ``roles_bands[1]`` is the upper (tweeter, ch1). Layout for
     ``repeat_count`` cycles (default :data:`MEASURE_REPEAT_COUNT`)::
 
-        [pilot lo → gap → pilot hi → gap →]  (v2, when leading pilots requested)
+        [ambient window → pilot lo → gap → pilot hi → gap →]
+                                     (v2, when leading pilots requested)
         guard silence
           → woofer sweep 1 → MESM gap → tweeter sweep 1 → MESM gap
           → woofer sweep 2 → MESM gap → tweeter sweep 2 → MESM gap
@@ -984,15 +1080,16 @@ def build_measure_program(
     ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` pilot pair on ``leading_pilot_role``'s
     channel (default the lower/woofer driver) so this capture carries its own
-    behavioral-linearity evidence. ``None`` (the default) omits the leading
-    pilot pair — the program starts at ``guard`` either way.
+    behavioral-linearity evidence, preceded by the short
+    :data:`PILOT_AMBIENT_WINDOW_S` room-listening window that makes those
+    pilots' SNR measurable (issue #1810). ``None`` (the default) omits both —
+    the program then starts at ``guard``, byte-identical to the pre-v2 shape.
 
     ``courtesy_prelude`` (issue #1677) OPT-IN inserts the "beep beep beep" +
-    silence warning (see the module docstring) directly in front of the first
-    SWEEP — so the leading pilot pair, which is stimulus-kind but is
-    behavioural-linearity evidence rather than the measurement the beeps
-    announce, stays AHEAD of the beeps rather than behind them (the §2.5
-    pacing move, 2026-07-27; it prepended to the whole program before that).
+    silence warning (see the module docstring) in front of the first AUDIBLE
+    content: sample 0 when a leading pilot pair is requested (the pilots are
+    full-gain stimulus, so nothing audible may precede the warning — issue
+    #1812, 2026-07-28), otherwise directly in front of the first sweep.
     ``False`` (the default) is byte-identical to the pre-#1677 composer.
     """
     roles = _validate_roles(roles_bands)
@@ -1038,6 +1135,7 @@ def build_measure_program(
 
     segments: list[ProgramSegment] = []
     cursor = 0
+    prelude_at: int | None = None
     if leading_pilot_gains_db is not None:
         if len(leading_pilot_gains_db) != 2:
             raise ValueError("leading_pilot_gains_db must be exactly two levels")
@@ -1050,6 +1148,12 @@ def build_measure_program(
                 )
             pilot_rb = matches[0]
         p_f1, p_f2 = _band(pilot_rb)
+        # The pilot pair is full-gain audible stimulus, so the beeps announce
+        # it too and belong in front of it (issue #1812) — sample 0. The
+        # ambient window then sits inside the settle, immediately before the
+        # pilots whose noise floor it measures (issue #1810).
+        prelude_at = cursor
+        cursor = _append_pilot_ambient_window(segments, cursor)
         cursor = _append_leading_pilot_pair(
             segments, cursor,
             role=pilot_rb.role,
@@ -1064,11 +1168,11 @@ def build_measure_program(
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("guard", cursor, guard_n))
     cursor += guard_n
-    # Everything the program needs before its first SWEEP — the pilot pair and
-    # the guard silence — is lead-in, so the beeps land here (§2.5). The
-    # prelude's own trailing settle then sits directly in front of the first
-    # sweep, which is what the beeps are announcing.
-    prelude_at = cursor
+    if prelude_at is None:
+        # No leading pilot pair (the legacy shape): the first audible content
+        # is the sweep, the guard silence ahead of it is ordinary lead-in, and
+        # the beeps land directly in front of the sweep they announce (§2.5).
+        prelude_at = cursor
 
     def _sweep(segment_id: str, rb: RoleBand, f1: float, f2: float, dur: float) -> ProgramSegment:
         seg = _stimulus(
@@ -1130,16 +1234,19 @@ def build_verify_program(
 ) -> ExcitationProgram:
     """Compose the VERIFY program (design §5.2): a mono full-band summed sweep.
 
-    One channel: ``[pilot lo → gap → pilot hi → gap →]`` (v2, when leading
-    pilots requested) guard silence + one full-band summed ESS (~6 s) + tail,
+    One channel: ``[ambient window → pilot lo → gap → pilot hi → gap →]``
+    (v2, when leading pilots requested) guard silence + one full-band summed
+    ESS (~6 s) + tail,
     played through the APPLIED production graph (the real system, not a
     commissioning construct). ``fc_hz`` widens the low bound when the crossover
     is low so the lower shoulder ``fc/2`` is always excited:
     ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
 
     ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
-    prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``) so
-    VERIFY also carries its own behavioral-linearity evidence. The pilot rides
+    prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``),
+    preceded by the :data:`PILOT_AMBIENT_WINDOW_S` room-listening window
+    (issue #1810), so VERIFY also carries its own behavioral-linearity
+    evidence AND the noise floor needed to trust it. The pilot rides
     its OWN band (W6.7 ruling 2) — a flat mid-woofer region of the applied
     summed response, ``[VERIFY_PILOT_F_LO_HZ, min(VERIFY_PILOT_F_HI_HZ,
     fc/VERIFY_PILOT_FC_CLEARANCE_RATIO)]``, falling back to ``[fc/8, fc/4]``
@@ -1151,11 +1258,9 @@ def build_verify_program(
     is byte-identical to the pre-v2 composer.
 
     ``courtesy_prelude`` (issue #1677) OPT-IN inserts the "beep beep beep" +
-    silence warning (see the module docstring) directly in front of the first
-    SWEEP — so the leading pilot pair, which is stimulus-kind but is
-    behavioural-linearity evidence rather than the measurement the beeps
-    announce, stays AHEAD of the beeps rather than behind them (the §2.5
-    pacing move, 2026-07-27; it prepended to the whole program before that).
+    silence warning (see the module docstring) in front of the first AUDIBLE
+    content: sample 0 when a leading pilot pair is requested (issue #1812,
+    2026-07-28), otherwise directly in front of the summed sweep.
     ``False`` (the default) is byte-identical to the pre-#1677 composer. VERIFY has no
     program-admission gate (it rides the applied production graph — see
     ``jasper.active_speaker.program_admission``'s ``_validate_program``), so
@@ -1171,6 +1276,7 @@ def build_verify_program(
 
     segments: list[ProgramSegment] = []
     cursor = 0
+    prelude_at: int | None = None
     if leading_pilot_gains_db is not None:
         if len(leading_pilot_gains_db) != 2:
             raise ValueError("leading_pilot_gains_db must be exactly two levels")
@@ -1182,6 +1288,10 @@ def build_verify_program(
         pilot_hi = min(VERIFY_PILOT_F_HI_HZ, fc_hz / VERIFY_PILOT_FC_CLEARANCE_RATIO)
         if not pilot_lo < pilot_hi:
             pilot_lo, pilot_hi = fc_hz / 8.0, fc_hz / 4.0
+        # Same ordering rule as MEASURE (issues #1810 / #1812): beeps first,
+        # then the settle, then the ambient window, then the pilots.
+        prelude_at = cursor
+        cursor = _append_pilot_ambient_window(segments, cursor)
         cursor = _append_leading_pilot_pair(
             segments, cursor,
             role=VERIFY_PILOT_ROLE,
@@ -1196,9 +1306,9 @@ def build_verify_program(
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("guard", cursor, guard_n))
     cursor += guard_n
-    # Same lead-in rule as MEASURE (§2.5): pilots + guard, then the beeps,
-    # then the settle, then the sweep they are announcing.
-    prelude_at = cursor
+    if prelude_at is None:
+        # Legacy pilot-less VERIFY: the beeps land in front of the sweep.
+        prelude_at = cursor
 
     sweep = _stimulus(
         segment_id="sweep_verify",

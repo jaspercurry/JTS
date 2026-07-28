@@ -837,6 +837,21 @@ REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
 # independent of the linearity outcome) rather than blaming the phone's
 # microphone when the room itself was the problem.
 REASON_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
+# Issue #1810 (2026-07-28): the same discriminator W6.12 gave CHECK, for the
+# phases CHECK's evidence cannot speak for. MEASURE / cloud / VERIFY each
+# carry their own leading pilot pair, and since #1810 their own pre-pilot
+# ambient window, so `analysis.pilot_snr_ok` is a real verdict there: False
+# means the quiet pilot did not clear the room's own in-band floor by enough
+# to trust ANY level comparison drawn from the pair. That is a statement
+# about the room and the playback level — a loud room, a mic too far away, or
+# (the session that exposed this) a freshly-applied correction that dropped
+# the pilot band 14-18 dB and left the quiet pilot ~5 dB over the floor. It is
+# NOT evidence about the phone's microphone, which is exactly what the copy
+# said before this code existed. `_pilot_observations` already forces
+# ``linearity_ok`` True whenever the SNR guard fails, so this branch is the
+# only path that can fail on it, and every verdict below checks it BEFORE
+# `REASON_AGC_BEHAVIORAL_FAIL`.
+REASON_PILOT_LEVEL_COLLAPSE = "pilot_level_collapse"
 REASON_SNR_FLOOR = "snr_floor"
 REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 REASON_CLIPPED = "clipped"
@@ -983,12 +998,37 @@ class ReasonSpec:
 REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_AGC_BEHAVIORAL_FAIL: ReasonSpec(
         REASON_AGC_BEHAVIORAL_FAIL, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "Your phone's microphone changed its own levels mid-measurement. "
+        # Copy amended 2026-07-28 (issue #1810). It used to state the cause
+        # outright — "Your phone's microphone changed its own levels
+        # mid-measurement" — and the JTS3 session that filed the issue proved
+        # that claim can be false: the pilot pair had collapsed into the room
+        # floor, the only direct recording-chain evidence path
+        # (``pilot_transfer_step_db``) was null, and the household was told to
+        # go re-allow a microphone that had done nothing wrong. What this code
+        # actually observes is that the captured two-pilot level delta did not
+        # match the programmed one at a level where it should have. Two things
+        # produce that — the phone's input chain riding gain, or the speaker's
+        # own output compressing — so the copy names the observation and the
+        # one action that helps either way. The definite mic accusation now
+        # lives ONLY on REASON_VERIFY_LEVEL_SHIFT, which has the cross-attempt
+        # transfer step to back it.
+        "The two test tones didn't come back at the levels JTS played them. "
         "Re-allow the microphone, then try again.",
     ),
     REASON_NOISY_ROOM_LINEARITY: ReasonSpec(
         REASON_NOISY_ROOM_LINEARITY, TEMPLATE_FIX_AND_RETRY, 1, "",
         "The room got loud during that measurement — quiet it and try again.",
+    ),
+    REASON_PILOT_LEVEL_COLLAPSE: ReasonSpec(
+        REASON_PILOT_LEVEL_COLLAPSE, TEMPLATE_FIX_AND_RETRY, 1, "",
+        # One reason, one action (the Language guide) — but the cause is
+        # genuinely two-sided and naming only half of it would be the same
+        # over-claim this code exists to stop. "Not your phone" is the point:
+        # the household's previous experience of this failure was being told
+        # to re-allow a microphone that was working.
+        "The test tones didn't rise clearly above the room — it was too loud, "
+        "or the speaker too quiet, for this check. Quiet the room or move the "
+        "phone closer, then try again.",
     ),
     REASON_SNR_FLOOR: ReasonSpec(
         REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1, "",
@@ -1620,18 +1660,26 @@ def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
     ``level_hi_dbfs`` safety note: ``PilotObservation``'s own docstring warns
     it "must never feed an ABSOLUTE-level consumer" (ambient subtraction
     shifts it by however much ambient power was removed). This use is safe
-    for TWO independent reasons: (1) it is a RELATIVE cross-ATTEMPT
-    comparison (this attempt's transfer minus the FIRST attempt's), never a
-    true absolute-level read; and (2) a v2 MEASURE/VERIFY leading pilot pair
-    is built with NO ambient window at all (``program_analysis._pilot_verdicts``'s
-    docstring: "a MEASURE/VERIFY pilot pair has no leading ambient window of
-    its own"), so ``_pilot_observations`` degrades ambient subtraction to a
-    no-op for every VERIFY pilot today — ``level_hi_dbfs`` here is the plain
-    band-relative in-band RMS level, not an ambient-adjusted one. If VERIFY's
-    leading pilot pair is ever given an ambient window in the future, this
-    gate needs to be revisited: two attempts observed against DIFFERENT
-    ambient levels would inject an ambient-difference confound into a step
-    that is supposed to isolate the recording chain's own drift.
+    for TWO independent reasons.
+
+    (1) It is a RELATIVE cross-ATTEMPT comparison (this attempt's transfer
+    minus the FIRST attempt's), never a true absolute-level read.
+
+    (2) The ambient-difference confound the older version of this note
+    deferred is now REAL but bounded far below the gate. Until issue #1810
+    (2026-07-28) a VERIFY pilot pair had no ambient window at all, so
+    subtraction was a literal no-op here; it now has a ~1 s pre-pilot window
+    and subtraction is live. The bound: ``_verify_verdict`` refuses any
+    attempt whose ``pilot_snr_ok`` is False BEFORE reaching the G3 block, so
+    every attempt that gets here cleared ``PILOT_MIN_SNR_DB`` (≈12.4 dB) on
+    the QUIET pilot — and the HI pilot sits a further
+    ``PILOT_LEVEL_DELTA_DB`` (10 dB) above it, i.e. ≥22.4 dB in-band SNR. At
+    that SNR the subtraction moves ``level_hi_dbfs`` by at most
+    ``10·log10(1 − 10**−2.24)`` ≈ **0.025 dB**, so two admissible attempts can
+    differ by at most ~0.05 dB from this term alone — an order of magnitude
+    under :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` (0.35 dB). Lowering
+    that ceiling toward ~0.1 dB, or raising ``PILOT_AMBIENT_WINDOW_S``'s trust
+    without the SNR gate in front of it, is what would put this back in play.
     """
     return {
         pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db
@@ -1659,6 +1707,19 @@ def _measure_validity_floor_hz(analysis: ProgramAnalysis) -> float | None:
         if r.validity_floor_hz is not None
     ]
     return max(floors) if floors else None
+
+
+def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
+    """The lowest quiet-pilot in-band SNR across this capture's pilots.
+
+    The number the ``pilot_snr_ok`` aggregate (an ``all(...)``) was
+    thresholded from, so the diag line says HOW low, not just that it was.
+    ``None`` when there are no pilots, or when every SNR is ``+inf`` — the
+    "no ambient evidence to validate against" sentinel, which is not a
+    measurement and must not be logged as one (JSON has no infinity anyway).
+    """
+    finite = [p.snr_db for p in analysis.pilots if math.isfinite(p.snr_db)]
+    return round(min(finite), 2) if finite else None
 
 
 def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
@@ -4150,10 +4211,12 @@ class CrossoverV2Conductor:
             # runs ``_solve_gain_plan`` unconditionally, before this branch),
             # independent of whether linearity itself passed — reuse that
             # existing evidence rather than re-deriving a second ambient
-            # judgment. Only CHECK gets this distinction: MEASURE/VERIFY's
-            # leading pilot pair has no ambient window of its own (see
-            # ``_pilot_verdicts``'s docstring), so there is no comparably
-            # clean signal to judge "was the room loud" there yet.
+            # judgment. The other phases reach the same honest destination by
+            # a different route: since issue #1810 their own pre-pilot ambient
+            # window makes ``pilot_snr_ok`` a real verdict, and they branch on
+            # it to ``REASON_PILOT_LEVEL_COLLAPSE`` above their own linearity
+            # check. CHECK keeps the gain-solve route because it already has
+            # a stronger, band-resolved ambient judgment in hand.
             if analysis.gain_plan is not None and not analysis.gain_plan.snr_floor_ok:
                 return PhaseVerdict(False, REASON_NOISY_ROOM_LINEARITY)
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
@@ -4209,6 +4272,13 @@ class CrossoverV2Conductor:
         if _any_sweep_clipped(analysis):
             self._rearm_measure_after_transient(extra_backoff_db=CLIP_RETRY_BACKOFF_DB)
             return PhaseVerdict(False, REASON_CLIPPED)
+        if analysis.pilot_snr_ok is False:
+            # Issue #1810. Ahead of the linearity branch on purpose: below the
+            # SNR floor the two-pilot delta is not evidence about anything
+            # (``_pilot_observations`` has already forced ``linearity_ok``
+            # True), so the honest verdict is about the room and the level,
+            # never the phone's microphone.
+            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
         if analysis.linearity_ok is False:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         if analysis.alignment is not None and analysis.alignment.status != ALIGNMENT_OK:
@@ -4376,6 +4446,11 @@ class CrossoverV2Conductor:
         """
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.pilot_snr_ok is False:
+            # Issue #1810, same ordering rule as the other two verdicts: the
+            # room/level discriminator runs before the linearity branch so a
+            # collapsed pilot pair is never reported as the phone's fault.
+            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
         if analysis.linearity_ok is False:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         response = analysis.summed_response
@@ -5170,6 +5245,9 @@ class CrossoverV2Conductor:
             validity_floor_hz=getattr(response, "validity_floor_hz", None),
             summed_ripple_db=analysis.summed_ripple_db,
             linearity_ok=analysis.linearity_ok,
+            # Issue #1810 — see ``_log_measure_diag``'s note.
+            pilot_snr_ok=analysis.pilot_snr_ok,
+            pilot_snr_db=_worst_pilot_snr_db(analysis),
             glitch=analysis.glitch_detected,
         )
 
@@ -5182,10 +5260,10 @@ class CrossoverV2Conductor:
         # Reset every call — a stale value from a PRIOR attempt must never
         # leak into THIS attempt's diagnostic (mirrors ``_last_measure_guard``'s
         # method-top reset in ``_measure_verdict``, see its own comment).
-        # Every early return below (locate_failed, agc_behavioral_fail,
-        # gate-comparability) runs BEFORE the G3 block gets a chance to
-        # recompute this, so it must not still hold a REAL step number from
-        # an earlier attempt that happened to reach that block —
+        # Every early return below (locate_failed, pilot_level_collapse,
+        # agc_behavioral_fail, gate-comparability) runs BEFORE the G3 block
+        # gets a chance to recompute this, so it must not still hold a REAL
+        # step number from an earlier attempt that reached that block —
         # ``_log_verify_diag`` runs unconditionally after this method
         # returns and would otherwise misreport it as fresh.
         self._verify_pilot_transfer_step_db = None
@@ -5195,6 +5273,13 @@ class CrossoverV2Conductor:
         self._verify_evidence = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.pilot_snr_ok is False:
+            # Issue #1810 — the verdict the JTS3 session of 2026-07-28 should
+            # have got. It runs ahead of BOTH the linearity branch and the G3
+            # transfer gate below: a pilot pair that never cleared the room
+            # floor cannot establish or move a transfer baseline either, so
+            # letting it reach G3 would seed that gate with noise.
+            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
         if analysis.linearity_ok is False:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         # Gate-comparability rule (§5.2): a shorter VERIFY gate manufactures
@@ -5600,6 +5685,14 @@ class CrossoverV2Conductor:
             # shares its reused reason code (see __init__'s comment on
             # ``_last_measure_guard``).
             guard=self._last_measure_guard,
+            # The pilot SNR guard's own evidence (issue #1810). Live on this
+            # phase only since the pre-pilot ambient window shipped; before
+            # that ``pilot_snr_ok`` was True and ``pilot_snr_db`` +inf (logged
+            # as None) by construction, so a REASON_PILOT_LEVEL_COLLAPSE line
+            # with numbers here is what distinguishes a real low-SNR capture
+            # from the structurally-dead guard it replaced.
+            pilot_snr_ok=analysis.pilot_snr_ok,
+            pilot_snr_db=_worst_pilot_snr_db(analysis),
             # (A ``linearization`` field lived here until the 2026-07-27
             # timing move. It reported which path the candidate build took,
             # and the candidate build now happens eight captures later, at the
@@ -5648,6 +5741,12 @@ class CrossoverV2Conductor:
                 round(self._verify_pilot_transfer_step_db, 3)
                 if self._verify_pilot_transfer_step_db is not None else None
             ),
+            # Issue #1810 — see ``_log_measure_diag``'s note. Read alongside
+            # ``pilot_transfer_step_db``: the session that filed the issue
+            # showed a null step next to an agc_behavioral_fail, and these two
+            # fields together are what make that combination legible.
+            pilot_snr_ok=analysis.pilot_snr_ok,
+            pilot_snr_db=_worst_pilot_snr_db(analysis),
             guard=(
                 "pilot_level_shift" if verdict.code == REASON_VERIFY_LEVEL_SHIFT else ""
             ),
@@ -7301,6 +7400,7 @@ __all__ = [
     "TEMPLATE_VOLUME_RECOVERY",
     "REASON_AGC_BEHAVIORAL_FAIL",
     "REASON_NOISY_ROOM_LINEARITY",
+    "REASON_PILOT_LEVEL_COLLAPSE",
     "REASON_SNR_FLOOR",
     "REASON_CHANNEL_MAP_MISMATCH",
     "REASON_CLIPPED",

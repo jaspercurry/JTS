@@ -19,6 +19,8 @@ the repeat sweep).
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from scipy.signal import fftconvolve
@@ -34,6 +36,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    PILOT_MIN_SNR_DB,
     REPEAT_LEVEL_TOLERANCE_DB,
     MeasurementGeometry,
     MeasurementPriors,
@@ -115,12 +118,16 @@ def test_measure_default_layout_is_unchanged_without_pilots():
 def test_measure_leading_pilot_pair_layout_and_gains():
     prog = _measure_program()
     ids = [seg.segment_id for seg in prog.segments]
-    assert ids[:5] == [
+    # The pair is preceded by its own room-listening window (issue #1810) —
+    # without it `_pilot_observations` has no noise floor to judge the pilots
+    # against and the SNR guard on the linearity verdict cannot fire.
+    assert ids[:6] == [
+        "ambient",
         "pilot_woofer_lo", "pilot_gap_woofer_lo",
         "pilot_woofer_hi", "pilot_gap_woofer_hi",
         "guard",
     ]
-    assert ids[5:] == _N3_MEASURE_TAIL_IDS
+    assert ids[6:] == _N3_MEASURE_TAIL_IDS
     lo = prog.segment("pilot_woofer_lo")
     hi = prog.segment("pilot_woofer_hi")
     assert lo.kind == KIND_PILOT and hi.kind == KIND_PILOT
@@ -159,7 +166,8 @@ def test_verify_leading_pilot_pair_is_mono_summed():
     )
     assert prog.channels == 1
     ids = [seg.segment_id for seg in prog.segments]
-    assert ids[:4] == [
+    assert ids[:5] == [
+        "ambient",
         "pilot_summed_lo", "pilot_gap_summed_lo",
         "pilot_summed_hi", "pilot_gap_summed_hi",
     ]
@@ -239,6 +247,131 @@ def test_verify_pilot_linearity_verdict_present():
     # pilot (role "summed") publishes its programmed HI gain too.
     hi = prog.segment("pilot_summed_hi")
     assert res.pilots[0].programmed_hi_gain_db == pytest.approx(hi.gain_db)
+
+
+# --- analysis: the pilot SNR guard, live on MEASURE and VERIFY (#1810) --------
+
+
+def _verify_pilot_program():
+    return build_verify_program(
+        FC_HZ, sweep_s=1.5,
+        leading_pilot_gains_db=(-22.0, -12.0), pilot_duration_s=0.5,
+    )
+
+
+@pytest.mark.parametrize("phase", ["measure", "verify"])
+def test_pilot_snr_is_measured_not_infinite(phase):
+    """Issue #1810's structural defect, pinned.
+
+    ``_pilot_in_band_snr_db`` returns ``+inf`` when there is no ambient
+    evidence — "nothing to validate against, so nothing to distrust". Before
+    the pre-pilot ambient window shipped, that was the ONLY value MEASURE and
+    VERIFY could ever produce, so ``snr_valid = snr_db >= PILOT_MIN_SNR_DB``
+    was satisfied unconditionally and the guard was dead code on both phases.
+
+    A finite number here is the proof the window is actually being read.
+    """
+    prog = _measure_program() if phase == "measure" else _verify_pilot_program()
+    cap = _synthesize(prog)
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res.pilot_snr_ok is True
+    assert math.isfinite(res.pilots[0].snr_db)
+    assert res.pilots[0].snr_db > PILOT_MIN_SNR_DB
+
+
+@pytest.mark.parametrize("phase", ["measure", "verify"])
+def test_pilots_drowned_in_room_noise_fail_snr_not_linearity(phase):
+    """The JTS3 shape of 2026-07-28, reproduced.
+
+    The correction had dropped the pilot band, so the quiet pilot sat just
+    over the room floor and the noise compressed the captured two-pilot delta
+    from 10 dB toward 6 dB. With the guard dead that read as a linearity
+    failure and the household was told its phone's microphone had misbehaved.
+
+    With the guard live the verdict is ``pilot_snr_ok=False``, and
+    ``linearity_ok`` is FORCED True — an untrustworthy estimate must never
+    register as a linearity failure. Both halves are asserted: the second is
+    what makes the conductor's routing honest rather than merely reordered.
+    """
+    prog = _measure_program() if phase == "measure" else _verify_pilot_program()
+    cap = _synthesize(prog)
+    # Attenuate the pilot pair (the correction dropping their band) and raise
+    # the room floor across the whole capture — the ambient window included,
+    # which is exactly why that window has to live next to the pilots. The
+    # 30 dB drop is deeper than the session's measured 14-18 dB because this
+    # fixture's synthetic "room" is far quieter than a real one; what the test
+    # pins is the crossing of `PILOT_MIN_SNR_DB`, not the drop that gets there.
+    for suffix in ("lo", "hi"):
+        role = "woofer" if phase == "measure" else "summed"
+        seg = prog.segment(f"pilot_{role}_{suffix}")
+        start = GLOBAL_OFFSET + seg.start_sample
+        cap[start:start + seg.n_samples] *= 10.0 ** (-30.0 / 20.0)
+    cap = cap + np.random.default_rng(7).normal(0.0, 1e-2, cap.size)
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res.pilot_snr_ok is False
+    assert res.pilots[0].snr_db < PILOT_MIN_SNR_DB
+    assert res.linearity_ok is True
+
+
+@pytest.mark.parametrize("phase", ["measure", "verify"])
+def test_short_ambient_window_does_not_feed_the_channel_map_rise_test(phase):
+    """The window is threaded into the level/SNR path ONLY.
+
+    ``_channel_map_ok``'s TARGET test asks for a ``CHANNEL_MAP_TARGET_RISE_DB``
+    (12 dB) rise over ambient. Feeding it this ~1 s spot estimate would
+    reclassify the exact failure #1810 is about — a pilot pair sitting a few
+    dB over the floor — as ``channel_map_mismatch``, a HARD STOP whose copy
+    blames the speaker wiring. MEASURE/VERIFY therefore keep the
+    total-in-band-energy-fraction fallback, whose tell is that neither rise
+    number is computed.
+    """
+    prog = _measure_program() if phase == "measure" else _verify_pilot_program()
+    cap = _synthesize(prog)
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    pilot = res.pilots[0]
+    assert pilot.channel_map_ok is True
+    assert pilot.channel_map_target_rise_db is None
+    assert pilot.channel_map_cross_rise_db is None
+
+
+@pytest.mark.parametrize(
+    "keep_fraction,expect_evidence", [(0.7, True), (0.1, False)],
+)
+def test_late_started_capture_clips_the_ambient_window_never_slides_it(
+    keep_fraction, expect_evidence,
+):
+    """A capture that began after the program did clips the window's HEAD.
+
+    Two things must hold. (1) The window is clipped, not slid: computing its
+    end from the clamped start instead of its own schedule position would
+    walk it forward onto the first pilot and read that pilot as the room
+    floor — a fabricated loud ambient, i.e. a false ``pilot_level_collapse``
+    on a perfectly good capture. Above
+    ``PILOT_AMBIENT_MIN_USABLE_FRACTION`` the shortened window is still an
+    honest floor, because RMS is length-independent. (2) Below that fraction
+    there is nothing left to measure, and the analysis falls back to "no
+    ambient evidence" — ``+inf`` SNR, pilots trusted — never to a guess.
+    """
+    prog = _measure_program()
+    cap = _synthesize(prog)
+    ambient = prog.segment("ambient")
+    dropped = int((1.0 - keep_fraction) * ambient.n_samples)
+    cut = GLOBAL_OFFSET + ambient.start_sample + dropped
+    res = analyze_program_capture(
+        prog, cap[cut:], SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res.pilot_snr_ok is True
+    if expect_evidence:
+        assert math.isfinite(res.pilots[0].snr_db)
+        assert res.pilots[0].snr_db > PILOT_MIN_SNR_DB
+    else:
+        assert res.pilots[0].snr_db == math.inf
 
 
 # --- analysis: woofer-repeat level agreement ------------------------------------

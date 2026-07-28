@@ -34,7 +34,9 @@ Pipeline (per phase):
 CHECK additionally returns the ambient band floor, per-pilot captured levels +
 the behavioral linearity verdict (§3.4), channel-map sanity, and the solved
 ``GainPlan`` for MEASURE. VERIFY returns the gated summed response + ripple vs a
-supplied predicted sum.
+supplied predicted sum. Every phase with a leading pilot pair also returns
+``pilot_snr_ok`` — a real verdict on all of them since issue #1810 gave
+MEASURE / VERIFY their own short pre-pilot room-listening window.
 
 Reuses the measurement kernel (:mod:`~jasper.audio_measurement.sweep` /
 ``deconv`` / ``gating`` / ``snr_policy`` / ``analysis``) and mirrors
@@ -55,6 +57,7 @@ from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import calibration as calibration_mod
 from jasper.audio_measurement import deconv, gating, snr_policy
 from jasper.audio_measurement.program import (
+    AMBIENT_SEGMENT_ID,
     KIND_PILOT,
     KIND_SWEEP,
     PHASE_CHECK,
@@ -316,7 +319,7 @@ PILOT_FADE_TRIM_S = 0.005
 # (lo) pilot's own in-band power clears the in-band ambient power by enough
 # margin that residual bias from ambient NONSTATIONARITY — the room's true
 # noise power during the ~0.8 s pilot window can differ from the value
-# measured over CHECK's separate, earlier ambient window — stays a small
+# measured over the program's separate, earlier ambient window — stays a small
 # fraction of `LINEARITY_TOLERANCE_DB`. Modeling that mismatch as a bounded
 # multiplicative factor ``k = 10**(AMBIENT_NONSTATIONARITY_DB/10)`` on the
 # ambient power estimate:
@@ -714,18 +717,21 @@ class PilotObservation:
 
     ``snr_db`` is the actual quiet-pilot in-band SNR estimate ``snr_valid``
     is thresholded from (`_pilot_in_band_snr_db`) — kept as a number, not
-    just the pass/fail bool, so a diagnostic consumer (the CHECK diag log
-    event) can see how close a borderline capture ran. ``+inf`` when there
+    just the pass/fail bool, so a diagnostic consumer (the per-phase diag log
+    events) can see how close a borderline capture ran. ``+inf`` when there
     is no ambient window to validate against (nothing to distrust — see
     `_pilot_in_band_snr_db`), matching ``snr_valid``'s default-True stance.
+    Until issue #1810 (2026-07-28) that ``+inf`` was the ONLY value MEASURE
+    and VERIFY could produce, because their programs carried no ambient
+    window at all — so the guard was structurally dead on both phases.
 
     ``channel_map_target_rise_db``/``channel_map_cross_rise_db`` are the two
     rise numbers `_channel_map_ok` computed on the way to ``channel_map_ok``
     (this driver's own band above ambient, and the worst/failing other
-    band's rise above ITS ambient) — diagnostic only, ``None`` when there is
-    no ambient window (the fallback total-energy-fraction test has no rise
-    concept) or, for the cross figure, when there are no other roles to
-    compare against.
+    band's rise above ITS ambient) — diagnostic only, ``None`` on the
+    fallback total-energy-fraction path (which has no rise concept, and is
+    what v2 MEASURE/VERIFY take — see `_pilot_observations`) or, for the
+    cross figure, when there are no other roles to compare against.
 
     ``programmed_hi_gain_db`` is the HI segment's own declared ``gain_db``
     (the digital gain the program composer scheduled it at) — published
@@ -791,8 +797,9 @@ class ProgramAnalysis:
     # ``None`` when there are no pilots (same "no evidence" convention as
     # ``linearity_ok``). False means at least one pilot's quiet-side in-band
     # SNR was too low to trust the ambient-subtracted linearity estimate —
-    # the conductor routes this to `REASON_SNR_FLOOR`, never
-    # `REASON_AGC_BEHAVIORAL_FAIL` (see `crossover_v2_flow._consume_check`).
+    # the conductor routes this to `REASON_SNR_FLOOR` (CHECK) or
+    # `REASON_PILOT_LEVEL_COLLAPSE` (MEASURE / cloud / VERIFY), never to
+    # `REASON_AGC_BEHAVIORAL_FAIL`. Live on every phase since issue #1810.
     pilot_snr_ok: bool | None = None
     gain_plan: GainPlan | None = None
     summed_response: DriverResponse | None = None
@@ -2353,6 +2360,60 @@ def _ambient_from_capture(
     return samples, snr_policy.framed_ambient_band_report(samples, sample_rate, percentile=95)
 
 
+# How much of the scheduled ambient window must actually be present in the
+# capture for it to count as evidence. A capture that started late clips the
+# window's HEAD (never its tail — the pilots follow it), and RMS is
+# length-independent, so a shortened window is still an honest floor estimate;
+# what this rejects is the degenerate case where a couple of hundred samples
+# survive and the estimate is noise about noise. Below the fraction the caller
+# gets ``None`` and the analysis degrades to the pre-#1810 "no ambient
+# evidence, trust the pilots" behaviour — never to a fabricated floor.
+PILOT_AMBIENT_MIN_USABLE_FRACTION = 0.5
+
+
+def _pilot_ambient_samples(
+    program: ExcitationProgram, capture: np.ndarray, global_offset: int,
+) -> np.ndarray | None:
+    """The program's own room-listening window, or ``None`` if it has none.
+
+    Issue #1810: MEASURE/VERIFY programs carry an
+    :data:`~jasper.audio_measurement.program.AMBIENT_SEGMENT_ID` window ahead
+    of their leading pilot pair (``program.PILOT_AMBIENT_WINDOW_S``) so
+    `_pilot_observations`' in-band SNR guard has something to measure against
+    on those phases too. Before that window existed the guard's input was
+    ``+inf`` by construction and it could never fire — the structural defect
+    that let a pilot pair drowned in room noise be reported as the phone's
+    microphone misbehaving.
+
+    Located by SCHEDULE offset (like `_ambient_from_capture`), not by
+    correlation — it is silence, so there is nothing to correlate. That makes
+    it exact for a live capture (the conductor plays the program it composed)
+    and meaningless for a CROSS-ERA replay of an archived capture, where the
+    window lands on whatever the older schedule had at that position. The
+    replay failure direction is the safe one: a too-loud "ambient" reads as
+    low SNR, which forces ``linearity_ok`` True and can never manufacture a
+    false AGC accusation.
+
+    The window is CLIPPED to the capture, never SLID along it: ``end`` is
+    computed from the window's own (possibly negative) schedule position, not
+    from the clamped start, so a capture that began after the program did
+    yields a shorter window rather than one that has walked forward onto the
+    pilot it is supposed to measure the floor for. `_ambient_from_capture`
+    (CHECK's 12 s window) still has the older shape — flagged, not changed
+    here, because its consumer is the gain solve rather than this guard.
+    """
+    try:
+        seg = program.segment(AMBIENT_SEGMENT_ID)
+    except KeyError:
+        return None
+    begin = global_offset + seg.start_sample
+    start = max(0, begin)
+    end = min(capture.size, begin + seg.n_samples)
+    if end - start < PILOT_AMBIENT_MIN_USABLE_FRACTION * seg.n_samples:
+        return None
+    return capture[start:end]
+
+
 def _band_power(samples: np.ndarray, sample_rate: int, f1_hz: float, f2_hz: float) -> float:
     """Mean-square (linear power) of ``samples`` restricted to ``[f1_hz, f2_hz]``.
 
@@ -2408,10 +2469,10 @@ def _pilot_trim_fade(samples: np.ndarray, sample_rate: int) -> np.ndarray:
 def _ambient_subtracted_dbfs(power: float, ambient_power: float) -> float:
     """dB of ``power`` after subtracting ``ambient_power`` (power domain).
 
-    ``ambient_power`` is 0.0 when there is no ambient evidence (a v2
-    MEASURE/VERIFY leading pilot pair has no ambient window of its own — see
-    `_pilot_verdicts`'s docstring); subtracting zero is a no-op, so this
-    degrades to plain in-band RMS in that case.
+    ``ambient_power`` is 0.0 when there is no ambient evidence (a legacy
+    program composed without a room-listening window, or one whose window
+    fell outside the capture — see `_pilot_ambient_samples`); subtracting
+    zero is a no-op, so this degrades to plain in-band RMS in that case.
     """
     signal_power = power - ambient_power if ambient_power > 0 else power
     if signal_power <= 0 or not math.isfinite(signal_power):
@@ -2469,20 +2530,33 @@ def _pilot_observations(
     locations: Sequence[SegmentLocation],
     *,
     ambient_samples: np.ndarray | None = None,
+    channel_map_ambient_samples: np.ndarray | None = None,
 ) -> list[PilotObservation]:
     """Per-role pilot level/linearity/channel-map observations (design §3.4).
 
     Level is measured band-relative (each pilot's OWN declared band, via
     `_band_power` — same Hann+bandpass mechanism `_channel_map_ok` uses, not a
-    second filtering idiom) and, when an ambient window is available (CHECK's
-    own leading silence), ambient-power-subtracted before converting to dB —
+    second filtering idiom) and, when an ambient window is available,
+    ambient-power-subtracted before converting to dB —
     fixing the 2026-07-20 bug where a full-band PEAK estimate let LF room
     rumble inflate the quiet pilot's level and compress the captured delta
-    (see `LINEARITY_TOLERANCE_DB`'s comment). A v2 MEASURE/VERIFY leading
-    pilot pair has no ambient window (`_pilot_verdicts`'s docstring), so
-    ``ambient_samples`` is ``None`` there — subtraction degrades to a no-op
-    (`_ambient_subtracted_dbfs`) and SNR is trusted unconditionally (nothing
-    to validate against).
+    (see `LINEARITY_TOLERANCE_DB`'s comment). With no window at all
+    (``ambient_samples=None`` — a legacy program composed before #1810)
+    subtraction degrades to a no-op (`_ambient_subtracted_dbfs`) and SNR is
+    trusted unconditionally, because there is nothing to validate against.
+
+    **Two ambient parameters, deliberately (issue #1810).**
+    ``ambient_samples`` feeds the level/SNR path; ``channel_map_ambient_samples``
+    feeds `_channel_map_ok`'s TARGET/CROSS rise test. CHECK passes the same
+    12 s window to both — a long, framed, percentile-based room-floor estimate
+    the ±12 dB rise test was designed around. MEASURE/VERIFY pass only the
+    first: their pre-pilot window is a ~1 s spot estimate, sized for the SNR
+    guard, and feeding it to the rise test would reclassify exactly the
+    failure #1810 is about (a pilot pair sitting ~5 dB over the floor, i.e.
+    below `CHANNEL_MAP_TARGET_RISE_DB`) as a channel-map mismatch — a
+    hard-stop verdict whose copy blames the speaker wiring. Their channel-map
+    check therefore keeps the total-in-band-energy-fraction fallback it has
+    always used.
 
     The located segment's fixed composer fade (`_pilot_trim_fade`) is trimmed
     before measuring so the RMS estimate rides the steady-state portion, not
@@ -2577,7 +2651,7 @@ def _pilot_observations(
         )
         channel_ok, channel_target_rise_db, channel_cross_rise_db = _channel_map_ok(
             hi_samples, sample_rate, hi_seg,
-            ambient_samples=ambient_samples, other_bands=other_bands,
+            ambient_samples=channel_map_ambient_samples, other_bands=other_bands,
         )
         out.append(PilotObservation(
             role=role,
@@ -2603,20 +2677,31 @@ def _pilot_verdicts(
     capture: np.ndarray,
     sample_rate: int,
     locations: Sequence[SegmentLocation],
+    *,
+    global_offset: int,
 ) -> tuple[tuple[PilotObservation, ...], bool | None, bool | None, bool | None]:
     """Pilot observations + the aggregate linearity / channel-map / SNR verdicts.
 
     ``None`` verdicts when the program carries no pilots (a legacy MEASURE /
     VERIFY program), so a caller can distinguish "no pilot evidence" from
-    "pilot evidence, all clean". Shared by CHECK, and by v2 MEASURE / VERIFY
-    whose leading pilot pair (design §5.2) carries per-capture linearity
-    evidence CHECK-only verification cannot. Unlike CHECK, a MEASURE/VERIFY
-    pilot pair has no leading ambient window of its own (no silence precedes
-    it), so its channel-map check falls back to `_channel_map_ok`'s
-    total-in-band-energy-fraction test (unchanged from before Fix 1), and its
-    ``pilot_snr_ok`` is always trusted (``True``) — see `_pilot_observations`.
+    "pilot evidence, all clean". Shared by v2 MEASURE / VERIFY, whose leading
+    pilot pair (design §5.2) carries per-capture linearity evidence CHECK-only
+    verification cannot.
+
+    Since issue #1810 (2026-07-28) those programs also carry a short
+    room-listening window immediately ahead of that pilot pair, so
+    ``pilot_snr_ok`` is a REAL verdict here rather than the unconditional
+    ``True`` it used to be: `_pilot_ambient_samples` reads the window at its
+    schedule offset and hands it to the level/SNR path. The channel-map check
+    still uses `_channel_map_ok`'s total-in-band-energy-fraction fallback —
+    see `_pilot_observations` for why that short window must not feed the
+    rise test. A program without the window (legacy, or composed with no
+    leading pilots) behaves exactly as before.
     """
-    pilots = _pilot_observations(program, capture, sample_rate, locations)
+    pilots = _pilot_observations(
+        program, capture, sample_rate, locations,
+        ambient_samples=_pilot_ambient_samples(program, capture, global_offset),
+    )
     linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
     channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
@@ -2647,10 +2732,12 @@ def _channel_map_ok(
        pilot window? (energy did not land in the wrong driver's band — the
        actual map-swap discriminator.)
 
-    Without an ambient window (v2 MEASURE/VERIFY's leading pilot pair has none
-    — see `_pilot_verdicts`), falls back to the original test: energy inside
+    Without an ambient window, falls back to the original test: energy inside
     the declared band must exceed half of the pilot window's TOTAL spectral
-    energy.
+    energy. That is the path v2 MEASURE/VERIFY still take — their pre-pilot
+    window is deliberately NOT threaded here (see `_pilot_observations`'s
+    "two ambient parameters" note) — and the path any legacy program with no
+    window at all takes.
 
     Returns ``(ok, target_rise_db, cross_rise_db)`` — the two rise numbers are
     ADDITIVE diagnostic evidence for operator logging (surfaced on
@@ -2796,12 +2883,17 @@ def analyze_program_capture(
 def _analyze_check(
     program, capture, sample_rate, global_offset, locations, priors,
 ) -> ProgramAnalysis:
-    ambient_seg = program.segment("ambient")
+    ambient_seg = program.segment(AMBIENT_SEGMENT_ID)
     ambient_samples, ambient_report = _ambient_from_capture(
         capture, sample_rate, ambient_seg, global_offset
     )
+    # CHECK's own 12 s session-ambient window feeds BOTH the level/SNR path
+    # and the channel-map rise test — it is the long, framed estimate that
+    # test was designed around (see `_pilot_observations`).
     pilots = _pilot_observations(
-        program, capture, sample_rate, locations, ambient_samples=ambient_samples,
+        program, capture, sample_rate, locations,
+        ambient_samples=ambient_samples,
+        channel_map_ambient_samples=ambient_samples,
     )
     linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
     channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
@@ -2948,10 +3040,11 @@ def _analyze_measure(
             confidence_source="gcc_phat_seed",
         )
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
-    # program opens with a leading pilot pair; legacy programs carry none, so
-    # the verdicts stay ``None`` (byte-identical to the pre-v2 analysis).
+    # program opens with a pre-pilot ambient window + a leading pilot pair;
+    # legacy programs carry neither, so the verdicts stay ``None``
+    # (byte-identical to the pre-v2 analysis).
     pilots, linearity_ok, channel_map_ok, pilot_snr_ok = _pilot_verdicts(
-        program, capture, sample_rate, locations
+        program, capture, sample_rate, locations, global_offset=global_offset,
     )
     return ProgramAnalysis(
         phase=program.phase,
@@ -3280,11 +3373,13 @@ def _analyze_verify(
                 "rms_db_full_band": raw_rms,
                 "max_db_full_band": raw_max,
             }
-    # A v2 VERIFY program opens with a leading pilot pair (design §5.2) so the
-    # post-apply capture carries its own behavioral-linearity evidence too;
-    # legacy VERIFY programs carry none and the verdicts stay ``None``.
+    # A v2 VERIFY program opens with a pre-pilot ambient window + a leading
+    # pilot pair (design §5.2, issue #1810) so the post-apply capture carries
+    # its own behavioral-linearity evidence AND the noise floor needed to
+    # trust it; legacy VERIFY programs carry neither and the verdicts stay
+    # ``None``.
     pilots, linearity_ok, channel_map_ok, pilot_snr_ok = _pilot_verdicts(
-        program, capture, sample_rate, locations
+        program, capture, sample_rate, locations, global_offset=global_offset,
     )
     return ProgramAnalysis(
         phase=program.phase,

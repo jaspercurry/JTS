@@ -373,6 +373,44 @@ interval pin it). Golden wire pins re-derive (program durations shift).
 On-device listen required before merge (this defect was only audible,
 never visible in tests).
 
+> **Amendment, 2026-07-28 (issues #1810 / #1812).** The paragraph above
+> is preserved as written; two of its premises turned out to be wrong,
+> and the implementation that followed them (#1771, the "candidate
+> reorder" taken literally) shipped a worse defect than the one it fixed.
+> Recorded here rather than rewritten, because the reasoning error is the
+> useful part.
+>
+> **Premise 1 — "the pilot pair is not the stimulus itself" — is false.**
+> A leading pilot is a full-gain band-limited chirp, as loud as the sweep.
+> Moving it ahead of the beeps meant MEASURE and VERIFY opened on two
+> audible chirps at t=0 with the 6 dB quieter warning arriving ~4 s later.
+> The deferred on-device listen happened on 2026-07-28 and the owner heard
+> exactly that: "sweeps then beep beep beep." The ordering promise is
+> therefore **not** "beeps immediately before the sweep" but **"the beeps
+> precede every audible thing in the program"**, with the forward settle
+> bound preserved on top of it. The acceptance test pinned only the
+> forward interval, which is why nothing caught this; the backward pin
+> ("no audible content precedes the first courtesy beep") now exists too.
+>
+> **Premise 2 — "any listening window" belongs ahead of the beeps — is
+> false for the window MEASURE/VERIFY needed.** #1810 found the pilot SNR
+> guard structurally dead on every phase but CHECK, for want of a
+> room-listening window ahead of those pilot pairs. A noise floor measured
+> *before* the "go quiet" warning is not the floor the pilots play into, so
+> that window has to sit inside the settle, not ahead of the beeps. The
+> settle bound absorbs it explicitly:
+> `COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S = COURTESY_TONE_TRAILING_SILENCE_S
+> + PILOT_AMBIENT_WINDOW_S` (~4 s on those phases, still ~3 s on CHECK,
+> whose own 12 s ambient window is silent and stays where it is).
+>
+> Shipped order, both rules satisfied: **beeps → settle → ambient window →
+> pilots → guard → sweep** on MEASURE/VERIFY/cloud; **ambient → beeps →
+> settle → pilots** on CHECK. Golden wire pins re-derived again (durations
+> +1000 ms on every entry with a pilot pair; CHECK unchanged). The
+> on-device listen this section required is still owed — it is owed for the
+> *replacement* order now, and the two composition rules are pinned by test
+> in the meantime.
+
 ### 2.6 Per-measurement control: Retake / Next / Stop
 
 Every post-capture screen offers three controls, in the standard

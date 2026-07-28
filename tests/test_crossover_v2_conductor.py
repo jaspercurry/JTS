@@ -289,7 +289,7 @@ def _alignment(
 def _measure_analysis(
     program, *, glitch=False, clipped=False, linearity=True,
     alignment=None, locate_confidence=0.9, gate_ms=8.0,
-    predicted_ripple_db=0.8, sweep_locations=None,
+    predicted_ripple_db=0.8, sweep_locations=None, pilot_snr_ok=None,
 ) -> ProgramAnalysis:
     freqs = np.linspace(100.0, 20000.0, 64)
     locations = (
@@ -318,6 +318,7 @@ def _measure_analysis(
             predicted_ripple_db=predicted_ripple_db, confidence=0.8,
         ),
         linearity_ok=linearity,
+        pilot_snr_ok=pilot_snr_ok,
         predicted_sum=(freqs, np.zeros(64)),
         glitch_detected=glitch,
     )
@@ -337,6 +338,7 @@ def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> Pi
 def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
     pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
+    pilot_snr_ok=None,
 ) -> ProgramAnalysis:
     return ProgramAnalysis(
         phase="verify",
@@ -349,6 +351,7 @@ def _verify_analysis(
         # exclude), so the ``max_db`` parameter still controls the gate.
         verify_tracking={"rms_db": 0.4, "max_db": max_db, "max_db_notch_excluded": max_db},
         linearity_ok=linearity,
+        pilot_snr_ok=pilot_snr_ok,
         pilots=(
             (_verify_pilot(pilot_hi_dbfs, programmed_hi_gain_db=programmed_hi_gain_db),)
             if pilot_hi_dbfs is not None else ()
@@ -985,6 +988,130 @@ def test_check_linearity_fail_blames_the_room_when_ambient_is_elevated():
     verdict = _run_phase(c, 1, 1)
     assert verdict["code"] == "noisy_room_linearity"
     assert verdict["template"] == "fix_and_retry"
+
+
+def test_measure_low_pilot_snr_routes_to_level_collapse_not_agc():
+    """Issue #1810 at MEASURE.
+
+    The guard existed on ``PilotObservation`` all along, but MEASURE programs
+    carried no ambient window, so ``pilot_snr_ok`` could only ever be True
+    there and this branch was unreachable. Now that the composer gives them a
+    pre-pilot window, a capture whose pilots never cleared the room floor gets
+    a verdict about the room and the level — never about the phone.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(program, pilot_snr_ok=False)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["code"] == "pilot_level_collapse"
+    assert verdict["template"] == "fix_and_retry"
+
+
+def test_measure_low_pilot_snr_wins_over_the_linearity_branch():
+    """Ordering is the whole fix. ``_pilot_observations`` forces
+    ``linearity_ok`` True under the SNR floor, but a caller that checked
+    linearity FIRST would still route a hand-built analysis carrying both
+    flags to the mic accusation — and, more importantly, the ordering is what
+    a future analysis change must not be free to invert."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(
+        program, linearity=False, pilot_snr_ok=False,
+    )
+    assert _run_phase(c, 2, 2)["code"] == "pilot_level_collapse"
+
+
+def test_verify_low_pilot_snr_routes_to_level_collapse_not_agc():
+    """Issue #1810 at VERIFY — the JTS3 session of 2026-07-28.
+
+    A freshly-applied correction dropped the pilot band 14-18 dB, the quiet
+    pilot landed ~5 dB over the room floor, the noise compressed the captured
+    two-pilot delta from 10 dB to 6 dB, and the household was told "your
+    phone's microphone changed its own levels" while the only direct
+    recording-chain evidence (``pilot_transfer_step_db``) was null.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    fakes.verify = lambda program: _verify_analysis(program, pilot_snr_ok=False)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == "pilot_level_collapse"
+    # Post-apply, the envelope promotes any failure to the verify_fail screen
+    # (W6.7 ruling 3) so the household keeps its Undo — the REASON's own
+    # template stays fix_and_retry, which is what applies pre-apply.
+    assert REASON_REGISTRY["pilot_level_collapse"].template == "fix_and_retry"
+
+
+def test_verify_low_pilot_snr_does_not_seed_the_g3_transfer_baseline():
+    """A collapsed pilot pair cannot establish the G3 reference either.
+
+    ``_verify_verdict`` refuses on SNR BEFORE the transfer block, so a
+    low-SNR first attempt leaves no baseline behind — otherwise the next,
+    good attempt would be compared against a level measured out of noise and
+    could fail ``verify_level_shift`` on the strength of it. This is also the
+    bound that keeps ambient subtraction out of G3's error budget (see
+    ``_pilot_transfer_by_role``'s docstring).
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_snr_ok=False, pilot_hi_dbfs=-45.0,
+    )
+    assert _run_phase(c, 3, 3)["code"] == "pilot_level_collapse"
+    assert c._verify_pilot_baseline is None
+    # The good re-verify then establishes the baseline itself and passes.
+    fakes.verify = lambda program: _verify_analysis(program, pilot_hi_dbfs=-20.0)
+    assert _run_phase(c, 3, 4)["accepted"] is True
+
+
+def test_cloud_position_low_pilot_snr_routes_to_level_collapse_not_agc():
+    """The same ordering on a prompted cloud position — the phase that walks
+    the mic, and so the one most likely to meet a genuinely quiet spot."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.verify = lambda program: _verify_analysis(program, pilot_snr_ok=False)
+    verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[0], 3)
+    assert verdict["code"] == "pilot_level_collapse"
+
+
+def test_pilot_level_collapse_copy_never_accuses_the_phone():
+    """Issue #1810's actual complaint, pinned as copy.
+
+    The household's previous experience of this failure was being told to go
+    re-allow a microphone that had done nothing wrong. The new reason names
+    the two real causes and two real actions; the definite mic accusation is
+    reserved for ``verify_level_shift``, which has the cross-attempt transfer
+    step to back it.
+    """
+    spec = REASON_REGISTRY["pilot_level_collapse"]
+    assert spec.retry_budget == 1
+    text = spec.message.lower()
+    assert "phone's microphone" not in text
+    assert "re-allow" not in text
+    assert "too loud" in text and "too quiet" in text
+    # The one code still allowed to state the mic as the cause is the one
+    # holding the evidence for it.
+    assert "microphone" in REASON_REGISTRY["verify_level_shift"].message.lower()
+
+
+def test_agc_behavioral_fail_copy_states_the_observation_not_the_cause():
+    """Issue #1810 amendment. ``agc_behavioral_fail`` fires on a captured
+    two-pilot delta that did not match the programmed one — which the phone's
+    input chain OR the speaker's own output compression can produce. The copy
+    may describe that observation and prescribe the one useful action; it may
+    not assert the phone as the cause, because this code never observes it."""
+    message = REASON_REGISTRY["agc_behavioral_fail"].message
+    assert "your phone's microphone changed" not in message.lower()
+    assert "test tones" in message.lower()
 
 
 def test_delay_exceeds_search_window_verdict():
@@ -3263,27 +3390,38 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # `confirm_title`/`confirm_body` keys the post-apply tap renders (§2.2), and
 # the 1-entry re-verify leads with the "you do NOT need to redo the walk"
 # sentence (§2.4). All intended copy changes. Program DURATIONS deliberately
-# did NOT move: the §2.5 courtesy-tone fix reorders where the prelude is
-# spliced without changing its length, so every `duration_ms` is byte-identical
-# to the pre-fix plan — a useful independent check that the pacing change is a
-# reorder and not a lengthening.
+# did NOT move at THAT revision: the §2.5 courtesy-tone fix reordered where
+# the prelude is spliced without changing its length, so every `duration_ms`
+# was byte-identical to the pre-fix plan — a useful independent check that the
+# pacing change was a reorder and not a lengthening. (The 2026-07-28 revision
+# below is the first one that does lengthen them, and says so.)
 #
 # ADDED 2026-07-27: a third `"express"` pin. The express tier is a second
 # SHIPPED plan shape (N=5, M=1 — flow-simplification §1.1), so it earns the
 # same protection the full plan has: a change to its copy, counts, or the
 # M=1 done-screen placement must be an intended edit, not drift.
+#
+# RE-DERIVED 2026-07-28 (issues #1810 / #1812): this time the DURATIONS did
+# move, and only they — the pre-pilot ambient window adds exactly 1000 ms to
+# every program that carries a leading pilot pair. Measured on this fixture:
+# check 22819 ms (unchanged — CHECK's own 12 s ambient window already served
+# the guard), measure 39385 → 40385, verify and all 14 cloud entries
+# 16207 → 17207. Copy, counts, screen keys and byte LENGTH are all identical
+# (3897 / 2107 / 324 bytes before and after), because the digit counts of the
+# changed numbers did not change — which is precisely why these pins are
+# hashes and not lengths.
 _GOLDEN_V2_PLAN_BYTES = {
     "cloud": (
         3897,
-        "435ac318d59f97fc1181a4d0903426a9b16984c9d5dd17bb1b0dc409a18f4557",
+        "b67a654afdc8060562c6a43291e78ae4c739de80d9d4ee879eaa10b7ceb0bf43",
     ),
     "express": (
         2107,
-        "b85b2be3302109cfd878ffe9c48bc133e3baa38c720faed07aac1fdb06d129ed",
+        "fb502b66d1d5975a6a93f1f9e6b330b09e82e147c8107e3666ef9fd497654ed8",
     ),
     "1-entry": (
         324,
-        "0c5ad1d3ec654fe9b8c20ca5945481f44b87d11cb5ab06fe2b5488acda8ef411",
+        "4b52a50e74690a8a2f6a92b9a79c503335d1351111ed7d3a2bf62dd888cb3a06",
     ),
 }
 
