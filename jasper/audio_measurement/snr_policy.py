@@ -102,13 +102,41 @@ def band_levels_dbfs(
     sample_rate: int,
     bands: Sequence[tuple[str, float, float]],
 ) -> list[dict[str, Any]]:
-    """FFT band-power levels of ``samples``, one entry per band that has bins.
+    """Band-INTEGRATED level of ``samples``, in true dBFS, per band with bins.
 
-    Moved verbatim from ``jasper.correction.session._band_levels_dbfs``
-    (which now delegates through ``correction.acoustic_quality``) — same
-    Hanning window, same power average, same rounding — so room correction
-    and active-crossover commissioning read one implementation instead of two
-    forks. Bounds the FFT input the same way
+    Each entry's ``level_dbfs`` is ``20*log10`` of the band's RMS amplitude:
+    exactly the number a band-pass filter followed by an RMS meter would
+    read. A -20 dBFS sine inside one band puts -20.0 in that band's row; a
+    signal whose energy is split across bands has its total recovered by
+    summing the bands' powers.
+
+    **This was wrong until issue #1838** and the defect is worth naming,
+    because both the old shape and the fix are load-bearing. The previous
+    implementation returned ``sqrt(mean(power[mask])) / x.size`` — a per-BIN
+    mean, i.e. a PSD-like quantity, not band power. Three consequences:
+
+    * It read low by ``7.27 + 10*log10(n_bins)`` dB — 25 dB on a 60 Hz-wide
+      band from a 1 s frame, 42 dB across ``mid`` — and a quiet room's upper
+      bands saturated flat against :data:`DBFS_FLOOR`, destroying the
+      evidence outright.
+    * It was not even a stable statistic: ``n_bins`` scales with the input's
+      own length, so the SAME stationary noise measured over 1/2/4 s read
+      -111.4/-114.4/-117.1 dBFS. A ratio between two levels therefore only
+      cancelled when both sides were computed over an equal-length window.
+    * It was benign for years because every consumer used it in such a
+      ratio (an SNR verdict). Issue #1829 made it an ABSOLUTE authority —
+      the MEASURE per-driver level solve — and the cancellation stopped: the
+      solve read the room 18-39 dB too quiet, backed MEASURE off 30-34 dB,
+      and the field session died on its own buried pilots.
+
+    The estimator is Parseval-exact: the one-sided ``rfft`` bins are weighted
+    back to two-sided energy (all but DC and, for an even-length input,
+    Nyquist), and the Hann window's energy loss is divided out by its own
+    ``sum(w**2)`` rather than a hard-coded 3/8, so the correction stays right
+    for any window this ever uses. Validated to <0.35 dB against closed-form
+    band power for white noise and to <0.05 dB for a full-band total.
+
+    Bounds the FFT input the same way
     :func:`~jasper.audio_measurement.deconv.deconvolve` does
     (``deconv.cap_capture_length``), since callers pass uploaded WAVs
     (ambient noise, capture band levels) limited only by the HTTP body cap —
@@ -122,16 +150,25 @@ def band_levels_dbfs(
     spectrum = np.fft.rfft(x * window)
     freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
     power = np.abs(spectrum) ** 2
+    # One-sided -> two-sided energy: every bin except DC (and Nyquist, which
+    # only exists for an even-length input) stands for a conjugate pair.
+    power = power * 2.0
+    power[0] = power[0] / 2.0
+    if x.size % 2 == 0:
+        power[-1] = power[-1] / 2.0
+    # Parseval + window-energy normalization: mean-square of the unwindowed
+    # signal in a band = (two-sided band energy) / (N * sum(w**2)).
+    denom = float(x.size) * float(np.sum(window ** 2))
     out: list[dict[str, Any]] = []
     for band_id, low, high in bands:
         mask = (freqs >= low) & (freqs < high)
         if not np.any(mask):
             continue
-        rms_like = math.sqrt(float(np.mean(power[mask]))) / max(1, x.size)
+        mean_square = float(np.sum(power[mask])) / denom if denom > 0 else 0.0
         out.append({
             "band_id": band_id,
             "band_hz": [low, high],
-            "level_dbfs": round(_dbfs(rms_like), 2),
+            "level_dbfs": round(_dbfs(math.sqrt(max(mean_square, 0.0))), 2),
         })
     return out
 

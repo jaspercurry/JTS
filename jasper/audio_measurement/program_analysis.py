@@ -318,18 +318,96 @@ GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
 # change to one silently retune the other.
 MEASURE_SNR_SOLVE_MARGIN_DB = 6.0
 
+# Peak-to-RMS of the excitation itself. Every stimulus segment this analysis
+# reasons about — pilots included — is rendered by `program.segment_stimulus`
+# as a constant-amplitude synchronized swept sine, so its peak sits exactly
+# 10*log10(2) dB above its own full-band RMS. Measured at 3.02-3.03 dB on both
+# real MEASURE sweeps (see `test_sweep_band_crest_factor_matches_the_rendered_sweep`).
+SWEEP_PEAK_TO_RMS_DB = 3.0103
+
+# --------------------------------------------------------------------------- #
+# D6 (#1838): the demand and the budget must be in the same units
+# --------------------------------------------------------------------------- #
+
+
+def sweep_band_crest_factor_db(
+    sweep_hz: tuple[float, float], band_hz: tuple[float, float]
+) -> float:
+    """dB from a swept sine's PEAK down to its RMS inside ``band_hz``.
+
+    The MEASURE level solve budgets a capture *peak*
+    (``MeasurementPriors.target_capture_dbfs``, and ``k_db`` measured from
+    pilot peaks) but its SNR demand is stated against an ambient *band RMS*.
+    Until issue #1838 the two were added directly, which under-drove the
+    sweep by exactly this quantity: the capture peak landed where the demand
+    asked, and the in-band signal RMS — the thing that actually has to clear
+    the room — landed this far below it.
+
+    Two terms, both exact for the constant-amplitude exponential sweep
+    ``program.segment_stimulus`` renders:
+
+    * :data:`SWEEP_PEAK_TO_RMS_DB` — peak to full-band RMS.
+    * ``10*log10( ln(f2/f1) / ln(hi/lo) )`` — band occupancy. An exponential
+      sweep dwells in ``[lo, hi]`` for ``ln(hi/lo)/ln(f2/f1)`` of its
+      duration, so its energy density per Hz falls as ``1/f`` and a
+      sub-band holds only that fraction of the total. After deconvolution
+      the matched filter gathers all of the band's signal energy — and all
+      of the band's noise over the same observation window — so the
+      dilution does NOT cancel: the per-band SNR of a swept-sine measurement
+      is ``(sweep RMS**2 / ambient band power) * dwell_fraction``.
+
+    ``band_hz`` is clipped to ``sweep_hz`` first: a sweep puts no energy
+    where it does not go.
+
+    Validated against the rendered stimulus to within 0.03 dB on both
+    production MEASURE sweeps (150-2000 Hz woofer, 1500-23000 Hz tweeter);
+    the widest disagreement in the set is 0.63 dB, on a 10 Hz-wide clipped
+    sliver where FFT bin granularity, not the law, is the limit.
+
+    **Named residual — row width, erring LOUD.** The ambient rows this is
+    applied to (``snr_policy.CROSSOVER_SNR_BANDS_HZ``) can be wider than the
+    slice of them the sweep covers: a woofer swept from 150 Hz clips the
+    80-160 Hz ``bass`` row to 10 Hz. The crest is then computed over the
+    10 Hz slice (correct — that is where the sweep's energy is) while the
+    ambient level is still the whole row's (the room's noise across all
+    80 Hz). That over-states the demand, i.e. keeps MEASURE LOUDER, which is
+    the same direction the row-width coarseness already documented in
+    :func:`_solve_role_gain` errs, and the safe one: this solve can only
+    make MEASURE quieter than the level that has always shipped. Restricting
+    the ambient level to the covered slice under a flat-noise assumption is
+    the obvious refinement; it errs QUIET, so it wants bench data first.
+    """
+    lo = max(float(band_hz[0]), float(sweep_hz[0]))
+    hi = min(float(band_hz[1]), float(sweep_hz[1]))
+    f1, f2 = float(sweep_hz[0]), float(sweep_hz[1])
+    if not (hi > lo > 0.0 and f2 > f1 > 0.0):
+        # No overlap, or a degenerate band — no occupancy term to compute.
+        # `_ambient_rows_in_band` only yields overlapping rows, so this is
+        # defense against a malformed band, not a live path.
+        return SWEEP_PEAK_TO_RMS_DB
+    return SWEEP_PEAK_TO_RMS_DB + 10.0 * math.log10(
+        math.log(f2 / f1) / math.log(hi / lo)
+    )
+
+
 # Vocabulary for `RoleGainSolve.bound_by` — which limit chose the level.
 GAIN_BOUND_FLAT_TARGET = "flat_target"          # room too noisy to back off
 GAIN_BOUND_ROOM_SNR = "room_snr"                # the fit's own SNR need
 GAIN_BOUND_PILOT_SNR = "pilot_snr"              # the quiet pilot's SNR guard
 GAIN_BOUND_CAPTURE_FLOOR = "capture_floor"      # `DRIVER.peak_too_low_dbfs`
 GAIN_BOUND_NO_AMBIENT_EVIDENCE = "no_ambient_evidence"  # disclosed fallback
+# The ambient report was credible-looking but degenerate: every SNR arm
+# resolved BELOW `DRIVER.peak_too_low_dbfs`, i.e. the room read so quiet that
+# the math proposed a sweep too faint to trust. Issue #1838 — see
+# `_solve_role_gain`. A disclosed refusal to solve, never a shipped level.
+GAIN_BOUND_DEGENERATE_AMBIENT = "degenerate_ambient"
 GAIN_BOUNDS = frozenset({
     GAIN_BOUND_FLAT_TARGET,
     GAIN_BOUND_ROOM_SNR,
     GAIN_BOUND_PILOT_SNR,
     GAIN_BOUND_CAPTURE_FLOOR,
     GAIN_BOUND_NO_AMBIENT_EVIDENCE,
+    GAIN_BOUND_DEGENERATE_AMBIENT,
 })
 
 # Behavioral linearity tolerance (design §3.4): captured delta within this of
@@ -746,12 +824,16 @@ class PilotObservation:
 
     ``snr_valid`` is True when the quiet (lo) pilot's in-band SNR clears
     `PILOT_MIN_SNR_DB`, i.e. the ambient-subtracted estimate (and therefore
-    ``linearity_ok``) is trustworthy; when False, ``linearity_ok`` is forced
-    True (an untrustworthy estimate must never register as a linearity
-    FAILURE — the caller routes on ``snr_valid`` instead, honestly attributing
-    the room/positioning cause rather than the phone's AGC). Defaults to True
-    so a caller constructing one directly (fixtures, legacy call sites)
-    without an opinion on SNR gets the pre-fix "trust the delta" behavior.
+    ``linearity_ok``) is trustworthy; when False, ``linearity_ok`` is
+    ``None`` — UNKNOWN. An untrustworthy estimate must never register as a
+    linearity FAILURE (the caller routes on ``snr_valid`` instead, honestly
+    attributing the room/positioning cause rather than the phone's AGC), and
+    since issue #1838 it must not register as a PASS either: it was forced
+    ``True`` until then, which is how a capture with a -60.9 dB captured
+    delta against a programmed 10.0 dB published ``linearity_ok=true``.
+    ``snr_valid`` defaults to True so a caller constructing one directly
+    (fixtures, legacy call sites) without an opinion on SNR gets the
+    "trust the delta" behavior.
 
     ``snr_db`` is the actual quiet-pilot in-band SNR estimate ``snr_valid``
     is thresholded from (`_pilot_in_band_snr_db`) — kept as a number, not
@@ -789,7 +871,7 @@ class PilotObservation:
     level_hi_dbfs: float
     programmed_delta_db: float
     captured_delta_db: float
-    linearity_ok: bool
+    linearity_ok: bool | None
     channel_map_ok: bool
     snr_valid: bool = True
     peak_lo_dbfs: float = DBFS_FLOOR
@@ -818,16 +900,21 @@ class RoleGainSolve:
     the room was noisy enough that the SNR requirement wanted at least the
     flat level, so nothing moved.
 
-    ``ambient_dbfs`` / ``required_snr_db`` / ``required_capture_dbfs`` are the
-    ROOM-SNR demand, and only that: the worst overlapping ambient band's
-    level, the SNR this solve demanded above it, and their sum. They are a
-    coherent triple (the third is the first two added) and they stay the room
-    demand even when a DIFFERENT floor won — read ``bound_by`` for which one
-    did, and ``gain_db`` for the level actually scheduled. When ``bound_by``
-    is ``GAIN_BOUND_PILOT_SNR`` or ``GAIN_BOUND_CAPTURE_FLOOR``,
-    ``required_capture_dbfs`` is therefore the (lower) room demand that floor
-    overrode, not the capture peak aimed at. All three are ``None`` on the
-    no-evidence fallback — a missing number is never a zero.
+    ``ambient_dbfs`` / ``required_snr_db`` / ``crest_factor_db`` /
+    ``required_capture_dbfs`` are the ROOM-SNR demand, and only that: the
+    worst overlapping ambient band's level, the SNR this solve demanded above
+    it, the stimulus crest factor that converts that band-RMS demand into the
+    capture-PEAK units everything else here is expressed in (D6, issue
+    #1838 — see :func:`sweep_band_crest_factor_db`), and their sum. They are a
+    coherent quadruple (the last is the first three added) and they stay the
+    room demand even when a DIFFERENT arm won — read ``bound_by`` for which
+    one did, and ``gain_db`` for the level actually scheduled. When
+    ``bound_by`` is ``GAIN_BOUND_PILOT_SNR`` or
+    ``GAIN_BOUND_DEGENERATE_AMBIENT``, ``required_capture_dbfs`` is therefore
+    the room demand that arm overrode, not the capture peak aimed at. All four
+    are ``None`` on the no-evidence fallback — a missing number is never a
+    zero. ``crest_factor_db`` is additionally ``None`` on a solve persisted
+    before #1838, where the demand carried no crest term at all.
     """
 
     role: str
@@ -838,6 +925,7 @@ class RoleGainSolve:
     ambient_dbfs: float | None = None
     required_snr_db: float | None = None
     required_capture_dbfs: float | None = None
+    crest_factor_db: float | None = None
 
     @property
     def reduction_db(self) -> float:
@@ -865,6 +953,10 @@ class RoleGainSolve:
             "required_capture_dbfs": (
                 round(self.required_capture_dbfs, 2)
                 if self.required_capture_dbfs is not None else None
+            ),
+            "crest_factor_db": (
+                round(self.crest_factor_db, 2)
+                if self.crest_factor_db is not None else None
             ),
         }
 
@@ -2758,8 +2850,16 @@ def _pilot_observations(
 
         lo_snr_db = _pilot_in_band_snr_db(lo_power, ambient_power) if has_ambient else math.inf
         snr_valid = lo_snr_db >= PILOT_MIN_SNR_DB
+        # D7 (issue #1838): UNKNOWN below the SNR floor, not True. The
+        # captured delta is not evidence down there in EITHER direction, and
+        # `True` is a claim — session cap_-Us10xORVNlFa_dgi-sP7g published
+        # `linearity_ok=true` beside a captured delta of -60.9 dB against a
+        # programmed 10.0 dB, which is not a passing linearity check, it is
+        # the absence of one. `None` still never registers as a FAILURE (the
+        # reason this was forced True), and it stops reading as a PASS to a
+        # consumer that does not also check `snr_valid`.
         linearity_ok = (
-            True if not snr_valid
+            None if not snr_valid
             else abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
         )
 
@@ -2798,6 +2898,30 @@ def _pilot_observations(
     return out
 
 
+def _aggregate_linearity_ok(
+    pilots: Sequence[PilotObservation],
+) -> bool | None:
+    """Reduce per-pilot ``linearity_ok`` over the roles, tri-state aware.
+
+    A FAILURE anywhere is the verdict; otherwise an UNKNOWN anywhere (a
+    pilot whose SNR was too low to judge — D7, issue #1838) makes the whole
+    verdict unknown, because "the roles we could read were fine" is not the
+    same claim as "the pilots were linear". ``None`` for no pilots at all,
+    unchanged. Written out rather than left as ``all(...)``: Python's
+    ``all()`` folds ``None`` to False, which would have turned every
+    unknown into a linearity FAILURE — precisely the mic accusation the
+    low-SNR routing exists to prevent.
+    """
+    if not pilots:
+        return None
+    verdicts = [p.linearity_ok for p in pilots]
+    if any(v is False for v in verdicts):
+        return False
+    if any(v is None for v in verdicts):
+        return None
+    return True
+
+
 def _pilot_verdicts(
     program: ExcitationProgram,
     capture: np.ndarray,
@@ -2828,7 +2952,7 @@ def _pilot_verdicts(
         program, capture, sample_rate, locations,
         ambient_samples=_pilot_ambient_samples(program, capture, global_offset),
     )
-    linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
+    linearity_ok = _aggregate_linearity_ok(pilots)
     channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
     return tuple(pilots), linearity_ok, channel_map_ok, pilot_snr_ok
@@ -2987,7 +3111,15 @@ def _solve_role_gain(
     ``k_db`` is this driver's measured chain gain (captured peak minus the
     digital gain that produced it), so a target capture peak ``C`` is reached
     at digital gain ``C - k_db``. Three floors compete for the number, and the
-    LOUDEST of them wins because each is a genuine requirement:
+    LOUDEST of them wins because each is a genuine requirement.
+
+    **Every arm is peak-expressed** (D6, issue #1838). ``k_db`` and
+    ``flat_target_gain_db`` are capture-PEAK quantities; an ambient band level
+    and an SNR requirement are RMS quantities. Adding them directly — which
+    this function did until #1838 — under-drove MEASURE by the stimulus's own
+    crest factor, so each arm now carries
+    :func:`sweep_band_crest_factor_db` (roughly 8-19 dB for the room arm's
+    rows, exactly :data:`SWEEP_PEAK_TO_RMS_DB` for the pilot arm).
 
     * **room SNR** — the worst ``ambient + required_snr`` across the ambient
       bands overlapping this driver's own measurement band. Band-scoped on
@@ -3028,6 +3160,14 @@ def _solve_role_gain(
       capture-quality model's "a capture peak below this is too low to
       trust". Guards the degenerate case where an ambient report reads near
       the dBFS floor and the SNR math alone would propose an inaudible sweep.
+      **It is a tripwire, not a shippable bound** (D2, issue #1838): if it
+      wins, the other two arms have both resolved below a level that is by
+      definition too faint to measure, which says the ambient evidence is not
+      solvable — so the solve is REFUSED and the role falls back to
+      ``flat_target_gain_db`` with ``bound_by=GAIN_BOUND_DEGENERATE_AMBIENT``
+      and a WARNING. ``GAIN_BOUND_CAPTURE_FLOOR`` therefore no longer appears
+      on a returned solve; it stays in ``GAIN_BOUNDS`` as the name of the
+      losing arm and for reading back solves persisted before #1838.
 
     The result is then clamped by ``flat_target_gain_db``: this solve can only
     make MEASURE quieter than (or equal to) what it does today, never louder.
@@ -3045,19 +3185,30 @@ def _solve_role_gain(
             band_hz=band_hz,
         )
 
-    demands: list[tuple[float, float, float]] = []
+    demands: list[tuple[float, float, float, float]] = []
     for lo, hi, level in rows:
         required_snr = (
             _band_required_snr_db(lo, hi, overlap_hz) + MEASURE_SNR_SOLVE_MARGIN_DB
         )
-        demands.append((level + required_snr, level, required_snr))
-    required_capture_dbfs, ambient_dbfs, required_snr_db = max(
+        # D6 (#1838): `level + required_snr` is a band-RMS demand, but what it
+        # is about to be compared against — and what `k_db` converts into a
+        # digital gain — is a capture PEAK. Carry the stimulus's own
+        # peak-to-band-RMS across so both sides are peak-expressed.
+        crest = sweep_band_crest_factor_db(band_hz, (lo, hi)) if band_hz else 0.0
+        demands.append((level + required_snr + crest, level, required_snr, crest))
+    required_capture_dbfs, ambient_dbfs, required_snr_db, crest_factor_db = max(
         demands, key=lambda item: item[0]
     )
     worst_ambient_dbfs = max(level for _lo, _hi, level in rows)
     pilot_floor_dbfs = (
         worst_ambient_dbfs + pilot_delta_db + PILOT_MIN_SNR_DB
         + MEASURE_SNR_SOLVE_MARGIN_DB
+        # Same dimensional carry as the room arm. A pilot is a swept sine over
+        # the role's WHOLE band (`program.segment_stimulus` renders every
+        # stimulus kind the same way), and `PILOT_MIN_SNR_DB` is checked
+        # against its in-band power ratio, so the occupancy term is 1 and only
+        # the peak-to-RMS constant applies.
+        + SWEEP_PEAK_TO_RMS_DB
     )
     capture_dbfs, bound_by = max(
         (
@@ -3067,6 +3218,39 @@ def _solve_role_gain(
         ),
         key=lambda item: item[0],
     )
+    if bound_by == GAIN_BOUND_CAPTURE_FLOOR:
+        # D2 (#1838): the capture floor winning is this function's OWN
+        # documented degenerate-ambient signal — "an ambient report [reading]
+        # near the dBFS floor [where] the SNR math alone would propose an
+        # inaudible sweep". Until #1838 it was treated as a floor to ship,
+        # and the field session that exposed the band-power bug shipped
+        # exactly that: both roles solved to a -45 dBFS capture target, 34 dB
+        # below the flat level, and every downstream guard that might have
+        # caught it (the pilot SNR floor, the sweep locator) was computed from
+        # the same collapsed ambient report and so could not bound it by
+        # construction. A floor-bound solve is not a level, it is evidence
+        # that the ambient report cannot be solved against — so refuse, keep
+        # today's proven flat target, and say which way the refusal went.
+        logger.warning(
+            "measure level solve refused for role=%s: ambient report is "
+            "degenerate (every SNR arm resolved below the %.1f dBFS capture "
+            "floor); falling back to the flat target %.2f dBFS",
+            role, DRIVER.peak_too_low_dbfs, flat_target_gain_db,
+        )
+        return RoleGainSolve(
+            role=role,
+            gain_db=flat_target_gain_db,
+            flat_target_gain_db=flat_target_gain_db,
+            bound_by=GAIN_BOUND_DEGENERATE_AMBIENT,
+            band_hz=band_hz,
+            # The evidence that was refused, retained deliberately: a reviewer
+            # reading the disclosure event needs to see WHAT the ambient
+            # report claimed, not just that it was rejected.
+            ambient_dbfs=ambient_dbfs,
+            required_snr_db=required_snr_db,
+            required_capture_dbfs=required_capture_dbfs,
+            crest_factor_db=crest_factor_db,
+        )
     gain_db = capture_dbfs - k_db
     if gain_db >= flat_target_gain_db:
         gain_db, bound_by = flat_target_gain_db, GAIN_BOUND_FLAT_TARGET
@@ -3079,6 +3263,7 @@ def _solve_role_gain(
         ambient_dbfs=ambient_dbfs,
         required_snr_db=required_snr_db,
         required_capture_dbfs=required_capture_dbfs,
+        crest_factor_db=crest_factor_db,
     )
 
 
@@ -3234,7 +3419,7 @@ def _analyze_check(
         ambient_samples=ambient_samples,
         channel_map_ambient_samples=ambient_samples,
     )
-    linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
+    linearity_ok = _aggregate_linearity_ok(pilots)
     channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
     pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
     gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)

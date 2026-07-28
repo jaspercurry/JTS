@@ -848,10 +848,11 @@ REASON_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
 # (the session that exposed this) a freshly-applied correction that dropped
 # the pilot band 14-18 dB and left the quiet pilot ~5 dB over the floor. It is
 # NOT evidence about the phone's microphone, which is exactly what the copy
-# said before this code existed. `_pilot_observations` already forces
-# ``linearity_ok`` True whenever the SNR guard fails, so this branch is the
-# only path that can fail on it, and every verdict below checks it BEFORE
-# `REASON_AGC_BEHAVIORAL_FAIL`.
+# said before this code existed. `_pilot_observations` reports
+# ``linearity_ok`` as None — unknown — whenever the SNR guard fails (it forced
+# True until issue #1838, which made an unreadable capture look like a PASS),
+# so this branch is the only path that can fail on it, and every verdict below
+# checks it BEFORE `REASON_AGC_BEHAVIORAL_FAIL`.
 REASON_PILOT_LEVEL_COLLAPSE = "pilot_level_collapse"
 REASON_SNR_FLOOR = "snr_floor"
 REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
@@ -1619,19 +1620,78 @@ def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
 
 
 def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
-    """False when no located stimulus cleared the locate-confidence floor."""
-    confidences = [
-        loc.confidence for loc in analysis.locations if loc.kind in STIMULUS_KINDS
-    ]
-    if not confidences:
+    """False when any ROLE's stimuli all failed the locate-confidence floor.
+
+    D8 (issue #1838). This used to be ``max(confidences) >= floor`` over every
+    stimulus segment in the capture, which is effectively no floor at all on a
+    multi-driver program: one clearly-located segment anywhere cleared the
+    gate for the whole capture, so a capture in which an entire driver was
+    inaudible passed and went on to be analysed as if both drivers had been
+    heard. Grouping by role first makes the gate mean what its name says.
+
+    Per ROLE, not per SEGMENT, deliberately. A role's segments are not
+    equally locatable by design — a two-level pilot pair's quiet side sits
+    10 dB under its loud side and locates more coarsely — so requiring every
+    segment to clear the floor would fail captures that are fine. One
+    confidently-located stimulus is enough to say "this driver was heard";
+    zero is not. Role-less stimuli (a summed sweep, which carries no role)
+    group together and are held to the same rule.
+
+    The stricter per-SWEEP floor that MEASURE also applies lives in
+    :func:`_sweep_locate_confidence_ok`.
+    """
+    by_role: dict[str | None, float] = {}
+    for loc in analysis.locations:
+        if loc.kind not in STIMULUS_KINDS:
+            continue
+        best = by_role.get(loc.role)
+        if best is None or loc.confidence > best:
+            by_role[loc.role] = loc.confidence
+    if not by_role:
         return False
-    return max(confidences) >= LOCATE_MIN_CONFIDENCE
+    return all(best >= LOCATE_MIN_CONFIDENCE for best in by_role.values())
+
+
+def _sweep_locate_confidence_ok(analysis: ProgramAnalysis) -> bool:
+    """False when a MEASURE sweep was only weakly located — i.e. too quiet.
+
+    Split out of :func:`_sweep_schedule_ok` by D3 (issue #1838). The two
+    halves of that gate answer different questions and deserve different
+    verdicts:
+
+    * a sweep whose RESIDUAL is out of bounds landed off its scheduled slot —
+      a timeline splice, a genuine capture glitch, retry;
+    * a sweep the locator could barely find at all is not a splice. It is a
+      capture too quiet to hear, and the fix is the level or the mic, not a
+      retry of the same level.
+
+    In session cap_-Us10xORVNlFa_dgi-sP7g the sweeps located at 0.0298
+    against this 0.3 floor, the mis-located sweeps then produced a 1018-sample
+    residual, and the residual tripped ``glitch_detected`` — so the household
+    was told the capture glitched and the flow silently re-armed the same
+    unwinnable level. Low SNR CAUSES the glitch signal; ordering this check
+    ahead of it is what makes the reported cause the real one.
+
+    Same ``KIND_SWEEP`` domain as :func:`_sweep_schedule_ok`: the leading
+    pilot pair's short, quiet windows locate coarsely by design and would
+    manufacture spurious fires here.
+    """
+    return all(
+        loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+        for loc in analysis.locations
+        if loc.kind == KIND_SWEEP
+    )
 
 
 def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
-    """False when a MEASURE sweep landed off its scheduled slot, or was only
-    weakly located (measurement-honesty gate G2, 2026-07-22 — the xrun
-    detector; see :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS` for the evidence).
+    """False when a MEASURE sweep landed off its scheduled slot
+    (measurement-honesty gate G2, 2026-07-22 — the xrun detector; see
+    :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS` for the evidence).
+
+    Since D3 (issue #1838) this is the RESIDUAL half of G2 only. The
+    locate-confidence half moved to :func:`_sweep_locate_confidence_ok`,
+    which runs earlier and answers "too quiet" instead of "glitched" — see
+    that function for why the two must not share a verdict.
 
     ``sample_rate_hz`` is deliberately the CALLER's own MEASURE program rate,
     not something read off ``analysis`` itself:
@@ -1657,8 +1717,6 @@ def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
     for loc in sweeps:
         residual_ms = abs(loc.residual_samples) / sample_rate_hz * 1000.0
         if residual_ms > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS:
-            return False
-        if loc.confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR:
             return False
     return True
 
@@ -4357,7 +4415,7 @@ class CrossoverV2Conductor:
             # Band-relative ambient-compensated linearity fix (2026-07-20):
             # the quiet pilot's own in-band SNR was too low to trust the
             # ambient-subtracted delta either way — ``analysis.linearity_ok``
-            # is already forced True in this case (see
+            # is already None (unknown) in this case since issue #1838 (see
             # ``program_analysis._pilot_observations``'s docstring), so this
             # branch is the ONLY path that can fail on it. Route to the
             # honest room/positioning reason, never AGC — the phone's mic
@@ -4406,6 +4464,34 @@ class CrossoverV2Conductor:
         self._last_level_frame_disagreement_db = 0.0
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        # --- "too quiet" runs BEFORE "glitched" (D3, issue #1838) ---
+        #
+        # A capture nobody could hear produces the same symptoms as a spliced
+        # one: the locator lands the sweeps in the wrong place, the residual
+        # blows past its ceiling, and `glitch_detected` fires on noise. Until
+        # #1838 the glitch branch sat second and swallowed both level
+        # verdicts below it, so session cap_-Us10xORVNlFa_dgi-sP7g — whose
+        # MEASURE played 33 dB below flat — told the household its capture had
+        # glitched and silently re-armed the SAME unwinnable level, twice,
+        # until the session timed out. Low SNR CAUSES the glitch signal, so
+        # the level verdicts have to be asked first or the reported cause is
+        # never the real one. (This very likely also explains a share of the
+        # historical "capture glitched" reports.)
+        #
+        # Neither branch re-arms: re-running an inaudible measurement at the
+        # same level cannot succeed, and both reason codes already carry the
+        # household action that can ("quiet the room / move the phone closer",
+        # "check the volume and the microphone").
+        if analysis.pilot_snr_ok is False:
+            # Issue #1810. Also ahead of the linearity branch: below the SNR
+            # floor the two-pilot delta is not evidence about anything
+            # (``_pilot_observations`` reports ``linearity_ok`` as None), so
+            # the honest verdict is about the room and the level, never the
+            # phone's microphone.
+            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
+        if not _sweep_locate_confidence_ok(analysis):
+            self._last_measure_guard = "sweep_locate_confidence"
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.glitch_detected:
             # Repeat-level disagreement reuses this same code (§5.2) — the
             # analysis already folded it into glitch_detected.
@@ -4432,13 +4518,6 @@ class CrossoverV2Conductor:
         if _any_sweep_clipped(analysis):
             self._rearm_measure_after_transient(extra_backoff_db=CLIP_RETRY_BACKOFF_DB)
             return PhaseVerdict(False, REASON_CLIPPED)
-        if analysis.pilot_snr_ok is False:
-            # Issue #1810. Ahead of the linearity branch on purpose: below the
-            # SNR floor the two-pilot delta is not evidence about anything
-            # (``_pilot_observations`` has already forced ``linearity_ok``
-            # True), so the honest verdict is about the room and the level,
-            # never the phone's microphone.
-            return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
         if analysis.linearity_ok is False:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         if analysis.alignment is not None and analysis.alignment.status != ALIGNMENT_OK:
@@ -5801,6 +5880,12 @@ class CrossoverV2Conductor:
                 required_capture_dbfs=(
                     round(float(solve.required_capture_dbfs), 2)
                     if solve.required_capture_dbfs is not None else None
+                ),
+                # #1838: without this the disclosed triple no longer adds up —
+                # `required_capture_dbfs` is `ambient + required_snr + crest`.
+                crest_factor_db=(
+                    round(float(solve.crest_factor_db), 2)
+                    if solve.crest_factor_db is not None else None
                 ),
             )
 

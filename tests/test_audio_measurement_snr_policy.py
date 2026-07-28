@@ -85,6 +85,137 @@ def test_band_levels_dbfs_matches_session_delegation():
     assert len(via_session) == 4
 
 
+def test_band_levels_dbfs_reports_true_band_power():
+    """D1 (#1838): a band's ``level_dbfs`` is what a band-pass + RMS meter
+    reads, in real dBFS — the defect that made the #1829 level solve read the
+    room 18-39 dB too quiet.
+
+    Two independent known-power fixtures, both closed-form:
+
+    * a -20 dBFS sine parked mid-band reads -20 dBFS in its own band;
+    * white noise of known variance reads its exact band share,
+      ``level = 20*log10(sigma) + 10*log10(bandwidth / nyquist)``.
+
+    The pre-fix estimator (``sqrt(mean(power[mask])) / x.size``) returned a
+    per-BIN mean instead, low by ``7.27 + 10*log10(n_bins)``: -62.8 for the
+    sine and -111 for every one of the noise bands, saturating the evidence
+    flat. Tolerances are tight on purpose — this is arithmetic with a right
+    answer, not a heuristic.
+    """
+    # 1) Pure tone, well inside `mid` (2 kHz, clear of both band edges so no
+    #    Hann skirt leaks across into `transition`).
+    t = np.arange(SR) / SR
+    tone = (10.0 ** (-20.0 / 20.0)) * np.sqrt(2.0) * np.sin(2 * np.pi * 2000.0 * t)
+    by_id = {
+        row["band_id"]: row["level_dbfs"]
+        for row in snr_policy.band_levels_dbfs(
+            tone, SR, snr_policy.CROSSOVER_SNR_BANDS_HZ
+        )
+    }
+    assert by_id["mid"] == pytest.approx(-20.0, abs=0.1)
+    # ...and the tone's energy is not double-counted into its neighbours.
+    assert by_id["transition"] < -100.0
+    assert by_id["treble"] < -100.0
+
+    # 2) White noise: every band reads its own closed-form share. Four
+    #    seconds so even the narrowest band (`sub_bass`, 60 Hz) averages
+    #    enough bins for the chi-square spread of the estimate to sit well
+    #    inside the tolerance.
+    sigma = 0.001  # -60 dBFS broadband
+    noise = np.random.default_rng(1838).normal(0.0, sigma, SR * 4)
+    levels = {
+        row["band_id"]: row["level_dbfs"]
+        for row in snr_policy.band_levels_dbfs(
+            noise, SR, snr_policy.CROSSOVER_SNR_BANDS_HZ
+        )
+    }
+    for band_id, lo, hi in snr_policy.CROSSOVER_SNR_BANDS_HZ:
+        expected = 20.0 * np.log10(sigma) + 10.0 * np.log10((hi - lo) / (SR / 2))
+        assert levels[band_id] == pytest.approx(expected, abs=0.8), band_id
+        # And nowhere near the floor the pre-fix estimator pinned them to.
+        assert levels[band_id] > snr_policy.DBFS_FLOOR + 25.0
+
+
+def test_band_levels_dbfs_is_independent_of_capture_length():
+    """The pre-fix estimator was not a stable statistic: because its per-bin
+    mean diluted with ``n_bins``, the SAME stationary noise read -111.4 /
+    -114.4 / -117.1 dBFS over 1 / 2 / 4 s. That is why the SNR ratio only
+    cancelled when both sides shared a window length — and room correction's
+    ``capture_band_snr`` compares a full sweep capture against a separately
+    recorded, differently-sized noise WAV. Band power is length-invariant.
+    """
+    rng = np.random.default_rng(4242)
+    # One wide band, so the reading is dominated by the scaling under test
+    # rather than by the chi-square spread of a 60-bin narrow-band estimate.
+    wide = (("wide", 20.0, 12000.0),)
+    levels = [
+        snr_policy.band_levels_dbfs(
+            rng.normal(0.0, 0.001, SR * seconds), SR, wide
+        )[0]["level_dbfs"]
+        for seconds in (1, 2, 4)
+    ]
+    # Pre-fix these spanned a full 10*log10(4) = 6 dB, monotonically
+    # decreasing with duration; the true band level does not move at all.
+    assert max(levels) - min(levels) < 0.5
+
+
+def test_band_snr_verdicts_are_unchanged_by_the_band_power_rescale():
+    """The ratio consumers' cancellation, SHOWN rather than assumed (#1838).
+
+    ``band_snr_verdicts`` subtracts a noise level from a capture level. The
+    D1 rescale adds the SAME per-band offset to both sides whenever both are
+    measured over equal-length windows, so every ``estimated_snr_db`` and
+    every verdict must be byte-identical to what the pre-fix estimator
+    produced. This replays the pre-fix math locally (the deleted expression,
+    kept here as the reference) and asserts the verdict block matches.
+    """
+    rng = np.random.default_rng(770)
+    capture = rng.normal(0.0, 0.05, SR)
+    noise = rng.normal(0.0, 0.0008, SR)
+
+    def _pre_fix_levels(x):
+        window = np.hanning(x.size)
+        power = np.abs(np.fft.rfft(x * window)) ** 2
+        freqs = np.fft.rfftfreq(x.size, d=1.0 / SR)
+        rows = []
+        for band_id, lo, hi in snr_policy.CROSSOVER_SNR_BANDS_HZ:
+            mask = (freqs >= lo) & (freqs < hi)
+            rms_like = np.sqrt(float(np.mean(power[mask]))) / x.size
+            rows.append({
+                "band_id": band_id,
+                "band_hz": [lo, hi],
+                "level_dbfs": round(snr_policy._dbfs(float(rms_like)), 2),
+            })
+        return rows
+
+    def _verdicts(capture_bands, noise_bands):
+        return snr_policy.band_snr_verdicts(
+            decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
+            capture_bands=capture_bands,
+            noise_bands=noise_bands,
+            noise_floor_dbfs_scalar=None,
+            relevant_hz=(20.0, 12000.0),
+            model=DRIVER,
+        )
+
+    fixed = _verdicts(
+        snr_policy.band_levels_dbfs(capture, SR, snr_policy.CROSSOVER_SNR_BANDS_HZ),
+        snr_policy.band_levels_dbfs(noise, SR, snr_policy.CROSSOVER_SNR_BANDS_HZ),
+    )
+    pre_fix = _verdicts(_pre_fix_levels(capture), _pre_fix_levels(noise))
+
+    assert fixed["verdict"] == pre_fix["verdict"]
+    assert fixed["worst_relevant"] == pre_fix["worst_relevant"]
+    for fixed_band, pre_fix_band in zip(fixed["bands"], pre_fix["bands"], strict=True):
+        assert fixed_band["band_id"] == pre_fix_band["band_id"]
+        assert fixed_band["verdict"] == pre_fix_band["verdict"]
+        # Rounding of the two levels can move the difference by one 0.1 step;
+        # the SNR is otherwise identical.
+        assert fixed_band["estimated_snr_db"] == pytest.approx(
+            pre_fix_band["estimated_snr_db"], abs=0.2
+        )
+
+
 def test_ambient_report_uses_upper_percentile_across_one_second_frames():
     rng = np.random.default_rng(91)
     quiet = rng.normal(0.0, 0.001, SR * 11)

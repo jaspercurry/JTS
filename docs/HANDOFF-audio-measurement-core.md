@@ -417,9 +417,18 @@ create a second retention system.
   smoothing, log resample, band normalize), `quality.py` (+ correction's
   `acoustic_quality.py`) (SNR/clipping gates), `calibration.py` (Dayton/miniDSP/
   UMIK lookup + upload), `snr_policy.py` (the crossover-builder Slice 0
-  band-specific, decision-class-split SNR gate — `band_levels_dbfs` moved
-  verbatim from `correction/session.py._band_levels_dbfs`, which now
-  delegates to it; `band_snr_verdicts` / `cap_null_depth_db` are new,
+  band-specific, decision-class-split SNR gate — `band_levels_dbfs`
+  originally moved verbatim from `correction/session.py._band_levels_dbfs`,
+  which delegates to it, and **rewritten in #1838**: the inherited
+  implementation returned a per-BIN mean, not band power, reading
+  18–39 dB low, saturating wide bands flat against `DBFS_FLOOR`, and
+  varying with the input's own length. It now returns true
+  Parseval-correct band-integrated dBFS. Room correction's
+  `band_noise_dbfs` and `capture_band_snr` ride the same function, so their
+  absolute rows moved too (the SNR *ratio* only cancelled exactly when both
+  sides were measured over equal-length windows, which `capture_band_snr` —
+  a full sweep capture against a separately recorded noise WAV — does not
+  guarantee); `band_snr_verdicts` / `cap_null_depth_db` are new,
   consumed by `active_speaker/driver_acoustics.py` and
   `crossover_alignment.py`), `program.py` + `program_analysis.py` (crossover
   conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/
@@ -639,12 +648,19 @@ create a second retention system.
   `snr_policy.excitation_covered_bands` flags any canonical band not
   ENTIRELY inside `[f1, f2]`; `apply_noise_band_fallback` substitutes the
   raw (non-deconvolved) robust ambient reading for those bands, unless that
-  raw reading is itself floor-clamped (no real precision to trust either —
-  the real hardware `treble` shape, entirely above a woofer's `f2`, where
-  phone-mic self-noise reads as pure digital silence, so it keeps its
-  pre-fix deconvolved value). Covered bands keep their reported level
-  unchanged (every band entry gains an additive diagnostic `basis` key
-  naming which path produced it). Full detail, the ground-truth validation
+  raw reading is itself floor-clamped at `DBFS_FLOOR` (no real precision to
+  trust either, so it keeps its deconvolved value). **The observed hardware
+  `treble` clamp was an estimator artifact, not physics (#1838).** This
+  paragraph used to explain it as phone-mic self-noise at 4–12 kHz reading
+  as "pure digital silence"; the #1838 forensics measured that room's true
+  `treble` band at −90.99 dBFS, which the pre-fix per-bin estimator reported
+  46 dB lower and therefore clamped. With the estimator fixed that band
+  returns a real level and takes the `raw_ambient_fallback` branch — so
+  re-derive any fixture or expectation resting on the clamp firing. Covered
+  bands keep their reported level unchanged *by the phantom-noise fix* —
+  #1838 later re-scaled the raw estimator itself, which moves every raw row
+  (every band entry gains an additive diagnostic `basis` key naming which
+  path produced it). Full detail, the ground-truth validation
   table, and doc cross-reference in
   active-crossover-information-design.md "Level control and SNR".
 - **Lane B fixed-axis admission contract (2026-07-12).** Driver analysis no
@@ -1404,4 +1420,12 @@ against three real jts3 hardware captures (sub_bass moved from 13-16 dB
 "insufficient" to 62-66 dB "ok" on all three; every other band's reported
 level is bit-for-bit unchanged) and pinned by ground-truth fixtures plus
 synthetic protective-power cases; not yet hardware-validated on a live
-re-measure)
+re-measure). **Those absolute figures are pre-#1838 and no longer
+reproduce**: the raw-ambient side of that subtraction was reading
+18-39 dB low, so the post-#1838 sub_bass SNR lands well below 62-66 dB.
+The phantom-fix mechanism (deconvolved artifact → raw fallback) is
+unaffected and still correct; only the numbers must be re-derived. Do not
+conflate the two stories — the phantom artifact OVERSTATED SNR by ~40-50 dB
+in uncovered bands, #1838's band-power defect UNDERSTATED every raw ambient
+level by 18-39 dB. They point in opposite directions and have separate
+causes.
