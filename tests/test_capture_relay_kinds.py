@@ -17,6 +17,7 @@ import pytest
 
 from jasper.capture_relay import spec as spec_mod
 from jasper.capture_relay.spec import (
+    CAPTURE_PROTOCOL_VERSION,
     UI_COMPONENT_TYPES,
     BUILDERS,
     CaptureSpec,
@@ -82,7 +83,7 @@ def test_per_kind_validity_policy_is_the_differentiation():
     from jasper.capture_relay.spec import build_level_ramp_spec
 
     ramp = build_level_ramp_spec(geometry_label="speaker baffle")
-    assert ramp.capture_protocol_version == 2
+    assert ramp.capture_protocol_version == CAPTURE_PROTOCOL_VERSION
     assert ramp.validity.clean_capture == "refuse"
     assert ramp.validity.allow_capability_fallback is True
     assert ramp.validity.require_alignment is False
@@ -156,7 +157,7 @@ def test_crossover_driver_requires_explicit_bound_placement_acknowledgement():
         acknowledgement_binding=binding,
     )
 
-    assert spec.capture_protocol_version == 2
+    assert spec.capture_protocol_version == CAPTURE_PROTOCOL_VERSION
     assert spec.acknowledgement is not None
     assert spec.acknowledgement.id == "driver_same_distance_v1"
     assert spec.acknowledgement.binding_id == binding

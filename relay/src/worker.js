@@ -43,7 +43,7 @@ const DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
 // A capture spec is ~1 KB; cap the opaque string well above that but bounded.
 const MAX_SPEC_BYTES = 64 * 1024;
 
-// Session-spanning capture plans (Pi protocol v3, SPEC W2.3) key each admitted
+// Session-spanning capture plans (Pi-side, SPEC W2.3) key each admitted
 // attempt's blob by a small integer `?index=` (absent = 0 → the legacy
 // un-indexed key, byte-identical back-compat). One blob per admitted attempt,
 // `capture_index = attempt - 1`, so the valid indexes are EXACTLY

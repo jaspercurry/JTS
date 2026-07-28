@@ -7,8 +7,8 @@
 The relay can see and store a capture spec and phone control events, but it
 does not know the capture content key carried in the phone-link fragment.  We
 derive a separate HMAC key from that content key and authenticate the exact spec
-bytes plus every protocol-v2 phone event before either endpoint interprets
-them.  The relay remains a byte transport; no relay-side parsing or secret is
+bytes plus EVERY phone event before either endpoint interprets them.  There is
+no unauthenticated path: the protocol that had one is deleted.  The relay remains a byte transport; no relay-side parsing or secret is
 added.
 """
 
@@ -123,7 +123,7 @@ def authenticated_phone_event(
     *,
     sequence: int,
 ) -> dict[str, Any]:
-    """Build the relay-opaque signed envelope used by protocol-v2 phones."""
+    """Build the relay-opaque signed envelope every phone event rides in."""
 
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise CaptureIntegrityError("phone event sequence must be a positive integer")

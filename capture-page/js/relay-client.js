@@ -173,7 +173,7 @@ export class RelayClient {
   }
 
   // Upload IV‖ciphertext with the plaintext integrity the Pi verifies.
-  // `captureIndex` (session-spanning capture plans, protocol v3, SPEC W2.3)
+  // `captureIndex` (session-spanning capture plans, SPEC W2.3)
   // is the 0-based relay blob slot for one admitted attempt
   // (`capture_index = attempt - 1`); omitted/undefined keeps today's
   // byte-identical single-capture request (no `?index=`, aliasing the

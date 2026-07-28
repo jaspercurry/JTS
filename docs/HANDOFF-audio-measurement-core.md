@@ -928,7 +928,7 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    The correction-native relay flow strengthens that advice into a comparable
    measurement contract: 3 cm from the microphone capsule to the named driver's
    radiating-surface center (horn mouth for a compression driver), on-axis, with
-   the same distance for every driver. Capture protocol v2 renders an explicit
+   the same distance for every driver. The capture page renders an explicit
    acknowledgement and the Pi verifies its per-link binding before playback.
    The resulting server-owned placement proof is tied to one durable comparison
    set created by the near-field level check (profile + mic/setup + calibration +

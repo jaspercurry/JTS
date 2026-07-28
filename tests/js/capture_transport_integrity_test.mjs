@@ -15,8 +15,10 @@ function ok() { passed += 1; }
 const KEY = Buffer.from(Array.from({ length: 32 }, (_, index) => index))
   .toString("base64url");
 const SESSION = "cap_integrity_test";
-const SPEC = '{"kind":"crossover_sweep","capture_protocol_version":2}';
-const SPEC_MAC = "bGlwzjxko5SkN3PLp8ZP6vdPuj2SXGQYMWaLZ3yGFe0";
+// Keep byte-identical to `tests/test_capture_relay_integrity.py` — this is
+// the cross-language pin, so both sides move together or not at all.
+const SPEC = '{"kind":"crossover_sweep","capture_protocol_version":3}';
+const SPEC_MAC = "SnRu5CNZlynsM-Wjk4sfI_6Q2dAVrJdwMHOwZR1Ybqo";
 
 async function testCrossLanguageSpecVectorAndTamperRefusal() {
   const integrity = await createTransportIntegrity(KEY, SESSION);
@@ -33,40 +35,51 @@ async function testCrossLanguageAuthenticatedEventVector() {
   const integrity = await createTransportIntegrity(KEY, SESSION);
   const envelope = await integrity.authenticatePhoneEvent({
     armed: true,
-    capture_page: { capture_protocol_version: 2 },
+    capture_page: { capture_protocol_version: 3 },
   }, 1);
   assert.deepEqual(envelope, {
     authenticated_event: {
       schema_version: 1,
       sequence: 1,
-      payload: '{"armed":true,"capture_page":{"capture_protocol_version":2}}',
-      mac: "TiRz4S4EjBn2YcqQg-lI_Ys_ikO4oIlrwW6fOGwC57A",
+      payload: '{"armed":true,"capture_page":{"capture_protocol_version":3}}',
+      mac: "uzqEqrfokAMfNeEoL1_ycE8vqIOzKmNFNjYnRWUun88",
     },
   });
   ok();
 }
 
-async function testProtocolTwoRequiresLinkMacButLegacyOneRemainsReadable() {
-  await assert.rejects(
-    () => verifyAndParseCaptureSpec(SPEC, {
-      contentKeyB64: KEY,
-      sessionId: SESSION,
-      specMac: "",
-    }),
-    /integrity proof is missing/,
-  );
-  const legacy = await verifyAndParseCaptureSpec(
-    '{"kind":"room_sweep","capture_protocol_version":1}',
-    { contentKeyB64: KEY, sessionId: SESSION, specMac: "" },
-  );
-  assert.equal(legacy.spec.kind, "room_sweep");
+async function testEveryCaptureSpecRequiresALinkMac() {
+  // The spec MAC is mandatory for EVERY spec. Protocol-1 links carried none
+  // and were parsed unverified; protocol 1 is deleted and no lab Pi emits it,
+  // so a MAC-less spec is simply unauthenticated — including one that omits
+  // the protocol entirely, which used to be read as legacy protocol 1.
+  for (const specText of [
+    SPEC,
+    '{"kind":"room_sweep","capture_protocol_version":3}',
+    '{"kind":"room_sweep"}',
+  ]) {
+    await assert.rejects(
+      () => verifyAndParseCaptureSpec(specText, {
+        contentKeyB64: KEY,
+        sessionId: SESSION,
+        specMac: "",
+      }),
+      /integrity proof is missing/,
+    );
+  }
+  const verified = await verifyAndParseCaptureSpec(SPEC, {
+    contentKeyB64: KEY,
+    sessionId: SESSION,
+    specMac: SPEC_MAC,
+  });
+  assert.equal(verified.spec.kind, "crossover_sweep");
   ok();
 }
 
 const tests = [
   testCrossLanguageSpecVectorAndTamperRefusal,
   testCrossLanguageAuthenticatedEventVector,
-  testProtocolTwoRequiresLinkMacButLegacyOneRemainsReadable,
+  testEveryCaptureSpecRequiresALinkMac,
 ];
 
 let failure = null;

@@ -295,8 +295,11 @@ audio. Full sequence:
 3. **Phone** verifies that the spec's `capture_protocol_version` is in the
    public page's `supported_capture_protocol_versions`, then includes the page
    build/protocol identity in every control event. The Pi validates that identity
-   before any setup or armed callback may play audio. Specs from before the
-   handshake map narrowly to legacy protocol 1 so the page can be released first.
+   before any setup or armed callback may play audio. A spec that states no
+   protocol is incompatible, not legacy — there is exactly one capture protocol
+   (1 and 2 were deleted on 2026-07-27: the flow has never shipped outside the
+   lab and no lab Pi emits them, though page build 20260712.3 did serve
+   protocol 2, which is why that deletion rolled out Pi-first).
 4. **Phone** posts `{setup_validate:true, setup:{...}, setup_identity:{...}}`;
    the Pi validates/applies it and replies `host_event.phase="setup_validated"`.
    The phone then streams compact level batches, and the Pi raises software gain
@@ -482,7 +485,8 @@ with the **Pi-owned** admission ledger (`repeat_admission` — the phone NEVER
 decides budget; a refused begin gets a named `capture_refused` host event) →
 the Pi ACKs `capture_authorized {index, attempt}` → the phone records and posts
 `armed` carrying the same begin context (page identity + placement
-acknowledgement validated per capture, exactly as v2) → the Pi plays the
+acknowledgement validated per capture, exactly as the single-capture path) →
+the Pi plays the
 stimulus → the phone uploads its blob at relay **`capture_index = attempt - 1`**
 (each attempt gets its own key; attempt 1 aliases the legacy un-indexed key) →
 the Pi pulls/decrypts/verifies, analyzes, and posts `capture_result {index,
@@ -490,7 +494,7 @@ attempt, accepted, verdict fields}` → the phone renders "Measurement N of
 {target} ✓ — Next" (or Retry: same index, attempt k+1). The set terminates with
 `capture_set_complete` or `capture_set_exhausted`. Out-of-order / replayed /
 malformed begins are refused loudly; per-event replay is already blocked by the
-protocol-v2 authenticated-envelope sequence.
+authenticated-envelope sequence.
 
 **Per-capture entries (plan `schema_version: 2` — dormant).** `capture_plan`
 may additionally carry an `entries` table (one `{index, kind_label,
@@ -503,9 +507,10 @@ crossover v2 flow (W5) will. Design:
 
 **Page side (Wave-2 batch):** the 2026-07 capture page
 (`capture-page/js/main.js`'s `onPlanStart`/`runPlanCapture`) implements the
-full v3 choreography, and its `version.json` advertises
-`supported_capture_protocol_versions: [1, 2, 3]`. The Pi side
-(`jasper/capture_relay/session.py`'s `run_capture_plan`) has understood v3
+full session-spanning choreography, and its `version.json` advertises
+`supported_capture_protocol_versions: [3]` — one protocol, the only one that
+ever reached a public page. The Pi side
+(`jasper/capture_relay/session.py`'s `run_capture_plan`) has understood plans
 since the earlier PR in this series.
 
 **Host orchestrator (Wave-2 Pi finale — the flip):**
@@ -520,25 +525,28 @@ the closed-loop level solver (#1543/#1552) and the completion-time correction
 `_handle_crossover_relay_capture` now builds every DRIVER capture spec with a
 `capture_plan` (`capture_target=3`, `max_attempts=4`, matching
 `commissioning_capture.DEFAULT_REPEAT_TARGET` /
-`repeat_admission.MAX_ATTEMPTS` exactly) — **the marker is emitted
-unconditionally, no env gate.** Summed/verification captures and `level_ramp`
-stay on the v2 per-capture path untouched. `CapturePlan` progress (`{role,
+`repeat_admission.MAX_ATTEMPTS` exactly) — the plan is emitted
+unconditionally, no env gate. Summed/verification captures and `level_ramp`
+stay on the single-capture path untouched: they carry no `capture_plan`, which
+is the ONLY thing that selects between the two runners (the protocol number
+says nothing about it — every spec carries the same one). `CapturePlan` progress (`{role,
 capture_target, accepted}`) publishes into the relay status snapshot
 (`correction_setup._publish_crossover_capture_plan_progress`) so the wizard
 envelope's passive "N of {target} done" mirror
 (`crossover_envelope._plan_measuring_verdict`, landed dormant with #1550) has
-live data once a v3 session is running.
+live data once a session-spanning session is running.
 
 **Deploy sequencing is the only remaining gate — no code flag.** Every piece
-is now merged in code: Pi session machinery (#1550), Worker indexed blobs
-(#1550, not yet wrangler-deployed), page v3 loop + version advertisement
-(#1560), and the host flip (this PR). The coordinator sequences the actual
-rollout: Worker → page publish → **the Pi build carrying the host flip
-deploys LAST**. A v3 spec against an OLDER (pre-Wave-2) deployed page fails
-the page-identity check (`validate_capture_page`) loudly before any tone
-plays — a safe, visible failure, but the wrong order: deploying the Pi flip
-before the page publish would make every driver-sweep capture request error
-until the page catches up.
+is merged in code: Pi session machinery (#1550), Worker indexed blobs
+(#1550), page plan loop + version advertisement (#1560), and the host flip.
+The coordinator sequences the actual rollout. For that ADD (protocol 3 joining
+the page's supported list) the order was Worker → page publish → **the Pi build
+LAST**: a spec whose protocol an OLDER deployed page does not advertise fails
+the page-identity check (`validate_capture_page`) loudly before any tone plays
+— a safe, visible failure, but the wrong order, since deploying the Pi before
+the page publish would error every driver-sweep capture until the page caught
+up. The 2026-07-27 protocol-1/2 REMOVAL runs the opposite way (Pi first, page
+second) — see §14.
 
 **Hardware blocker found and fixed (run 21, jts3 @ 62af5b206): the v3 order
 was never validated against the wizard's own envelope-derivation guard.**
@@ -674,14 +682,14 @@ separate HMAC-SHA-256 key from the fragment-only `content_key`:
   before parsing or rendering the spec. The relay can withhold the spec, but it
   cannot change instructions, protocol, acknowledgement binding, or return URL
   without a visible integrity failure.
-- Protocol-v2 phone events are one relay-opaque authenticated envelope. The MAC
+- EVERY phone event is one relay-opaque authenticated envelope. The MAC
   covers the exact JSON payload, a monotonic sequence, and `session_id`. The Pi
   verifies that envelope **before** reading page identity, setup, device,
   acknowledgement, abort, or `armed`; relay edits and prior-session replay fail
-  before a host callback can play audio.
-- Protocol 1 remains readable for old Pi/page pairs, but raw protocol-1 events
-  cannot satisfy a protocol-v2 session or create v2 crossover evidence. New Pi
-  links carry the spec MAC for every kind, including protocol 1.
+  before a host callback can play audio. There is no unauthenticated read path:
+  protocol 1 had one and was deleted along with the protocol itself.
+- Every Pi link carries the spec MAC, for every kind, and the page refuses a
+  spec that arrives without one.
 
 The matching reusable implementations are
 `capture-page/js/transport-integrity.js` and
@@ -905,16 +913,26 @@ keeps its normal logging and cue policy.
 ## 14. Build and release order
 
 The numbered implementation history below is not the deployment order. The
-public page, the relay Worker, and the Pi are released independently, so
-**the Pi always goes last** — accepting a newer contract is backwards
-compatible, emitting it is not.
+public page, the relay Worker, and the Pi are released independently, and
+**the side that NARROWS what it accepts goes last**. For a protocol addition
+that is the Pi (accepting a newer contract is backwards compatible, emitting it
+is not); for a protocol removal it is the page.
 
-- **Page before Pi** for a `capture_protocol_version` change: publish a page
-  whose `version.json` supports both the old and new protocol, verify
+- **Adding a `capture_protocol_version` → page before Pi:** publish a page
+  whose `version.json` advertises the new protocol alongside any protocol a
+  deployed Pi still emits, verify
   `https://capture.jasper.tech/version.json`, and only then deploy Pis that
-  emit the new `CaptureSpec.capture_protocol_version`. The exact commands and
-  old-protocol retirement step live in
-  [`capture-page/README.md`](../capture-page/README.md).
+  emit the new `CaptureSpec.capture_protocol_version`.
+- **Removing one → Pi before page:** deploy the Pis that stop emitting it
+  first, then drop it from `supported_capture_protocol_versions` and publish.
+  A page that has dropped protocol N strands every Pi still emitting N —
+  instantly, since `version.json` is served `no-store`.
+
+  The 2026-07-27 deletion of protocols 1 and 2 was a REMOVAL (the published
+  build `20260712.3` served protocol 2) and shipped Pi-first.
+
+The exact commands for both directions live in
+[`capture-page/README.md`](../capture-page/README.md).
 - **Worker before Pi** for a relay capacity change (the capture-plan attempt
   ceiling): deploy the Worker, verify
   `https://relay.jasper.tech/capabilities`, and only then deploy Pis that emit
@@ -939,7 +957,7 @@ spec is uploaded.
    stimulus playback.
 5. **E2E encryption** (WebCrypto on the phone / AES-GCM on the Pi), WAV
    **integrity** (length + SHA-256), and fragment-key-derived HMAC integrity for
-   the exact spec plus protocol-v2 phone control events.
+   the exact spec plus every phone control event.
 6. **Measurement-validity gates**: realized-constraints verify + device-capability
    fallback; **alignment-confidence** check; per-kind clock-drift handling.
 7. **Failure states**; relay-unreachable messaging; **Screen Wake Lock** +
@@ -979,12 +997,21 @@ spec is uploaded.
 - The **UI renders only from data** (no executable markup path): a payload
   containing `<script>` / `onerror=` / `javascript:` is rendered inert (escaped
   text), never executed. A regression test asserts this.
-- A relay-modified spec, raw/modified protocol-v2 event, or authenticated event
-  replayed from another session fails before `on_armed` can play a stimulus.
+- A relay-modified spec, a raw or modified phone event, or an authenticated
+  event replayed from another session fails before `on_armed` can play a
+  stimulus.
 
 ---
 
-Last updated: 2026-07-16 — §9's level-ramp AGC gate now verifies chain
+Last updated: 2026-07-27 — capture protocols 1 and 2 are DELETED. There is
+exactly one capture protocol; every builder emits it, `version.json` advertises
+exactly it, a spec that omits it is incompatible rather than legacy, every
+phone event and every spec link is authenticated, and session-spanning
+behaviour is selected by `capture_plan` presence alone. Because published build
+`20260712.3` really did serve protocol 2, this is a protocol REMOVAL: it ships
+**Pi-first, page-second** (§14), and persisted placement proofs stamped
+`capture_protocol_version: 2` stay valid. Prior 2026-07-16 —
+§9's level-ramp AGC gate now verifies chain
 linearity empirically for an unattested (undefined `autoGainControl`) phone
 instead of refusing it client-side; see "Level-ramp AGC is verified, not just
 attested" above and `jasper/audio_measurement/ramp.py`. Prior 2026-07-15 —
@@ -1032,15 +1059,17 @@ and the server-owned three-repeat admission loop; selecting a UMIK-2 preselects
 only the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
 serial, so the operator must still enter and validate it once; there is no
 automatic calibration-file match. Capture specs are MAC-bound to their fragment
-links and protocol-v2 phone events are authenticated end to end before any
-correctness-critical field can reach playback; protocol 1 remains compatible
-but cannot satisfy v2 evidence. The level stage preflights and freezes the
+links and every phone event is authenticated end to end before any
+correctness-critical field can reach playback. The level stage preflights and
+freezes the
 microphone/calibration setup; successful leveling restores listening volume
 immediately, and sweeps assert the retained target only inside their guarded
 playback windows. Crossover retains its compact setup binding and bounded
 browser-storage lifetime. The page/Pi compatibility version is checked before
-tone and published at `capture.jasper.tech/version.json` with a page-before-Pi
-release contract; the crossover page is a serialized single-next-action flow;
+tone and published at `capture.jasper.tech/version.json`, with a release
+contract whose order depends on direction — page-before-Pi to ADD a protocol,
+Pi-before-page to REMOVE one; the crossover page is a serialized
+single-next-action flow;
 blank legacy `JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` values now
 migrate to the public relay defaults on install/update; explicit
 `disabled`/`off`/`0`/`none` remains the persistent on-Pi fallback opt-out. Prior

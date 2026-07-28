@@ -96,7 +96,7 @@ CAPTURE_INCOMPATIBLE_USER_MESSAGE = (
     "your speaker and try again."
 )
 
-# --- Protocol v3 (session-spanning capture plans, SPEC W2.3) -------------------
+# --- Session-spanning capture plans (SPEC W2.3) -------------------------------
 # Event vocabulary. The phone requests each capture of the set with an
 # authenticated `begin_capture {index, attempt}` field (`index` = 1-based
 # measurement slot of `capture_target`; `attempt` = 1-based Pi-admitted attempt
@@ -179,7 +179,7 @@ class RelayCapacityUnavailable(ValueError):
 
 
 class CaptureBeginRefused(RuntimeError):
-    """The Pi refused a phone ``begin_capture`` request (protocol v3).
+    """The Pi refused a phone ``begin_capture`` request (capture plans).
 
     Admission stays Pi-owned (SPEC W2.3): the host's injected
     ``authorize_begin`` raises this to refuse — most importantly when
@@ -195,7 +195,7 @@ class CaptureBeginRefused(RuntimeError):
 
 
 class CaptureBeginDeferred(RuntimeError):
-    """A NON-terminal soft-hold on a phone's ``begin_capture`` (protocol v3).
+    """A NON-terminal soft-hold on a phone's ``begin_capture`` (capture plans).
 
     Distinct from :class:`CaptureBeginRefused` (terminal — ends the whole
     plan): the host's injected ``authorize_begin`` raises this when the Pi
@@ -396,10 +396,11 @@ class PollState:
     setup_token: str = ""
     capture_page: dict | None = None
     acknowledgement: dict | None = None
-    # Protocol v3 (session-spanning plans): the phone's current
+    # Session-spanning plans: the phone's current
     # `begin_capture {index, attempt}` request context, and the relay's
     # per-index blob summary (`{"<capture_index>": {size, integrity}}`).
-    # Both `None` on v2 sessions — v2 readers never touch them.
+    # Both `None` on a plan-free session — single-capture readers never
+    # touch them.
     begin_capture: dict | None = None
     blobs: dict | None = None
 
@@ -432,8 +433,9 @@ class PhoneEventVerifier:
     def verify(self, relay_event: Any) -> dict[str, Any] | None:
         if relay_event is None:
             return None
-        if self._session.spec.capture_protocol_version < 2:
-            return dict(relay_event) if isinstance(relay_event, dict) else None
+        # Every event is authenticated. Protocol 1 used to pass the relay's
+        # slot through unverified; it is deleted, and no lab Pi emits it, so
+        # there is no unauthenticated path left to fall into.
         verified, sequence = verify_authenticated_phone_event(
             self._session.content_key,
             self._session.session_id,
@@ -457,7 +459,7 @@ class PhoneEventVerifier:
 
         The relay `event` slot persists between polls, so a plan runner needs
         the sequence to tell "the same event, still sitting there" from "the
-        phone posted a new event" (protocol-v3 begin dedup vs replay)."""
+        phone posted a new event" (begin dedup vs replay)."""
         return self._sequence
 
 
@@ -478,18 +480,14 @@ class CaptureActivityProbe:
         *,
         capture_index: int | None = None,
     ) -> None:
-        if session.spec.capture_protocol_version < 2:
-            raise CaptureFailed(
-                "abort-aware host playback requires authenticated capture protocol v2"
-            )
         self._client = client
         self._session = session
         self._verifier = PhoneEventVerifier(session)
         self._lock = threading.Lock()
-        # Protocol v3: "the recorder finished" is per-capture, not per-session.
-        # A prior attempt's blob leaves the legacy `state == ready` set for the
-        # whole session, so a plan-aware probe checks THIS capture's index in
-        # the per-index blob map instead.
+        # In a capture-plan session "the recorder finished" is per-capture, not
+        # per-session. A prior attempt's blob leaves the session-wide
+        # `state == ready` set, so a plan-aware probe checks THIS capture's
+        # index in the per-index blob map instead.
         self._capture_index = capture_index
 
     def assert_active(self) -> None:
@@ -806,9 +804,9 @@ def _verify_phone_event(
 
     On an integrity failure this logs, tells the phone (best-effort), and
     raises ``CaptureFailed`` — the identical handling both the single-capture
-    poll loop and the protocol-v3 plan runner need."""
+    poll loop and the capture-plan runner need."""
     relay_event = status.get("event") if isinstance(status, dict) else None
-    if session.spec.capture_protocol_version < 2 or relay_event is None:
+    if relay_event is None:
         return status
     try:
         verified_event = verifier.verify(relay_event)
@@ -1071,7 +1069,7 @@ def _poll_until_capture(
         sleep(poll_interval_s)
 
 
-# --- Session-spanning plan runner (protocol v3, SPEC W2.3) ---------------------
+# --- Session-spanning plan runner (SPEC W2.3) ---------------------------------
 
 
 class BeginCapture(NamedTuple):
@@ -1212,7 +1210,7 @@ def run_capture_plan(
     play_cue: Callable[[str], None] | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> list[PlanCaptureOutcome]:
-    """Run one session-spanning capture SET (protocol v3, SPEC W2.3).
+    """Run one session-spanning capture SET (SPEC W2.3).
 
     One relay session covers ``capture_plan.capture_target`` accepted captures
     within ``capture_plan.max_attempts`` admitted attempts. Per capture N the
@@ -1302,10 +1300,8 @@ def run_capture_plan(
     legitimately outlasts the general 120 s budget.
     """
     plan = session.spec.capture_plan
-    if plan is None or session.spec.capture_protocol_version < 3:
-        raise CaptureFailed(
-            "run_capture_plan requires a capture_plan spec (capture protocol 3)"
-        )
+    if plan is None:
+        raise CaptureFailed("run_capture_plan requires a capture_plan spec")
     return _run_with_failure_cues(
         session,
         play_cue,

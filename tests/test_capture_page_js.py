@@ -96,8 +96,14 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert version == {
         "schema_version": 1,
         "capture_protocol_version": 3,
-        "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260727.1",
+        # ONE protocol. The supported list is not a negotiation surface any
+        # more — protocols 1 and 2 were deleted (the flow has never shipped
+        # outside the lab and no lab Pi emits them), so a page advertising
+        # anything else is stale. NOTE this is a REMOVAL: the currently
+        # deployed page still advertises [1, 2, 3], so this page build must
+        # publish AFTER the Pis stop emitting 1 and 2, not before.
+        "supported_capture_protocol_versions": [3],
+        "capture_page_build": "20260727.2",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -105,12 +111,20 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260727-1" in index_html
+    assert "main.js?v=20260727-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
     assert 'from "./constraints.js?v=20260711-4"' in main_js
     assert 'from "./relay-client.js?v=20260717-1"' in main_js
+    # Both modules changed in the protocol-deletion PR, and both carry a
+    # SECURITY tightening (mandatory spec MAC; a version-less spec is refused
+    # rather than read as legacy protocol 1). An unstamped or stale-stamped
+    # import means a warm-cache phone keeps the permissive module — the
+    # tightening silently would not take effect. capture-protocol.js had no
+    # stamp at all before this PR.
+    assert 'from "./capture-protocol.js?v=20260727-1"' in main_js
+    assert 'from "./transport-integrity.js?v=20260727-1"' in main_js
     assert 'from "./level-events.js?v=20260716-1"' in main_js
     assert 'from "./ambient-stats.js?v=20260717-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
@@ -749,21 +763,29 @@ def test_crossover_candidate_review_collapses_provenance_hashes():
 # ---------------------------------------------------------------------------
 
 
-def test_capture_page_v3_plan_routes_begin_capture_to_the_plan_loop():
-    """A capture_protocol_version=3 spec with a capture_plan wires the
-    spec-rendered Start button to onPlanStart(); anything else (v1/v2, or a
-    v3-shaped protocol number with no plan — impossible per
-    CaptureSpec.validate() but checked defensively anyway) keeps today's
-    single-capture onStart() untouched."""
+def test_capture_page_plan_routes_begin_capture_to_the_plan_loop():
+    """A `capture_plan` — and ONLY a `capture_plan` — wires the spec-rendered
+    Start button to onPlanStart(); a plan-free spec keeps the single-capture
+    onStart(). The protocol number is deliberately NOT part of this test: with
+    one protocol, every spec carries the same version, so a
+    `capture_protocol_version === 3` conjunct would be dead weight that reads
+    as if plan-ness were still version-encoded."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert (
-        "const isPlanSpec = spec.capture_protocol_version === 3 && Boolean(spec.capture_plan);"
-        in main_js
-    )
+    assert "const isPlanSpec = Boolean(spec.capture_plan);" in main_js
+    assert "capture_protocol_version === 3" not in main_js
+    # Phone-event signing is unconditional. The old
+    # `requiredCaptureProtocol(spec) >= 2` let a protocol-1 spec — including a
+    # version-less one — disable the authenticated envelope entirely.
+    assert "client.setTransportIntegrity(verified.integrity, { required: true });" in main_js
+    assert "requiredCaptureProtocol(spec) >= 2" not in main_js
+    # The helper is no longer imported at all — nothing left branches on the
+    # protocol number. (Checked on the import list, not the whole file, so the
+    # explanatory comment above the call site does not satisfy it.)
+    assert "  requiredCaptureProtocol," not in main_js
     assert "begin_capture: () => (isPlanSpec ? onPlanStart(ctx) : onStart(ctx))," in main_js
-    # v2 keeps its exact single-capture behavior — the "retry" action (a v2-
-    # only affordance; v3 never emits it) is untouched, still onStart.
+    # The single-capture path keeps its exact behavior — the "retry" action
+    # (which a plan spec never emits) is untouched, still onStart.
     assert "retry: () => onStart(ctx)," in main_js
 
 

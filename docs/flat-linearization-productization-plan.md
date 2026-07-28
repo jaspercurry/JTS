@@ -449,6 +449,15 @@ at all, and only plans above the legacy ceiling probe, so the shipped
 fail-closed property the contract asked for is preserved and
 strengthened; only the mechanism changed.)*
 
+*(Follow-on, 2026-07-27: capture protocols 1 and 2 were deleted, so the
+"negotiated protocol version" this annotation critiques is now a
+single-value equality check — the pre-registered gate is not merely
+mis-aimed at the Worker, it can no longer vary at all. The shipped
+`GET /capabilities` gate is untouched and remains the real mechanism;
+`LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS` stays, because it describes the
+deployed Worker's blob-index ceiling, an axis independent of the page
+protocol.)*
+
 **Acceptance:** spec-layer tests for >8-entry plans and the skew
 refusal; Worker-side test for the widened index space; the existing
 3-entry and 1-entry (re-verify) flows byte-identical.

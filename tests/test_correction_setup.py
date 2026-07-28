@@ -38,6 +38,7 @@ import pytest
 
 from pathlib import Path
 
+from jasper.capture_relay.spec import CAPTURE_PROTOCOL_VERSION
 from jasper.web import correction_setup, correction_tuning
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -702,7 +703,10 @@ async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeyp
     pi_session = SimpleNamespace(
         session_id="cap-stop",
         pull_token="pull",
-        spec=SimpleNamespace(capture_protocol_version=2, kind="level_ramp"),
+        spec=SimpleNamespace(
+            capture_protocol_version=CAPTURE_PROTOCOL_VERSION,
+            kind="level_ramp",
+        ),
     )
 
     async def acquire_measurement_gate():
@@ -835,7 +839,10 @@ async def test_level_pump_refreshes_status_after_host_event_timeout(monkeypatch)
         SimpleNamespace(
             session_id="cap-level",
             pull_token="pull",
-            spec=SimpleNamespace(capture_protocol_version=1, kind="level_ramp"),
+            spec=SimpleNamespace(
+                capture_protocol_version=CAPTURE_PROTOCOL_VERSION,
+                kind="level_ramp",
+            ),
         ),
         geometry="listening_position",
         run_token="run-level",
@@ -944,7 +951,10 @@ async def test_relay_level_match_unlocked_raises_refused_and_posts_mapped_messag
             SimpleNamespace(
                 session_id="cap-level",
                 pull_token="pull",
-                spec=SimpleNamespace(capture_protocol_version=1, kind="level_ramp"),
+                spec=SimpleNamespace(
+                    capture_protocol_version=CAPTURE_PROTOCOL_VERSION,
+                    kind="level_ramp",
+                ),
             ),
             geometry="listening_position",
             run_token="run-level",

@@ -59,14 +59,16 @@ from jasper.capture_relay.spec import (
 
 _BINDING = "placement_abcdefghijklmnopqrstuv"
 
-_PAGE_V3 = {
+_PAGE = {
     "schema_version": 1,
     "capture_protocol_version": 3,
-    "supported_capture_protocol_versions": [1, 2, 3],
-    "capture_page_build": "20260716.1",
+    "supported_capture_protocol_versions": [3],
+    "capture_page_build": "20260727.2",
 }
 
-_PAGE_V2 = {
+# A page build from before the protocol-1/2 deletion: it advertises only the
+# deleted versions, so the handshake must refuse it before any tone.
+_PAGE_STALE = {
     "schema_version": 1,
     "capture_protocol_version": 2,
     "supported_capture_protocol_versions": [1, 2],
@@ -209,7 +211,7 @@ class PhonePlanDriver:
     def __init__(self, backend, session, *, page=None, setup=None):
         self.backend = backend
         self.session = session
-        self.page = dict(page or _PAGE_V3)
+        self.page = dict(page or _PAGE)
         self.sequence = 0
         self.begun: tuple[int, int] | None = None
         self.armed_for: tuple[int, int] | None = None
@@ -1389,7 +1391,7 @@ def _scripted_begin_client(backend, session, script):
     def post(payload):
         backend.phone_post(
             session.session_id,
-            {**payload, "capture_page": dict(_PAGE_V3)},
+            {**payload, "capture_page": dict(_PAGE)},
             session=session,
             sequence=next(seq),
         )
@@ -1536,7 +1538,7 @@ def test_out_of_order_or_malformed_first_begin_is_refused(index, attempt, code):
         session.session_id,
         {
             "begin_capture": {"index": index, "attempt": attempt},
-            "capture_page": dict(_PAGE_V3),
+            "capture_page": dict(_PAGE),
         },
         session=session,
         sequence=1,
@@ -1573,7 +1575,7 @@ def test_unauthenticated_begin_never_reaches_admission(failure_mode):
     client, session, _phone = _mint_plan_session(backend, driver=False)
     event = {
         "begin_capture": {"index": 1, "attempt": 1},
-        "capture_page": dict(_PAGE_V3),
+        "capture_page": dict(_PAGE),
     }
     if failure_mode == "unsigned":
         # Raw event straight into the relay slot — no authenticated envelope.
@@ -1803,7 +1805,7 @@ def test_stop_mid_set_persists_accepted_captures_without_failure_cue(
 # --- protocol guards ------------------------------------------------------------
 
 
-def test_run_capture_plan_requires_a_v3_plan_spec():
+def test_run_capture_plan_requires_a_capture_plan_spec():
     backend = FakePlanRelayBackend()
     spec = build_crossover_sweep_spec(
         driver_label="Woofer driver",
@@ -1816,7 +1818,7 @@ def test_run_capture_plan_requires_a_v3_plan_spec():
     )
     client = RelayClient("https://relay.test", transport=backend)
     register_session(client, session)
-    with pytest.raises(CaptureFailed, match="capture protocol 3"):
+    with pytest.raises(CaptureFailed, match="requires a capture_plan"):
         run_capture_plan(
             client,
             session,
@@ -1827,14 +1829,14 @@ def test_run_capture_plan_requires_a_v3_plan_spec():
         )
 
 
-def test_v3_session_against_todays_v2_page_fails_before_any_stimulus():
+def test_plan_session_against_a_stale_page_fails_before_any_stimulus():
     backend = FakePlanRelayBackend()
     client, session, _phone = _mint_plan_session(backend, driver=False)
     backend.phone_post(
         session.session_id,
         {
             "begin_capture": {"index": 1, "attempt": 1},
-            "capture_page": dict(_PAGE_V2),
+            "capture_page": dict(_PAGE_STALE),
         },
         session=session,
         sequence=1,
@@ -1929,13 +1931,14 @@ def test_phone_that_never_begins_times_out_in_the_begin_phase():
     assert ei.value.phase == "awaiting_begin"
 
 
-# --- v2 path unchanged (contract) -----------------------------------------------
+# --- single-capture path unchanged (contract) -----------------------------------
 
 
-def test_v2_single_capture_ignores_a_begin_capture_field():
-    """The v2 runner never reads `begin_capture` — a phone event carrying the
-    v3 field flows through today's single-capture path untouched (the
-    v2-unchanged contract, SPEC W2.3 compat matrix)."""
+def test_single_capture_ignores_a_begin_capture_field():
+    """The single-capture runner never reads `begin_capture` — a phone event
+    carrying the plan field flows through the plan-free path untouched. This
+    is the contract that lets ONE protocol serve both shapes: the runner is
+    selected by `capture_plan` presence, not by a version number."""
     backend = FakePlanRelayBackend()
     spec = build_crossover_sweep_spec(
         driver_label="Woofer driver",
@@ -1943,7 +1946,7 @@ def test_v2_single_capture_ignores_a_begin_capture_field():
         acknowledgement_binding=_BINDING,
         stimulus_duration_ms=4000,
     )
-    assert spec.capture_protocol_version == 2
+    assert spec.capture_plan is None
     session = mint_session(
         spec, relay_base="https://relay.test", capture_origin="capture.test"
     )
@@ -1954,8 +1957,8 @@ def test_v2_single_capture_ignores_a_begin_capture_field():
         session.session_id,
         {
             "armed": True,
-            "begin_capture": {"index": 1, "attempt": 1},  # ignored by v2
-            "capture_page": dict(_PAGE_V2),
+            "begin_capture": {"index": 1, "attempt": 1},  # ignored, no plan
+            "capture_page": dict(_PAGE),
             "acknowledgement": {
                 "schema_version": 1,
                 "id": spec.acknowledgement.id,
@@ -2069,7 +2072,7 @@ def test_activity_probe_is_per_index_aware_for_plans():
         {
             "armed": True,
             "begin_capture": {"index": 2, "attempt": 2},
-            "capture_page": dict(_PAGE_V3),
+            "capture_page": dict(_PAGE),
         },
         session=session,
         sequence=1,

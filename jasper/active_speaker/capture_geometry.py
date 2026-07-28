@@ -48,16 +48,28 @@ COMPARISON_SET_SCHEMA_VERSION = 2
 PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
 
-# Capture protocol versions with the acknowledgement machinery a placement
-# proof depends on (protocol 1 has none -- see
-# jasper.capture_relay.spec._validate_acknowledgement's "acknowledgement
-# requires capture protocol 2"). Protocol 3 (SPEC W2.3's session-spanning
-# capture plan) still authenticates the SAME per-capture acknowledgement
-# through the SAME validate_capture_acknowledgement/on_armed choreography
-# v2 uses -- it only changes how many captures share one relay session, not
-# what proves placement -- so a v3-sourced proof is equally trustworthy.
-# Explicit allowlist (not >= 2): a future protocol 4 must be a deliberate
-# addition here, never a silent pass-through.
+# Capture protocol versions carrying the acknowledgement machinery a placement
+# proof depends on. Protocol 1 has none, so it is excluded; 2 and 3 authenticate
+# the SAME acknowledgement through the SAME
+# validate_capture_acknowledgement/on_armed choreography.
+#
+# **2 stays even though the Pi no longer EMITS it.** This reads a version
+# stamped into PERSISTED evidence by whatever page wrote the proof --
+# `normalized_placement_proof` records the PAGE's `capture_protocol_version`,
+# and the published build 20260712.3 advertised 2. Dropping 2 here would
+# retroactively invalidate every proof captured against that page (repeat
+# admission, crossover readiness, replay), so a persisted proof IS a deployed
+# artifact even though protocol 2 is no longer emitted.
+#
+# Explicit allowlist, never a `>=` floor: a future protocol must be a
+# deliberate addition here once its acknowledgement choreography is confirmed
+# equivalent -- never a silent pass-through.
+#
+# The literals are duplicated rather than imported on purpose: capture_relay.spec
+# imports THIS module (lazily, for placement copy), so importing it back at
+# module scope would invert that dependency. Containment of
+# capture_relay.spec.CAPTURE_PROTOCOL_VERSION is pinned by
+# tests/test_active_speaker_commissioning_capture.py.
 PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
 # Capture geometry is speaker policy, never browser input. The relay verifies

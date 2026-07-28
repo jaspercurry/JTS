@@ -170,15 +170,14 @@ export async function verifyAndParseCaptureSpec(
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
     throw new Error("capture spec is invalid");
   }
-  const protocol = Number(spec.capture_protocol_version || 1);
   const integrity = await createTransportIntegrity(contentKeyB64, sessionId);
-  if (specMac) {
-    await integrity.verifyCaptureSpec(String(specText), specMac);
-  } else if (protocol >= 2) {
-    // Old protocol-1 links did not carry a spec MAC. They remain usable, but
-    // can never be downgraded into satisfying a v2 capture.
+  // The spec MAC is mandatory. Protocol-1 links carried none and were let
+  // through unverified; protocol 1 is deleted and no lab Pi emits it, so a
+  // MAC-less spec is now simply unauthenticated and refused.
+  if (!specMac) {
     throw new Error("capture spec integrity proof is missing");
   }
+  await integrity.verifyCaptureSpec(String(specText), specMac);
   return { spec, integrity };
 }
 

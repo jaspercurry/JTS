@@ -98,6 +98,11 @@ const posted = [];
 await onStart({
   spec: {
     kind: "crossover_sweep",
+    // Real protocol-3 shape. This fixture used to omit the field entirely,
+    // which only parsed because of the deleted "no version means protocol 1"
+    // rule; both the page and CaptureSpec.from_dict now refuse a version-less
+    // spec, so a fixture without one no longer represents anything shippable.
+    capture_protocol_version: 3,
     sample_rate_hz: 48000,
     channels: 1,
     constraints: {
@@ -136,12 +141,11 @@ assert.equal(globalThis.__wakeReleased, true, "host Stop releases the wake lock"
 assert.equal(uploads, 0, "host Stop prevents a late upload");
 assert.equal(statusEl.dataset.kind, "info", "host Stop stays expected control flow");
 
-// v2 regression pin (this spec carries no capture_protocol_version, i.e. the
-// legacy/v1-v2 shape): captureAmbientNoise()'s new `samples` field must
-// never leak onto the wire — noise_floor stays exactly {duration_ms,
-// rms_dbfs} — and the ambient_stats fields ride alongside on the SAME
-// already-awaited `armed` post for a crossover_sweep capture (no separate
-// relay round trip).
+// Single-capture (plan-free) regression pin: captureAmbientNoise()'s
+// `samples` field must never leak onto the wire — noise_floor stays exactly
+// {duration_ms, rms_dbfs} — and the ambient_stats fields ride alongside on
+// the SAME already-awaited `armed` post for a crossover_sweep capture (no
+// separate relay round trip).
 assert.deepEqual(
   new Set(Object.keys(posted[0].noise_floor)),
   new Set(["duration_ms", "rms_dbfs"]),

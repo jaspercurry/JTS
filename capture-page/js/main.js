@@ -33,10 +33,9 @@ import { runLevelRampProtocol } from "./level-events.js?v=20260716-1";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
-  requiredCaptureProtocol,
   validateCapturePageIdentity,
-} from "./capture-protocol.js";
-import { verifyAndParseCaptureSpec } from "./transport-integrity.js?v=20260711-3";
+} from "./capture-protocol.js?v=20260727-1";
+import { verifyAndParseCaptureSpec } from "./transport-integrity.js?v=20260727-1";
 import {
   loadBoundSetup,
   refreshBoundSetup,
@@ -1491,19 +1490,18 @@ async function waitForSweepComplete(client, spec, isAborted) {
 }
 
 // ============================================================================
-// Session-spanning capture plans (capture protocol v3, SPEC W2.3) — the
+// Session-spanning capture plans (SPEC W2.3) — the
 // ping-pong killer. One relay session now covers a driver's whole repeat
 // SET: after each accepted capture the phone shows "Measurement N of target
 // ✓" with a single "Next measurement" tap, instead of the household
-// returning to the wizard between every repeat. v2 specs (no capture_plan)
+// returning to the wizard between every repeat. Plan-free specs
 // keep today's flow through onStart() above, which stays WIRE-COMPATIBLE
 // with every deployed Pi: its armed event changed inert-additively (the
 // noise_floor object is now built explicitly with the same two fields, and
 // crossover_sweep captures gained the ambient_stats key, which older Pis
 // simply ignore) — no field changed meaning or shape. The loop below is a
-// fully separate code path, dormant until a Pi build starts emitting
-// capture_protocol_version=3 + capture_plan (see
-// jasper/capture_relay/spec.py's CapturePlan docstring).
+// fully separate code path, taken only for a spec carrying a capture_plan
+// (see jasper/capture_relay/spec.py's CapturePlan docstring).
 // ============================================================================
 
 function planTargetAndAttempts(spec) {
@@ -2926,8 +2924,8 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
 }
 
 // Entry point wired to the spec's own `begin_capture` button (rendered by
-// the standard DATA renderer, same as v2's onStart) for a v3
-// (capture_protocol_version=3 + capture_plan) spec. Captures the operator's
+// the standard DATA renderer, same as the single-capture `onStart`) for a
+// spec carrying a `capture_plan`. Captures the operator's
 // placement acknowledgement ONCE, up front — the acknowledgement's identity
 // (id/binding_id) is fixed by the spec, not re-derived per round, since a
 // repeat SET measures the SAME physical placement multiple times and there
@@ -3244,9 +3242,12 @@ async function boot() {
     spec = verified.spec;
     assertCaptureProtocolCompatible(spec, pageIdentity);
     client.setCapturePageIdentity(pageIdentity);
-    client.setTransportIntegrity(verified.integrity, {
-      required: Number(requiredCaptureProtocol(spec)) >= 2,
-    });
+    // Signing is unconditional: with one protocol there is no version that
+    // exempts a phone event from its authenticated envelope. This used to be
+    // gated on the spec's protocol being at least two, which a protocol-1
+    // spec — including a version-less one, via the deleted legacy mapping —
+    // could turn off entirely.
+    client.setTransportIntegrity(verified.integrity, { required: true });
   } catch (err) {
     setStatus(relayBootFailureMessage(err), "error");
     return;
@@ -3306,11 +3307,11 @@ async function boot() {
   } else if (spec.kind === "room_sweep" || spec.kind === "level_ramp") {
     renderIntro(screenEl, ctx);
   } else {
-    // Session-spanning capture plans (protocol v3, SPEC W2.3): the Pi marker
-    // + capture_plan are both required together (CaptureSpec.validate()), so
-    // checking capture_plan alone is sufficient, but check both defensively.
-    const isPlanSpec = spec.capture_protocol_version === 3 && Boolean(spec.capture_plan);
-    // W6.12: this branch (crossover_sweep, legacy or v2 plan) has no
+    // Session-spanning capture plans (SPEC W2.3). `capture_plan` presence is
+    // the ONLY signal — the protocol version says nothing about plan-ness
+    // (there is exactly one protocol; see jasper/capture_relay/spec.py).
+    const isPlanSpec = Boolean(spec.capture_plan);
+    // W6.12: this branch (crossover_sweep, with or without a plan) has no
     // calibration-picker screen — apply the household-mic hint silently
     // before the first `armed`/`setup` event carries setupWirePayload().
     applyDefaultCalibrationHintSilently(spec);

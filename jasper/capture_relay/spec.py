@@ -47,23 +47,30 @@ SCHEMA_VERSION = 1
 # changes (for example, setup binding or a level stream) require a matching
 # public page before the Pi is allowed to play a tone.
 #
-# Protocol 3 (SPEC W2.3) is the session-spanning capture protocol: one relay
-# session covers a driver's whole repeat SET, choreographed by a `capture_plan`
-# (below). The Pi validates and runs v3 sessions; `build_crossover_sweep_spec`
-# itself stays dormant-by-default (`capture_plan=None`), but the Wave-2 Pi
-# host path (`jasper/web/correction_setup.py`'s driver-sweep relay-capture
-# handler) now DOES pass one unconditionally in code — no env gate. The
-# Wave-2 capture page (capture-page/js/main.js) implements the v3 loop and
-# advertises protocol 3, so once the Worker and page are DEPLOYED, a Pi
-# build carrying the host flip goes live for real; against an older
-# deployed page the v3 spec fails the page-identity check loudly before any
-# tone can play. The coordinator's deploy sequencing (worker → page publish
-# → the Pi host flip last) is the rollout gate — there is no code-level
-# flag. Summed/verification/level_ramp builders are untouched and stay on
-# protocol 1/2.
-CAPTURE_PROTOCOL_VERSION = 1
-SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION = 3
-SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
+# There is exactly ONE capture protocol. Versions 1 and 2 were deleted rather
+# than carried (owner ruling, 2026-07-27). What made that safe, precisely: the
+# capture flow has never shipped outside the lab, the live page advertises
+# [1, 2, 3] so a Pi emitting 3 is already compatible with it, and no lab Pi
+# needs 1 or 2 for the handshake. It is NOT that the deleted protocols were
+# never published — page build 20260712.3 did serve protocol 2, which is why
+# the deletion had to roll out Pi-first (see capture-page/README.md's
+# release order) and why persisted placement proofs may still carry a 2
+# (see active_speaker.capture_geometry).
+#
+# Every builder emits this value, the page advertises exactly this value, and a
+# mismatch is a loud incompatibility, never a negotiated downgrade.
+#
+# The version still earns its keep as the page/Pi handshake: it is checked
+# against the public page's `supported_capture_protocol_versions` before the Pi
+# may play a tone, so a choreography change (setup binding, level stream,
+# session-spanning plans) can be rolled out page-before-Pi by bumping this
+# number in lockstep with `capture-page/version.json`.
+#
+# Note what this integer does NOT encode: whether a session is session-spanning.
+# That is carried by `capture_plan` presence alone (a `capture_plan` spec runs
+# the plan loop; a plan-free spec runs one capture), which is exactly how the
+# page branches. Do not reintroduce a protocol-number test for plan-ness.
+CAPTURE_PROTOCOL_VERSION = 3
 
 # Hard ceiling on a capture plan's attempt budget. Each admission attempt's
 # blob rides its own relay key (capture_index = attempt - 1), so the storable
@@ -505,7 +512,7 @@ class CapturePlanEntry:
 
 @dataclass(frozen=True)
 class CapturePlan:
-    """Session-spanning capture plan (capture protocol v3, SPEC W2.3).
+    """Session-spanning capture plan (SPEC W2.3).
 
     One relay session covers a driver's whole repeat SET instead of one
     capture per session: the phone requests each capture with an authenticated
@@ -691,8 +698,9 @@ class CaptureSpec:
     # Optional household-mic prefill hint (Wave-2 persistence). See
     # `DefaultSetupCalibration` — never binding, ignored by the current page.
     default_setup_calibration: DefaultSetupCalibration | None = None
-    # Session-spanning capture plan (protocol v3, SPEC W2.3). `None` for every
-    # shipped builder today — presence requires (and is required by) protocol 3.
+    # Session-spanning capture plan (SPEC W2.3): one relay session covers a
+    # driver's whole repeat SET. Presence — and ONLY presence — selects the
+    # plan loop over the single-capture path, on both the Pi and the page.
     capture_plan: CapturePlan | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
@@ -873,11 +881,14 @@ class CaptureSpec:
                 if isinstance(capture_plan_raw, Mapping)
                 else None
             ),
-            capture_protocol_version=_as_int(
-                data,
-                "capture_protocol_version",
-                default=CAPTURE_PROTOCOL_VERSION,
-            ),
+            # REQUIRED on the wire, with no default — a spec that states no
+            # protocol is incompatible, not legacy, and defaulting it here
+            # would silently accept inbound bytes the capture page refuses
+            # (capture-page/js/capture-protocol.js applies the same rule).
+            # The dataclass field still defaults, so BUILDERS stay ergonomic;
+            # the strictness belongs on the parse boundary, not the
+            # constructor.
+            capture_protocol_version=_as_int(data, "capture_protocol_version"),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
         # Guard against a screen entry that was not a Mapping (dropped above).
@@ -894,10 +905,10 @@ class CaptureSpec:
         """Strict, loud validation. Returns self so callers can chain."""
         if not self.kind or not isinstance(self.kind, str):
             raise CaptureSpecError("kind must be a non-empty string")
-        if self.capture_protocol_version not in SUPPORTED_CAPTURE_PROTOCOL_VERSIONS:
+        if self.capture_protocol_version != CAPTURE_PROTOCOL_VERSION:
             raise CaptureSpecError(
-                "capture_protocol_version must be one of "
-                f"{SUPPORTED_CAPTURE_PROTOCOL_VERSIONS}, "
+                "capture_protocol_version must be "
+                f"{CAPTURE_PROTOCOL_VERSION}, "
                 f"got {self.capture_protocol_version}"
             )
         # NB: kinds are deliberately NOT enumerated — a new kind needs no schema
@@ -937,14 +948,8 @@ class CaptureSpec:
         if not isinstance(self.setup_collect_positions, bool):
             raise CaptureSpecError("setup_collect_positions must be a boolean")
         _validate_run_token(self.run_token)
-        _validate_acknowledgement(
-            self.acknowledgement,
-            capture_protocol_version=self.capture_protocol_version,
-        )
-        _validate_capture_plan(
-            self.capture_plan,
-            capture_protocol_version=self.capture_protocol_version,
-        )
+        _validate_acknowledgement(self.acknowledgement)
+        _validate_capture_plan(self.capture_plan)
         if self.setup_binding_id and not re.fullmatch(
             r"[A-Za-z0-9_-]{12,160}", self.setup_binding_id
         ):
@@ -1168,13 +1173,9 @@ def _validate_run_token(run_token: str) -> None:
 
 def _validate_acknowledgement(
     acknowledgement: CaptureAcknowledgement | None,
-    *,
-    capture_protocol_version: int,
 ) -> None:
     if acknowledgement is None:
         return
-    if capture_protocol_version < 2:
-        raise CaptureSpecError("acknowledgement requires capture protocol 2")
     if acknowledgement.schema_version != 1:
         raise CaptureSpecError("acknowledgement.schema_version must be 1")
     if not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", acknowledgement.id):
@@ -1185,19 +1186,14 @@ def _validate_acknowledgement(
         raise CaptureSpecError("acknowledgement.label must be 1..360 characters")
 
 
-def _validate_capture_plan(
-    capture_plan: CapturePlan | None,
-    *,
-    capture_protocol_version: int,
-) -> None:
+def _validate_capture_plan(capture_plan: CapturePlan | None) -> None:
+    # `capture_plan` is optional and its PRESENCE is the only session-spanning
+    # signal — there is no protocol-number coupling. (Before the protocol-1/2
+    # deletion this was a biconditional with protocol 3; with one protocol both
+    # halves were vacuous, and requiring a plan would have broken every
+    # plan-free flow — room_sweep, level_ramp, sync_marker.)
     if capture_plan is None:
-        if capture_protocol_version >= SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION:
-            raise CaptureSpecError(
-                "capture protocol 3 requires a capture_plan"
-            )
         return
-    if capture_protocol_version < SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION:
-        raise CaptureSpecError("capture_plan requires capture protocol 3")
     if capture_plan.schema_version not in CAPTURE_PLAN_SCHEMA_VERSIONS:
         raise CaptureSpecError(
             "capture_plan.schema_version must be one of "
@@ -1877,13 +1873,6 @@ def build_crossover_sweep_spec(
         acknowledgement=acknowledgement,
         capture_plan=capture_plan,
         default_setup_calibration=default_setup_calibration,
-        capture_protocol_version=(
-            SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION
-            if capture_plan is not None
-            else 2
-            if acknowledgement
-            else CAPTURE_PROTOCOL_VERSION
-        ),
     ).validate()
 
 
@@ -1985,7 +1974,6 @@ def build_level_ramp_spec(
         setup_collect_positions=setup_collect_positions,
         default_setup_calibration=default_setup_calibration,
         max_upload_bytes=max_upload_bytes,
-        capture_protocol_version=2,
     ).validate()
 
 

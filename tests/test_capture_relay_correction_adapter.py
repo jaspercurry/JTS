@@ -31,10 +31,71 @@ from tests.active_speaker_fixtures import mono_output_topology
 
 _CAPTURE_PAGE = {
     "schema_version": 1,
-    "capture_protocol_version": 1,
-    "supported_capture_protocol_versions": [1],
-    "capture_page_build": "20260710.1",
+    "capture_protocol_version": 3,
+    "supported_capture_protocol_versions": [3],
+    "capture_page_build": "20260727.2",
 }
+
+# Every phone event is authenticated — the unauthenticated protocol-1
+# transport these tests used to lean on is deleted, so the fake phone signs
+# with the same E2E key the fixture session carries.
+_CONTENT_KEY = b"k" * 32
+
+
+def _authed(event, sequence=1, *, session_id="sid", content_key=_CONTENT_KEY):
+    """Wrap a phone event in the authenticated envelope the Pi requires.
+
+    ``sequence`` is strictly monotonic per session, so a test feeding several
+    statuses through one run must number them in the order they are polled.
+    """
+    from jasper.capture_relay.integrity import authenticated_phone_event
+
+    return authenticated_phone_event(
+        content_key, session_id, event, sequence=sequence
+    )
+
+
+def _static_status(status, *, session_id="sid", content_key=_CONTENT_KEY):
+    """Sign a status whose phone event does not change during the run."""
+    return {
+        **status,
+        "event": _authed(
+            status["event"], 1, session_id=session_id, content_key=content_key
+        ),
+    }
+
+
+class _PhoneEventSigner:
+    """Sign plain phone-event dicts, assigning sequences the way a phone does.
+
+    Tests author events as readable plain dicts. This assigns the NEXT sequence
+    whenever the payload actually changes and re-signs an unchanged payload at
+    the SAME sequence — which is exactly what the Pi sees when it polls twice
+    between two phone events, and what the verifier's monotonicity rule
+    expects.
+    """
+
+    def __init__(self, session_id="sid", content_key=_CONTENT_KEY) -> None:
+        self._session_id = session_id
+        self._content_key = content_key
+        self._sequence = 0
+        self._last: str | None = None
+
+    def status(self, event, **extra):
+        """Return a relay status dict carrying the signed event."""
+        fingerprint = json.dumps(event, sort_keys=True, default=str)
+        if fingerprint != self._last:
+            self._sequence += 1
+            self._last = fingerprint
+        return {
+            "event": _authed(
+                event,
+                self._sequence,
+                session_id=self._session_id,
+                content_key=self._content_key,
+            ),
+            **extra,
+        }
 
 
 def _topology():
@@ -42,20 +103,13 @@ def _topology():
 
 
 def _level_pi_session():
-    from dataclasses import replace
-
     from jasper.capture_relay.spec import build_level_ramp_spec
 
     return SimpleNamespace(
         session_id="sid",
         pull_token="pull",
-        content_key=b"k" * 32,
-        # Most adapter tests exercise host behavior with the legacy plain-event
-        # transport. Dedicated tests below pin the authenticated v2 boundary.
-        spec=replace(
-            build_level_ramp_spec(run_token="test-run-token"),
-            capture_protocol_version=1,
-        ),
+        content_key=_CONTENT_KEY,
+        spec=build_level_ramp_spec(run_token="test-run-token"),
     )
 
 
@@ -108,11 +162,13 @@ class FakeRelayBackend:
                 return RelayResponse(204, {}, b"")
         return jr(404, {"error": "not_found"})
 
-    def phone_arm(self, sid, device=None):
+    def phone_arm(self, sid, device=None, *, sequence=1, content_key=_CONTENT_KEY):
         event = {"armed": True, "capture_page": dict(_CAPTURE_PAGE)}
         if device is not None:
             event["device"] = device
-        self.sessions[sid]["event"] = event
+        self.sessions[sid]["event"] = _authed(
+            event, sequence, session_id=sid, content_key=content_key
+        )
 
     def phone_upload(self, sid, content_key, wav):
         iv = os.urandom(crypto.IV_BYTES)
@@ -291,7 +347,11 @@ def test_run_and_store_feeds_the_verified_wav(tmp_path):
     armed_calls = []
     # The phone arms (it is recording) before the Pi's first poll, reporting which
     # mic it used.
-    backend.phone_arm(rc.pi_session.session_id, device=device)
+    backend.phone_arm(
+        rc.pi_session.session_id,
+        device=device,
+        content_key=rc.pi_session.content_key,
+    )
 
     def on_armed():
         # The host plays the stimulus; the phone finishes its window and uploads.
@@ -716,6 +776,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     terminal_events = []
     ambient_index = 0
     ambient_reads: dict[int, int] = {}
+    signer = _PhoneEventSigner()
 
     class Client:
         def status(self, *_args):
@@ -732,16 +793,14 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
                 # seq 5 and derive the wrong floor.
                 if ambient_reads[seq] >= 2 and ambient_index < 9:
                     ambient_index += 1
-                return {
-                    "event": {
-                        **batch_status["event"],
-                        "level_batch": {
-                            **batch_status["event"]["level_batch"],
-                            "samples": [sample],
-                        },
-                    }
-                }
-            return value
+                return signer.status({
+                    **batch_status["event"],
+                    "level_batch": {
+                        **batch_status["event"]["level_batch"],
+                        "samples": [sample],
+                    },
+                })
+            return signer.status(value["event"])
 
         def post_host_event(self, *_args):
             payload = _args[-1]
@@ -886,7 +945,7 @@ async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
 
     class Client:
         def status(self, *_args):
-            return status
+            return _static_status(status)
 
         def post_host_event(self, *_args):
             return None
@@ -959,7 +1018,7 @@ async def test_relay_level_stop_during_prepare_never_starts_ramp(monkeypatch):
 
     class Client:
         def status(self, *_args):
-            return status
+            return _static_status(status)
 
         def post_host_event(self, *_args):
             return None
@@ -1055,7 +1114,7 @@ async def test_relay_driver_level_rejects_changed_microphone_before_tone(
 
     class Client:
         def status(self, *_args):
-            return status
+            return _static_status(status)
 
         def post_host_event(self, *_args):
             return None
@@ -1126,7 +1185,7 @@ async def test_relay_level_adapter_fails_closed_when_volume_write_is_rejected(
 
     class Client:
         def status(self, *_args):
-            return status
+            return _static_status(status)
 
         def post_host_event(self, *_args):
             return None
@@ -1196,7 +1255,7 @@ async def test_relay_level_agc_refusal_never_starts_tone_and_reaches_phone(
 
     class Client:
         def status(self, *_args):
-            return status
+            return _static_status(status)
 
         def post_host_event(self, _sid, _token, payload):
             host_events.append(payload)
@@ -1251,7 +1310,7 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
 
     class Client:
         def status(self, *_args):
-            return status
+            return _static_status(status)
 
         def post_host_event(self, _sid, _token, payload):
             host_events.append(payload)
@@ -1291,7 +1350,7 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
 
 
 @pytest.mark.asyncio
-async def test_relay_level_v2_verifies_and_unwraps_authenticated_events(monkeypatch):
+async def test_relay_level_verifies_and_unwraps_authenticated_events(monkeypatch):
     from jasper.capture_relay.integrity import authenticated_phone_event
     from jasper.capture_relay.spec import build_level_ramp_spec
     from jasper.capture_relay import session as relay_session
@@ -1305,12 +1364,7 @@ async def test_relay_level_v2_verifies_and_unwraps_authenticated_events(monkeypa
         spec=build_level_ramp_spec(run_token="run-v2"),
     )
     event = {
-        "capture_page": {
-            "schema_version": 1,
-            "capture_protocol_version": 2,
-            "supported_capture_protocol_versions": [1, 2],
-            "capture_page_build": "20260711.3",
-        },
+        "capture_page": dict(_CAPTURE_PAGE),
         "level_refused": {
             "schema": 1,
             "run_token": "run-v2",
@@ -1351,7 +1405,7 @@ async def test_relay_level_v2_verifies_and_unwraps_authenticated_events(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_relay_level_v2_refuses_unsigned_event_before_tone(monkeypatch):
+async def test_relay_level_refuses_unsigned_event_before_tone(monkeypatch):
     from jasper.capture_relay.spec import build_level_ramp_spec
     from jasper.capture_relay import session as relay_session
     from jasper.correction import coordinator
