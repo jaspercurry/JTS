@@ -215,6 +215,32 @@ DEFAULT_PILOT_LEVELS_DB = (-10.0, 0.0)
 # Placed AFTER the courtesy settle (see the module docstring) so it samples
 # the room the household has already been asked to quiet — the same room the
 # pilots immediately play into.
+#
+# NAMED RESIDUAL — transient sensitivity (2026-07-28 review). The estimator
+# reading this window (`program_analysis._band_power`) is a plain
+# Hann-windowed in-band mean-square over the whole second, whereas CHECK's
+# 12 s window is read through `snr_policy.framed_ambient_band_report`, a
+# 95th-percentile-over-1-s-frames statistic. A short loud transient therefore
+# weighs more here: 0.1 s at +20 dB over the floor inflates a 1 s mean-square
+# by ~10.4 dB, where the same event spread over 12 s of mean-square is
+# ~2.6 dB. Switching this consumer to the framed estimator is NOT the fix and
+# would be a literal no-op: that function's frame length IS one second
+# (`frame_len = sample_rate`), so at a 1 s window it yields exactly one frame
+# and the percentile degenerates to that frame's own mean-square — and it
+# reports the fixed CROSSOVER_SNR_BANDS_HZ set rather than the pilot's own
+# declared band, which is what this guard needs. Getting a duration-
+# independent statistic means a window of ≥2 frames, i.e. ≥2 s per capture.
+# Accepted at 1 s because the residual's DIRECTION is safe and the margin
+# covers it: an inflated ambient under-estimates SNR, so the failure mode is
+# an honest, retryable `pilot_level_collapse` on a capture that was actually
+# fine — never the mic accusation (`linearity_ok` is forced True under the
+# floor), and never a pass for a genuinely collapsed pair. Margin: the
+# 2026-07-20 jts3 hardware captures measured ~26-30 dB of quiet-pilot in-band
+# SNR against a ~12.4 dB `PILOT_MIN_SNR_DB` floor, so ~14-18 dB of headroom
+# absorbs a worst-case ~10 dB transient inflation — comfortably, but not by
+# so much that the residual is worth leaving unnamed. Revisit (longer window,
+# or a framed statistic over ≥2 frames) if bench data shows healthy captures
+# landing inside ~10 dB of the floor.
 PILOT_AMBIENT_WINDOW_S = 1.0
 
 # --- MEASURE phase defaults ---

@@ -2548,15 +2548,27 @@ def _pilot_observations(
     **Two ambient parameters, deliberately (issue #1810).**
     ``ambient_samples`` feeds the level/SNR path; ``channel_map_ambient_samples``
     feeds `_channel_map_ok`'s TARGET/CROSS rise test. CHECK passes the same
-    12 s window to both — a long, framed, percentile-based room-floor estimate
-    the ±12 dB rise test was designed around. MEASURE/VERIFY pass only the
-    first: their pre-pilot window is a ~1 s spot estimate, sized for the SNR
-    guard, and feeding it to the rise test would reclassify exactly the
-    failure #1810 is about (a pilot pair sitting ~5 dB over the floor, i.e.
-    below `CHANNEL_MAP_TARGET_RISE_DB`) as a channel-map mismatch — a
-    hard-stop verdict whose copy blames the speaker wiring. Their channel-map
-    check therefore keeps the total-in-band-energy-fraction fallback it has
-    always used.
+    12 s window to both — the long, framed, percentile-based room-floor
+    estimate `CHANNEL_MAP_TARGET_RISE_DB` (12 dB) was calibrated against, on
+    the run-5 hardware table. MEASURE/VERIFY pass only the first, for two
+    reasons, neither of which is "it would break something today":
+
+    1. **Calibration.** Their pre-pilot window is a ~1 s spot estimate sized
+       for the SNR guard, not the duration-independent statistic the rise
+       thresholds were derived from. Judging a 12 dB rise against it would be
+       reading a threshold off an estimator it was never fitted to.
+    2. **Pre-emption.** ``analysis.channel_map_ok`` is routed on at exactly
+       ONE site today — ``crossover_v2_flow._check_verdict``, which maps it to
+       the hard-stop ``channel_map_mismatch``. MEASURE, the cloud positions
+       and VERIFY compute the flag and never branch on it, so threading the
+       window here would currently change no verdict at all. It would instead
+       leave a False flag sitting on those analyses, ARMED for the next
+       maintainer who adds a routing branch: a pilot pair a few dB over the
+       floor (exactly the #1810 shape) would then hard-stop with copy blaming
+       the speaker wiring, on evidence never calibrated for a 1 s window.
+
+    Their channel-map check therefore keeps the total-in-band-energy-fraction
+    fallback it has always used.
 
     The located segment's fixed composer fade (`_pilot_trim_fade`) is trimmed
     before measuring so the RMS estimate rides the steady-state portion, not

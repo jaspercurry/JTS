@@ -1709,17 +1709,42 @@ def _measure_validity_floor_hz(analysis: ProgramAnalysis) -> float | None:
     return max(floors) if floors else None
 
 
+# The finite stand-in logged for `_pilot_in_band_snr_db`'s ``-inf`` — "this
+# pilot's measured power did not even exceed the ambient", i.e. the estimate
+# is unusable rather than merely low. JSON has no infinity, and DROPPING the
+# value is worse than substituting one: a two-role capture with one buried
+# pilot and one clean one would log the CLEAN pilot's SNR beside
+# ``pilot_snr_ok=False``, a diag row that contradicts itself and reproduces
+# the very "verdict beside absent evidence" shape #1810 was filed about.
+# -120 dB mirrors `program_analysis.DBFS_FLOOR`'s "off the scale" magnitude
+# and keeps the field monotone-comparable, so `min(...)` still selects the
+# worst pilot.
+PILOT_SNR_UNUSABLE_DB = -120.0
+
+
 def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
     """The lowest quiet-pilot in-band SNR across this capture's pilots.
 
     The number the ``pilot_snr_ok`` aggregate (an ``all(...)``) was
     thresholded from, so the diag line says HOW low, not just that it was.
-    ``None`` when there are no pilots, or when every SNR is ``+inf`` — the
-    "no ambient evidence to validate against" sentinel, which is not a
-    measurement and must not be logged as one (JSON has no infinity anyway).
+    The two infinities `_pilot_in_band_snr_db` can return are treated
+    differently on purpose:
+
+    * ``+inf`` — "no ambient evidence to validate against". Not a
+      measurement, so it is EXCLUDED. A capture where every pilot reads
+      ``+inf`` (a legacy program with no room-listening window) logs
+      ``None``; one where some pilots read ``+inf`` and others a real number
+      logs the worst real number.
+    * ``-inf`` — "the pilot never exceeded the ambient". That IS a
+      measurement, and the most damning one, so it is substituted with
+      :data:`PILOT_SNR_UNUSABLE_DB` rather than dropped.
     """
-    finite = [p.snr_db for p in analysis.pilots if math.isfinite(p.snr_db)]
-    return round(min(finite), 2) if finite else None
+    values = [
+        PILOT_SNR_UNUSABLE_DB if p.snr_db == -math.inf else p.snr_db
+        for p in analysis.pilots
+        if p.snr_db != math.inf
+    ]
+    return round(min(values), 2) if values else None
 
 
 def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:

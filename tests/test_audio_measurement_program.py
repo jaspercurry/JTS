@@ -657,6 +657,13 @@ def test_the_beeps_are_followed_by_the_settle_and_nothing_else(phase):
     # …and the exact value, derived from whether an ambient window sits
     # between the beeps and the first stimulus rather than hand-tabulated
     # per phase.
+    #
+    # The schedule walk below deliberately RE-DERIVES what
+    # `courtesy_beep_to_stimulus_gap_s` computes, rather than importing its
+    # answer: asserting a function's output against itself would pass for any
+    # composition. Two independent derivations of "where do the beeps end and
+    # the first stimulus begin" have to agree, so a bug in the shipped helper
+    # fails here instead of being ratified by it.
     beep_end = max(
         s.start_sample + s.n_samples
         for s in prog.segments if s.kind == KIND_COURTESY_TONE

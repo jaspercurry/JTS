@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import math
 import types
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -68,6 +69,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     PILOT_LEVEL_DELTA_DB,
+    PILOT_SNR_UNUSABLE_DB,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_CORRECTION_NOT_AN_IMPROVEMENT,
@@ -92,6 +94,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     _analysis_json,
     _compose_sigma_db,
     _program_duration_ms,
+    _worst_pilot_snr_db,
     abandon_measurement_volume,
     alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
@@ -1081,6 +1084,51 @@ def test_cloud_position_low_pilot_snr_routes_to_level_collapse_not_agc():
     fakes.verify = lambda program: _verify_analysis(program, pilot_snr_ok=False)
     verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[0], 3)
     assert verdict["code"] == "pilot_level_collapse"
+
+
+def _snr_pilot(role: str, snr_db: float) -> PilotObservation:
+    return PilotObservation(
+        role=role, level_lo_dbfs=-40.0, level_hi_dbfs=-30.0,
+        programmed_delta_db=10.0, captured_delta_db=10.0,
+        linearity_ok=True, channel_map_ok=True,
+        snr_valid=math.isfinite(snr_db) or snr_db > 0, snr_db=snr_db,
+    )
+
+
+def _snr_analysis(*pilots: PilotObservation) -> ProgramAnalysis:
+    return ProgramAnalysis(
+        phase="measure", program_id="p", locations=(), pilots=pilots,
+    )
+
+
+@pytest.mark.parametrize("snrs,expected", [
+    # The row the review caught: one pilot buried (-inf, "never exceeded the
+    # ambient"), one clean. Dropping -inf as non-finite logged the CLEAN
+    # pilot's 20.0 dB beside pilot_snr_ok=False — a diag row contradicting
+    # itself, and the same "verdict beside absent evidence" shape #1810 is
+    # about. The buried pilot must win the min().
+    (( -math.inf, 20.0), PILOT_SNR_UNUSABLE_DB),
+    # +inf is NOT a measurement ("no ambient window to validate against"), so
+    # it is excluded rather than floored — the real number is reported.
+    ((math.inf, 20.0), 20.0),
+    # Every pilot +inf (a legacy program with no window at all): no number to
+    # report, and None must not be confused with a measured floor.
+    ((math.inf, math.inf), None),
+    # Both buried.
+    ((-math.inf, -math.inf), PILOT_SNR_UNUSABLE_DB),
+    # Ordinary case: the worst real number.
+    ((30.0, 11.5), 11.5),
+])
+def test_worst_pilot_snr_db_handles_both_infinities(snrs, expected):
+    """The diag field must never contradict the verdict logged beside it."""
+    analysis = _snr_analysis(
+        *(_snr_pilot(f"r{i}", snr) for i, snr in enumerate(snrs))
+    )
+    assert _worst_pilot_snr_db(analysis) == expected
+
+
+def test_worst_pilot_snr_db_is_none_without_pilots():
+    assert _worst_pilot_snr_db(_snr_analysis()) is None
 
 
 def test_pilot_level_collapse_copy_never_accuses_the_phone():

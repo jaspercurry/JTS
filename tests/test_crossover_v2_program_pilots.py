@@ -36,12 +36,14 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    PILOT_AMBIENT_MIN_USABLE_FRACTION,
     PILOT_MIN_SNR_DB,
     REPEAT_LEVEL_TOLERANCE_DB,
     MeasurementGeometry,
     MeasurementPriors,
     _global_offset,
     _locate_segments,
+    _pilot_ambient_samples,
     analyze_program_capture,
 )
 
@@ -338,6 +340,41 @@ def test_short_ambient_window_does_not_feed_the_channel_map_rise_test(phase):
     assert pilot.channel_map_ok is True
     assert pilot.channel_map_target_rise_db is None
     assert pilot.channel_map_cross_rise_db is None
+
+
+@pytest.mark.parametrize("kept_samples_delta,expect_evidence", [(0, True), (-1, False)])
+def test_pilot_ambient_min_usable_fraction_boundary(
+    kept_samples_delta, expect_evidence,
+):
+    """`PILOT_AMBIENT_MIN_USABLE_FRACTION` pinned AT its boundary, inclusive.
+
+    Driven through `_pilot_ambient_samples` directly rather than through a
+    truncated capture: the end-to-end path recovers ``global_offset`` by
+    correlation, and a ±1-sample location error would flip a test that turns
+    on an exact sample count. Here the offset is supplied, so "exactly at the
+    fraction is KEPT, one sample under is dropped" is an exact statement
+    about the constant.
+    """
+    prog = _measure_program()
+    ambient = prog.segment("ambient")
+    kept = int(PILOT_AMBIENT_MIN_USABLE_FRACTION * ambient.n_samples) + kept_samples_delta
+    # A capture that began exactly ``ambient.n_samples - kept`` samples into
+    # the window: its schedule position is negative by that much.
+    global_offset = -(ambient.start_sample + ambient.n_samples - kept)
+    capture = np.zeros(prog.total_samples, dtype=np.float64)
+    got = _pilot_ambient_samples(prog, capture, global_offset)
+    if expect_evidence:
+        assert got is not None and got.size == kept
+    else:
+        assert got is None
+
+
+def test_pilot_ambient_samples_is_none_without_a_window():
+    """A program with no room-listening window at all (legacy, or composed
+    without leading pilots) yields no evidence rather than raising."""
+    prog = _measure_program(with_pilots=False)
+    capture = np.zeros(prog.total_samples, dtype=np.float64)
+    assert _pilot_ambient_samples(prog, capture, 0) is None
 
 
 @pytest.mark.parametrize(

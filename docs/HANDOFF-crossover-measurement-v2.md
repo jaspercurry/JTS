@@ -994,9 +994,10 @@ recording-chain evidence path — was null. MEASURE, VERIFY and every cloud
 position now check `pilot_snr_ok` **before** their linearity branch and
 answer with `pilot_level_collapse` ("the room was too loud, or the speaker
 too quiet"), the same discriminator W6.12 gave CHECK. The window feeds the
-level/SNR path only, never `_channel_map_ok`'s ±12 dB rise test — routing a
-collapsed pilot pair to `channel_map_mismatch` would be a hard stop blaming
-the speaker wiring. `agc_behavioral_fail`'s own copy was amended in the
+level/SNR path only, never `_channel_map_ok`'s ±12 dB rise test — that
+threshold was calibrated against CHECK's long framed estimator, and
+keeping the short window out of it also pre-empts arming a hard-stop flag
+nothing routes on yet (see gotcha #20). `agc_behavioral_fail`'s own copy was amended in the
 same change to state what it observes (the two tones came back at the wrong
 levels) rather than assert a cause it never measures; the definite mic
 accusation now lives only on `verify_level_shift`, which holds the
@@ -1727,12 +1728,19 @@ no retries-as-bodge). Treat these as regression fences.
     own 1 s ambient window immediately ahead of the pilot pair
     (`PILOT_AMBIENT_WINDOW_S`), `_pilot_verdicts` reads it, and all three
     verdicts branch to `pilot_level_collapse` before their linearity check.
-    Two design constraints worth keeping: the window sits AFTER the
-    courtesy settle (a floor measured before the "go quiet" warning is not
-    the floor the pilots play into), and it feeds the level/SNR path ONLY
-    — routing it into `_channel_map_ok`'s ±12 dB rise test would have
-    reclassified this exact failure as `channel_map_mismatch`, a hard stop
-    blaming the speaker wiring. **The general rule:** when a guard's input
+    Two design constraints worth keeping. First, the window sits AFTER the
+    courtesy settle — a floor measured before the "go quiet" warning is not
+    the floor the pilots play into. Second, it feeds the level/SNR path
+    ONLY, never `_channel_map_ok`'s ±12 dB rise test: that threshold was
+    calibrated against CHECK's long framed estimator, and — note the
+    precise reason, since an earlier draft of this entry overstated it —
+    threading the 1 s window there would change **no verdict today**,
+    because `analysis.channel_map_ok` is routed on at exactly one site
+    (`_check_verdict`). MEASURE/cloud/VERIFY compute the flag and never
+    branch on it. What it would do is leave a False flag ARMED on those
+    analyses for whoever next adds a routing branch, at which point a pilot
+    pair a few dB over the floor would hard-stop with copy blaming the
+    speaker wiring. **The general rule:** when a guard's input
     can take a value that makes its comparison vacuously true, a test must
     assert the input is a real measurement on every path that claims the
     guard — `test_pilot_snr_is_measured_not_infinite` is that test.
