@@ -543,34 +543,44 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     ``/correction/``, not a broken daemon. Express-tier sessions legitimately
     omit the post-apply position group, so the VERIFY outcome is what carries
     them — which is why both are consulted and either one satisfies this check.
+
+    **Reads ``post_apply_grade``; does not re-derive it** (PR-L4 review S2).
+    An earlier revision recomputed the verdict here from ``verify`` and the
+    cloud block with a predicate that had already drifted from the producer's
+    (``overall_passed is not None`` vs an ``isinstance`` bool check), which is
+    the second-owner-of-one-decision shape this PR's own docstrings spend
+    paragraphs forbidding elsewhere. ``crossover_v2_status_block`` computes the
+    grade once; every surface — `/state`, the wizard, this check — reads that.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
-    from jasper.web.correction_crossover_v2 import crossover_v2_status_block
+    from jasper.web.correction_crossover_v2 import (
+        GRADE_FAILED,
+        GRADE_GRADED,
+        GRADE_INCONCLUSIVE,
+        GRADE_MARK_VERIFIED,
+        GRADE_NOT_APPLIED,
+        crossover_v2_status_block,
+    )
 
     label = "crossover v2 applied profile graded"
     block = crossover_v2_status_block() or {}
-    if not block.get("applied"):
+    grade = block.get("post_apply_grade")
+    grade = grade if isinstance(grade, dict) else {}
+    # `.get` with a default rather than a lookup: a durable state written by a
+    # future build could carry a state name this one has never heard of, and
+    # inventing a warning about it would be worse than saying what it said.
+    state = str(grade.get("state") or "")
+    if state == GRADE_NOT_APPLIED:
         return CheckResult(label, "ok", "no applied measured crossover")
-
-    verify = block.get("verify")
-    outcome = str((verify or {}).get("outcome") or "") if isinstance(verify, dict) else ""
-    cloud = block.get("cloud")
-    post_apply = (
-        cloud.get(PHASE_CLOUD_VERIFY) if isinstance(cloud, dict) else None
-    )
-    graded_by_cloud = (
-        isinstance(post_apply, dict) and post_apply.get("overall_passed") is not None
-    )
-    if outcome == "pass" or graded_by_cloud:
+    if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         return CheckResult(
             label, "ok",
-            f"applied and graded (verify={outcome or 'n/a'}, "
-            f"post_apply_cloud={'yes' if graded_by_cloud else 'no'})",
+            f"applied and graded (state={state}, "
+            f"verify={grade.get('verify_outcome') or 'n/a'})",
         )
-    if outcome in {"fail", "inconclusive"}:
+    if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
         return CheckResult(
             label, "warn",
-            f"applied but the post-apply check came back {outcome} — re-verify "
+            f"applied but the post-apply check came back {state} — re-verify "
             "at /correction/ or undo to restore the previous sound",
         )
     return CheckResult(

@@ -105,9 +105,23 @@ reconciliation: `captures/iloud-comparison-20260727/trim-replay/`.
 
 ## PR-L4 — accountability: the missing assertions
 
-**Status: landed.** All nine items below are implemented with tests. Two
+**Status: landed.** All nine items below are implemented with tests. Three
 dispositions differ from the work order's default and are recorded here rather
 than only in the code:
+
+- **Item 3(a) does not directly compare the exact 2026-07-27 pair.** The pair
+  the forensics found ~12 dB apart was the *crossover MEASURE* trim
+  (`solve_branch_trims`) against the pad-folded datasheet gap — but a session
+  carrying a measured candidate never reaches `_derive_corrections`, which is
+  where the datasheet comparison lives, so those two numbers still meet nowhere.
+  What 3(a) directly compares is the *phone level match* against the datasheet;
+  the crossover trim is covered transitively by item 3(b) (crossover trim vs
+  phone level match) and that leg is disclosure-only. Closing the loop properly
+  means giving the measured-candidate branch a datasheet cross-check of its own,
+  and it is deliberately not done here: PR-L5's "both drivers' targets in one
+  shared level frame" restructures exactly this seam, and adding a fourth
+  pairwise comparator on top of a frame that is about to change would be work
+  spent twice.
 
 - **Item 3(b)** (the two level-match estimators) is **disclosed, not
   refused**. Unlike item 3(a), whose two frames grade the same capture against
@@ -127,8 +141,19 @@ than only in the code:
 
 Named tolerances, with their derivations pinned by tests:
 `REALIZED_LEVEL_MATCH_TOLERANCE_DB = 3.0`,
-`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 1.5`,
+`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5`,
 `MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB = 6.0`.
+
+Item 2's gate grades the RAW pre-fit and the LINEARIZED predicted sums through
+one evaluator — a same-instrument before/after. An earlier revision compared
+the model against the measured in-room cloud; adversarial review showed that
+made the verdict a function of the ROOM (holding the correction constant,
+better rooms refused harder), and the threshold fell from 1.5 dB to 0.5 dB with
+the frame change because the comparison no longer has to absorb a cross-frame
+gap. Item 9 grades both candidate trim pairs unconditionally rather than only
+on a guard rejection — the conditional version was non-monotonic in the drift
+it policed. Behaviour change worth knowing: the #1667 ripple polish now
+survives only when it does not worsen the level match.
 
 From the verification-accountability audit, plus one found during
 follow-up. Each lands with its test; items 1–2 are the load-bearing

@@ -892,11 +892,14 @@ REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 # speaker is never touched: the honest outcome of "we cannot show this makes
 # your speaker better" is to leave it alone and say so.
 #
-# item 1 — the two drivers' REALIZED passband levels, after the committed trim,
-# sit further apart than REALIZED_LEVEL_MATCH_TOLERANCE_DB. A 2-way sums flat
-# only when both branches hand off at the same level, so this is a tonal-balance
-# defect that no amount of per-driver flattening can hide. Fired at ~9 dB on the
-# 2026-07-27 JTS3 profile the owner heard as dark.
+# item 1 — the two drivers' realized levels, read on their own mirrored
+# ±1-octave half-bands about Fc after the committed trim, sit further apart than
+# REALIZED_LEVEL_MATCH_TOLERANCE_DB. A 2-way sums flat only when both branches
+# hand off at the same level, so this is a tonal-balance defect that no amount
+# of per-driver flattening can hide. Fired at ~9 dB on the 2026-07-27 JTS3
+# profile the owner heard as dark. (It grades the HANDOFF, not the whole
+# passband: a driver whose own band tilts while its half-band level is right is
+# the fit's problem to catch, not this assertion's.)
 REASON_DRIVER_LEVELS_DISAGREE = "driver_levels_disagree"
 # item 2 — the PREDICTED post-apply response fails the flat spec and is not
 # materially better than the measured pre-apply response. Applying it would

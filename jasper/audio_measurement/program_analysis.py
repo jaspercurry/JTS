@@ -240,8 +240,9 @@ RIPPLE_TRIM_SANITY_MARGIN_DB = 6.0
 RIPPLE_TRIM_MAX_DB = 0.0
 RIPPLE_TRIM_MIN_DB = -60.0
 
-# How far the two branches' REALIZED passband levels may sit apart, after the
-# committed trim, before the pair is refused (linearization-integrity PR-L4
+# How far the two branches' realized levels — read on their own mirrored
+# ±1-octave half-bands about Fc, NOT across each driver's whole passband — may
+# sit apart after the committed trim before the pair is refused (linearization-integrity PR-L4
 # item 1 — the assertion nothing in the chain made). The design intent is that
 # they are EQUAL: a 2-way's summed response is flat only when each branch hands
 # off at the same level, which is the whole purpose of a trim. This is the
@@ -2117,7 +2118,7 @@ def realized_branch_level_match(
     **The assertion nothing in the chain made** (linearization-integrity PR-L4
     item 1). Of the comparators the 2026-07-27 forensics inventoried, three
     compare the speaker to itself, one compares it to flat, and *none* compared
-    the two drivers' realized passband levels to each other. That is the gap a
+    the two drivers' realized handoff levels to each other. That is the gap a
     ~9 dB-dark tweeter walked through: every stage was individually satisfied,
     because no stage was asked the one question whose answer was wrong.
 
