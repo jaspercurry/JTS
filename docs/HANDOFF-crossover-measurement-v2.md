@@ -1954,8 +1954,16 @@ no retries-as-bodge). Treat these as regression fences.
     deconvolution and every downstream consumer (`solve_branch_trims`,
     `realized_branch_level_match`, the Layer-1a shared level frame) works
     per-unit-drive. That 11.5 dB is a sensitivity delta, not a drive delta.
+    Pinned since 2026-07-28 by
+    `test_measure_analysis_is_invariant_to_the_programmed_drive_gain`
+    (`tests/test_audio_measurement_program_analysis.py`): the same synthetic
+    drivers analyzed twice with the tweeter driven 10 dB quieter agree on
+    `trim_band_average_db`, `trim_db`, and every `DriverResponse.magnitude_db`
+    to 0.01 dB. Before that this paragraph was the only thing holding the
+    claim — and a reference built at unit amplitude would have re-introduced
+    an inter-driver error of exactly the gain skew, silently.
 
-22. **A deterministic pre-condition must be checked before the link is
+23. **A deterministic pre-condition must be checked before the link is
     minted** (#1820, #1821, 2026-07-28). `resolve_conductor_context`'s
     driver-safety gate checked only that a profile object was PRESENT
     while its refusal text claimed confirmation had been checked; the
