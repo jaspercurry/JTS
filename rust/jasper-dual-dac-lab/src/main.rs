@@ -596,11 +596,12 @@ fn configure_pcm(
             period_frames
         );
     }
-    if negotiated.buffer_frames < period_frames * 2 {
+    let min_buffer_frames = period_frames.saturating_mul(2);
+    if negotiated.buffer_frames < min_buffer_frames {
         bail!(
             "{role} PCM {pcm_name} negotiated buffer_frames={} but requires at least {}",
             negotiated.buffer_frames,
-            period_frames * 2
+            min_buffer_frames
         );
     }
 

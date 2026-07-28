@@ -233,6 +233,8 @@ The patch does not change the samples written to the DAC, the samples sent over 
 
 Set `JASPER_OUTPUTD_CHIP_REF_TEE_PATH=/run/jasper-outputd/chip-ref.s16le` or another path writable by the outputd systemd sandbox to write the exact 16 kHz S16_LE stereo dual-mono packets dequeued by the chip-ref writer. The packaged unit currently allows writes under `/run/jasper-outputd` and `/var/lib/jasper`; arbitrary home or source-tree paths are expected to fail under `ProtectSystem=full` / `ProtectHome=read-only`. The file is created/truncated at outputd start.
 
+The tee observes the chip-reference writer, so `JASPER_OUTPUTD_CHIP_REF_PCM` must also be configured. Outputd refuses startup when the tee path is set without that PCM source.
+
 Important boundaries:
 
 - Disabled by default.

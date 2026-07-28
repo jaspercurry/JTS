@@ -31,6 +31,7 @@ pub mod core;
 // See HANDOFF-multiroom.md §2 "Canonical signal flow".)
 pub mod dac_content;
 pub mod fake;
+mod json;
 pub mod ledger;
 pub mod loudness;
 pub mod mixer;

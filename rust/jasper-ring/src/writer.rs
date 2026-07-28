@@ -282,7 +282,11 @@ impl RingWriter {
     /// here — see the plan's `Output::Ring` pacing rule).
     pub fn publish(&mut self, samples: &[i16]) -> PublishOutcome {
         let g = self.map.geometry;
-        debug_assert_eq!(samples.len(), g.samples_per_slot());
+        assert_eq!(
+            samples.len(),
+            g.samples_per_slot(),
+            "ring publish requires exactly one complete slot"
+        );
 
         // Stamp the heartbeat up front so the reader sees us alive even if we
         // spend the whole call blocking on a full ring.
@@ -530,9 +534,7 @@ impl Drop for RingWriter {
         // guard and the reader's Drop.
         let slot = self.map.header_atomic(layout::OFF_WRITER_PID);
         let mine = std::process::id() as u64;
-        if slot.load(Ordering::Relaxed) == mine {
-            slot.store(0, Ordering::Relaxed);
-        }
+        let _ = slot.compare_exchange(mine, 0, Ordering::Relaxed, Ordering::Relaxed);
     }
 }
 
@@ -621,6 +623,16 @@ mod tests {
         // Consumed the only slot -> empty again (steady state).
         assert_eq!(reader.try_consume_slot(&mut out), SlotRead::Empty);
         cleanup(&path);
+    }
+
+    #[test]
+    #[should_panic(expected = "ring publish requires exactly one complete slot")]
+    fn publish_rejects_short_slot_in_release_builds() {
+        let path = tmp_ring_path("short-slot");
+        let g = proto_geometry();
+        let mut writer = RingWriter::create_or_attach(&path, g).unwrap();
+        let short = vec![0i16; g.samples_per_slot() - 1];
+        let _ = writer.publish(&short);
     }
 
     /// Full ring with a LIVE reader: the writer blocks (bounded) and then

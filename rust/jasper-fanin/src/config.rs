@@ -539,13 +539,7 @@ impl Config {
         // DEFAULT-OFF per-input adaptive resampler (clock-crossing/USB lane).
         // Fail-safe: only the exact literal `enabled` (case-insensitive) arms
         // it; unset / empty / anything else stays OFF (byte-identical to today).
-        let input_resampler_enabled = matches!(
-            std::env::var("JASPER_FANIN_INPUT_RESAMPLER")
-                .ok()
-                .map(|s| s.trim().to_ascii_lowercase())
-                .as_deref(),
-            Some("enabled")
-        );
+        let input_resampler_enabled = env_enabled("JASPER_FANIN_INPUT_RESAMPLER");
         let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
         let input_resampler_target_frames =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
@@ -566,13 +560,8 @@ impl Config {
         // the exact literal `enabled` (case-insensitive) arms it; unset / empty /
         // anything else stays OFF (held target pinned at the acquisition ceiling,
         // byte-identical to today). Meaningful only with the host-clock DLL armed.
-        let input_resampler_cushion_decay_enabled = matches!(
-            std::env::var("JASPER_FANIN_RESAMPLER_CUSHION_DECAY")
-                .ok()
-                .map(|s| s.trim().to_ascii_lowercase())
-                .as_deref(),
-            Some("enabled")
-        );
+        let input_resampler_cushion_decay_enabled =
+            env_enabled("JASPER_FANIN_RESAMPLER_CUSHION_DECAY");
         // The tightest safe floor is the LARGER of two constraints, both a DLL
         // working margin above their anchor:
         //   1. `target + DLL margin` — keep a working cushion above the base
@@ -677,25 +666,13 @@ impl Config {
         // DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). Fail-safe:
         // only the exact literal `enabled` (case-insensitive) arms it; unset /
         // empty / anything else stays OFF (byte-identical to today).
-        let auto_trim_enabled = matches!(
-            std::env::var("JASPER_FANIN_AUTO_TRIM")
-                .ok()
-                .map(|s| s.trim().to_ascii_lowercase())
-                .as_deref(),
-            Some("enabled")
-        );
+        let auto_trim_enabled = env_enabled("JASPER_FANIN_AUTO_TRIM");
 
         // DEFAULT-OFF USB DIRECT capture (PoC). Fail-safe: only the exact
         // literal `enabled` (case-insensitive) arms it — same idiom as the
         // resampler / auto-trim flags. Direct mode implies a resampler on the
         // usbsink lane (see Config::lane_wants_resampler).
-        let usb_direct_enabled = matches!(
-            std::env::var("JASPER_FANIN_USB_DIRECT")
-                .ok()
-                .map(|s| s.trim().to_ascii_lowercase())
-                .as_deref(),
-            Some("enabled")
-        );
+        let usb_direct_enabled = env_enabled("JASPER_FANIN_USB_DIRECT");
         let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
         // The gadget OPEN period (frames). Default 256 = byte-identical to the
         // bridge-proven envelope. Fail-loud range 32..=1024: below 32 the period
@@ -957,6 +934,12 @@ impl Config {
 
 fn env_str(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// Fail-safe feature gate: only the exact `enabled` token, ignoring case and
+/// surrounding whitespace, arms the feature.
+fn env_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| value.trim().eq_ignore_ascii_case("enabled"))
 }
 
 fn env_optional_with_default(name: &str, default: &str) -> Option<String> {

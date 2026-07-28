@@ -728,14 +728,17 @@ impl SlopeEstimator {
         self.last_divergence = Some(divergence);
 
         // EW mean/variance of the fill signal (West-style, non-negative).
-        if self.have_fill {
-            let d = fill_frames - self.fill_mean;
-            self.fill_mean += self.alpha * d;
-            self.fill_var = (1.0 - self.alpha) * (self.fill_var + self.alpha * d * d);
-        } else {
-            self.fill_mean = fill_frames;
-            self.fill_var = 0.0;
-            self.have_fill = true;
+        // Ignore a bad observation rather than poisoning every later sample.
+        if fill_frames.is_finite() {
+            if self.have_fill {
+                let d = fill_frames - self.fill_mean;
+                self.fill_mean += self.alpha * d;
+                self.fill_var = (1.0 - self.alpha) * (self.fill_var + self.alpha * d * d);
+            } else {
+                self.fill_mean = fill_frames;
+                self.fill_var = 0.0;
+                self.have_fill = true;
+            }
         }
 
         // EW mean of the resampler correction ppm (CORRECTION-mode observable).
@@ -1694,8 +1697,6 @@ impl HostClock {
                 if total_raw.is_finite()
                     && total_raw.abs() > MAX_BIAS_PPM
                     && err.abs() >= anti_windup_threshold
-                    && dll_trim_ppm.signum() != 0.0
-                    && err.signum() != 0.0
                     && dll_trim_ppm.signum() == err.signum()
                 {
                     self.dll.reset();
@@ -1728,7 +1729,6 @@ impl HostClock {
                 let railed_further = total_raw.is_finite()
                     && total_raw.abs() > MAX_BIAS_PPM
                     && err.abs() >= anti_windup_threshold
-                    && step.signum() != 0.0
                     && total_raw.signum() == step.signum();
                 if railed_further {
                     self.anti_windup_events = self.anti_windup_events.saturating_add(1);
@@ -2190,6 +2190,20 @@ pub use alsa_ctl::AlsaPitchCtl;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slope_estimator_ignores_non_finite_fill_samples() {
+        let mut slope = SlopeEstimator::new(0.3);
+        slope.update(0, 400.0, 0.0, 48_000.0);
+        let variance_before = slope.fill_variance();
+
+        slope.update(48_000, f64::NAN, 0.0, 48_000.0);
+        slope.update(96_000, f64::INFINITY, 0.0, 48_000.0);
+
+        assert!(slope.fill_mean.is_finite());
+        assert_eq!(slope.fill_mean, 400.0);
+        assert_eq!(slope.fill_variance(), variance_before);
+    }
 
     fn enabled_cfg() -> HostClockConfig {
         HostClockConfig {

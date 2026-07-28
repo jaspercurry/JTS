@@ -586,7 +586,7 @@ impl Config {
             ContentBridgeMode::Direct | ContentBridgeMode::RateMatch => None,
         };
 
-        Ok(Self {
+        let config = Self {
             backend,
             sink_mode,
             content_pcm: env_str("JASPER_OUTPUTD_CONTENT_PCM", default_content_pcm),
@@ -623,7 +623,11 @@ impl Config {
                 "/var/lib/jasper/outputd_assistant_volume_reference.json",
             ),
             active_lane,
-        })
+        };
+        if config.chip_ref_tee_path.is_some() && config.chip_ref_pcm.is_none() {
+            anyhow::bail!("JASPER_OUTPUTD_CHIP_REF_TEE_PATH requires JASPER_OUTPUTD_CHIP_REF_PCM");
+        }
+        Ok(config)
     }
 }
 
@@ -1265,6 +1269,24 @@ mod tests {
                     Some("/tmp/outputd-chip-ref.s16le")
                 );
                 assert_eq!(cfg.reference_udp_target.as_deref(), Some("127.0.0.1:9891"));
+            },
+        );
+    }
+
+    #[test]
+    fn chip_ref_tee_requires_chip_ref_pcm() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CHIP_REF_PCM", None),
+                (
+                    "JASPER_OUTPUTD_CHIP_REF_TEE_PATH",
+                    Some("/tmp/outputd-chip-ref.s16le"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("JASPER_OUTPUTD_CHIP_REF_TEE_PATH"), "{err}");
+                assert!(err.contains("JASPER_OUTPUTD_CHIP_REF_PCM"), "{err}");
             },
         );
     }

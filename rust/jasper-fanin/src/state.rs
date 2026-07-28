@@ -779,7 +779,9 @@ impl StateServer {
             if let Some(r) = &input.resampler {
                 buf.push(',');
                 buf.push_str(r#""resampler":{"#);
-                push_kv_bool(&mut buf, "armed", r.armed);
+                // Presence of `input.resampler` is the arm state; the wire key
+                // remains explicit for compatibility with existing consumers.
+                push_kv_bool(&mut buf, "armed", true);
                 buf.push(',');
                 push_kv_bool(&mut buf, "locked", r.locked.load(Ordering::Relaxed));
                 buf.push(',');
@@ -1442,7 +1444,6 @@ mod tests {
                     // the STATUS rendering path). ratio = +120 ppm → 120000
                     // milli-ppm stored in the u64 atomic.
                     resampler: Some(LaneResamplerObservability {
-                        armed: true,
                         locked: Arc::new(AtomicBool::new(true)),
                         input_frames: Arc::new(AtomicU64::new(48000)),
                         output_frames: Arc::new(AtomicU64::new(47988)),
@@ -1515,7 +1516,6 @@ mod tests {
                     catchup_events: Arc::new(AtomicU64::new(0)),
                     // Direct lanes always own a resampler; a minimal armed fixture.
                     resampler: Some(LaneResamplerObservability {
-                        armed: true,
                         locked: Arc::new(AtomicBool::new(true)),
                         input_frames: Arc::new(AtomicU64::new(96000)),
                         output_frames: Arc::new(AtomicU64::new(95900)),

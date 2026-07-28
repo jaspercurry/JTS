@@ -437,8 +437,12 @@ impl RingMapping {
     }
 
     fn slot_ptr(&self, slot_index: u32) -> *const u8 {
-        let off = HEADER_BYTES + (slot_index as usize) * self.geometry.slot_bytes();
-        debug_assert!(off + self.geometry.slot_bytes() <= self.len);
+        let slot_bytes = self
+            .geometry
+            .slot_bytes()
+            .expect("mapped ring geometry was validated before slot access");
+        let off = HEADER_BYTES + (slot_index as usize) * slot_bytes;
+        debug_assert!(off + slot_bytes <= self.len);
         // SAFETY: slot_index < n_slots (caller guarantees via seq % n_slots)
         // and the mapping is sized HEADER_BYTES + n_slots*slot_bytes.
         unsafe { self.base.add(off) }
@@ -650,9 +654,7 @@ impl Drop for RingReader {
         // reader's presence. Mirrors the C writer_close `cur == mine` guard.
         let slot = self.map.header_atomic(layout::OFF_READER_PID);
         let mine = std::process::id() as u64;
-        if slot.load(Ordering::Relaxed) == mine {
-            slot.store(0, Ordering::Relaxed);
-        }
+        let _ = slot.compare_exchange(mine, 0, Ordering::Relaxed, Ordering::Relaxed);
     }
 }
 
@@ -832,7 +834,7 @@ enum AttachError {
 }
 
 fn init_created(fd: RawFd, g: Geometry) -> io::Result<RingMapping> {
-    let file_size = g.file_size();
+    let file_size = g.file_size()?;
     if unsafe { libc::ftruncate(fd, file_size as libc::off_t) } < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -913,14 +915,20 @@ where
         period_frames: map.header_u32(layout::OFF_PERIOD_FRAMES),
         n_slots: map.header_u32(layout::OFF_N_SLOTS),
     };
-    if header_geometry.file_size() != actual_size {
+    let declared_size = header_geometry.file_size().map_err(|error| {
+        AttachError::Fatal(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid ring header geometry: {error}"),
+        ))
+    })?;
+    if declared_size != actual_size {
         return Err(AttachError::Fatal(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "ring file size {} is inconsistent with its own header geometry \
                  (declares {} bytes: rate={} ch={} fmt={} period={} slots={})",
                 actual_size,
-                header_geometry.file_size(),
+                declared_size,
                 header_geometry.rate,
                 header_geometry.channels,
                 header_geometry.sample_format,
@@ -1234,10 +1242,11 @@ impl TestRingWriter {
 
 impl Drop for TestRingWriter {
     fn drop(&mut self) {
-        // Clear writer pid so a subsequent reader sees the writer as detached.
-        self.map
-            .header_atomic(layout::OFF_WRITER_PID)
-            .store(0, Ordering::Relaxed);
+        // Clear writer_pid only if this process still owns it. A newer writer
+        // may have attached and taken ownership before this test twin drops.
+        let slot = self.map.header_atomic(layout::OFF_WRITER_PID);
+        let mine = std::process::id() as u64;
+        let _ = slot.compare_exchange(mine, 0, Ordering::Relaxed, Ordering::Relaxed);
     }
 }
 
@@ -1342,7 +1351,7 @@ mod tests {
             .create_new(true)
             .open(path)
             .unwrap();
-        file.set_len(g.file_size() as u64).unwrap();
+        file.set_len(g.file_size().unwrap() as u64).unwrap();
         let metadata = file.metadata().unwrap();
         (file, metadata)
     }
@@ -1518,6 +1527,31 @@ mod tests {
         );
         let _reader = RingReader::create_or_attach(&path, g)
             .expect("fatal attach releases the transaction lock");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn unsupported_header_format_returns_invalid_data_without_panicking() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let path = tmp_ring_path("unsupported-format");
+        let g = proto_geometry();
+        drop(TestRingWriter::create_or_attach(&path, g).unwrap());
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(layout::OFF_SAMPLE_FORMAT as u64))
+            .unwrap();
+        file.write_all(&u32::MAX.to_le_bytes()).unwrap();
+        drop(file);
+
+        let error = match RingReader::create_or_attach(&path, g) {
+            Ok(_) => panic!("unsupported header format should be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("unsupported ring sample format"),
+            "{error}"
+        );
         cleanup(&path);
     }
 
@@ -1760,7 +1794,7 @@ mod tests {
             .write(true)
             .open(&path)
             .unwrap();
-        file.set_len(g.file_size() as u64).unwrap();
+        file.set_len(g.file_size().unwrap() as u64).unwrap();
         drop(file);
         // Attach must reject (magic never appears within the bounded wait).
         // Not an owned /dev/shm path, so it errors rather than reclaiming.
@@ -1957,6 +1991,33 @@ mod tests {
                 .load(Ordering::Relaxed),
             foreign,
             "dropping a reader must not clear a foreign reader_pid"
+        );
+        drop(checker);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_writer_drop_only_clears_its_own_pid() {
+        let path = tmp_ring_path("testwriterpid");
+        let g = proto_geometry();
+        let writer = TestRingWriter::create_or_attach(&path, g).unwrap();
+        let checker = RingReader::create_or_attach(&path, g).unwrap();
+        let ours = std::process::id() as u64;
+        let foreign = ours.wrapping_add(1);
+        checker
+            .map
+            .header_atomic(layout::OFF_WRITER_PID)
+            .store(foreign, Ordering::Relaxed);
+
+        drop(writer);
+
+        assert_eq!(
+            checker
+                .map
+                .header_atomic(layout::OFF_WRITER_PID)
+                .load(Ordering::Relaxed),
+            foreign,
+            "dropping a test writer must not clear a newer writer's pid"
         );
         drop(checker);
         cleanup(&path);
