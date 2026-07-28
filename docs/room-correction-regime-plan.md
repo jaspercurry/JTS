@@ -28,8 +28,20 @@ The current 350 Hz ceiling is right in spirit, wrong as a hard wall:
 the defensible regime is a **per-room transition** for full-resolution
 modal correction, a strictly-bounded **residual trend tier** above it
 that corrects only what the room added on top of the speaker's known
-gated response — JTS's structural advantage; no shipping competitor
-owns the anechoic curve — and **nothing above 1 kHz**. FIR/phase is
+gated response — and **nothing above 1 kHz**. The attribution
+advantage, stated precisely (owner pushback 2026-07-28 corrected an
+overclaim here): hardware owners (Sonos, Neumann, Genelec, HomePod)
+do subtract their speaker's anechoic behavior, but from a
+**factory, model-level golden-unit reference** baked in at design
+time; hardware-agnostic correctors (Dirac, Audyssey) never measured
+the speaker at all and must *estimate* its direct sound from the
+same in-room capture (Dirac's frequency-dependent windowing is
+exactly that estimate). JTS is the only one of the three shapes that
+corrects against a **live, per-unit, gated measurement of this
+specific speaker as currently commissioned** — necessarily so, since
+JTS hardware is open/DIY (nobody has a factory curve for a cdhorn
+build, a swapped horn, or aged drivers) — fingerprint-matched to the
+applied DSP. FIR/phase is
 rejected on quantified grounds. Evidence-gated LF boosts are unlocked,
 but on room-instrument evidence, not the HF null registry (see D5's
 delta).
