@@ -25,6 +25,21 @@ from .correction_session_fixtures import make_measurement_session
 
 
 def test_capture_band_snr_preserves_exact_report(tmp_path: Path):
+    """Exact-report guard, re-derived against ground truth by #1838.
+
+    The fixture is three equal tones (0.08 amplitude ⇒ 0.08/√2 RMS ⇒
+    **−24.95 dBFS**), one each in `sub_bass`, `bass` and `transition`. Every
+    band must therefore report that same −24.95, and this test now asserts
+    exactly that.
+
+    The pre-#1838 expectations were −50.00 / −51.25 / −60.35 — three
+    DIFFERENT wrong numbers for three IDENTICAL tones, because
+    `band_levels_dbfs` returned a per-bin mean whose dilution scaled with the
+    band's width. Room correction's `capture_band_snr` is a ratio, but its
+    two sides are measured over different-length windows (a full sweep
+    capture vs a separately recorded noise WAV), so the error did not cancel
+    there either: this report read a 25 dB SNR as 0 dB, i.e. "insufficient".
+    """
     sess = make_measurement_session(tmp_path)
     sample_rate = sess.cfg.sample_rate
     time_s = np.arange(sample_rate, dtype=np.float64) / sample_rate
@@ -49,29 +64,33 @@ def test_capture_band_snr_preserves_exact_report(tmp_path: Path):
 
     report = acoustic_quality.capture_band_snr(capture_path, noise_report)
 
+    # The tone's own RMS, computed independently of the estimator under test.
+    tone_dbfs = round(20.0 * float(np.log10(0.08 / np.sqrt(2.0))), 2)
+    assert tone_dbfs == -24.95
+
     assert report == [
         {
             "band_id": "sub_bass",
             "band_hz": [20.0, 80.0],
-            "capture_level_dbfs": -50.0,
+            "capture_level_dbfs": tone_dbfs,
             "noise_level_dbfs": -50.0,
-            "estimated_snr_db": 0.0,
+            "estimated_snr_db": 25.05,
             "method": "fft_band_power_difference",
         },
         {
             "band_id": "bass",
             "band_hz": [80.0, 160.0],
-            "capture_level_dbfs": -51.25,
+            "capture_level_dbfs": tone_dbfs,
             "noise_level_dbfs": -51.0,
-            "estimated_snr_db": -0.25,
+            "estimated_snr_db": 26.05,
             "method": "fft_band_power_difference",
         },
         {
             "band_id": "transition",
             "band_hz": [350.0, 1000.0],
-            "capture_level_dbfs": -60.35,
+            "capture_level_dbfs": tone_dbfs,
             "noise_level_dbfs": -53.0,
-            "estimated_snr_db": -7.35,
+            "estimated_snr_db": 28.05,
             "method": "fft_band_power_difference",
         },
     ]
