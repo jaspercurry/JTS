@@ -25,6 +25,27 @@ export class RelayError extends Error {
 // excluded; their bounded size and transfer time are a different contract.
 export const RELAY_CONTROL_TIMEOUT_MS = 3000;
 
+// The rejection a timed-out control request produces, carrying a MACHINE tag.
+//
+// Why a tag and not a name/message test: `_controlFetch` aborts with a named
+// reason so the household never reads the browser's "signal is aborted without
+// reason." (the run-19 defect), and per the AbortController spec fetch then
+// rejects with THAT value — an ordinary Error whose `name` is "Error" and whose
+// message says nothing about aborting. So the very fix that made the copy
+// friendly also made every `name === "AbortError"` / `/signal is aborted/`
+// classifier silently stop matching real timeouts. Callers MUST key on
+// `err.relayTimeout`; the string is for humans only and may be reworded freely.
+export class RelayTimeoutError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RelayTimeoutError";
+    // Own property, not just the class: a page bundle and this module can be
+    // loaded from different URLs (each import stamp is its own module
+    // instance), so `instanceof` is not a reliable cross-module test here.
+    this.relayTimeout = true;
+  }
+}
+
 export class RelayClient {
   constructor({ baseUrl, sessionId, uploadToken, fetchImpl } = {}) {
     if (!baseUrl) throw new Error("baseUrl required");
@@ -85,10 +106,13 @@ export class RelayClient {
     // never surfaces the browser's default "signal is aborted without
     // reason." to the household — that raw DOMException text was leaking
     // through captureFailureMessage() verbatim (run-19 defect). Fetch
-    // rejects with this exact reason value per the AbortController spec.
+    // rejects with this exact reason value per the AbortController spec,
+    // which is why the reason is a TAGGED error: see RelayTimeoutError.
     const timer = setTimeout(
       () => controller.abort(
-        new Error("timed out waiting for the speaker's measurement relay"),
+        new RelayTimeoutError(
+          "timed out waiting for the speaker's measurement relay",
+        ),
       ),
       timeout,
     );

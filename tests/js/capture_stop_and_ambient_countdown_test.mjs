@@ -5,12 +5,14 @@
 // Behavioral harness for two 2026-07-16 fixes on the browser orchestration
 // path (capture-page/js/main.js):
 //
-//   1. The pre-tone quiet phase's countdown — the `ambient_started` host
-//      event now carries `duration_s` (see
-//      jasper.web.correction_crossover_flow.run_crossover_relay_transport's
-//      `post_phase("ambient_started", duration_s=...)`), and the page renders
-//      a live "stay quiet for about N seconds" countdown from it instead
-//      of a fixed, unexplained-silence status line.
+//   1. The room-listening phase's countdown — the `ambient_started` host
+//      event carries `duration_s`, and the page renders a live "about N
+//      seconds" countdown from it instead of a fixed, unexplained-silence
+//      status line. (The producer this originally cited,
+//      `correction_crossover_flow`'s per-driver `post_phase`, was deleted with
+//      the legacy flow and left the consumer dead; the live producer is
+//      `jasper.web.correction_crossover_v2.start_program_phase_ladder` — see
+//      test 5 below.)
 //   2. A phone-tappable Stop — `stopCapture()` (wired to the shared "stop"
 //      button action) calls whichever capture leg's own `abort(reason)` is
 //      currently live, landing on the SAME terminal "Measurement stopped."
@@ -218,8 +220,8 @@ async function testAmbientCountdownRendersFromHostEventDuration() {
   // capture — sweep_cancelled keeps this test clear of the crypto/upload leg
   // (mirrors capture_host_stop_lifecycle_test.mjs's use of the same phase).
   const phases = [
-    { phase: "ambient_started", duration_s: 5 },
-    { phase: "ambient_started", duration_s: 5 },
+    { phase: "ambient_started", duration_s: 5, quiet_requested: true },
+    { phase: "ambient_started", duration_s: 5, quiet_requested: true },
     { phase: "sweep_started" },
     { phase: "sweep_cancelled" },
   ];
@@ -309,9 +311,9 @@ async function testAmbientPhaseWithoutDurationFallsBackToStaticCopy() {
 
   assert.ok(
     statusHistory.includes(
-      "Measuring room noise — stay quiet and keep the phone still.",
+      "Measuring room noise — keep the phone still.",
     ),
-    "missing duration_s degrades to the original static copy",
+    "missing duration_s degrades to the static copy — and with no\n     quiet_requested flag it must NOT ask for quiet (see the CHECK window)",
   );
   assert.ok(
     !statusHistory.some((line) => line.includes("stay quiet for about")),
@@ -472,7 +474,7 @@ async function testPreToneLadderNeverClaimsTheToneEarly() {
 
   const phases = [
     { phase: "prelude_started" },
-    { phase: "ambient_started", duration_s: 1 },
+    { phase: "ambient_started", duration_s: 1, quiet_requested: true },
     { phase: "sweep_started" },
     { phase: "sweep_cancelled" },
   ];
@@ -520,10 +522,88 @@ async function testPreToneLadderNeverClaimsTheToneEarly() {
   ok();
 }
 
+// ============================================================================
+// 6 (#1824 S1). The two room-listening windows are OPPOSITES, and only the
+// speaker knows which is playing. MEASURE/VERIFY's 1 s window sits after the
+// courtesy beeps and must be quiet. CHECK's 12 s window is the SESSION's
+// room-noise measurement, deliberately taken BEFORE anyone is asked to hush —
+// the ambient band-floor report and the gain solve read it, so a phone that
+// asked for quiet there would edit the very floor being measured. The host
+// decides (`quiet_requested`); the page must not ask on its own initiative.
+// ============================================================================
+async function testTheCheckWindowNeverAsksTheHouseholdToGoQuiet() {
+  statusHistory.length = 0;
+  const { onStart } = await loadModule();
+
+  globalThis.__recorder = makeRecorder();
+  globalThis.document = {
+    createElement: (tag) => makeNode(tag),
+    getElementById: () => statusEl,
+  };
+  const statusEl = makeStatusEl();
+
+  // CHECK's composed order: the room window FIRST, beeps after it, then the
+  // tone (jasper.audio_measurement.program._insert_courtesy_prelude).
+  const phases = [
+    { phase: "ambient_started", duration_s: 12, quiet_requested: false },
+    { phase: "prelude_started" },
+    { phase: "sweep_started" },
+    { phase: "sweep_cancelled" },
+  ];
+  let call = 0;
+  const client = {
+    async postEvent() {},
+    async fetchPhoneStatus() {
+      const host_event = phases[Math.min(call, phases.length - 1)];
+      call += 1;
+      return { host_event };
+    },
+  };
+
+  await onStart({
+    spec: {
+      kind: "crossover_sweep",
+      sample_rate_hz: 48000,
+      constraints: {},
+      validity: { clean_capture: "refuse" },
+      run_token: "run-test",
+    },
+    contentKeyB64: "unused",
+    captureRefs: {},
+    screenEl: makeScreenEl(),
+    client,
+  });
+
+  assert.ok(
+    statusHistory.some((line) => line === "Listening to the room for about 12 seconds"),
+    `expected the neutral room-listening copy, got: ${JSON.stringify(statusHistory)}`,
+  );
+  // No ROOM-LISTENING line may ask for quiet when the host did not request it.
+  assert.deepEqual(
+    statusHistory.filter(
+      (line) => line.startsWith("Listening to the room") && /stay quiet/i.test(line),
+    ),
+    [],
+    "the page never adds a quiet request the speaker did not ask for",
+  );
+  // The prelude's own line legitimately asks — the beeps ARE the warning — and
+  // it lands after this window closes, which is the ordering the composer
+  // designed. (`captureAmbientNoise`'s pre-arm "Measuring room noise — stay
+  // quiet." is a THIRD, pre-existing line for the phone's own local noise
+  // floor, measured before arming; it is out of this test's scope.)
+  const preludeAt = statusHistory.indexOf(
+    "Listen for three beeps, then stay quiet — the tone follows.",
+  );
+  const roomAt = statusHistory.indexOf("Listening to the room for about 12 seconds");
+  assert.ok(preludeAt > roomAt, "the warning follows the session's room measurement");
+  ok();
+}
+
 const tests = [
   testAmbientCountdownRendersFromHostEventDuration,
   testAmbientPhaseWithoutDurationFallsBackToStaticCopy,
   testPreToneLadderNeverClaimsTheToneEarly,
+  testTheCheckWindowNeverAsksTheHouseholdToGoQuiet,
   testStopDuringSweepCapturePostsAbortAndRendersStoppedScreen,
   testStopDuringLevelRampRendersStoppedScreen,
 ];

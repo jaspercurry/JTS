@@ -281,7 +281,9 @@ async function testDeadSessionDuringLevelRampRendersLinkExpired() {
 // (b) A relay control-fetch AbortError never leaks
 // "signal is aborted without reason." to the household.
 // ============================================================================
-async function testAbortErrorDuringSweepGetsFriendlyCopy() {
+async function testAbortErrorDuringSweepGetsFriendlyCopy(
+  makeError = () => new DOMException("signal is aborted without reason.", "AbortError"),
+) {
   statusHistory.length = 0;
   const { onStart } = await loadModule();
   globalThis.__recorder = makeRecorder();
@@ -292,8 +294,7 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
   const client = {
     async postEvent() {},
     async fetchPhoneStatus() {
-      const err = new DOMException("signal is aborted without reason.", "AbortError");
-      throw err;
+      throw makeError();
     },
   };
 
@@ -336,11 +337,41 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
   ok();
 }
 
+// …and the shape PRODUCTION actually raises (#1824 B1). The run-19 fix aborts
+// with a named reason, so fetch rejects with THAT — an ordinary Error, name
+// "Error", no "signal is aborted" text — and the classifier's two original
+// tests both stopped matching. The DOMException case above kept passing the
+// whole time, which is exactly why it never surfaced. Derive the fixture from
+// the REAL client so it cannot drift back into a fiction.
+async function testTheProductionTimeoutShapeAlsoGetsFriendlyCopy() {
+  const { RelayClient } = await import("../../capture-page/js/relay-client.js");
+  const client = new RelayClient({
+    baseUrl: "https://relay.test",
+    sessionId: "cap_harness",
+    uploadToken: "tok",
+    fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener(
+        "abort", () => reject(init.signal.reason), { once: true },
+      );
+    }),
+  });
+  let production = null;
+  try {
+    await client.fetchPhoneStatus({ timeoutMs: 1 });
+  } catch (err) {
+    production = err;
+  }
+  assert.ok(production, "the real client produced a timeout");
+  assert.notEqual(production.name, "AbortError", "fixture is the REAL shape");
+  await testAbortErrorDuringSweepGetsFriendlyCopy(() => production);
+}
+
 const tests = [
   testIsDeadSessionErrorClassifiesRelayStatusCodes,
   testDeadSessionDuringSweepRendersLinkExpiredNotRetry,
   testDeadSessionDuringLevelRampRendersLinkExpired,
   testAbortErrorDuringSweepGetsFriendlyCopy,
+  testTheProductionTimeoutShapeAlsoGetsFriendlyCopy,
 ];
 
 let failure = null;

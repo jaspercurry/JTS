@@ -17,7 +17,7 @@ import {
   acceptedAcknowledgement,
   renderScreen,
 } from "./render.js?v=20260711-1";
-import { RelayClient } from "./relay-client.js?v=20260717-1";
+import { RelayClient } from "./relay-client.js?v=20260728-1";
 import { importContentKey, encryptWav } from "./crypto.js";
 import {
   constraintDecision,
@@ -292,13 +292,21 @@ function setupValidationToken() {
 }
 
 // A control request that timed out (see relay-client.js's _controlFetch)
-// rejects with a named Error, but stays defensive here too: an older browser
-// or an AbortController used elsewhere could still surface its native
-// "signal is aborted without reason." DOMException text verbatim, which read
-// as gibberish to a household (run-19 defect). Treat ANY AbortError the same
-// way regardless of its exact message.
+// rejects with the reason it was aborted with — a TAGGED `RelayTimeoutError`
+// whose `name` is "RelayTimeoutError" and whose message says nothing about
+// aborting. `relayTimeout` is therefore the ONLY reliable test, and the two
+// legacy checks below are the fallback for a browser that ignores
+// `abort(reason)` and raises its own "signal is aborted without reason."
+// DOMException instead (the run-19 gibberish).
+//
+// Getting this wrong is not cosmetic: between the run-19 named-reason change
+// and #1824 this function returned false for every real timeout, so the
+// friendly-copy branch it exists to reach was unreachable in production.
+// Never re-derive this from `name` or the message text — the string is for
+// humans and may be reworded freely.
 function isRelayConnectivityAbort(err, message) {
   return (
+    (err && err.relayTimeout === true) ||
     (err && err.name === "AbortError") ||
     /signal is aborted/i.test(message)
   );
@@ -1505,6 +1513,16 @@ async function waitForSweepComplete(client, spec, isAborted, armed = null) {
   // original static copy — no countdown, same as before.
   let ambientDeadlineMs = null;
   let lastCountdownSeconds = null;
+  // Whether THIS room-listening window is one the household should be quiet
+  // for. The two windows are opposites and only the speaker knows which is
+  // playing: MEASURE/VERIFY's 1 s pre-pilot window sits after the courtesy
+  // beeps and must be quiet, while CHECK's 12 s window is the SESSION's
+  // room-noise measurement, deliberately taken BEFORE anyone is asked to hush
+  // (jasper.audio_measurement.program's module docstring). Asking for quiet
+  // during that one would edit the floor it is measuring — the gain solve and
+  // the ambient band-floor report both read it. Absent (an older Pi) resolves
+  // to false: not asking is the harmless direction, asking is not.
+  let ambientQuietRequested = false;
   while (Date.now() < deadline) {
     if (isAborted()) return false;
     let status;
@@ -1565,12 +1583,19 @@ async function waitForSweepComplete(client, spec, isAborted, armed = null) {
     if (phase && phase !== lastPhase) {
       lastPhase = phase;
       if (phase === "prelude_started") {
-        // The courtesy prelude (three beeps, then the settle the household is
+        // The courtesy prelude (the beeps, then the settle the household is
         // asked to go quiet in). Its own phase because it is AUDIBLE and it is
         // not the tone: before #1824 D4 the Pi posted `sweep_started` at arm
         // time and the phone said "Playing the measurement tone…" through
         // ~4.6 s of beeps and silence. An older Pi that posts no prelude phase
         // simply keeps the pre-arm line until the tone starts, as before.
+        //
+        // "three" MIRRORS jasper.audio_measurement.program's
+        // COURTESY_TONE_BEEP_COUNT. Deliberately spelled out rather than sent
+        // over the wire — a household counts beeps, it does not parse a field,
+        // and the count has one value. The pairing is pinned by
+        // test_capture_page_beep_copy_matches_the_composed_beep_count, which
+        // fails if the constant ever moves.
         showPhase("Listen for three beeps, then stay quiet — the tone follows.");
       } else if (phase === "ambient_started") {
         const durationS = Number(event.duration_s);
@@ -1579,8 +1604,13 @@ async function waitForSweepComplete(client, spec, isAborted, armed = null) {
             ? Date.now() + durationS * 1000
             : null;
         lastCountdownSeconds = null;
+        ambientQuietRequested = event.quiet_requested === true;
         if (!ambientDeadlineMs) {
-          showPhase("Measuring room noise — stay quiet and keep the phone still.");
+          showPhase(
+            ambientQuietRequested
+              ? "Measuring room noise — stay quiet and keep the phone still."
+              : "Measuring room noise — keep the phone still.",
+          );
         }
       } else if (phase === "sweep_started") {
         ambientDeadlineMs = null;
@@ -1600,8 +1630,12 @@ async function waitForSweepComplete(client, spec, isAborted, armed = null) {
       }
     }
     if (phase === "ambient_started" && ambientDeadlineMs) {
+      // Floored at 1, not 0: the boundary tick would otherwise render "about 0
+      // seconds", which is not a duration. The phase flips to the tone (or the
+      // beeps) within one poll of here anyway, so "about 1 second" is the last
+      // thing shown and it stays true to the nearest second.
       const remaining = Math.max(
-        0,
+        1,
         Math.ceil((ambientDeadlineMs - Date.now()) / 1000),
       );
       if (remaining !== lastCountdownSeconds) {
@@ -1613,9 +1647,16 @@ async function waitForSweepComplete(client, spec, isAborted, armed = null) {
         // courtesy beeps before the tone (see
         // jasper.audio_measurement.program's `_insert_courtesy_prelude`), so
         // that sentence would have been wrong by the whole prelude.
+        //
+        // And the quiet REQUEST is the speaker's call, not the page's — see
+        // ambientQuietRequested. CHECK's window is measuring the room the
+        // household is actually living in; hushing them for it would change
+        // the reading.
+        const seconds = `${remaining} second${remaining === 1 ? "" : "s"}`;
         showPhase(
-          `Listening to the room… stay quiet for about ${remaining} ` +
-            `second${remaining === 1 ? "" : "s"}`,
+          ambientQuietRequested
+            ? `Listening to the room… stay quiet for about ${seconds}`
+            : `Listening to the room for about ${seconds}`,
         );
       }
     }
@@ -2368,6 +2409,11 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
     // in 1…" frozen on screen for the whole capture that had ALREADY started
     // — the countdown screen's notes survive into the round, and the round's
     // own progress goes to #status, so nothing else ever repainted it.
+    //
+    // NOTE no SHIPPED plan reaches this today: MEASURE was the only countdown
+    // entry and #1823 made it a tap. The countdown vocabulary is retained for
+    // a future same-spot transition, so the bug is fixed where it lives rather
+    // than left to come back with it.
     counter.textContent = "";
     void runPlanCapture(ctx, { index: nextIndex, attempt: nextAttempt });
   };
@@ -2618,7 +2664,9 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
   // (spec.duration_ms) like waitForSweepComplete's own timeout does, with a
   // floor comfortably above typical analysis time.
   const deadline = Date.now() + Math.max(30000, Number(spec.duration_ms) || 30000);
-  let reconnecting = false;
+  // The swallowed abort still in force, or null once the relay answers — same
+  // role as waitForSweepComplete's, for the same reason (see its expiry).
+  let reconnecting = null;
   while (Date.now() < deadline) {
     if (isAborted()) return { aborted: true };
     let status;
@@ -2631,7 +2679,7 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
       // session. This wait is squarely POST-arm — the sweep already played —
       // so ending here would discard a capture the Pi is actively analyzing.
       if (isRelayConnectivityAbort(err, String((err && err.message) || err))) {
-        reconnecting = true;
+        reconnecting = err;
         setStatus(RELAY_RECONNECTING_RESULT_MESSAGE, "info");
         await delayMs(pollMs);
         continue;
@@ -2639,7 +2687,7 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
       throw err;
     }
     if (reconnecting) {
-      reconnecting = false;
+      reconnecting = null;
       setStatus(CAPTURE_CHECKING_MESSAGE, "info");
     }
     const event = (status && status.host_event) || {};
@@ -2696,6 +2744,15 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
     }
     await delayMs(pollMs);
   }
+  // Still blind when the window ran out: report the outage, not a verdict
+  // about a speaker we could not hear from. Mirrors waitForSweepComplete's
+  // expiry — the caller's post-arm branch renders the same terminal either
+  // way, so the only thing that changes is whether the household is told the
+  // truth about WHY. Left unmarked (no `sweepFailed`) exactly like the sweep
+  // wait's: `armedPosted` is necessarily true this late, so the routing is
+  // identical, and the v1 caller reads it as the retryable connectivity case
+  // it is.
+  if (reconnecting) throw reconnecting;
   // Terminal, not a stale retry — see waitForCaptureAuthorized's matching
   // comment. By this point the blob has ALREADY been pulled/decrypted (or
   // is still being analyzed) on the Pi; a stale "Next measurement"/"Try

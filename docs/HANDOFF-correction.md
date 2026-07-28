@@ -675,14 +675,17 @@
   ([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
   posts the whole pre-tone ladder — `prelude_started` (the courtesy beeps and
   their settle), `ambient_started` (carrying the room-listening window's own
-  length), then `sweep_started` — from `start_program_phase_ladder`, on the
-  program's own clock, anchored at the play path's WAV handoff
-  (`PlaybackStartSignal`). Offsets are read off the composed program's segment
-  table, so a composer that moves the prelude or the ambient window moves the
-  ladder with it. This replaced an eager `sweep_started` posted synchronously
-  in `on_armed`, which announced the measurement tone ~4.6 s before any sound
-  on a courtesy-prelude program; a host that wires no playback-start signal
-  keeps that eager post as its fallback. (An earlier W2.6/PR #1552 callback in
+  `duration_s` plus `quiet_requested`), then `sweep_started` — from
+  `start_program_phase_ladder`, on the program's own clock, anchored at the
+  play path's WAV handoff (`PlaybackStartSignal`). Offsets are read off the
+  composed program's segment table, so a composer that moves the prelude or the
+  ambient window moves the ladder with it. `quiet_requested` is what keeps the
+  countdown from asking a household to hush during CHECK's session room-noise
+  window, which is measured before the warning on purpose. This replaced an
+  eager `sweep_started` posted synchronously in `on_armed`, which announced the
+  measurement tone ~4.6 s before any sound on a courtesy-prelude program; a
+  host that wires no playback-start signal keeps that eager post as its
+  fallback. (An earlier W2.6/PR #1552 callback in
   `correction_crossover_flow._play` did the same job for the retired
   per-driver flow and went away with it — for a stretch afterwards
   `ambient_started` had NO producer at all and the phone's countdown consumer

@@ -5771,13 +5771,19 @@ def test_program_phase_schedule_reads_the_programs_own_segments():
     # CHECK opens on its 12 s session-ambient window and splices the beeps
     # AFTER it (jasper.audio_measurement.program._insert_courtesy_prelude), so
     # the ladder is ordered by the program, not by a fixed vocabulary.
-    assert [phase for _o, phase, _d in check] == [
+    assert [phase for _o, phase, _x in check] == [
         "ambient_started", "prelude_started", "sweep_started",
     ]
-    offsets = {phase: offset for offset, phase, _d in check}
-    durations = {phase: duration for _o, phase, duration in check}
+    offsets = {phase: offset for offset, phase, _x in check}
+    extras = {phase: extra for _o, phase, extra in check}
     assert offsets["ambient_started"] == pytest.approx(0.0, abs=1e-6)
-    assert durations["ambient_started"] == pytest.approx(12.0, abs=1e-6)
+    assert extras["ambient_started"]["duration_s"] == pytest.approx(12.0, abs=1e-6)
+    # THE S1 fact. CHECK's window is the SESSION's room-noise measurement,
+    # deliberately taken BEFORE the household is asked to go quiet (the
+    # composer's module docstring) — the ambient band-floor report and the gain
+    # solve read it. A phone that asked for quiet here would edit the floor it
+    # is measuring, so the host must not ask.
+    assert extras["ambient_started"]["quiet_requested"] is False
     # The tone is announced only after the beeps AND their settle.
     assert offsets["sweep_started"] > offsets["prelude_started"]
 
@@ -5787,20 +5793,23 @@ def test_program_phase_schedule_reads_the_programs_own_segments():
         leading_pilot_gains_db=(-10.0, 0.0),
         courtesy_prelude=True,
     ))
-    assert [phase for _o, phase, _d in measure] == [
+    assert [phase for _o, phase, _x in measure] == [
         "prelude_started", "ambient_started", "sweep_started",
     ]
-    m_offsets = {phase: offset for offset, phase, _d in measure}
-    m_durations = {phase: duration for _o, phase, duration in measure}
+    m_offsets = {phase: offset for offset, phase, _x in measure}
+    m_extras = {phase: extra for _o, phase, extra in measure}
     # THE defect this exists to remove: the eager post claimed the tone was
     # playing here, at t=0 — 4.6 s of beeps and silence before the first
     # sound of the measurement.
     assert m_offsets["prelude_started"] == pytest.approx(0.0, abs=1e-6)
     assert m_offsets["sweep_started"] == pytest.approx(4.6, abs=1e-3)
     # The room-listening window's own length is what the phone counts down.
-    assert m_durations["ambient_started"] == pytest.approx(
+    assert m_extras["ambient_started"]["duration_s"] == pytest.approx(
         PILOT_AMBIENT_WINDOW_S, abs=1e-6
     )
+    # …and this window is the OPPOSITE of CHECK's: it sits after the beeps and
+    # "MUST be measured with the room already quiet", so here the host DOES ask.
+    assert m_extras["ambient_started"]["quiet_requested"] is True
 
 
 def test_program_phase_schedule_is_empty_for_a_program_it_cannot_read():
@@ -5856,10 +5865,11 @@ def test_phase_ladder_posts_each_phase_when_it_becomes_audible():
     assert [phase for phase, _extra in posted] == [
         "prelude_started", "ambient_started", "sweep_started",
     ]
-    # Only the room-listening window has a declared length; the other two must
-    # not invent one (the phone renders a countdown from exactly this field).
+    # Only the room-listening window carries fields; the other two must not
+    # invent any (the phone renders its countdown from exactly these).
     assert posted[0][1] == {}
     assert posted[1][1]["duration_s"] == pytest.approx(0.01, abs=1e-6)
+    assert posted[1][1]["quiet_requested"] is True
     assert posted[2][1] == {}
 
 
@@ -5922,7 +5932,71 @@ def test_phase_ladder_replaces_the_eager_sweep_started_post(monkeypatch):
     # The countdown field the capture page reads. Its consumer has been
     # shipped-but-dead since the producer it was written against was deleted.
     assert ambient["duration_s"] == pytest.approx(0.01, abs=1e-6)
+    assert ambient["quiet_requested"] is True
     # Every ladder post is addressed to the armed capture, like the pair it
     # replaces — a phone that matched on (index, attempt) must still match.
     assert ambient["index"] == 1
     assert ambient["attempt"] == 1
+
+
+def test_phase_ladder_cancel_waits_for_a_post_already_in_flight():
+    """#1824 S2: the relay's host-event slot is last-write-wins, so a ladder
+    post still in flight when the caller moves on would land AFTER whatever it
+    posts next — overwriting a `sweep_complete`, or a terminal
+    `capture_result`, and putting the phone back to polling a refusal it can no
+    longer see. `_cancel` must not return while one is running."""
+    started = threading.Event()
+    release = threading.Event()
+    posted: list[str] = []
+
+    def slow_post(phase: str, **_extra: Any) -> None:
+        started.set()
+        release.wait(5.0)
+        posted.append(phase)
+
+    cancel = v2host.start_program_phase_ladder(
+        slow_post, _ladder_program(), skew_s=0.0
+    )
+    assert started.wait(5.0), "the ladder reached its first post"
+
+    done = threading.Event()
+
+    def _cancel_and_flag() -> None:
+        cancel()
+        done.set()
+
+    waiter = threading.Thread(target=_cancel_and_flag, daemon=True)
+    waiter.start()
+    # Cancel is BLOCKED while the post runs — that is the whole contract.
+    assert not done.wait(0.3), "cancel returned while a post was still in flight"
+    release.set()
+    assert done.wait(5.0), "cancel returned once the in-flight post finished"
+    waiter.join(timeout=5.0)
+    # The in-flight post completed (it was not abandoned), and the ladder
+    # stopped there rather than continuing through the rest of the schedule.
+    assert posted == ["prelude_started"]
+
+
+def test_playback_signal_handler_failure_never_stops_the_measurement():
+    """The signal fires from INSIDE the play path, so an escaping handler error
+    would abort a sweep over a status line. Pins the promise the widened catch
+    in `PlaybackStartSignal.fire` makes (#1824 N2)."""
+    signal = v2host.PlaybackStartSignal()
+
+    for boom in (
+        AttributeError("no segments"),
+        KeyError("play_wav"),
+        TypeError("not a program"),
+        RuntimeError("can't start new thread"),
+        ValueError("bad rate"),
+        OSError("resource"),
+    ):
+        def _raise(_program: Any, exc: BaseException = boom) -> None:
+            raise exc
+
+        signal.install(_raise)
+        signal.fire(object())  # must not raise
+
+    # …and a cleared signal is simply inert.
+    signal.clear()
+    signal.fire(object())

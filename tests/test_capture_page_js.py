@@ -116,7 +116,11 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
     assert 'from "./constraints.js?v=20260711-4"' in main_js
-    assert 'from "./relay-client.js?v=20260717-1"' in main_js
+    # Bumped with #1824 B1: relay-client.js gained the machine-readable
+    # timeout tag the page classifies on. A warm-cache phone holding the old
+    # module would keep raising untagged timeouts, so the classifier would stay
+    # broken for exactly the phones already in a household's hands.
+    assert 'from "./relay-client.js?v=20260728-1"' in main_js
     # Both modules changed in the protocol-deletion PR, and both carry a
     # SECURITY tightening (mandatory spec MAC; a version-less spec is refused
     # rather than read as legacy protocol 1). An unstamped or stale-stamped
@@ -128,6 +132,43 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'from "./level-events.js?v=20260716-1"' in main_js
     assert 'from "./ambient-stats.js?v=20260717-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
+
+
+def test_capture_page_beep_copy_matches_the_composed_beep_count():
+    """#1824 N3: the prelude line says "Listen for three beeps", which mirrors
+    the composer's COURTESY_TONE_BEEP_COUNT. Spelled out rather than sent over
+    the wire — a household counts beeps, it does not parse a field — so this is
+    what stops the two from drifting into a page that miscounts the sound the
+    speaker actually makes."""
+    from jasper.audio_measurement.program import COURTESY_TONE_BEEP_COUNT
+
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert COURTESY_TONE_BEEP_COUNT == 3, (
+        "the composed beep count moved — update the capture page's prelude copy "
+        "(main.js, 'Listen for three beeps') to match, then this pin"
+    )
+    assert "Listen for three beeps" in main_js
+
+
+def test_capture_page_classifies_relay_timeouts_by_tag_not_by_message():
+    """#1824 B1. `_controlFetch` aborts with a NAMED reason (the run-19 fix), so
+    per the AbortController spec fetch rejects with that value — an ordinary
+    Error whose name is not "AbortError" and whose message says nothing about
+    aborting. Classifying on either of those therefore stopped matching real
+    timeouts, silently, and every connectivity branch on the page became
+    unreachable in production. The tag is the contract; these pins keep the
+    two halves of it wired together."""
+    relay_js = (_REPO / "capture-page/js/relay-client.js").read_text(encoding="utf-8")
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    # Producer: the abort reason is the tagged class, not a bare Error.
+    assert "export class RelayTimeoutError extends Error" in relay_js
+    assert "this.relayTimeout = true;" in relay_js
+    assert "controller.abort(\n        new RelayTimeoutError(" in relay_js
+    # Consumer: the classifier keys on the tag FIRST; the name/text checks
+    # remain only as the bare-abort fallback.
+    assert "err.relayTimeout === true" in main_js
 
 
 def test_capture_page_step_screens_render_one_instruction_grammar():

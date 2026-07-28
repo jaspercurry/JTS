@@ -2323,15 +2323,22 @@ HOST_PHASE_AMBIENT_STARTED = "ambient_started"
 HOST_PHASE_SWEEP_STARTED = "sweep_started"
 HOST_PHASE_SWEEP_COMPLETE = "sweep_complete"
 
-# NAMED RESIDUAL. The ladder is anchored where the host HANDS a program to the
-# playback path, which leads real audio by the verified-source read plus the
-# ALSA/output prefill — tens to a few hundred ms, device-dependent, and not one
-# number we can look up. Every step is therefore delayed by this skew so the
-# residual lands on the SAFE side: a phase line may appear slightly late, but
-# the phone can never claim the tone is playing while the room is still silent,
-# which is the failure this ladder exists to remove. Tighten it (or replace it
-# with a real playback-start observation) from an on-device pass; do not shrink
-# it toward zero from reasoning alone.
+# NAMED RESIDUAL — ON-DEVICE: the size of this bias is NOT measured. The ladder
+# is anchored where the host HANDS a program to the playback path, which leads
+# real audio by the verified-source read plus the ALSA/output prefill: tens to a
+# few hundred ms, device-dependent, and not one number we can look up. Delaying
+# every step is INTENDED to bias late, so the residual lands on the safe side —
+# a phase line appearing late is harmless, a phone claiming the tone is playing
+# while the room is silent is the failure this ladder exists to remove. It is
+# not a guarantee: a prefill longer than this value would still put the sweep
+# line marginally early.
+#
+# Two things push the same way and are worth knowing before tuning it: the
+# phone only repaints on its own poll (``progress_poll_ms``, ≤1 s), which adds
+# further late bias on the rendered line; and the household reads copy, not
+# timestamps. Measure the real anchor-to-audio interval on hardware before
+# changing this, and prefer replacing the whole estimate with an observed
+# playback start over shrinking the number from reasoning alone.
 PHASE_LADDER_START_SKEW_S = 0.35
 
 
@@ -2365,17 +2372,28 @@ class PlaybackStartSignal:
             return
         try:
             handler(program)
-        except (OSError, RuntimeError, ValueError):
-            # Progress reporting must never be able to stop a measurement.
+        except (
+            OSError, RuntimeError, ValueError, AttributeError, KeyError, TypeError,
+        ):
+            # Progress reporting must never be able to stop a measurement, and
+            # this fires from INSIDE the play path — an escape here would abort
+            # a sweep over a status line. The handler reads a program object it
+            # does not own (AttributeError/TypeError/KeyError on an unexpected
+            # shape) and starts a thread (RuntimeError), so the list covers what
+            # it can actually raise; pinned by
+            # test_playback_signal_handler_failure_never_stops_the_measurement.
             logger.warning("v2 playback-start signal handler failed", exc_info=True)
 
 
-def program_phase_schedule(program: Any) -> tuple[tuple[float, str, float], ...]:
+def program_phase_schedule(
+    program: Any,
+) -> tuple[tuple[float, str, dict[str, Any]], ...]:
     """When each phone-visible phase of ``program`` actually becomes audible.
 
-    Returns ``((offset_s, phase, duration_s), …)`` ordered by offset, where
+    Returns ``((offset_s, phase, extra_fields), …)`` ordered by offset, where
     ``offset_s`` is measured from the start of the program WAV and
-    ``duration_s`` is 0.0 for phases that have no declared length.
+    ``extra_fields`` are the wire fields that phase carries (empty for phases
+    that carry none).
 
     Offsets are read off the program's OWN segment table
     (``start_sample``/``sample_rate_hz``), never re-derived from the composer's
@@ -2384,6 +2402,21 @@ def program_phase_schedule(program: Any) -> tuple[tuple[float, str, float], ...]
     one moves this schedule with it. A program with no segments (or an
     unreadable rate) yields an empty schedule — the caller then posts nothing,
     which is what an older/simpler program should produce.
+
+    ``ambient_started`` carries ``quiet_requested``, and it is a MEASUREMENT
+    fact, not a presentation one. The two ambient windows are opposites:
+
+    * MEASURE/VERIFY's 1 s pre-pilot window sits AFTER the courtesy beeps and
+      "MUST be measured with the room already quiet" — the phone should ask.
+    * CHECK's 12 s window is the SESSION's room-noise measurement, "deliberately
+      taken before the household is asked to go quiet" (both quotes:
+      :mod:`jasper.audio_measurement.program`'s module docstring). The ambient
+      band-floor report and the gain solve read it. A phone that asked for quiet
+      during THAT window would change the very floor it is measuring — a copy
+      string silently editing the measurement.
+
+    Derived from the composed order (is this window after the beeps?), so a
+    composer that moves either window moves the flag with it.
     """
     from jasper.audio_measurement.program import (
         AMBIENT_SEGMENT_ID,
@@ -2399,11 +2432,18 @@ def program_phase_schedule(program: Any) -> tuple[tuple[float, str, float], ...]
     if rate <= 0 or not segments:
         return ()
 
-    steps: list[tuple[float, str, float]] = []
+    steps: list[tuple[float, str, dict[str, Any]]] = []
     beeps = [s for s in segments if s.kind == KIND_COURTESY_TONE]
+    beep_end = (
+        max(s.start_sample + s.n_samples for s in beeps) if beeps else None
+    )
     if beeps:
         steps.append(
-            (min(s.start_sample for s in beeps) / rate, HOST_PHASE_PRELUDE_STARTED, 0.0)
+            (
+                min(s.start_sample for s in beeps) / rate,
+                HOST_PHASE_PRELUDE_STARTED,
+                {},
+            )
         )
     ambient = [s for s in segments if s.segment_id == AMBIENT_SEGMENT_ID]
     if ambient:
@@ -2412,7 +2452,13 @@ def program_phase_schedule(program: Any) -> tuple[tuple[float, str, float], ...]
             (
                 first.start_sample / rate,
                 HOST_PHASE_AMBIENT_STARTED,
-                first.n_samples / rate,
+                {
+                    "duration_s": first.n_samples / rate,
+                    # No prelude at all ⇒ no warning was played ⇒ do not ask.
+                    "quiet_requested": (
+                        beep_end is not None and first.start_sample >= beep_end
+                    ),
+                },
             )
         )
     stimulus = [s for s in segments if s.kind in STIMULUS_KINDS]
@@ -2421,7 +2467,7 @@ def program_phase_schedule(program: Any) -> tuple[tuple[float, str, float], ...]
             (
                 min(s.start_sample for s in stimulus) / rate,
                 HOST_PHASE_SWEEP_STARTED,
-                0.0,
+                {},
             )
         )
     steps.sort(key=lambda step: step[0])
@@ -2455,13 +2501,12 @@ def start_program_phase_ladder(
 
     def _run() -> None:
         started = time.monotonic()
-        for offset_s, phase, duration_s in schedule:
+        for offset_s, phase, extra in schedule:
             delay = (offset_s + skew) - (time.monotonic() - started)
             if delay > 0 and done.wait(delay):
                 return
             if done.is_set():
                 return
-            extra = {"duration_s": duration_s} if duration_s > 0 else {}
             post_phase(phase, **extra)
 
     thread = threading.Thread(
@@ -2471,7 +2516,20 @@ def start_program_phase_ladder(
 
     def _cancel() -> None:
         done.set()
-        thread.join(timeout=1.0)
+        # UNBOUNDED join, deliberately. The relay's host-event slot is
+        # last-write-wins, so a ladder post still in flight when this returns
+        # would land AFTER whatever the caller posts next — overwriting a
+        # `sweep_complete`, or worse a terminal `capture_result`, and putting
+        # the phone back to polling a refusal it can no longer see (the
+        # expired-link pathology this PR removes elsewhere). A bounded join
+        # would leave exactly that race open on a slow post.
+        #
+        # Safe to wait: the only thing this thread does is
+        # ``client.post_host_event``, whose urllib transport carries
+        # ``capture_relay.client.DEFAULT_TIMEOUT_S`` (15 s) and whose failures
+        # the caller already swallows as OSError — so the wait is bounded by
+        # the transport, not by hope.
+        thread.join()
 
     return _cancel
 
@@ -2930,17 +2988,24 @@ def build_v2_run_and_consume(
             conductor.authorize_begin(index, attempt, entry)
 
         def _post_sweep_phase_best_effort(phase: str, **extra: Any) -> None:
-            """Tell the phone playback is starting/finished (§5.10 progress).
+            """Post one phone-visible progress phase (§5.10 progress).
 
             The capture page's ``waitForSweepComplete``
-            (``capture-page/js/main.js``) polls ``host_event.phase`` for
-            ``"sweep_started"`` / ``"sweep_complete"`` around its own play
-            wait and otherwise sits until ITS OWN timeout elapses — the v2
-            runner posted neither (W6 run 5), so a real phone could never
-            complete a v2 capture. Mirrors the legacy per-driver capture-plan
-            flow's ``post_phase`` around its own play call
-            (``correction_crossover_flow.py``). Best-effort like that
-            sibling: a transient post failure here is a progress-only miss,
+            (``capture-page/js/main.js``) polls ``host_event.phase`` around its
+            own play wait and otherwise sits until ITS OWN timeout elapses —
+            the v2 runner posted nothing (W6 run 5), so a real phone could
+            never complete a v2 capture.
+
+            The phases this posts, in the order one capture produces them:
+            ``prelude_started`` (the courtesy beeps), ``ambient_started``
+            (the room-listening window; carries ``duration_s`` and
+            ``quiet_requested``), ``sweep_started`` (the tone) — all three from
+            :func:`start_program_phase_ladder`, on the program's own clock —
+            and finally ``sweep_complete``, the ONLY phase that makes the
+            phone's wait return. ``**extra`` carries whatever fields a phase
+            declares; the relay relays them verbatim.
+
+            Best-effort: a transient post failure here is a progress-only miss,
             not a capture failure — the existing terminal host event (or the
             phone's own wait timeout) still resolves the phone's wait on any
             real failure.

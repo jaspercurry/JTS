@@ -969,20 +969,35 @@ is the bound.
 
 **What the phone says while that order plays (issue #1824).** The host
 posts one phase per audible thing, on the program's own clock:
-`prelude_started` → `ambient_started` (carrying the window's own length,
-which the page renders as a live countdown) → `sweep_started` →
-`sweep_complete`. The offsets come from the composed program's segment
-table (`program_phase_schedule`), so the table above and the phone's copy
-cannot drift apart, and the ladder is anchored at the play path's WAV
-handoff (`PlaybackStartSignal`) rather than at arm time. Before this,
+`prelude_started` → `ambient_started` → `sweep_started` → `sweep_complete`.
+The offsets come from the composed program's segment table
+(`program_phase_schedule`), so the table above and the phone's copy cannot
+drift apart, and the ladder is anchored at the play path's WAV handoff
+(`PlaybackStartSignal`) rather than at arm time. Before this,
 `sweep_started` was posted synchronously in `on_armed`: the phone read
 "Playing the measurement tone…" for the whole ~4.6 s of beeps, settle and
-ambient window on MEASURE — silence, labelled as the tone. The anchor
-leads real audio by the verified-source read plus the output prefill, so
-every step carries a deliberate `PHASE_LADDER_START_SKEW_S` bias to land
-late rather than early; that residual is named in
-[`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py)
-and is worth tightening from an on-device pass.
+ambient window on MEASURE — silence, labelled as the tone.
+
+`ambient_started` carries **`duration_s`** (the page renders a live
+countdown) and **`quiet_requested`**, which is a measurement fact rather
+than a presentation one. The two windows in the table above are opposites:
+MEASURE/VERIFY's 1 s pre-pilot window sits after the beeps and must be
+quiet, so the phone asks; CHECK's 12 s window is the SESSION's room-noise
+measurement, *deliberately* taken before the household is asked to go
+quiet, and the ambient band-floor report and the gain solve both read it.
+A phone that asked for quiet during CHECK's window would edit the floor it
+is measuring — a copy string silently changing a measurement — so the host
+derives the flag from the composed order and the page never asks on its
+own initiative.
+
+The anchor leads real audio by the verified-source read plus the output
+prefill, so every step carries a `PHASE_LADDER_START_SKEW_S` bias
+*intended* to land late rather than early. **ON-DEVICE:** that interval has
+not been measured; the skew is a safe-direction estimate, not a guarantee,
+and is named in
+[`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py).
+Measure it on hardware before tuning, and prefer an observed playback start
+over a smaller guess.
 
 The prelude is composed as ordinary segments on the SAME
 `ExcitationProgram` the phase already plays and admits — never a second
