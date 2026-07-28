@@ -8,25 +8,11 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
+source "$(dirname "${BASH_SOURCE[0]}")/_test_lane.sh"
+
 base_ref="${TEST_BASE:-origin/main}"
-pytest_bin="${PYTEST:-}"
-ruff_bin="${RUFF:-}"
-
-if [[ -z "${pytest_bin}" ]]; then
-  if [[ -x ".venv/bin/pytest" ]]; then
-    pytest_bin=".venv/bin/pytest"
-  else
-    pytest_bin="pytest"
-  fi
-fi
-
-if [[ -z "${ruff_bin}" ]]; then
-  if [[ -x ".venv/bin/ruff" ]]; then
-    ruff_bin=".venv/bin/ruff"
-  else
-    ruff_bin="ruff"
-  fi
-fi
+pytest_bin="$(resolve_lane_tool test-fast pytest PYTEST "${PYTEST:-}")" || exit 1
+ruff_bin="$(resolve_lane_tool test-fast ruff RUFF "${RUFF:-}")" || exit 1
 
 export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
 

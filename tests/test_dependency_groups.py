@@ -208,6 +208,7 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
 
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
     test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
+    lane_resolver = (ROOT / "scripts" / "_test_lane.sh").read_text(encoding="utf-8")
 
     sync = "uv sync --locked --extra full --extra dev --group openwakeword-onnx"
     openwakeword = (
@@ -221,7 +222,12 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
     assert workflow.index(sync) < workflow.index(openwakeword)
     assert ".venv/bin/ruff check ." in workflow
     assert "run: scripts/test-merge" in workflow
-    assert '".venv/bin/pytest"' in test_merge
+    # The lane must run the interpreter from the `.venv` this sync populates,
+    # not whatever `pytest` happens to be on $PATH. That preference now lives
+    # in the resolver both lanes source rather than in each lane (issue #1836),
+    # so pin both halves of the chain.
+    assert "resolve_lane_tool test-merge pytest" in test_merge
+    assert 'resolved=".venv/bin/${tool}"' in lane_resolver
     assert "scikit-learn>=1,<2" not in workflow
     assert "uv pip install --python .venv/bin/python requests" not in workflow
     assert "pip install -e '.[full,dev]'" not in workflow
@@ -255,6 +261,9 @@ def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None
     (repo / "scripts").mkdir()
     (repo / "tests").mkdir()
     shutil.copy2(ROOT / "scripts" / "test-fast", repo / "scripts" / "test-fast")
+    # The lane sources its sibling tool resolver, so the scratch repo has to
+    # carry it too (issue #1836).
+    shutil.copy2(ROOT / "scripts" / "_test_lane.sh", repo / "scripts" / "_test_lane.sh")
 
     pytest_calls = repo / "pytest-calls.jsonl"
     fake_pytest = repo / "fake-pytest"
