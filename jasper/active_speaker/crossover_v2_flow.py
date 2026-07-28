@@ -1621,10 +1621,11 @@ LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
 # retained deliberately and is judged from live guard telemetry, not re-derived.
 LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 
-# How much better the PREDICTED post-apply flatness must be than the MEASURED
-# pre-apply flatness before a spec-failing correction is allowed onto the
-# speaker (linearization-integrity PR-L4 item 2). Both numbers are the pooled
-# spec residual (`flat_spec.spec_convergence_residual`), in dB.
+# How much the correction must improve ITS OWN two-branch model before a
+# spec-failing prediction is allowed onto the speaker (linearization-integrity
+# PR-L4 item 2). Both numbers are the pooled spec residual
+# (`flat_spec.spec_convergence_residual`) of the RAW pre-fit and the LINEARIZED
+# predicted sum, graded through the identical evaluator, in dB.
 #
 # The gate only bites when the prediction ALREADY fails the spec — a prediction
 # that meets it needs no improvement argument, and gating an in-spec result on
@@ -1632,16 +1633,22 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 # question this threshold answers is narrow: *we can already see this will not
 # reach spec — is it at least clearly moving the right way?*
 #
-# 1.5 dB, which is `flat_spec.SPEC_BANDS[0]`'s own tolerance — the smallest
-# change the adopted spec table itself treats as the difference between in and
-# out of tolerance. Deliberately that whole figure rather than a fraction of
-# it, because the two residuals come from different frames (a two-branch model
-# at the mark vs an eight-position in-room spatial power mean; see
-# `spec_report_for_predicted_sum`). Only a change larger than the spec's own
-# tightest tolerance can be read as a real direction signal rather than frame
-# noise, so a smaller threshold would be false precision and would start
-# refusing honest sessions.
-PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 1.5
+# 0.5 dB, and the derivation changed with the frame (PR-L4 review B1). While
+# this compared the model against the measured in-room cloud, the threshold had
+# to absorb the whole cross-frame gap and was set at `SPEC_BANDS[0]`'s 1.5 dB
+# for that reason — which, as the review demonstrated, made the verdict a
+# function of the ROOM rather than the correction. Now that both terms are the
+# same instrument (same branches, same grid, same evaluator, differing ONLY by
+# the emitted filters) the comparison carries no measurement noise at all, so
+# the threshold is a product-policy floor instead of a noise margin.
+#
+# 0.5 dB is that floor because it is this model's own measured tracking error:
+# `_fit_linearization` records the complex-correction model tracking the real
+# VERIFY summation to ~0.5 dB on JTS3 (the zero-phase model it replaced
+# mistracked by ~2.0 dB). An improvement smaller than the gap between what we
+# model and what the hardware realizes is not an improvement we can honestly
+# claim, so it does not earn an apply.
+PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
 
 # Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
 # (module-private there — see that module's top docstring for the "no
@@ -4551,7 +4558,7 @@ class CrossoverV2Conductor:
         # CaptureBeginRefused, so nothing below runs — no candidate is stashed,
         # none is published, and the payload that triggers auto-apply is never
         # returned.
-        self._assert_accountable(predicted_sum)
+        self._assert_accountable(predicted_sum, analysis.predicted_sum)
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
         self._seams.publish_candidate(candidate)
@@ -4602,7 +4609,9 @@ class CrossoverV2Conductor:
         self._last_failure_code = code
         return CaptureBeginRefused(code, spec.message or spec.banner)
 
-    def _assert_accountable(self, predicted_sum: Any) -> None:
+    def _assert_accountable(
+        self, predicted_sum: Any, raw_predicted_sum: Any = None,
+    ) -> None:
         """The two load-bearing PR-L4 assertions, run before the apply fires.
 
         Raises :class:`CaptureBeginRefused` with a named
@@ -4643,50 +4652,107 @@ class CrossoverV2Conductor:
         # trust gates already decided — was true about the CAPTURE and silent
         # about the CORRECTION. This adds the missing half: the capture is
         # trusted, and now the thing built from it has to show its work.
-        predicted = spec_report_for_predicted_sum(predicted_sum)
-        if predicted is None or predicted.overall_passed:
-            # No prediction to grade, or a prediction that meets the spec on
-            # its own. An absent report is NOT a pass being granted — it is the
-            # gate having no evidence to refuse on, the same posture every
-            # honesty instrument in this flow takes toward an unknown.
+        #
+        # **BEFORE and AFTER, on the same instrument** (PR-L4 review B1). The
+        # first cut of this gate compared the model's residual against the
+        # MEASURED pre-apply cloud's, which is not a comparison: an
+        # eight-position in-room spatial mean and a gated two-branch model at
+        # the mark are different instruments in different frames, so the margin
+        # between them is room-sized. Held to a constant, excellent correction
+        # (predicted pooled 0.858 dB) the reviewer varied only the ROOM and
+        # watched the verdict flip — the shipped fixture applied at +0.333, and
+        # every BETTER room refused. That is exactly backwards: it punished
+        # good rooms, and it tightened as the correction improved. Worse, it was
+        # a live trap — an owner who undoes first re-measures a decent speaker
+        # and re-runs into a stricter bar.
+        #
+        # The fix is to ask the question the gate was always trying to ask, of
+        # one instrument: grade the RAW pre-fit two-branch prediction and the
+        # LINEARIZED one through the IDENTICAL `spec_report_for_predicted_sum`,
+        # and require the correction to move ITS OWN model materially. Same
+        # branches, same grid, same evaluator, same position — the room cancels
+        # because it is not in either term.
+        if raw_predicted_sum is None or self._last_linearized_predicted_sum is None:
+            # No fit ran this attempt (ineligible mic tier, or the fit failed
+            # into SF2's trims-only fallback), so `predicted_sum` IS
+            # `raw_predicted_sum` — the same object. Grading a thing against
+            # itself always returns "no improvement", which would refuse every
+            # trims-only candidate on the strength of arithmetic rather than
+            # evidence. Abstain, loudly.
+            self._log_prediction_ledger(reason="no_linearization")
+            return
+        after = spec_report_for_predicted_sum(predicted_sum)
+        if after is None:
+            self._log_prediction_ledger(reason="prediction_ungradeable")
+            return
+        if after.overall_passed:
+            # A prediction that meets the spec on its own needs no improvement
+            # argument, and gating an in-spec result on "how much did it
+            # improve" would refuse the flattest speakers hardest.
+            self._log_prediction_ledger(reason="predicted_in_spec", after=after)
+            return
+        before = spec_report_for_predicted_sum(raw_predicted_sum)
+        if before is None:
+            self._log_prediction_ledger(reason="baseline_ungradeable", after=after)
             return
         from jasper.active_speaker.flat_spec import spec_convergence_residual
 
-        predicted_rms_db = spec_convergence_residual(predicted).rms_db
-        measured_rms_db = self._measured_pre_apply_rms_db()
-        if predicted_rms_db is None or measured_rms_db is None:
-            # Either side unmeasurable — no comparison exists to refuse on.
+        after_rms_db = spec_convergence_residual(after).rms_db
+        before_rms_db = spec_convergence_residual(before).rms_db
+        if after_rms_db is None or before_rms_db is None:
+            self._log_prediction_ledger(
+                reason="residual_unevaluable", after=after, before=before,
+            )
             return
-        improvement_db = float(measured_rms_db) - float(predicted_rms_db)
+        improvement_db = float(before_rms_db) - float(after_rms_db)
         if improvement_db >= PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB:
+            self._log_prediction_ledger(
+                reason="improved", after=after, before=before,
+                improvement_db=improvement_db,
+            )
             return
-        log_event(
-            logger, "correction.crossover_v2_prediction_refused",
-            level=logging.ERROR, session_id=self.session_id,
-            reason=REASON_CORRECTION_NOT_AN_IMPROVEMENT,
-            predicted_rms_db=round(float(predicted_rms_db), 3),
-            measured_rms_db=round(float(measured_rms_db), 3),
-            improvement_db=round(improvement_db, 3),
-            required_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+        self._log_prediction_ledger(
+            reason=REASON_CORRECTION_NOT_AN_IMPROVEMENT, after=after, before=before,
+            improvement_db=improvement_db, level=logging.ERROR,
         )
         raise self._refuse(REASON_CORRECTION_NOT_AN_IMPROVEMENT)
 
-    def _measured_pre_apply_rms_db(self) -> float | None:
-        """The measured pre-apply cloud's pooled spec residual, or ``None``.
+    def _log_prediction_ledger(
+        self,
+        *,
+        reason: str,
+        after: Any = None,
+        before: Any = None,
+        improvement_db: float | None = None,
+        level: int = logging.INFO,
+    ) -> None:
+        """One ledger line per session for item 2's gate, on EVERY path.
 
-        Read off the SSOT flatness gauge this session's own CLOUD_MEASURE group
-        already published (plan PR-5: one construction, every surface), never
-        re-evaluated here — a second evaluation of the same curve is the
-        drift shape that SSOT exists to prevent.
+        Mirrors item 1's ``correction.crossover_v2_realized_level_match``, which
+        logs whether or not it refuses (PR-L4 review S4). A gate that only
+        speaks when it fires leaves "it passed" and "it never ran" looking
+        identical in the journal — the exact ambiguity this PR exists to remove,
+        and the one a field diagnosis of a dark speaker would need first.
         """
-        result = self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {}
-        flatness = result.get("flatness")
-        if not isinstance(flatness, Mapping):
-            return None
-        rms_db = flatness.get("rms_db")
-        if not isinstance(rms_db, (int, float)) or not math.isfinite(float(rms_db)):
-            return None
-        return float(rms_db)
+        from jasper.active_speaker.flat_spec import spec_convergence_residual
+
+        def _rms(report: Any) -> float | None:
+            if report is None:
+                return None
+            value = spec_convergence_residual(report).rms_db
+            return round(float(value), 3) if value is not None else None
+
+        log_event(
+            logger, "correction.crossover_v2_prediction_gate",
+            level=level, session_id=self.session_id, reason=reason,
+            before_rms_db=_rms(before),
+            after_rms_db=_rms(after),
+            after_passed=(after.overall_passed if after is not None else None),
+            improvement_db=(
+                round(float(improvement_db), 3) if improvement_db is not None else None
+            ),
+            required_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+        )
 
     def _cloud_fit_evidence(self, combined: Any) -> "_CloudFitEvidence | None":
         """This group's honesty verdict, in the shape the fit envelope takes.
@@ -5558,33 +5624,49 @@ class CrossoverV2Conductor:
         # mattered. The scan had walked 5.500 dB, missing this guard by 0.50 dB,
         # and its walk was TOWARD a correct level; the fallback the guard would
         # have taken was 5.5 dB darker still. A guard whose rejection branch can
-        # point away from the truth is not a safety net, so it no longer decides
-        # alone: on a rejection, the two candidate pairs are graded by the one
-        # direct measurement of what a trim is FOR (their realized inter-driver
-        # level, PR-L4 item 1) and the better-levelled pair is committed.
+        # point away from the truth is not a safety net, so it no longer
+        # decides: BOTH candidate pairs are graded by the one direct measurement
+        # of what a trim is FOR (their realized inter-driver level, item 1) and
+        # the better-levelled pair is committed.
         #
-        # This is strictly stronger than the pre-PR-L4 guard, not weaker. The
-        # scan is already clamped to a physically valid attenuation
-        # ([RIPPLE_TRIM_MIN_DB, RIPPLE_TRIM_MAX_DB]), so "wild" never means
-        # "unusable" — it means "far from the anchor", and a genuinely garbage
-        # trim scores badly on the level match by construction. Whichever pair
-        # wins here still faces the item-1 assertion at
-        # ``_publish_measure_candidate``, which refuses the candidate outright
-        # if even the winner does not level. Drift is retained as the trigger
-        # for the comparison and as telemetry, never as the verdict.
+        # **Unconditionally, not only on a rejection** (PR-L4 review B2). The
+        # first cut graded only inside the `wild` branch, which made the whole
+        # thing non-monotonic in the drift it was supposed to police: below the
+        # 6.0 dB guard `resolved` committed UNGRADED and item 1's 3.0 dB
+        # tolerance then hard-stopped the session, while a LARGER drift tripped
+        # the guard, fell back to the anchor, and applied. Measured by the
+        # reviewer: 2.0 / 4.0 / 5.9 dB drifts refused at committed level errors
+        # of -3.6 / -5.6 / -7.5 dB, and a 6.5 dB drift applied at -1.6 dB. The
+        # guard's ceiling and item 1's tolerance were fighting, and the band
+        # between them was a terminal failure instead of a fallback.
+        #
+        # **Named behaviour change**: the ripple polish now survives only when
+        # it does not worsen the level match (ties go to the anchor, which is
+        # level-preserving by construction). That is a real narrowing of
+        # #1667's scan, and it is the intended ordering — inter-driver level is
+        # the load-bearing property, summed ripple is the polish, and PR-L3
+        # already skips the scan entirely on the one-sided geometry where it
+        # was doing the damage. Whichever pair wins still faces item 1's
+        # refusal at `_publish_measure_candidate`; drift is retained as the
+        # trigger for the WARNING and as telemetry, never as the verdict.
         match_resolved = self._realized_level_match(
             freqs, W_lin, T_lin, resolved, woofer_role, tweeter_role,
             woofer_span_hz=woofer_span, tweeter_span_hz=tweeter_span,
         )
+        match_anchored = self._realized_level_match(
+            freqs, W_lin, T_lin, anchored, woofer_role, tweeter_role,
+            woofer_span_hz=woofer_span, tweeter_span_hz=tweeter_span,
+        )
+        anchor_levels_better = abs(match_anchored.difference_db) <= abs(
+            match_resolved.difference_db
+        )
+        role_attenuations_db = anchored if anchor_levels_better else resolved
+        realized_match = match_anchored if anchor_levels_better else match_resolved
+        # Never the RAW trim, whichever pair wins — the correction filters are
+        # emitted either way, and raw trim + emitted filters is the known
+        # deterministic VERIFY-mismatch class (#1668 PR-D).
+        self._last_linearization_outcome = "trim_rejected" if wild else "fitted"  # SF3
         if wild:
-            match_anchored = self._realized_level_match(
-                freqs, W_lin, T_lin, anchored, woofer_role, tweeter_role,
-                woofer_span_hz=woofer_span, tweeter_span_hz=tweeter_span,
-            )
-            anchor_levels_better = abs(match_anchored.difference_db) <= abs(
-                match_resolved.difference_db
-            )
-            fallback = anchored if anchor_levels_better else resolved
             log_event(
                 logger, "correction.crossover_v2_linearization_trim_rejected",
                 level=logging.WARNING, session_id=self.session_id,
@@ -5596,7 +5678,9 @@ class CrossoverV2Conductor:
                 # The pair actually committed. Since PR-L4 this is the anchor
                 # only when the anchor LEVELS BETTER — the two numbers below say
                 # which won and by how much.
-                fallback_trim_db={k: round(v, 3) for k, v in fallback.items()},
+                fallback_trim_db={
+                    k: round(v, 3) for k, v in role_attenuations_db.items()
+                },
                 anchored_level_error_db=round(
                     float(match_anchored.difference_db), 3
                 ),
@@ -5616,18 +5700,6 @@ class CrossoverV2Conductor:
                 ),
                 raw_predicted_ripple_db=round(float(cand.predicted_ripple_db), 3),
             )
-            # Never the RAW trim, whichever pair wins — the correction filters
-            # are emitted either way, and raw trim + emitted filters is the
-            # known deterministic VERIFY-mismatch class (#1668 PR-D).
-            role_attenuations_db = fallback
-            realized_match = (
-                match_anchored if anchor_levels_better else match_resolved
-            )
-            self._last_linearization_outcome = "trim_rejected"  # SF3
-        else:
-            role_attenuations_db = resolved
-            realized_match = match_resolved
-            self._last_linearization_outcome = "fitted"  # SF3
 
         # PR-L4 item 1: the inter-driver realized-level ledger, on every fitted
         # candidate whatever the guard decided. Recorded here (where the
