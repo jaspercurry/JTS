@@ -3216,6 +3216,7 @@ def prepare_v2_session(
                 publish_cloud=bind_cloud_publisher(
                     evidence_store, relay_session_id, refs
                 ),
+                rollback=bind_delta_probe_rollback(run_async, camilla_factory),
             ),
             tier=plan_shape.tier,
             # The conductor's index→phase map is built from the SAME resolved
@@ -3592,6 +3593,44 @@ def handle_v2_apply(
         candidate_fingerprint=expected,
     )
     return payload
+
+
+def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
+    """The conductor's ``rollback`` seam (linearization-integrity PR-L5).
+
+    Runs the SAME restore the household's Undo button runs — one restore path,
+    not a second one that could drift from it — and returns True when the
+    previous profile is back on the speaker. The only difference is who
+    pressed it: here the delta probe did, because it measured that the applied
+    correction is not doing what its own filters commanded.
+
+    Never raises. Every refusal :func:`handle_v2_restore` can make is an
+    ordinary outcome for an automatic caller — a first-ever apply has nothing
+    stashed to go back to, and a changed output topology makes the stash
+    unsafe to reload — and in each case the correct behaviour is to report
+    "not restored" and let the conductor's refusal still reach the household
+    with the Undo button on it. A rollback that could not run must not swallow
+    the verdict that asked for it.
+    """
+
+    def _rollback(reason: str) -> bool:
+        try:
+            payload = handle_v2_restore(run_async, camilla_factory)
+        except CrossoverV2Refused as exc:
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_restore_refused",
+                level=logging.WARNING, reason=reason, detail=str(exc),
+            )
+            return False
+        restored = payload.get("status") == "restored"
+        log_event(
+            logger, "correction.crossover_v2_delta_probe_restore",
+            level=logging.WARNING if not restored else logging.INFO,
+            reason=reason, status=payload.get("status"),
+        )
+        return restored
+
+    return _rollback
 
 
 def handle_v2_restore(

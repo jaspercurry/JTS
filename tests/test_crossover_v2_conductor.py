@@ -23,6 +23,7 @@ for the host-level auto-apply trigger + background-thread wiring.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -30,7 +31,15 @@ from typing import Any
 import numpy as np
 import pytest
 
+from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.delta_probe import (
+    DELTA_PROBE_ROLLBACK_VERDICTS,
+    VERDICT_MATCHED,
+    VERDICT_MODEL_ERROR,
+)
 from jasper.active_speaker.crossover_v2_flow import (
+    DELTA_PROBE_REASON_BY_VERDICT,
+    REASON_CORRECTION_MODEL_ERROR,
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_ON_APPLY,
@@ -364,6 +373,9 @@ class FakeSeams:
     # failure (owner ruling, 2026-07-20) — empty string while pending/never
     # attempted, a REASON_REGISTRY code once the auto-apply gives up.
     apply_failed_code: str = ""
+    # PR-L5: the delta probe's automatic-rollback seam. ``None`` (the default)
+    # is the honest "no binding" case the conductor must still refuse under.
+    rollback: Any = None
 
     def seams(self) -> V2FlowSeams:
         def analyze(program, result, priors, geometry):
@@ -380,6 +392,7 @@ class FakeSeams:
             publish_candidate=self.published_candidates.append,
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
+            rollback=self.rollback,
         )
 
 
@@ -4469,7 +4482,18 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
     }
-    unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
+    # PR-L5 adds the shared-level-frame offset to the same anchor: the
+    # give-back returns a branch to its OWN pre-correction system level, and
+    # the offset then places that level where the session's one frame says it
+    # belongs. Read off the fit rather than recomputed, for the same reason
+    # ``giveback`` is.
+    frame_offset = {
+        role: c.candidate.linearization[role]["level_frame_offset_db"]
+        for role in ("woofer", "tweeter")
+    }
+    unnormalized = {
+        r: raw_trim[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
+    }
     shift = max(0.0, max(unnormalized.values()))
     expected_anchored = {r: v - shift for r, v in unnormalized.items()}
     assert call["trim_w_db"] == pytest.approx(expected_anchored["woofer"])
@@ -4554,7 +4578,18 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
     }
-    unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
+    # PR-L5 adds the shared-level-frame offset to the same anchor: the
+    # give-back returns a branch to its OWN pre-correction system level, and
+    # the offset then places that level where the session's one frame says it
+    # belongs. Read off the fit rather than recomputed, for the same reason
+    # ``giveback`` is.
+    frame_offset = {
+        role: c.candidate.linearization[role]["level_frame_offset_db"]
+        for role in ("woofer", "tweeter")
+    }
+    unnormalized = {
+        r: raw_trim[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
+    }
     shift = max(0.0, max(unnormalized.values()))
     for role in ("woofer", "tweeter"):
         assert c.candidate.role_attenuations_db[role] == pytest.approx(
@@ -4747,12 +4782,21 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     large shift vs the raw trim (what a legitimate CD-horn give-back produces)
     does not trip it. That is still true and still asserted here.
 
-    What PR-L4 adds is the half the guard never had: a raw trim 20 dB away from
-    what these branches justify carries straight through the anchor into the
-    committed pair, and *drift from the anchor cannot see that* — the anchor is
-    the thing that is wrong. The realized-level assertion does see it, and
-    refuses the candidate rather than shipping a 20 dB-mislevelled speaker.
-    This is the 2026-07-27 failure shape in miniature.
+    What PR-L4 added is the half the guard never had: a raw trim 20 dB away
+    from what these branches justify is *invisible to drift from the anchor* —
+    the anchor is the thing that is wrong — and the level layer sees it and
+    refuses rather than shipping a 20 dB-mislevelled speaker. This is the
+    2026-07-27 failure shape in miniature.
+
+    PR-L5 moved WHICH level instrument catches it, one stage earlier and to a
+    strictly more specific diagnosis. The shared level frame reconciles the
+    trim solve's estimate against the fit's before either reaches a trim, so a
+    20 dB gap between them is refused as a frame disagreement rather than
+    surviving into the committed pair for the realized-level assertion to find.
+    Same code, same copy, same untouched speaker — the assertion is still
+    there, now as the backstop it should have been from the start. The event
+    name is what distinguishes them in the journal, which is why this test
+    asserts on it.
     """
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
@@ -4765,9 +4809,10 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
     assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # the constant exists and is positive
     # The GUARD did not fire — a near-seed scan is trusted, exactly as #1668
-    # intended. The refusal above came from the level check, one layer later.
+    # intended. The refusal above came from the level layer, one stage later.
     assert "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
-    assert "event=correction.crossover_v2_level_match_refused" in caplog.text
+    assert "event=correction.crossover_v2_level_frame_refused" in caplog.text
+    assert "tolerance_db=3.0" in caplog.text
     # Nothing was published or stashed: the speaker is untouched.
     assert c.candidate is None
     assert fakes.published_candidates == []
@@ -4831,33 +4876,68 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
     5.5 dB darker. Had the drift been a hair larger, the guard would have made
     the speaker worse. Here the forced scan is both wild AND better-levelled, so
     the guard fires and commits it anyway.
+
+    **Why the level verdicts are supplied rather than provoked (PR-L5).** This
+    test used to drive the anchor mislevelled with a 12 dB-dark raw trim. That
+    lever is gone, and gone on purpose: the shared level frame makes the anchor
+    ``give-back + system_level − core_level``, in which the raw trim cancels
+    out of every branch's level RELATIVE to the others — a dark raw trim can no
+    longer mislevel the anchored pair, and one 12 dB off is refused as a frame
+    disagreement long before this branch. That is the ladder working. What
+    remains worth pinning is the guard's DECISION — that it commits on levels
+    and not on drift — so the two level verdicts are supplied directly and the
+    physical scenario that used to produce them is left retired.
     """
     from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.audio_measurement.program_analysis import RealizedLevelMatch
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
 
-    # A raw trim 12 dB too dark: the anchor inherits all of it, so the anchored
-    # pair is badly mislevelled and ANY scan toward 0 levels better.
-    dark_raw_trim = {"woofer": 0.0, "tweeter": -12.0}
+    seed: dict[str, float] = {}
+
+    def _scan(*_a, **k):
+        # 7 dB BELOW the anchor: past the 6 dB margin (so the guard fires) and
+        # still a legal attenuation — the candidate refuses a positive trim
+        # outright, and a bigger walk would fail the prediction gate downstream
+        # on a fixture whose subject is the guard, not the gate.
+        seed["tweeter"] = k["seed_trim_db"]
+        return k["seed_trim_db"] - 7.0, 0.0, k["seed_trim_db"]
+
+    def _match(_self, _freqs, _w, _t, trims_db, _woofer_role, tweeter_role, **_kw):
+        # The SCANNED pair levels well; the anchor's does not. Both inside the
+        # assertion tolerance, so the session lives and the committed pair is
+        # what this test can read.
+        scanned = trims_db[tweeter_role] < seed["tweeter"] - 3.0
+        difference = 0.2 if scanned else 2.5
+        return RealizedLevelMatch(
+            level_w_db=0.0, level_t_db=difference, difference_db=difference,
+            tolerance_db=3.0, matched=True,
+            woofer_band_hz=(1000.0, 2000.0), tweeter_band_hz=(2000.0, 4000.0),
+        )
+
+    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _scan)
     monkeypatch.setattr(
-        flow_mod, "solve_ripple_optimal_trim",
-        lambda *a, **k: (k["seed_trim_db"] + 11.0, 0.0, k["seed_trim_db"]),
+        flow_mod.CrossoverV2Conductor, "_realized_level_match", _match,
     )
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=dark_raw_trim)
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
+    with pytest.raises(CaptureBeginRefused):
+        _run_phase(c, 2, 2)
 
-    # The guard FIRED (drift 11 dB > the 6 dB margin) and still committed the
-    # scan, because the scan levels better than the anchor it would have fallen
+    # The guard FIRED (drift 7 dB > the 6 dB margin) and still committed the
+    # SCAN, because the scan levels better than the anchor it would have fallen
     # back to. Pre-PR-L4 this fell back to the darker pair unconditionally.
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
     assert "committed=resolved" in caplog.text
-    committed = c.candidate.role_attenuations_db
-    assert committed["tweeter"] > dark_raw_trim["tweeter"]
-    # And the committed pair clears the level assertion, so the session lives.
-    assert c.candidate is not None
+    assert "anchored_level_error_db=2.5" in caplog.text
+    assert "resolved_level_error_db=0.2" in caplog.text
+    # What happens to the session AFTER that is the ladder working, not this
+    # test's subject: a deliberately-wild trim degrades the correction's own
+    # predicted model, so PR-L4 item 2 refuses it downstream. The guard picking
+    # the better-levelled pair and the gate refusing a worse prediction are two
+    # independent claims, and this fixture happens to exercise both.
+    assert c.last_failure_code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
 
 
 def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
@@ -4879,7 +4959,15 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     }
     # Every branch that emitted filters reports a positive give-back.
     assert giveback["tweeter"] > 0.0
-    unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
+    # PR-L5's shared-level-frame offset rides the same anchor (see the
+    # sibling tests). Read off the fit, never recomputed.
+    frame_offset = {
+        role: c.candidate.linearization[role]["level_frame_offset_db"]
+        for role in ("woofer", "tweeter")
+    }
+    unnormalized = {
+        r: raw_trim[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
+    }
     shift = max(0.0, max(unnormalized.values()))
     anchored = {r: v - shift for r, v in unnormalized.items()}
 
@@ -4927,7 +5015,13 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
     }
-    unnormalized = {r: zero_raw[r] + giveback[r] for r in ("woofer", "tweeter")}
+    frame_offset = {
+        role: c.candidate.linearization[role]["level_frame_offset_db"]
+        for role in ("woofer", "tweeter")
+    }
+    unnormalized = {
+        r: zero_raw[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
+    }
     assert max(unnormalized.values()) > 0.0, "fixture must actually need the shift"
     shift = max(unnormalized.values())
     expected = {r: v - shift for r, v in unnormalized.items()}
@@ -5083,18 +5177,23 @@ def test_prediction_gate_refuses_a_correction_that_does_not_improve(caplog):
     pair whose fit cannot help, so the linearized model lands essentially on top
     of the raw one (PR-L4 review: the previous version monkeypatched the
     threshold to 100 dB, which proved the arithmetic ran and nothing about
-    whether the shipped number does anything)."""
+    whether the shipped number does anything).
+
+    **The fixture changed with PR-L5, because its old subject did.** It used to
+    be a broad woofer-only suckout, "structurally unable to correct" on the
+    reasoning that everything around it would have to come DOWN. Both halves of
+    that stopped being true: boost can now fill a suckout, and the shared level
+    frame repairs the inter-driver level error a woofer-only defect creates. A
+    dense comb replaces it, and it is un-correctable for a reason no later PR
+    can quietly undo — there are far more notches than the 8-filter budget, and
+    chasing comb structure is precisely what the null doctrine forbids. It is
+    put in BOTH drivers so the frame has nothing to fix either."""
     caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
     freqs = _LINEARIZABLE_FREQS_HZ
-    # A broad, deep suckout the cut-only fit is structurally unable to correct:
-    # everything around it would have to come DOWN by ~9 dB, which the envelope
-    # will not spend. The linearized model therefore stays as un-flat as the raw
-    # one, which is exactly the case the gate exists to catch.
-    woofer_db = -9.0 * np.exp(-0.5 * ((np.log2(freqs / 700.0) / 0.5) ** 2))
-    tweeter_db = np.zeros_like(freqs)
+    comb_db = 6.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 3.0)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(
-        program, woofer_db=woofer_db, tweeter_db=tweeter_db,
+        program, woofer_db=comb_db, tweeter_db=comb_db,
     )
     c = _cloud_conductor(fakes)
 
@@ -5196,12 +5295,16 @@ def test_prediction_gate_logs_a_ledger_line_on_every_path(caplog):
     assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
 
     assert "event=correction.crossover_v2_prediction_gate" in caplog.text
-    assert "reason=improved" in caplog.text
-    # Both terms and the delta are on the line, so the verdict is re-derivable
-    # from the journal alone.
-    for ledger_field in (
-        "before_rms_db=", "after_rms_db=", "improvement_db=", "required_db=",
-    ):
+    # PR-L5 moved this fixture's OUTCOME, not the ledger's contract: the shared
+    # level frame flattens the default pair enough that its predicted sum now
+    # meets the spec outright, which is the gate's ``predicted_in_spec`` early
+    # return rather than its ``improved`` one. The claim under test — that the
+    # gate speaks on every path — is what this asserts, and it is stronger for
+    # covering an early-return path.
+    assert "reason=predicted_in_spec" in caplog.text
+    # The terms the taken path can honestly report are on the line, so the
+    # verdict is re-derivable from the journal alone.
+    for ledger_field in ("after_rms_db=", "required_db="):
         assert ledger_field in caplog.text
 
 
@@ -5601,3 +5704,225 @@ def test_verify_rearm_measure_predicted_sum_era_round_trip():
     got_freqs2, got_db2 = c.measure_predicted_sum
     np.testing.assert_array_equal(got_freqs2, freqs)
     np.testing.assert_array_equal(got_db2, old_era_prediction[1])
+
+
+# --------------------------------------------------------------------------- #
+# PR-L5 — delta-probe verification and automatic rollback
+# --------------------------------------------------------------------------- #
+
+
+def _probed_conductor(fakes: FakeSeams, *, rollback=None):
+    """A conductor walked to the point where VERIFY is the next capture.
+
+    Uses the ELIGIBLE measure fixture because a probe needs something to have
+    been commanded: an ineligible session emits no linearization filters, so
+    relative to the raw crossover it commands nothing this probe can grade
+    (pinned by ``test_the_commanded_delta_is_none_for_a_trims_only_candidate``).
+    """
+    fakes.rollback = rollback
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    return c
+
+
+def _tracking_curve(c, error_db):
+    """VERIFY's smoothed ``(freqs, measured, predicted)`` triple, on the grid
+    the session's own commanded delta lives on, with ``error_db`` (a callable
+    of frequency, or a scalar) as measured−predicted."""
+    freqs = np.asarray(c.measure_commanded_delta[0], dtype=float)
+    predicted = np.asarray(c.measure_predicted_sum[1], dtype=float)
+    error = error_db(freqs) if callable(error_db) else np.full_like(freqs, error_db)
+    return freqs, predicted + error, predicted
+
+
+def test_delta_probe_verifies_the_correction_and_accepts_a_matching_one():
+    """The happy path: the speaker did what the filters commanded, so the
+    probe records a MATCHED map and the session is untouched."""
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program), verify_tracking_curve=_tracking_curve(c, 0.0),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.verify_outcome == "pass"
+    assert c.delta_probe is not None
+    assert c.delta_probe.verdict == VERDICT_MATCHED
+    assert c.delta_probe.rollback is False
+    assert c.delta_probe.to_dict()["rollback"] is False
+
+
+def test_delta_probe_model_error_rolls_back_automatically_and_refuses(caplog):
+    """The load-bearing behaviour: a realized-vs-commanded map that does not
+    match is undone BEFORE the household is told, so the copy ("the previous
+    sound has been put back") is already true when they read it."""
+    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    calls: list[str] = []
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes, rollback=lambda reason: calls.append(reason) or True)
+    # A wide tilt across the commanded band: the shape is wrong, not the scale.
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
+    assert c.verify_outcome == "fail"
+    assert c.delta_probe.verdict == VERDICT_MODEL_ERROR
+    # The rollback ran, and it ran with the reason the household will see.
+    assert calls == [REASON_CORRECTION_MODEL_ERROR]
+    assert "event=correction.crossover_v2_delta_probe_rollback" in caplog.text
+    assert "restored=true" in caplog.text
+    # The refusal names itself to the host (the same contract PR-L4 relies on).
+    assert c.last_failure_code == REASON_CORRECTION_MODEL_ERROR
+
+
+def test_delta_probe_refuses_even_when_no_rollback_seam_is_bound():
+    """The verdict is real whether or not this process can act on it. A
+    conductor with no rollback binding still refuses — the failure screen
+    already offers Undo — and says so on its own event rather than pretending
+    the restore happened."""
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    assert c._seams.rollback is None
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
+
+
+def test_delta_probe_survives_a_rollback_seam_that_raises():
+    """A rollback that could not run must not swallow the verdict that asked
+    for it."""
+    fakes = FakeSeams()
+
+    def _boom(_reason):
+        raise RuntimeError("camilla is unreachable")
+
+    c = _probed_conductor(fakes, rollback=_boom)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_CORRECTION_MODEL_ERROR
+
+
+def test_delta_probe_without_a_tracking_curve_is_unavailable_not_a_rollback():
+    """No post-apply comparison, no verdict — and an absent measurement is not
+    evidence of a bad correction. Rolling back on it would revert every session
+    whose household closed the phone before the sweep."""
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    fakes.verify = _verify_analysis  # carries no verify_tracking_curve
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.delta_probe is None
+
+
+def test_delta_probe_runs_only_after_tracking_has_passed():
+    """A session that already failed at the handoff band does not need a
+    second verdict about the same capture, and its retry budget still means
+    something."""
+    fakes = FakeSeams()
+    c = _probed_conductor(fakes)
+    fakes.verify = lambda program: dataclasses.replace(
+        _verify_analysis(program, max_db=2.4),
+        verify_tracking_curve=_tracking_curve(
+            c, lambda f: np.where(f > 4000.0, 5.0, -5.0)
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == "verify_out_of_tolerance"
+    assert c.delta_probe is None
+
+
+def test_boost_is_granted_only_to_a_session_that_will_verify():
+    """Boost permission is EVIDENCE-gated. Today every plan shape runs VERIFY,
+    so this reads as always-on — but it is the correct CONDITION rather than a
+    constant, so a future plan that drops the post-apply sweep drops boost with
+    it instead of silently shipping an unverified one."""
+    fakes = FakeSeams()
+    seen: list[bool] = []
+    real_fit = flow.fit_driver_linearization
+
+    def _spy(resp, envelope, **kwargs):
+        seen.append(kwargs["vocabulary"].allow_boost)
+        return real_fit(resp, envelope, **kwargs)
+
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "fit_driver_linearization", _spy)
+        c = _conductor(fakes)
+        _run_phase(c, 1, 1)
+        _run_phase(c, 2, 2)
+    assert seen and all(seen)
+    assert PHASE_VERIFY in c.session_phases
+
+    # …and a session whose phases exclude VERIFY is refused the vocabulary.
+    seen.clear()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "fit_driver_linearization", _spy)
+        c2 = _conductor(fakes, index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE})
+        _run_phase(c2, 1, 1)
+        _run_phase(c2, 2, 2)
+    assert seen and not any(seen)
+
+
+def test_every_rollback_verdict_has_a_reason_code_with_household_copy():
+    """A new non-matched verdict cannot ship without a sentence for the
+    household — the mapping is exhaustive over the rollback set, and every
+    code it names is in the reason registry with real copy."""
+    assert set(DELTA_PROBE_REASON_BY_VERDICT) == set(DELTA_PROBE_ROLLBACK_VERDICTS)
+    for code in DELTA_PROBE_REASON_BY_VERDICT.values():
+        spec = REASON_REGISTRY[code]
+        assert spec.template == "hard_stop"
+        assert spec.retry_budget == 0
+        assert len(spec.message) > 40
+        # The correction is already undone, so the copy has to say so.
+        assert "put back" in spec.message
+
+
+def test_delta_probe_reason_copy_names_no_hardware_noun():
+    """Mirrors the null-classification copy rule: the household is told what
+    happened and what to do, never given a hardware diagnosis this measurement
+    cannot support."""
+    # "driver details in speaker setup" is a UI location and appears in
+    # PR-L4's own copy — what is banned is naming a PART as the cause, which
+    # is a diagnosis this measurement cannot support.
+    banned = ("tweeter", "woofer", "amplifier", "horn", "capacitor", "resistor")
+    for code in DELTA_PROBE_REASON_BY_VERDICT.values():
+        message = REASON_REGISTRY[code].message.lower()
+        assert not any(word in message for word in banned), code
+
+
+def test_the_commanded_delta_is_none_for_a_trims_only_candidate():
+    """A candidate that emits no filters commands nothing this probe can grade
+    relative to the raw crossover, and says so rather than inventing a zero
+    curve that would classify as 'matched'."""
+    predicted = (np.array([100.0, 200.0]), np.array([0.0, 0.0]))
+    assert flow._commanded_delta(predicted, predicted) is None
+    assert flow._commanded_delta(None, predicted) is None
+    assert flow._commanded_delta(predicted, None) is None
+
+
+def test_the_commanded_delta_is_the_linearized_minus_raw_prediction():
+    raw = (np.array([100.0, 1000.0]), np.array([0.0, 0.0]))
+    post = (np.array([100.0, 1000.0]), np.array([-1.0, 4.0]))
+    freqs, delta = flow._commanded_delta(raw, post)
+    assert list(freqs) == [100.0, 1000.0]
+    assert list(delta) == [-1.0, 4.0]

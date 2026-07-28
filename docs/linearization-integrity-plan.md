@@ -190,6 +190,50 @@ pair.
 
 ## PR-L5 — doctrine amendment: evidence-gated correction, delta-probe verification
 
+**Status: landed.** All five in-scope items below are implemented with tests;
+the stereo-pair item stays future. Three dispositions differ from the work
+order's plain reading and are recorded here rather than only in the code:
+
+- **The shared level frame is GATED, not merely applied.** The frame's
+  per-role offset IS the disagreement between two measured estimates of the
+  same relationship — the trim solve's power-band average either side of Fc,
+  and the fit's median over each driver's whole trusted passband. After PR-L3
+  those agree to 1.08–1.30 dB, so a small offset is an honest reconciliation
+  and is folded into the anchored trim. A LARGE one is refused
+  (`LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, deliberately the same 3.0 dB as
+  `REALIZED_LEVEL_MATCH_TOLERANCE_DB` and imported from it): silently
+  preferring either estimator by 10 dB would be the same "nothing ever
+  compared these" failure pointed a new direction. This moves which instrument
+  catches the 2026-07-27 shape — the frame gate now fires before PR-L4 item 1,
+  under the same reason code and copy, distinguished in the journal by
+  `event=`. Item 1 remains as the backstop it should always have been.
+- **"Reduce our own cuts" is part of the LIFT vocabulary.** `reduce_cuts_for_lift`
+  is a public, separately-tested operation the lift stage calls before any
+  boost, but the stage as a whole is inert under a cut-only vocabulary. A
+  cuts-only flattening loop leaves the whole curve at or below its target, so
+  every dip the driver has reads as a "deficit"; chasing those by unwinding
+  cuts under a vocabulary that never intended to add level would silently
+  change every pre-PR-L5 fit.
+- **Boost stays uncapped by making the emitter pay for it, not by removing a
+  rail.** The fit discloses `headroom_cost_db`; `camilla_yaml` folds the worst
+  branch's total positive boost into the existing `active_baseline_headroom`
+  gain (the same mechanism room-correction boost already rides); and
+  `runtime_contract` proves each branch's boost total against the attenuation
+  the graph itself provably applies. On a cut-only correction that allowance is
+  0.0, so the old `gain <= 0` tamper proof is bit-for-bit preserved. The
+  per-filter cap (12 dB, mirroring the cut side) is a realization bound, not a
+  policy cap, and survives the ruling.
+
+Named tolerances, with their derivations pinned by tests:
+`DELTA_PROBE_TOLERANCE_LOW_DB = 1.5` (below the 1.70 dB the shelf-Q defect
+peaked at, and the same bar `VERIFY_TOLERANCE_DB` already sets),
+`DELTA_PROBE_TOLERANCE_HIGH_DB = 2.5` (above the 2.0 dB repeat spread the fit's
+own agreement gate accepts at those frequencies, so HF noise cannot fabricate a
+rollback), `DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES = 1/3` (one full smoothing
+window — texture versus structure), `DELTA_PROBE_SHORTFALL_GAIN_CEILING = 0.85`,
+`DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB = 1.0`,
+`LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = 3.0`.
+
 Owner-ruled 2026-07-27 (recorded in FORENSICS-SYNTHESIS.md):
 
 - **Boost is allowed and uncapped.** Null-exclusion stays as a measured

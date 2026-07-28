@@ -26,13 +26,16 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
 )
 from jasper.active_speaker.camilla_yaml import (
+    MAX_LINEARIZATION_BOOST_DB,
     MAX_LINEARIZATION_FILTERS_PER_DRIVER,
     driver_linearization_peak_name,
     driver_linearization_shelf_name,
     driver_linearization_taper_name,
+    linearization_headroom_db,
 )
 from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
+    PER_FILTER_BOOST_CAP_DB,
     _HIGHSHELF_Q,
 )
 from jasper.active_speaker.runtime_contract import (
@@ -73,6 +76,11 @@ def _peak(freq: float = 1000.0, gain: float = -2.0, q: float = 3.0) -> dict:
     return {"biquad_type": "Peaking", "freq": freq, "q": q, "gain": gain}
 
 
+def _headroom_gain_db(text: str) -> float:
+    payload = yaml.safe_load(text)
+    return float(payload["filters"]["active_baseline_headroom"]["parameters"]["gain"])
+
+
 def _pipeline_names(text: str, *, channel: int) -> list[str]:
     payload = yaml.safe_load(text)
     for step in payload["pipeline"]:
@@ -92,6 +100,14 @@ def test_max_linearization_filters_matches_fit_engine_cap():
     fit-engine-produced candidate could be silently rejected by the emitter's
     independent re-validation."""
     assert MAX_LINEARIZATION_FILTERS_PER_DRIVER == MAX_FILTERS_PER_DRIVER
+
+
+def test_max_linearization_boost_matches_fit_engine_cap():
+    """The PR-L5 twin of the count pin, for the same reason: the emitter holds
+    its own copy of the per-filter boost ceiling so it re-validates rather than
+    trusts, and a drift between the two would silently refuse a legitimate
+    fit-engine boost at the emitter boundary."""
+    assert MAX_LINEARIZATION_BOOST_DB == PER_FILTER_BOOST_CAP_DB
 
 
 # --------------------------------------------------------------------------- #
@@ -353,13 +369,68 @@ def test_linearization_rejects_unsupported_biquad_type(bad_type):
         )
 
 
-def test_linearization_rejects_positive_gain():
+def test_linearization_rejects_boost_above_the_per_filter_cap():
+    """PR-L5 replaced the emitter's blanket ``gain > 0`` refusal with the
+    per-filter realization cap. The refusal itself did not go away — a single
+    biquad asked for more than :data:`MAX_LINEARIZATION_BOOST_DB` stops being
+    a faithful realization of the shape the fit drew, exactly as on the cut
+    side, and is still refused rather than clamped."""
     preset = _preset()
-    with pytest.raises(ActiveSpeakerConfigError, match="must not be positive"):
+    with pytest.raises(ActiveSpeakerConfigError, match="must not exceed"):
         emit_active_speaker_baseline_config(
             preset, playback_device=ACTIVE_PCM,
-            linearization={"woofer": [_peak(gain=2.0)]},
+            linearization={"woofer": [_peak(gain=MAX_LINEARIZATION_BOOST_DB + 0.5)]},
         )
+
+
+def test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom():
+    """The PR-L5 doctrine amendment, at the emitter: a boost is emitted as
+    asked, and the program-domain ``active_baseline_headroom`` gain grows by
+    the worst branch's TOTAL positive boost so the boosted band still lands at
+    or under unity. That absorption — not a numeric cap on the correction — is
+    what keeps CamillaDSP's 0 dB ceiling a hard rail while total boost stays
+    uncapped."""
+    preset = _preset()
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    boosted = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"woofer": [_peak(gain=3.0), _peak(freq=2200.0, gain=1.5)]},
+    )
+    assert "gain: 3.000" in boosted
+    assert _headroom_gain_db(boosted) == pytest.approx(
+        _headroom_gain_db(flat) - 4.5, abs=1e-3
+    )
+
+
+def test_linearization_headroom_takes_the_worst_branch_not_the_sum():
+    """Driver chains run in PARALLEL after the split, so no single sample path
+    sees two branches' boosts — absorbing their sum would throw away max SPL
+    for a clip that cannot happen."""
+    preset = _preset()
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    both = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={
+            "woofer": [_peak(gain=3.0)],
+            "tweeter": [_peak(freq=6000.0, gain=2.0)],
+        },
+    )
+    assert _headroom_gain_db(both) == pytest.approx(
+        _headroom_gain_db(flat) - 3.0, abs=1e-3
+    )
+
+
+def test_linearization_headroom_is_zero_for_a_cut_only_correction():
+    """Every pre-PR-L5 fit is cut-only, and its emitted graph must be
+    byte-identical to what it was before boost existed."""
+    preset = _preset()
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    cut_only = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"woofer": [_peak(gain=-4.0)]},
+    )
+    assert linearization_headroom_db({"woofer": [_peak(gain=-4.0)]}) == 0.0
+    assert _headroom_gain_db(cut_only) == pytest.approx(_headroom_gain_db(flat))
 
 
 @pytest.mark.parametrize("bad_freq", [0.0, -100.0, float("nan"), float("inf")])
@@ -489,11 +560,75 @@ def test_linearized_baseline_reproves_as_approved_active_runtime():
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
+def test_boosted_baseline_reproves_as_approved_active_runtime():
+    """PR-L5: a boost the emitter itself absorbed re-proves as approved. The
+    graph carries its own evidence — the ``active_baseline_headroom`` gain the
+    boost was paid for with — so the proof stays self-contained, exactly as
+    ``_consume_linearization_chain`` promises."""
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]},
+    )
+    graph = classify_camilla_graph(topology=topology, text=text)
+    assert graph.allowed is True, graph.issues
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+
+def test_reproof_blocks_boost_beyond_the_absorbed_headroom():
+    """The boost proof's teeth: a boost tampered UP past what the graph's own
+    headroom gain paid for would drive the chain past unity, and fails closed.
+    Tampered on a graph that legitimately carries 4.5 dB of absorbed boost, so
+    what is being caught is the EXCESS, not the presence of boost."""
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]},
+    )
+    payload = yaml.safe_load(text)
+    assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
+        pytest.approx(-4.5, abs=1e-3)
+    name = driver_linearization_peak_name("tweeter", 1)
+    payload["filters"][name]["parameters"]["gain"] = 8.0  # total 9.5 > 4.5
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+    graph = classify_camilla_graph(topology=topology, text=tampered)
+    assert graph.allowed is False
+
+
+def test_reproof_blocks_boost_stacked_within_per_filter_cap_but_over_allowance():
+    """Per-branch TOTAL, not per-filter maximum. Two boosts each individually
+    inside the allowance can still add past it in one chain — which is the
+    whole reason the emitter absorbs the sum."""
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]},
+    )
+    payload = yaml.safe_load(text)
+    for i, gain in ((1, 4.0), (2, 4.0)):  # 8.0 total vs a 4.5 allowance
+        payload["filters"][driver_linearization_peak_name("tweeter", i)][
+            "parameters"
+        ]["gain"] = gain
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+    graph = classify_camilla_graph(topology=topology, text=tampered)
+    assert graph.allowed is False
+
+
 @pytest.mark.parametrize("bad_gain", [2.0, 0.5])
 def test_reproof_blocks_tampered_positive_gain_linearization_filter(bad_gain):
     """The graph_safety keystone: a positive-gain linearization filter
     tampered directly into the YAML (simulating a corrupted statefile, since
-    the emitter itself can never produce one) must fail closed at re-proof."""
+    the emitter itself can never produce one) must fail closed at re-proof.
+
+    PR-L5 made the rail "boost within the graph's own absorbed headroom"
+    rather than "no boost at all", and this test still passes UNCHANGED —
+    which is the point. A cut-only correction absorbs nothing, so its
+    allowance is 0.0 and any tampered-in boost is still refused. The allowance
+    can only grow when the same emit that placed a boost also paid for it."""
     topology = _active_topology("mono", "active_2_way")
     preset = _preset()
     text = emit_active_speaker_baseline_config(

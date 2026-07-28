@@ -89,9 +89,21 @@ from jasper.active_speaker.linearization_envelope import (
     compose_envelope,
     compute_sigma_curve,
 )
+from jasper.active_speaker.delta_probe import (
+    DELTA_PROBE_ROLLBACK_VERDICTS,
+    VERDICT_LEVEL_DEPENDENT_SHORTFALL,
+    VERDICT_MODEL_ERROR,
+    VERDICT_SPATIALLY_COSTLY,
+    DeltaProbeMap,
+    classify_delta_probe,
+    spatial_cost_from_group_spreads,
+)
 from jasper.active_speaker.linearization_fit import (
+    FitVocabulary,
     complex_correction_response,
+    driver_core_level_db,
     fit_driver_linearization,
+    solve_shared_level_frame,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
@@ -112,6 +124,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
     ProgramAnalysis,
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RealizedLevelMatch,
     overlap_band_hz,
     predicted_branch_sum,
@@ -905,6 +918,32 @@ REASON_DRIVER_LEVELS_DISAGREE = "driver_levels_disagree"
 # materially better than the measured pre-apply response. Applying it would
 # spend the household's speaker on a change we can already show does not help.
 REASON_CORRECTION_NOT_AN_IMPROVEMENT = "correction_not_an_improvement"
+# Delta-probe verdicts (linearization-integrity PR-L5). Unlike the two above,
+# these fire AFTER the apply — they are what the post-apply sweep found — so
+# each one rolls the correction back before it names itself. The household is
+# left on the sound they had, and told why, which is the difference between an
+# automatic rollback and a silent one.
+#
+# The correction did not do what its own filters said it would: a chain defect
+# (the shelf realized at a Q the fit never modelled is the archetype, and the
+# reason this code exists permanently rather than as a one-off fix).
+REASON_CORRECTION_MODEL_ERROR = "correction_model_error"
+# The correction's shape landed but its depth did not — the driver delivered
+# materially less level than it was asked for. A compression diagnostic.
+REASON_CORRECTION_LEVEL_SHORTFALL = "correction_level_shortfall"
+# The correction tracked at the measuring spot and made the room LESS even
+# everywhere else: it fitted one position's interference rather than the
+# speaker. The remedy is placement, not a different filter.
+REASON_CORRECTION_SPATIALLY_COSTLY = "correction_spatially_costly"
+
+#: Delta-probe verdict → the reason code its rollback surfaces. Exhaustive
+#: over :data:`delta_probe.DELTA_PROBE_ROLLBACK_VERDICTS`, pinned by a test, so
+#: a new non-matched verdict cannot ship without household-facing copy.
+DELTA_PROBE_REASON_BY_VERDICT: Mapping[str, str] = {
+    VERDICT_MODEL_ERROR: REASON_CORRECTION_MODEL_ERROR,
+    VERDICT_LEVEL_DEPENDENT_SHORTFALL: REASON_CORRECTION_LEVEL_SHORTFALL,
+    VERDICT_SPATIALLY_COSTLY: REASON_CORRECTION_SPATIALLY_COSTLY,
+}
 
 
 @dataclass(frozen=True)
@@ -1060,6 +1099,33 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The tuning JTS worked out would not have made this speaker measure "
         "better, so it was not applied. Re-check the driver details in speaker "
         "setup, then measure again.",
+    ),
+    # PR-L5 delta-probe rollbacks. All three are TEMPLATE_HARD_STOP with no
+    # retry budget: the correction has already been undone, so "try again"
+    # would re-run the same measurement into the same defect. Each names what
+    # was restored FIRST — a household whose speaker just changed twice needs
+    # to know where it ended up before it needs a diagnosis — and then the one
+    # thing that would actually change the outcome. No hardware nouns, matching
+    # the null-classification copy rule.
+    REASON_CORRECTION_MODEL_ERROR: ReasonSpec(
+        REASON_CORRECTION_MODEL_ERROR, TEMPLATE_HARD_STOP, 0, "",
+        "JTS checked the tuning against what your speaker actually did, and "
+        "they did not match — so the previous sound has been put back. This "
+        "usually means something in the chain is not behaving as described; "
+        "re-check the driver details in speaker setup, then measure again.",
+    ),
+    REASON_CORRECTION_LEVEL_SHORTFALL: ReasonSpec(
+        REASON_CORRECTION_LEVEL_SHORTFALL, TEMPLATE_HARD_STOP, 0, "",
+        "Your speaker delivered noticeably less than the tuning asked it for, "
+        "so the previous sound has been put back. Try measuring again at a "
+        "lower listening volume.",
+    ),
+    REASON_CORRECTION_SPATIALLY_COSTLY: ReasonSpec(
+        REASON_CORRECTION_SPATIALLY_COSTLY, TEMPLATE_HARD_STOP, 0, "",
+        "The tuning helped at the measuring spot but made the sound less even "
+        "elsewhere in the room, so the previous sound has been put back. "
+        "Moving the speaker away from nearby walls and surfaces, then "
+        "measuring again, is what changes this.",
     ),
 }
 
@@ -1624,6 +1690,24 @@ LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
 # retained deliberately and is judged from live guard telemetry, not re-derived.
 LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 
+# How far the two measured level estimates may disagree before the session is
+# refused (linearization-integrity PR-L5). The estimates are the trim solve's
+# power-band average on each side of Fc (`program_analysis.solve_branch_trims`)
+# and the fit's median over each driver's whole trusted passband
+# (`linearization_fit.driver_core_level_db`), reconciled by
+# `solve_shared_level_frame` into one frame whose per-role offset IS their
+# disagreement.
+#
+# DELIBERATELY the same number as `program_analysis.
+# REALIZED_LEVEL_MATCH_TOLERANCE_DB`, and imported from it rather than written
+# twice: both answer one question — do two estimates of where these drivers sit
+# agree — and PR-L4 already derived 3.0 dB for it from this exact evidence (the
+# worst honest frame disagreement across the five archived captures is 1.30 dB
+# after PR-L3; the 2026-07-27 profile that shipped 9-11 dB dark sat at
+# 8.76 dB). A second number for the same question is how two instruments start
+# disagreeing about what "agree" means.
+LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
+
 # How much the correction must improve ITS OWN two-branch model before a
 # spec-failing prediction is allowed onto the speaker (linearization-integrity
 # PR-L4 item 2). Both numbers are the pooled spec residual
@@ -1785,6 +1869,14 @@ class V2FlowSeams:
     # :meth:`CrossoverV2Conductor.group_cloud_result` but not published as a
     # bundle artifact.
     publish_cloud: Callable[[str, Mapping[str, Any]], None] | None = None
+    # PR-L5: undo the applied correction, called with the delta-probe reason
+    # code when the post-apply map does not match. Returns True when the
+    # previous profile was restored. Optional like the two seams above — a
+    # conductor with no rollback binding still CLASSIFIES and refuses (the
+    # household sees the verdict and the Undo button the failure screen
+    # already offers), it just cannot press the button itself. That degraded
+    # mode is disclosed on the verdict's own event, never silent.
+    rollback: Callable[[str], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -3085,6 +3177,42 @@ def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
         return None
 
 
+def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
+    """``(freqs_hz, delta_db)`` — what the applied correction COMMANDS on the
+    summed response, or ``None`` (PR-L5's delta probe, the commanded half).
+
+    The linearized-branch prediction minus the raw-branch one, both built from
+    the SAME measured branches with the SAME summation model
+    (``program_analysis.predicted_branch_sum``), so the branch measurements
+    and the summation model divide out and what is left is the shape the
+    emitted filters and trims ask the speaker for.
+
+    ``None`` — the probe reports ``unavailable``, which is not a pass — when
+    either curve is missing, when they are the same object (a trims-only
+    candidate: it emits no filters, so relative to the raw crossover it
+    commands nothing this probe could grade, and the VERIFY tracking check
+    remains its comparator), or when the two curves cannot be put on one grid.
+    """
+    if raw_predicted_sum is None or predicted_sum is None:
+        return None
+    if raw_predicted_sum is predicted_sum:
+        return None
+    try:
+        raw_freqs, raw_db = raw_predicted_sum
+        freqs, db = predicted_sum
+        grid = np.asarray(freqs, dtype=float)
+        delta = np.asarray(db, dtype=float) - np.interp(
+            grid, np.asarray(raw_freqs, dtype=float), np.asarray(raw_db, dtype=float),
+        )
+    except (ValueError, TypeError, IndexError, AttributeError) as exc:
+        log_event(
+            logger, "correction.crossover_v2_commanded_delta_failed",
+            level=logging.WARNING, error=str(exc),
+        )
+        return None
+    return grid, delta
+
+
 # --------------------------------------------------------------------------- #
 # the conductor
 # --------------------------------------------------------------------------- #
@@ -3122,6 +3250,7 @@ class CrossoverV2Conductor:
         gain_plan_db: Mapping[str, float] | None = None,
         index_phase_map: Mapping[int, str] | None = None,
         measure_predicted_sum: Any = None,
+        measure_commanded_delta: Any = None,
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_baseline: Mapping[str, float] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
@@ -3258,6 +3387,31 @@ class CrossoverV2Conductor:
         # MEASURE→VERIFY handoff evidence. A verify-only re-arm session
         # rehydrates both from the persisted state (§5.2 re-verify).
         self._measure_predicted_sum: Any = measure_predicted_sum
+        # PR-L5: what the applied correction COMMANDS on the summed response
+        # (``_commanded_delta``). Carried alongside ``_measure_predicted_sum``
+        # for the same reason and by the same route — the delta probe runs at
+        # VERIFY, which a re-arm session reaches with a fresh conductor.
+        self._measure_commanded_delta: Any = measure_commanded_delta
+        # This session's delta-probe verdict, refined once more if a post-apply
+        # position group closes (which adds the spatial arm). ``None`` until
+        # VERIFY is consumed.
+        self._delta_probe: DeltaProbeMap | None = None
+        # PR-L5: the session's shared level frame and the largest per-role
+        # disagreement it had to reconcile. ``None``/0.0 means no fit ran for
+        # this attempt — which, exactly like ``_last_realized_level_match``, is
+        # NOT a pass; the gate that reads them only refuses on evidence.
+        self._last_level_frame: Any = None
+        self._last_level_frame_disagreement_db: float = 0.0
+        # VERIFY's own measured-vs-predicted curve pair and gated validity
+        # floor, held so the post-apply group's close can re-run the probe with
+        # the spatial arm without re-analyzing a capture.
+        self._verify_tracking_curve: Any = None
+        self._verify_validity_floor_hz: float | None = None
+        # Each cloud group's across-position level spread, the spatial arm's
+        # two inputs. Keyed by phase; absent for a group that never closed and
+        # empty for one with fewer than two positions (the express tier's
+        # post-apply group is the mark alone by design).
+        self._group_band_spread: dict[str, tuple[Any, ...]] = {}
         self._measure_gate_window_ms: float | None = measure_gate_window_ms
         # The accepted MEASURE capture's analysis, held ONLY while something
         # still needs it: from MEASURE's accept until the CLOUD_MEASURE group
@@ -3595,6 +3749,16 @@ class CrossoverV2Conductor:
     @property
     def measure_predicted_sum(self) -> Any:
         return self._measure_predicted_sum
+
+    @property
+    def measure_commanded_delta(self) -> Any:
+        return self._measure_commanded_delta
+
+    @property
+    def delta_probe(self) -> DeltaProbeMap | None:
+        """This session's realized-vs-commanded verdict (PR-L5), or ``None``
+        when no post-apply capture has been consumed yet."""
+        return self._delta_probe
 
     @property
     def measure_gate_window_ms(self) -> float | None:
@@ -3977,6 +4141,8 @@ class CrossoverV2Conductor:
         self._last_linearization_outcome = ""
         self._last_linearized_predicted_sum = None
         self._last_realized_level_match = None
+        self._last_level_frame = None
+        self._last_level_frame_disagreement_db = 0.0
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.glitch_detected:
@@ -4265,6 +4431,13 @@ class CrossoverV2Conductor:
         """
         positions = self._group_positions[phase]
         combined = combine_cloud_positions(positions)
+        # PR-L5's spatial arm reads the across-position level spread of BOTH
+        # groups. Stashed off the one combine this method already paid for
+        # rather than added to the published group result, because it is
+        # comparison input, not a disclosure the household reads.
+        self._group_band_spread[phase] = tuple(
+            getattr(combined, "band_spread", None) or ()
+        )
         verdict = _geometry_verdict_from_combined(combined, len(positions))
         retries = self._geometry_retries_used[phase]
         retry_warranted = (
@@ -4386,6 +4559,20 @@ class CrossoverV2Conductor:
             # one (measured 2.7-6 s, see this method's own docstring).
             self._group_combined[phase] = combined
             payload["awaiting_confirm"] = True
+        if phase == PHASE_CLOUD_VERIFY:
+            # The delta probe's spatial arm, and the only point in the session
+            # where it can run: both clouds are walked, so "did the correction
+            # make the room less even" is finally a measured question rather
+            # than a modelled one. Deliberately OUTSIDE the disclosure wrap
+            # above — this is a product gate, like the candidate build, and a
+            # gate that cannot fail the capture is not a gate.
+            refusal = self._delta_probe_refusal(self._run_delta_probe())
+            if refusal is not None:
+                return PhaseVerdict(
+                    False, refusal,
+                    payload={"delta_probe": self._delta_probe.to_dict()}
+                    if self._delta_probe is not None else {},
+                )
         return PhaseVerdict(True, payload=payload)
 
     def cloud_measure_group_awaiting_confirm(self) -> bool:
@@ -4564,6 +4751,9 @@ class CrossoverV2Conductor:
         self._assert_accountable(predicted_sum, analysis.predicted_sum)
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
+        self._measure_commanded_delta = _commanded_delta(
+            analysis.predicted_sum, predicted_sum,
+        )
         self._seams.publish_candidate(candidate)
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -4629,6 +4819,44 @@ class CrossoverV2Conductor:
         true, naming the specific cause is more useful to whoever reads the
         journal, and the household copy is more actionable.
         """
+        # --- PR-L5: the two level FRAMES agree ---------------------------
+        #
+        # Runs before item 1 because it is the more specific diagnosis of the
+        # same disease: item 1 grades the level the committed trim REALIZES,
+        # this grades whether the two instruments that trim was derived from
+        # still agree about where the drivers sit. On the 2026-07-27 captures
+        # the disagreement was 10.9-13.1 dB; PR-L3 fixed its cause, and this
+        # is what stops the next cause from shipping silently.
+        #
+        # It refuses under PR-L4's own ``driver_levels_disagree`` code, not a
+        # new one: the household's remedy is identical (re-check sensitivity
+        # and the pad in speaker setup) and one consistent sentence beats two
+        # near-duplicates. The journal separates them by ``event=``.
+        if (
+            self._last_level_frame_disagreement_db
+            > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+        ):
+            frame = self._last_level_frame
+            log_event(
+                logger, "correction.crossover_v2_level_frame_refused",
+                level=logging.ERROR, session_id=self.session_id,
+                reason=REASON_DRIVER_LEVELS_DISAGREE,
+                disagreement_db=round(
+                    float(self._last_level_frame_disagreement_db), 3
+                ),
+                tolerance_db=LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
+                system_level_db=(
+                    round(float(frame.system_level_db), 3)
+                    if frame is not None else None
+                ),
+                reference_role=frame.reference_role if frame is not None else "",
+                offset_db=(
+                    {k: round(float(v), 3) for k, v in frame.offset_db.items()}
+                    if frame is not None else {}
+                ),
+            )
+            raise self._refuse(REASON_DRIVER_LEVELS_DISAGREE)
+
         # --- item 1: the inter-driver realized level ---------------------
         match = self._last_realized_level_match
         if match is not None and not match.matched:
@@ -4966,13 +5194,165 @@ class CrossoverV2Conductor:
                 False, REASON_VERIFY_OUT_OF_TOLERANCE,
                 payload={"tracking": dict(tracking)},
             )
+        # PR-L5's delta probe. Runs only once tracking has PASSED — a session
+        # that already failed at the handoff band does not need a second
+        # verdict about the same capture, and its retry budget (2) still means
+        # something. What this adds on top is the band tracking cannot see: the
+        # whole span the correction commands, which is where a realization
+        # defect like the 2026-07-27 shelf lives.
+        self._verify_tracking_curve = analysis.verify_tracking_curve
+        summed = analysis.summed_response
+        if summed is not None:
+            self._verify_validity_floor_hz = summed.validity_floor_hz
+        refusal = self._delta_probe_refusal(self._run_delta_probe())
+        if refusal is not None:
+            self._verify_outcome = "fail"
+            return PhaseVerdict(
+                False, refusal,
+                payload={
+                    "tracking": dict(tracking),
+                    "delta_probe": (
+                        self._delta_probe.to_dict()
+                        if self._delta_probe is not None else {}
+                    ),
+                },
+            )
         self._verify_outcome = "pass"
         return PhaseVerdict(
             True, payload={
                 "measurement_phase": PHASE_VERIFY,
                 "tracking": dict(tracking),
+                **(
+                    {"delta_probe": self._delta_probe.to_dict()}
+                    if self._delta_probe is not None else {}
+                ),
             }
         )
+
+    # --- delta probe (linearization-integrity PR-L5) --------------------------
+
+    def _run_delta_probe(self) -> DeltaProbeMap | None:
+        """Classify what the speaker actually did against what was commanded.
+
+        Runs twice per full session and once per express one: at VERIFY, on
+        the at-the-mark map alone, and again at the post-apply group's close,
+        where the spatial arm becomes measurable. The second call can only
+        ever ADD evidence — VERIFY has already refused the session if the mark
+        arm did not match — so the later verdict supersedes the earlier.
+
+        The arithmetic, stated plainly because it matters (see
+        :mod:`jasper.active_speaker.delta_probe`): the ERROR this classifies is
+        ``measured − predicted``, exactly the residual VERIFY's tracking check
+        already computes — and it is read off
+        ``ProgramAnalysis.verify_tracking_curve``, the very smoothed pair the
+        tracking scalars were reduced from, rather than re-derived here. One
+        comparison, two consumers. What the delta framing adds is the commanded
+        curve — the axis the shortfall-vs-model-error discriminator needs — and
+        a band. The band is the one the correction actually commands something
+        in, which on this speaker reaches an octave and a half above the
+        ``[Fc/2, 2·Fc]`` window tracking looks at, and is where the 2026-07-27
+        shelf-realization defect lived.
+
+        Returns ``None`` when the tracking curve or the commanded delta is
+        missing. ``None`` is the same thing :data:`~jasper.active_speaker.
+        delta_probe.VERDICT_UNAVAILABLE` is: no evidence to refuse on, and no
+        permission granted either.
+        """
+        tracked = self._verify_tracking_curve
+        commanded = self._measure_commanded_delta
+        if tracked is None or commanded is None:
+            return None
+        try:
+            freqs, measured_s, predicted_s = tracked
+            freqs = np.asarray(freqs, dtype=float)
+            measured_s = np.asarray(measured_s, dtype=float)
+            predicted_s = np.asarray(predicted_s, dtype=float)
+            commanded_db = np.interp(
+                freqs,
+                np.asarray(commanded[0], dtype=float),
+                np.asarray(commanded[1], dtype=float),
+            )
+        except (ValueError, TypeError, IndexError, AttributeError) as exc:
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_failed",
+                level=logging.WARNING, session_id=self.session_id, error=str(exc),
+            )
+            return None
+
+        # realized − commanded == measured − predicted (the raw-branch
+        # prediction cancels), so the realized curve is reconstructed from the
+        # three quantities this conductor actually holds.
+        realized_db = (measured_s - predicted_s) + commanded_db
+        floor_hz = self._verify_validity_floor_hz
+        band_hz = (
+            float(floor_hz) if floor_hz is not None and math.isfinite(floor_hz)
+            else float(freqs[0]),
+            float(freqs[-1]),
+        )
+        probe = classify_delta_probe(
+            freqs, realized_db, commanded_db, band_hz=band_hz,
+            spatial=spatial_cost_from_group_spreads(
+                {"band_spread": self._group_band_spread.get(PHASE_CLOUD_MEASURE, ())},
+                {"band_spread": self._group_band_spread.get(PHASE_CLOUD_VERIFY, ())},
+            ),
+        )
+        self._delta_probe = probe
+        log_event(
+            logger, "correction.crossover_v2_delta_probe",
+            level=logging.WARNING if probe.rollback else logging.INFO,
+            session_id=self.session_id,
+            verdict=probe.verdict,
+            reason=probe.reason,
+            rollback=probe.rollback,
+            probe_band_hz=tuple(round(v, 1) for v in probe.probe_band_hz),
+            n_bins=probe.n_bins,
+            max_error_db=round(probe.max_error_db, 3),
+            rms_error_db=round(probe.rms_error_db, 3),
+            worst_hz=round(probe.worst_hz, 1),
+            exceedance_octaves=round(probe.exceedance_octaves, 3),
+            gain_factor=round(probe.gain_factor, 4),
+            spatial_available=probe.spatial.available,
+            spatial_widened=probe.spatial.widened,
+            spatial_worst_center_hz=round(probe.spatial.worst_center_hz, 1),
+            spatial_worst_widening_db=round(probe.spatial.worst_widening_db, 3),
+        )
+        return probe
+
+    def _delta_probe_refusal(self, probe: DeltaProbeMap | None) -> str | None:
+        """Roll the correction back and return the reason code, or ``None``.
+
+        The automatic half of PR-L5's "rollback is automatic on the
+        non-matched classes". Rollback runs BEFORE the refusal is returned, so
+        by the time the household reads the copy ("the previous sound has been
+        put back") it is already true.
+
+        A conductor with no ``rollback`` seam still refuses — the verdict is
+        real whether or not this process can act on it, and the failure screen
+        already offers Undo — but says so on its own event rather than
+        pretending the restore happened.
+        """
+        if probe is None or probe.verdict not in DELTA_PROBE_ROLLBACK_VERDICTS:
+            return None
+        code = DELTA_PROBE_REASON_BY_VERDICT[probe.verdict]
+        restored = False
+        error = ""
+        if self._seams.rollback is not None:
+            try:
+                restored = bool(self._seams.rollback(code))
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                # The same bounded family every seam boundary in this file
+                # uses. A rollback that could not run must not swallow the
+                # verdict that asked for it: the refusal still fires, and the
+                # household's Undo button is still on the screen.
+                error = str(exc)
+        log_event(
+            logger, "correction.crossover_v2_delta_probe_rollback",
+            level=logging.ERROR, session_id=self.session_id,
+            reason=code, verdict=probe.verdict, restored=restored,
+            seam_bound=self._seams.rollback is not None, error=error,
+        )
+        self._last_failure_code = code
+        return code
 
     # --- diagnostic logging (Part 1) ------------------------------------------
     #
@@ -5278,6 +5658,8 @@ class CrossoverV2Conductor:
                 # carries is worse than no verdict, because the assertion at
                 # publish time would grade the wrong thing.
                 self._last_realized_level_match = None
+                self._last_level_frame = None
+                self._last_level_frame_disagreement_db = 0.0
                 self._last_linearization_outcome = "fit_failed"
 
         return MeasuredCrossoverCandidate(
@@ -5431,8 +5813,18 @@ class CrossoverV2Conductor:
         siblings = {woofer_role: tweeter_resp, tweeter_role: woofer_resp}
         mic_tier = str(analysis.mic_tier)
 
-        fits: dict[str, Any] = {}
-        corrections: dict[str, np.ndarray] = {}
+        # --- the session's ONE shared level frame (PR-L5) ------------------
+        #
+        # Compose every envelope FIRST, read each driver's own core-passband
+        # level off it, and reconcile the set into a single frame before any
+        # driver is fitted. Before this, each driver was fitted to a flat
+        # target at its own median and the two numbers had no stated
+        # relationship at all — 13.9 dB apart on the 2026-07-27 JTS3 profile,
+        # reconciled only by a trim that was itself carrying ~11 dB of frame
+        # error. PR-L4 asserted afterwards that the realized branch levels
+        # agree; this makes them agree by construction, which is the
+        # difference between catching that bug and not having it.
+        envelopes: dict[str, Any] = {}
         for role in (woofer_role, tweeter_role):
             resp = responses[role]
             sigma_db = _compose_sigma_db(
@@ -5447,7 +5839,7 @@ class CrossoverV2Conductor:
             # terms existed. They can only ever NARROW allowed depth: they
             # enter the same ``np.min`` as every other term, so no cloud can
             # buy the fit permission it did not already have.
-            envelope = compose_envelope(
+            envelopes[role] = compose_envelope(
                 role, resp,
                 excited_band_hz=excited_band_hz[role],
                 mic_tier=mic_tier,
@@ -5457,7 +5849,56 @@ class CrossoverV2Conductor:
                 band_spread=cloud.band_spread if cloud else None,
                 n_positions=cloud.n_positions if cloud else None,
             )
-            fit = fit_driver_linearization(resp, envelope)
+        core_levels_db = {
+            role: level
+            for role in (woofer_role, tweeter_role)
+            if (level := driver_core_level_db(responses[role], envelopes[role]))
+            is not None
+        }
+        level_frame = (
+            solve_shared_level_frame(core_levels_db, dict(cand.trim_db))
+            if core_levels_db else None
+        )
+        # The frame's own honesty gate, and the reason it is not just applied.
+        #
+        # ``offset_db[role]`` is how far that role's own proposal
+        # (``core_level + trim``) sits below the loudest — which is exactly the
+        # DISAGREEMENT between two measured estimates of the same physical
+        # relationship: the trim solve's power-band average on each side of Fc,
+        # and the fit's median over each driver's whole trusted passband. After
+        # PR-L3 fixed the trim's band-clamp asymmetry those two agree to
+        # 1.08-1.30 dB across the five archived captures, so a small offset is
+        # an honest reconciliation and gets applied. A LARGE one is not: it
+        # means the two instruments are measuring different things again, and
+        # blindly preferring either — which is what applying a 10 dB offset on
+        # one estimator's say-so would be — is the same "nothing ever compared
+        # these" failure the 2026-07-27 profile shipped, pointed a new
+        # direction. So it is stashed here and refused at the confirm seam,
+        # beside PR-L4's own two assertions.
+        self._last_level_frame = level_frame
+        self._last_level_frame_disagreement_db = (
+            max((abs(v) for v in level_frame.offset_db.values()), default=0.0)
+            if level_frame is not None else 0.0
+        )
+
+        # Boost permission is EVIDENCE-gated, and this is the gate: a fit may
+        # emit gain only in a session that will measure what the speaker
+        # actually did with it. Today every plan shape runs VERIFY, so this
+        # reads as always-on — but it is the correct condition rather than a
+        # constant, so a future plan that drops the post-apply sweep silently
+        # drops boost with it instead of silently shipping an unverified one.
+        vocabulary = FitVocabulary(
+            allow_boost=PHASE_VERIFY in self.session_phases,
+        )
+
+        fits: dict[str, Any] = {}
+        corrections: dict[str, np.ndarray] = {}
+        for role in (woofer_role, tweeter_role):
+            resp = responses[role]
+            fit = fit_driver_linearization(
+                resp, envelopes[role],
+                vocabulary=vocabulary, level_frame=level_frame,
+            )
             fits[role] = fit
             # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
             # scale (#1667). The emitted biquads rotate phase near their
@@ -5536,9 +5977,23 @@ class CrossoverV2Conductor:
         # prediction for restoring a corrected branch's own level. What DID
         # change is `raw_trim` underneath it, which carried 10.9-13.1 dB of
         # frame error into every anchored trim on the JTS3 captures.
+        #
+        # PR-L5 adds ONE term: ``level_frame_offset_db``, how far this branch
+        # must move to reach the session's shared level frame. The anchor
+        # already returns a branch to its OWN pre-correction system level; the
+        # offset then places that level where the frame says it belongs. The
+        # two together mean ``target + trim`` is the same number for every
+        # branch by construction, which is the structural close of the defect
+        # PR-L4 item 1 could only assert about. It is 0.0 for the frame's own
+        # reference role and for any session with no frame, so a fit that
+        # predates the frame anchors byte-identically.
         raw_trim = dict(cand.trim_db)
         anchored_unnormalized = {
-            role: float(raw_trim.get(role, 0.0) + fits[role].correction_giveback_db)
+            role: float(
+                raw_trim.get(role, 0.0)
+                + fits[role].correction_giveback_db
+                + fits[role].level_frame_offset_db
+            )
             for role in (woofer_role, tweeter_role)
         }
         # Normalize to non-positive: a branch whose own cuts give back more than
@@ -5611,6 +6066,25 @@ class CrossoverV2Conductor:
             # things, which is exactly what shipped the 10 dB-dark tweeter.
             target_level_db={
                 role: round(float(fits[role].target_level_db), 3)
+                for role in (woofer_role, tweeter_role)
+            },
+            # PR-L5: the shared frame the two targets were reconciled into,
+            # and the per-role move it asked for. A large offset is the
+            # 10 dB-dark shape being CORRECTED, not a new problem — it is the
+            # number that used to be silently absorbed by nothing.
+            level_frame_system_db=(
+                round(float(level_frame.system_level_db), 3)
+                if level_frame is not None else None
+            ),
+            level_frame_reference_role=(
+                level_frame.reference_role if level_frame is not None else None
+            ),
+            level_frame_offset_db={
+                role: round(float(fits[role].level_frame_offset_db), 3)
+                for role in (woofer_role, tweeter_role)
+            },
+            headroom_cost_db={
+                role: round(float(fits[role].headroom_cost_db), 3)
                 for role in (woofer_role, tweeter_role)
             },
         )

@@ -798,6 +798,22 @@ class ProgramAnalysis:
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
     verify_tracking: dict[str, Any] | None = None
+    # The SMOOTHED ``(freqs_hz, measured_db, predicted_db)`` triple the
+    # tracking scalars above were reduced from (linearization-integrity PR-L5).
+    # A separate field rather than a key inside ``verify_tracking`` because
+    # that dict travels to the phone in a PhaseVerdict payload and these are
+    # full curves.
+    #
+    # It exists so the delta probe
+    # (:mod:`jasper.active_speaker.delta_probe`) grades the SAME comparison the
+    # tracking gate does — one measured-vs-predicted construction, two
+    # consumers reading it over different bands — rather than re-deriving its
+    # own from the raw curves. Two comparators of one quantity is the drift
+    # shape the linearization-integrity ladder exists to remove.
+    #
+    # ``None`` whenever ``verify_tracking`` is (no prediction prior), and the
+    # probe reads that as "no evidence", never as a pass.
+    verify_tracking_curve: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     # (``flatness_tracking`` lived here until the flat-linearization plan's
     # PR-5 — see the retired-constants comment near ANALYSIS_KIND. A single
     # capture cannot answer "is the speaker flat"; the spatial cloud's spec
@@ -3197,6 +3213,7 @@ def _analyze_verify(
     # changing what gates today.
     ripple = None
     tracking = None
+    tracking_curve = None
     if fc_hz is not None:
         lo, hi = overlap_band_hz(
             fc_hz,
@@ -3251,6 +3268,9 @@ def _analyze_verify(
             raw_rms, raw_max = analysis_mod.tracking_error_db(
                 summed.freqs_hz, measured_db, predicted_db, (lo, hi),
             )
+            # PR-L5: hand the delta probe the very curves these scalars
+            # were reduced from, so it grades one comparison, not a second.
+            tracking_curve = (summed.freqs_hz, measured_db, predicted_db)
             tracking = {
                 "rms_db": rms,
                 "max_db": max_abs,
@@ -3273,6 +3293,7 @@ def _analyze_verify(
         summed_response=summed,
         summed_ripple_db=ripple,
         verify_tracking=tracking,
+        verify_tracking_curve=tracking_curve,
         pilots=pilots,
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
