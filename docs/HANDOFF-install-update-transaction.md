@@ -22,7 +22,8 @@ A deploy answers two different questions; conflating them was the bug.
 
 1. **"Did the install *process* complete?"** — owned by `install.sh`,
    recorded in the build manifest. Hardware-independent: it means every
-   build compiled, every file installed, the venv resolved, units loaded.
+   required/core build compiled, every file installed, the venv resolved,
+   and units loaded. Explicit optional enhancements are outside this claim.
    It does **not** claim any daemon is currently healthy. `install.sh` may
    bounce the core audio graph while loading the new code and derived
    state; the deploy wrapper's post-install doctor/reconcile layer owns the
@@ -177,6 +178,22 @@ prints a structured result into the deploy transcript, skips unsaved
 `sound_audition.yml` previews, and leaves the current legal graph in place on
 failure or timeout. That keeps the manifest invariant clean: the install can
 complete honestly even if a derived-cache refresh needs a later manual retry.
+
+### Optional enhanced AEC is a capability-local transaction
+
+Vendored WebRTC AEC3 v2 / BEST_A is deliberately not a build-manifest gate.
+The core transaction builds the mandatory distro-linked v1 fallback only.
+After the manifest is atomically published, a `PathChanged=` unit may retry
+durable enhanced-AEC intent in a bounded background oneshot. Its
+download/build/probe/staleness failure is recorded on the feature but cannot
+roll back, fail, or falsely advance the core deploy.
+
+Deploy and optional activation share a short lock around source/package
+mutation, while the multi-minute optional build runs outside that lock.
+Activation rechecks the exact source/ABI fingerprint and writes its own
+verified marker last. This is a second, capability-local transaction—not an
+extension of `/var/lib/jasper/build.txt`'s claim. See
+[HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md).
 
 ### 4. Collateral OOM kills are surfaced, never silent
 
@@ -357,7 +374,10 @@ sourced bash helpers). Confirm on a Pi:
 
 ---
 
-Last verified: 2026-07-15 (outputd two-snapshot counter-growth, uptime
+Last verified: 2026-07-27 (targeted recheck of the optional enhanced-AEC
+boundary: mandatory v1 stays inside the core transaction, while
+manifest-driven v2 retry/activation owns a separate fail-soft marker; broader
+transaction verification remains from 2026-07-15, when outputd two-snapshot counter-growth, uptime
 continuity, and source-intent stability gates rechecked; verified-manifest asset timing and exact
 browser-visible `/system/` asset-token gate rechecked against
 `jasper/web/_common.py` and `scripts/deploy-to-pi.sh`; low-memory deploy-health

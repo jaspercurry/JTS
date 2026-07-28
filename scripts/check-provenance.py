@@ -256,6 +256,9 @@ def registry_urls() -> set[str]:
 def discovered_fetch_urls(root: Path = ROOT) -> dict[str, set[str]]:
     return {
         "deploy/install.sh": shell_fetch_urls(root / "deploy" / "install.sh"),
+        "jasper_aec3/enhanced-aec-source.env": shell_fetch_urls(
+            root / "jasper_aec3" / "enhanced-aec-source.env"
+        ),
         "pyproject.toml": pyproject_requirement_urls(root / "pyproject.toml"),
         "jasper_aec3/pyproject.toml": pyproject_requirement_urls(
             root / "jasper_aec3" / "pyproject.toml"
@@ -303,6 +306,9 @@ def validate_source_consistency(
     errors: list[str] = []
     artifacts = artifacts_by_id(data)
     install_vars = shell_assignments(root / "deploy" / "install.sh")
+    enhanced_aec_vars = shell_assignments(
+        root / "jasper_aec3" / "enhanced-aec-source.env"
+    )
     install_text = (root / "deploy" / "install.sh").read_text(encoding="utf-8")
 
     install_expectations = {
@@ -319,10 +325,6 @@ def validate_source_consistency(
         "SHAIRPORT_SYNC_COMMIT": ("shairport-sync", "commit"),
         "SHAIRPORT_SYNC_SHA256": ("shairport-sync", "sha256"),
         "SHAIRPORT_SYNC_VERSION": ("shairport-sync", "ref"),
-        "WEBRTC_AEC3_ARCHIVE_URL": ("webrtc-audio-processing-v2", "url"),
-        "WEBRTC_AEC3_COMMIT": ("webrtc-audio-processing-v2", "commit"),
-        "WEBRTC_AEC3_SHA256": ("webrtc-audio-processing-v2", "sha256"),
-        "WEBRTC_AEC3_VERSION": ("webrtc-audio-processing-v2", "ref"),
     }
     for var_name, (artifact_id, field) in install_expectations.items():
         values = install_vars.get(var_name, [])
@@ -334,6 +336,24 @@ def validate_source_consistency(
             errors.append(f"deploy/provenance.toml: missing artifact {artifact_id}")
             continue
         _expect(errors, artifact, field, values[-1], f"deploy/install.sh {var_name}")
+
+    enhanced_aec_expectations = {
+        "WEBRTC_AEC3_ARCHIVE_URL": ("webrtc-audio-processing-v2", "url"),
+        "WEBRTC_AEC3_COMMIT": ("webrtc-audio-processing-v2", "commit"),
+        "WEBRTC_AEC3_SHA256": ("webrtc-audio-processing-v2", "sha256"),
+        "WEBRTC_AEC3_VERSION": ("webrtc-audio-processing-v2", "ref"),
+    }
+    source_name = "jasper_aec3/enhanced-aec-source.env"
+    for var_name, (artifact_id, field) in enhanced_aec_expectations.items():
+        values = enhanced_aec_vars.get(var_name, [])
+        if not values:
+            errors.append(f"{source_name}: missing {var_name}")
+            continue
+        artifact = artifacts.get(artifact_id)
+        if artifact is None:
+            errors.append(f"deploy/provenance.toml: missing artifact {artifact_id}")
+            continue
+        _expect(errors, artifact, field, values[-1], f"{source_name} {var_name}")
 
     for artifact_id in (
         "camillagui-aarch64",

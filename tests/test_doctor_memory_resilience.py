@@ -489,6 +489,8 @@ _PID_MAP = {
     "ssh": "1015",
     "jasper-usbsink-volume": "1016",
     "jasper-usbmic": "1017",
+    # Optional compiler unit is installed but normally inactive.
+    "jasper-enhanced-aec-install": "0",
 }
 
 _EXPECTED_CONFIG = {
@@ -508,6 +510,7 @@ _EXPECTED_CONFIG = {
     "ssh": "-250",
     "jasper-usbsink-volume": "100",
     "jasper-usbmic": "-300",
+    "jasper-enhanced-aec-install": "900",
 }
 
 
@@ -573,8 +576,10 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
     assert r.status == "ok", r.detail
     for unit in absent:
         assert unit not in r.detail
-    # The remaining 12 installed daemons are still verified.
-    assert "12 critical daemons protected" in r.detail
+    # The remaining 12 running processes and inactive optional compiler unit
+    # are still verified against their configured policy.
+    assert "12 running processes match policy" in r.detail
+    assert "jasper-enhanced-aec-install" in r.detail
 
 
 def test_oom_score_adj_warns_on_present_drift_with_others_absent():
@@ -634,7 +639,8 @@ def test_oom_score_adj_all_match():
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "16 critical daemons protected" in r.detail
+    assert "16 running processes match policy" in r.detail
+    assert "jasper-enhanced-aec-install" in r.detail
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():

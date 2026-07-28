@@ -1252,31 +1252,44 @@ def _select_engine(
 ):
     """Pick the AEC engine to use.
 
-    JASPER_AEC_BINDING=v2 forces v2; =v1 forces v1; default (=auto)
-    tries v2 first, falls back to v1 if the v2 module isn't built.
+    JASPER_AEC_BINDING=v2 prefers v2; =v1 forces v1; default (=auto)
+    tries v2 first. Both v2 modes require the activation marker, source
+    fingerprint, and extension digest to agree; an orphan/stale native module
+    is never imported. Any unavailable or unverified v2 path falls back to the
+    mandatory v1 binding.
     Returns an engine instance ready to call .process().
     """
     pref = os.environ.get("JASPER_AEC_BINDING", "auto").strip().lower()
     if pref == "v1":
         return _Aec3Engine(overrides=overrides, label=label or "aec3_v1")
+    v2_verified = False
+    if pref in {"auto", "v2"}:
+        try:
+            from jasper.enhanced_aec import runtime_v2_verified
+
+            v2_verified = runtime_v2_verified()
+        except (ImportError, OSError):
+            v2_verified = False
+    if v2_verified:
+        try:
+            import jasper_aec3
+            if jasper_aec3.HAS_V2:
+                return _Aec3V2Engine(
+                    overrides=overrides,
+                    label=label or "aec3_v2(BEST_A)",
+                )
+        except ImportError:
+            pass
     if pref == "v2":
-        return _Aec3V2Engine(
-            overrides=overrides,
-            label=label or "aec3_v2(BEST_A)",
+        logger.warning(
+            "JASPER_AEC_BINDING=v2 requested but no verified enhanced "
+            "AEC activation is available — falling back to v1 binding"
         )
-    # auto
-    try:
-        import jasper_aec3
-        if jasper_aec3.HAS_V2:
-            return _Aec3V2Engine(
-                overrides=overrides,
-                label=label or "aec3_v2(BEST_A)",
-            )
-    except ImportError:
-        pass
-    logger.info(
-        "jasper_aec3._aec3_v2 not available — falling back to v1 binding"
-    )
+    else:
+        logger.info(
+            "verified jasper_aec3._aec3_v2 not available — falling back "
+            "to v1 binding"
+        )
     return _Aec3Engine(overrides=overrides, label=label or "aec3_v1")
 
 

@@ -145,8 +145,12 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # deferred hold and dishonestly time out as relay_timeout. Logs
 # event=correction.crossover_v2_auto_apply_error + persists the failure —
 # never a silent path. Ceilings 621 -> 622 / 814 -> 815.
-MAX_NOQA_MARKERS = 815
-MAX_BLE001_MARKERS = 622
+# 2026-07-27: +1 BLE001 for the enhanced-AEC native-extension activation
+# transaction. Its catch-all is cleanup-and-reraise only: it atomically restores
+# the prior extension (or removes the new one) for any import/probe failure,
+# then propagates the original exception. Ceilings 622 -> 623 / 815 -> 816.
+MAX_NOQA_MARKERS = 816
+MAX_BLE001_MARKERS = 623
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

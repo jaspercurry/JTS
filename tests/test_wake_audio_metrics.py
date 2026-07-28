@@ -62,7 +62,13 @@ def test_rms_amplitude_preserves_nonfinite_propagation() -> None:
     assert math.isinf(rms_amplitude(np.array([1.0, np.inf])))
 
 
-def test_identical_rms_consumers_alias_the_shared_function() -> None:
+def test_identical_rms_consumers_alias_the_shared_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A prior standalone-script test may leave scripts/ itself on sys.path.
+    # Import order must still select the canonical package module rather than
+    # creating a second top-level _wake_audio_metrics module/function object.
+    monkeypatch.syspath_prepend(str(_SCRIPTS))
     consumers = (
         ("_audit_wake_events.py", "rms"),
         ("_offline_wake_count.py", "_rms"),

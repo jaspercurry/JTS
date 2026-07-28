@@ -1,13 +1,14 @@
 # Handoff: memory-safe, production-isolated installer builds
 
-Canonical reference for how `deploy/install.sh` runs its heavy
-compile/build steps without OOM-killing live production daemons during an
-in-service update. This is **Workstream A** of
+Canonical reference for how `deploy/install.sh` and the opt-in enhanced-AEC
+background job run heavy compile/build steps without OOM-killing live
+production daemons during an in-service update. This is **Workstream A** of
 [install-update-resilience-plan.md](install-update-resilience-plan.md)
 (problems #1 and #2). It does not re-architect AEC (see AGENTS.md
-"Architecture is fixed; swap the engine, not the topology") and it does
-not change *what* gets built — only the memory/CPU envelope each build
-runs inside.
+"Architecture is fixed; swap the engine, not the topology"). The current
+delivery split is owned by
+[HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md): mandatory v1 is a quick
+core-install build; vendored v2 is opt-in and reuses this containment policy.
 
 ## The one invariant
 
@@ -22,8 +23,9 @@ Every heavy build in the installer now goes through **one** policy in
 
 1. **RAM-aware parallelism** — `build_sandbox_jobs <kb_per_job>` computes
    `clamp(MemTotal / kb_per_job, 1, nproc)`. This generalizes the
-   PR #899 point-fix (`_webrtc_compile_jobs`, which now just delegates
-   with `kb_per_job=1500000`). Lower parallelism ⇒ lower *peak* RAM ⇒
+   PR #899 WebRTC point-fix. The installed
+   `jasper-contained-build --jobs-cpp` entry point applies the canonical
+   `kb_per_job=1500000` policy to optional v2. Lower parallelism ⇒ lower *peak* RAM ⇒
    lower OOM probability.
 2. **cgroup containment** — `run_contained_build <label> -- <cmd…>` runs
    the build inside a transient `systemd-run --scope` whose properties
@@ -134,15 +136,16 @@ know whether the build was contained.
 
 | # | Build | Where | Tool | Profile | Now bounded? | Now contained? |
 |---|-------|-------|------|---------|--------------|----------------|
-| 1 | webrtc-audio-processing v2.1 | `install.sh build_webrtc_v2_for_aec3` | `meson compile` C++ −O3 | full | yes (`kb_per_job=1.5 GB`) | yes |
-| 2 | jasper_aec3 pybind11 binding | `python-runtime.sh install_jasper` | `pip`→`cc1plus` −O0 wrapper | full | n/a (single ext; content-cached) | yes |
+| 1 | optional webrtc-audio-processing v2.1 + v2 binding | `jasper-enhanced-aec-install` via `jasper-contained-build` | `meson compile` C++ −O3 + isolated `pip wheel` wrapper | full, explicit opt-in | yes (`kb_per_job=1.5 GB`) | yes |
+| 2 | mandatory jasper_aec3 v1 pybind11 binding | `python-runtime.sh install_jasper` | `pip`→`cc1plus` −O0 wrapper | full | n/a (single ext; content-cached) | yes |
 | 3 | jasper-fanin | `rust-daemons.sh` | `cargo build --release` | full + streambox | cargo `-j` + temporary build swap/runtime park on low-memory hosts | yes |
 | 4 | jasper-outputd | `rust-daemons.sh` | `cargo build --release` | full + streambox | cargo `-j` + temporary build swap/runtime park on low-memory hosts | yes |
 | 5 | shairport-sync | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
 | 6 | nqptp | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
 | 7 | optional ESP32 firmware | `install.sh _build_firmware_if_stale` | PlatformIO | opt-in only | unchanged (opt-in) | **not yet** (see below) |
 
-Before this slice, #1 was the only RAM-aware build, #3/#4 had a binary
+Before the original Workstream-A slice, #1 was the only RAM-aware build,
+#3/#4 had a binary
 on/off low-memory cargo profile (now flipped at ~1.2 GB), #5/#6 were a
 hardcoded `make -j4`, and #2/#7 had nothing. None were contained.
 
@@ -183,9 +186,9 @@ Zero 2 W tier**, where the constraint is *CPU time* (a 4×A53 may take 30+
 min, or be infeasible, on a webrtc/shairport build), not just RAM — and
 containment does nothing for build *duration*. Track under the
 HANDOFF-supply-chain "next slice" and the Workstream D tiering work
-(e.g. is the software WebRTC AEC3 build even relevant on a Zero 2 W
-streambox? it is full-profile-only today, so the Zero 2 W never builds
-it — that already narrows the prebuilt surface to shairport/nqptp/Rust).
+(e.g. a Zero 2 W streambox does not install the full mic/AEC brain, so the
+enhanced-AEC action is unavailable there; that already narrows the prebuilt
+surface to shairport/nqptp/Rust).
 
 ### What happens when a contained build won't fit
 
@@ -229,14 +232,16 @@ All read by `build-sandbox.sh`; all have safe defaults.
 
 **Unit-verified (hardware-free, `tests/test_install_helpers.py`):**
 - `_ram_bounded_jobs` math across the Pi 5 SKU range and per-toolchain
-  `kb_per_job` budgets; `_webrtc_compile_jobs` still returns its exact
-  PR #899 values via delegation.
+  `kb_per_job` budgets; the runtime `jasper-contained-build --jobs-cpp`
+  entry point uses that exact shared C++ budget.
 - `build_sandbox_props` encodes the inverse policy: positive
   `OOMScoreAdjust`, **no `MemorySwapMax=0`**, low CPU/IO weight,
   `MemoryAccounting=yes`.
 - `run_contained_build` degrades to a direct, unmodified exec when
   systemd is absent (the CI/macOS/container path) and never double-runs.
-- Every heavy build call-site routes through `run_contained_build`.
+- Every core heavy build call-site routes through `run_contained_build`;
+  the optional enhanced-AEC job reaches the same function through the
+  installed `jasper-contained-build` entry point.
 
 **Needs a real Pi (flag in the PR):**
 - That `systemd-run --scope` actually contains a `meson`/`cargo`/`make`
@@ -260,6 +265,6 @@ All read by `build-sandbox.sh`; all have safe defaults.
   resilience stages (the OOM ladder + cgroup slice this build policy
   complements but does not depend on).
 
-Last verified: 2026-06-29 (nginx recovery/OOM drop-in added; build #8 —
-the jasper_resampler pybind11 binding — remains removed with the usbsink
-rate-match stage, so the inventory stays at seven builds)
+Last verified: 2026-07-27 (enhanced WebRTC AEC3 v2 moved out of the core
+deploy into the bounded opt-in oneshot; mandatory v1 and the other six build
+classes retain the shared containment policy)

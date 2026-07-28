@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Single source of truth for the first-party ARM64 runtime bundle.
+#
+# Keep build outputs, bundle paths, install destinations, permissions, and ELF
+# expectations together. The packager, verifier, installer seam, tests, and
+# BUILD-INFO generator all consume this file; do not duplicate this table in
+# shell code or documentation.
+
+schema_version = 1
+artifact_set = "jts-first-party-runtime"
+bundle_format_version = 1
+archive_prefix = "jts-first-party-runtime"
+
+[licensing]
+# Exact expressions currently present in the target-active Cargo graphs.
+# A new expression is a redistribution-policy change, not just metadata: the
+# release build fails until this list and the canonical license inventory are
+# deliberately reviewed together.
+allowed_cargo_license_expressions = [
+  "(MIT OR Apache-2.0) AND Unicode-3.0",
+  "Apache-2.0",
+  "Apache-2.0/MIT",
+  "MIT",
+  "MIT OR Apache-2.0",
+  "Unlicense OR MIT",
+]
+
+[target]
+triple = "aarch64-unknown-linux-gnu"
+architecture = "aarch64"
+elf_class = "ELF64"
+elf_machine = "AArch64"
+os = "linux"
+distribution = "debian"
+distribution_codename = "trixie"
+platform = "raspberry-pi-os-trixie-arm64"
+accepted_host_machines = ["aarch64", "arm64"]
+allowed_interpreters = ["/lib/ld-linux-aarch64.so.1"]
+allowed_needed = [
+  "libasound.so.2",
+  "libc.so.6",
+  "libdl.so.2",
+  "libgcc_s.so.1",
+  "libm.so.6",
+  "libpthread.so.0",
+  "librt.so.1",
+]
+
+[[artifact]]
+id = "jasper-fanin"
+description = "Renderer fan-in and TTS mixer daemon"
+build_system = "cargo"
+build_output_path = "cargo-target/release/jasper-fanin"
+bundle_path = "bin/jasper-fanin"
+install_path = "/opt/jasper/bin/jasper-fanin"
+mode = "0755"
+elf_kind = "executable"
+required_needed = ["libasound.so.2"]
+required_symbols = []
+build = ["cargo", "build", "--manifest-path", "rust/jasper-fanin/Cargo.toml", "--release", "--locked"]
+
+[[artifact]]
+id = "jasper-outputd"
+description = "Final physical-output owner daemon"
+build_system = "cargo"
+build_output_path = "cargo-target/release/jasper-outputd"
+bundle_path = "bin/jasper-outputd"
+install_path = "/opt/jasper/bin/jasper-outputd"
+mode = "0755"
+elf_kind = "executable"
+required_needed = ["libasound.so.2"]
+required_symbols = []
+build = ["cargo", "build", "--manifest-path", "rust/jasper-outputd/Cargo.toml", "--release", "--locked"]
+
+[[artifact]]
+id = "jts-ring-ioplug"
+description = "JTS shared-memory ALSA PCM ioplug"
+build_system = "make"
+build_output_path = "c/libasound_module_pcm_jts_ring.so"
+bundle_path = "lib/alsa-lib/libasound_module_pcm_jts_ring.so"
+install_path = "/usr/lib/aarch64-linux-gnu/alsa-lib/libasound_module_pcm_jts_ring.so"
+mode = "0644"
+elf_kind = "shared-object"
+required_needed = ["libasound.so.2"]
+required_symbols = ["_snd_pcm_jts_ring_open"]
+build = ["make", "-C", "c/jts-ring-ioplug", "clean", "plugin"]
+
+[[cargo_graph]]
+root = "jasper-fanin"
+manifest_path = "rust/jasper-fanin/Cargo.toml"
+lockfile_path = "rust/jasper-fanin/Cargo.lock"
+
+[[cargo_graph]]
+root = "jasper-outputd"
+manifest_path = "rust/jasper-outputd/Cargo.toml"
+lockfile_path = "rust/jasper-outputd/Cargo.lock"
+
+[[derived_notice]]
+component = "PipeWire spa_dll"
+description = "MIT-licensed clock DLL math ported into the first-party jasper-clock crate"
+source_url = "https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/fd60e04525f3a04d90bf50085222e0cc9139b4a4/spa/include/spa/utils/dll.h"
+source_sha256 = "5dd6a467ff661f0e1ed1b59fa2e0b32db270f8c56b4ebbbdce700e47b0ee26ee"
+source_path = "LICENSES/PipeWire-spa-dll-MIT.txt"
+bundle_path = "licenses/derived/PipeWire-spa-dll-MIT.txt"
+license = "MIT"
+
+[[toolchain_notice]]
+component = "Debian rustc copyright inventory"
+description = "Copyright and license inventory for the Debian Rust toolchain whose standard library, panic runtime, and compiler-builtins code is statically incorporated into the Rust executables"
+source_url = "https://packages.debian.org/trixie/rustc"
+source_path = "/usr/share/doc/rustc/copyright"
+bundle_path = "licenses/toolchain/rustc-Debian-copyright.txt"
+license = "MIT OR Apache-2.0 (plus inventory-listed third-party terms)"
+
+[[toolchain_notice]]
+component = "Apache License 2.0"
+description = "Full Apache-2.0 text referenced by the Debian rustc copyright inventory"
+source_url = "https://www.apache.org/licenses/LICENSE-2.0"
+source_path = "/usr/share/common-licenses/Apache-2.0"
+bundle_path = "licenses/toolchain/Apache-2.0.txt"
+license = "Apache-2.0"
+
+[[system_dependency]]
+soname = "libasound.so.2"
+component = "alsa-lib"
+description = "Dynamically linked system ALSA library; the library itself is not included in this bundle"
+source_url = "https://www.alsa-project.org/"
+license = "LGPL-2.1-or-later"
+license_source_path = "/usr/share/common-licenses/LGPL-2.1"
+bundle_path = "licenses/system/LGPL-2.1.txt"

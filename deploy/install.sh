@@ -52,6 +52,7 @@ source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/renderers.sh"
 source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
 source "${REPO_DIR}/deploy/lib/install/model-staging.sh"
+source "${REPO_DIR}/deploy/lib/install/first-party-runtime.sh"
 source "${REPO_DIR}/deploy/lib/install/rust-daemons.sh"
 # Ring platform (audio-graph consolidation P1): builds the jts_ring ALSA
 # ioplug + ships its conf.d/tmpfiles assets INERT. Sourced after
@@ -59,6 +60,10 @@ source "${REPO_DIR}/deploy/lib/install/rust-daemons.sh"
 source "${REPO_DIR}/deploy/lib/install/ring-platform.sh"
 source "${REPO_DIR}/deploy/lib/install/python-runtime.sh"
 source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"
+# Hash-pinned vendored source for the optional enhanced AEC engine. This file
+# is also parsed by jasper.enhanced_aec; do not duplicate these values here.
+# shellcheck source=jasper_aec3/enhanced-aec-source.env
+source "${REPO_DIR}/jasper_aec3/enhanced-aec-source.env"
 
 CAMILLA_VERSION="v4.1.3"
 CAMILLA_TARBALL="camilladsp-linux-aarch64.tar.gz"
@@ -86,13 +91,6 @@ NQPTP_SHA256="d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9"
 # https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz
 SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/shairport-sync-0b1c4391ffd3.tar.gz"
 SHAIRPORT_SYNC_SHA256="7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865"
-WEBRTC_AEC3_VERSION="v2.1"
-WEBRTC_AEC3_COMMIT="846fe90a289f58b7c9303a635142aa2c7caa93e5"
-# Upstream provenance (auto-generated archive, not fetched by install.sh):
-# https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/${WEBRTC_AEC3_COMMIT}/webrtc-audio-processing-${WEBRTC_AEC3_COMMIT}.tar.gz
-WEBRTC_AEC3_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/webrtc-audio-processing-846fe90a289f.tar.gz"
-WEBRTC_AEC3_SHA256="ddf4e540b9f4291e140cc2ab4560f3eb4fce07ef6212a94d980843bfbf9a4588"
-
 print_install_usage() {
     cat <<'EOF'
 Usage: bash deploy/install.sh [--dry-run|--plan]
@@ -113,6 +111,10 @@ Environment:
                              Speaker identity/cert hostname for direct
                              Pi-local installs. scripts/deploy-to-pi.sh
                              forwards this automatically.
+  JASPER_FIRST_PARTY_RUNTIME_BUNDLE=<directory>
+                             Optional extracted, local ARM64 runtime bundle.
+                             Verification is fail-closed; unset preserves the
+                             existing source-build path.
 EOF
 }
 
@@ -523,8 +525,8 @@ Profile guard:
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. Build strategy keys off
-    RAM (the Rust low-memory profile under ~1.2 GB; the WebRTC AEC3 -j
-    cap budgets ~1.5 GB/job). The real install fails fast on a non-arm64
+    RAM (the Rust low-memory profile under ~1.2 GB). The optional enhanced
+    AEC job later uses the shared C++ budget of ~1.5 GB/job. The real install fails fast on a non-arm64
     architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. Low-RAM hosts
     may enable temporary high-priority build swap for the heavy source/Rust
     build window, removed automatically on exit.
@@ -557,7 +559,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - shairport-sync source archive: ${SHAIRPORT_SYNC_ARCHIVE_URL}
      ref=${SHAIRPORT_SYNC_VERSION}, commit=${SHAIRPORT_SYNC_COMMIT}
      sha256=${SHAIRPORT_SYNC_SHA256}
-   - WebRTC AEC3 v2 source archive: ${WEBRTC_AEC3_ARCHIVE_URL}
+   - Optional after setup — WebRTC AEC3 v2 source archive:
+     ${WEBRTC_AEC3_ARCHIVE_URL}
      ref=${WEBRTC_AEC3_VERSION}, commit=${WEBRTC_AEC3_COMMIT}
      sha256=${WEBRTC_AEC3_SHA256}
    - CamillaGUI 4.1.0 bundle selected by uname -m, sha256-checked.
@@ -585,10 +588,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      class) — the transcript build-failure WARN is the only signal.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
-   - All heavy source builds above (webrtc AEC3, jasper_aec3, the Rust
-     daemons, shairport-sync, nqptp) run RAM-bounded and cgroup-contained
+   - All heavy source builds above (jasper_aec3 v1, the Rust daemons,
+     shairport-sync, nqptp) run RAM-bounded and cgroup-contained
      via deploy/lib/install/build-sandbox.sh, so an OOM during an
      in-service update kills only the build, never a live daemon.
+     The optional v2 job reuses that same installed containment helper.
      See docs/HANDOFF-build-sandbox.md.
    - On low-RAM hosts, park audio/runtime daemons before Rust builds so
      the build has room without inducing service restart storms.
@@ -841,10 +845,10 @@ install_deps() {
     # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
     # our crate's rust-version=1.75 floor. See
     # docs/HANDOFF-fan-in-daemon.md "Why Rust" for the language choice.
-    # meson + ninja-build are needed by build_webrtc_v2_for_aec3() to
-    # compile webrtc-audio-processing v2.1 statically from source. The
-    # resulting static archive is what jasper_aec3/setup.py links the
-    # `_aec3_v2` binding against (BEST_A AEC config). See
+    # meson + ninja-build are installed ahead of time for the optional
+    # enhanced-AEC root oneshot. A normal deploy builds only the quick v1
+    # binding; an explicit Advanced → Software action compiles v2 later in a
+    # contained background job. See
     # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
     # libasound2-plugins is REQUIRED for the rate_converter line in
     # deploy/alsa/asoundrc.jasper. Without it ALSA silently falls back
@@ -869,102 +873,6 @@ install_streambox_deps() {
 
     _install_renderer_native_deps
 }
-
-_webrtc_compile_jobs() {
-    # Bound the WebRTC AEC3 C++ build's parallelism to available RAM.
-    # Each -O3 webrtc-audio-processing translation unit (notably
-    # audio_processing_impl.cc) can peak well over 1 GB in cc1plus;
-    # `meson compile` defaults to nproc jobs, so on a 1 GB Pi the four
-    # parallel compiles exhaust RAM+swap and the OOM killer takes out
-    # cc1plus *and* cascading victims (nginx, jasper-voice were both
-    # OOM-killed on jts2, 2026-06-21), aborting the deploy mid-install.
-    #
-    # Budget ~1.5 GB per job and clamp to [1, nproc]: a 1 GB Pi builds
-    # at -j1 (slower but survives), an 8 GB Pi still gets full nproc.
-    # $1=MemTotal kB, $2=nproc (both injectable for tests).
-    #
-    # Now a thin caller of the unified _ram_bounded_jobs policy in
-    # build-sandbox.sh, at the shared C++ budget. Kept as a named function
-    # so its regression tests and the call site below stay stable.
-    # Containment of the compile itself is run_contained_build.
-    _ram_bounded_jobs "${1:-0}" "${2:-1}" "${BUILD_SANDBOX_KB_PER_JOB_CPP}"
-}
-
-build_webrtc_v2_for_aec3() {
-    # Build webrtc-audio-processing v2.1 statically into
-    # /opt/jasper/.cache/webrtc-aec3-v2/src/builddir/, then export
-    # JASPER_WEBRTC_V2_PREFIX for the caller. jasper_aec3/setup.py
-    # reads this env var (as WEBRTC_AEC3_V2_PREFIX) and links its
-    # `_aec3_v2` binding against the static archive.
-    #
-    # Why v2.1 vendored + static: Debian Trixie's apt
-    # libwebrtc-audio-processing-1 v1.3-3 doesn't expose
-    # EchoCanceller3Factory in its public headers, so the deep
-    # suppressor / ERLE / stationarity knobs that BEST_A relies on
-    # are unreachable. Mirroring PipeWire 1.4's pattern, we vendor
-    # v2.1 from the upstream pulseaudio fork and link statically —
-    # we own both sides of the ABI boundary; no Debian-rebuild risk.
-    # See HANDOFF-aec.md section E + experiments/aec3-v2-deep-tune-spike/.
-    #
-    # First-run cost: ~3-5 min on Pi 5. Re-runs are no-ops thanks to
-    # the static-archive existence check.
-    local cache_dir="/opt/jasper/.cache/webrtc-aec3-v2"
-    local src_dir="${cache_dir}/src"
-    local build_dir="${src_dir}/builddir"
-    local static_archive="${build_dir}/webrtc/modules/audio_processing/libwebrtc-audio-processing-2.a"
-    local provenance_marker="${cache_dir}/source.archive"
-    local source_id="${WEBRTC_AEC3_COMMIT}:${WEBRTC_AEC3_SHA256}"
-    local repo_tag="${WEBRTC_AEC3_VERSION}"
-
-    if [[ -f "${static_archive}" ]]; then
-        if [[ -f "${provenance_marker}" ]] \
-           && [[ "$(cat "${provenance_marker}")" == "${source_id}" ]]; then
-            echo "  webrtc-audio-processing v2.1 already built at ${static_archive}"
-            export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
-            return 0
-        fi
-        echo "  webrtc-audio-processing cache lacks expected provenance; rebuilding"
-        rm -rf "${src_dir}"
-    fi
-
-    echo "  building webrtc-audio-processing ${repo_tag} statically (first run, ~3-5 min)..."
-    mkdir -p "${cache_dir}"
-
-    fetch_verified_source_archive \
-        "${WEBRTC_AEC3_ARCHIVE_URL}" \
-        "${WEBRTC_AEC3_SHA256}" \
-        "${src_dir}" \
-        "webrtc-audio-processing ${repo_tag} (${WEBRTC_AEC3_COMMIT})"
-
-    if [[ ! -f "${build_dir}/build.ninja" ]]; then
-        echo "    meson setup builddir/"
-        (cd "${src_dir}" && meson setup builddir \
-            -Ddefault_library=static \
-            -Db_pie=true \
-            -Dc_args=-fPIC \
-            -Dcpp_args=-fPIC \
-            --buildtype=release)
-    fi
-
-    local compile_jobs
-    compile_jobs="$(_webrtc_compile_jobs \
-        "$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2>/dev/null)" \
-        "$(nproc 2>/dev/null || echo 1)")"
-    echo "    meson compile -C builddir/ (-j ${compile_jobs}; RAM-bounded + cgroup-contained to avoid OOM-killing live daemons on low-memory Pis)"
-    (cd "${src_dir}" && run_contained_build "webrtc-aec3" -- \
-        meson compile -C builddir -j "${compile_jobs}")
-
-    if [[ ! -f "${static_archive}" ]]; then
-        echo "  ERROR: meson compile finished but ${static_archive} is missing" >&2
-        echo "  WEBRTC_AEC3_V2_PREFIX will not be set; setup.py will skip _aec3_v2" >&2
-        return 1
-    fi
-
-    echo "${source_id}" > "${provenance_marker}"
-    echo "  → static archive: ${static_archive} ($(du -h "${static_archive}" | cut -f1))"
-    export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
-}
-
 
 require_outputd_ready() {
     if [[ ! -x /opt/jasper/bin/jasper-outputd ]]; then

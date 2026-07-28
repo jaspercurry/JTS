@@ -484,7 +484,11 @@ def test_process_group_signal_restores_bypass_and_full_daemon(
         chip_aec_install_restore_trap
         chip_aec_enter_ref_only
         printf 'ready\\n' > {shlex_quote(str(ready))}
-        while :; do sleep 30; done
+        # Bash defers a trapped signal while waiting for a foreground child.
+        # Keep that child interval bounded so a process-group signal delivered
+        # in the ready->sleep startup race cannot defer cleanup past the test
+        # timeout.
+        while :; do sleep 0.1; done
         """
     )
     proc = subprocess.Popen(

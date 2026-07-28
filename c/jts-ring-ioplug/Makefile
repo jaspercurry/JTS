@@ -35,6 +35,9 @@ TEST_CPPFLAGS ?= -DJTS_RING_TESTING
 # ALSA plugin install dir (aarch64 Trixie). Override for other multiarch dirs.
 ALSA_PLUGIN_DIR ?= /usr/lib/aarch64-linux-gnu/alsa-lib
 PLUGIN_SO := libasound_module_pcm_jts_ring.so
+# Release packaging overrides this with a path inside its freshly-created,
+# release-owned output root. Ordinary Pi/source builds keep the local default.
+PLUGIN_OUTPUT ?= $(PLUGIN_SO)
 
 CORE := jts_ring_shm.c
 
@@ -71,11 +74,11 @@ bench: ring_writer_bench ring_reader_bench
 # jts.local 2026-07-02). libtool passes -DPIC implicitly; hand-rolled
 # Makefiles must do it themselves.
 plugin: pcm_jts_ring.c $(CORE) jts_ring_shm.h
-	$(CC) $(CFLAGS) -DPIC -shared -o $(PLUGIN_SO) pcm_jts_ring.c $(CORE) -lasound $(LDFLAGS)
+	$(CC) $(CFLAGS) -DPIC -shared -o $(PLUGIN_OUTPUT) pcm_jts_ring.c $(CORE) -lasound $(LDFLAGS)
 
 install: plugin
 	install -d $(ALSA_PLUGIN_DIR)
-	install -m 0644 $(PLUGIN_SO) $(ALSA_PLUGIN_DIR)/$(PLUGIN_SO)
+	install -m 0644 $(PLUGIN_OUTPUT) $(ALSA_PLUGIN_DIR)/$(PLUGIN_SO)
 
 clean:
-	rm -f test_ring_core ring_writer_bench ring_reader_bench $(PLUGIN_SO)
+	rm -f test_ring_core ring_writer_bench ring_reader_bench $(PLUGIN_OUTPUT)

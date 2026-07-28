@@ -1,0 +1,84 @@
+name: first-party ARM64 runtime artifact
+
+# Deliberately manual-only. This produces a downloadable Actions artifact for
+# review/hardware promotion; it does not create a GitHub Release and moving
+# main can never publish binaries automatically.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release label (blank = git-<12-char SHA>)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: native Debian Trixie ARM64
+    # Native ARM64 avoids cross-linker/host-ABI ambiguity. GitHub currently
+    # labels this runner as public preview; the operational doc records that
+    # availability as a release-lane limitation rather than hiding it.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    container:
+      # Date-pinned Debian 13 base. Apt packages are still the signed current
+      # Trixie repository (recorded toolchain, not a hermetic snapshot); see
+      # docs/HANDOFF-first-party-arm64-artifacts.md.
+      image: debian:trixie-20260713-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
+
+    steps:
+      - name: Install native build and ELF inspection tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            binutils build-essential ca-certificates cargo git \
+            libasound2-dev pkg-config python3 rustc xz-utils
+          rm -rf /var/lib/apt/lists/*
+          test "$(uname -m)" = "aarch64"
+          grep -q '^VERSION_CODENAME=trixie$' /etc/os-release
+          test -f /usr/share/common-licenses/LGPL-2.1
+          test -f /usr/share/common-licenses/Apache-2.0
+          test -f /usr/share/doc/rustc/copyright
+
+      # The slim image has no Git. Install it before checkout so checkout
+      # cannot fall back to an archive without the metadata BUILD-INFO needs.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact source identity is available
+        run: |
+          test -d .git
+          git rev-parse --verify HEAD
+          test -z "$(git status --porcelain)"
+
+      - name: Build, verify, and package the first-party runtime
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "${RELEASE_VERSION}" ]; then
+            python3 scripts/build-first-party-arm64-release.py \
+              --version "${RELEASE_VERSION}"
+          else
+            python3 scripts/build-first-party-arm64-release.py
+          fi
+
+      - name: Recheck the downloadable archive digest
+        run: |
+          cd dist/first-party-arm64
+          sha256sum --check ./*.tar.xz.sha256
+
+      - name: Upload reviewable bundle and deterministic archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: jts-first-party-runtime-arm64-${{ github.run_id }}
+          path: dist/first-party-arm64/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

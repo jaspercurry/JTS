@@ -21,11 +21,11 @@ import numpy as np
 from scipy import signal
 
 try:
-    from _wake_audio_metrics import rms_amplitude as rms
-except ModuleNotFoundError as exc:
-    if exc.name != "_wake_audio_metrics":
-        raise
     from scripts._wake_audio_metrics import rms_amplitude as rms
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts._wake_audio_metrics"}:
+        raise
+    from _wake_audio_metrics import rms_amplitude as rms
 
 
 SAMPLE_RATE = 16000

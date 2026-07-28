@@ -13,13 +13,19 @@ Data comes from jasper-control:
   GET  /system/snapshot     metrics + build (5 s ring buffer)
   GET  /system/diagnostics  serves cached jasper-doctor JSON and
                              refreshes stale snapshots in the background
+  GET  /aec/enhanced-aec     enhanced AEC installation state, proxied to the
+                             browser as /optional-features/enhanced-aec
+  POST /aec/enhanced-aec/install
+                             start or retry the background installation,
+                             proxied from the matching browser route
   POST /system/restart/*    restart voice / audio chain
   POST /usb-forensics       persistent sampler toggle / capture / USB repair
   POST /system/reboot       full Pi reboot
 
 Wake detection lives on /wake/ — the model picker, the AEC + per-leg
 toggles, and the sensitivity slider all share that page now since they
-share a restart cycle. /system/ no longer carries an AEC card.
+share a restart cycle. /system/ carries no operational AEC controls; its
+Software card only offers the optional enhanced-engine installation.
 
 This wizard's job is to render the page shell and proxy the JSON. The UI
 itself is the canonical design system: `canonical_page()` emits the shared
@@ -132,6 +138,15 @@ def _make_handler(
                 )
                 send_proxy_json(self, body, status=status)
                 return
+            if path == "/optional-features/enhanced-aec":
+                if not guard_read_request(self):
+                    return
+                status, body = proxy_get(
+                    "/aec/enhanced-aec",
+                    control_base=control_base, timeout=5.0,
+                )
+                send_proxy_json(self, body, status=status)
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -140,6 +155,7 @@ def _make_handler(
             POST_ROUTES = (
                 "/restart/voice", "/restart/audio", "/reboot", "/poweroff",
                 "/audio-quality", "/usb-forensics",
+                "/optional-features/enhanced-aec/install",
             )
             if path not in POST_ROUTES:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -148,7 +164,10 @@ def _make_handler(
                 reject_csrf(self)
                 return
             body = None
-            if path in ("/audio-quality", "/usb-forensics"):
+            if path in (
+                "/audio-quality", "/usb-forensics",
+                "/optional-features/enhanced-aec/install",
+            ):
                 try:
                     length = int(self.headers.get("Content-Length") or "0")
                 except ValueError:
@@ -162,9 +181,14 @@ def _make_handler(
             # control-token gate sees it on /system/reboot|poweroff (the
             # wizard proxies server-side; the header can't ride the browser
             # fetch otherwise).
-            control_path = (
-                "/usb-forensics" if path == "/usb-forensics" else "/system" + path
-            )
+            if path in (
+                "/usb-forensics",
+            ):
+                control_path = path
+            elif path == "/optional-features/enhanced-aec/install":
+                control_path = "/aec/enhanced-aec/install"
+            else:
+                control_path = "/system" + path
             status, body = proxy_post(
                 control_path, control_base=control_base, body=body,
                 headers=forward_control_token_headers(self),

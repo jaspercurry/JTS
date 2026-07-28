@@ -28,6 +28,9 @@ from jasper.web import system_setup
 _NODE = shutil.which("node")
 _NAV_HARNESS = Path(__file__).resolve().parent / "js" / "system_status_navigation_test.mjs"
 _AUDIO_HARNESS = Path(__file__).resolve().parent / "js" / "system_audio_sections_test.mjs"
+_OPTIONAL_FEATURES_HARNESS = (
+    Path(__file__).resolve().parent / "js" / "system_optional_features_test.mjs"
+)
 _MAIN_JS = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "assets" / "system-status" / "js" / "main.js"
@@ -35,6 +38,11 @@ _MAIN_JS = (
 _AUDIO_SECTIONS_JS = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "assets" / "system-status" / "js" / "audio-sections.js"
+)
+_OPTIONAL_FEATURES_JS = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "assets" / "system-status" / "js"
+    / "optional-features-card.js"
 )
 
 
@@ -62,6 +70,17 @@ def test_audio_sections_runtime_contract() -> None:
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_AUDIO_HARNESS), str(_AUDIO_SECTIONS_JS)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {"ok": True}
+
+
+def test_optional_features_runtime_contract() -> None:
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [_NODE, str(_OPTIONAL_FEATURES_HARNESS), str(_OPTIONAL_FEATURES_JS)],
         capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
@@ -226,6 +245,44 @@ def upstream_control():
                 {"name": "env_file", "status": "ok", "detail": "/etc/jasper/jasper.env present"},
             ],
         },
+        "/aec/enhanced-aec": {
+            "schema_version": 1,
+            "feature": "enhanced_aec",
+            "state": "not_installed",
+            "requested": False,
+            "installed": False,
+            "current": False,
+            "summary": "Standard echo cancellation is active.",
+            "detail": "",
+            "last_error": "",
+            "desired_fingerprint": "abc123",
+            "installed_fingerprint": "",
+            "engine": "v1",
+            "action": {
+                "enabled": True,
+                "label": "Install enhancement",
+                "reason": "",
+            },
+        },
+        "/aec/enhanced-aec/install": {
+            "schema_version": 1,
+            "feature": "enhanced_aec",
+            "state": "installing",
+            "requested": True,
+            "installed": False,
+            "current": False,
+            "summary": "Installing in the background.",
+            "detail": "",
+            "last_error": "",
+            "desired_fingerprint": "abc123",
+            "installed_fingerprint": "",
+            "engine": "v1",
+            "action": {
+                "enabled": False,
+                "label": "Installing…",
+                "reason": "installation_in_progress",
+            },
+        },
         "/system/restart/voice": {"ok": True, "action": "restart-voice"},
         "/system/restart/audio": {"ok": True, "action": "restart-audio"},
         "/system/audio-quality": {"ok": True, "action": "audio-quality"},
@@ -370,6 +427,22 @@ def test_diagnostics_json_proxies_doctor(dashboard_server) -> None:
     assert ("GET", "/system/diagnostics") in received
 
 
+def test_enhanced_aec_status_proxies_versioned_contract(
+    dashboard_server,
+) -> None:
+    base, received, _ = dashboard_server
+    status, body = _http_get(
+        f"{base}/optional-features/enhanced-aec",
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["schema_version"] == 1
+    assert payload["feature"] == "enhanced_aec"
+    assert payload["state"] == "not_installed"
+    assert payload["action"]["label"] == "Install enhancement"
+    assert ("GET", "/aec/enhanced-aec") in received
+
+
 def test_post_restart_voice_proxies(dashboard_server) -> None:
     base, received, _ = dashboard_server
     status, body = _http_post(f"{base}/restart/voice")
@@ -414,6 +487,21 @@ def test_post_usb_forensics_proxies_json_body(dashboard_server) -> None:
         "action": "set_enabled", "enabled": True,
     }
     assert ("POST", "/usb-forensics") in received
+
+
+def test_post_enhanced_aec_install_proxies_json_body(
+    dashboard_server,
+) -> None:
+    base, received, _ = dashboard_server
+    status, body = _http_post_json(
+        f"{base}/optional-features/enhanced-aec/install", {},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["schema_version"] == 1
+    assert payload["state"] == "installing"
+    assert payload["received_body"] == {}
+    assert ("POST", "/aec/enhanced-aec/install") in received
 
 
 def test_post_reboot_proxies(dashboard_server) -> None:
@@ -514,7 +602,8 @@ _SHARED_DOM_JS = _ASSETS_DIR / "shared" / "js" / "dom.js"
 # in via _system_js() below rather than listed here.
 _EXPECTED_MODULES = (
     "format", "charts", "components", "sections", "audio-sections", "audio-view",
-    "views", "usb-forensics-card", "api", "actions", "main",
+    "views", "usb-forensics-card", "optional-features-card", "api", "actions",
+    "main",
 )
 
 
@@ -557,10 +646,35 @@ def test_modules_wire_the_proxy_endpoints() -> None:
     poll the same read endpoints."""
     js = _system_js()
     for path in ("restart/voice", "restart/audio", "reboot", "poweroff",
-                 "audio-quality", "usb-forensics", "data.json", "diagnostics.json"):
+                 "audio-quality", "usb-forensics", "data.json", "diagnostics.json",
+                 "optional-features/enhanced-aec"):
         assert path in js, f"system modules no longer reference {path}"
     assert 'getJSON("/system/data.json")' in js
     assert 'fetch("/system/audio-quality"' in js
+
+
+def test_enhanced_aec_is_progressively_disclosed_on_software_surface() -> None:
+    optional_js = _OPTIONAL_FEATURES_JS.read_text()
+    views_js = (_MODULE_DIR / "views.js").read_text()
+    landing = (
+        Path(__file__).resolve().parents[1] / "deploy" / "index.html"
+    ).read_text()
+
+    assert 'title: "Optional features"' in optional_js
+    assert "open: false" in optional_js
+    assert "Enhanced echo cancellation" in optional_js
+    assert "Adds an enhanced software engine" in optional_js
+    assert "Most speakers don’t need it" in optional_js
+    assert "Technical details" in optional_js
+    assert "WebRTC AEC3 v2 / BEST_A" in optional_js
+    assert "Install enhancement" in optional_js
+    assert "type: \"checkbox\"" not in optional_js
+    assert "buildEnhancedAecCard()" in views_js
+    assert "software.body.append(softwareDetails, buildEnhancedAecCard())" in views_js
+    assert "Enhanced echo cancellation" not in landing
+    assert ".optional-feature__technical dd { overflow-wrap: anywhere; }" in (
+        _SYSTEM_CSS.read_text()
+    )
 
 
 def test_modules_preserve_metric_logic() -> None:

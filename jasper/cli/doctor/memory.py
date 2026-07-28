@@ -405,12 +405,12 @@ def check_oom_score_adj() -> CheckResult:
     if missing:
         return CheckResult(
             "OOM score adj", "ok",
-            f"{len(expected) - len(missing)} daemons protected; "
+            f"{len(expected) - len(missing)} running processes match policy; "
             f"{len(missing)} not running ({', '.join(missing)})",
         )
     return CheckResult(
         "OOM score adj", "ok",
-        f"all {len(expected)} critical daemons protected",
+        f"all {len(expected)} installed units match the configured OOM policy",
     )
 
 # --- Stage 2 audio-protection checks (shipped 2026-05-24) ---

@@ -464,6 +464,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-mic-fusion-architecture.md  Design/plan (draft): pluggable-mic boundary + N-leg wake fusion
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
+  HANDOFF-enhanced-aec.md       Optional vendored AEC3 v2 install/activation lifecycle
   HANDOFF-hotplug-resilience.md  Runtime mic/DAC/satellite attach-detach convergence (no crash-loop)
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
   HANDOFF-chip-aec-portability.md  DAC-portable chip-AEC: clock-recovery design + roadmap
@@ -604,7 +605,10 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up a Zero 2 W streambox | Lab runbook for cheap Zero-class JTS: the streambox install profile (local renderers, DSP, shared capability-gated UI) plus the planned `active_crossover` output topology. "Endpoint behaviour" is now the runtime multiroom follower role, not a separate install tier |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
-| [docs/HANDOFF-build-sandbox.md](docs/HANDOFF-build-sandbox.md) | Maintainers / install-path | How `install.sh` runs heavy compiles (webrtc AEC3, jasper_aec3, Rust daemons, shairport-sync/nqptp) RAM-bounded + cgroup-contained so an OOM during an in-service update kills only the build, never a live daemon. Workstream A of the install-update resilience brief; the inverse-of-audio-daemon build policy |
+| [docs/HANDOFF-pi-image-delivery.md](docs/HANDOFF-pi-image-delivery.md) | Maintainers / release engineers | **Operational delivery plan.** The single source of truth for the stock-OS → bootstrap → hybrid-image gradient, fast-moving-main release boundary, first-boot transaction, redistribution scope, image-factory choice, and promotion gates for a future Raspberry Pi Imager `.img.xz`. |
+| [docs/HANDOFF-first-party-arm64-artifacts.md](docs/HANDOFF-first-party-arm64-artifacts.md) | Maintainers / release engineers | **Operational artifact contract.** Native Trixie ARM64 build lane, deterministic bundle format, exact BUILD-INFO/ELF/license verification, commit-coupled transactional installer seam, and honest reproducibility boundary. |
+| [docs/HANDOFF-enhanced-aec.md](docs/HANDOFF-enhanced-aec.md) | Maintainers / audio / install-path | **Operational.** The mandatory fast AEC3 v1 vs. opt-in vendored v2 boundary, durable intent and verified-marker state model, lazy runtime authorization, contained background build, deploy-race handling, status API, and redistribution boundary. |
+| [docs/HANDOFF-build-sandbox.md](docs/HANDOFF-build-sandbox.md) | Maintainers / install-path | How core installer compiles and optional background builds (including enhanced WebRTC AEC3 v2) run RAM-bounded + cgroup-contained so an OOM during an in-service update kills only the build, never a live daemon. Workstream A of the install-update resilience brief; the inverse-of-audio-daemon build policy |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
 | [docs/DEEP-AUDIT-PLAYBOOK.md](docs/DEEP-AUDIT-PLAYBOOK.md) | Maintainers / AI agents (pre-launch) | The heavyweight whole-codebase audit method: many sub-agents comb the tree close to line by line for dead code, drift, duplication, unjustified complexity, and the **unknown unknowns** (orphans, dead flags, off-map corners). Capital-T-truth bar (a clean result is *suspect*), coverage ledger, adversarial verification, honest grades with confidence. Driven by the `/deep-audit` command. NOT a per-diff review — that's `/code-review ultra`. |
 | [docs/HANDOFF-observability.md](docs/HANDOFF-observability.md) | Operator + AI | Logging/observability model (heartbeat-vs-forensic split, the three steady-state verbosity hotspots, persistent-journald rationale) + the approved per-subsystem debug-mode toggle, flight-recorder, and download-diagnostics design |
@@ -673,6 +677,10 @@ reference. Currently:
   capability with local `/crossover`.
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine choices, chip-AEC profile, software fallback)
+- [`HANDOFF-enhanced-aec.md`](docs/HANDOFF-enhanced-aec.md) — the
+  install/activation lifecycle for optional vendored AEC3 v2: fast v1
+  baseline, verified marker + digest gate, background build, retries,
+  deploy races, and licensing boundary
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —
   2026-05-29 chip-AEC lab findings and next-productionization plan.
   Option D is now a positive lab result, not a closed negative:
@@ -1183,9 +1191,10 @@ reference. Currently:
   Treat as source material; operational guidance lives in
   `HANDOFF-multiroom.md` and `dumb-endpoint-bringup.md`.
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
-  Proposal (created 2026-05-22, not yet implemented) for
-  restructuring the `jts.local` management surface into a tighter
-  layout with a first-run setup wizard.
+  Current management-surface reference plus the remaining roadmap.
+  The canonical design system and tighter `jts.local` layout are
+  implemented; the first-run setup wizard and fuller conditional
+  guidance remain future phases.
 - [`PROPOSAL-dac-profile-registry.md`](docs/PROPOSAL-dac-profile-registry.md)
   — **Proposal / implementation handoff** (updated 2026-06-11) —
   scoped design for the data-driven DAC profile registry now scaffolded

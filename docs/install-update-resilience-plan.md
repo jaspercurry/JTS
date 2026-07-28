@@ -8,6 +8,14 @@
 > `HANDOFF-resilience.md`, …) are the truth, not this file. Origin: a
 > 2026-06-21 update of `jts2.local` (a 1 GB Pi 5, **748 commits behind**
 > `main`) that failed mid-install and left the speaker degraded.
+>
+> **2026-07-27 follow-up:** the slow vendored WebRTC AEC3 v2 build is no
+> longer inside the core install transaction. Full installs retain the small
+> mandatory v1 fallback; v2/BEST_A is explicit, contained, and retried after a
+> successful deploy without gating its manifest. Current truth:
+> [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md). Incident-era references
+> to `_webrtc_compile_jobs` below are preserved as the evidence that motivated
+> the shared build policy.
 
 ## Mission
 
@@ -201,6 +209,8 @@ and #C can land before #A, and #D informs all of them.
 > prebuilt per-arch artifacts for the Zero 2 W (a CPU-time problem
 > containment can't solve), the Rust low-memory threshold bump, and the
 > on-hardware OOM confirmation listed in that doc.
+> The vendored WebRTC build now runs only as the optional enhanced-AEC
+> oneshot through that same installed containment helper.
 
 ```text
 Read docs/install-update-resilience-plan.md for full context (problems #1, #2;
@@ -310,7 +320,9 @@ design note + scoped PR; flag what needs a real plug/unplug hardware pass.
 > is *not* a migration-pile-up risk — it amplifies risk via cold build
 > caches, so stepwise updates are **rejected** in favour of safe builds
 > (A) + atomic updates (B); plus a cross-SKU test strategy and a scoped
-> tier-detection + arch-guard change in `deploy/install.sh`.
+> tier-detection + arch-guard change in `deploy/install.sh`. The conditional
+> build question is now resolved as “mandatory v1 fallback, optional v2
+> enhancement,” not “skip software AEC on chip-AEC hardware.”
 
 ```text
 Read docs/install-update-resilience-plan.md for full context (the hardware-tier

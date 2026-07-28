@@ -47,6 +47,7 @@
 | Check udev SYSTEMD_WANTS hotplug targets are shipped units | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — udev → unit chain guard |
 | Check wizard-socket ListenStream ports match nginx upstreams (PR #118 502 class) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — two-sided socket↔nginx parity guard |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
+| Build or verify the first-party Pi ARM64 runtime bundle | [First-party ARM64 release artifact](#first-party-arm64-release-artifact) |
 | Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
@@ -129,6 +130,23 @@ python3 scripts/check-provenance.py
 
 The policy and update workflow live in
 [`docs/HANDOFF-supply-chain.md`](HANDOFF-supply-chain.md).
+
+## First-party ARM64 release artifact
+
+The manual native-ARM64 release lane builds and validates the narrow compiled
+runtime that a future Pi image can preload:
+
+```sh
+python3 scripts/build-first-party-arm64-release.py
+python3 scripts/verify-first-party-arm64-release.py \
+  dist/first-party-arm64/jts-first-party-runtime-<version>
+pytest -q tests/test_first_party_arm64_release.py
+```
+
+Use `--expected-source-sha <full-sha>` when validating a bundle for install.
+The artifact contract, output semantics, license scope, installer transaction,
+and reproducibility limits live in
+[`HANDOFF-first-party-arm64-artifacts.md`](HANDOFF-first-party-arm64-artifacts.md).
 
 ---
 

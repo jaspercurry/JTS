@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=77.0.3", "pybind11>=2.10"]
+# Exact pins make the native-extension build reproducible. The optional
+# installer uses PEP 517 isolation, so these are provisioned in its temporary
+# build environment rather than assumed to exist in /opt/jasper/.venv.
+requires = ["setuptools==82.0.1", "pybind11==2.13.6"]
 build-backend = "setuptools.build_meta"
 
 [project]
