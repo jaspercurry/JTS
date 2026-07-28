@@ -1524,9 +1524,15 @@ def test_measure_level_solve_refuses_a_degenerate_ambient_report(caplog):
         # before #1838 carry it — but the solver never emits it again.
         assert solve.bound_by != GAIN_BOUND_CAPTURE_FLOOR
     assert GAIN_BOUND_CAPTURE_FLOOR in GAIN_BOUNDS
-    # And it is not silent: one WARNING per refused role.
-    refusals = [r for r in caplog.records if "degenerate" in r.getMessage()]
+    # And it is not silent: one structured WARNING per refused role, carrying
+    # the arms it refused so the refusal is diagnosable from the journal.
+    refusals = [
+        r for r in caplog.records
+        if "event=program_analysis.measure_level_solve_refused" in r.getMessage()
+    ]
     assert len(refusals) == 2
+    assert all("reason=degenerate_ambient" in r.getMessage() for r in refusals)
+    assert all("required_capture_dbfs=" in r.getMessage() for r in refusals)
 
 
 def test_measure_level_solve_reports_the_room_demand_even_when_it_is_refused():

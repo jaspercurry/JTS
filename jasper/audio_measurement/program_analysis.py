@@ -3231,11 +3231,17 @@ def _solve_role_gain(
         # construction. A floor-bound solve is not a level, it is evidence
         # that the ambient report cannot be solved against — so refuse, keep
         # today's proven flat target, and say which way the refusal went.
-        logger.warning(
-            "measure level solve refused for role=%s: ambient report is "
-            "degenerate (every SNR arm resolved below the %.1f dBFS capture "
-            "floor); falling back to the flat target %.2f dBFS",
-            role, DRIVER.peak_too_low_dbfs, flat_target_gain_db,
+        log_event(
+            logger,
+            "program_analysis.measure_level_solve_refused",
+            level=logging.WARNING,
+            role=role,
+            reason=GAIN_BOUND_DEGENERATE_AMBIENT,
+            capture_floor_dbfs=round(DRIVER.peak_too_low_dbfs, 2),
+            required_capture_dbfs=round(required_capture_dbfs, 2),
+            pilot_floor_dbfs=round(pilot_floor_dbfs, 2),
+            ambient_dbfs=round(ambient_dbfs, 2),
+            fallback_gain_db=round(flat_target_gain_db, 3),
         )
         return RoleGainSolve(
             role=role,
