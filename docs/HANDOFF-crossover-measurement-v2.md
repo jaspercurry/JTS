@@ -934,17 +934,38 @@ auto-arms VERIFY with no household action in between, and each prompted
 cloud position needs its own tap because the household has to move the
 mic first.
 
-**Pre-capture courtesy tone (issue #1677).** Every capture's program
-opens with three short ~1 kHz beeps + ~3 s of silence
-from the speaker under test itself, before that phase's own content
-resumes — a "quiet please, a measurement is starting" warning ahead of
-each capture (16 of them in a Full-tier cloud session, 7 on Express,
-where it used to be 3), replacing the 2026-07-23 lab-only interim (a
-Mac-side `osascript
-beep`, then a fan-in-TTS-lane 3-beep burst). It is composed as an ordinary
-prepended segment group on the SAME `ExcitationProgram` the phase already
-plays and admits — never a second playback path — so it rides the session's
-existing volume/admission machinery for free. Its level is derived per
+**Pre-capture courtesy tone (issue #1677) and the program's audible
+order.** Every capture's program plays three short ~1 kHz beeps + ~3 s of
+silence from the speaker under test itself — a "quiet please, a
+measurement is starting" warning ahead of each capture (16 of them in a
+Full-tier cloud session, 7 on Express, where it used to be 3), replacing
+the 2026-07-23 lab-only interim (a Mac-side `osascript beep`, then a
+fan-in-TTS-lane 3-beep burst).
+
+The audible order, since 2026-07-28 (issues #1810/#1812 — the previous
+revision of this paragraph still described the pre-#1771 "prepended
+group" shape, one revision stale):
+
+| Phase | Order |
+|---|---|
+| CHECK | 12 s session-ambient window (silent) → **beeps** → ~3 s settle → pilots |
+| MEASURE / VERIFY / every cloud position | **beeps** → ~3 s settle → 1 s ambient window (silent) → pilots → guard → sweep(s) |
+
+Two rules hold on every phase, both pinned by composition tests in
+[`tests/test_audio_measurement_program.py`](../tests/test_audio_measurement_program.py):
+**nothing audible precedes the first beep** (PR #1771 left MEASURE/VERIFY
+opening on two full-gain pilot chirps ahead of the quieter beeps — the
+owner heard "sweeps then beep beep beep" on 2026-07-28), and **the beeps
+are followed by the settle and nothing else** except that 1 s ambient
+window, which is silence and must be measured *inside* the quiet the
+beeps just asked for. `courtesy_beep_to_stimulus_gap_s` derives the real
+interval from any composed program; `COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S`
+is the bound.
+
+The prelude is composed as ordinary segments on the SAME
+`ExcitationProgram` the phase already plays and admits — never a second
+playback path — so it rides the session's existing volume/admission
+machinery for free. Its level is derived per
 program channel from that channel's own loudest scheduled stimulus gain
 (`courtesy_tone_gain_db`, 6 dB below, clamped to never exceed it and never
 positive), and its kind (`KIND_COURTESY_TONE`) is deliberately excluded from
@@ -956,6 +977,31 @@ from the same lengthened program, so it is not a second thing to keep in
 sync. See the "courtesy-tone prelude" section of
 [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py)'s
 module docstring for the segment shape.
+
+**The pre-pilot ambient window (issue #1810).** The 1 s silence in the
+MEASURE/VERIFY row above is not cosmetic: it is what makes the pilot SNR
+guard exist on those phases. `PilotObservation.snr_valid` gates the
+behavioural-linearity verdict on the quiet pilot clearing
+`PILOT_MIN_SNR_DB` (≈12.4 dB) over the room's in-band floor — but until
+this window shipped, those programs had no floor to measure, the guard's
+input was `+inf` by construction, and it could never fire. A JTS3 session
+on 2026-07-28 hit exactly that: a freshly-applied correction dropped the
+pilot band 14–18 dB, the quiet pilot landed ~5 dB over the room floor,
+noise compressed the captured two-pilot delta from 10 dB to 6 dB, and the
+household was told *"Your phone's microphone changed its own levels
+mid-measurement"* while `pilot_transfer_step_db` — the only direct
+recording-chain evidence path — was null. MEASURE, VERIFY and every cloud
+position now check `pilot_snr_ok` **before** their linearity branch and
+answer with `pilot_level_collapse` ("the room was too loud, or the speaker
+too quiet"), the same discriminator W6.12 gave CHECK. The window feeds the
+level/SNR path only, never `_channel_map_ok`'s ±12 dB rise test — that
+threshold was calibrated against CHECK's long framed estimator, and
+keeping the short window out of it also pre-empts arming a hard-stop flag
+nothing routes on yet (see gotcha #20). `agc_behavioral_fail`'s own copy was amended in the
+same change to state what it observes (the two tones came back at the wrong
+levels) rather than assert a cause it never measures; the definite mic
+accusation now lives only on `verify_level_shift`, which holds the
+cross-attempt transfer step.
 
 The RESULT screen (phone end screen + wizard `done` screen) states the
 outcome plainly first ("Your speaker is tuned. If it sounds worse than
@@ -1152,9 +1198,10 @@ source, no drift.
 
 | Code | Phase | Budget | Meaning |
 |---|---|---|---|
-| `agc_behavioral_fail` | CHECK / MEASURE / VERIFY | 1 | phone AGC changed levels mid-capture |
+| `agc_behavioral_fail` | CHECK / MEASURE / VERIFY | 1 | the captured two-pilot level delta did not match the programmed one, at an SNR where it should have. The phone's input chain riding gain OR the speaker's own output compressing — the copy names the observation, not a cause it never measures (#1810) |
 | `noisy_room_linearity` | CHECK | 1 | linearity failed *and* the ambient SNR floor failed — room, not phone |
-| `snr_floor` | CHECK / MEASURE | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16) |
+| `pilot_level_collapse` | MEASURE / cloud / VERIFY | 1 | the quiet pilot never cleared the room's in-band floor, so no level comparison from the pair is evidence — room too loud, or the playback level collapsed (e.g. a correction that dropped the pilot band). Checked BEFORE the linearity branch on all three phases, so a collapsed pair can never surface as the phone's fault (#1810) |
+| `snr_floor` | CHECK | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16). CHECK-only — the other phases use `pilot_level_collapse` |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
 | `clipped` | MEASURE / VERIFY | 1 | auto quieter retry (gain −3 dB) |
 | `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped (#1765) |
@@ -1746,6 +1793,57 @@ no retries-as-bodge). Treat these as regression fences.
     gate (`test_repeat_level_step_is_flagged_as_glitch`); a peak-only LF
     transient no longer does (`test_repeat_level_lf_transient_does_not_false_reject`).
     The epsilon/residual timing sub-conditions are untouched.
+
+20. **A guard whose input is a constant is not a guard** (#1810,
+    2026-07-28). The FOURTH sibling of the same family, and the nastiest,
+    because it looked shipped. Gotcha #16 built the pilot SNR guard and
+    wired its ambient window from `_analyze_check` only — every other
+    phase called `_pilot_observations` with no ambient, so
+    `_pilot_in_band_snr_db` returned its documented `+inf` "nothing to
+    validate against" sentinel and `snr_valid = snr_db >= PILOT_MIN_SNR_DB`
+    was satisfied *unconditionally* on MEASURE, VERIFY and every cloud
+    position — the code read as guarded and executed as unguarded from
+    2026-07-20 until it was found on 2026-07-28. It surfaced on JTS3 when
+    a freshly-applied correction dropped
+    the pilot band 14–18 dB, the quiet pilot landed ~5 dB over the room
+    floor, and VERIFY reported `agc_behavioral_fail` — telling the
+    household its phone's microphone had misbehaved, with
+    `pilot_transfer_step_db` (the only direct recording-chain evidence)
+    null in the same log line. Fix: MEASURE/VERIFY programs now carry their
+    own 1 s ambient window immediately ahead of the pilot pair
+    (`PILOT_AMBIENT_WINDOW_S`), `_pilot_verdicts` reads it, and all three
+    verdicts branch to `pilot_level_collapse` before their linearity check.
+    Two design constraints worth keeping. First, the window sits AFTER the
+    courtesy settle — a floor measured before the "go quiet" warning is not
+    the floor the pilots play into. Second, it feeds the level/SNR path
+    ONLY, never `_channel_map_ok`'s ±12 dB rise test: that threshold was
+    calibrated against CHECK's long framed estimator, and — note the
+    precise reason, since an earlier draft of this entry overstated it —
+    threading the 1 s window there would change **no verdict today**,
+    because `analysis.channel_map_ok` is routed on at exactly one site
+    (`_check_verdict`). MEASURE/cloud/VERIFY compute the flag and never
+    branch on it. What it would do is leave a False flag ARMED on those
+    analyses for whoever next adds a routing branch, at which point a pilot
+    pair a few dB over the floor would hard-stop with copy blaming the
+    speaker wiring. **The general rule:** when a guard's input
+    can take a value that makes its comparison vacuously true, a test must
+    assert the input is a real measurement on every path that claims the
+    guard — `test_pilot_snr_is_measured_not_infinite` is that test.
+
+21. **The courtesy beeps must precede every audible thing, not just the
+    sweep** (#1812, 2026-07-28). The flow-simplification §2.5 fix (#1771)
+    moved the prelude from the head of the program to directly in front of
+    the first SWEEP, on the stated premise that a leading pilot pair is
+    inert lead-in. It is not: a pilot is a full-gain band-limited chirp.
+    MEASURE and VERIFY therefore shipped a program whose first sound was
+    two chirps at t=0, with the (6 dB quieter) "quiet please" beeps
+    arriving ~4 s later — "sweeps then beep beep beep", as the owner heard
+    it. Nothing caught it because the acceptance test measured only the
+    FORWARD interval (beeps → stimulus) and had nothing to say about what
+    preceded them. Both directions are pinned now
+    (`test_no_audible_content_precedes_the_first_courtesy_beep` is the
+    missing half). PR #1771 owed an on-device listen; the session that
+    provided it is the one that failed.
 
 ## Future work — the post-W6 follow-ups issue
 
