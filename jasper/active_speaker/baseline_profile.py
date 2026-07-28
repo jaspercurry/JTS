@@ -95,6 +95,28 @@ _SENSITIVITY_TRIM_EPS_DB = 0.05
 # Floor for any single attenuation, mirroring the explicit-gain clamp below.
 _MAX_ATTENUATION_DB = -60.0
 
+# How far the MEASURED level match and the pad-folded DATASHEET sensitivity gap
+# may disagree about the same pair of drivers before the measured value is
+# refused (linearization-integrity PR-L4 item 3). Two independent frames for one
+# physical quantity; on the 2026-07-27 JTS3 run they were ~12 dB apart and were
+# compared nowhere.
+#
+# 6.0 dB, summed from what CAN honestly differ between them:
+#
+#   ~2 dB   driver datasheet sensitivity is typically specified +/-2 dB, and
+#           a household transcribes it from a spec sheet
+#   ~2 dB   an L-pad's REALIZED attenuation follows the driver's actual
+#           impedance curve, not the nominal resistance the pad math assumes
+#   ~1.3 dB the measured estimator's own frame spread — PR-L3's five archived
+#           captures agreed with the fit frame to 1.30 dB worst case
+#   ~0.5 dB that estimator's known linear-bin systematic
+#
+# ~5.3 dB of honest disagreement in the worst case; 6.0 is the first whole dB
+# above it. The defect this exists to catch was twice that. Tightening it is a
+# measurement question, not a taste one: it needs a corpus of households whose
+# datasheet AND pad values are both known-good.
+MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB = 6.0
+
 # Canonical per-parameter provenance vocabulary (SC-3). ``RECOMMENDED_START``
 # is reserved for future profile prefills; no code path in this module emits
 # it directly (it only appears via the gain-source migration map below).
@@ -703,6 +725,65 @@ def _derive_corrections(
         level_match["skipped_reason"] = "operator_pinned_gain"
         measured_trims = {}
 
+    # PR-L4 item 3(a): the two independent level-frame estimates finally meet.
+    #
+    # `datasheet_trims` (pad-folded driver sensitivity) and `measured_trims`
+    # (the phone level match) answer the SAME question from completely
+    # independent evidence, and until now the precedence ladder below simply
+    # dropped whichever lost. On the 2026-07-27 JTS3 run they disagreed by
+    # ~12 dB — the datasheet path correct, the measured path carrying the frame
+    # defect PR-L3 later located — and no line of code was ever holding both
+    # numbers at once to notice. `solve_branch_trims`' own PR-L3 note defers its
+    # remaining +0.54 dB estimator-residual question to exactly this check,
+    # because two independent frames agreeing is the only way to tell a
+    # half-dB estimator artifact from a real acoustic difference.
+    #
+    # A disagreement beyond tolerance REFUSES the measured trim (falling through
+    # to the datasheet rung below) and surfaces BOTH numbers, because a measured
+    # value that far from physics is not a refinement of the datasheet — it is
+    # evidence that one of the two frames is broken, and the datasheet path is
+    # the one with a physical model behind it.
+    frame_disagreements: list[str] = []
+    for role in sorted(set(measured_trims) & set(datasheet_trims)):
+        disagreement_db = abs(measured_trims[role] - datasheet_trims[role])
+        if disagreement_db <= MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB:
+            continue
+        frame_disagreements.append(
+            f"{role} measured {measured_trims[role]:.1f} dB vs "
+            f"datasheet {datasheet_trims[role]:.1f} dB "
+            f"({disagreement_db:.1f} dB apart)"
+        )
+    if frame_disagreements:
+        measured_trims = {
+            role: value
+            for role, value in measured_trims.items()
+            if role not in {note.split(" ", 1)[0] for note in frame_disagreements}
+        }
+        # Recorded on the level-match ledger, not as an `applied: False` — the
+        # refusal is per ROLE, and the loop below recomputes `applied` from the
+        # roles whose measured trim survived. A pair where only the tweeter's
+        # frame is broken still legitimately applies the woofer's reference 0 dB.
+        level_match["frame_disagreements"] = list(frame_disagreements)
+        level_match["frame_tolerance_db"] = MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
+        issues.append(_issue(
+            "warning",
+            "driver_level_frame_disagreement",
+            (
+                "the measured level match and the driver sensitivity data "
+                "disagree by more than "
+                f"{MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB:.0f} dB ("
+                + "; ".join(frame_disagreements)
+                + "); JTS kept the sensitivity-derived trim — re-check the "
+                "driver sensitivity and pad values, then measure again"
+            ),
+        ))
+        log_event(
+            logger, "baseline_profile.level_frame_disagreement",
+            level=logging.WARNING,
+            tolerance_db=MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB,
+            detail="; ".join(frame_disagreements),
+        )
+
     sources: dict[str, str] = {}
     measured_notes: list[str] = []
     estimate_notes: list[str] = []
@@ -1158,6 +1239,118 @@ def _revalidation_payload(
     }
 
 
+def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
+    """How much per-driver and summed evidence a measured candidate actually
+    carries — ``{"driver": n, "summed": n}``, both ``0`` for ``None``.
+
+    **Existence is not evidence** (linearization-integrity PR-L4 item 5). Both
+    completeness flags used to be satisfied by ``measured_candidate is not
+    None``, which is a statement about a Python reference, not about anything
+    measured. On the 2026-07-27 JTS3 profile that published
+    ``summed_validation_complete: true`` beside ``validated_summed_group_count:
+    0`` — a self-contradicting record that a test pinned as intended, and one of
+    the reasons nothing in the verification chain objected to a 10 dB-dark
+    speaker. This asks the candidate what it is holding.
+
+    The two candidate shapes hold their evidence differently and both are
+    honoured on their own terms:
+
+    * :class:`~jasper.active_speaker.measured_candidate.MeasuredElectricalCandidate`
+      (the evidence-store path) names an isolated and a summed evidence
+      artifact. Each present artifact counts as one.
+    * :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`
+      (the v2 phone path) proves per-driver work with one measured level per
+      role in ``role_attenuations_db``, and summed work by the positions at
+      which the SUMMED behaviour was measured: its own MEASURE capture (which
+      is where the cross-driver alignment and the predicted sum come from) plus
+      the pre-apply cloud's walked positions when it ran one
+      (``exclusion_evidence.n_positions``). A trims-only candidate — the
+      ineligible-mic-tier / fit-failed fallback, a real production shape — is
+      NOT vacuous and still counts; what no longer counts is a candidate object
+      holding nothing.
+
+    A count, not a boolean, because the caller publishes it: a reader seeing
+    ``complete: true`` is entitled to see the number behind it.
+    """
+    if candidate is None:
+        return {"driver": 0, "summed": 0}
+    role_trims = getattr(candidate, "role_attenuations_db", None)
+    if isinstance(role_trims, Mapping):
+        exclusion = getattr(candidate, "exclusion_evidence", None)
+        positions = 0
+        if isinstance(exclusion, Mapping):
+            try:
+                positions = max(0, int(exclusion.get("n_positions") or 0))
+            except (TypeError, ValueError):
+                positions = 0
+        analysis = getattr(candidate, "analysis", None)
+        measure_positions = 1 if isinstance(analysis, Mapping) and analysis else 0
+        return {
+            "driver": len(role_trims),
+            "summed": max(measure_positions, positions),
+        }
+    return {
+        "driver": 1 if getattr(candidate, "isolated_evidence_artifact", None) else 0,
+        "summed": 1 if getattr(candidate, "summed_evidence_artifact", None) else 0,
+    }
+
+
+def _estimator_cross_check(
+    preset: ActiveSpeakerPreset,
+    measurements: Mapping[str, Any],
+    candidate_trims_db: Mapping[str, float],
+) -> list[str]:
+    """Where the two level-match ESTIMATORS disagree, per role, as copy strings.
+
+    PR-L4 item 3(b) / PR-L3 review finding N2. The repo carries two ways to
+    measure the same inter-driver level gap and never compared them:
+
+    * ``driver_acoustics``' point-at-Fc read (via
+      :func:`_measured_level_trims`) — at Fc both branches sit on their matched
+      -6 dB LR shoulder, so their delta IS the sensitivity delta, taken as a
+      single interpolated point;
+    * ``program_analysis.solve_branch_trims``' power-band average over each
+      branch's own half of Fc, which is what a v2 measured candidate carries.
+
+    **Disclosed, not refused** — and the distinction is deliberate. Unlike item
+    3(a)'s measured-vs-datasheet check, whose two frames describe the SAME
+    capture against a physical model, these two estimators in practice read
+    DIFFERENT captures (the phone level-match session and the crossover MEASURE
+    sweep are separate sittings, and the candidate branch below never runs the
+    point-at-Fc path itself). Mic placement moves between sittings, so a
+    disagreement here is weaker evidence than 3(a)'s and does not justify
+    refusing a candidate the realized-level assertion has already graded. It
+    justifies saying so.
+
+    Tolerance is :data:`MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB`, reused rather
+    than reinvented: this is the same "two independent estimates of one physical
+    quantity" question with a comparable error budget (~2 dB of estimator-frame
+    difference plus ~2-3 dB of between-sitting placement), and a second
+    weakly-grounded constant would be worse than one well-argued one. Empty list
+    when there is nothing to compare — the common case.
+    """
+    if not candidate_trims_db:
+        return []
+    try:
+        point_trims, _meta = _measured_level_trims(preset, measurements)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        # The point-at-Fc reader is fail-closed by design and this is a
+        # disclosure path; an unreadable measurements blob means "no second
+        # opinion available", never a failed profile build.
+        return []
+    notes: list[str] = []
+    for role in sorted(set(point_trims) & set(candidate_trims_db)):
+        disagreement_db = abs(point_trims[role] - candidate_trims_db[role])
+        if disagreement_db <= MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB:
+            continue
+        notes.append(
+            f"{role} crossover sweep {candidate_trims_db[role]:.1f} dB vs "
+            f"phone level match {point_trims[role]:.1f} dB "
+            f"({disagreement_db:.1f} dB apart)"
+        )
+    return notes
+
+
 def _summed_validation_evidence_complete(summary: Mapping[str, Any]) -> bool:
     if summary.get("summed_validation_complete"):
         return True
@@ -1405,17 +1598,25 @@ def build_baseline_profile_candidate(
 
     issues: list[dict[str, str]] = []
     summary = measurements.get("summary") if isinstance(measurements.get("summary"), Mapping) else {}
-    driver_target_proof_complete = measured_candidate is not None or bool(
+    # PR-L4 item 5: a candidate satisfies a completeness flag by the evidence it
+    # CARRIES, never by existing. See `measured_candidate_evidence_counts`.
+    candidate_evidence = measured_candidate_evidence_counts(measured_candidate)
+    driver_target_proof_complete = bool(candidate_evidence["driver"]) or bool(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
     driver_target_proof_source = (
         "measured_candidate"
-        if measured_candidate is not None
+        if candidate_evidence["driver"]
         else ("measurements" if driver_target_proof_complete else "missing")
     )
-    summed_validation_complete = measured_candidate is not None or bool(
+    summed_validation_complete = bool(candidate_evidence["summed"]) or bool(
         summary.get("summed_validation_complete")
+    )
+    summed_validation_source = (
+        "measured_candidate"
+        if candidate_evidence["summed"]
+        else ("measurements" if summed_validation_complete else "missing")
     )
     # A passive-mains + local-subwoofer topology has NO inter-driver crossover, so
     # it never produces an active crossover preview and has no per-driver / summed
@@ -1491,12 +1692,17 @@ def build_baseline_profile_candidate(
                 "confirm each driver with a quiet test before saving the active profile",
             ))
         summed_validation_complete = (
-            measured_candidate is not None
+            bool(candidate_evidence["summed"])
             or bool(summary.get("summed_validation_complete"))
             or (
                 driver_target_proof_complete
                 and _summed_validation_evidence_complete(summary)
             )
+        )
+        summed_validation_source = (
+            "measured_candidate"
+            if candidate_evidence["summed"]
+            else ("measurements" if summed_validation_complete else "missing")
         )
         if not summed_validation_complete:
             issues.append(_issue(
@@ -1596,6 +1802,34 @@ def build_baseline_profile_candidate(
             for group in topology.speaker_groups
         )
         correction_issues: list[dict[str, str]] = []
+        # PR-L4 item 3(b): the ONLY place the repo's two level-match estimators
+        # can be read side by side (PR-L3 review finding N2). The candidate's
+        # trims come from `solve_branch_trims`' power-band average over each
+        # branch's own half of Fc; `_measured_level_trims` reads
+        # `driver_acoustics`' point-at-Fc interpolation of the same pair. Two
+        # different frames for one physical quantity, and until now nothing
+        # compared them.
+        estimator_notes = _estimator_cross_check(
+            preset, measurements, dict(measured_candidate.role_attenuations_db),
+        )
+        if estimator_notes:
+            correction_issues.append(_issue(
+                "warning",
+                "driver_level_estimator_disagreement",
+                (
+                    "the two ways JTS can measure the driver level gap disagree "
+                    "by more than "
+                    f"{MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB:.0f} dB ("
+                    + "; ".join(estimator_notes)
+                    + "); the crossover measurement's own value was used"
+                ),
+            ))
+            log_event(
+                logger, "baseline_profile.level_estimator_disagreement",
+                level=logging.WARNING,
+                tolerance_db=MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB,
+                detail="; ".join(estimator_notes),
+            )
         correction_meta = {
             "sources": {role: "measured" for role in roles},
             "gain_provenance": {role: "measured" for role in roles},
@@ -1606,6 +1840,7 @@ def build_baseline_profile_candidate(
                 "comparison": "strict_measured_candidate",
                 "incomparable_groups": [],
                 "applied": True,
+                "estimator_disagreements": list(estimator_notes),
             },
             "corrections_provenance": {
                 role: {
@@ -1894,11 +2129,20 @@ def build_baseline_profile_candidate(
             "driver_target_proof_complete": driver_target_proof_complete,
             "driver_target_proof_source": driver_target_proof_source,
             "summed_validation_complete": summed_validation_complete,
+            # PR-L4 item 5: which lane satisfied the summed flag, mirroring the
+            # driver flag's own source field. Without it a reader met
+            # `summed_validation_complete: true` beside
+            # `validated_summed_group_count: 0` and had no way to tell a
+            # candidate-backed claim from a vacuous one.
+            "summed_validation_source": summed_validation_source,
             "captured_driver_count": summary.get("captured_driver_count", 0),
             "validated_summed_group_count": summary.get(
                 "validated_summed_group_count",
                 0,
             ),
+            # ...and the counts BEHIND a measured-candidate claim, so every
+            # `complete: true` in this block has a number under it somewhere.
+            "measured_candidate_evidence": dict(candidate_evidence),
         },
         "corrections": corrections,
         "corrections_source": correction_meta["sources"],
