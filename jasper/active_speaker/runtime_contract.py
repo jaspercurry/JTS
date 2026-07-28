@@ -1120,6 +1120,15 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     direction is a tamper spending the household's own trim as boost headroom,
     which is bounded and far narrower than the pre-fix behaviour.
 
+    **One stated coincidence**: the emitter adds a CALLER-SUPPLIED
+    ``baseline_headroom_db`` (validated 0..40), while this subtracts the module
+    DEFAULT :data:`~jasper.active_speaker.camilla_yaml.BASELINE_HEADROOM_DB`.
+    They agree only because every production emit path takes the default, which
+    is 0.0 — pinned by a test rather than left to be discovered. A caller that
+    passed a non-default value would make this allowance generous by exactly
+    that amount (never tight, the same direction as the ``output_trim_db``
+    slack above), and the pin is what would catch it.
+
     Returns 0.0 when the filter is absent or non-negative — which is the
     driver-domain (follower) graph, where the leader owns Layer B/C and no
     program-domain headroom exists. That graph therefore proves the ORIGINAL

@@ -6039,12 +6039,21 @@ def test_the_realized_level_assertion_still_fires_when_the_frame_agreed(caplog):
     to the frame's event. Item 1 is NOT thereby dead, and this pins the gap it
     still owns.
 
-    The two gates measure different things: the frame grades the two LEVEL-MATCH
-    estimates against each other, item 1 grades the level the COMMITTED trim
-    realizes. A ripple polish lives between them — it moves the applied trim
-    without touching either level estimate — so a polish large enough to
-    mislevel the branches passes the frame and is caught by item 1. That is
-    exactly the backstop role the frame's arrival left it.
+    The two gates measure different things: the frame grades the two
+    LEVEL-MATCH estimates against each other, item 1 grades the level the
+    COMMITTED trim realizes.
+
+    **Item 1's real remaining route is the NO-FRAME path.** When no driver has
+    a usable core level (``core_levels_db`` empty — every envelope allows
+    correction nowhere), ``level_frame`` is ``None``: the frame gate has
+    nothing to grade and abstains, every ``level_frame_offset_db`` is 0.0, and
+    the anchor falls back to the raw applied trim exactly as it did before
+    PR-L5. A mislevelled trim then reaches the committed pair with item 1 as
+    the only thing standing in front of it. (The ripple polish is NOT that
+    route any more — PR-L5 anchors on the same trim term the frame solves on,
+    so the polish cancels out of the anchor; the linearized scan can still move
+    the committed pair, but only through the wild-trim guard, which grades both
+    candidates on this same assertion first.)
     """
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
@@ -6149,3 +6158,59 @@ def test_a_cut_only_candidate_discloses_a_zero_headroom_cost():
         mp.setattr(c, "_cloud_fit_evidence", lambda combined: None)  # no boost
         payload = _walk_measure_cloud_to_close(c)
     assert payload["headroom_cost_db"] == 0.0
+
+
+def test_the_browser_candidate_summary_discloses_the_headroom_cost():
+    """**SF3.** The owner's ruling is that headroom spend is DISCLOSED, not
+    limited — and the conductor's confirm payload is read by the host for
+    ``auto_apply`` alone, so a number that stopped there reached the journal
+    and nothing else. This is the payload the envelope's own screens read.
+    """
+    from jasper.web.correction_crossover_v2 import _candidate_summary
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    summary = _candidate_summary(c.candidate)
+    assert "headroom_cost_db" in summary
+    charged = max(
+        fit["headroom_cost_db"] for fit in c.candidate.linearization.values()
+    )
+    assert summary["headroom_cost_db"] == pytest.approx(charged)
+    # This fixture's correction is granted boost, so the disclosure is a real
+    # number rather than a structurally-zero field.
+    assert summary["headroom_cost_db"] > 0.0
+
+
+def test_the_browser_summary_discloses_zero_for_a_cut_only_correction():
+    """PRESENT and zero, never absent — a surface must not have to guess
+    whether the field is missing or the cost is nothing."""
+    from jasper.web.correction_crossover_v2 import _candidate_summary
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(c, "_cloud_fit_evidence", lambda combined: None)  # no boost
+        _walk_measure_cloud_to_close(c)
+
+    summary = _candidate_summary(c.candidate)
+    assert summary["headroom_cost_db"] == 0.0
+
+
+def test_both_headroom_disclosures_come_from_one_reducer():
+    """The conductor's confirm payload and the browser summary answer to
+    different readers, so both exist — but two reducers for one
+    household-facing number is the drift this ladder removes."""
+    from jasper.web.correction_crossover_v2 import _candidate_summary
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    payload = _walk_measure_cloud_to_close(c)
+
+    assert payload["headroom_cost_db"] == pytest.approx(
+        _candidate_summary(c.candidate)["headroom_cost_db"]
+    )

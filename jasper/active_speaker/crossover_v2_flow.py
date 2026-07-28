@@ -104,6 +104,7 @@ from jasper.active_speaker.linearization_fit import (
     driver_core_level_db,
     fit_driver_linearization,
     solve_shared_level_frame,
+    worst_headroom_cost_db,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
@@ -1139,6 +1140,16 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     # which is only true when the rollback actually ran. When it did not, THIS
     # is the row that renders instead — same finding, opposite state of the
     # speaker, and it says so first.
+    #
+    # ONE row rather than three verdict-specific ones, deliberately. Splitting
+    # it would let each keep its own remedy ("move the speaker away from
+    # walls"), but that remedy is the SECOND thing this household needs: the
+    # first is that a correction they are listening to right now was found
+    # faulty and is still applied, and the action is Undo in all three cases.
+    # Three near-duplicate rows for a state that should be rare is registry
+    # bloat, and the specific finding is on the verdict itself
+    # (``delta_probe.verdict``, in the payload and the journal) for whoever
+    # needs it after the undo.
     REASON_CORRECTION_ROLLBACK_FAILED: ReasonSpec(
         REASON_CORRECTION_ROLLBACK_FAILED, TEMPLATE_HARD_STOP, 0, "",
         "JTS checked the tuning against what your speaker actually did, and "
@@ -4798,37 +4809,31 @@ class CrossoverV2Conductor:
             # own capture, however many captures back this session's shape puts
             # it), so this is unconditionally True here, not a second decision.
             "auto_apply": True,
-            # "This correction costs N dB of maximum level" (PR-L5), on the
-            # payload the host persists and the envelope renders — the owner's
-            # ruling is that headroom spend is DISCLOSED, not limited, and a
-            # number that only ever reaches the journal is not disclosed to the
-            # household that owns the speaker. The worst branch's charge, which
-            # is the quantity the graph actually gives up (the emitter absorbs
-            # the same number). 0.0 for every cut-only correction.
+            # "This correction costs N dB of maximum level" (PR-L5). The
+            # worst branch's charge — the quantity the graph actually gives up,
+            # and the same number the emitter absorbs.
+            #
+            # This is the CONFIRM payload, which the host reads for
+            # ``auto_apply``; it is not by itself the household disclosure the
+            # owner's ruling asks for. That lives on the browser-visible
+            # candidate summary (``correction_crossover_v2._candidate_summary``,
+            # same reducer), which the envelope's own screens read. Both are
+            # here because they answer to different readers, and both come from
+            # ``worst_headroom_cost_db`` so they cannot drift.
             "headroom_cost_db": self._candidate_headroom_cost_db(),
         }
 
     def _candidate_headroom_cost_db(self) -> float:
         """The applied correction's disclosed max-level cost, dB (PR-L5).
 
-        The WORST branch's ``headroom_cost_db``, matching
-        ``camilla_yaml.linearization_headroom_db``'s own worst-branch rule —
-        the driver chains run in parallel after the split, so no single sample
-        path sees two branches' boosts and the graph gives up the largest one,
-        not their sum. 0.0 when no fit ran or the fit was cut-only.
+        Delegates to the fit module's own reducer so this payload and the web
+        layer's browser-visible one cannot disagree about a household-facing
+        number.
         """
-        candidate = self._candidate
-        linearization = getattr(candidate, "linearization", None)
+        linearization = getattr(self._candidate, "linearization", None)
         if not isinstance(linearization, Mapping):
             return 0.0
-        worst = 0.0
-        for fit in linearization.values():
-            if not isinstance(fit, Mapping):
-                continue
-            cost = fit.get("headroom_cost_db")
-            if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
-                worst = max(worst, float(cost))
-        return worst
+        return worst_headroom_cost_db(linearization)
 
     def _refuse(self, code: str) -> "CaptureBeginRefused":
         """Build the refusal for ``code``, with the registry's own copy, and
@@ -6097,9 +6102,15 @@ class CrossoverV2Conductor:
         # `raw_trim + giveback + offset` (the offset subtracts the same trim the
         # base adds, leaving `giveback + system − core`). That cancellation is
         # what makes the polish a GATE sensitivity rather than a correction
-        # difference, and it is why S5 was a gate fix and not a behaviour
-        # change. The LINEARIZED ripple polish below still sets the final trim;
-        # this is only its anchor.
+        # difference. Precisely: the RELATIVE level between branches is exact
+        # either way, and the emitted pair is identical whenever
+        # ``normalize_shift_db`` clamps (the ordinary case). When it does not —
+        # which needs a net-BOOSTED core band, a shape only PR-L5's vocabulary
+        # can produce — the pair shifts in COMMON MODE by the change in
+        # ``system_level_db``; every emitted trim is still ≤ 0, and a common
+        # shift is a volume-knob difference, not a tonal one. The LINEARIZED
+        # ripple polish below still sets the final trim; this is only its
+        # anchor.
         anchor_base_db = frame_trims_db if level_frame is not None else raw_trim
         anchored_unnormalized = {
             role: float(

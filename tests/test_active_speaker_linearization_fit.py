@@ -1326,21 +1326,6 @@ def test_a_boost_vocabulary_fills_a_dip_a_cut_only_fit_cannot():
     assert boosted.residual_max_db < cut_only.residual_max_db - 3.0
 
 
-def test_a_boost_discloses_its_headroom_cost():
-    """"This correction costs N dB of maximum level" — the peak positive dB of
-    the emitted cascade, which is exactly what the emitter must absorb."""
-    resp, envelope = _dip_response(depth_db=6.0)
-    fit = fit_driver_linearization(
-        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
-    )
-    cascade_db = 20.0 * np.log10(
-        np.abs(complex_correction_response(fit.filters, envelope.freqs_hz))
-    )
-    assert fit.headroom_cost_db == pytest.approx(float(np.max(cascade_db)), abs=1e-9)
-    assert fit.headroom_cost_db > 0.0
-    assert fit.to_dict()["headroom_cost_db"] == fit.headroom_cost_db
-
-
 def test_total_boost_is_uncapped_but_one_filter_is_not():
     """The owner's ruling, precisely: arbitrary caps on the CORRECTION go, the
     per-filter realization bound stays. A gain past that bound raises rather
@@ -1638,31 +1623,54 @@ def test_the_cut_reduction_epsilon_is_the_modules_own_materiality_floor():
     assert 0.0034 < _CUT_REDUCTION_EPS_DB < _MIN_FILTER_GAIN_DB
 
 
+def _two_dip_response(depth_db: float = 3.0):
+    """A driver with TWO separated dips — the shape whose fit makes the two
+    candidate headroom contracts diverge (two bells at different centres never
+    reach their combined height anywhere). Measured on this fixture: two boosts
+    of +2.90 and +2.68 dB, sum 5.58, realized cascade peak 2.91."""
+    db = -(
+        depth_db * np.exp(-0.5 * ((np.log2(_NATIVE_FREQS_HZ / 700.0) / 0.25) ** 2))
+        + depth_db * np.exp(-0.5 * ((np.log2(_NATIVE_FREQS_HZ / 5000.0) / 0.25) ** 2))
+    )
+    resp = _driver_response("woofer", db)
+    return resp, _envelope("woofer", resp, excited_band_hz=(150.0, 8000.0))
+
+
 def test_headroom_cost_is_the_sum_the_emitter_charges_not_the_cascade_peak():
     """**S2.** The disclosed number and the charged number are one number.
 
-    Two boosts at different centres never reach their combined height anywhere,
-    so the realized cascade PEAK understates what the graph gives up — measured
-    0.34 dB peak against a 3.38 dB charge. The SUM is the conservative bound
-    (overlapping boosts at one frequency DO add, and that is the case the
-    headroom must survive), so the charge is right and the disclosure follows
-    it. Reporting the peak would tell a household its correction cost a tenth
-    of what the speaker actually gave up.
+    Pinned on a fixture where the two candidate contracts DIVERGE — an
+    earlier version used a single-boost fit, where sum and peak are trivially
+    equal, so it would have passed against either implementation and regressed
+    nothing (adversarial review SF2).
+
+    The SUM is correct because overlapping boosts at one frequency DO add, and
+    that is the case the headroom has to survive; the realized peak understates
+    it whenever the boosts sit apart. Reporting the peak would have told a
+    household its correction cost half what the speaker actually gave up.
     """
     from jasper.active_speaker.camilla_yaml import linearization_headroom_db
 
-    resp, envelope = _dip_response(depth_db=6.0)
+    resp, envelope = _two_dip_response()
     fit = fit_driver_linearization(
         resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
     )
     boosts = [f.gain for f in fit.filters if f.gain > 0.0]
-    assert boosts, "this fixture must emit boost for the claim to mean anything"
+    assert len(boosts) >= 2, "the contracts only diverge with separated boosts"
+    cascade_peak_db = float(np.max(20.0 * np.log10(
+        np.abs(complex_correction_response(fit.filters, envelope.freqs_hz))
+    )))
+    # The fixture really does separate the two contracts…
+    assert sum(boosts) > cascade_peak_db + 1.0, (sum(boosts), cascade_peak_db)
+    # …and the field follows the SUM, not the peak.
     assert fit.headroom_cost_db == pytest.approx(sum(boosts))
-    # …and it is literally the emitter's own charge for this fit.
-    charged = linearization_headroom_db(
-        {fit.role: [f.to_dict() for f in fit.filters]}
+    assert fit.headroom_cost_db != pytest.approx(cascade_peak_db, abs=0.5)
+    # …which is literally the emitter's own charge for this fit, and survives
+    # the JSON round-trip the candidate takes to reach a household.
+    assert fit.headroom_cost_db == pytest.approx(
+        linearization_headroom_db({fit.role: [f.to_dict() for f in fit.filters]})
     )
-    assert fit.headroom_cost_db == pytest.approx(charged)
+    assert fit.to_dict()["headroom_cost_db"] == fit.headroom_cost_db
 
 
 def test_headroom_cost_is_zero_for_every_cut_only_fit():

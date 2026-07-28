@@ -666,13 +666,22 @@ class LinearizationFit:
     # stage fires this reads ≈ spend + the flattening peaks' own in-band share.
     correction_giveback_db: float = 0.0
     # --- PR-L5 disclosure ------------------------------------------------
-    # "This correction costs N dB of maximum level." The PEAK positive dB of
-    # the emitted cascade over the fit grid — literally how far the program
-    # must be attenuated ahead of this branch for the boosted band to stay
-    # under 0 dBFS, and therefore exactly the max-SPL the correction spends.
-    # The emitter folds it into ``active_baseline_headroom`` (the same gain
-    # room-correction boost already rides), so the ceiling is never breached;
-    # this field is the number a household and a journal reader are owed.
+    # "This correction costs N dB of maximum level." The SUM of this fit's
+    # positive filter gains — which is exactly the quantity the emitter
+    # CHARGES to ``active_baseline_headroom`` (the same gain room-correction
+    # boost already rides; see ``camilla_yaml.linearization_headroom_db``), so
+    # the number a household is told and the number the speaker gives up are
+    # one number.
+    #
+    # The sum and NOT the realized cascade peak, deliberately. Two bells at
+    # different centres never reach their combined height anywhere, so the peak
+    # understates the charge — measured on a two-boost fit, 1.71 dB peak
+    # against a 3.38 dB charge. The sum is the conservative bound, because
+    # overlapping boosts at ONE frequency do add and that is the case the
+    # headroom has to survive; the charge is therefore right, and the
+    # disclosure follows the charge rather than the other way round. Reporting
+    # the peak would tell a household its correction cost half what the
+    # speaker actually gave up.
     # 0.0 for every cut-only fit — which is every fit before PR-L5.
     headroom_cost_db: float = 0.0
     # How far this driver had to move to reach the session's SHARED level
@@ -822,6 +831,37 @@ def linearization_filters_by_role(
             dict(entry) for entry in filters if isinstance(entry, Mapping)
         ]
     return out
+
+
+def worst_headroom_cost_db(linearization_mapping: Mapping[str, Any]) -> float:
+    """The max-level cost of a whole correction, dB — the WORST branch's
+    :attr:`LinearizationFit.headroom_cost_db` (PR-L5).
+
+    Worst branch and not the sum across branches, matching
+    ``camilla_yaml.linearization_headroom_db``'s own rule: the driver chains
+    run in PARALLEL after the split, so no single sample path ever sees two
+    branches' boosts and the graph gives up the largest one.
+
+    Takes a persisted ``{role: LinearizationFit.to_dict()}`` mapping — the
+    shape a candidate carries under its ``"linearization"`` key, after a JSON
+    round-trip — so it is defensive in the same way
+    :func:`linearization_filters_by_role` is: a malformed or era-older entry is
+    skipped rather than raising. Returns 0.0 when nothing was boosted or
+    nothing was fitted.
+
+    Defined here, once, because BOTH the conductor's own candidate payload and
+    the web layer's browser-visible ``_candidate_summary`` disclose this
+    number, and two reducers for one household-facing figure is exactly the
+    drift this ladder exists to remove.
+    """
+    worst = 0.0
+    for fit in (linearization_mapping or {}).values():
+        if not isinstance(fit, Mapping):
+            continue
+        cost = fit.get("headroom_cost_db")
+        if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
+            worst = max(worst, float(cost))
+    return worst
 
 
 def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
@@ -1456,9 +1496,10 @@ _CUT_REDUCTION_BISECTION_STEPS: int = 24
 # :data:`_ENVELOPE_NONZERO_EPS_DB` is the module's existing answer to exactly
 # this question — "below this, a per-bin dB figure is float noise or a taper's
 # asymptotic tail rather than a real allowance" — so it is reused rather than
-# given a second name. It is two orders of magnitude above the leakage that
-# caused the veto and two orders below the smallest gain this module will emit
-# (:data:`_MIN_FILTER_GAIN_DB`), so it cannot mask a real overshoot.
+# given a second name. At 0.05 dB it sits ~15x above the 0.0034 dB leakage that
+# caused the veto and 10x below the smallest gain this module will emit
+# (:data:`_MIN_FILTER_GAIN_DB` = 0.5), so it can mask neither a real overshoot
+# nor a real filter.
 _CUT_REDUCTION_EPS_DB: float = _ENVELOPE_NONZERO_EPS_DB
 
 

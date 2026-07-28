@@ -1166,6 +1166,20 @@ def _finite(value: Any) -> float | None:
     return number if number == number and abs(number) != float("inf") else None
 
 
+def _candidate_headroom_cost_db(linearization: Any) -> float:
+    """The applied correction's disclosed max-level cost, dB (PR-L5).
+
+    Thin adapter over the fit module's own reducer — defined there once so this
+    browser payload and the conductor's cannot disagree about a
+    household-facing number.
+    """
+    from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
+
+    if not isinstance(linearization, Mapping):
+        return 0.0
+    return worst_headroom_cost_db(linearization)
+
+
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
     """Gauge fix (2026-07-24): per-role OBSERVE-layer octave deficits
     (``LinearizationFit.observe_octave_summary`` — already computed by the
@@ -1222,6 +1236,21 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # Gauge fix (2026-07-24): per-role top-octave deficits (the number
         # that says "the top octave is 9 dB down and nothing corrected it").
         "linearization_octaves": _candidate_octave_summary(candidate.linearization),
+        # "This correction costs N dB of maximum level" (linearization-integrity
+        # PR-L5). The owner's ruling on boost is that headroom spend is
+        # DISCLOSED, never silently limited — and a number that only reaches the
+        # journal is not disclosed to the household that owns the speaker. This
+        # is the payload the envelope's own screens read, so putting it here is
+        # what makes the ruling true rather than merely intended.
+        #
+        # The WORST branch's charge, matching the emitter's own worst-branch
+        # rule (``camilla_yaml.linearization_headroom_db``): the driver chains
+        # run in parallel after the split, so the graph gives up the largest
+        # branch's boost, not the sum across branches. 0.0 for every cut-only
+        # correction, which is every correction before PR-L5 — present and
+        # zero rather than absent, so a surface never has to guess whether the
+        # field is missing or the cost is nothing.
+        "headroom_cost_db": _candidate_headroom_cost_db(candidate.linearization),
     }
 
 

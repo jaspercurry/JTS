@@ -804,3 +804,30 @@ def test_a_generous_program_headroom_still_emits():
         linearization={"tweeter": [_peak(6000.0, 9.0), _peak(9000.0, 6.0)]},
     )
     assert _headroom_gain_db(text) == pytest.approx(-15.0, abs=1e-3)
+
+
+def test_the_production_emit_path_uses_the_default_baseline_headroom():
+    """The boost proof subtracts the module DEFAULT ``BASELINE_HEADROOM_DB``
+    where the emitter adds a CALLER-SUPPLIED ``baseline_headroom_db`` (0..40).
+    They agree only because every production emit path takes the default — so
+    that coincidence is pinned here rather than left to be discovered.
+
+    A caller passing a non-default value would make the allowance generous by
+    exactly that amount (never tight — the same direction as the documented
+    ``output_trim_db`` slack), and this is what catches it.
+    """
+    import inspect
+
+    from jasper.active_speaker.camilla_yaml import (
+        BASELINE_HEADROOM_DB, emit_active_speaker_baseline_config,
+    )
+
+    assert BASELINE_HEADROOM_DB == 0.0
+    signature = inspect.signature(emit_active_speaker_baseline_config)
+    assert (
+        signature.parameters["baseline_headroom_db"].default == BASELINE_HEADROOM_DB
+    )
+    # …and a default emit really does put nothing but the correction's own
+    # charge into the gain the proof reads.
+    text = emit_active_speaker_baseline_config(_preset(), playback_device=ACTIVE_PCM)
+    assert _headroom_gain_db(text) == pytest.approx(0.0)
