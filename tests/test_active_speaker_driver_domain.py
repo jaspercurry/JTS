@@ -89,16 +89,18 @@ def test_no_program_prefix(layout: str, way: int, channel: str) -> None:
     doc = _doc(layout, way, channel)
     # The leader baked Layer B/C: no program-domain headroom gain exists...
     assert "active_baseline_headroom" not in doc["filters"]
-    # ...and no Filter pipeline step targets the [0, 1] program bus except the
-    # live pair-balance scalar between channel-select and the driver split.
+    # ...and the only [0, 1] filters are Layer A's role overlay + local
+    # linearization safety headroom.
     program_filter_steps = [
         step
         for step in doc["pipeline"]
         if step.get("type") == "Filter"
         and step.get("channels") == [0, 1]
-        and step.get("names") != ["pair_balance_trim"]
     ]
-    assert program_filter_steps == []
+    assert [step["names"] for step in program_filter_steps] == [
+        ["pair_balance_trim"],
+        ["active_driver_headroom"],
+    ]
 
 
 @pytest.mark.parametrize("layout,way,channel", _CASES)
@@ -143,16 +145,36 @@ def test_driver_chain_matches_baseline(layout: str, way: int) -> None:
         "mid": {"gain_db": -2.0, "delay_ms": 0.3, "inverted": False},
         "tweeter": {"gain_db": -2.75, "delay_ms": 0.45, "inverted": True},
     }
+    linearization = {
+        "woofer": [
+            {
+                "biquad_type": "Peaking",
+                "freq": 120.0,
+                "q": 1.1,
+                "gain": 3.0,
+            },
+        ],
+        "tweeter": [
+            {
+                "biquad_type": "Highshelf",
+                "freq": 4500.0,
+                "q": 0.70710678,
+                "gain": -1.5,
+            },
+        ],
+    }
     follower = yaml.safe_load(emit_active_speaker_driver_domain_config(
         preset,
         playback_device=ACTIVE_PCM,
         program_channel="left",
         corrections=corrections,
+        linearization=linearization,
     ))
     baseline = yaml.safe_load(emit_active_speaker_baseline_config(
         preset,
         playback_device=ACTIVE_PCM,
         corrections=corrections,
+        linearization=linearization,
     ))
     # Drop the program-domain headroom the baseline carries (and the follower
     # must not) plus the follower's inter-speaker balance trim: the remaining
@@ -162,11 +184,28 @@ def test_driver_chain_matches_baseline(layout: str, way: int) -> None:
         k: v for k, v in baseline["filters"].items() if k != "active_baseline_headroom"
     }
     follower_driver_filters = {
-        k: v for k, v in follower["filters"].items() if k != "pair_balance_trim"
+        k: v
+        for k, v in follower["filters"].items()
+        if k not in {"pair_balance_trim", "active_driver_headroom"}
     }
     assert follower_driver_filters == baseline_driver_filters
     assert follower["mixers"]["split_active_%dway" % way] == \
         baseline["mixers"]["split_active_%dway" % way]
+    assert (
+        follower["filters"]["active_driver_headroom"]["parameters"]["gain"]
+        == baseline["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    )
+
+    def driver_steps(document: dict) -> list[dict]:
+        split_index = next(
+            index
+            for index, step in enumerate(document["pipeline"])
+            if step.get("type") == "Mixer"
+            and str(step.get("name") or "").startswith("split_active_")
+        )
+        return document["pipeline"][split_index + 1 :]
+
+    assert driver_steps(follower) == driver_steps(baseline)
 
 
 # --- validation --------------------------------------------------------------

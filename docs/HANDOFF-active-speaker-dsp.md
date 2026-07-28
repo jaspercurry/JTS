@@ -825,6 +825,18 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > on the baseline payload; `active_speaker_output_safety.level_match_provisional`
 > on jasper-control `/state`). Attenuation-only + the 0 dB ceiling are preserved,
 > so the emitted baseline still passes the runtime_contract tweeter guard.
+> **Runtime grouping projection, corrected 2026-07-28:** once Apply snapshots
+> Layer A, grouped active roles project their driver-domain graph from that
+> immutable applied profile—not from the mutable draft, crossover preview, or
+> measurement store. The shared snapshot decoder supplies crossover,
+> corrections, linearization, playback route, and bass extension to both solo
+> recomposition and grouped projection. Grouping adds only its runtime channel
+> pick, attenuate-only pair trim, and loopback capture. A dedicated
+> non-positive `active_driver_headroom` before the split absorbs the applied
+> linearization boost, and the independent runtime classifier proves its
+> presence, ordering, sign, and sufficiency. New incomplete commissioning
+> evidence can therefore block the next Apply without invalidating a
+> currently-playing, topology-current applied profile for grouping.
 > Commissioning serializes against room correction / balance / sync cooperatively
 > via [`jasper/web/active_speaker_flow.py`](../jasper/web/active_speaker_flow.py)'s
 > self-expiring `active_phase()` (it can't hold `measurement_window` across its

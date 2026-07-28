@@ -943,6 +943,14 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         "_systemctl_unit_state",
         lambda _query, _unit: False,
     )
+    # Enabled grouping asks the existing fan-in coupling owner to converge
+    # before touching bond wiring. Keep ordinary main() tests hermetic; the
+    # dedicated coupling-order tests below exercise the synchronous handoff.
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_converge_grouping_coupling",
+        lambda: True,
+    )
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
     # Snapcast provisioning (main() calls it for any enabled bond): default to a
     # present no-op so these tests never shell out to apt. The provisioning tests
@@ -1320,7 +1328,66 @@ def test_role_apply_hands_all_sources_to_canonical_owner(
     source_idx = order.index("start-owner:jasper-source-intent-reconcile.service")
     assert apply_idx < source_idx
     assert not any("accessory-reconcile" in entry for entry in order)
-    assert not any("fanin-coupling" in entry for entry in order)
+
+
+def test_unbond_restores_solo_before_source_owner_may_rearm_ring(
+    tmp_path,
+    monkeypatch,
+):
+    """The disabled path never runs the pre-bond coupling handoff.
+
+    Its existing final source-owner pass owns the best-effort solo auto
+    resolution, and may therefore re-arm an eligible ring only after Camilla,
+    outputd, and the solo Snapcast unit plan have landed.
+    """
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+
+    def unexpected_prebond_coupling():
+        order.append("unexpected_prebond_coupling")
+        return True
+
+    def source_owner_with_coupling_auto():
+        order.append("source_owner_coupling_auto")
+        return True
+
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_converge_grouping_coupling",
+        unexpected_prebond_coupling,
+    )
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_converge_sources_after_role",
+        source_owner_with_coupling_auto,
+    )
+
+    assert main([]) == 0
+    assert "unexpected_prebond_coupling" not in order
+    assert order.index("camilla_restore_check") < order.index("apply")
+    assert order.index("apply") < order.index("source_owner_coupling_auto")
+    assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
+
+
+def test_unbond_source_owner_failure_never_rolls_back_landed_solo(
+    tmp_path,
+    monkeypatch,
+):
+    """A best-effort post-solo ring attempt may fail loudly, not undo solo."""
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_converge_sources_after_role",
+        lambda: order.append("source_owner_failed") or False,
+    )
+
+    # The owner failure remains visible in the oneshot result, but the grouping
+    # graph is already safely solo and is never rolled back to a bond.
+    assert main([]) == 1
+    assert order.index("camilla_restore_check") < order.index("apply")
+    assert order.index("apply") < order.index("source_owner_failed")
+    assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
 
 
 def test_main_leader_writes_member_fifo(tmp_path, monkeypatch):
@@ -2708,6 +2775,124 @@ def test_restart_unit_active_only_never_resurrects_airplay_off(monkeypatch):
     ]
 
 
+def test_converge_grouping_coupling_runs_fresh_pass_when_inactive(monkeypatch):
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.FANIN_COUPLING_AUTO_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="inactive\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_grouping_coupling() is True
+    assert calls == [
+        [
+            "systemctl",
+            "reset-failed",
+            reconcile_mod.FANIN_COUPLING_AUTO_UNIT,
+        ],
+        [
+            "systemctl",
+            "show",
+            reconcile_mod.FANIN_COUPLING_AUTO_UNIT,
+            "--property=ActiveState",
+            "--value",
+        ],
+        [
+            "systemctl",
+            "start",
+            reconcile_mod.FANIN_COUPLING_AUTO_UNIT,
+        ],
+    ]
+
+
+def test_converge_grouping_coupling_drains_old_pass_then_runs_fresh(
+    monkeypatch,
+):
+    """A joined auto pass may have read the prior solo grouping request."""
+    import subprocess as sp
+
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(argv, **kw):
+        calls.append((list(argv), dict(kw)))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.FANIN_COUPLING_AUTO_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_grouping_coupling() is True
+
+    argv = [call[0] for call in calls]
+    assert argv[-2:] == [
+        ["systemctl", "start", reconcile_mod.FANIN_COUPLING_AUTO_UNIT],
+        ["systemctl", "start", reconcile_mod.FANIN_COUPLING_AUTO_UNIT],
+    ]
+    assert calls[-2][1]["timeout"] == (
+        reconcile_mod._FANIN_COUPLING_AUTO_START_TIMEOUT_SEC
+    )
+    assert calls[-1][1]["timeout"] == (
+        reconcile_mod._FANIN_COUPLING_AUTO_START_TIMEOUT_SEC
+    )
+    assert all(call[1]["check"] is True for call in calls[-2:])
+
+
+def test_converge_grouping_coupling_unknown_state_uses_safe_barrier(
+    monkeypatch,
+):
+    """An indeterminate state cannot authorize a possibly stale joined pass."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1:2] == ["show"]:
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_grouping_coupling() is True
+    assert calls[-2:] == [
+        ["systemctl", "start", reconcile_mod.FANIN_COUPLING_AUTO_UNIT],
+        ["systemctl", "start", reconcile_mod.FANIN_COUPLING_AUTO_UNIT],
+    ]
+
+
+def test_converge_grouping_coupling_barrier_failure_starts_no_fresh_pass(
+    monkeypatch,
+):
+    """Never stack a new graph transition behind a coupling owner that wedged."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1:2] == ["show"]:
+            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+        if argv[1:2] == ["start"]:
+            raise sp.TimeoutExpired(argv, kw["timeout"])
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    assert reconcile_mod._converge_grouping_coupling() is False
+    assert (
+        calls.count(["systemctl", "start", reconcile_mod.FANIN_COUPLING_AUTO_UNIT]) == 1
+    )
+
+
 def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
     import subprocess as sp
 
@@ -3332,18 +3517,75 @@ def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
     )
 
 
-# --- ring-armed box refuses to bond (audit finding 3, P2) --------------------
+# --- grouping asks coupling owner to land a supported route -----------------
 
 
 def _arm_ring_for_reconcile(monkeypatch):
-    """Make main()'s read_persisted_coupling report shm_ring (ring-armed box)."""
+    """Make ring remain armed after a successful auto-owner pass.
+
+    This is the observable result of an operator-pinned ring: auto preserves
+    the explicit choice, and grouping must retain the existing safe blocker.
+    """
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
 
 
-def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch):
+def test_auto_owned_ring_converts_to_loopback_and_bonds_in_same_pass(
+    tmp_path,
+    monkeypatch,
+):
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    coupling = {"value": "shm_ring"}
+
+    def converge():
+        assert coupling["value"] == "shm_ring"
+        order.append("coupling_auto")
+        coupling["value"] = "loopback"
+        return True
+
+    monkeypatch.setattr(reconcile_mod, "_converge_grouping_coupling", converge)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: coupling["value"],
+    )
+
+    assert main([]) == 0
+    assert order.index("coupling_auto") < order.index("write")
+    assert "camilla_bonded" in order
+    assert SNAPFIFO in target.read_text()
+
+
+def test_failed_coupling_transition_refuses_bond_even_if_env_says_loopback(
+    tmp_path,
+    monkeypatch,
+):
+    """A written value is not proof the ordered live transition completed."""
+    import json
+
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_converge_grouping_coupling",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "loopback",
+    )
+
+    assert main([]) == 1
+    assert "camilla_bonded" not in order
+    assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert status["blocked_reason"] == "fanin_coupling_transition_failed"
+
+
+def test_operator_pinned_ring_leader_refuses_bond_falls_back_to_solo(
+    tmp_path,
+    monkeypatch,
+):
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     _arm_ring_for_reconcile(monkeypatch)
     rc = main([])

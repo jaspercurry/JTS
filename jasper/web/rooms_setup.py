@@ -54,8 +54,11 @@ URL surface (after nginx strips the /rooms/ prefix):
   POST /peering     write the wake-response state into peering.env +
                     restart voice/control (JSON body, CSRF-verified)
   POST /bond        form a stereo pair from {peer_addr}; the server mints a
-                    bond id, builds the member plan, then fans the grouping
-                    config out SERVER-side to each member's jasper-control.
+                    bond id, builds the member plan, preflights both speakers,
+                    then configures the remote follower before the local
+                    leader. If that local write fails, it best-effort returns
+                    the remote follower to solo. The calls are SERVER-side to
+                    each member's jasper-control.
                     Before any write, every enabled member must return
                     readiness.allowed=true from lightweight GET /grouping;
                     POST /grouping/set rechecks the same target-side guard.
@@ -1055,17 +1058,22 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     Primary flow: the browser sends ``{peer_addr}``; the backend builds the
     stereo topology (this speaker leader/left, peer follower/right). Advanced
     same-bond edits may still send ``{members: [...]}`` explicitly. We mint a
-    bond_id, build one target per member, then fan the config out concurrently
-    to each member's control API via :func:`_fan_out_grouping`. The leader is
-    this speaker (it hosts this page), so followers get its STABLE mDNS handle
-    (:func:`_leader_handle`, e.g. ``jts.local``) as ``leader_addr`` — a handle
-    that survives DHCP IP churn, not a NIC IP. No env editing, no per-speaker
-    tinkering.
+    bond_id and preflight every target before any write. The primary two-box
+    flow then configures the remote follower first and the local leader last,
+    so an unreachable follower cannot leave the leader claiming a pair. If
+    that final local write fails after the follower accepted, one best-effort
+    disable returns the follower to solo and its outcome is surfaced. Advanced
+    explicit-member edits preserve their existing concurrent fan-out.
+
+    The leader is this speaker (it hosts this page), so followers get its
+    STABLE mDNS handle (:func:`_leader_handle`, e.g. ``jts.local``) as
+    ``leader_addr`` — a handle that survives DHCP IP churn, not a NIC IP. No
+    env editing, no per-speaker tinkering.
 
     Per-member outcomes are returned so the UI can show exactly which
-    speaker failed. A partial failure (some members configured, one
-    unreachable) is surfaced, not auto-rolled-back — the household retries;
-    the `/state` runtime health shows the half-formed bond as degraded.
+    speaker failed. Advanced explicit-member fan-out retains its established
+    partial-failure semantics; only the primary two-speaker create flow has
+    the narrow remote-follower compensation described above.
     """
     parsed, err = _read_json_body(handler)
     if err is not None:
@@ -1074,6 +1082,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         return
 
     members = parsed.get("members")
+    primary_pair_intent = members is None
     if members is None:
         peer_addr = str(parsed.get("peer_addr") or "").strip()
         if not peer_addr:
@@ -1259,10 +1268,125 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             error=str(exc), level=logging.WARNING,
         )
     token = request_control_token(handler)
-    for slot, (addr, body), (ok, detail) in zip(
-        target_idx, targets, _fan_out_grouping(targets, known=known, token=token)
-    ):
-        results[slot] = {"addr": addr, "role": body["role"], "ok": ok, "detail": detail}
+    compensation: dict | None = None
+    if primary_pair_intent:
+        # _stereo_pair_members_from_intent owns this exact two-member shape.
+        # Select by role/address instead of depending on list order so the
+        # safety ordering remains obvious if that builder is ever rearranged.
+        follower_target = next(
+            (
+                (slot, addr, body)
+                for slot, (addr, body) in zip(target_idx, targets)
+                if addr and body.get("role") == "follower"
+            ),
+            None,
+        )
+        leader_target = next(
+            (
+                (slot, addr, body)
+                for slot, (addr, body) in zip(target_idx, targets)
+                if not addr and body.get("role") == "leader"
+            ),
+            None,
+        )
+        # The primary builder is local and deterministic, but keep this branch
+        # total if a future edit accidentally breaks its shape.
+        if follower_target is None or leader_target is None:
+            for slot, (addr, body) in zip(target_idx, targets):
+                results[slot] = {
+                    "addr": addr,
+                    "role": body["role"],
+                    "ok": False,
+                    "detail": "primary stereo-pair plan is invalid",
+                }
+        else:
+            household = household_credential.current()
+            follower_slot, follower_addr, follower_body = follower_target
+            follower_ok, follower_detail = post_grouping_to_member(
+                follower_addr,
+                follower_body,
+                known,
+                token=token,
+                household=household,
+            )
+            results[follower_slot] = {
+                "addr": follower_addr,
+                "role": follower_body["role"],
+                "ok": follower_ok,
+                "detail": follower_detail,
+            }
+
+            leader_slot, leader_target_addr, leader_body = leader_target
+            if not follower_ok:
+                results[leader_slot] = {
+                    "addr": leader_target_addr,
+                    "role": leader_body["role"],
+                    "ok": False,
+                    "detail": (
+                        "not attempted because the remote follower did not "
+                        "accept the pair"
+                    ),
+                }
+            else:
+                leader_ok, leader_detail = post_grouping_to_member(
+                    leader_target_addr,
+                    leader_body,
+                    known,
+                    token=token,
+                    household=household,
+                )
+                results[leader_slot] = {
+                    "addr": leader_target_addr,
+                    "role": leader_body["role"],
+                    "ok": leader_ok,
+                    "detail": leader_detail,
+                }
+                if not leader_ok:
+                    # The follower accepted but this leader did not. Return the
+                    # follower to solo through the same authoritative control
+                    # surface; never edit its env directly. One bounded attempt
+                    # is enough—the response tells the household when cleanup
+                    # remains incomplete instead of hiding a retry loop.
+                    compensation_ok, compensation_detail = post_grouping_to_member(
+                        follower_addr,
+                        {"enabled": False, "trim_db": 0.0},
+                        known,
+                        token=token,
+                        household=household,
+                    )
+                    compensation = {
+                        "attempted": True,
+                        "addr": follower_addr,
+                        "ok": compensation_ok,
+                        "detail": compensation_detail,
+                    }
+                    log_event(
+                        logger,
+                        "rooms.bond.compensation",
+                        bond=bond_id,
+                        addr=follower_addr,
+                        ok=compensation_ok,
+                        detail=compensation_detail,
+                        level=(
+                            logging.INFO
+                            if compensation_ok
+                            else logging.WARNING
+                        ),
+                    )
+    else:
+        # Advanced explicit-member edits retain their established concurrent
+        # fan-out and partial-failure behavior.
+        for slot, (addr, body), (ok, detail) in zip(
+            target_idx,
+            targets,
+            _fan_out_grouping(targets, known=known, token=token),
+        ):
+            results[slot] = {
+                "addr": addr,
+                "role": body["role"],
+                "ok": ok,
+                "detail": detail,
+            }
 
     all_ok = all(r["ok"] for r in results)
     # Name each failed member in the journal (not just the aggregate) — on a
@@ -1287,9 +1411,12 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         members=len(members),
         ok=all_ok,
     )
+    payload = {"ok": all_ok, "bond_id": bond_id, "results": results}
+    if compensation is not None:
+        payload["compensation"] = compensation
     _send_json(
         handler,
-        {"ok": all_ok, "bond_id": bond_id, "results": results},
+        payload,
         status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
     )
 

@@ -53,6 +53,7 @@ import {
   balanceText,
   clampBalanceDb,
   formatBalanceDb,
+  groupingStatusView,
   snapcastProvisionRow,
   subCornerLabel,
   trimsForBalance,
@@ -109,20 +110,13 @@ function groupingBody(g) {
   if (!g || typeof g !== "object") {
     return h("p.info-card__note", null, "Grouping status unavailable.");
   }
-  // Fail-LOUD: an enabled-but-broken config carries an error string.
-  if (g.error) {
-    const badge = h("span.badge", null, "Misconfigured");
-    badge.style.setProperty("--tone", "var(--status-danger)");
+  const statusView = groupingStatusView(g);
+  if (statusView.state === "solo" || statusView.state === "misconfigured") {
+    const badge = h("span.badge", null, statusView.label);
+    badge.style.setProperty("--tone", statusView.tone);
     return h("div", null,
       h("div.badge-row", null, badge),
-      h("p.info-card__note", null, String(g.error)),
-    );
-  }
-  if (!g.enabled) {
-    const badge = h("span.badge", null, "Solo");
-    badge.style.setProperty("--tone", "var(--status-idle)");
-    return h("div", null,
-      h("div.badge-row", null, badge, "Not part of a bond"),
+      h("p.info-card__note", null, statusView.detail),
     );
   }
   // Enabled + valid: role / channel / bond / buffer / codec. A subwoofer
@@ -132,10 +126,22 @@ function groupingBody(g) {
     ? "Subwoofer | " + subCornerLabel(g.crossover_hz)
     : (g.channel || "—");
   const rows = [
-    defRow("Role", g.role || "—"),
+    defRow("Requested role", g.role || "—"),
     defRow("Channel", channelLabel),
     defRow("Bond", g.bond_id || "—"),
   ];
+  const endpoint =
+    g.endpoint && typeof g.endpoint === "object" ? g.endpoint : null;
+  if (endpoint) {
+    const effectiveEndpoint = endpoint.blocked_reason === "role_transition_in_progress"
+      ? "Transitioning"
+      : endpoint.blocked_reason
+        ? "Solo (request blocked)"
+        : endpoint.mode === "active_crossover"
+          ? `${endpoint.role || "active"} crossover`
+          : "Unknown";
+    rows.push(defRow("Effective endpoint", effectiveEndpoint));
+  }
   if (g.role === "follower" && g.leader_addr) {
     const leaderHost = localWebHost(g.leader_addr);
     rows.push(defRow("Leader", leaderHost || "leader"));
@@ -164,23 +170,21 @@ function groupingBody(g) {
     provBadge.style.setProperty("--tone", provRow.tone);
     rows.push([h("dt", null, "Snapcast"), h("dd", null, provBadge)]);
   }
-  // Runtime health (jasper.multiroom.state.derive_grouping_runtime):
-  //   {health: "ok"|"degraded"|…, detail}. Present when grouping is on.
-  // A degraded bond — a follower that can't reach its leader, or (until the
-  // producer ships) a leader with no FIFO — shows amber + the reason, not a
-  // green "Grouped" hiding silent breakage. The detail (which may contain a
-  // leader address) is rendered as a TEXT node, which h() escapes.
+  // Runtime status is composed by groupingStatusView from requested config,
+  // active-endpoint truth, runtime health, and pair-lock evidence. In
+  // particular, an enabled config or a running snapclient process alone can
+  // never produce a green badge.
   const rt = g.runtime && typeof g.runtime === "object" ? g.runtime : null;
-  const degraded = rt && rt.health === "degraded";
-  const badge = h("span.badge", null, degraded ? "Degraded" : "Grouped");
-  badge.style.setProperty(
-    "--tone", degraded ? "var(--status-warn)" : "var(--status-ok)",
-  );
+  const badge = h("span.badge", null, statusView.label);
+  badge.style.setProperty("--tone", statusView.tone);
   const out = [
     h("div.badge-row", null, badge),
     h("dl.deflist", null, rows.flat()),
   ];
-  if (rt && rt.detail) {
+  if (statusView.detail) {
+    out.push(h("p.info-card__note", null, statusView.detail));
+  }
+  if (rt && rt.detail && String(rt.detail) !== statusView.detail) {
     out.push(h("p.info-card__note", null, String(rt.detail)));
   }
   if (fitRow && fitRow.note) {
@@ -411,6 +415,16 @@ function describeBondFailure(e) {
   } else if (body.rolled_back === false) {
     msg += " — ROLLBACK ALSO FAILED: the pair may be on one channel; " +
       "press Swap again to repair it.";
+  }
+  const compensation =
+    body.compensation && typeof body.compensation === "object"
+      ? body.compensation
+      : null;
+  if (compensation && compensation.ok === true) {
+    msg += " — the remote speaker was returned to solo.";
+  } else if (compensation && compensation.ok === false) {
+    msg += " — cleanup also failed: the remote speaker may still have the " +
+      "pair request. Dissolve the incomplete pair there, then retry.";
   }
   return msg;
 }
@@ -668,6 +682,19 @@ function makeBondCard() {
   // are passed as h() text-node children (escaped). Raw IP leader handles are
   // intentionally not shown as browser-facing hosts.
   function summarize(g) {
+    const statusView = groupingStatusView(g);
+    if (statusView.state === "pairing") {
+      return ["Pairing — ", statusView.detail];
+    }
+    if (statusView.state === "blocked") {
+      return ["Couldn't pair — ", statusView.detail];
+    }
+    if (statusView.state === "degraded") {
+      return ["Pair configured, but playback is degraded. ", statusView.detail];
+    }
+    if (statusView.state === "unknown") {
+      return ["Pair requested — ", statusView.detail];
+    }
     const channel = g.channel || "";
     if (g.role === "follower") {
       const leaderHost = localWebHost(g.leader_addr);

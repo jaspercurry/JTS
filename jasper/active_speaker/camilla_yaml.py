@@ -121,6 +121,7 @@ ACTIVE_PROGRAM_BAKE_SOURCE = (
 # is passthrough (not a single-box pick) and ``sub`` is the wireless-sub member
 # (gap 5) — both are out of scope for the follower driver-domain emit.
 DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
+DRIVER_DOMAIN_HEADROOM_FILTER = "active_driver_headroom"
 
 # S1 (G7 chunksize-knob safety): the follower driver-domain graph captures the
 # leader's stream from an snd-aloop loopback whose period underruns (EPIPE)
@@ -1149,10 +1150,8 @@ def _emit_baseline_driver_definitions(
     *intra-speaker* half — it has no program-domain headroom and no preference
     EQ (those are program-domain, wired only by the baseline caller). The
     follower's driver-domain emit reuses this verbatim so the relocated Layer A
-    is byte-for-byte the same protective chain a solo speaker runs. ``linearization``
-    is threaded only by the solo/leader baseline caller today — the follower's
-    driver-domain emit never passes it, so its graph stays exactly the pre-PR-D
-    protective chain (Layer 1a linearization ships to a follower in a later slice).
+    is byte-for-byte the same protective chain a solo speaker runs, including
+    the applied ``linearization`` stage.
     """
     lines: list[str] = []
     for region in _ordered_regions(preset):
@@ -1400,8 +1399,8 @@ def _linearization_has_boost(
 ) -> bool:
     """Does any emitted linearization filter carry positive gain?
 
-    The guard that keeps a cut-only graph — every graph before PR-L5, and
-    every one a follower runs — off the chain-evaluation path entirely, so
+    The guard that keeps a cut-only graph — every graph before PR-L5 — off the
+    chain-evaluation path entirely, so
     neither this emitter nor the runtime contract imports numpy for it (see
     :mod:`jasper.active_speaker.branch_chain`'s module docstring). Sound
     because a cut cascade, a Linkwitz-Riley section, and a non-positive trim
@@ -1619,11 +1618,19 @@ def _emit_baseline_pipeline(
     ])
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
-        chain = ", ".join(
-            _driver_baseline_filter_chain(
+        if linearization:
+            chain_names = _driver_baseline_filter_chain(
                 preset, role, bass_extension, linearization,
             )
-        )
+        elif bass_extension is not None:
+            chain_names = _driver_baseline_filter_chain(
+                preset, role, bass_extension,
+            )
+        else:
+            # Keep the established two-argument seam for the ordinary graph;
+            # safety tests patch it to adversarially remove one crossover.
+            chain_names = _driver_baseline_filter_chain(preset, role)
+        chain = ", ".join(chain_names)
         lines.extend([
             "  - type: Filter",
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
@@ -1654,11 +1661,13 @@ def _emit_driver_domain_pipeline(
     *,
     pair_trim_db: float = 0.0,
     bass_extension: dict[str, Any] | None = None,
+    linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
     # Driver-domain-only (follower) pipeline. The inter-speaker channel-select
     # runs FIRST (a 2->2 Mixer that picks L/R/mono from the leader's corrected
     # stereo program), THEN the optional pair-balance trim on the selected stereo
-    # bus, THEN the intra-speaker 2->N split, THEN each driver's
+    # bus, THEN the Layer-A linearization headroom, THEN the intra-speaker 2->N
+    # split, THEN each driver's
     # crossover/delay/gain/limiter chain. Exactly one helper owns this ordering so
     # an edit to the safety-critical Layer-A pipeline cannot fork the trimmed and
     # untrimmed cases.
@@ -1672,15 +1681,20 @@ def _emit_driver_domain_pipeline(
         f"    names: [{DRIVER_DOMAIN_PAIR_TRIM_FILTER}]",
     ])
     lines.extend([
+        "  - type: Filter",
+        "    channels: [0, 1]",
+        f"    names: [{DRIVER_DOMAIN_HEADROOM_FILTER}]",
+    ])
+    lines.extend([
         "  - type: Mixer",
         f"    name: split_active_{preset.way_count}way",
     ])
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
         chain = ", ".join(
-            _driver_baseline_filter_chain(preset, role)
-            if bass_extension is None
-            else _driver_baseline_filter_chain(preset, role, bass_extension)
+            _driver_baseline_filter_chain(
+                preset, role, bass_extension, linearization,
+            )
         )
         lines.extend([
             "  - type: Filter",
@@ -2917,6 +2931,7 @@ def emit_active_speaker_driver_domain_config(
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> str:
     """Build a **driver-domain-only** active-speaker graph for a wireless follower.
 
@@ -2929,11 +2944,13 @@ def emit_active_speaker_driver_domain_config(
     no ``active_baseline_headroom`` gain and no preference-EQ band — because that
     domain belongs to the leader's bake instance.
 
-    The pipeline is ``channel_select (2->2 pick L/R/mono) -> optional
-    pair_balance_trim -> split_active_<way>way (2->N) -> per-driver chain``:
+    The pipeline is ``channel_select (2->2 pick L/R/mono) ->
+    pair_balance_trim -> active_driver_headroom -> split_active_<way>way
+    (2->N) -> per-driver chain``:
     the inter-speaker channel-select runs FIRST (which channel of the pair this
     box plays), THEN the attenuate-only pair trim for this physical member,
-    THEN the intra-speaker driver split — exactly
+    THEN the applied linearization's local safety headroom, THEN the
+    intra-speaker driver split — exactly
     ``jasper.multiroom.channel_split``'s documented composition order.
     ``program_channel`` is one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``
     (``left`` / ``right`` / ``mono``); the channel-select mixer is the shared
@@ -2998,6 +3015,21 @@ def emit_active_speaker_driver_domain_config(
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
     bass_extension = _bass_extension_emission(preset, bass_extension_profile)
+    safe_linearization = _validated_linearization(preset, linearization or {})
+    driver_headroom_db = linearization_headroom_db(
+        safe_linearization,
+        branch_context=(
+            _branch_context(preset, safe_corrections)
+            if _linearization_has_boost(safe_linearization)
+            else {}
+        ),
+    )
+    if driver_headroom_db > MAX_PROGRAM_HEADROOM_DB:
+        raise ActiveSpeakerConfigError(
+            f"driver-domain headroom {driver_headroom_db:.3f} dB exceeds "
+            f"{MAX_PROGRAM_HEADROOM_DB} dB — refusing to emit a graph this "
+            "attenuated (check the applied linearization)"
+        )
 
     output_count = _output_count(preset)
     filter_lines = _emit_baseline_driver_definitions(
@@ -3005,9 +3037,16 @@ def emit_active_speaker_driver_domain_config(
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
         bass_extension=bass_extension,
+        linearization=safe_linearization,
     )
     filter_lines.extend(
         emit_gain_filter(DRIVER_DOMAIN_PAIR_TRIM_FILTER, -pair_trim_db)
+    )
+    filter_lines.extend(
+        emit_gain_filter(
+            DRIVER_DOMAIN_HEADROOM_FILTER,
+            0.0 if driver_headroom_db == 0 else -driver_headroom_db,
+        )
     )
     filter_yaml = "\n".join(filter_lines)
     # channel_select FIRST (inter-speaker pick), then the intra-speaker split.
@@ -3022,11 +3061,13 @@ def emit_active_speaker_driver_domain_config(
         preset,
         pair_trim_db=pair_trim_db,
         bass_extension=bass_extension,
+        linearization=safe_linearization,
     )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
         f"# program_channel={program_channel}",
         f"# pair_trim_db={pair_trim_db:.3f}",
+        f"# driver_headroom_db={driver_headroom_db:.3f}",
     ]
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")
@@ -3039,8 +3080,9 @@ def emit_active_speaker_driver_domain_config(
 {metadata_yaml}
 # This is a wireless follower's driver-domain-only Layer-A graph: it picks one
 # inter-speaker channel of the leader's already-corrected stereo program, then
-# runs the per-driver crossover/limiter chain. There is no program-domain
-# headroom or preference EQ (the leader baked Layer B/C); outputs are not
+# runs the per-driver crossover/limiter chain. The local active_driver_headroom
+# gain absorbs only applied Layer-A linearization boost; there is no Layer-B/C
+# program headroom or preference EQ (the leader baked those); outputs are not
 # startup-muted, per-driver correction gain is non-positive, and the software
 # volume ceiling remains non-positive.
 

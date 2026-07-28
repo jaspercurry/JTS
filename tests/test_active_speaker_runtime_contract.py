@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 import json
+import re
 
 import pytest
 import yaml
@@ -262,6 +263,7 @@ def _driver_domain_yaml(
     channel: str = "left",
     pair_trim_db: float = 0.0,
     bass_extension_profile=None,
+    linearization=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_driver_domain_config(
@@ -271,6 +273,7 @@ def _driver_domain_yaml(
         pair_trim_db=pair_trim_db,
         baseline_id=f"follower-{layout}-{way}way",
         bass_extension_profile=bass_extension_profile,
+        linearization=linearization,
     )
 
 
@@ -3014,7 +3017,15 @@ def test_driver_domain_pair_trim_after_split_is_rejected() -> None:
         "  - type: Mixer\n"
         "    name: split_active_2way\n"
     )
-    tampered = text.replace(trim_step + split_step, split_step + trim_step)
+    headroom_step = (
+        "  - type: Filter\n"
+        "    channels: [0, 1]\n"
+        "    names: [active_driver_headroom]\n"
+    )
+    tampered = text.replace(
+        trim_step + headroom_step + split_step,
+        headroom_step + split_step + trim_step,
+    )
 
     graph = classify_camilla_graph(
         topology=_active_topology("mono", "active_2_way"), text=tampered,
@@ -3025,6 +3036,99 @@ def test_driver_domain_pair_trim_after_split_is_rejected() -> None:
         i.get("code") == "active_driver_domain_pair_trim_invalid"
         for i in graph.issues
     )
+
+
+_BOOSTED_DRIVER_LINEARIZATION = {
+    "woofer": [
+        {
+            "biquad_type": "Peaking",
+            "freq": 500.0,
+            "q": 1.0,
+            "gain": 6.0,
+        },
+    ],
+}
+
+
+def _driver_headroom_gain(text: str) -> float:
+    match = re.search(
+        r"active_driver_headroom:\n"
+        r"\s+type: Gain\n"
+        r"\s+parameters: \{ gain: (-?\d+\.\d+)",
+        text,
+    )
+    assert match is not None
+    return float(match.group(1))
+
+
+def test_driver_domain_boosted_linearization_has_proven_local_headroom() -> None:
+    text = _driver_domain_yaml(
+        "mono", 2, linearization=_BOOSTED_DRIVER_LINEARIZATION,
+    )
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=text,
+    )
+
+    assert graph.allowed, graph.issues
+    assert _driver_headroom_gain(text) < 0.0
+    pipeline = text[text.index("\npipeline:") :]
+    assert (
+        pipeline.index("names: [pair_balance_trim]")
+        < pipeline.index("names: [active_driver_headroom]")
+        < pipeline.index("name: split_active_2way")
+        < pipeline.index("as_woofer_linearization_peak_1")
+    )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "positive", "after_split"])
+def test_driver_domain_invalid_headroom_is_rejected(mutation: str) -> None:
+    text = _driver_domain_yaml(
+        "mono", 2, linearization=_BOOSTED_DRIVER_LINEARIZATION,
+    )
+    gain = _driver_headroom_gain(text)
+    definition = (
+        "  active_driver_headroom:\n"
+        "    type: Gain\n"
+        f"    parameters: {{ gain: {gain:.4f}, inverted: false, mute: false }}\n"
+    )
+    step = (
+        "  - type: Filter\n"
+        "    channels: [0, 1]\n"
+        "    names: [active_driver_headroom]\n"
+    )
+    split = "  - type: Mixer\n    name: split_active_2way\n"
+    if mutation == "missing":
+        tampered = text.replace(definition, "").replace(step, "")
+    elif mutation == "positive":
+        tampered = text.replace(f"gain: {gain:.4f}", "gain: 1.0000", 1)
+    else:
+        tampered = text.replace(step + split, split + step)
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=tampered,
+    )
+
+    assert not graph.allowed
+    assert "active_driver_domain_headroom_invalid" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_driver_domain_insufficient_headroom_rejects_boosted_chain() -> None:
+    text = _driver_domain_yaml(
+        "mono", 2, linearization=_BOOSTED_DRIVER_LINEARIZATION,
+    )
+    gain = _driver_headroom_gain(text)
+    tampered = text.replace(f"gain: {gain:.4f}", "gain: -0.0010", 1)
+
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=tampered,
+    )
+
+    assert not graph.allowed
+    assert "active_output_driver_chain_unrecognized" in {
+        issue["code"] for issue in graph.issues
+    }
 
 
 def test_driver_domain_rejects_injected_program_prefix() -> None:
@@ -3097,13 +3201,15 @@ def test_driver_domain_rejects_channel_select_after_split() -> None:
     valid_prefix = (
         "  - type: Mixer\n    name: channel_select\n"
         "  - type: Filter\n    channels: [0, 1]\n    names: [pair_balance_trim]\n"
+        "  - type: Filter\n    channels: [0, 1]\n    names: [active_driver_headroom]\n"
         "  - type: Mixer\n    name: split_active_2way\n"
     )
     swapped = text.replace(
         valid_prefix,
         "  - type: Mixer\n    name: split_active_2way\n"
         "  - type: Mixer\n    name: channel_select\n"
-        "  - type: Filter\n    channels: [0, 1]\n    names: [pair_balance_trim]\n",
+        "  - type: Filter\n    channels: [0, 1]\n    names: [pair_balance_trim]\n"
+        "  - type: Filter\n    channels: [0, 1]\n    names: [active_driver_headroom]\n",
     )
     assert swapped != text
     graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=swapped)

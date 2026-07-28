@@ -133,13 +133,18 @@ are **operational (RAM, voice, sub sync), not architectural**:
 
 ## Roles & capture contract (gap 1)
 
+**Operational correction, 2026-07-28.**
+
 Bond role is **runtime** (`grouping.env`), exactly as
 `member_camilla_kwargs` ([member_config.py](../jasper/multiroom/member_config.py))
-already resolves the leader's pipe sink per role. So the **commissioned
-artifact stays the driver-domain description** (crossover points,
-per-driver gain/delay/limiter, tweeter HP — hardware truth, role
-independent); the **reconciler resolves capture device + domain-mode per
-current role**:
+already resolves the leader's pipe sink per role. The production authority is
+the immutable **applied baseline profile**: its recomposition snapshot owns
+crossover points, per-driver gain/delay/limiter, linearization, tweeter HP,
+playback route, and bass extension. Those are hardware truths and remain
+role-independent. The reconciler projects that applied snapshot for the current
+role, adding only capture device, inter-speaker channel selection, and
+attenuate-only pair trim. It does not rebuild production Layer A from the
+mutable design draft, crossover preview, or measurement store:
 
 | Role | Capture | Layers emitted |
 |---|---|---|
@@ -177,11 +182,14 @@ The reconciler's follower branch:
 1. Points the follower's CamillaDSP **capture at the round-trip loopback**
    (snapclient writes it; today snapclient feeds `MEMBER_CONTENT_FIFO` →
    outputd's `dac_content` — [reconcile.py](../jasper/multiroom/reconcile.py)).
-2. Emits a **driver-domain-only baseline**: `channel-select (2→2 pick
-   L/R/mono) → split_active_<way>way (2→N) → per-driver [crossover, delay,
-   gain, limiter] (+ tweeter HP)` — **no** program prefix, **no** EQ
-   headroom (the leader baked B/C). Channel-select runs FIRST (inter-
-   speaker axis), then the crossover splits (intra-speaker axis) — exactly
+2. Projects a **driver-domain-only baseline** from the immutable applied
+   snapshot: `channel-select (2→2 pick L/R/mono) → pair_balance_trim →
+   active_driver_headroom → split_active_<way>way (2→N) → per-driver
+   [crossover, linearization, delay, gain, limiter] (+ tweeter HP)`.
+   `active_driver_headroom` absorbs only applied Layer-A linearization boost;
+   the graph has **no** Layer-B/C program prefix or preference EQ (the leader
+   baked those). Channel-select runs FIRST (inter-speaker axis), then local
+   Layer-A protection and the crossover split (intra-speaker axis) — exactly
    [channel_split.py](../jasper/multiroom/channel_split.py)'s documented
    composition order.
 3. **Disables outputd's `dac_content` ChannelPick on this box** — camilla
@@ -191,14 +199,15 @@ The reconciler's follower branch:
    can't be re-proven, refuse to bond / silence + cue).
 
 The driver-domain-only emit is a **parameterization of the existing
-emitter** (compose, don't text-splice — the PR-3 `recompose_baseline_yaml`
-pattern), and `classify_camilla_graph`
+emitter** (compose, don't text-splice). Both solo recomposition and grouped
+projection decode the same applied-snapshot inputs; only the explicit role
+overlay differs. `classify_camilla_graph`
 ([runtime_contract.py](../jasper/active_speaker/runtime_contract.py)) grows
 a **driver-domain-only baseline** classification arm: Layer A present
 (crossover HP + per-driver limiter `clip_limit≤0` + per-driver gain `≤0` +
-`0 dB volume_limit`), channel-select present, program prefix absent. The
-emitter↔verifier independence stays; the carrier emits, the classifier
-re-proves.
+`0 dB volume_limit`), channel-select/pair trim/headroom in the required order,
+linearization headroom non-positive and sufficient, program prefix absent. The
+emitter↔verifier independence stays; the carrier emits, the classifier re-proves.
 
 ## Web: narrow the follower-409, make the promise true (gap 2)
 

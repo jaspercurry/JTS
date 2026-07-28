@@ -19,10 +19,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
-import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology as output_topology_mod
@@ -39,12 +36,10 @@ from tests.test_bass_extension_profile import _profile
 # solo apply + the follower arm use (the leader is its own receiver — the
 # driver-domain build is identical, only the config/state paths differ).
 from tests.test_active_speaker_baseline_profile import (
-    _draft,
+    _applied_profile,
     _dual_apple_topology,
-    _measurements,
     _valid_config,
 )
-from jasper.active_speaker.crossover_preview import build_crossover_preview
 
 
 @pytest.fixture(autouse=True)
@@ -99,24 +94,29 @@ class _FakeCamilla:
         return True
 
 
-def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
+def _patch_applied_profile(
+    monkeypatch,
+    tmp_path,
+    topology,
+    *,
+    applied_profile=None,
+):
     # The re-proof uses the STRICT loader (fail-closed); patch that.
+    if applied_profile is None:
+        applied_profile = _applied_profile(topology, tmp_path)
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: topology
     )
-    monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda *a, **k: draft)
     monkeypatch.setattr(
-        crossover_preview_mod, "load_crossover_preview", lambda *a, **k: preview
-    )
-    monkeypatch.setattr(
-        measurement_mod, "load_measurement_state", lambda *a, **k: measurements
+        baseline_profile_mod,
+        "load_applied_baseline_profile_state",
+        lambda *a, **k: applied_profile,
     )
     # Leader-specific config/state/stash paths so nothing clobbers the solo
     # baseline OR the active-follower arm's files.
     monkeypatch.setattr(
         alc, "CROSSOVER_CONFIG_PATH", str(tmp_path / "grouping_active_leader_crossover.yml")
     )
-    monkeypatch.setattr(alc, "CROSSOVER_STATE_PATH", str(tmp_path / "crossover_state.json"))
     monkeypatch.setattr(
         alc, "LEADER_BAKE_CONFIG_PATH", str(tmp_path / "grouping_active_leader_bake.yml")
     )
@@ -160,10 +160,7 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     from jasper.multiroom.reconcile import GROUPING_LOOPBACK_CAPTURE, SNAPFIFO
 
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     sealed = replace(
         _profile(topology=topology),
         bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
@@ -187,6 +184,7 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     assert "# program_channel=left" in crossover_yaml
     assert f'device: "{GROUPING_LOOPBACK_CAPTURE}"' in crossover_yaml
     assert "active_baseline_headroom" not in crossover_yaml  # leader bakes B/C
+    assert "active_driver_headroom" in crossover_yaml
     crossover_doc = yaml.safe_load(crossover_yaml)
     woofer_chain = next(
         step["names"]
@@ -212,10 +210,7 @@ def test_precheck_refuses_shm_ring_coupling_before_emit(monkeypatch, tmp_path) -
     supported pair (the ring is solo-stereo-only until ring v2). Refuse before
     writing either generated config."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     monkeypatch.setattr(
         alc, "read_persisted_coupling", lambda *a, **k: "shm_ring",
     )
@@ -234,10 +229,7 @@ def test_precheck_threads_pair_trim_into_leader_crossover(
     """The active leader's own speaker path is camilla#2, not outputd's
     dac_content lane, so grouping trim must be in the driver-domain graph."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
 
     asyncio.run(alc.precheck_active_leader(_cfg("left", trim_db=-4.0), validate=_valid_config))
 
@@ -251,9 +243,7 @@ def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> N
     """A box with no ready driver-domain baseline cannot lead — precheck raises
     ActiveLeaderError(baseline_not_ready) and never reaches the bake."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, {"summary": {}})
+    _patch_applied_profile(monkeypatch, tmp_path, topology, applied_profile={})
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
@@ -266,10 +256,7 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     """If camilla#2's emitted driver-domain graph cannot be re-proven, refuse to
     bond (no full-range emit) — the bake re-prove is never reached."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     import jasper.active_speaker.camilla_yaml as camilla_yaml
 
     original = camilla_yaml._driver_baseline_filter_chain
@@ -300,16 +287,13 @@ def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
     import jasper.active_speaker.camilla_yaml as camilla_yaml
 
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     # Provoke the L0 gate: strip the tweeter high-pass from the baseline chain the
     # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
     original = camilla_yaml._driver_baseline_filter_chain
 
-    def _hp_stripped(preset, role):
-        names = original(preset, role)
+    def _hp_stripped(preset, role, *args, **kwargs):
+        names = original(preset, role, *args, **kwargs)
         return [n for n in names if not n.endswith("_hp")] if role == "tweeter" else names
 
     monkeypatch.setattr(camilla_yaml, "_driver_baseline_filter_chain", _hp_stripped)
@@ -325,10 +309,7 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
     """The crossover re-proves, but camilla#1's program bake does NOT — refuse to
     bond. Selective re-proof keyed on the config path."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
 
     def _selective(*, config_path=None, **k):
         ok = str(config_path) == alc.CROSSOVER_CONFIG_PATH
@@ -351,13 +332,10 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
 
 def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> None:
     """A corrupt/unreadable topology.json (the filesystem-loss class) must make
-    precheck REFUSE — not fall through to an empty draft where a flat full-range
+    precheck REFUSE — not fall through to a profile where a flat full-range
     graph would re-prove allowed and reach the tweeter."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
 
     def _boom(*a, **k):
         raise output_topology_mod.OutputTopologyError("topology.json corrupt")
@@ -374,10 +352,7 @@ def test_precheck_bad_channel_fails_closed_as_leader_error(monkeypatch, tmp_path
     fail closed. The shared program_channel_for raises a follower-flavoured error
     that the leader arm re-raises as ActiveLeaderError (reason preserved)."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
 
     for bad in ("stereo", "sub"):
         with pytest.raises(alc.ActiveLeaderError) as exc:
@@ -392,10 +367,7 @@ def test_precheck_fails_closed_when_snapcast_missing(monkeypatch, tmp_path) -> N
     camilla#2 onto the DAC would fight camilla#1 and exhaust its recovery
     budget. Refuse the bond UP FRONT (stay solo-active)."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     # snapserver absent (snapclient present) — either-absent must fail closed.
     monkeypatch.setattr(
         shutil, "which",

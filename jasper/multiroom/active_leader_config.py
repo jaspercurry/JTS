@@ -26,7 +26,7 @@ must feed both the wire (2 ch) and its own DACs (N ch)":
     round-trip loopback (snapclient -> loopback -> camilla#2 [rate_adjust ON] ->
     DAC). This is **literally the follower endpoint config**
     (:func:`jasper.active_speaker.emit_active_speaker_driver_domain_config`, via
-    ``build_baseline_profile_candidate(driver_domain=True, ...)``), so the
+    the immutable applied-profile projection), so the
     leader's own drivers are protected by the SAME re-proven Layer-A graph a
     wireless follower uses.
 
@@ -79,19 +79,19 @@ from .follower_config import program_channel_for
 
 logger = logging.getLogger(__name__)
 
-# camilla#1's program bake + camilla#2's driver-domain config + its (throwaway)
-# compile state. Names registered in jasper.sound.camilla_yaml._JTS_GENERATED_RE
+# camilla#1's program bake + camilla#2's disposable driver-domain projection.
+# Names registered in jasper.sound.camilla_yaml._JTS_GENERATED_RE
 # so a /sound or /correction read while bonded recognises them as JTS-generated
 # (never "custom"). DELIBERATELY leader-specific paths so neither clobbers the
 # solo baseline profile state at baseline_profile.DEFAULT_STATE_PATH — that
 # record must survive the bond so the unbond restore can re-apply the solo
 # active baseline — and so neither collides with the active-FOLLOWER arm's files
 # (a box is a leader xor a follower at a time, but separate files keep the two
-# arms from ever fighting over one path).
+# arms from ever fighting over one path). The applied solo profile remains the
+# one Layer-A authority; the leader projection has no profile-state sidecar.
 CONFIG_DIR = "/var/lib/camilladsp/configs"
 LEADER_BAKE_CONFIG_PATH = CONFIG_DIR + "/grouping_active_leader_bake.yml"
 CROSSOVER_CONFIG_PATH = CONFIG_DIR + "/grouping_active_leader_crossover.yml"
-CROSSOVER_STATE_PATH = "/var/lib/jasper/active_leader_crossover_profile.json"
 
 # Persistent prior-config stash for camilla#1's solo-active baseline (NOT /run:
 # a bond survives reboots, and the unwind may happen many boots after the bond
@@ -161,11 +161,9 @@ async def precheck_active_leader(
         emit_active_speaker_program_bake_config,
     )
     from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
+        compile_applied_driver_domain_config,
+        load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
         classify_camilla_graph,
@@ -234,16 +232,12 @@ async def precheck_active_leader(
         ) from exc
 
     # 1. camilla#2 driver-domain (Layer A) — the leader's OWN drivers, captured
-    #    from the round-trip loopback. Identical build to the active follower
-    #    (build_baseline_profile_candidate(driver_domain=True, ...)) — the leader
-    #    is its own receiver — only the config/state paths differ so the solo
-    #    baseline + follower files are never clobbered.
-    design_draft = load_design_draft()
-    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
-    measurements = load_measurement_state(topology)
+    #    from the round-trip loopback. This is the same APPLIED Layer-A
+    #    projection as the active follower — the leader is its own receiver.
+    #    Mutable drafts/previews/measurements are not runtime authorities.
     # ``validate`` is a test seam (mirrors apply_baseline_profile); production
-    # leaves it None so build uses the real CamillaDSP --check.
-    build_kwargs = {} if validate is None else {"validate": validate}
+    # leaves it None so projection uses the real CamillaDSP --check.
+    compile_kwargs = {} if validate is None else {"validate": validate}
     # The L0 emit gate inside emit_active_speaker_driver_domain_config raises
     # ActiveSpeakerConfigError (a ValueError) if the driver-domain graph would
     # ship an unprotected tweeter. Convert it to ActiveLeaderError (a
@@ -251,20 +245,15 @@ async def precheck_active_leader(
     # path catches it — a refused graph must fall back to solo, never crash the
     # reconciler oneshot. Mirrors the ActiveFollowerError re-raise below.
     try:
-        candidate = build_baseline_profile_candidate(
+        projection, projection_issues = compile_applied_driver_domain_config(
             topology,
-            design_draft=design_draft,
-            crossover_preview=crossover_preview,
-            measurements=measurements,
-            write=True,
-            state_path=CROSSOVER_STATE_PATH,
-            config_path=CROSSOVER_CONFIG_PATH,
+            applied_profile=load_applied_baseline_profile_state() or {},
+            program_channel=program_channel,
+            pair_trim_db=max(0.0, -float(cfg.trim_db)),
             capture_device=GROUPING_LOOPBACK_CAPTURE,
             capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
-            driver_domain=True,
-            program_channel=program_channel,
-            driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
-            **build_kwargs,
+            out_path=CROSSOVER_CONFIG_PATH,
+            **compile_kwargs,
         )
     except ActiveSpeakerConfigError as exc:
         raise ActiveLeaderError(
@@ -272,22 +261,22 @@ async def precheck_active_leader(
             "active leader camilla#2 driver-domain graph refused at the emit "
             f"gate (no full-range emit to a tweeter): {exc}",
         ) from exc
-    if not candidate.get("permissions", {}).get("may_apply"):
+    if projection is None:
         codes = [
-            i.get("code") for i in candidate.get("issues", [])
+            i.get("code") for i in projection_issues
             if isinstance(i, dict)
         ]
         raise ActiveLeaderError(
             "baseline_not_ready",
-            "active leader has no ready driver-domain baseline for camilla#2 "
-            f"(status={candidate.get('status')}, issues={codes}); commission "
-            "this speaker as an active speaker before leading a bond",
+            "active leader cannot project its applied driver-domain baseline "
+            f"for camilla#2 (issues={codes}); apply this speaker's active "
+            "crossover before leading a bond",
         )
     crossover_graph = classify_camilla_graph(
         topology=topology,
-        text=Path(CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8"),
+        text=projection.yaml,
         config_path=CROSSOVER_CONFIG_PATH,
-        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
+        bass_profile_summary=projection.bass_extension_profile_summary,
     )
     if (
         not crossover_graph.allowed

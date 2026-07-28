@@ -40,6 +40,181 @@ export function balanceTrimRequest(value) {
   return { target: "pair", balance_db: clampBalanceDb(value) };
 }
 
+// One honest household-facing grouping verdict from the existing requested,
+// endpoint, runtime, and pair-lock signals. Requested grouping config alone is
+// never evidence that audio actually grouped: a reconciler may still be
+// applying the role, may have refused an active endpoint and kept it safely
+// solo, or the process probes may be too weak to prove an audible pair.
+//
+// A healthy leader is the one role where today's evidence can be positive
+// without claiming the unobservable follower clock-lock signal: the leader
+// owns the full requested roster, runtime has proved its units + producer +
+// bindings, and Snapcast reports every roster member plus the leader's own
+// client connected and audible on the selected stream. Followers retain an
+// honest "Status unknown" until a future lock signal can prove more than a
+// running snapclient process.
+export function groupingStatusView(g) {
+  const grouping = g && typeof g === "object" ? g : {};
+  if (grouping.error) {
+    return {
+      state: "misconfigured",
+      label: "Misconfigured",
+      tone: "var(--status-danger)",
+      detail: String(grouping.error),
+    };
+  }
+  if (!grouping.enabled) {
+    return {
+      state: "solo",
+      label: "Solo",
+      tone: "var(--status-idle)",
+      detail: "Not part of a bond",
+    };
+  }
+
+  const endpoint =
+    grouping.endpoint && typeof grouping.endpoint === "object"
+      ? grouping.endpoint
+      : null;
+  const blockedReason = endpoint
+    ? String(endpoint.blocked_reason || "").trim()
+    : "";
+  if (blockedReason === "role_transition_in_progress") {
+    return {
+      state: "pairing",
+      label: "Pairing",
+      tone: "var(--status-warn)",
+      detail: "The requested speaker role is still being applied.",
+    };
+  }
+  if (blockedReason) {
+    return {
+      state: "blocked",
+      label: "Couldn't pair",
+      tone: "var(--status-danger)",
+      detail:
+        blockedReason.replace(/_/g, " ") +
+        " — this speaker stayed solo.",
+    };
+  }
+  if (endpoint && endpoint.mode === "blocked") {
+    return {
+      state: "blocked",
+      label: "Couldn't pair",
+      tone: "var(--status-danger)",
+      detail: "The endpoint refused the requested role — this speaker stayed solo.",
+    };
+  }
+
+  const runtime =
+    grouping.runtime && typeof grouping.runtime === "object"
+      ? grouping.runtime
+      : null;
+  const pairLock =
+    runtime && runtime.pair_lock && typeof runtime.pair_lock === "object"
+      ? runtime.pair_lock
+      : null;
+
+  if (runtime && runtime.health !== "ok") {
+    return {
+      state: "degraded",
+      label: "Degraded",
+      tone: "var(--status-warn)",
+      detail: String(runtime.detail || "The requested group is not healthy."),
+    };
+  }
+  if (pairLock && pairLock.status === "degraded") {
+    return {
+      state: "degraded",
+      label: "Degraded",
+      tone: "var(--status-warn)",
+      detail: String(
+        pairLock.detail ||
+        (runtime && runtime.detail) ||
+        "Pair health degraded.",
+      ),
+    };
+  }
+  if (
+    endpoint &&
+    endpoint.mode === "active_crossover" &&
+    endpoint.role &&
+    grouping.role &&
+    endpoint.role !== grouping.role
+  ) {
+    return {
+      state: "degraded",
+      label: "Degraded",
+      tone: "var(--status-warn)",
+      detail:
+        `Requested ${grouping.role}, but the active endpoint reports ` +
+        `${endpoint.role}.`,
+    };
+  }
+  if (
+    runtime &&
+    runtime.health === "ok" &&
+    pairLock &&
+    pairLock.locked_and_healthy === true
+  ) {
+    return {
+      state: "grouped",
+      label: "Grouped",
+      tone: "var(--status-ok)",
+      detail: String(runtime.detail || pairLock.detail || "Pair healthy."),
+    };
+  }
+
+  // Today's leader-side positive proof. A bare "units active" runtime is not
+  // enough: require a non-empty authoritative roster and an audible Snapcast
+  // client for every requested member (including this leader).
+  const roster = Array.isArray(grouping.roster)
+    ? grouping.roster.filter((member) => member && member.addr)
+    : [];
+  const signals =
+    pairLock && pairLock.signals && typeof pairLock.signals === "object"
+      ? pairLock.signals
+      : null;
+  const clients =
+    signals &&
+    signals.snapcast_clients &&
+    typeof signals.snapcast_clients === "object"
+      ? signals.snapcast_clients
+      : null;
+  const expectedClients = roster.length + 1;
+  const healthyLeaderRoster =
+    grouping.role === "leader" &&
+    roster.length > 0 &&
+    runtime &&
+    runtime.health === "ok" &&
+    pairLock &&
+    clients &&
+    clients.reachable === true &&
+    clients.own_client_connected === true &&
+    Number(clients.audible) >= expectedClients &&
+    Number(clients.wrong_stream || 0) === 0 &&
+    Number(clients.muted_or_zero || 0) === 0;
+  if (healthyLeaderRoster) {
+    return {
+      state: "grouped",
+      label: "Grouped",
+      tone: "var(--status-ok)",
+      detail: String(runtime.detail || "All requested speakers are audible."),
+    };
+  }
+
+  return {
+    state: "unknown",
+    label: "Status unknown",
+    tone: "var(--status-warn)",
+    detail: String(
+      (pairLock && pairLock.detail) ||
+      (runtime && runtime.detail) ||
+      "The pair is requested, but audible runtime health is not yet verified.",
+    ),
+  };
+}
+
 // The bonded-leader "AirPlay lip-sync" row's presentation, or null when no row
 // should render. `fit` is /state.grouping.airplay_latency_fit (shape from
 // jasper/multiroom/airplay_latency.py): {applicable, tight?, residual_lag_sec?}

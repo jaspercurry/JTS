@@ -72,6 +72,25 @@ transition leaves the deny in place for the next reconcile. The detailed source
 guard/UI contract lives in
 [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md#role-parking).
 
+**Grouping/coupling convergence update (2026-07-28).**
+
+Before an enabled bond touches Snapcast or endpoint wiring, grouping asks the
+existing `jasper-fanin-coupling-auto.service` owner to complete one
+guaranteed-fresh pass. This preserves coupling's single-writer lock and route
+matrix: an auto-owned solo `shm_ring` converges to the grouping-compatible
+loopback route and the same grouping pass continues; an operator-pinned ring,
+failed owner pass, or unconfirmed transition remains safely solo with a typed
+block reason. Unbond restores the complete solo graph first and only then hands
+the landed role to the source owner, which may re-arm an eligible auto-owned
+ring. Grouping never writes `fanin.env` or duplicates coupling policy.
+
+The primary two-speaker `/rooms` create flow preflights both speakers, writes
+the remote follower first, and writes the local leader only after that succeeds.
+If the local write then fails, it makes one best-effort authoritative disable
+call to return the remote follower to solo and reports whether cleanup
+completed. Advanced explicit-member fan-out retains its existing concurrent,
+partial-failure contract.
+
 **Increment 5 PR-1 (the bonded MUSIC dataplane) is BUILT (2026-06-11).**
 A bond now moves audio end-to-end: the leader's CamillaDSP bakes the shared
 program and writes the snapserver pipe; every member's snapclient writes the
@@ -1538,17 +1557,21 @@ behavior**, not a regression (a sub *should* be quiet when the system
 is off; a satellite's room depends on the leader anyway). We make it
 *visible*, not invisible.
 
-**Visible-failure surface (built 2026-06-08).** The "/state flag +
+**Visible-failure surface (built 2026-06-08; tightened 2026-07-28).** The "/state flag +
 doctor" half of "make it visible" is live: `read_grouping_state` carries
 a `runtime` health block and `jasper-doctor`'s `check_grouping` warns
 when a configured-valid bond's units aren't actually up — both derived by
 the one pure `derive_grouping_runtime(cfg, unit_states)`, which reuses
-`reconcile.plan` for "what should be running." The **`/rooms` page renders
-that block** too (an amber **Degraded** badge + the reason, vs green
-**Grouped**), completing the `/state` + doctor + dashboard triad. Until
-the P1.3 producer ships, an enabled leader correctly reads as `degraded`
-(snapserver has no FIFO to read yet) — the honest state, not a false
-green.
+`reconcile.plan` for "what should be running." The **`/rooms` page composes**
+requested config, effective endpoint state, runtime health, and pair-lock
+evidence rather than treating enabled intent as success: an in-flight role is
+**Pairing**; a refused endpoint is **Couldn't pair** and says it stayed solo;
+runtime/pair-lock failure is **Degraded**; missing or process-only evidence is
+**Status unknown**. Green **Grouped** requires an explicit healthy pair lock or
+leader-side proof that the authoritative roster's Snapcast clients (including
+the leader's own client) are connected, on the right stream, unmuted, and
+audible. This completes the `/state` + doctor + dashboard triad without a false
+green follower merely because `snapclient` is active.
 
 **Blast radius scales with bond size — leader-failover priority rises with
 N.** The fixed-leader model's leader-crash cost grows with the group: losing
