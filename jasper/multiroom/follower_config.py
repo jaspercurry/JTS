@@ -48,16 +48,14 @@ from .config import GroupingConfig
 
 logger = logging.getLogger(__name__)
 
-# The follower driver-domain config + its (throwaway) compile state. The
-# config name is registered in jasper.sound.camilla_yaml._JTS_GENERATED_RE so a
-# /sound or /correction read while bonded recognises it as JTS-generated
-# (never "custom"). The state path is DELIBERATELY follower-specific so the
-# driver-domain compile never clobbers the solo baseline profile state at
-# baseline_profile.DEFAULT_STATE_PATH — that record must survive the bond so
-# the unbond restore can re-apply the solo active baseline.
+# The follower driver-domain config is a disposable runtime projection of the
+# immutable applied active-speaker profile. The config name is registered in
+# jasper.sound.camilla_yaml._JTS_GENERATED_RE so a /sound or /correction read
+# while bonded recognises it as JTS-generated (never "custom"). There is no
+# follower profile state: the applied solo profile remains the one Layer-A
+# authority across roles.
 CONFIG_DIR = "/var/lib/camilladsp/configs"
 FOLLOWER_CONFIG_PATH = CONFIG_DIR + "/grouping_follower.yml"
-FOLLOWER_STATE_PATH = "/var/lib/jasper/active_speaker_follower_profile.json"
 
 # Persistent prior-config stash (NOT /run: a bond survives reboots, and the
 # unwind may happen many boots after the bond formed). Cleared only on a
@@ -150,11 +148,9 @@ async def precheck_active_follower(
     """
     from jasper.active_speaker import ActiveSpeakerConfigError
     from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
+        compile_applied_driver_domain_config,
+        load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
         classify_camilla_graph,
@@ -186,15 +182,12 @@ async def precheck_active_follower(
             "active follower cannot re-prove its graph — output topology is "
             f"missing/corrupt ({exc}); refusing to bond (no full-range emit)",
         ) from exc
-    design_draft = load_design_draft()
-    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
-    measurements = load_measurement_state(topology)
 
-    # Emit the driver-domain-only graph to the follower-specific path, capturing
-    # the round-trip loopback. The solo baseline state/config are untouched.
-    # ``validate`` is a test seam (mirrors apply_baseline_profile); production
-    # leaves it None so build uses the real CamillaDSP --check.
-    build_kwargs = {} if validate is None else {"validate": validate}
+    # Project the APPLIED driver-domain graph to the follower-specific path,
+    # capturing the round-trip loopback. Mutable drafts, previews, and
+    # measurements are deliberately absent: they cannot change production
+    # playback until an explicit active-speaker Apply replaces this authority.
+    compile_kwargs = {} if validate is None else {"validate": validate}
     # The L0 emit gate inside emit_active_speaker_driver_domain_config raises
     # ActiveSpeakerConfigError (a ValueError) if the driver-domain graph would
     # ship an unprotected tweeter. Convert it to ActiveFollowerError (a
@@ -202,20 +195,15 @@ async def precheck_active_follower(
     # path catches it — a refused graph must fall back to solo, never crash the
     # reconciler oneshot. Mirrors the graph_unprovable re-prove refusal below.
     try:
-        candidate = build_baseline_profile_candidate(
+        projection, projection_issues = compile_applied_driver_domain_config(
             topology,
-            design_draft=design_draft,
-            crossover_preview=crossover_preview,
-            measurements=measurements,
-            write=True,
-            state_path=FOLLOWER_STATE_PATH,
-            config_path=FOLLOWER_CONFIG_PATH,
+            applied_profile=load_applied_baseline_profile_state() or {},
+            program_channel=program_channel,
+            pair_trim_db=max(0.0, -float(cfg.trim_db)),
             capture_device=GROUPING_LOOPBACK_CAPTURE,
             capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
-            driver_domain=True,
-            program_channel=program_channel,
-            driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
-            **build_kwargs,
+            out_path=FOLLOWER_CONFIG_PATH,
+            **compile_kwargs,
         )
     except ActiveSpeakerConfigError as exc:
         raise ActiveFollowerError(
@@ -223,16 +211,16 @@ async def precheck_active_follower(
             "active follower driver-domain graph refused at the emit gate "
             f"(no full-range emit to a tweeter): {exc}",
         ) from exc
-    if not candidate.get("permissions", {}).get("may_apply"):
+    if projection is None:
         codes = [
-            i.get("code") for i in candidate.get("issues", [])
+            i.get("code") for i in projection_issues
             if isinstance(i, dict)
         ]
         raise ActiveFollowerError(
             "baseline_not_ready",
-            "active follower has no ready driver-domain baseline to relocate "
-            f"(status={candidate.get('status')}, issues={codes}); commission "
-            "this speaker as an active speaker before bonding it",
+            "active follower cannot project its applied driver-domain baseline "
+            f"(issues={codes}); apply this speaker's active crossover before "
+            "bonding it",
         )
 
     # Re-prove the complete emitted Layer-A graph independently. The emit gates
@@ -240,9 +228,9 @@ async def precheck_active_follower(
     # driver crossover/gain/limiter chain before the candidate can be loaded.
     graph = classify_camilla_graph(
         topology=topology,
-        text=Path(FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8"),
+        text=projection.yaml,
         config_path=FOLLOWER_CONFIG_PATH,
-        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
+        bass_profile_summary=projection.bass_extension_profile_summary,
     )
     if (
         not graph.allowed

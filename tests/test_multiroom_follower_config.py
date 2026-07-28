@@ -18,10 +18,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
-import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology as output_topology_mod
@@ -32,12 +29,10 @@ from jasper.multiroom.config import GroupingConfig
 # the follower arm is exercised against the SAME evidence shape the solo apply
 # uses (the only difference is driver_domain + the loopback capture).
 from tests.test_active_speaker_baseline_profile import (
-    _draft,
+    _applied_profile,
     _dual_apple_topology,
-    _measurements,
     _valid_config,
 )
-from jasper.active_speaker.crossover_preview import build_crossover_preview
 
 # Clock-seam guard imports — the active follower's CamillaDSP is the sole
 # rate-tracker of the snapclient round-trip loopback (see the clock-seam tests
@@ -109,20 +104,25 @@ class _FakeCamilla:
         return True
 
 
-def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
+def _patch_applied_profile(
+    monkeypatch,
+    tmp_path,
+    topology,
+    *,
+    applied_profile=None,
+):
     # The re-proof uses the STRICT loader (fail-closed); patch that.
+    if applied_profile is None:
+        applied_profile = _applied_profile(topology, tmp_path)
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: topology
     )
-    monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda *a, **k: draft)
     monkeypatch.setattr(
-        crossover_preview_mod, "load_crossover_preview", lambda *a, **k: preview
-    )
-    monkeypatch.setattr(
-        measurement_mod, "load_measurement_state", lambda *a, **k: measurements
+        baseline_profile_mod,
+        "load_applied_baseline_profile_state",
+        lambda *a, **k: applied_profile,
     )
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
-    monkeypatch.setattr(fc, "FOLLOWER_STATE_PATH", str(tmp_path / "follower_state.json"))
     monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
 
 
@@ -148,10 +148,7 @@ def test_program_channel_for_fail_closed() -> None:
 
 def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None:
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     sealed = replace(
         _profile(topology=topology),
         bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
@@ -185,6 +182,7 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     assert "# program_channel=left" in yaml_text
     assert 'device: "hw:Loopback,1,6"' in yaml_text  # the round-trip loopback capture (shared pair 6)
     assert "active_baseline_headroom" not in yaml_text  # no leader-baked program domain
+    assert "active_driver_headroom" in yaml_text
     document = yaml.safe_load(yaml_text)
     woofer_chain = next(
         step["names"]
@@ -245,10 +243,7 @@ def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> No
     """Active followers clear outputd's dac_content trim lane, so grouping trim
     must be emitted into the relocated driver-domain graph."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
@@ -266,13 +261,42 @@ def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> No
     assert "parameters: { gain: -2.5000" in yaml
 
 
+def test_precheck_ignores_mutable_commissioning_evidence(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """A valid applied profile remains groupable while newer draft evidence is
+    incomplete or stale; only an explicit Apply may replace Layer A."""
+    import jasper.active_speaker.crossover_preview as crossover_preview_mod
+    import jasper.active_speaker.design_draft as design_draft_mod
+    import jasper.active_speaker.measurement as measurement_mod
+
+    topology = _dual_apple_topology()
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError("grouping must not read mutable commissioning evidence")
+
+    monkeypatch.setattr(design_draft_mod, "load_design_draft", unexpected_read)
+    monkeypatch.setattr(
+        crossover_preview_mod,
+        "load_crossover_preview",
+        unexpected_read,
+    )
+    monkeypatch.setattr(measurement_mod, "load_measurement_state", unexpected_read)
+
+    emitted = asyncio.run(
+        fc.precheck_active_follower(_cfg("left"), validate=_valid_config)
+    )
+
+    assert emitted == fc.FOLLOWER_CONFIG_PATH
+
+
 def test_apply_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:
     """Invariant 5 (not-ready path): a box with no ready baseline cannot be
     relocated — apply raises and NEVER loads a config into CamillaDSP."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, {"summary": {}})
+    _patch_applied_profile(monkeypatch, tmp_path, topology, applied_profile={})
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
@@ -290,10 +314,7 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     """Invariant 5 (re-proof path): if the EMITTED driver-only graph cannot be
     re-proven, refuse to bond — CamillaDSP is never loaded."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     import jasper.active_speaker.camilla_yaml as camilla_yaml
 
@@ -332,17 +353,14 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
     import jasper.active_speaker.camilla_yaml as camilla_yaml
 
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     # Provoke the L0 gate: strip the tweeter high-pass from the baseline chain the
     # driver-domain emitter uses, so the emitted graph is an unprotected tweeter.
     original = camilla_yaml._driver_baseline_filter_chain
 
-    def _hp_stripped(preset, role):
-        names = original(preset, role)
+    def _hp_stripped(preset, role, *args, **kwargs):
+        names = original(preset, role, *args, **kwargs)
         return [n for n in names if not n.endswith("_hp")] if role == "tweeter" else names
 
     monkeypatch.setattr(camilla_yaml, "_driver_baseline_filter_chain", _hp_stripped)
@@ -564,13 +582,10 @@ def test_restore_refuses_candidate_when_reproof_has_no_graph(
 def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> None:
     """Critical (adversarial review): the re-proof must use the STRICT topology
     loader. A corrupt/unreadable topology.json (the filesystem-loss class) must
-    make precheck REFUSE to bond — not fall through to an empty draft where a
+    make precheck REFUSE to bond — not fall through to a profile where a
     flat full-range graph would re-prove allowed and reach the tweeter."""
     topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _patch_applied_profile(monkeypatch, tmp_path, topology)
 
     def _boom(*a, **k):
         raise output_topology_mod.OutputTopologyError("topology.json corrupt")

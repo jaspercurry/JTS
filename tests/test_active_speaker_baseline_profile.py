@@ -35,6 +35,7 @@ from jasper.active_speaker.baseline_profile import (
     apply_baseline_profile,
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
+    compile_applied_driver_domain_config,
     load_applied_baseline_profile_state,
     recompose_applied_baseline_yaml,
     restore_applied_baseline_profile,
@@ -325,6 +326,37 @@ def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
         status=ValidationStatus.VALID,
         path=str(path),
     )
+
+
+def _applied_profile(
+    topology: OutputTopology,
+    tmp_path: Path,
+    *,
+    linearization: dict | None = None,
+) -> dict:
+    """Build one applied-profile dict for role/projection tests."""
+
+    draft = _draft(topology)
+    preview = build_crossover_preview(
+        draft, created_at="2026-06-14T12:10:00Z",
+    )
+    profile = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    profile["status"] = "applied"
+    if linearization is not None:
+        profile["linearization"] = deepcopy(linearization)
+        profile["recomposition_snapshot"]["linearization"] = deepcopy(
+            linearization
+        )
+    return profile
 
 
 _SENSITIVITY_TRIM_FIXTURE = json.loads(
@@ -1424,6 +1456,162 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     )
     assert issues == []
     assert recomposed == (tmp_path / "active_speaker_baseline.yml").read_text()
+
+
+def test_compile_applied_driver_domain_preserves_exact_applied_layer_a(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    linearization = {
+        "woofer": [
+            {
+                "biquad_type": "Peaking",
+                "freq": 500.0,
+                "q": 1.0,
+                "gain": 6.0,
+            },
+        ],
+        "tweeter": [
+            {
+                "biquad_type": "Highshelf",
+                "freq": 4500.0,
+                "q": 0.70710678,
+                "gain": -1.5,
+            },
+        ],
+    }
+    applied = _applied_profile(
+        topology, tmp_path, linearization=linearization,
+    )
+    out_path = tmp_path / "active_driver.yml"
+
+    compiled, issues = compile_applied_driver_domain_config(
+        topology,
+        applied_profile=applied,
+        program_channel="right",
+        pair_trim_db=2.5,
+        capture_device="hw:Loopback,1,6",
+        capture_format="S32_LE",
+        out_path=out_path,
+        validate=_valid_config,
+        bass_extension_profile=None,
+    )
+
+    assert issues == []
+    assert compiled is not None
+    assert compiled.yaml == out_path.read_text(encoding="utf-8")
+    assert compiled.bass_extension_profile_summary == (
+        NO_BASS_EXTENSION_PROFILE_SUMMARY
+    )
+    driver = yaml_lib.safe_load(compiled.yaml)
+    assert driver["devices"]["capture"]["device"] == "hw:Loopback,1,6"
+    assert driver["filters"]["pair_balance_trim"]["parameters"]["gain"] == -2.5
+    assert "as_woofer_linearization_peak_1" in driver["filters"]
+    assert "as_tweeter_linearization_shelf" in driver["filters"]
+
+    solo_text, solo_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        bass_extension_profile=None,
+    )
+    assert solo_issues == []
+    assert solo_text is not None
+    solo = yaml_lib.safe_load(solo_text)
+    assert (
+        driver["filters"]["active_driver_headroom"]["parameters"]["gain"]
+        == solo["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    )
+
+    def speaker_layer(document: dict) -> dict:
+        split_index = next(
+            index
+            for index, step in enumerate(document["pipeline"])
+            if step.get("type") == "Mixer"
+            and str(step.get("name") or "").startswith("split_active_")
+        )
+        suffix = document["pipeline"][split_index:]
+        names = {
+            name
+            for step in suffix
+            if step.get("type") == "Filter"
+            for name in step.get("names", [])
+        }
+        split_name = document["pipeline"][split_index]["name"]
+        return {
+            "split": document["mixers"][split_name],
+            "pipeline": suffix,
+            "filters": {
+                name: document["filters"][name] for name in sorted(names)
+            },
+        }
+
+    assert speaker_layer(driver) == speaker_layer(solo)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "issue_code"),
+    [
+        ("not_applied", "applied_baseline_snapshot_unavailable"),
+        ("legacy", "applied_baseline_snapshot_unavailable"),
+        ("topology_stale", "applied_baseline_snapshot_topology_stale"),
+    ],
+)
+def test_compile_applied_driver_domain_rejects_invalid_authority(
+    tmp_path: Path,
+    mutation: str,
+    issue_code: str,
+) -> None:
+    topology = _dual_apple_topology()
+    applied = deepcopy(_applied_profile(topology, tmp_path))
+    if mutation == "not_applied":
+        applied["status"] = "ready_to_apply"
+    elif mutation == "legacy":
+        applied.pop("recomposition_snapshot")
+    else:
+        applied["recomposition_snapshot"]["topology_fingerprint"] = "stale"
+    out_path = tmp_path / f"{mutation}.yml"
+
+    compiled, issues = compile_applied_driver_domain_config(
+        topology,
+        applied_profile=applied,
+        program_channel="left",
+        out_path=out_path,
+        validate=_valid_config,
+        bass_extension_profile=None,
+    )
+
+    assert compiled is None
+    assert [issue["code"] for issue in issues] == [issue_code]
+    assert not out_path.exists()
+
+
+def test_compile_applied_driver_domain_returns_validation_failure(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    applied = _applied_profile(topology, tmp_path)
+    out_path = tmp_path / "invalid.yml"
+
+    def invalid(path: str | Path) -> CamillaConfigValidationResult:
+        return CamillaConfigValidationResult(
+            status=ValidationStatus.INVALID_CONFIG,
+            path=str(path),
+        )
+
+    compiled, issues = compile_applied_driver_domain_config(
+        topology,
+        applied_profile=applied,
+        program_channel="left",
+        out_path=out_path,
+        validate=invalid,
+        bass_extension_profile=None,
+    )
+
+    assert compiled is None
+    assert [issue["code"] for issue in issues] == [
+        "baseline_config_validation_failed"
+    ]
+    assert out_path.exists()
 
 
 async def test_apply_baseline_profile_preserves_only_current_sealed_bass_block(

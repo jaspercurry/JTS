@@ -254,12 +254,16 @@ def test_grouping_timeout_covers_every_bounded_owner_handoff_step():
     """The outer oneshot must outlast its complete sequential child budget."""
     required_before_margin = (
         multiroom_reconcile._BASE_RECONCILE_BUDGET_SEC
+        + multiroom_reconcile._MAX_FANIN_COUPLING_AUTO_STARTS
+        * multiroom_reconcile._FANIN_COUPLING_AUTO_START_TIMEOUT_SEC
         + multiroom_reconcile._MAX_SOURCE_RECONCILE_STARTS
         * multiroom_reconcile._SOURCE_RECONCILE_START_TIMEOUT_SEC
-        + multiroom_reconcile._OWNER_CONTROL_CALLS_PER_HANDOFF
+        + multiroom_reconcile._MAX_OWNER_HANDOFFS
+        * multiroom_reconcile._OWNER_CONTROL_CALLS_PER_HANDOFF
         * multiroom_reconcile._SYSTEMCTL_CONTROL_TIMEOUT_SEC
     )
     assert multiroom_reconcile._OWNER_CONTROL_CALLS_PER_HANDOFF == 2
+    assert multiroom_reconcile._MAX_OWNER_HANDOFFS == 2
     assert multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC == (
         required_before_margin + multiroom_reconcile._RECONCILE_TIMEOUT_MARGIN_SEC
     )

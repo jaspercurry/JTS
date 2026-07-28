@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
@@ -96,6 +97,27 @@ _DEFAULT_PERSISTED_BASS_PROFILE = object()
 _SENSITIVITY_TRIM_EPS_DB = 0.05
 # Floor for any single attenuation, mirroring the explicit-gain clamp below.
 _MAX_ATTENUATION_DB = -60.0
+
+
+@dataclass(frozen=True)
+class AppliedDriverDomainConfig:
+    """One validated driver-domain projection of the applied Layer-A SSOT."""
+
+    yaml: str
+    bass_extension_profile_summary: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _AppliedRecompositionInputs:
+    """Validated immutable inputs shared by every applied-profile projection."""
+
+    preset: ActiveSpeakerPreset
+    playback_device: str
+    corrections: dict[str, dict[str, Any]]
+    linearization: dict[str, list[Any]]
+    baseline_id: str
+    bass_extension_profile: BassExtensionProfile | None
+
 
 # How far the MEASURED level match and the pad-folded DATASHEET sensitivity gap
 # may disagree about the same pair of drivers before the measured value is
@@ -2395,25 +2417,16 @@ def build_baseline_profile_candidate(
     return payload
 
 
-def recompose_applied_baseline_yaml(
+def _applied_recomposition_inputs(
     topology: OutputTopology,
     *,
     applied_profile: Mapping[str, Any],
-    room_peqs: Sequence[PeqFilter] = (),
-    preference_filters: Sequence[FilterSpec] = (),
-    output_trim_db: float = 0.0,
-    out_path: str | Path | None = None,
     bass_extension_profile: BassExtensionProfile | None | object = (
         _DEFAULT_PERSISTED_BASS_PROFILE
     ),
-) -> tuple[str | None, list[dict[str, str]]]:
-    """Re-emit Layer A strictly from the immutable applied-profile snapshot.
+) -> tuple[_AppliedRecompositionInputs | None, list[dict[str, str]]]:
+    """Decode the immutable applied-profile snapshot for a production graph."""
 
-    This is the production graph-carrier seam. Mutable design drafts,
-    crossover previews, and measurement stores are deliberately not parameters:
-    captures remain candidates until :func:`apply_baseline_profile` snapshots
-    them under an explicit Apply transaction.
-    """
     if applied_profile.get("status") != "applied":
         return None, [_issue(
             "blocker",
@@ -2503,14 +2516,13 @@ def recompose_applied_baseline_yaml(
         if isinstance(linearization_raw, Mapping)
         else {}
     )
-    yaml = emit_active_speaker_baseline_config(
-        preset,
+    return _AppliedRecompositionInputs(
+        preset=preset,
         playback_device=playback_device,
-        corrections={str(role): dict(value) for role, value in corrections.items()},
-        room_peqs=room_peqs,
-        preference_filters=preference_filters,
-        output_trim_db=output_trim_db,
-        out_path=out_path,
+        corrections={
+            str(role): dict(value) for role, value in corrections.items()
+        },
+        linearization=linearization,
         baseline_id=str(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
@@ -2520,9 +2532,114 @@ def recompose_applied_baseline_yaml(
             if isinstance(bass_extension_profile, BassExtensionProfile)
             else None
         ),
-        linearization=linearization,
+    ), []
+
+
+def recompose_applied_baseline_yaml(
+    topology: OutputTopology,
+    *,
+    applied_profile: Mapping[str, Any],
+    room_peqs: Sequence[PeqFilter] = (),
+    preference_filters: Sequence[FilterSpec] = (),
+    output_trim_db: float = 0.0,
+    out_path: str | Path | None = None,
+    bass_extension_profile: BassExtensionProfile | None | object = (
+        _DEFAULT_PERSISTED_BASS_PROFILE
+    ),
+) -> tuple[str | None, list[dict[str, str]]]:
+    """Re-emit Layer A strictly from the immutable applied-profile snapshot.
+
+    This is the production graph-carrier seam. Mutable design drafts,
+    crossover previews, and measurement stores are deliberately not parameters:
+    captures remain candidates until :func:`apply_baseline_profile` snapshots
+    them under an explicit Apply transaction.
+    """
+
+    inputs, issues = _applied_recomposition_inputs(
+        topology,
+        applied_profile=applied_profile,
+        bass_extension_profile=bass_extension_profile,
+    )
+    if inputs is None:
+        return None, issues
+    yaml = emit_active_speaker_baseline_config(
+        inputs.preset,
+        playback_device=inputs.playback_device,
+        corrections=inputs.corrections,
+        room_peqs=room_peqs,
+        preference_filters=preference_filters,
+        output_trim_db=output_trim_db,
+        out_path=out_path,
+        baseline_id=inputs.baseline_id,
+        bass_extension_profile=inputs.bass_extension_profile,
+        linearization=inputs.linearization,
     )
     return yaml, []
+
+
+def compile_applied_driver_domain_config(
+    topology: OutputTopology,
+    *,
+    applied_profile: Mapping[str, Any],
+    program_channel: str,
+    pair_trim_db: float = 0.0,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    out_path: str | Path,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+    bass_extension_profile: BassExtensionProfile | None | object = (
+        _DEFAULT_PERSISTED_BASS_PROFILE
+    ),
+) -> tuple[AppliedDriverDomainConfig | None, list[dict[str, str]]]:
+    """Compile grouping's driver graph strictly from the applied Layer-A SSOT.
+
+    Channel selection, pair trim, and capture are runtime role overlays. The
+    crossover, corrections, linearization, playback route, and bass extension
+    come only from the immutable applied snapshot. Mutable commissioning
+    evidence is deliberately absent from this API.
+    """
+
+    inputs, issues = _applied_recomposition_inputs(
+        topology,
+        applied_profile=applied_profile,
+        bass_extension_profile=bass_extension_profile,
+    )
+    if inputs is None:
+        return None, issues
+
+    config_path = Path(out_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml = emit_active_speaker_driver_domain_config(
+        inputs.preset,
+        playback_device=inputs.playback_device,
+        program_channel=program_channel,
+        pair_trim_db=pair_trim_db,
+        corrections=inputs.corrections,
+        capture_device=capture_device,
+        capture_format=capture_format,
+        out_path=config_path,
+        baseline_id=inputs.baseline_id,
+        bass_extension_profile=inputs.bass_extension_profile,
+        linearization=inputs.linearization,
+    )
+    validation = validate(config_path).to_dict()
+    if (
+        not validation.get("ok_to_apply")
+        and validation.get("status") not in {"valid", "missing"}
+    ):
+        return None, [_issue(
+            "blocker",
+            "baseline_config_validation_failed",
+            "generated active driver-domain config did not pass CamillaDSP validation",
+        )]
+    return AppliedDriverDomainConfig(
+        yaml=yaml,
+        bass_extension_profile_summary=_bass_extension_graph_summary(
+            inputs.bass_extension_profile
+        ),
+    ), []
 
 
 def recompose_baseline_yaml(

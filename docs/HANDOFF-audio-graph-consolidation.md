@@ -294,9 +294,13 @@ Verified missing on main (2026-07-03):
    (`safe_graph_for_current_topology`) gates the ring flat config on the predicate,
    not just `not requires_roleful_graph`, so a composite/mono box carrying a stale
    `coupling=shm_ring` falls back to the loopback flat config instead of seeding a
-   stereo-ring config it cannot play. The multiroom bond-formation precheck is a
-   *coupling* gate (`read_persisted_coupling == shm_ring` refuses a bond), not a
-   topology gate — it does not consult this predicate.
+   stereo-ring config it cannot play. Multiroom bond formation synchronously
+   asks the coupling-auto owner for one fresh pass before its coupling gate. An
+   auto-owned solo ring therefore converges to loopback and can bond in the
+   same grouping pass; an operator-pinned ring, failed owner pass, or
+   still-observed `shm_ring` remains a safe blocker. This is a *coupling* gate,
+   not a duplicate topology policy — grouping does not consult this predicate
+   or write the coupling env.
    `transport_topology_for_coupling` names the resolved ring topology.
 6. **Doctor**: ~~no ring asset/drift checks;~~ **Ring-asset check CLOSED by P1**
    (`check_ring_platform_assets`), **made ARMED-AWARE + coherence checks added by

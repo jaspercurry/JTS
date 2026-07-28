@@ -253,6 +253,17 @@ def test_rooms_module_keeps_pair_hosts_local_not_raw_ip():
     assert 'h("code.bond-current__addr", null, g.leader_addr)' not in js
 
 
+def test_rooms_module_surfaces_incomplete_primary_pair_compensation():
+    js = (_REPO / "deploy" / "assets" / "rooms" / "js" / "main.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "body.compensation" in js
+    assert "the remote speaker was returned to solo" in js
+    assert "cleanup also failed" in js
+    assert "Dissolve the incomplete pair there, then retry." in js
+
+
 def test_rooms_balance_slider_saves_on_input_not_only_release():
     js = (_REPO / "deploy" / "assets" / "rooms" / "js" / "main.js").read_text(
         encoding="utf-8"
@@ -1285,13 +1296,22 @@ def test_discovery_cache_empty_result_does_not_poison(monkeypatch):
 # ----------------------------------------------------------------------
 
 
-def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
+def _post_bond(
+    body,
+    *,
+    csrf_ok=True,
+    monkeypatch,
+    member_results=None,
+    member_post=None,
+):
     """Drive POST /bond with the cross-speaker call stubbed. Returns
     (handler, calls) where calls is the list of (addr, body) fanned out."""
     calls: list[tuple[str, dict]] = []
 
     def fake_member_post(addr, member_body, known=None, *, token=None, household=None):
         calls.append((addr, member_body))
+        if member_post is not None:
+            return member_post(addr, member_body)
         if member_results and addr in member_results:
             return member_results[addr]
         return (True, "HTTP 200")
@@ -1387,6 +1407,9 @@ def test_post_bond_peer_addr_intent_builds_stereo_pair(monkeypatch):
     h, calls = _post_bond({"peer_addr": "192.168.1.9"}, monkeypatch=monkeypatch)
     assert h.status == 200
 
+    # Primary create is deliberately ordered: remote follower first, local
+    # leader last. Advanced explicit-member fan-out remains concurrent.
+    assert [addr for addr, _body in calls] == ["192.168.1.9", ""]
     bodies = {addr: body for addr, body in calls}
     assert bodies[""]["role"] == "leader"
     assert bodies[""]["channel"] == "left"
@@ -1397,6 +1420,73 @@ def test_post_bond_peer_addr_intent_builds_stereo_pair(monkeypatch):
     assert bodies["192.168.1.9"]["channel"] == "right"
     assert bodies["192.168.1.9"]["leader_addr"] == "jts-living.local"
     assert bodies["192.168.1.9"]["trim_db"] == 0.0
+
+
+def test_post_bond_primary_remote_failure_never_writes_local_leader(monkeypatch):
+    h, calls = _post_bond(
+        {"peer_addr": "192.168.1.9"},
+        monkeypatch=monkeypatch,
+        member_results={"192.168.1.9": (False, "Connection refused")},
+    )
+
+    assert h.status == 502
+    assert [addr for addr, _body in calls] == ["192.168.1.9"]
+    payload = json.loads(h.wfile.getvalue())
+    by_role = {result["role"]: result for result in payload["results"]}
+    assert by_role["follower"]["ok"] is False
+    assert by_role["leader"]["ok"] is False
+    assert "not attempted" in by_role["leader"]["detail"]
+    assert "compensation" not in payload
+
+
+def test_post_bond_primary_local_failure_returns_remote_to_solo(monkeypatch):
+    def member_post(addr, body):
+        if addr == "":
+            return False, "local write failed"
+        return True, "HTTP 200"
+
+    h, calls = _post_bond(
+        {"peer_addr": "192.168.1.9"},
+        monkeypatch=monkeypatch,
+        member_post=member_post,
+    )
+
+    assert h.status == 502
+    assert [addr for addr, _body in calls] == [
+        "192.168.1.9", "", "192.168.1.9",
+    ]
+    assert calls[0][1]["enabled"] is True
+    assert calls[1][1]["enabled"] is True
+    assert calls[2][1] == {"enabled": False, "trim_db": 0.0}
+    payload = json.loads(h.wfile.getvalue())
+    assert payload["compensation"] == {
+        "attempted": True,
+        "addr": "192.168.1.9",
+        "ok": True,
+        "detail": "HTTP 200",
+    }
+
+
+def test_post_bond_primary_surfaces_incomplete_remote_compensation(monkeypatch):
+    def member_post(addr, body):
+        if addr == "":
+            return False, "local write failed"
+        if body.get("enabled") is False:
+            return False, "remote cleanup timed out"
+        return True, "HTTP 200"
+
+    h, calls = _post_bond(
+        {"peer_addr": "192.168.1.9"},
+        monkeypatch=monkeypatch,
+        member_post=member_post,
+    )
+
+    assert h.status == 502
+    assert len(calls) == 3
+    payload = json.loads(h.wfile.getvalue())
+    assert payload["compensation"]["attempted"] is True
+    assert payload["compensation"]["ok"] is False
+    assert payload["compensation"]["detail"] == "remote cleanup timed out"
 
 
 def test_post_bond_configures_all_members_and_wires_leader_addr(monkeypatch):

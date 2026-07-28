@@ -157,6 +157,7 @@ ACTIVE_DRIVER_DOMAIN_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config"
 )
 _DRIVER_DOMAIN_PAIR_TRIM = "pair_balance_trim"
+_DRIVER_DOMAIN_HEADROOM = "active_driver_headroom"
 # Both emitted baseline-shaped sources run every output live through a
 # protective per-driver chain; they differ only in the pre-split prefix
 # (program-domain headroom + preference EQ vs inter-speaker channel-select).
@@ -732,16 +733,21 @@ def _channel_select_precedes_split(mixer_names: list[str]) -> bool:
 def _program_domain_filter_step_names(view: GraphView) -> tuple[str, ...]:
     """Filter names wired to the stereo program bus ``[0, 1]``.
 
-    A driver-domain follower has no program-domain Filter step at all: it mixes
-    channel_select -> optional pair trim -> split_active, then filters physical
-    driver outputs. So a Filter step on exactly channels [0, 1] is Layer B/C
-    leaking onto the follower, except for the dedicated pair-balance trim.
+    A driver-domain follower carries only two Layer-A prefix gains:
+    pair-balance trim and the applied linearization's dedicated safety
+    headroom. Any other Filter step on exactly channels [0, 1] is Layer B/C
+    leaking onto the follower.
     """
     names: list[str] = []
     for step in view.pipeline_steps:
         if step.channels == frozenset({0, 1}):
             names.extend(
-                name for name in step.names if name != _DRIVER_DOMAIN_PAIR_TRIM
+                name
+                for name in step.names
+                if name not in {
+                    _DRIVER_DOMAIN_PAIR_TRIM,
+                    _DRIVER_DOMAIN_HEADROOM,
+                }
             )
     return tuple(names)
 
@@ -750,19 +756,20 @@ def _room_peq_filter_names(view: GraphView) -> tuple[str, ...]:
     return tuple(sorted(name for name in view.filters if name.startswith("room_peq")))
 
 
-def _driver_domain_pair_trim_between_select_and_split(
+def _driver_domain_prefix_order_valid(
     payload: dict[str, Any],
 ) -> bool:
-    """Prove ``channel_select -> pair_balance_trim -> split_active_*`` order.
+    """Prove select -> pair trim -> Layer-A headroom -> driver split.
 
     ``GraphView`` intentionally stores only Filter steps, so this raw-pipeline
-    check owns the mixed Mixer/Filter ordering proof for the optional pair trim.
+    check owns the mixed Mixer/Filter ordering proof for the driver prefix.
     """
     pipeline = payload.get("pipeline")
     if not isinstance(pipeline, list):
         return False
     select_idx: int | None = None
     trim_idx: int | None = None
+    headroom_idx: int | None = None
     split_idxs: list[int] = []
     for idx, raw_step in enumerate(pipeline):
         step = raw_step if isinstance(raw_step, dict) else {}
@@ -777,14 +784,24 @@ def _driver_domain_pair_trim_between_select_and_split(
         if step_type != "Filter":
             continue
         names = step.get("names")
-        if not isinstance(names, list) or _DRIVER_DOMAIN_PAIR_TRIM not in names:
+        if not isinstance(names, list):
             continue
-        if trim_idx is not None:
-            return False
-        trim_idx = idx
-    if select_idx is None or trim_idx is None or not split_idxs:
+        if _DRIVER_DOMAIN_PAIR_TRIM in names:
+            if trim_idx is not None:
+                return False
+            trim_idx = idx
+        if _DRIVER_DOMAIN_HEADROOM in names:
+            if headroom_idx is not None:
+                return False
+            headroom_idx = idx
+    if (
+        select_idx is None
+        or trim_idx is None
+        or headroom_idx is None
+        or not split_idxs
+    ):
         return False
-    return select_idx < trim_idx < min(split_idxs)
+    return select_idx < trim_idx < headroom_idx < min(split_idxs)
 
 
 def _filter_step_channels(step: dict[str, Any]) -> set[int] | None:
@@ -1140,12 +1157,20 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     that amount (never tight, the same direction as the ``output_trim_db``
     slack above), and the pin is what would catch it.
 
-    Returns 0.0 when the filter is absent or non-negative — which is the
-    driver-domain (follower) graph, where the leader owns Layer B/C and no
-    program-domain headroom exists. That graph therefore proves the ORIGINAL
-    cut-only invariant, which is the correct fail-closed answer: a follower
-    has nothing to absorb a boost with.
+    A driver-domain graph has no Layer-B/C program prefix. Its independent
+    ``active_driver_headroom`` gain absorbs only the endpoint's applied
+    linearization, so its full non-positive magnitude is the exact allowance.
     """
+    if (
+        _filter_type(payload, "active_baseline_headroom") != "Gain"
+        and _filter_type(payload, _DRIVER_DOMAIN_HEADROOM) == "Gain"
+    ):
+        driver_gain = _strict_finite_number(
+            _filter_params(payload, _DRIVER_DOMAIN_HEADROOM).get("gain")
+        )
+        if driver_gain is not None and driver_gain < 0.0:
+            return -float(driver_gain)
+        return 0.0
     if _filter_type(payload, "active_baseline_headroom") != "Gain":
         return 0.0
     gain = _strict_finite_number(
@@ -1712,7 +1737,29 @@ def _driver_domain_pair_trim_safe(
             channels={0, 1},
             required_names=(_DRIVER_DOMAIN_PAIR_TRIM,),
         )
-        and _driver_domain_pair_trim_between_select_and_split(payload)
+        and _driver_domain_prefix_order_valid(payload)
+    )
+
+
+def _driver_domain_headroom_safe(
+    payload: dict[str, Any],
+    view: GraphView,
+) -> bool:
+    """Layer-A linearization headroom is one non-positive pre-split Gain."""
+
+    gain = _strict_finite_number(
+        _filter_params(payload, _DRIVER_DOMAIN_HEADROOM).get("gain")
+    )
+    return (
+        _filter_type(payload, _DRIVER_DOMAIN_HEADROOM) == "Gain"
+        and gain is not None
+        and gain <= 0.0
+        and pipeline_contains_chain(
+            view,
+            channels={0, 1},
+            required_names=(_DRIVER_DOMAIN_HEADROOM,),
+        )
+        and _driver_domain_prefix_order_valid(payload)
     )
 
 
@@ -2369,6 +2416,15 @@ def _active_graph_evidence(
                     (
                         "driver-domain pair-balance trim must be a non-positive "
                         "Gain wired to the selected stereo bus before the driver split"
+                    ),
+                ))
+            if not _driver_domain_headroom_safe(payload, view):
+                issues.append(_issue(
+                    "blocker",
+                    "active_driver_domain_headroom_invalid",
+                    (
+                        "driver-domain linearization headroom must be one "
+                        "non-positive Gain after pair trim and before the driver split"
                     ),
                 ))
         unknown_baseline_outputs = sorted(graph_indexes - known_indexes)

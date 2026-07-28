@@ -226,12 +226,14 @@ from .measurement import (
     record_summed_validation,
 )
 from .baseline_profile import (
+    AppliedDriverDomainConfig,
     BASELINE_PROFILE_KIND,
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     apply_baseline_profile,
     baseline_config_path,
     baseline_profile_state_path,
+    compile_applied_driver_domain_config,
 )
 from .driver_acoustics import (
     DRIVER_ACOUSTIC_KIND,
@@ -266,6 +268,7 @@ from .crossover_alignment import (
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
+    "AppliedDriverDomainConfig",
     "ACTIVE_BASELINE_KIND",
     "ACTIVE_PRESET_KIND",
     "BASELINE_HEADROOM_DB",
@@ -411,6 +414,7 @@ __all__ = [
     "COMMISSION_LOAD_STATE_KIND",
     "COMMISSIONING_CONFIG_KIND",
     "compile_preset_from_crossover_preview",
+    "compile_applied_driver_domain_config",
     "driver_commission_audible_evidence",
     "prepare_driver_commissioning_config",
     "prepare_summed_commissioning_config",

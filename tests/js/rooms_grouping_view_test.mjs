@@ -17,6 +17,7 @@ import {
   balanceText,
   balanceTrimRequest,
   formatBalanceDb,
+  groupingStatusView,
   trimsForBalance,
   snapcastProvisionRow,
   subCornerLabel,
@@ -33,6 +34,133 @@ assert.deepEqual(trimsForBalance(-2.5), { left: 0, right: -2.5 });
 assert.deepEqual(balanceTrimRequest(99), { target: "pair", balance_db: 24 });
 assert.deepEqual(balanceTrimRequest(-99), { target: "pair", balance_db: -24 });
 assert.deepEqual(balanceTrimRequest("nope"), { target: "pair", balance_db: 0 });
+
+// The grouping badge composes requested config with endpoint, runtime, and
+// pair-lock truth. Requested/process-only state can never become green.
+assert.equal(groupingStatusView(null).state, "solo");
+assert.equal(groupingStatusView({ enabled: false }).label, "Solo");
+assert.equal(
+  groupingStatusView({ enabled: true, error: "missing bond" }).label,
+  "Misconfigured",
+);
+{
+  const pairing = groupingStatusView({
+    enabled: true,
+    endpoint: { blocked_reason: "role_transition_in_progress" },
+  });
+  assert.equal(pairing.state, "pairing");
+  assert.equal(pairing.label, "Pairing");
+  assert.equal(pairing.tone, "var(--status-warn)");
+}
+{
+  const blocked = groupingStatusView({
+    enabled: true,
+    endpoint: { mode: "blocked", blocked_reason: "graph_unprovable" },
+    runtime: { health: "degraded", detail: "processes inactive" },
+  });
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.label, "Couldn't pair");
+  assert.match(blocked.detail, /stayed solo/);
+}
+{
+  const blockedWithoutDetail = groupingStatusView({
+    enabled: true,
+    endpoint: { mode: "blocked", blocked_reason: "" },
+  });
+  assert.equal(blockedWithoutDetail.state, "blocked");
+  assert.match(blockedWithoutDetail.detail, /stayed solo/);
+}
+{
+  const degraded = groupingStatusView({
+    enabled: true,
+    runtime: {
+      health: "ok",
+      pair_lock: { status: "degraded", detail: "FIFO is not serving bytes" },
+    },
+  });
+  assert.equal(degraded.label, "Degraded");
+  assert.match(degraded.detail, /FIFO/);
+}
+{
+  const processOnly = groupingStatusView({
+    enabled: true,
+    role: "follower",
+    runtime: {
+      health: "ok",
+      detail: "snapclient active",
+      pair_lock: {
+        status: "unknown",
+        locked_and_healthy: false,
+        detail: "clock lock unobservable",
+      },
+    },
+  });
+  assert.equal(processOnly.state, "unknown");
+  assert.notEqual(processOnly.tone, "var(--status-ok)");
+}
+{
+  const noPairLock = groupingStatusView({
+    enabled: true,
+    role: "leader",
+    roster: [{ addr: "192.168.1.9" }],
+    runtime: { health: "ok", detail: "processes active" },
+  });
+  assert.equal(noPairLock.state, "unknown");
+  assert.notEqual(noPairLock.tone, "var(--status-ok)");
+}
+{
+  const groupedLeader = groupingStatusView({
+    enabled: true,
+    role: "leader",
+    roster: [{ addr: "192.168.1.9" }],
+    runtime: {
+      health: "ok",
+      detail: "leader streaming",
+      pair_lock: {
+        status: "unknown",
+        locked_and_healthy: false,
+        detail: "clock lock unobservable",
+        signals: {
+          snapcast_clients: {
+            reachable: true,
+            own_client_connected: true,
+            audible: 2,
+            wrong_stream: 0,
+            muted_or_zero: 0,
+          },
+        },
+      },
+    },
+  });
+  assert.equal(groupedLeader.state, "grouped");
+  assert.equal(groupedLeader.label, "Grouped");
+  assert.equal(groupedLeader.tone, "var(--status-ok)");
+}
+{
+  const missingRosterClient = groupingStatusView({
+    enabled: true,
+    role: "leader",
+    roster: [{ addr: "192.168.1.9" }],
+    runtime: {
+      health: "ok",
+      pair_lock: {
+        status: "unknown",
+        locked_and_healthy: false,
+        signals: {
+          snapcast_clients: {
+            reachable: true,
+            own_client_connected: true,
+            audible: 1,
+            wrong_stream: 0,
+            muted_or_zero: 0,
+          },
+        },
+      },
+    },
+  });
+  assert.equal(missingRosterClient.state, "unknown");
+  assert.notEqual(missingRosterClient.tone, "var(--status-ok)");
+}
 
 // No row unless this speaker is an active bonded leader: read error (null),
 // solo/follower ({applicable:false}), or a malformed payload.

@@ -91,6 +91,7 @@ SHAIRPORT_UNIT = "shairport-sync.service"
 # learns source units, optional accessory adapter names, or fan-in USB
 # mechanics; after its own plan lands, it asks the source coordinator to read
 # the new role and converge every source in its domain order.
+FANIN_COUPLING_AUTO_UNIT = "jasper-fanin-coupling-auto.service"
 # Short manager requests (probes and reset-failed) should
 # return promptly.  Blocking starts/restarts may wait for a normal service job,
 # but remain finite when this module is run directly during install or repair,
@@ -104,6 +105,13 @@ _SYSTEMCTL_BLOCKING_TIMEOUT_SEC = 60.0
 # target unit's own TimeoutStartSec.  A fresh activation is then queued.
 _SOURCE_RECONCILE_START_TIMEOUT_SEC = SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
 _MAX_SOURCE_RECONCILE_STARTS = 2  # drain prior pass, then run fresh role pass
+# fanin-coupling-auto is a 120-second oneshot. Grouping starts it synchronously
+# before a valid bond so its route policy can turn an auto-owned solo ring into
+# the grouped loopback route. As with the source owner, an already-running pass
+# may have read the previous grouping request, so the bounded worst case is one
+# drain followed by one guaranteed-fresh pass.
+_FANIN_COUPLING_AUTO_START_TIMEOUT_SEC = 125.0
+_MAX_FANIN_COUPLING_AUTO_STARTS = 2
 # The finite outer boundary covers the two-unit Snapcast plan, the one-time
 # Snapcast apt opt-in, and the
 # active-endpoint branch's bounded post-plan unit/hardware actions. These are
@@ -118,11 +126,15 @@ _BASE_RECONCILE_BUDGET_SEC = (
     + _MAX_POST_PLAN_BLOCKING_ACTIONS * _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
 )
 _OWNER_CONTROL_CALLS_PER_HANDOFF = 2  # reset-failed + ActiveState probe
+_MAX_OWNER_HANDOFFS = 2  # pre-bond coupling owner + post-role source owner
 _RECONCILE_TIMEOUT_MARGIN_SEC = 40.0
 _RECONCILE_SYSTEMD_TIMEOUT_SEC = (
     _BASE_RECONCILE_BUDGET_SEC
+    + _MAX_FANIN_COUPLING_AUTO_STARTS * _FANIN_COUPLING_AUTO_START_TIMEOUT_SEC
     + _MAX_SOURCE_RECONCILE_STARTS * _SOURCE_RECONCILE_START_TIMEOUT_SEC
-    + _OWNER_CONTROL_CALLS_PER_HANDOFF * _SYSTEMCTL_CONTROL_TIMEOUT_SEC
+    + _MAX_OWNER_HANDOFFS
+    * _OWNER_CONTROL_CALLS_PER_HANDOFF
+    * _SYSTEMCTL_CONTROL_TIMEOUT_SEC
     + _RECONCILE_TIMEOUT_MARGIN_SEC
 )
 
@@ -1306,8 +1318,8 @@ def _restart_unit(
     return True
 
 
-def _source_reconciler_activation_busy() -> bool | None:
-    """Return whether the source owner has an activation that can absorb a start.
+def _owner_activation_busy(unit: str) -> bool | None:
+    """Return whether an owner oneshot has an activation that can absorb a start.
 
     ``systemctl is-active`` does not give the distinction we need for every
     oneshot state, so read ``ActiveState`` directly.  Unknown/probe failure is
@@ -1319,7 +1331,7 @@ def _source_reconciler_activation_busy() -> bool | None:
             [
                 "systemctl",
                 "show",
-                SOURCE_INTENT_RECONCILE_UNIT,
+                unit,
                 "--property=ActiveState",
                 "--value",
             ],
@@ -1332,7 +1344,7 @@ def _source_reconciler_activation_busy() -> bool | None:
         log_event(
             logger,
             "multiroom.reconcile.owner_state_probe_failed",
-            unit=SOURCE_INTENT_RECONCILE_UNIT,
+            unit=unit,
             error=exc,
             level=logging.WARNING,
         )
@@ -1350,13 +1362,98 @@ def _source_reconciler_activation_busy() -> bool | None:
     log_event(
         logger,
         "multiroom.reconcile.owner_state_probe_failed",
-        unit=SOURCE_INTENT_RECONCILE_UNIT,
+        unit=unit,
         returncode=proc.returncode,
         state=state or None,
         stderr=(proc.stderr or "").strip() or None,
         level=logging.WARNING,
     )
     return None
+
+
+def _source_reconciler_activation_busy() -> bool | None:
+    return _owner_activation_busy(SOURCE_INTENT_RECONCILE_UNIT)
+
+
+def _coupling_auto_activation_busy() -> bool | None:
+    return _owner_activation_busy(FANIN_COUPLING_AUTO_UNIT)
+
+
+def _converge_grouping_coupling() -> bool:
+    """Run the coupling owner against the fresh grouping request and await it.
+
+    ``grouping.env`` was persisted before this oneshot began. The auto owner is
+    therefore the one authority that may resolve an auto-owned solo ``shm_ring``
+    route to the loopback route grouping supports. It also owns the advisory
+    lock and the ordered CamillaDSP/fan-in/outputd transition; grouping neither
+    writes ``fanin.env`` nor duplicates the route matrix.
+
+    A start can join an activation that read the previous grouping request.
+    Probe first: when an old activation is busy (or the probe is indeterminate),
+    synchronously drain it, then start one guaranteed-fresh pass. Starting an
+    inactive unit needs only the fresh pass. Any failure is returned to the
+    caller, which must stay solo before touching bond wiring.
+    """
+
+    unit = FANIN_COUPLING_AUTO_UNIT
+    _reset_failed_unit(unit)
+    busy = _coupling_auto_activation_busy()
+    if busy is not False:
+        barrier_cmd = ["systemctl", "start", unit]
+        try:
+            subprocess.run(
+                barrier_cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=_FANIN_COUPLING_AUTO_START_TIMEOUT_SEC,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            stderr = getattr(exc, "stderr", "") or ""
+            log_event(
+                logger,
+                "multiroom.reconcile.coupling_owner_barrier_failed",
+                unit=unit,
+                error=exc,
+                stderr=stderr.strip(),
+                level=logging.ERROR,
+            )
+            return False
+        log_event(
+            logger,
+            "multiroom.reconcile.coupling_owner_prior_activation_drained",
+            unit=unit,
+            state_was_unknown=busy is None,
+        )
+
+    cmd = ["systemctl", "start", unit]
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_FANIN_COUPLING_AUTO_START_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        stderr = getattr(exc, "stderr", "") or ""
+        log_event(
+            logger,
+            "multiroom.reconcile.coupling_converge_failed",
+            unit=unit,
+            error=exc,
+            stderr=stderr.strip(),
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        "multiroom.reconcile.coupling_converged",
+        unit=unit,
+        reason="grouping_request",
+        waited_for_prior_activation=busy is not False,
+    )
+    return True
 
 
 def _converge_sources_after_role() -> bool:
@@ -1728,6 +1825,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ORDER (load-bearing — see HANDOFF-multiroom.md §2):
 
+      0. For an enabled bond, synchronously converge the coupling owner against
+         the persisted grouping request. Continue only after the effective
+         route is confirmed group-compatible.
       1. Derived files (snapcast args + outputd lane env) + the member
          FIFO — before any unit work, so everything a started unit
          reads is fresh.
@@ -1740,6 +1840,8 @@ def main(argv: list[str] | None = None) -> int:
          LAST, after snapserver started, so the pipe's reader exists
          before CamillaDSP's File sink opens it for write (a FIFO
          write-open blocks until a reader exists).
+      6. Hand the completed role to the source owner. On unbond this is also
+         the first point at which coupling-auto may restore a solo ring.
 
     Camilla apply/restore failures are caught and logged
     (event=multiroom.reconcile.camilla_failed) — the reconcile still
@@ -1823,22 +1925,37 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Ring-armed box: REFUSE to form ANY bond (active or passive) while the fan-in
-    # coupling is shm_ring (audio-graph consolidation P2, audit finding 3). Ring is
-    # solo-stereo-only until P8's ring-v2 (N-channel + bonded round-trip): a bond
-    # formed on a ring box would split camilla#1's graph across topologies (the
-    # bonded leader-pipe/round-trip lanes assume the loopback/aloop content path,
-    # not the SHM ring). Fail-SAFE to solo — the box keeps playing its own content
-    # (self-recovery, AGENTS.md resilience) rather than half-parking silent — and
-    # surface a clear operator reason (disarm the ring to bond). Placed BEFORE the
-    # snapcast provision / any bond wiring so nothing bond-forming runs. The bond
-    # request stays in the wizard config; the operator disarms the ring (or waits
-    # for P8) and the next reconcile forms the bond.
+    # Ask the coupling OWNER to resolve the already-persisted grouping request
+    # before inspecting the route. An auto-owned solo shm_ring should disarm to
+    # loopback here and this SAME grouping pass can continue. An operator-pinned
+    # ring remains ring by policy and is refused below. A failed owner pass is
+    # likewise a fail-safe solo block: never start bond wiring after an
+    # unconfirmed graph transition.
+    #
+    # This runs only for a valid ENABLED request. On unbond, solo Camilla/outputd/
+    # unit restoration must land first; the existing final source-owner handoff
+    # then invokes this same coupling-auto owner best-effort against the solo
+    # route, where an eligible auto-owned box may re-arm its ring.
     if active:
         from jasper.fanin.coupling_reconcile import read_persisted_coupling
         from jasper.fanin_coupling import COUPLING_SHM_RING
 
-        if read_persisted_coupling() == COUPLING_SHM_RING:
+        coupling_ready = _converge_grouping_coupling()
+        effective_coupling = read_persisted_coupling()
+        if not coupling_ready:
+            endpoint_block_reason = "fanin_coupling_transition_failed"
+            log_event(
+                logger,
+                "multiroom.reconcile.coupling_transition_blocked",
+                reason=args.reason,
+                coupling=effective_coupling,
+                detail=(
+                    "jasper-fanin-coupling-auto.service did not complete a "
+                    "fresh pass; staying solo before bond wiring"
+                ),
+                level=logging.ERROR,
+            )
+        elif effective_coupling == COUPLING_SHM_RING:
             endpoint_block_reason = "ring_armed_box_cannot_bond"
             log_event(
                 logger,
@@ -1852,6 +1969,8 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 level=logging.WARNING,
             )
+
+        if endpoint_block_reason:
             cfg = replace(cfg, enabled=False)
             refused_follower_fallback = local_sources_parked(requested_cfg)
             decision = plan(cfg)
