@@ -98,7 +98,11 @@ def read_unit_active_states(units: list[str]) -> dict[str, str]:
     return {u: "unknown" for u in units}
 
 
-def _dac_content_signal(local_outputd_status: Any) -> dict[str, Any]:
+def _dac_content_signal(
+    local_outputd_status: Any,
+    *,
+    local_fifo_applicable: bool = True,
+) -> dict[str, Any]:
     """Local outputd dac_content signal for the pair-lock verdict. PURE.
 
     ``serving_fifo=true`` is useful: it says snapclient is feeding bytes
@@ -109,12 +113,19 @@ def _dac_content_signal(local_outputd_status: Any) -> dict[str, Any]:
     """
     signal: dict[str, Any] = {
         "source": "outputd.dac_content",
+        "applicable": local_fifo_applicable,
         "available": False,
         "enabled": None,
         "serving_fifo": None,
         "bytes_flowing": None,
         "meaning": "serving_fifo means bytes are flowing; it is not a clock-lock signal",
     }
+    if not local_fifo_applicable:
+        signal["detail"] = (
+            "active crossover owns the bonded output path; "
+            "outputd dac_content FIFO is not used"
+        )
+        return signal
     if not isinstance(local_outputd_status, dict):
         signal["detail"] = "outputd STATUS unavailable"
         return signal
@@ -257,6 +268,7 @@ def _derive_pair_lock(
     self_name: str = "",
     want_stream: str = "",
     local_outputd_status: Any = None,
+    local_fifo_applicable: bool = True,
 ) -> dict[str, Any]:
     """Composite "pair locked + healthy" verdict. PURE and total."""
     if not cfg.enabled:
@@ -276,7 +288,10 @@ def _derive_pair_lock(
             "signals": {},
         }
 
-    fifo = _dac_content_signal(local_outputd_status)
+    fifo = _dac_content_signal(
+        local_outputd_status,
+        local_fifo_applicable=local_fifo_applicable,
+    )
     stream = _stream_client_signal(
         stream_clients, self_name=self_name, want_stream=want_stream,
     )
@@ -346,6 +361,7 @@ def _runtime_with_pair_lock(
     self_name: str = "",
     want_stream: str = "",
     local_outputd_status: Any = None,
+    local_fifo_applicable: bool = True,
 ) -> dict[str, Any]:
     runtime = dict(runtime)
     runtime["pair_lock"] = _derive_pair_lock(
@@ -356,6 +372,7 @@ def _runtime_with_pair_lock(
         self_name=self_name,
         want_stream=want_stream,
         local_outputd_status=local_outputd_status,
+        local_fifo_applicable=local_fifo_applicable,
     )
     return runtime
 
@@ -369,6 +386,7 @@ def derive_grouping_runtime(
     self_name: str = "",
     want_stream: str = "",
     local_outputd_status: Any = None,
+    local_fifo_applicable: bool = True,
 ) -> dict[str, Any]:
     """Combine the declared config with actual unit states into a runtime
     health verdict. PURE and total — no I/O, no clock.
@@ -460,6 +478,7 @@ def derive_grouping_runtime(
             self_name=self_name,
             want_stream=want_stream,
             local_outputd_status=local_outputd_status,
+            local_fifo_applicable=local_fifo_applicable,
         )
 
     # Snap units are up. For a leader, the stream source must ALSO be live:
@@ -484,6 +503,7 @@ def derive_grouping_runtime(
             self_name=self_name,
             want_stream=want_stream,
             local_outputd_status=local_outputd_status,
+            local_fifo_applicable=local_fifo_applicable,
         )
 
     # Stream-binding + client-audibility truth (leader only; see the
@@ -506,6 +526,7 @@ def derive_grouping_runtime(
                 self_name=self_name,
                 want_stream=want_stream,
                 local_outputd_status=local_outputd_status,
+                local_fifo_applicable=local_fifo_applicable,
             )
         for row in stream_clients:
             if row.get("connected") and want_stream and row.get("stream_id") != want_stream:
@@ -524,6 +545,7 @@ def derive_grouping_runtime(
                     self_name=self_name,
                     want_stream=want_stream,
                     local_outputd_status=local_outputd_status,
+                    local_fifo_applicable=local_fifo_applicable,
                 )
             if row.get("connected") and (
                 row.get("muted")
@@ -545,6 +567,7 @@ def derive_grouping_runtime(
                     self_name=self_name,
                     want_stream=want_stream,
                     local_outputd_status=local_outputd_status,
+                    local_fifo_applicable=local_fifo_applicable,
                 )
         if self_name and not any(
             row.get("name") == self_name and row.get("connected")
@@ -564,6 +587,7 @@ def derive_grouping_runtime(
                 self_name=self_name,
                 want_stream=want_stream,
                 local_outputd_status=local_outputd_status,
+                local_fifo_applicable=local_fifo_applicable,
             )
 
     detail = (
@@ -578,6 +602,7 @@ def derive_grouping_runtime(
         self_name=self_name,
         want_stream=want_stream,
         local_outputd_status=local_outputd_status,
+        local_fifo_applicable=local_fifo_applicable,
     )
 
 
@@ -676,6 +701,12 @@ def read_grouping_state(
         tap = ""
         stream_clients: Any = None
         local_outputd_status: Any = None
+        try:
+            endpoint = (
+                endpoint_status_reader or read_active_follower_status
+            )()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            endpoint = {}
         if cfg.error is None:
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])
@@ -714,6 +745,10 @@ def read_grouping_state(
             self_name=_self_client_name(),
             want_stream=SNAP_STREAM_ID,
             local_outputd_status=local_outputd_status,
+            local_fifo_applicable=not (
+                endpoint.get("active_follower") is True
+                or endpoint.get("active_leader") is True
+            ),
         )
 
         # Active-endpoint surface (distributed-active Slice 3 follower / Slice 5
@@ -726,7 +761,6 @@ def read_grouping_state(
         # item). Gated on cfg.enabled so a solo speaker's snapshot stays
         # byte-for-byte unchanged (no status-file read, no extra key). Read fresh,
         # never os.environ.
-        endpoint = (endpoint_status_reader or read_active_follower_status)()
         endpoint_follower = endpoint.get("active_follower")
         endpoint_leader = endpoint.get("active_leader")
         if endpoint_follower or endpoint_leader or endpoint.get("blocked_reason"):

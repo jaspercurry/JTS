@@ -194,8 +194,11 @@ Increment 6 (per-follower calibration). What exists:
   for a valid leader. The runtime block also carries `pair_lock`, the
   composite "pair locked + healthy" verdict shared with `jasper-doctor`'s
   `grouping: pair lock` check. Today it distinguishes three truths:
-  unit/binding health, local FIFO byte flow (`outputd.dac_content.serving_fifo`
-  means bytes flow, not clock lock), and follower clock-lock. Snapcast's
+  unit/binding health, local FIFO byte flow on dumb endpoints
+  (`outputd.dac_content.serving_fifo` means bytes flow, not clock lock), and
+  follower clock-lock. The FIFO signal is explicitly not applicable on an
+  active endpoint: its local Layer-A crossover owns the bonded output path and
+  `dac_content` being disabled is correct, not degradation. Snapcast's
   documented JSON-RPC (`Server.GetStatus`) exposes connection, binding,
   latency, stream status, and volume, but **not** follower buffer fill, drift,
   or time-lock, so `pair_lock.signals.follower_clock_lock.status` honestly

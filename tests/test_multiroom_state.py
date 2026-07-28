@@ -393,6 +393,31 @@ def test_runtime_pair_lock_degrades_when_fifo_not_serving(tmp_path):
     assert "not serving FIFO bytes" in rt["pair_lock"]["detail"]
 
 
+def test_runtime_pair_lock_skips_dumb_fifo_for_active_crossover(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "active", SNAPCLIENT: "active"},
+        leader_tap_path="/run/jasper-snapserver/snapfifo",
+        stream_clients=[{
+            "name": "jts3", "connected": True, "stream_id": "jts",
+            "muted": False, "group_muted": False, "volume_percent": 100,
+            "latency_ms": 0,
+        }],
+        self_name="jts3",
+        want_stream="jts",
+        local_outputd_status={
+            "dac_content": {"enabled": False, "serving_fifo": False},
+        },
+        local_fifo_applicable=False,
+    )
+    fifo = rt["pair_lock"]["signals"]["local_fifo"]
+    assert rt["health"] == "ok"
+    assert rt["pair_lock"]["status"] == "unknown"
+    assert fifo["applicable"] is False
+    assert fifo["available"] is False
+    assert "active crossover owns" in fifo["detail"]
+
+
 def test_runtime_pair_lock_distinguishes_group_mute_from_clock_lock(tmp_path):
     rt = derive_grouping_runtime(
         _cfg(tmp_path, _leader_env()),
@@ -936,6 +961,24 @@ def test_endpoint_block_present_for_active_crossover_leader(tmp_path):
     assert state["endpoint"] == {
         "mode": "active_crossover", "role": "leader", "blocked_reason": "",
     }
+
+
+def test_active_crossover_endpoint_does_not_require_outputd_dac_content(tmp_path):
+    state = read_grouping_state(
+        _write_env(tmp_path, _leader_env()),
+        unit_state_reader=_stub,
+        tap_path_reader=lambda: _SNAPFIFO,
+        stream_clients_reader=_healthy_stream(),
+        local_outputd_reader=lambda: {
+            "dac_content": {"enabled": False, "serving_fifo": False},
+        },
+        endpoint_status_reader=lambda: {
+            "active_follower": False, "active_leader": True, "blocked_reason": "",
+        },
+    )
+    pair_lock = state["runtime"]["pair_lock"]
+    assert pair_lock["status"] == "unknown"
+    assert pair_lock["signals"]["local_fifo"]["applicable"] is False
 
 
 def test_endpoint_block_surfaces_fail_closed_block_reason(tmp_path):
