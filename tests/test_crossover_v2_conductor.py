@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import types
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -4263,6 +4264,20 @@ def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
     # linearity checks below unaffected (the fit and its own filters are
     # sibling-independent; verified offline).
     woofer_db = np.clip(-1.5 * np.log2(np.maximum(freqs, 1.0) / 1600.0), -6.0, 6.0)
+    # …plus a -6 dB dip at 400 Hz, INSIDE the woofer's own radiating band
+    # (#1809). Without it this fixture cannot exercise the lift vocabulary at
+    # all any more, and the reason is the defect #1809 filed: the tilt's only
+    # deficit is its falling tail, which lives ABOVE the 1600 Hz crossover,
+    # where the woofer has handed off. Every boost this fixture used to emit
+    # was a stopband boost — a miniature of the 2026-07-28 JTS3 profile, where
+    # +11.6155 dB at 2747 Hz sat 750 Hz into the woofer's own LR4 stopband. A
+    # real in-band dip is what a driver the fit should lift actually looks
+    # like, and it lands the fixture's own boost at +4.25 dB / 399 Hz, beside
+    # that profile's real +4.8807 dB / 377.4 Hz. It moves the solved raw trim
+    # by 0.002 dB, so nothing else in this file shifts under it.
+    woofer_db = woofer_db - 6.0 * np.exp(
+        -0.5 * ((np.log2(freqs / 400.0) / 0.3) ** 2)
+    )
     # A +6 dB bump inside the [800, 3200] Hz overlap band (Fc=1600) —
     # validated offline (PR-C sanity pass) to survive envelope/fit and
     # move the re-solved trim measurably vs the raw candidate.
@@ -4944,8 +4959,7 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    with pytest.raises(CaptureBeginRefused):
-        _run_phase(c, 2, 2)
+    _run_phase(c, 2, 2)
 
     # The guard FIRED (drift 7 dB > the 6 dB margin) and still committed the
     # SCAN, because the scan levels better than the anchor it would have fallen
@@ -4954,12 +4968,14 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
     assert "committed=resolved" in caplog.text
     assert "anchored_level_error_db=2.5" in caplog.text
     assert "resolved_level_error_db=0.2" in caplog.text
-    # What happens to the session AFTER that is the ladder working, not this
-    # test's subject: a deliberately-wild trim degrades the correction's own
-    # predicted model, so PR-L4 item 2 refuses it downstream. The guard picking
-    # the better-levelled pair and the gate refusing a worse prediction are two
-    # independent claims, and this fixture happens to exercise both.
-    assert c.last_failure_code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    # This fixture USED to also refuse downstream on PR-L4 item 2, which its
+    # own comment called out as the ladder working rather than this test's
+    # subject. It no longer does, and the reason is #1809: once the fit stops
+    # spending gain against the woofer's own crossover, this fixture's
+    # correction genuinely improves its predicted model, so a deliberately-wild
+    # trim is not enough to make it a regression. The guard's DECISION — commit
+    # on levels, not on drift — is what this test pins, and it is unchanged.
+    # (Item 2's refusal keeps its own dedicated test.)
 
 
 def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
@@ -5209,10 +5225,20 @@ def test_prediction_gate_refuses_a_correction_that_does_not_improve(caplog):
     dense comb replaces it, and it is un-correctable for a reason no later PR
     can quietly undo — there are far more notches than the 8-filter budget, and
     chasing comb structure is precisely what the null doctrine forbids. It is
-    put in BOTH drivers so the frame has nothing to fix either."""
+    put in BOTH drivers so the frame has nothing to fix either.
+
+    **The comb got denser and deeper with #1809**, for a reason worth keeping
+    on the record: at 6 dB / 3 cycles per octave the correction USED to be a
+    regression only because the fit was boosting inside each driver's own
+    crossover stopband, and each branch's stopband is the other's passband —
+    so the two stopband boosts stacked in the summed prediction. Bound the lift
+    to each driver's radiating band and that shape's correction becomes a
+    genuine improvement (it now lands in spec). At 9 dB / 5 cycles per octave
+    the comb is un-correctable on its own merits — ~35 notches against an
+    8-filter budget — and the ledger reads a 0.001 dB improvement."""
     caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
     freqs = _LINEARIZABLE_FREQS_HZ
-    comb_db = 6.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 3.0)
+    comb_db = 9.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 5.0)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(
         program, woofer_db=comb_db, tweeter_db=comb_db,
@@ -6103,14 +6129,19 @@ def test_prediction_gate_logs_the_improved_path_with_both_terms(caplog):
 
     Driven by a correction that genuinely improves its own model WITHOUT
     reaching spec — the only shape that reaches this branch. A big broad peak
-    the fit can take out (3.6 dB pooled residual down to 0.4) riding on a comb
+    the fit can take out (3.6 dB pooled residual down to 0.46) riding on a comb
     it cannot (there are far more notches than the filter budget), so the
     prediction moves materially and still fails.
+
+    The comb went from 3 dB to 5 dB with #1809: once the fit stops spending
+    gain inside each driver's own crossover stopband the corrected prediction
+    is better, and at 3 dB it now clears the spec outright and takes the
+    ``predicted_in_spec`` early return instead of reaching this branch.
     """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     freqs = _LINEARIZABLE_FREQS_HZ
     peak_db = 12.0 * np.exp(-0.5 * ((np.log2(freqs / 900.0) / 0.6) ** 2))
-    comb_db = 3.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 3.0)
+    comb_db = 5.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 3.0)
     shape_db = peak_db + comb_db
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(
@@ -6213,4 +6244,141 @@ def test_both_headroom_disclosures_come_from_one_reducer():
 
     assert payload["headroom_cost_db"] == pytest.approx(
         _candidate_summary(c.candidate)["headroom_cost_db"]
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the fit band and the headroom charge, end to end (#1809, #1808)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_conductor_and_the_emitter_derive_one_set_of_crossover_sections():
+    """**One derivation.** The conductor stamps the disclosed
+    ``headroom_cost_db`` from these sections and the emitter charges
+    ``active_baseline_headroom`` from its own; if the two ever disagreed, the
+    number a household is told and the level the speaker gives up would part
+    company. They were separate derivations for one review cycle and had
+    already drifted on the no-region case — the conductor invented a section
+    at the session Fc where the emitter credited none, which makes the
+    disclosure SMALLER than the charge: the one direction the ledger promises
+    is impossible."""
+    from jasper.active_speaker.camilla_yaml import _branch_context
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    emitter = _branch_context(c.candidate.source_preset, {})
+    for role in c.candidate.linearization:
+        assert c._branch_crossover_sections(role) == emitter[role][0], role
+
+
+def test_a_role_with_no_crossover_region_is_credited_nothing_and_named(caplog):
+    """…and the no-region case resolves the same way on both sides, because
+    both sides ask the same function: no section, so the branch is treated as
+    running full range — which is exactly what the emitter would build for it.
+    It is still a defect on a 2-way conductor, so it is named in the journal
+    rather than silently absorbed."""
+    from jasper.active_speaker.branch_chain import sections_by_role
+
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(c, "_preset", types.SimpleNamespace(crossover_regions=()))
+        assert c._branch_crossover_sections("woofer") == ()
+    assert "event=correction.crossover_v2_linearization_no_crossover" in caplog.text
+    # The shared derivation is where that answer comes from — not a branch in
+    # the conductor that the emitter would have to mirror.
+    assert sections_by_role(()) == {}
+
+
+def test_no_boost_lands_in_a_drivers_own_crossover_stopband():
+    """**#1809, end to end.** Whatever the fit decides, no emitted boost may
+    sit where this driver's own crossover has handed off. Cuts are unaffected —
+    they remove leakage that still reaches the summed response.
+
+    Held on the conductor rather than only on the fit engine because the
+    radiating band is the CONDUCTOR's to solve (it owns the preset's crossover
+    regions); a wiring regression here would silently restore the defect with
+    the fit engine's own tests still green.
+    """
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    boosts_seen = False
+    for role, fit in c.candidate.linearization.items():
+        sections = c._branch_crossover_sections(role)
+        lo_hz, hi_hz = radiating_band_hz(sections)
+        for f in fit["filters"]:
+            if f["gain"] > 0.0:
+                boosts_seen = True
+                assert lo_hz <= f["freq"] <= hi_hz, (role, f)
+    assert boosts_seen, "the fixture must emit a boost for this to mean anything"
+
+
+def test_the_stamped_headroom_cost_is_the_committed_chains_own_peak():
+    """One number: what the candidate discloses is what
+    ``branch_chain.branch_headroom_db`` returns for the chain the graph will
+    actually run — the same filters, the same crossover, and the trim the
+    level-match adjudication COMMITTED (not the anchor it might have
+    rejected)."""
+    from jasper.active_speaker.branch_chain import branch_headroom_db
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    for role, fit in c.candidate.linearization.items():
+        assert fit["headroom_cost_db"] == pytest.approx(
+            branch_headroom_db(
+                fit["filters"],
+                sections=c._branch_crossover_sections(role),
+                trim_db=c.candidate.role_attenuations_db[role],
+            )
+        )
+
+
+def test_the_stamped_disclosure_equals_what_the_emitter_actually_charges():
+    """**The edge between the two owners**, and the one a drifted
+    role -> sections derivation would break silently.
+
+    The conductor STAMPS each branch's cost onto the candidate; the emitter
+    CHARGES ``active_baseline_headroom`` when that candidate is compiled into a
+    graph. Nothing else compares them, so this walks the candidate all the way
+    to an emitted config and asserts the two numbers are one number — over the
+    real preset, the real committed trims, and the real emitted filters.
+    """
+    from jasper.active_speaker.camilla_yaml import (
+        _branch_context, linearization_headroom_db,
+    )
+    from jasper.active_speaker.linearization_fit import (
+        linearization_filters_by_role, worst_headroom_cost_db,
+    )
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+    candidate = c.candidate
+    assert worst_headroom_cost_db(candidate.linearization) > 0.0, (
+        "the fixture must carry a real charge for this edge to mean anything"
+    )
+
+    corrections = {
+        role: {"gain_db": float(gain_db)}
+        for role, gain_db in candidate.role_attenuations_db.items()
+    }
+    charged = linearization_headroom_db(
+        linearization_filters_by_role(candidate.linearization),
+        branch_context=_branch_context(candidate.source_preset, corrections),
+    )
+    assert charged == pytest.approx(
+        worst_headroom_cost_db(candidate.linearization), abs=1e-6
     )

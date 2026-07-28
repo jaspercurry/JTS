@@ -220,13 +220,62 @@ order's plain reading and are recorded here rather than only in the code:
   does not take today.
 - **Boost stays uncapped by making the emitter pay for it, not by removing a
   rail.** The fit discloses `headroom_cost_db`; `camilla_yaml` folds the worst
-  branch's total positive boost into the existing `active_baseline_headroom`
-  gain (the same mechanism room-correction boost already rides); and
-  `runtime_contract` proves each branch's boost total against the attenuation
-  the graph itself provably applies. On a cut-only correction that allowance is
-  0.0, so the old `gain <= 0` tamper proof is bit-for-bit preserved. The
-  per-filter cap (12 dB, mirroring the cut side) is a realization bound, not a
-  policy cap, and survives the ruling.
+  branch's charge into the existing `active_baseline_headroom` gain (the same
+  mechanism room-correction boost already rides); and `runtime_contract`
+  proves each branch against the attenuation the graph itself provably
+  applies. On a cut-only correction that allowance is 0.0, so the old
+  `gain <= 0` tamper proof is bit-for-bit preserved. The per-filter cap
+  (12 dB, mirroring the cut side) is a realization bound, not a policy cap,
+  and survives the ruling.
+
+  **AMENDED 2026-07-28 (#1808, #1809), after the first hardware exercise.**
+  Three things changed, all in `jasper/active_speaker/branch_chain.py` (new —
+  one owner for the emitted branch chain, read by the fit's disclosure, the
+  emitter's charge, and the contract's proof):
+
+  1. The per-branch number is the **realized peak of the emitted branch
+     chain** (`crossover ⊗ linearization ⊗ trim`) plus a named 1.0 dB margin,
+     not the sum of positive filter gains. The sum was a valid upper bound and
+     a 5.6× loose one: the 2026-07-28 JTS3 profile charged 22.458 dB against a
+     branch that peaked at +4.00 dB, and the speaker ended 8.3 dB below its
+     household's listening level at maximum volume. Owner ruling: corrections
+     must never stack invisible headroom.
+  2. The **fit's lift band is bounded to the driver's radiating side of its
+     crossover** — the same own-side-of-Fc principle PR-L3 established for
+     trim averaging, expressed as "within 3 dB of full output" so it also
+     bounds the knee. Cuts are unbounded: out-of-band leakage still reaches
+     the summed response and removing it spends no headroom. The defect: a branch
+     measured THROUGH its crossover reads that crossover's rolloff as a driver
+     deficit, and the L5 lift vocabulary "corrected" it with +11.6155 dB (Q 8)
+     at 2747 Hz, 750 Hz inside the woofer's own LR4 stopband.
+  3. `LinearizationFit.headroom_cost_db` is **stamped by the composer**, not
+     computed by the fit core: a correction's cost is a property of the chain
+     it is emitted into, and the topology-agnostic core knows neither the
+     crossover nor the trim.
+
+  **Open items on this ledger, both deferred deliberately:**
+
+  - *The physical pad is invisible to the emitter* (#1808). The JTS3 tweeter
+    carries a −14.4 dB L-pad that no graph filter expresses, so a padded
+    branch's real headroom is not credited and the charge for it is
+    conservative by that much.
+  - *The fit still flattens a crossover-shaped branch against a FLAT target*
+    (#1817). #1809's bound stops a driver spending gain OUTSIDE its radiating
+    band; inside it, the fit still lifts the last few dB before the edge — a
+    flat driver behind an LR4 attracts +2.379 dB at 0.79·Fc. Cheap and
+    bounded (the same crossover eats 2.27 dB of it, so the chain peaks at
+    +0.111 dB and the charge is 1.11 dB), and disclosed like any other spend.
+    The real fix is a crossover-shaped fit target, which changes what
+    `target_level_db` MEANS — it is a scalar read by the residual, VERIFY,
+    OBSERVE, the shared level frame, and the trim anchor — and so is its own
+    piece of work rather than a wider bound.
+
+  **Cross-era disclosure.** A candidate persisted BEFORE this amendment
+  carries a `headroom_cost_db` stamped under the sum-of-positives rule, so it
+  discloses (on the 2026-07-28 JTS3 profile) ~22.5 dB where re-emitting the
+  same candidate now charges ~5. The stamp is not re-derived on load,
+  deliberately: it is a record of what that graph was emitted with, and a
+  recommission replaces it. The realistic population is one profile.
 
 Named tolerances, with their derivations pinned by tests:
 `DELTA_PROBE_TOLERANCE_LOW_DB = 1.5` (below the 1.70 dB the shelf-Q defect

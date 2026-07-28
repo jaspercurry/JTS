@@ -81,6 +81,10 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from jasper.bass_extension.profile import BassExtensionProfile
 
+    # Type-only: the runtime import stays inside the two functions that need
+    # it, so a cut-only emit never pulls numpy (see branch_chain's docstring).
+    from .branch_chain import CrossoverSection
+
 ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
 STARTUP_HEADROOM_DB = 40.0
 COMMISSIONING_HEADROOM_DB = 0.0
@@ -849,8 +853,8 @@ MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 #
 # This bounds ONE emitted biquad, not the correction. Total boost is uncapped
 # by the owner's 2026-07-27 ruling, and is made safe not by a number here but
-# by ``_linearization_headroom_db`` below, which folds the worst branch's
-# total positive boost into ``active_baseline_headroom`` — so the boosted band
+# by ``linearization_headroom_db`` below, which folds the worst branch chain's
+# realized peak into ``active_baseline_headroom`` — so the boosted band
 # lands at or under unity no matter how deep the correction is, and CamillaDSP's
 # 0 dB ceiling, the per-driver limiters, and tweeter protection are untouched.
 MAX_LINEARIZATION_BOOST_DB = 12.0
@@ -1324,33 +1328,134 @@ def _emit_sub_baseline_definitions(
 
 def linearization_headroom_db(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    *,
+    branch_context: Mapping[str, tuple[Sequence["CrossoverSection"], float]],
 ) -> float:
     """Program-domain attenuation the emitted linearization boost needs, dB.
 
-    The WORST branch's total positive gain. Per-branch total (not the
-    max single filter) because overlapping boosts in one chain add — the same
-    upper-bound argument :func:`jasper.camilla_config_contract.
-    total_positive_boost_db` makes for room PEQ; worst-branch (not the sum
-    across branches) because the driver chains run in PARALLEL after the
-    split, so no single sample path ever sees two branches' boosts.
+    The WORST branch's REALIZED PEAK — the largest gain any one branch chain
+    (``crossover ⊗ linearization ⊗ trim``) applies to the program, plus
+    :data:`jasper.active_speaker.branch_chain.HEADROOM_MARGIN_DB`. Worst
+    branch and not the sum across branches because the driver chains run in
+    PARALLEL after the split, so no single sample path ever sees two branches'
+    boosts and the graph gives up the largest one.
 
-    Public because the runtime contract's prover has to agree with the
-    emitter about this number, and ``jasper-doctor``/the ledger disclose it.
+    Until 2026-07-28 this was the per-branch SUM of positive filter gains — a
+    valid upper bound on the same quantity (overlapping boosts at ONE
+    frequency do add, which is the case a headroom charge has to survive), but
+    a badly loose one: on the JTS3 profile of that morning it charged
+    22.458 dB against a branch that peaked at +4.00 dB, most of the difference
+    paying for two boosts the woofer's own crossover then attenuated by 13.3
+    and 7.8 dB. The speaker ended 8.3 dB below the household's listening level
+    at maximum volume. The owner's ruling (#1808): corrections must never
+    stack invisible headroom — the speaker plays as loud as possible while
+    accomplishing its leveling goals, subject to ``volume_limit`` 0 and
+    protection. A bin-by-bin cascade evaluation contains the overlapping-boost
+    case the sum was protecting, and no other.
+
+    ``branch_context`` maps role to ``(crossover_sections, trim_db)`` — what
+    else that branch's chain carries — and is **required**, deliberately.
+    Omitting it would charge the linearization cascade alone: a strict
+    over-estimate, so safe for a CHARGE, but silently wrong for any reader
+    asking what a correction costs or comparing two of them, and wrong in the
+    loud direction for a delta. There is no signature that lets a caller skip
+    it by accident; :func:`_branch_context` builds it from the same preset and
+    corrections the graph is emitted from. A role absent from the mapping
+    still falls back to "no crossover, no trim" for the same over-estimating
+    reason, but that is a per-role gap in a supplied context, not a whole
+    missing one.
+
+    Public because the runtime contract's prover has to agree with the emitter
+    about this number, and the candidate payload and ``/correction/`` browser
+    summary disclose it (via ``linearization_fit.worst_headroom_cost_db``
+    reading the per-branch numbers the conductor stamps). The evaluation
+    itself lives in :mod:`jasper.active_speaker.branch_chain` — one
+    implementation, read by the fit's disclosure, this charge, and that proof.
     0.0 for a cut-only linearization, which is every one before PR-L5.
     """
+    # A branch with no positive gain cannot reach unity through a crossover
+    # and a non-positive trim, so the ordinary cut-only graph is charged 0.0
+    # without evaluating anything — and without this module importing numpy,
+    # which it otherwise does not (see branch_chain's module docstring on why
+    # that dependency is kept lazy on a 1 GB Pi).
+    if not _linearization_has_boost(linearization):
+        return 0.0
+    from .branch_chain import branch_headroom_db
+
     worst = 0.0
+    for role, filters in (linearization or {}).items():
+        if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
+            continue
+        sections, trim_db = branch_context.get(str(role), ((), 0.0))
+        worst = max(worst, branch_headroom_db(
+            [entry for entry in filters if isinstance(entry, Mapping)],
+            sections=sections,
+            trim_db=float(trim_db),
+        ))
+    return worst
+
+
+def _linearization_has_boost(
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+) -> bool:
+    """Does any emitted linearization filter carry positive gain?
+
+    The guard that keeps a cut-only graph — every graph before PR-L5, and
+    every one a follower runs — off the chain-evaluation path entirely, so
+    neither this emitter nor the runtime contract imports numpy for it (see
+    :mod:`jasper.active_speaker.branch_chain`'s module docstring). Sound
+    because a cut cascade, a Linkwitz-Riley section, and a non-positive trim
+    are each <= 0 dB everywhere: that chain cannot reach unity, so its charge
+    is 0.0 without evaluating anything.
+    """
     for filters in (linearization or {}).values():
         if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
             continue
-        total = 0.0
         for entry in filters:
             if not isinstance(entry, Mapping):
                 continue
             gain = entry.get("gain")
-            if isinstance(gain, (int, float)) and gain > 0.0:
-                total += float(gain)
-        worst = max(worst, total)
-    return worst
+            if isinstance(gain, (int, float)) and not isinstance(gain, bool) and gain > 0.0:
+                return True
+    return False
+
+
+def _branch_context(
+    preset: ActiveSpeakerPreset,
+    corrections: Mapping[str, Mapping[str, float | bool]],
+) -> dict[str, tuple[tuple[CrossoverSection, ...], float]]:
+    """Per-role ``(crossover sections, trim_db)`` for the headroom charge.
+
+    Built from the same two sources the graph itself is: the preset's
+    crossover regions (which :func:`_emit_baseline_driver_definitions` turns
+    into the emitted Linkwitz-Riley filters, ``lower_driver`` low-pass /
+    ``upper_driver`` high-pass) and ``corrections``' per-driver ``gain_db``
+    (the emitted baseline Gain). So the chain this charge is computed over is
+    the chain the next few lines emit — not a description of it.
+
+    The role -> sections half is :func:`jasper.active_speaker.branch_chain.
+    sections_by_role`, shared with the conductor that stamps the disclosed
+    ``headroom_cost_db`` — one derivation, because two of them had already
+    drifted on the no-region case in a way that would have made the disclosure
+    smaller than this charge.
+
+    Deliberately omits the bass-management high-pass and the protective
+    tweeter high-pass, which attenuate further still: crediting less
+    attenuation over-estimates the peak, which over-charges rather than
+    under-charges, and it keeps this identical to what the runtime contract
+    can re-derive from the graph without walking optional filters.
+    """
+    from .branch_chain import sections_by_role
+
+    return {
+        role: (
+            role_sections,
+            float(_correction_value(corrections, role, "gain_db", 0.0)),
+        )
+        for role, role_sections in sections_by_role(
+            _ordered_regions(preset)
+        ).items()
+    }
 
 
 def _emit_baseline_filter_definitions(
@@ -1393,14 +1498,25 @@ def _emit_baseline_filter_definitions(
     # branch's total covers all of them. This is the mechanism that lets the
     # fit engine's boost stay uncapped while the 0 dB ceiling stays a hard
     # rail. It is the SAME quantity the fit discloses as
-    # ``LinearizationFit.headroom_cost_db`` — both are the per-branch sum of
-    # positive gains — so what a household is told the correction costs is what
+    # ``LinearizationFit.headroom_cost_db`` — both are that branch chain's
+    # realized peak (#1808; it was the per-branch sum of positive gains until
+    # 2026-07-28) — so what a household is told the correction costs is what
     # the speaker actually gives up. Pinned by a test.
     trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
     total_headroom_db = (
         baseline_headroom_db
         + total_positive_boost_db(room_peqs)
-        + linearization_headroom_db(linearization)
+        + linearization_headroom_db(
+            linearization,
+            # Built only when there is a boost to charge for: the context
+            # itself imports branch_chain, and with it numpy, which the
+            # cut-only path must not pay for (see _linearization_has_boost).
+            branch_context=(
+                _branch_context(preset, corrections)
+                if _linearization_has_boost(linearization)
+                else {}
+            ),
+        )
         + trim_db
     )
     if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:

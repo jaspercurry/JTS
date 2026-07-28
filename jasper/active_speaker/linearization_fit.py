@@ -49,7 +49,22 @@ What did NOT change: the headroom cost of a boost is **disclosed**
 (:attr:`LinearizationFit.headroom_cost_db`) and absorbed by the emitter's
 existing ``active_baseline_headroom`` gain, exactly as room-correction boost
 already is — so the CamillaDSP 0 dB ceiling, the per-driver limiters, and
-tweeter protection remain untouched hard rails. A vocabulary that forbids
+tweeter protection remain untouched hard rails. What that cost IS changed on
+2026-07-28 (#1808): the realized peak of the emitted branch chain rather than
+the sum of positive filter gains, because the sum charged a JTS3 profile
+22.458 dB for a branch whose true peak was +4.00 dB and left the speaker 8.3 dB
+quieter than the household's listening level at full volume.
+
+**Lift is bounded to the driver's radiating side of its crossover** (#1809).
+The composer passes ``radiating_band_hz`` — solved by
+:func:`jasper.active_speaker.branch_chain.radiating_band_hz`, so nothing in
+THIS module knows what a crossover is; it is handed a band, like every other
+bound it consumes. A driver measured through its own crossover carries that
+crossover's rolloff in its curve, and a boost-capable fit reads the rolloff as
+a driver deficit and spends gain undoing a filter the same graph emits three
+lines earlier. CUTS are not bounded: whatever leaks past the handoff still
+reaches the summed response, and removing it spends no headroom (a cut
+cannot raise a peak). A vocabulary that forbids
 boost still enforces the cut-only invariant with an explicit ``raise`` before
 returning (not a bare ``assert`` — a hardware-bound safety invariant must
 survive ``python -O``; see :func:`fit_driver_linearization`), pinned by a test.
@@ -82,10 +97,9 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.correction.peq import design_peq, predicted_response
-from jasper.sound.profile import (
-    RESPONSE_SAMPLE_RATE_HZ, FilterSpec, _filter_response_complex, _freq_trig,
-)
+from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
+from .branch_chain import chain_response
 from .linearization_envelope import (
     ENVELOPE_CEILING_SENTINEL_DB,
     EnvelopeCurve,
@@ -665,23 +679,31 @@ class LinearizationFit:
     # carrying only flattening cuts anchors correctly too. When the CD-horn
     # stage fires this reads ≈ spend + the flattening peaks' own in-band share.
     correction_giveback_db: float = 0.0
-    # --- PR-L5 disclosure ------------------------------------------------
-    # "This correction costs N dB of maximum level." The SUM of this fit's
-    # positive filter gains — which is exactly the quantity the emitter
-    # CHARGES to ``active_baseline_headroom`` (the same gain room-correction
-    # boost already rides; see ``camilla_yaml.linearization_headroom_db``), so
-    # the number a household is told and the number the speaker gives up are
-    # one number.
+    # --- PR-L5 disclosure, #1808 charge ----------------------------------
+    # "This correction costs N dB of maximum level" — the realized peak of the
+    # branch chain this fit is emitted into (``crossover ⊗ linearization ⊗
+    # trim``) plus ``branch_chain.HEADROOM_MARGIN_DB``, which is exactly the
+    # quantity the emitter CHARGES to ``active_baseline_headroom`` (the same
+    # gain room-correction boost already rides; see
+    # ``camilla_yaml.linearization_headroom_db``). One number: what a
+    # household is told the correction costs is what the speaker gives up.
     #
-    # The sum and NOT the realized cascade peak, deliberately. Two bells at
-    # different centres never reach their combined height anywhere, so the peak
-    # understates the charge — measured on a two-boost fit, 1.71 dB peak
-    # against a 3.38 dB charge. The sum is the conservative bound, because
-    # overlapping boosts at ONE frequency do add and that is the case the
-    # headroom has to survive; the charge is therefore right, and the
-    # disclosure follows the charge rather than the other way round. Reporting
-    # the peak would tell a household its correction cost half what the
-    # speaker actually gave up.
+    # **Stamped by the composer, not computed here.** A correction's cost is a
+    # property of the chain it is emitted into — the crossover that follows it
+    # and the trim that follows that — and this topology-agnostic core
+    # deliberately knows neither (see the module docstring's "the allowed
+    # vocabulary is an INPUT" rule). ``crossover_v2_flow._fit_linearization``
+    # fills it through :func:`jasper.active_speaker.branch_chain.
+    # branch_headroom_db` once the trim is resolved, using the same function
+    # the emitter charges with. A fit evaluated with no branch (a direct
+    # caller, a test) honestly reports 0.0: no branch, no charge.
+    #
+    # It used to be the SUM of this fit's positive filter gains. That was a
+    # loose upper bound on the same physical quantity and, on the 2026-07-28
+    # JTS3 profile, a 5.6x one — 22.458 dB charged against a +4.00 dB realized
+    # peak, most of it paying for two boosts the woofer's own crossover then
+    # attenuated by 13.3 and 7.8 dB. The owner's ruling (#1808): corrections
+    # must never stack invisible headroom.
     # 0.0 for every cut-only fit — which is every fit before PR-L5.
     headroom_cost_db: float = 0.0
     # How far this driver had to move to reach the session's SHARED level
@@ -767,22 +789,15 @@ def complex_correction_response(
     ``10**(sum of jasper.sound.profile._filter_response_db over filters / 20)``
     bin-for-bin (pinned by a magnitude-consistency test). Callers apply it in
     the LINEAR domain: ``W_lin = W * complex_correction_response(...)``.
+
+    A thin role adapter since #1808: the cascade evaluation itself is
+    :func:`jasper.active_speaker.branch_chain.chain_response`, shared with the
+    emitter's headroom charge and the runtime contract's proof so those three
+    can never evaluate the same filters differently. This function only
+    reduces :class:`LinearizationFilter` records to the plain biquad mappings
+    that evaluator speaks.
     """
-    freqs = np.asarray(freqs_hz, dtype=np.float64)
-    # One trig table (at RESPONSE_SAMPLE_RATE_HZ) shared across every biquad in
-    # the cascade — the same reuse _filter_response_db's own callers do.
-    trig = _freq_trig(freqs)
-    total = np.ones(freqs.shape, dtype=np.complex128)
-    for f in filters:
-        # LinearizationFilter and FilterSpec are structurally the same biquad
-        # record (biquad_type/freq/gain/q); FilterSpec is the declared input of
-        # the shared profile evaluator.
-        spec = FilterSpec(
-            name="linearization", biquad_type=f.biquad_type,
-            freq=f.freq, gain=f.gain, q=f.q,
-        )
-        total = total * np.array(_filter_response_complex(spec, freqs, trig))
-    return total
+    return chain_response([f.to_dict() for f in filters], freqs_hz)
 
 
 def linearization_filters_by_role(
@@ -840,7 +855,10 @@ def worst_headroom_cost_db(linearization_mapping: Mapping[str, Any]) -> float:
     Worst branch and not the sum across branches, matching
     ``camilla_yaml.linearization_headroom_db``'s own rule: the driver chains
     run in PARALLEL after the split, so no single sample path ever sees two
-    branches' boosts and the graph gives up the largest one.
+    branches' boosts and the graph gives up the largest one. (That
+    adjudication is unchanged by #1808 — what changed is the per-branch number
+    this maxes over, from a sum of positive gains to the branch chain's
+    realized peak.)
 
     Takes a persisted ``{role: LinearizationFit.to_dict()}`` mapping — the
     shape a candidate carries under its ``"linearization"`` key, after a JSON
@@ -1632,6 +1650,8 @@ def _lift_stage(
     band_mask: np.ndarray,
     filters: Sequence[LinearizationFilter],
     vocabulary: FitVocabulary,
+    *,
+    lift_mask: np.ndarray | None = None,
 ) -> _Lift:
     """Raise the bands a cut-only fit had to leave dark (PR-L5).
 
@@ -1670,15 +1690,24 @@ def _lift_stage(
     # How much lift is PERMITTED per bin: the distance to target inside the fit
     # band (negative where the curve already sits above it — a cut there may
     # not be unwound), and unconstrained outside it, where this fit makes no
-    # claim at all.
+    # claim at all. Read over the whole fit band, NOT ``lift_mask``: a bin the
+    # crossover has handed off is still a bin a lifting filter's skirt must
+    # not overshoot into.
     headroom_db = np.where(band_mask, target_level_db - working_db, np.inf)
     # How much lift is WANTED: the positive part of the same distance, bounded
     # per bin by the envelope's allowance. That allowance is a correction-DEPTH
     # ceiling and is direction-agnostic — a bin the measurement cannot support
     # a 3 dB cut at cannot support a 3 dB lift either — and it is already zero
     # wherever the null registry or the position screen excluded a band.
+    #
+    # ``lift_mask`` narrows WANTED to the driver's own radiating band (#1809),
+    # which is what makes the bound boost-only: the cut stages above ran
+    # against the full fit band and keep everything they placed. Defaults to
+    # the fit band itself, so a caller with no crossover to declare gets the
+    # pre-#1809 stage exactly.
+    wanted_mask = band_mask if lift_mask is None else lift_mask
     wanted = np.minimum(
-        np.clip(np.where(band_mask, target_level_db - working_db, 0.0), 0.0, None),
+        np.clip(np.where(wanted_mask, target_level_db - working_db, 0.0), 0.0, None),
         np.maximum(envelope.allowed_depth_db, 0.0),
     )
     requested_db = float(np.max(wanted)) if wanted.size else 0.0
@@ -1701,7 +1730,10 @@ def _lift_stage(
             "no_filter_budget",
         )
 
-    band_idx = np.flatnonzero(band_mask)
+    # The boost designer's own band is the LIFT band, so a bell's centre can
+    # never be placed where this driver has handed off — belt to the braces of
+    # a ``residue`` that is already zero out there.
+    band_idx = np.flatnonzero(wanted_mask)
     f_low = float(grid_hz[band_idx[0]])
     f_high = float(grid_hz[band_idx[-1]])
     peqs = design_peq(
@@ -1761,6 +1793,7 @@ def fit_driver_linearization(
     *,
     vocabulary: FitVocabulary = CUT_ONLY_VOCABULARY,
     level_frame: SharedLevelFrame | None = None,
+    radiating_band_hz: tuple[float, float] | None = None,
 ) -> LinearizationFit:
     """Fit one driver's cut-only linearization from its measured response
     and correction envelope.
@@ -1773,6 +1806,25 @@ def fit_driver_linearization(
     ``vocabulary`` is the allowed-moves input of the topology-agnostic core
     (:class:`FitVocabulary`); it defaults to :data:`CUT_ONLY_VOCABULARY`, so
     a caller that does not opt into boost gets the pre-PR-L5 fit exactly.
+    ``radiating_band_hz`` bounds where the fit may add LEVEL to the span this
+    driver's own crossover leaves it radiating in
+    (:func:`jasper.active_speaker.branch_chain.radiating_band_hz`, which the
+    composer solves — this core is handed a band, never a crossover). ``None``
+    (the default, and every caller before #1809) means unbounded, which is
+    also the honest answer for a one-way box's summed chain.
+
+    It bounds the LIFT stage and deliberately nothing else. Cuts still run to
+    the fit band's own edge — out-of-band leakage is real, reaches the summed
+    response, and removing it spends no headroom — and ``target_level_db``, the
+    core-band level :func:`driver_core_level_db` reconciles into the shared
+    frame, and ``correction_giveback_db`` are all still read over the
+    envelope's own region, because those are LEVEL questions and narrowing
+    their band would move the shared frame and the trim anchor as a side
+    effect of a SHAPE fix. What #1809 is about is a driver spending GAIN
+    against its own crossover: the 2026-07-28 JTS3 woofer carried +11.6155 dB
+    (Q 8) at 2747 Hz, above its own 2 kHz LR4 crossover, which arrived at
+    +1.06 dB of net acoustic contribution and cost 11.6 dB of headroom.
+
     ``level_frame`` is the session's :class:`SharedLevelFrame`; when supplied,
     this driver's :attr:`~LinearizationFit.level_frame_offset_db` reports how
     far it must move to reach that shared frame, which the conductor folds
@@ -1786,7 +1838,8 @@ def fit_driver_linearization(
          smooth it.
       2. Fit band = envelope-nonzero bins, trimmed by the adaptive-band-trim
          walk (never fit past where the curve has already fallen more than
-         one filter's cut budget below target).
+         one filter's cut budget below target). The LIFT band is that band
+         intersected with ``radiating_band_hz``.
       3. Target level = median of the smoothed curve over the trusted core
          passband (NOT the band minimum).
       4. Shelf stage: one cut-only Highshelf if the fit band's regression
@@ -1802,9 +1855,9 @@ def fit_driver_linearization(
          fit-quality. When it fires, the residual/verify/observe claims are
          computed in the give-back frame (``target_level_db - spend``).
       7. Lift stage (``_lift_stage``, PR-L5): whatever deficit survives steps
-         4-6 is spent first by SHRINKING this fit's own cuts
-         (:func:`reduce_cuts_for_lift`) and then, if ``vocabulary`` allows it,
-         by boost filters — envelope-bounded per bin, so a measured
+         4-6 **inside the lift band** is spent first by SHRINKING this fit's
+         own cuts (:func:`reduce_cuts_for_lift`) and then, if ``vocabulary``
+         allows it, by boost filters — envelope-bounded per bin, so a measured
          interference null can never be filled.
 
     Returns a :class:`LinearizationFit` with zero filters (an honest no-op)
@@ -1827,6 +1880,44 @@ def fit_driver_linearization(
     band_mask = np.zeros_like(envelope_mask)
     band_mask[fit_lo_idx:fit_hi_idx + 1] = True
     band_mask &= envelope_mask
+
+    # Where LIFT may go (#1809) — the fit band clamped to the side of the
+    # crossover this driver actually radiates on.
+    #
+    # **Boosts only, and the asymmetry is the whole design.** A CUT outside a
+    # driver's radiating band is ordinary useful work: the crossover has
+    # attenuated the band but not silenced it, and whatever leaks through
+    # still reaches the summed response. Such a cut is not free of acoustic
+    # consequence — it moves the sum, which is the point of placing it — it is
+    # free of the two things that make the boost case a defect: it spends no
+    # headroom (the charge is a peak, and a cut cannot raise one), and it
+    # cannot fight the crossover, because past the edge the curve is already
+    # BELOW target and only an overshoot the fit does not place could put it
+    # back above. A BOOST there is the pathology #1809 filed. It is
+    # attenuated by the same crossover it is fighting (the 2026-07-28 JTS3
+    # woofer's +11.6155 dB at 2747 Hz arrived at +1.06 dB of net acoustic
+    # contribution), it charges full headroom for that nothing, and it exists
+    # only because a branch measured THROUGH its crossover reads the
+    # crossover's own rolloff as a driver deficit. A driver must not spend
+    # gain fighting its own crossover; it may still stop leaking.
+    #
+    # **What this bound does NOT fix, deliberately (issue #1817).** Inside the
+    # band, the fit is still flattening a crossover-shaped curve toward a FLAT
+    # target, so it still lifts the last few dB before the edge: a perfectly
+    # flat driver behind an LR4 attracts +2.379 dB at 0.79*Fc. That is bounded
+    # by the edge attenuation itself and it is cheap — the same crossover eats
+    # 2.27 dB of it, so the branch chain peaks at +0.111 dB and the charge is
+    # 1.11 dB, not the 2.4 the filter reads. The real fix is to give the fit a
+    # crossover-shaped TARGET rather than a flat one, so no filter fights the
+    # crossover anywhere instead of only outside the radiating band; that is a
+    # change to what ``target_level_db`` MEANS (a scalar everywhere here:
+    # residual, verify, observe, give-back) and does not belong in a bound.
+    lift_mask = band_mask
+    if radiating_band_hz is not None:
+        radiating_lo_hz, radiating_hi_hz = radiating_band_hz
+        lift_mask = band_mask & (
+            (grid_hz >= radiating_lo_hz) & (grid_hz <= radiating_hi_hz)
+        )
     fit_lo_hz = float(grid_hz[fit_lo_idx])
     fit_hi_hz = float(grid_hz[fit_hi_idx])
 
@@ -1894,7 +1985,7 @@ def fit_driver_linearization(
     # spend the give-back is already returning for free.
     lift = _lift_stage(
         grid_hz, working_db, target_level_db - hf.spend_db, envelope,
-        band_mask, filters, vocabulary,
+        band_mask, filters, vocabulary, lift_mask=lift_mask,
     )
     if lift.filters != tuple(filters):
         filters = list(lift.filters)
@@ -1988,15 +2079,6 @@ def fit_driver_linearization(
             for center, code in reason_summary.items()
         }
 
-    # "This correction costs N dB of maximum level" (PR-L5) — the SUM of the
-    # positive gains, which is the number the emitter charges. See the field's
-    # own comment for why the sum and not the realized cascade peak. Nothing
-    # when the fit is cut-only, which keeps every pre-PR-L5 fit's disclosure at
-    # a literal 0.0.
-    headroom_cost_db = float(
-        max(0.0, math.fsum(f.gain for f in filters if f.gain > 0.0))
-    )
-
     return LinearizationFit(
         role=envelope.role,
         filters=tuple(filters),
@@ -2018,7 +2100,9 @@ def fit_driver_linearization(
         hf_continuation_suppressed_reason=hf.suppressed_reason,
         measured_deficit_at_ceiling_db=hf.measured_deficit_at_ceiling_db,
         correction_giveback_db=correction_giveback_db,
-        headroom_cost_db=headroom_cost_db,
+        # headroom_cost_db is deliberately left at its 0.0 default: the charge
+        # is a property of the emitted branch chain, which this core does not
+        # know. See the field's own comment — the composer stamps it.
         level_frame_offset_db=(
             float(level_frame.offset_db.get(envelope.role, 0.0))
             if level_frame is not None else 0.0

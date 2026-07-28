@@ -1636,25 +1636,42 @@ def _two_dip_response(depth_db: float = 3.0):
     return resp, _envelope("woofer", resp, excited_band_hz=(150.0, 8000.0))
 
 
-def test_headroom_cost_is_the_sum_the_emitter_charges_not_the_cascade_peak():
-    """**S2.** The disclosed number and the charged number are one number.
+def test_headroom_cost_is_the_realized_peak_the_emitter_charges_not_the_sum():
+    """**S2, re-pointed by #1808.** The disclosed number and the charged
+    number are one number — and that number is now the branch chain's
+    REALIZED PEAK, not the sum of the fit's positive gains.
 
-    Pinned on a fixture where the two candidate contracts DIVERGE — an
-    earlier version used a single-boost fit, where sum and peak are trivially
-    equal, so it would have passed against either implementation and regressed
-    nothing (adversarial review SF2).
+    Still pinned on the two-separated-boosts fixture, because that is where
+    the two candidate contracts DIVERGE (a single-boost fit makes sum and peak
+    trivially equal, so it would pass against either implementation and
+    regress nothing — adversarial review SF2). What changed is which side the
+    contract is on.
 
-    The SUM is correct because overlapping boosts at one frequency DO add, and
-    that is the case the headroom has to survive; the realized peak understates
-    it whenever the boosts sit apart. Reporting the peak would have told a
-    household its correction cost half what the speaker actually gave up.
+    The sum was defended here as the conservative bound, since overlapping
+    boosts at one frequency DO add. They still do — and a bin-by-bin cascade
+    evaluation contains that case exactly, which is why the peak is not a
+    weakening. What the sum ALSO charged for was boosts that never meet, and
+    boosts the branch's own crossover deletes: on the 2026-07-28 JTS3 profile
+    that was 22.458 dB charged against a +4.00 dB realized branch peak, and a
+    speaker 8.3 dB below its household's listening level at full volume
+    (#1808).
+
+    The fit core no longer computes the field at all — a correction's cost
+    depends on the crossover and trim it is emitted into, which the
+    topology-agnostic core does not know — so this asserts the contract at the
+    seam that DOES know: ``branch_chain``, which the composer stamps with and
+    the emitter charges with.
     """
+    from jasper.active_speaker.branch_chain import (
+        HEADROOM_MARGIN_DB, CrossoverSection, branch_headroom_db,
+    )
     from jasper.active_speaker.camilla_yaml import linearization_headroom_db
 
     resp, envelope = _two_dip_response()
     fit = fit_driver_linearization(
         resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
     )
+    emitted = [f.to_dict() for f in fit.filters]
     boosts = [f.gain for f in fit.filters if f.gain > 0.0]
     assert len(boosts) >= 2, "the contracts only diverge with separated boosts"
     cascade_peak_db = float(np.max(20.0 * np.log10(
@@ -1662,17 +1679,161 @@ def test_headroom_cost_is_the_sum_the_emitter_charges_not_the_cascade_peak():
     )))
     # The fixture really does separate the two contracts…
     assert sum(boosts) > cascade_peak_db + 1.0, (sum(boosts), cascade_peak_db)
-    # …and the field follows the SUM, not the peak.
-    assert fit.headroom_cost_db == pytest.approx(sum(boosts))
-    assert fit.headroom_cost_db != pytest.approx(cascade_peak_db, abs=0.5)
-    # …which is literally the emitter's own charge for this fit, and survives
-    # the JSON round-trip the candidate takes to reach a household.
-    assert fit.headroom_cost_db == pytest.approx(
-        linearization_headroom_db({fit.role: [f.to_dict() for f in fit.filters]})
+
+    # …and the charge follows the PEAK (plus the named margin), not the sum.
+    # (The divergence guard above is what makes this an assertion about WHICH
+    # contract holds, so no separate `charge < sum` restatement is needed.)
+    charge_db = branch_headroom_db(emitted)
+    assert charge_db == pytest.approx(cascade_peak_db + HEADROOM_MARGIN_DB, abs=0.05)
+
+    # It is literally the emitter's own charge for this fit — one function,
+    # two readers — and it survives the JSON round-trip a candidate takes.
+    # (A branch with no crossover and no trim: this fit was not composed into
+    # one, so the honest context for it is empty.)
+    assert charge_db == pytest.approx(
+        linearization_headroom_db({fit.role: emitted}, branch_context={})
     )
     assert fit.to_dict()["headroom_cost_db"] == fit.headroom_cost_db
+
+    # The fit core leaves the field alone: no branch, no charge. The composer
+    # stamps it (crossover_v2_flow._fit_linearization), which is what makes
+    # the crossover and trim terms below expressible at all.
+    assert fit.headroom_cost_db == 0.0
+
+    # And the crossover the branch runs through is part of the charge: put
+    # this fit behind a low-pass an octave under its boosts and the same
+    # filters cost the speaker nothing at all.
+    lowest_boost_hz = min(f.freq for f in fit.filters if f.gain > 0.0)
+    assert branch_headroom_db(
+        emitted,
+        sections=(
+            CrossoverSection(
+                fc_hz=lowest_boost_hz / 4.0, order=4, highpass=False,
+            ),
+        ),
+    ) == 0.0
 
 
 def test_headroom_cost_is_zero_for_every_cut_only_fit():
     resp, envelope = _dip_response()
     assert fit_driver_linearization(resp, envelope).headroom_cost_db == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# the fit band vs the driver's own crossover (#1809)
+# --------------------------------------------------------------------------- #
+
+
+def _crossed_over_woofer(fc_hz: float = 2000.0, order: int = 4):
+    """The 2026-07-28 JTS3 woofer shape, reconstructed: a flat driver measured
+    THROUGH its own LR4 low-pass, so its curve falls away above Fc for a reason
+    that has nothing to do with the driver.
+
+    That is the whole defect. The fit flattens toward a target read off the
+    trusted core band, the crossover's rolloff reads as a driver deficit, and
+    a boost-capable vocabulary "corrects" it — on the real profile with
+    +11.6155 dB (Q 8.0) at 2747 Hz and +5.9619 dB at 2196 Hz, both inside the
+    stopband, for a net acoustic contribution of +1.06 and -1.60 dB.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db,
+    )
+
+    sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=False),)
+    db = crossover_response_db(_NATIVE_FREQS_HZ, sections)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 8000.0))
+    return resp, envelope, sections
+
+
+def test_the_fit_places_no_boost_in_the_drivers_own_stopband():
+    """**The #1809 keystone.** Reconstruct the shape that produced the
+    2026-07-28 JTS3 profile — a woofer whose measured curve extends well above
+    its own crossover — and the bounded fit must spend no gain up there.
+
+    Asserted against the UNBOUNDED fit on the same response, so this cannot
+    pass by the fixture simply having nothing to boost.
+    """
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    resp, envelope, sections = _crossed_over_woofer()
+    band = radiating_band_hz(sections)
+    vocabulary = FitVocabulary(allow_boost=True)
+
+    unbounded = fit_driver_linearization(resp, envelope, vocabulary=vocabulary)
+    bounded = fit_driver_linearization(
+        resp, envelope, vocabulary=vocabulary, radiating_band_hz=band,
+    )
+
+    # The defect reproduces: without the bound the fit boosts above Fc.
+    stopband_boosts = [
+        f for f in unbounded.filters if f.gain > 0.0 and f.freq > band[1]
+    ]
+    assert stopband_boosts, "the fixture must reproduce the defect to pin the fix"
+    assert max(f.gain for f in stopband_boosts) > 4.0
+
+    # …and the bound removes exactly that: no boost outside the radiating band.
+    assert [f for f in bounded.filters if f.gain > 0.0 and f.freq > band[1]] == []
+
+
+def test_the_bound_is_boost_only_cuts_still_reach_out_of_band_leakage():
+    """The asymmetry, pinned. A cut past the handoff is ordinary useful work —
+    whatever leaks through the crossover still reaches the summed response, and
+    removing it spends no headroom (the charge is a peak, and a cut cannot
+    raise one) — so the bound must not take the cut stages with it. (The
+    conductor fixture proved the cost of getting this wrong: its tweeter's real
+    +6 dB bump sits 100 Hz BELOW Fc, and refusing to cut it turned a passing
+    correction into a refused one.)"""
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    fc_hz = 2000.0
+    resp, envelope, sections = _crossed_over_woofer(fc_hz=fc_hz)
+    sections_band = radiating_band_hz(sections)
+    # A woofer with a real resonance just past its own handoff (1800 Hz, above
+    # the 1602.9 Hz radiating edge), riding the same crossover-shaped rolloff.
+    peak_db = resp.magnitude_db + _bell(_NATIVE_FREQS_HZ, 1800.0, 8.0, 0.2)
+    resp = _driver_response("woofer", peak_db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 8000.0))
+
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        radiating_band_hz=sections_band,
+    )
+    out_of_band = [f for f in fit.filters if f.freq > sections_band[1]]
+    assert [f for f in out_of_band if f.gain > 0.0] == []
+    assert [f for f in out_of_band if f.gain < 0.0], (
+        "a resonance past the handoff must still be cut"
+    )
+
+
+def test_an_unbounded_fit_is_byte_identical_to_before_the_bound_existed():
+    """Every caller that declares no crossover — a one-way box's summed chain,
+    and every pre-#1809 caller — gets exactly the fit it got before."""
+    resp, envelope, _sections = _crossed_over_woofer()
+    vocabulary = FitVocabulary(allow_boost=True)
+    assert fit_driver_linearization(
+        resp, envelope, vocabulary=vocabulary,
+    ).to_dict() == fit_driver_linearization(
+        resp, envelope, vocabulary=vocabulary,
+        radiating_band_hz=(0.0, float("inf")),
+    ).to_dict()
+
+
+def test_the_bound_does_not_move_the_target_level_or_the_give_back():
+    """Scoped to the SHAPE question. ``target_level_db`` (which the shared
+    level frame reconciles) and ``correction_giveback_db`` (which anchors the
+    trim) are level questions read over the envelope's own region, and #1809
+    must not move them — narrowing their band walks the frame straight into
+    PR-L5's disagreement refusal."""
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    resp, envelope, sections = _crossed_over_woofer()
+    unbounded = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    bounded = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        radiating_band_hz=radiating_band_hz(sections),
+    )
+    assert bounded.target_level_db == unbounded.target_level_db
+    assert driver_core_level_db(resp, envelope) == unbounded.target_level_db

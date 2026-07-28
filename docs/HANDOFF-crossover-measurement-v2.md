@@ -1165,10 +1165,36 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(l
 
 `event=correction.crossover_v2_linearization_giveback` carries the shared
 level frame beside the trim it produced (`level_frame_system_db`,
-`level_frame_reference_role`, `level_frame_offset_db`, `headroom_cost_db`) — a
-large `level_frame_offset_db` is the 10 dB-dark shape being CORRECTED, not a
-new problem; a large `headroom_cost_db` is what the correction is spending of
-the speaker's maximum level to do it.
+`level_frame_reference_role`, `level_frame_offset_db`) — a large
+`level_frame_offset_db` is the 10 dB-dark shape being CORRECTED, not a new
+problem.
+
+Two further events cover what the correction COSTS (#1808, #1809):
+
+- `event=correction.crossover_v2_linearization_fit_band` — the band each
+  driver was allowed to add level in, solved from its own crossover
+  (`radiating_band_hz`, `crossover_order`). A boost outside it is the #1809
+  defect; cuts outside it are ordinary.
+- `event=correction.crossover_v2_linearization_headroom` — per role,
+  `chain_peak_db` (what the emitted `crossover ⊗ linearization ⊗ trim` chain
+  actually puts above unity), `headroom_cost_db` (that peak plus the 1.0 dB
+  `margin_db`, or 0.0 for a chain that never exceeds unity — this is what the
+  emitter attenuates the program by), `trim_db`, and `sum_of_positives_db`
+  (what the retired pre-#1808 rule WOULD have charged, kept so the reclaimed
+  loudness is visible in the journal). A large gap between the last two is the
+  correction spending nothing where it used to spend a lot.
+- `event=correction.crossover_v2_linearization_no_crossover` (WARNING) — a
+  role the session's preset carries no crossover region for. Its branch is
+  treated as running full range: no lift bound and no headroom credit, which
+  is what the emitter would build for it. On a 2-way conductor this is a
+  defect in the supplied preset, which is why it is a warning rather than
+  silence.
+
+**Reading a `headroom_cost_db` from before 2026-07-28.** A candidate
+persisted under the retired sum-of-positives rule discloses a much larger
+number than re-emitting it would charge today — ~22.5 dB vs ~5 on the
+2026-07-28 JTS3 profile. The stamp is deliberately not re-derived on load
+(it records what that graph was emitted with); a recommission replaces it.
 
 ### Per-capture diagnostics — every capture logs its numbers
 

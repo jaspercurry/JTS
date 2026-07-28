@@ -388,10 +388,17 @@ def test_linearization_rejects_boost_above_the_per_filter_cap():
 def test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom():
     """The PR-L5 doctrine amendment, at the emitter: a boost is emitted as
     asked, and the program-domain ``active_baseline_headroom`` gain grows by
-    the worst branch's TOTAL positive boost so the boosted band still lands at
-    or under unity. That absorption — not a numeric cap on the correction — is
-    what keeps CamillaDSP's 0 dB ceiling a hard rail while total boost stays
-    uncapped."""
+    what the worst branch's emitted CHAIN actually puts above unity, so the
+    boosted band still lands at or under it. That absorption — not a numeric
+    cap on the correction — is what keeps CamillaDSP's 0 dB ceiling a hard rail
+    while total boost stays uncapped.
+
+    The charged number is the chain's realized peak plus
+    ``branch_chain.HEADROOM_MARGIN_DB``, not the sum of the two gains (#1808).
+    This fixture is exactly the shape that separates them: a +3.0 dB bell at
+    1000 Hz and a +1.5 dB bell at 2200 Hz never meet, and BOTH are already
+    down the woofer's own 1600 Hz low-pass — the 2200 Hz one by 4.6 dB, inside
+    the stopband. The sum charged 4.5 dB for a chain that peaks at 1.86 dB."""
     preset = _preset()
     flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
     boosted = emit_active_speaker_baseline_config(
@@ -399,15 +406,16 @@ def test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom():
         linearization={"woofer": [_peak(gain=3.0), _peak(freq=2200.0, gain=1.5)]},
     )
     assert "gain: 3.000" in boosted
-    assert _headroom_gain_db(boosted) == pytest.approx(
-        _headroom_gain_db(flat) - 4.5, abs=1e-3
-    )
+    charged = _headroom_gain_db(flat) - _headroom_gain_db(boosted)
+    assert charged == pytest.approx(2.8707, abs=1e-3)
+    assert charged < 4.5  # the retired sum-of-positives rule
 
 
 def test_linearization_headroom_takes_the_worst_branch_not_the_sum():
     """Driver chains run in PARALLEL after the split, so no single sample path
     sees two branches' boosts — absorbing their sum would throw away max SPL
-    for a clip that cannot happen."""
+    for a clip that cannot happen. (#1808 changed the per-branch number this
+    maxes over, not this adjudication.)"""
     preset = _preset()
     flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
     both = emit_active_speaker_baseline_config(
@@ -417,8 +425,25 @@ def test_linearization_headroom_takes_the_worst_branch_not_the_sum():
             "tweeter": [_peak(freq=6000.0, gain=2.0)],
         },
     )
+    def _charged(linearization) -> float:
+        return _headroom_gain_db(flat) - _headroom_gain_db(
+            emit_active_speaker_baseline_config(
+                preset, playback_device=ACTIVE_PCM, linearization=linearization,
+            )
+        )
+
+    woofer_alone = _charged({"woofer": [_peak(gain=3.0)]})
+    tweeter_alone = _charged({"tweeter": [_peak(freq=6000.0, gain=2.0)]})
+    # The pair costs exactly what the WORSE branch alone costs, never the sum.
+    # (Here that is the tweeter: its +2 dB bell at 6 kHz sits in its own
+    # passband, while the woofer's +3 dB bell at 1 kHz is already 1.2 dB down
+    # its own 1600 Hz low-pass — which is #1808's point restated.)
     assert _headroom_gain_db(both) == pytest.approx(
-        _headroom_gain_db(flat) - 3.0, abs=1e-3
+        _headroom_gain_db(flat) - max(woofer_alone, tweeter_alone), abs=1e-3
+    )
+    assert max(woofer_alone, tweeter_alone) == pytest.approx(2.9641, abs=1e-3)
+    assert _headroom_gain_db(both) > _headroom_gain_db(flat) - (
+        woofer_alone + tweeter_alone
     )
 
 
@@ -431,8 +456,20 @@ def test_linearization_headroom_is_zero_for_a_cut_only_correction():
         preset, playback_device=ACTIVE_PCM,
         linearization={"woofer": [_peak(gain=-4.0)]},
     )
-    assert linearization_headroom_db({"woofer": [_peak(gain=-4.0)]}) == 0.0
+    assert linearization_headroom_db(
+        {"woofer": [_peak(gain=-4.0)]}, branch_context={},
+    ) == 0.0
     assert _headroom_gain_db(cut_only) == pytest.approx(_headroom_gain_db(flat))
+
+
+def test_the_headroom_charge_cannot_be_asked_for_without_a_branch_context():
+    """**Required, not defaulted.** With no context the charge would silently
+    become the naked linearization cascade's peak — a strict over-estimate, so
+    still SAFE for an attenuation, but wrong for anyone reading it as what the
+    correction costs, and wrong in the LOUD direction for a delta between two
+    of them. There is no signature that lets a caller skip it by accident."""
+    with pytest.raises(TypeError, match="branch_context"):
+        linearization_headroom_db({"woofer": [_peak(gain=3.0)]})  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize("bad_freq", [0.0, -100.0, float("nan"), float("inf")])
@@ -580,16 +617,18 @@ def test_boosted_baseline_reproves_as_approved_active_runtime():
 def test_reproof_blocks_boost_beyond_the_absorbed_headroom():
     """The boost proof's teeth: a boost tampered UP past what the graph's own
     headroom gain paid for would drive the chain past unity, and fails closed.
-    Tampered on a graph that legitimately carries 4.5 dB of absorbed boost, so
-    what is being caught is the EXCESS, not the presence of boost."""
+    Tampered on a graph that legitimately carries absorbed boost, so what is
+    being caught is the EXCESS, not the presence of boost."""
     topology = _active_topology("mono", "active_2_way")
     text = emit_active_speaker_baseline_config(
         _preset(), playback_device=ACTIVE_PCM,
         linearization={"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]},
     )
     payload = yaml.safe_load(text)
+    # The realized peak of two non-overlapping bells is the taller one, plus
+    # the margin — 4.108, not the 4.5 their sum would have charged (#1808).
     assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
-        pytest.approx(-4.5, abs=1e-3)
+        pytest.approx(-4.1165, abs=1e-3)
     name = driver_linearization_peak_name("tweeter", 1)
     payload["filters"][name]["parameters"]["gain"] = 8.0  # total 9.5 > 4.5
     source = next(line for line in text.splitlines() if line.startswith("# Source:"))
@@ -770,8 +809,10 @@ def test_linearization_boost_beside_room_peq_boost_still_proves():
         linearization={"tweeter": [_peak(6000.0, 3.0)]},
     )
     payload = yaml.safe_load(text)
+    # 8 dB of room boost + the linearization branch's own realized peak
+    # (3 dB of bell, less a hair of the tweeter's high-pass at 6 kHz) + margin.
     assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
-        pytest.approx(-11.0, abs=1e-3)
+        pytest.approx(-11.9641, abs=1e-3)
     graph = classify_camilla_graph(topology=topology, text=text)
     assert graph.allowed is True, graph.issues
 
@@ -780,12 +821,18 @@ def test_runaway_program_headroom_is_refused_by_name_not_silently_muted():
     """**N7.** Total boost is uncapped, and absorption turns every dB of it into
     a dB of pre-split attenuation — so left unbounded the failure mode is a
     graph that is, to a household, simply mute, with nothing naming why. Past a
-    generous ceiling the emitter REFUSES instead."""
+    generous ceiling the emitter REFUSES instead.
+
+    **COINCIDENT boosts since #1808.** The charge is the chain's realized peak,
+    so spreading N per-filter-capped bells across the spectrum no longer adds
+    up to anything — which is the whole point of the change. Stacking them at
+    ONE frequency does add, and that is the shape that can still run the
+    program-domain headroom away."""
     preset = _preset()
     over = MAX_PROGRAM_HEADROOM_DB + 1.0
     n = int(over // MAX_LINEARIZATION_BOOST_DB) + 1
     filters = [
-        _peak(2000.0 + 500.0 * i, min(MAX_LINEARIZATION_BOOST_DB, over - i * MAX_LINEARIZATION_BOOST_DB))
+        _peak(6000.0, min(MAX_LINEARIZATION_BOOST_DB, over - i * MAX_LINEARIZATION_BOOST_DB))
         for i in range(n)
     ]
     filters = [f for f in filters if f["gain"] > 0.0]
@@ -803,7 +850,9 @@ def test_a_generous_program_headroom_still_emits():
         _preset(), playback_device=ACTIVE_PCM,
         linearization={"tweeter": [_peak(6000.0, 9.0), _peak(9000.0, 6.0)]},
     )
-    assert _headroom_gain_db(text) == pytest.approx(-15.0, abs=1e-3)
+    # The taller bell plus the margin — the two never meet, so #1808 charges
+    # 10.6 dB where the sum charged 15.
+    assert _headroom_gain_db(text) == pytest.approx(-10.606, abs=1e-3)
 
 
 def test_the_production_emit_path_uses_the_default_baseline_headroom():
@@ -831,3 +880,136 @@ def test_the_production_emit_path_uses_the_default_baseline_headroom():
     # charge into the gain the proof reads.
     text = emit_active_speaker_baseline_config(_preset(), playback_device=ACTIVE_PCM)
     assert _headroom_gain_db(text) == pytest.approx(0.0)
+
+
+# --------------------------------------------------------------------------- #
+# the charge and the proof read one chain (#1808)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_charge_credits_the_crossover_the_graph_itself_emits():
+    """The emitter charges over ``crossover ⊗ linearization ⊗ trim``, and the
+    crossover term is read off the SAME preset region that becomes the emitted
+    Linkwitz-Riley filter three lines later.
+
+    A +6 dB boost deep in the woofer's own stopband cannot drive the branch
+    past unity, so under #1808 it costs the household nothing — where the
+    retired sum-of-positives rule charged the full 6 dB for it."""
+    preset = _preset()
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    buried = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"woofer": [_peak(6000.0, 6.0)]},
+    )
+    assert "gain: 6.000" in buried  # the filter really is emitted…
+    assert _headroom_gain_db(buried) == pytest.approx(
+        _headroom_gain_db(flat), abs=1e-3  # …and costs nothing
+    )
+
+
+def test_the_charge_credits_the_branch_trim():
+    """A branch already attenuated by its own baseline gain needs that much
+    less program-domain headroom. This is what makes the conductor's
+    ``normalize_shift_db`` net-neutral: shifting every branch's trim down by S
+    lowers the charge by S, so the pre-split attenuation gives back exactly
+    what the branches gave up."""
+    preset = _preset()
+    boost = {"tweeter": [_peak(6000.0, 4.0)]}
+    untrimmed = _headroom_gain_db(emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, linearization=boost,
+    ))
+    trimmed = _headroom_gain_db(emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, linearization=boost,
+        corrections={"tweeter": {"gain_db": -1.5}},
+    ))
+    assert trimmed == pytest.approx(untrimmed + 1.5, abs=1e-3)
+
+
+def test_a_stopband_boost_proves_against_a_graph_that_charged_nothing_for_it():
+    """The proof follows the charge. A boost the crossover fully removes is
+    charged 0.0, so the graph carries no allowance for it — and it must still
+    re-prove, because the quantity being proved is the CHAIN's peak, not the
+    filter's gain. Under the retired sum rule this graph would have refused
+    itself."""
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"woofer": [_peak(6000.0, 6.0)]},
+    )
+    assert _headroom_gain_db(text) == pytest.approx(0.0, abs=1e-3)
+    graph = classify_camilla_graph(topology=topology, text=text)
+    assert graph.allowed is True, graph.issues
+
+
+def test_reproof_blocks_a_tampered_boost_moved_into_the_passband():
+    """…and the same filter moved where the crossover does NOT remove it is
+    refused, on a graph whose headroom never paid for it. The freedom the peak
+    rule grants is exactly "attenuation the graph provably applies", nothing
+    else."""
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"woofer": [_peak(6000.0, 6.0)]},
+    )
+    payload = yaml.safe_load(text)
+    payload["filters"][driver_linearization_peak_name("woofer", 1)][
+        "parameters"
+    ]["freq"] = 400.0
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+    graph = classify_camilla_graph(topology=topology, text=tampered)
+    assert graph.allowed is False
+
+
+def test_reproof_blocks_a_tampered_branch_trim_that_removes_the_attenuation():
+    """The trim is credited, so it is also proved. Tampering the branch gain
+    back to unity on a graph whose charge counted that attenuation must fail
+    closed — otherwise crediting the trim would be a way to spend headroom
+    twice."""
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(6000.0, 4.0)]},
+        corrections={"tweeter": {"gain_db": -3.0}},
+    )
+    assert classify_camilla_graph(topology=topology, text=text).allowed is True
+    payload = yaml.safe_load(text)
+    payload["filters"]["as_tweeter_baseline_gain"]["parameters"]["gain"] = 0.0
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+    graph = classify_camilla_graph(topology=topology, text=tampered)
+    assert graph.allowed is False
+
+
+def test_the_emitter_and_the_prover_read_the_same_chain():
+    """One number, two readers. The emitter's charge and the contract's
+    allowance are the same quantity over the same three terms — if they ever
+    disagreed by more than the proof's float slack, a graph correct by
+    construction would refuse itself on hardware."""
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, branch_headroom_db,
+    )
+
+    filters = [_peak(6000.0, 4.0), _peak(9000.0, 2.0)]
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"tweeter": filters},
+        corrections={"tweeter": {"gain_db": -1.0}},
+    )
+    payload = yaml.safe_load(text)
+    hp_name = next(
+        name for name in payload["filters"]
+        if name.startswith("as_tweeter_") and name.endswith("_hp")
+    )
+    fc_hz = float(payload["filters"][hp_name]["parameters"]["freq"])
+    order = int(payload["filters"][hp_name]["parameters"]["order"])
+    assert -_headroom_gain_db(text) == pytest.approx(
+        branch_headroom_db(
+            filters,
+            sections=(CrossoverSection(fc_hz=fc_hz, order=order, highpass=True),),
+            trim_db=-1.0,
+        ),
+        abs=1e-3,
+    )
