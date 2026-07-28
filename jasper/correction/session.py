@@ -499,10 +499,16 @@ class MeasurementSession:
         (issue #1797).
 
         Resolved fresh from `strategy.CORRECTION_STRATEGIES` rather than cached
-        at construction: the strategy table is the SSOT for strategy character,
-        and its upper edges are themselves routed through the room-correction
-        boundary SSOT (jasper.audio_measurement.room_boundary), so a per-room
-        ceiling reaches every one of those consumers with no further edit.
+        at construction, so the strategy table stays the one owner of strategy
+        character.
+
+        NOT a per-room ceiling yet, and this property does not make it one:
+        `CORRECTION_STRATEGIES` binds the boundary SSOT's *static* module-level
+        values at import time, so RC3 must still change how those bands are
+        composed (in `strategy.py`) before a per-room f_t can flow through
+        here. What RC1 bought is that the change is confined to that one
+        composition — every consumer below already reads whatever this
+        property returns.
         """
         strat = strategy.resolve_correction_strategy(self.strategy_choice)
         return (strat.f_low_hz, strat.f_high_hz)

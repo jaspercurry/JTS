@@ -3026,6 +3026,17 @@ Current versions:
 
 Compatibility rules:
 
+- **Value discontinuity, not a schema change (2026-07-28).** For
+  `safe`-strategy sessions, `correction_band_hz` in `positions.json`
+  (and `peq_f_low`/`peq_f_high` in the `/status` config payload)
+  changed value from `[20, 350]` to `[25, 250]` on this date. No
+  schema bump accompanies it, deliberately: the field's shape and
+  meaning are unchanged and the **old value was simply wrong** —
+  sessions reported the `balanced` band regardless of the strategy
+  actually used (issue #1797). Anything comparing this field across
+  bundles that straddle the date should treat pre-2026-07-28
+  `safe`-session values as unreliable rather than as evidence the
+  band moved. `balanced` bundles are unaffected.
 - Treat `info.json` as the minimum bundle identity surface. It must
   contain `session_id`, `state`, and `bundle_schema_version` for a
   bundle to be useful. Its `bundle_schema_version` is authoritative for

@@ -140,16 +140,32 @@ TARGET_PROFILES: dict[str, TargetProfile] = {
 
 # Every strategy's upper band edge is expressed against the room-correction
 # boundary SSOT (jasper.audio_measurement.room_boundary), never as its own
-# literal: the three strategies differ by CHARACTER — how much of the boundary's
-# admissible range each is willing to use — and that character is what survives
-# the boundary going per-room in RC3.
+# literal. Today those resolve to 250 / 350 / 500 Hz, exactly the values these
+# three strategies have always shipped.
 #
-#   safe       -> the most conservative ceiling the clamp permits
-#   balanced   -> the boundary itself (the default strategy IS the boundary)
-#   assertive  -> the widest ceiling the clamp permits
+#   safe       -> ROOM_BOUNDARY_MIN_HZ. Settled: the plan (D1) specifies
+#                 `min(250, f_t)`, and since f_t is clamped to >= MIN, that is
+#                 identically MIN for every admissible f_t. Correct as written
+#                 once the boundary becomes per-room.
+#   balanced   -> ROOM_BOUNDARY_DEFAULT_HZ. The default strategy IS the
+#                 boundary.
+#   assertive  -> ROOM_BOUNDARY_MAX_HZ. **OPEN RC3 DECISION, not a settled
+#                 equality.** This preserves assertive's shipped 500 Hz today,
+#                 but D1 never adjudicated what assertive should do under a
+#                 per-room ceiling, and the two concepts genuinely differ: MAX
+#                 bounds how far the *estimator* may be trusted, whereas
+#                 assertive's band is a power-user policy choice. At f_t = 280
+#                 a static 500 would have assertive correcting ~220 Hz of what
+#                 D1 assigns to Tier B's residual-only regime. RC3 must decide
+#                 explicitly — track f_t, keep a fixed 500, or something else —
+#                 rather than inheriting this equality by default. assertive is
+#                 not offered on the household surface (see
+#                 HOUSEHOLD_CORRECTION_STRATEGY_IDS), which is why RC1 leaves
+#                 it parked rather than guessing.
 #
-# Today those resolve to 250 / 350 / 500 Hz, exactly the values these three
-# strategies have always shipped. See docs/room-correction-regime-plan.md D1.
+# NOTE: these bind the SSOT's static module-level values at import time. RC3's
+# per-room f_t therefore requires changing this composition; it does not arrive
+# here for free. See docs/room-correction-regime-plan.md D1.
 CORRECTION_STRATEGIES: dict[str, CorrectionStrategy] = {
     "safe": CorrectionStrategy(
         strategy_id="safe",

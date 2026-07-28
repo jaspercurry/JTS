@@ -18,14 +18,19 @@ finding and editing all ten by hand, and two of them
 silently capped a raised ceiling rather than failing loudly.
 
 Why this module lives in ``audio_measurement`` and not ``correction``:
-``audio_measurement`` is the lowest architectural layer of the three that
-consume the boundary (every existing import between the packages runs
-``active_speaker -> audio_measurement`` and ``correction -> audio_measurement``,
-never the reverse — see :mod:`jasper.audio_measurement.calibration`'s own note
-on the same constraint). Homing the SSOT here is the only placement all three
-consumers can import without inverting that order.
-:mod:`jasper.audio_measurement.snr_policy` is the precedent: a shared band
-vocabulary owned one layer below its consumers.
+``correction`` and ``active_speaker`` import **each other** (for example
+``active_speaker.linearization_fit`` imports ``correction.peq``, while
+``correction.runtime_safety`` imports ``active_speaker.runtime_contract``), so
+neither one is "below" the other and homing a shared constant in either would
+be an arbitrary pick that some consumer has to reach sideways for.
+``audio_measurement`` is different, and this is the precise property the
+placement rests on: **it is imported by both and imports neither** — it has
+zero imports of ``jasper.correction`` and zero of ``jasper.active_speaker``.
+That makes it the one package all three consumers (including
+``audio_measurement.analysis`` itself, which owns one of the routed sites) can
+read the boundary from without any new cross-package edge.
+``tests/test_correction_boundary_ssot.py`` pins that invariant, because the
+placement argument is only as good as it stays true.
 
 The two edges, and the relation between them
 --------------------------------------------

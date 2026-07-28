@@ -54,7 +54,12 @@ delta).
   ships `safe` 25–250 / `balanced` 20–350 (default) / `assertive`
   20–500 (`cuts_only=False`, `max_total_boost_db=3.0`, not offered on
   the household surface per `HOUSEHOLD_CORRECTION_STRATEGY_IDS`).
-- **Ten** 350-literal sites, not #1787's seven: the issue's seven plus
+- **Ten** 350-literal sites, not #1787's seven — *and RC1's
+  implementation found an eleventh: `correction/envelope.py`'s
+  `_band_word`, which owns 250/500 thresholds on the household-facing
+  headline sentence ("in the bass and lower mids"). It is routed too;
+  the count below is the pre-implementation survey.* The issue's seven
+  plus
   `acoustic_quality.SNR_BANDS_HZ`, `acoustic_quality`'s
   `min(350.0, peq_f_high)` re-clamp (would silently cap any raised
   ceiling), and the shared metric
@@ -328,10 +333,17 @@ lanes (`-p no:randomly`).
   and [`tests/test_correction_boundary_ssot.py`](../tests/test_correction_boundary_ssot.py)
   + `tests/test_correction_applied_speaker_evidence.py`. Four
   deltas from the text above, all deliberate:
-  (i) the SSOT is homed in **`audio_measurement`, not `correction`** —
-  it is the lowest layer all three consumers can import without
-  inverting the documented `active_speaker -> audio_measurement`
-  package order, which `analysis.py` would otherwise have violated;
+  (i) the SSOT is homed in **`audio_measurement`, not `correction`**.
+  The reason is *not* a strict layer order — `correction` and
+  `active_speaker` import each other in both directions
+  (`active_speaker.linearization_fit` -> `correction.peq`;
+  `correction.runtime_safety` -> `active_speaker.runtime_contract`),
+  so neither is below the other. The property that actually earns the
+  home is narrower and verified: `audio_measurement` is **imported by
+  both and imports neither**, so it is the one package every consumer
+  — including `audio_measurement.analysis`, itself a routed site — can
+  read the boundary from with no new cross-package edge. A contract
+  test pins that invariant;
   (ii) the candidate extension needed **no change to
   `measured_crossover_candidate.py`** — the floor and gated curve
   ride *inside* `exclusion_evidence`, a free-form mapping already
@@ -352,6 +364,22 @@ lanes (`-p no:randomly`).
   `cfg.correction_strategy` (always the default) rather than the
   household's actual pick, which would have contradicted the
   now-correct band on the same payload.
+
+  *Carried into RC3 as an OPEN decision.* `safe` composes as
+  `ROOM_BOUNDARY_MIN_HZ`, which is provably identical to D1's
+  `min(250, f_t)` for every admissible f_t (the clamp floor is 250),
+  so it needs no revisit. **`assertive` does not have that
+  guarantee.** RC1 expresses it as `ROOM_BOUNDARY_MAX_HZ` to preserve
+  its shipped 500 Hz, but D1 never adjudicated assertive under a
+  per-room ceiling, and the two concepts differ: MAX bounds how far
+  the *estimator* may be trusted, while assertive's band is a
+  power-user policy choice. At f_t = 280 a static 500 would leave
+  assertive correcting ~220 Hz of what D1 assigns to Tier B's
+  residual-only regime. RC3 must decide assertive explicitly rather
+  than inherit the equality. Also note the strategy table binds the
+  SSOT's *static* module-level values at import time, so RC3's f_t
+  requires editing that composition in `strategy.py` — RC1 confined
+  the change to one place, it did not remove it.
 - **RC2 — T60 estimator + per-room f_t.** Offline Schroeder-integral
   T60 recomputed from persisted raw captures
   (`impulse_response_from_capture`); a bundle whose raw audio was
@@ -440,4 +468,4 @@ calibrated-mic-gated, and survive recompose round-trips; LF boosts
 land only on spatially-persistent modal evidence with their level cost
 disclosed; and no code path corrects the raw in-room curve above f_t.
 
-Last verified: 2026-07-27
+Last verified: 2026-07-28

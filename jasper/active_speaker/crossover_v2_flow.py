@@ -6133,6 +6133,15 @@ class CrossoverV2Conductor:
         them tamper-evident for free. Both are copied verbatim from this
         group's own pipeline result, the same source ``cloud_measure.json``
         reads, so the two copies cannot disagree.
+
+        Cost, stated plainly: ``gated_spec_curve`` duplicates the already-
+        decimated cloud curve (<=512 points, two float arrays), which adds
+        roughly **15-20 KB of JSON per candidate**. That is a deliberate
+        trade — the curve is small, bounded, and written once per commission,
+        whereas the alternative (re-reading it from the session bundle) is
+        exactly the retention-prunable dependency this extension exists to
+        remove. If the curve ever grows unbounded, decimate at this boundary
+        rather than dropping the field.
         """
         result = self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {}
         registry = result.get("null_registry")

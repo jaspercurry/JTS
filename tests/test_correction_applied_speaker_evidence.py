@@ -71,6 +71,19 @@ def _publish(root: Path, candidate: MeasuredCrossoverCandidate, *, session="s1")
     return path
 
 
+def _profile(fingerprint: str, *, linearization: dict | None = None) -> dict:
+    """An applied-profile view naming `fingerprint`.
+
+    `linearization` non-empty by default: that is what marks an ACOUSTIC
+    commission (the same gate the producer uses to decide whether cloud
+    evidence rides the candidate). Pass `{}` for the electrical-only shape.
+    """
+    return {
+        "linearization": {"woofer": {}} if linearization is None else linearization,
+        "source": {"measured_candidate_fingerprint": fingerprint},
+    }
+
+
 def _state(tmp_path: Path, fingerprint: str | None) -> Path:
     """A baseline-profile state file whose applied profile names a candidate."""
     source = {"topology_id": "t1", "fingerprint": "src-fp"}
@@ -147,7 +160,7 @@ def test_empty_exclusion_evidence_candidate_is_unaffected():
 def test_resolves_the_applied_candidates_evidence(tmp_path, applied):
     candidate = _candidate(exclusion_evidence=_evidence_payload())
     _publish(tmp_path, candidate)
-    applied({"source": {"measured_candidate_fingerprint": candidate.fingerprint}})
+    applied(_profile(candidate.fingerprint))
 
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, candidate.fingerprint), sessions_dir=tmp_path
@@ -185,9 +198,35 @@ def test_applied_profile_without_a_candidate_fingerprint_is_unresolved(
     assert result.reason == "candidate_unresolved"
 
 
+def test_electrical_only_commission_is_not_reported_as_stale(tmp_path, applied):
+    """An electrical-only commission must not masquerade as a stale candidate.
+
+    `MeasuredElectricalCandidate` writes the SAME
+    `source.measured_candidate_fingerprint` field as an acoustic candidate but
+    publishes nothing under `crossover_v2/`, so a fingerprint-only reader falls
+    through to `candidate_stale` — telling the household "this speaker was
+    re-measured since" when the truth is "this speaker was never commissioned
+    with acoustic cloud evidence at all." Empty `linearization` is the honest
+    discriminator.
+
+    The published acoustic candidate below is a decoy: without the check it is
+    exactly what would produce the wrong `candidate_stale` verdict.
+    """
+    decoy = _candidate(exclusion_evidence=_evidence_payload())
+    _publish(tmp_path, decoy)
+    applied(_profile("electrical-candidate-fp", linearization={}))
+
+    result = resolve_applied_speaker_evidence(
+        state_path=_state(tmp_path, "electrical-candidate-fp"), sessions_dir=tmp_path
+    )
+    assert isinstance(result, AppliedSpeakerEvidenceAbsent)
+    assert result.reason == "no_cloud_evidence"
+    assert "without acoustic cloud evidence" in result.detail
+
+
 def test_pruned_bundle_is_unresolved(tmp_path, applied):
     """Raw session bundles are retention-capped; a pruned one must refuse."""
-    applied({"source": {"measured_candidate_fingerprint": "deadbeef"}})
+    applied(_profile("deadbeef"))
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, "deadbeef"), sessions_dir=tmp_path
     )
@@ -207,7 +246,7 @@ def test_a_different_candidate_on_disk_is_stale_not_a_silent_substitute(
     """
     published = _candidate(exclusion_evidence=_evidence_payload())
     _publish(tmp_path, published)
-    applied({"source": {"measured_candidate_fingerprint": "a-different-fingerprint"}})
+    applied(_profile("a-different-fingerprint"))
 
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, "a-different-fingerprint"), sessions_dir=tmp_path
@@ -228,7 +267,7 @@ def test_pre_extension_candidate_reports_era_absent(tmp_path, applied):
         }
     )
     _publish(tmp_path, old)
-    applied({"source": {"measured_candidate_fingerprint": old.fingerprint}})
+    applied(_profile(old.fingerprint))
 
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, old.fingerprint), sessions_dir=tmp_path
@@ -241,7 +280,7 @@ def test_pre_extension_candidate_reports_era_absent(tmp_path, applied):
 def test_candidate_with_no_cloud_evidence_reports_absent(tmp_path, applied):
     plain = _candidate()
     _publish(tmp_path, plain)
-    applied({"source": {"measured_candidate_fingerprint": plain.fingerprint}})
+    applied(_profile(plain.fingerprint))
 
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, plain.fingerprint), sessions_dir=tmp_path
@@ -260,7 +299,7 @@ def test_unverified_floor_is_none_never_zero(tmp_path, applied):
         exclusion_evidence=_evidence_payload(validity_floor_hz=None)
     )
     _publish(tmp_path, candidate)
-    applied({"source": {"measured_candidate_fingerprint": candidate.fingerprint}})
+    applied(_profile(candidate.fingerprint))
 
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, candidate.fingerprint), sessions_dir=tmp_path
@@ -278,7 +317,7 @@ def test_ragged_curve_is_rejected_rather_than_half_used(tmp_path, applied):
         )
     )
     _publish(tmp_path, candidate)
-    applied({"source": {"measured_candidate_fingerprint": candidate.fingerprint}})
+    applied(_profile(candidate.fingerprint))
 
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, candidate.fingerprint), sessions_dir=tmp_path
@@ -297,7 +336,7 @@ def test_corrupt_candidate_artifact_does_not_raise(tmp_path, applied):
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
-    applied({"source": {"measured_candidate_fingerprint": "abc"}})
+    applied(_profile("abc"))
 
     result = resolve_applied_speaker_evidence(
         state_path=_state(tmp_path, "abc"), sessions_dir=tmp_path
@@ -306,16 +345,28 @@ def test_corrupt_candidate_artifact_does_not_raise(tmp_path, applied):
     assert result.reason == "candidate_unresolved"
 
 
-def test_artifact_scan_is_bounded(tmp_path):
-    """A pathological bundle directory must not become an unbounded walk."""
+def test_artifact_scan_is_bounded_and_keeps_the_newest(tmp_path):
+    """A pathological bundle directory must not become an unbounded walk —
+    and the truncation must drop the OLDEST, never the newest.
+
+    Which end survives is the whole point: the applied profile's candidate is
+    almost always among the most recent, so truncating from the front would
+    discard exactly what the reader is looking for and report a false
+    `candidate_stale`. Zero-padded names make the sort order the age order.
+    """
     session_root = tmp_path / "bundle-a" / "evidence" / "v1" / "artifacts" / "crossover_v2"
-    for index in range(seam.MAX_CANDIDATE_ARTIFACTS_SCANNED + 15):
+    overflow = 15
+    total = seam.MAX_CANDIDATE_ARTIFACTS_SCANNED + overflow
+    for index in range(total):
         target = session_root / f"s{index:03d}" / "candidate.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("{}", encoding="utf-8")
 
     found = seam._candidate_artifact_paths(tmp_path)
     assert len(found) == seam.MAX_CANDIDATE_ARTIFACTS_SCANNED
+    # The newest survives; the oldest `overflow` are the ones dropped.
+    assert found[-1].parent.name == f"s{total - 1:03d}"
+    assert found[0].parent.name == f"s{overflow:03d}"
 
 
 def test_nothing_consumes_the_seam_yet():

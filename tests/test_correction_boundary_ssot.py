@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import re
 from pathlib import Path
 
 import pytest
@@ -43,23 +42,36 @@ from jasper.correction.session import MeasurementSession, SessionConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# The files RC1 routed through the SSOT. Each is listed with the band-edge
-# values it must no longer re-declare. A file appearing here is a promise that
-# its band edges come from jasper.audio_measurement.room_boundary.
+# The files RC1 routed through the SSOT. A file appearing here is a promise
+# that its band edges come from jasper.audio_measurement.room_boundary.
+#
+# KNOWN LIMITATION — this is a per-file allowlist, so it is blind to band-edge
+# literals in modules that do not appear in it, including modules that do not
+# exist yet. RC4's Tier B correction is the concrete near-term risk: a new
+# module that hard-codes 250/350/500 for the Tier A/Tier B handoff would pass
+# this guard simply by not being listed. Whoever adds a module that reasons
+# about the boundary adds it here in the same PR. A whole-package sweep was
+# considered and rejected for RC1: `jasper/correction/**` is full of unrelated
+# frequencies (crossover corners, analysis bands, display vocabulary) and a
+# blanket scan would be mostly false positives, which is how guards get
+# disabled.
 ROUTED_FILES: tuple[str, ...] = (
     "jasper/correction/peq.py",
     "jasper/correction/strategy.py",
     "jasper/correction/session.py",
     "jasper/correction/acceptance.py",
     "jasper/correction/confidence.py",
+    "jasper/correction/envelope.py",
     "jasper/correction/evidence.py",
     "jasper/audio_measurement/analysis.py",
     "jasper/active_speaker/flat_spec.py",
 )
 
-# The values that belong to the SSOT. A bare occurrence of any of these as a
-# float literal in a routed file is a re-declaration.
-SSOT_VALUES: tuple[str, ...] = ("250.0", "350.0", "500.0")
+# The values that belong to the SSOT, matched by VALUE rather than by spelling.
+# `350`, `350.0`, `350.`, and `3.5e2` are all the same re-declaration, and an
+# earlier spelling-based version of this guard let three of those four through
+# (mutation-verified). The scan parses each numeric literal and compares.
+SSOT_VALUES: tuple[float, ...] = (250.0, 350.0, 500.0)
 
 # Module-level constants inside routed files that are STATIC BAND VOCABULARY,
 # not the correction boundary — the same category as the SNR tables, and
@@ -75,40 +87,23 @@ STATIC_BAND_VOCABULARY: dict[str, frozenset[str]] = {
 }
 
 
-def _code_lines(path: Path) -> list[tuple[int, str]]:
-    """Source lines with comments and docstring bodies removed.
+def _numeric_literals(path: Path) -> list[tuple[int, float]]:
+    """Every numeric literal in the file's CODE, by line.
 
-    Prose is allowed to say "350 Hz" — that is documentation, and RC1's own
-    routing comments do exactly that. Only executable literals are guarded.
+    Parsed from the AST rather than scanned as text, which buys two things the
+    text version got wrong: prose is excluded for free (comments never reach
+    the AST, and docstrings are `str` constants, so a routing comment may
+    freely say "350 Hz"), and the match is by VALUE — `350`, `350.0`, `350.`,
+    and `3.5e2` are all caught, where a spelling-based regex caught only one.
     """
-    lines: list[tuple[int, str]] = []
-    in_doc = False
-    delim = ""
-    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw
-        if in_doc:
-            if delim in line:
-                in_doc = False
-                line = line.split(delim, 1)[1]
-            else:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    out: list[tuple[int, float]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            if isinstance(node.value, bool):
                 continue
-        # Strip a same-line docstring/triple-quoted block, or enter one.
-        for quote in ('"""', "'''"):
-            while quote in line:
-                head, _, tail = line.partition(quote)
-                if quote in tail:
-                    line = head + " " + tail.split(quote, 1)[1]
-                else:
-                    line = head
-                    in_doc = True
-                    delim = quote
-                    break
-            if in_doc:
-                break
-        line = line.split("#", 1)[0]
-        if line.strip():
-            lines.append((number, line))
-    return lines
+            out.append((node.lineno, float(node.value)))
+    return out
 
 
 def _exempt_line_numbers(path: Path, names: frozenset[str]) -> set[int]:
@@ -148,12 +143,12 @@ def test_routed_files_do_not_redeclare_band_edge_literals(relative: str):
     frequency), give it a name and a comment saying so.
     """
     path = REPO_ROOT / relative
-    pattern = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, SSOT_VALUES)) + r")\b")
     exempt = _exempt_line_numbers(path, STATIC_BAND_VOCABULARY.get(relative, frozenset()))
+    source_lines = path.read_text(encoding="utf-8").splitlines()
     offenders = [
-        f"{relative}:{number}: {line.strip()}"
-        for number, line in _code_lines(path)
-        if number not in exempt and pattern.search(line)
+        f"{relative}:{number}: {value!r} in {source_lines[number - 1].strip()}"
+        for number, value in _numeric_literals(path)
+        if number not in exempt and value in SSOT_VALUES
     ]
     assert not offenders, (
         "band-edge literal re-declared outside the boundary SSOT:\n"
@@ -175,6 +170,42 @@ def test_clamp_bounds_and_spec_edge_are_the_ssots_values():
     # flat_spec consumes the edge rather than re-declaring it.
     assert flat_spec.SPEC_BANDS[0][0] == room_boundary.GATED_SPEC_LOWER_EDGE_HZ
     assert flat_spec.REFERENCE_BAND_HZ[0] == room_boundary.GATED_SPEC_LOWER_EDGE_HZ
+
+
+def test_audio_measurement_imports_neither_consumer_package():
+    """The invariant the SSOT's placement rests on (room_boundary's docstring).
+
+    `correction` and `active_speaker` import each other, so neither is "below"
+    the other. `audio_measurement` earns the home by being imported by both
+    while importing neither — which is what lets `analysis.py` (itself a routed
+    site) read the boundary with no new cross-package edge.
+
+    If this fails, the placement argument is no longer true: either move the
+    offending import out of `audio_measurement`, or re-argue where the SSOT
+    belongs. Do not just delete this test.
+    """
+    root = REPO_ROOT / "jasper" / "audio_measurement"
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                names = [node.module or ""]
+            for name in names:
+                if name.split(".")[:2] in (
+                    ["jasper", "correction"],
+                    ["jasper", "active_speaker"],
+                ):
+                    rel = path.relative_to(REPO_ROOT)
+                    offenders.append(f"{rel}:{node.lineno}: imports {name}")
+    assert not offenders, (
+        "jasper/audio_measurement must import neither jasper.correction nor "
+        "jasper.active_speaker — that is what makes it a valid home for the "
+        "boundary SSOT:\n" + "\n".join(offenders)
+    )
 
 
 def test_the_documented_relation_between_the_two_edges_holds():

@@ -32,6 +32,11 @@ double-correction Tier B exists to prevent.
 * ``candidate_unresolved`` — a profile is applied but the measured candidate it
   names cannot be found or parsed. Its evidence bundle was pruned (raw session
   bundles are retention-capped), or it predates candidate publication.
+* ``no_cloud_evidence`` — the applied profile came from an **electrical-only**
+  commission. Those write the same ``measured_candidate_fingerprint`` field
+  from a :class:`MeasuredElectricalCandidate` but publish no acoustic
+  candidate, so without this case they would masquerade as ``candidate_stale``
+  ("re-measured since") when nothing acoustic was ever measured.
 * ``candidate_stale`` — a candidate was found but it is not the one the applied
   profile was built from. **This module does not invent a staleness rule**: it
   reuses the identity the apply path already recorded,
@@ -133,6 +138,13 @@ AppliedSpeakerEvidenceResult = AppliedSpeakerEvidence | AppliedSpeakerEvidenceAb
 
 
 def _absent(reason: str, detail: str = "") -> AppliedSpeakerEvidenceAbsent:
+    # DEBUG is deliberate WHILE NOTHING CONSUMES THIS. Today an absent result
+    # changes no behaviour, so logging it at INFO would be journal noise on
+    # every passive speaker and every pre-commissioning room. RC4 must revisit:
+    # once Tier B depends on this, "evidence absent" becomes a user-visible
+    # capability being disabled, and the plan requires that be DISCLOSED, not
+    # merely debuggable — raise the level and surface the reason on the session
+    # surface at the same time as the first consumer lands.
     log_event(
         logger,
         "correction.applied_speaker_evidence_absent",
@@ -168,14 +180,22 @@ def _expected_candidate_fingerprint(profile: Mapping[str, Any]) -> str:
 def _candidate_artifact_paths(root: Path) -> list[Path]:
     """Every published candidate.json under the bundle root, newest last.
 
-    Bounded by :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED`. Sorted so the scan is
-    deterministic; the fingerprint decides the match, not the ordering.
+    Sorted so the scan is deterministic; the fingerprint decides the match, not
+    the ordering.
+
+    When there are more than :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` artifacts
+    the scan keeps the **newest** ones (``[-MAX:]``, not ``[:MAX]``). Which end
+    is dropped is load-bearing, not a detail: the applied profile's candidate
+    is overwhelmingly likely to be among the most recent, so truncating from
+    the front would discard exactly the artifact being looked for and report a
+    false ``candidate_stale`` — evidence silently disabled on the boxes with
+    the most measurement history.
     """
     try:
         found = sorted(root.glob("*/evidence/v1/artifacts/crossover_v2/*/candidate.json"))
     except OSError:
         return []
-    return found[:MAX_CANDIDATE_ARTIFACTS_SCANNED]
+    return found[-MAX_CANDIDATE_ARTIFACTS_SCANNED:]
 
 
 def _load_candidate(path: Path) -> Any | None:
@@ -238,6 +258,22 @@ def resolve_applied_speaker_evidence(
         return _absent(
             "candidate_unresolved",
             "applied profile records no measured_candidate_fingerprint",
+        )
+
+    if not profile.get("linearization"):
+        # An ELECTRICAL-only commission (MeasuredElectricalCandidate) writes
+        # the same `source.measured_candidate_fingerprint` field as an
+        # acoustic one, but publishes no crossover_v2 candidate — so scanning
+        # for one would find nothing that matches and report `candidate_stale`,
+        # i.e. "this speaker was re-measured since," when the truth is "this
+        # speaker was never commissioned with acoustic cloud evidence at all."
+        # Empty `linearization` is the honest discriminator, and it is the SAME
+        # gate the producer uses to decide whether evidence rides the candidate
+        # (`if cloud is not None and linearization`) — so the two agree by
+        # construction. Checked before the scan: it is decisive and free.
+        return _absent(
+            "no_cloud_evidence",
+            "applied profile was commissioned without acoustic cloud evidence",
         )
 
     root = sessions_dir if sessions_dir is not None else default_sessions_dir()

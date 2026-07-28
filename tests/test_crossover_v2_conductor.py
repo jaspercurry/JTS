@@ -2015,7 +2015,11 @@ def _assert_room_layer_can_read_the_evidence(candidate, pipeline, tmp_root=None)
         artifact.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
 
         applied = {
-            "source": {"measured_candidate_fingerprint": candidate.fingerprint}
+            # Non-empty linearization marks this as an ACOUSTIC commission —
+            # the seam's discriminator against electrical-only profiles, and
+            # true here since this candidate came from a real cloud fit.
+            "linearization": dict(candidate.linearization),
+            "source": {"measured_candidate_fingerprint": candidate.fingerprint},
         }
         target = (
             "jasper.active_speaker.baseline_profile."

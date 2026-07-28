@@ -47,7 +47,7 @@ from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement import analysis
+from jasper.audio_measurement import analysis, room_boundary
 
 from ..log_event import log_event
 
@@ -503,10 +503,18 @@ def _curves(session: Any) -> dict[str, dict[str, list[float]]]:
 
 
 def _band_word(f_low: float, f_high: float) -> str:
-    """Plain-language name for the correction band the numbers cover."""
-    if f_high <= 250.0:
+    """Plain-language name for the correction band the numbers cover.
+
+    The thresholds are the room-correction boundary's own clamp bounds, read
+    from the SSOT rather than re-declared: this is the HOUSEHOLD-facing
+    sentence about what got corrected, so it must keep telling the truth when
+    the ceiling becomes per-room at RC3. A `safe` session (ceiling 250 Hz)
+    reads "the bass"; the default `balanced` (350 Hz) reads "the bass and
+    lower mids".
+    """
+    if f_high <= room_boundary.ROOM_BOUNDARY_MIN_HZ:
         return "the bass"
-    if f_high <= 500.0:
+    if f_high <= room_boundary.ROOM_BOUNDARY_MAX_HZ:
         return "the bass and lower mids"
     return "the low end"
 
