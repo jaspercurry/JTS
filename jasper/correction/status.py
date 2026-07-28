@@ -325,11 +325,6 @@ def session_config_payload(session: Any) -> dict[str, Any]:
         "amplitude_dbfs": cfg.amplitude_dbfs,
         "peq_f_low": cfg.peq_f_low,
         "peq_f_high": cfg.peq_f_high,
-        "peq_max_filters": cfg.peq_max_filters,
-        "peq_max_cut_db": cfg.peq_max_cut_db,
-        "peq_max_boost_db": cfg.peq_max_boost_db,
-        "peq_cuts_only": cfg.peq_cuts_only,
-        "peq_flatness_target_db": cfg.peq_flatness_target_db,
         "correction_strategy": cfg.correction_strategy,
     }
 

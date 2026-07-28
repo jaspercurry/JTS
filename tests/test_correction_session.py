@@ -54,6 +54,200 @@ def test_session_room_defaults_match_named_owners(tmp_path):
     assert sess.repeat_main_position is DEFAULT_REPEAT_MAIN_POSITION is True
 
 
+@pytest.mark.parametrize(
+    (
+        "method_name",
+        "initial_state",
+        "capture_kind",
+        "position_index",
+        "position_payload",
+        "prepare_state",
+        "awaiting_state",
+    ),
+    [
+        (
+            "prepare_and_play_sweep",
+            SessionState.IDLE,
+            "measurement",
+            0,
+            {"position": 0, "total_positions": 1},
+            SessionState.PREPARING,
+            SessionState.AWAITING_CAPTURE,
+        ),
+        (
+            "prepare_and_play_repeat_sweep",
+            SessionState.NEEDS_REPEAT_CAPTURE,
+            "repeat",
+            0,
+            {"position": 0, "total_positions": 1},
+            SessionState.PREPARING,
+            SessionState.AWAITING_REPEAT_CAPTURE,
+        ),
+        (
+            "start_verify_sweep",
+            SessionState.APPLIED,
+            "verify",
+            None,
+            None,
+            SessionState.VERIFYING,
+            SessionState.AWAITING_VERIFY_CAPTURE,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_prepared_sweep_paths_preserve_events_and_runtime_evidence(
+    tmp_path: Path,
+    monkeypatch,
+    method_name,
+    initial_state,
+    capture_kind,
+    position_index,
+    position_payload,
+    prepare_state,
+    awaiting_state,
+):
+    """The shared lifecycle keeps each public path's exact observable contract."""
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0
+    sess.state = initial_state
+    sweep_path = tmp_path / "cached-sweep.wav"
+    monkeypatch.setattr(
+        sess,
+        "_ensure_sweep_cache",
+        lambda: (sweep_path, SimpleNamespace(duration_s=1.25)),
+    )
+    snapshots = []
+
+    async def record_snapshot(
+        label,
+        *,
+        capture_kind,
+        position_index,
+        runtime_probe_async,
+    ):
+        snapshots.append((label, capture_kind, position_index))
+
+    monkeypatch.setattr(sess, "_record_runtime_snapshot", record_snapshot)
+    plays = []
+
+    async def play(path, **kwargs):
+        plays.append((path, kwargs))
+
+    await getattr(sess, method_name)(play, alsa_device="hw:test")
+
+    assert snapshots == [
+        (f"{capture_kind}_prepare", capture_kind, position_index),
+        (f"{capture_kind}_sweep_start", capture_kind, position_index),
+        (f"{capture_kind}_sweep_complete", capture_kind, position_index),
+    ]
+    assert plays == [(str(sweep_path), {"alsa_device": "hw:test"})]
+    assert sess.state == awaiting_state
+
+    state_events = [event.payload for event in sess._events if event.type == "state"]
+    if position_payload is None:
+        assert state_events == [
+            {
+                "state": prepare_state.value,
+                "prev": initial_state.value,
+            },
+            {
+                "state": SessionState.SWEEPING.value,
+                "prev": prepare_state.value,
+                "duration_s": 1.25,
+            },
+            {
+                "state": awaiting_state.value,
+                "prev": SessionState.SWEEPING.value,
+            },
+        ]
+    else:
+        assert state_events == [
+            {
+                "state": prepare_state.value,
+                "prev": initial_state.value,
+                **position_payload,
+            },
+            {
+                "state": SessionState.SWEEPING.value,
+                "prev": prepare_state.value,
+                "duration_s": 1.25,
+                **position_payload,
+            },
+            {
+                "state": awaiting_state.value,
+                "prev": SessionState.SWEEPING.value,
+                **position_payload,
+            },
+        ]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "initial_state", "capture_kind", "expected_error"),
+    [
+        (
+            "prepare_and_play_sweep",
+            SessionState.IDLE,
+            "measurement",
+            "sweep playback failed: speaker offline",
+        ),
+        (
+            "prepare_and_play_repeat_sweep",
+            SessionState.NEEDS_REPEAT_CAPTURE,
+            "repeat",
+            "repeat sweep playback failed: speaker offline",
+        ),
+        (
+            "start_verify_sweep",
+            SessionState.APPLIED,
+            "verify",
+            "verify sweep playback failed: speaker offline",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_prepared_sweep_paths_preserve_failure_contract(
+    tmp_path: Path,
+    monkeypatch,
+    method_name,
+    initial_state,
+    capture_kind,
+    expected_error,
+):
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0
+    sess.state = initial_state
+    monkeypatch.setattr(
+        sess,
+        "_ensure_sweep_cache",
+        lambda: (
+            tmp_path / "cached-sweep.wav",
+            SimpleNamespace(duration_s=1.25),
+        ),
+    )
+    snapshots = []
+
+    async def record_snapshot(label, **_kwargs):
+        snapshots.append(label)
+
+    monkeypatch.setattr(sess, "_record_runtime_snapshot", record_snapshot)
+
+    async def fail_play(_path, **_kwargs):
+        raise RuntimeError("speaker offline")
+
+    with pytest.raises(RuntimeError, match="speaker offline"):
+        await getattr(sess, method_name)(fail_play)
+
+    assert sess.state == SessionState.FAILED
+    assert sess.error == expected_error
+    assert snapshots == [
+        f"{capture_kind}_prepare",
+        f"{capture_kind}_sweep_start",
+        f"{capture_kind}_sweep_failed",
+    ]
+    assert sess._events[-1].type == "error"
+    assert sess._events[-1].payload == {"message": expected_error}
+
+
 @pytest.mark.asyncio
 async def test_apply_forwards_exact_guard_bass_summary_before_load(
     tmp_path: Path,

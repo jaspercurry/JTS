@@ -204,11 +204,6 @@ class SessionConfig:
 
     peq_f_low: float = 20.0
     peq_f_high: float = 350.0
-    peq_max_filters: int = 5
-    peq_max_cut_db: float = -10.0
-    peq_max_boost_db: float = 3.0
-    peq_cuts_only: bool = True
-    peq_flatness_target_db: float = 1.0
     correction_strategy: str = strategy.DEFAULT_CORRECTION_STRATEGY_ID
 
 
@@ -1412,6 +1407,78 @@ class MeasurementSession:
         except Exception:  # noqa: BLE001
             logger.exception("bundle noise capture artifact write failed")
 
+    async def _play_prepared_sweep(
+        self,
+        play_sweep_async: Callable[..., Awaitable[Any]],
+        *,
+        capture_kind: str,
+        position_index: int | None,
+        position_payload: dict[str, int] | None,
+        awaiting_state: SessionState,
+        playback_error: str,
+        alsa_device: str | None = None,
+        runtime_probe_async: (
+            Callable[[], Awaitable[dict[str, Any] | None]] | None
+        ) = None,
+    ) -> None:
+        """Play a sweep after the caller validates and enters its prepare state.
+
+        ``position_payload`` is intentionally optional: all sweep events expose
+        duration, while measurement and repeat also expose position metadata.
+        """
+        await self._record_runtime_snapshot(
+            f"{capture_kind}_prepare",
+            capture_kind=capture_kind,
+            position_index=position_index,
+            runtime_probe_async=runtime_probe_async,
+        )
+
+        try:
+            sweep_wav, meta = self._ensure_sweep_cache()
+        except Exception as e:  # noqa: BLE001
+            async with self._lock:
+                await self._fail(f"sweep generation failed: {e}")
+            raise
+
+        async with self._lock:
+            sweeping_payload: dict[str, Any] = {
+                "duration_s": meta.duration_s,
+                **(position_payload or {}),
+            }
+            await self._set_state(SessionState.SWEEPING, **sweeping_payload)
+
+        try:
+            kwargs = {"alsa_device": alsa_device} if alsa_device else {}
+            await self._record_runtime_snapshot(
+                f"{capture_kind}_sweep_start",
+                capture_kind=capture_kind,
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
+            await play_sweep_async(str(sweep_wav), **kwargs)
+            await self._record_runtime_snapshot(
+                f"{capture_kind}_sweep_complete",
+                capture_kind=capture_kind,
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
+        except Exception as e:  # noqa: BLE001
+            await self._record_runtime_snapshot(
+                f"{capture_kind}_sweep_failed",
+                capture_kind=capture_kind,
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
+            async with self._lock:
+                await self._fail(f"{playback_error}: {e}")
+            raise
+
+        async with self._lock:
+            await self._set_state(
+                awaiting_state,
+                **(position_payload or {}),
+            )
+
     async def prepare_and_play_sweep(
         self,
         play_sweep_async: Callable[..., Awaitable[Any]],
@@ -1449,60 +1516,19 @@ class MeasurementSession:
             )
             position_index = self.current_position
 
-        await self._record_runtime_snapshot(
-            "measurement_prepare",
+        await self._play_prepared_sweep(
+            play_sweep_async,
             capture_kind="measurement",
             position_index=position_index,
+            position_payload={
+                "position": position_index,
+                "total_positions": self.total_positions,
+            },
+            awaiting_state=SessionState.AWAITING_CAPTURE,
+            playback_error="sweep playback failed",
+            alsa_device=alsa_device,
             runtime_probe_async=runtime_probe_async,
         )
-
-        try:
-            sweep_wav, meta = self._ensure_sweep_cache()
-        except Exception as e:  # noqa: BLE001
-            async with self._lock:
-                await self._fail(f"sweep generation failed: {e}")
-            raise
-
-        async with self._lock:
-            await self._set_state(
-                SessionState.SWEEPING,
-                duration_s=meta.duration_s,
-                position=self.current_position,
-                total_positions=self.total_positions,
-            )
-
-        try:
-            kwargs = {"alsa_device": alsa_device} if alsa_device else {}
-            await self._record_runtime_snapshot(
-                "measurement_sweep_start",
-                capture_kind="measurement",
-                position_index=position_index,
-                runtime_probe_async=runtime_probe_async,
-            )
-            await play_sweep_async(str(sweep_wav), **kwargs)
-            await self._record_runtime_snapshot(
-                "measurement_sweep_complete",
-                capture_kind="measurement",
-                position_index=position_index,
-                runtime_probe_async=runtime_probe_async,
-            )
-        except Exception as e:  # noqa: BLE001
-            await self._record_runtime_snapshot(
-                "measurement_sweep_failed",
-                capture_kind="measurement",
-                position_index=position_index,
-                runtime_probe_async=runtime_probe_async,
-            )
-            async with self._lock:
-                await self._fail(f"sweep playback failed: {e}")
-            raise
-
-        async with self._lock:
-            await self._set_state(
-                SessionState.AWAITING_CAPTURE,
-                position=self.current_position,
-                total_positions=self.total_positions,
-            )
 
     async def prepare_and_play_repeat_sweep(
         self,
@@ -1531,60 +1557,19 @@ class MeasurementSession:
                 total_positions=self.total_positions,
             )
 
-        await self._record_runtime_snapshot(
-            "repeat_prepare",
+        await self._play_prepared_sweep(
+            play_sweep_async,
             capture_kind="repeat",
             position_index=position_index,
+            position_payload={
+                "position": position_index,
+                "total_positions": self.total_positions,
+            },
+            awaiting_state=SessionState.AWAITING_REPEAT_CAPTURE,
+            playback_error="repeat sweep playback failed",
+            alsa_device=alsa_device,
             runtime_probe_async=runtime_probe_async,
         )
-
-        try:
-            sweep_wav, meta = self._ensure_sweep_cache()
-        except Exception as e:  # noqa: BLE001
-            async with self._lock:
-                await self._fail(f"sweep generation failed: {e}")
-            raise
-
-        async with self._lock:
-            await self._set_state(
-                SessionState.SWEEPING,
-                duration_s=meta.duration_s,
-                position=position_index,
-                total_positions=self.total_positions,
-            )
-
-        try:
-            kwargs = {"alsa_device": alsa_device} if alsa_device else {}
-            await self._record_runtime_snapshot(
-                "repeat_sweep_start",
-                capture_kind="repeat",
-                position_index=position_index,
-                runtime_probe_async=runtime_probe_async,
-            )
-            await play_sweep_async(str(sweep_wav), **kwargs)
-            await self._record_runtime_snapshot(
-                "repeat_sweep_complete",
-                capture_kind="repeat",
-                position_index=position_index,
-                runtime_probe_async=runtime_probe_async,
-            )
-        except Exception as e:  # noqa: BLE001
-            await self._record_runtime_snapshot(
-                "repeat_sweep_failed",
-                capture_kind="repeat",
-                position_index=position_index,
-                runtime_probe_async=runtime_probe_async,
-            )
-            async with self._lock:
-                await self._fail(f"repeat sweep playback failed: {e}")
-            raise
-
-        async with self._lock:
-            await self._set_state(
-                SessionState.AWAITING_REPEAT_CAPTURE,
-                position=position_index,
-                total_positions=self.total_positions,
-            )
 
     async def on_capture_uploaded(
         self, captured_wav_path: Path,
@@ -1693,35 +1678,7 @@ class MeasurementSession:
                 )
             return
 
-        if self.current_position < self.total_positions:
-            # Wait for the user to move to the next position.
-            async with self._lock:
-                await self._set_state(
-                    SessionState.NEEDS_NEXT_POSITION,
-                    position=self.current_position,
-                    total_positions=self.total_positions,
-                )
-            return
-
-        # All positions captured. Average + design.
-        try:
-            await asyncio.to_thread(self._run_design_from_positions)
-        except Exception as e:  # noqa: BLE001
-            async with self._lock:
-                await self._fail(f"PEQ design failed: {e}")
-            raise
-
-        try:
-            self._write_result_json()
-        except Exception:  # noqa: BLE001
-            logger.exception("bundle result.json write failed")
-
-        async with self._lock:
-            await self._set_state(
-                SessionState.READY,
-                peq_count=len(self.peqs),
-                positions_used=self.total_positions,
-            )
+        await self._advance_position_or_design()
 
     async def on_repeat_capture_uploaded(
         self,
@@ -1819,6 +1776,10 @@ class MeasurementSession:
         except Exception:  # noqa: BLE001
             logger.exception("bundle acoustic_quality.json write failed")
 
+        await self._advance_position_or_design()
+
+    async def _advance_position_or_design(self) -> None:
+        """Advance to the next seat or finish the shared correction design."""
         if self.current_position < self.total_positions:
             async with self._lock:
                 await self._set_state(
@@ -2110,51 +2071,16 @@ class MeasurementSession:
                 )
             await self._set_state(SessionState.VERIFYING)
 
-        await self._record_runtime_snapshot(
-            "verify_prepare",
+        await self._play_prepared_sweep(
+            play_sweep_async,
             capture_kind="verify",
             position_index=None,
+            position_payload=None,
+            awaiting_state=SessionState.AWAITING_VERIFY_CAPTURE,
+            playback_error="verify sweep playback failed",
+            alsa_device=alsa_device,
             runtime_probe_async=runtime_probe_async,
         )
-
-        try:
-            sweep_wav, _ = self._ensure_sweep_cache()
-        except Exception as e:  # noqa: BLE001
-            async with self._lock:
-                await self._fail(f"sweep generation failed: {e}")
-            raise
-
-        async with self._lock:
-            await self._set_state(SessionState.SWEEPING)
-
-        try:
-            kwargs = {"alsa_device": alsa_device} if alsa_device else {}
-            await self._record_runtime_snapshot(
-                "verify_sweep_start",
-                capture_kind="verify",
-                position_index=None,
-                runtime_probe_async=runtime_probe_async,
-            )
-            await play_sweep_async(str(sweep_wav), **kwargs)
-            await self._record_runtime_snapshot(
-                "verify_sweep_complete",
-                capture_kind="verify",
-                position_index=None,
-                runtime_probe_async=runtime_probe_async,
-            )
-        except Exception as e:  # noqa: BLE001
-            await self._record_runtime_snapshot(
-                "verify_sweep_failed",
-                capture_kind="verify",
-                position_index=None,
-                runtime_probe_async=runtime_probe_async,
-            )
-            async with self._lock:
-                await self._fail(f"verify sweep playback failed: {e}")
-            raise
-
-        async with self._lock:
-            await self._set_state(SessionState.AWAITING_VERIFY_CAPTURE)
 
     async def on_verify_capture_uploaded(
         self, captured_wav_path: Path,

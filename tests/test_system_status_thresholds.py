@@ -17,11 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.doctor.memory import (
-    _DEFAULT_DISK_WARN_PERCENT,
-    _DISK_FAIL_PERCENT,
-    memory_headroom_thresholds,
-)
+from jasper.cli.doctor.memory import _DEFAULT_DISK_WARN_PERCENT, _DISK_FAIL_PERCENT
+from jasper.memory_policy import memory_headroom_thresholds
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_JS = ROOT / "deploy" / "assets" / "system-status" / "js"
@@ -197,8 +194,9 @@ def test_dashboard_memory_disk_thresholds_match_jasper_doctor() -> None:
     OK in the doctor. This test computes the doctor's thresholds in Python and
     the dashboard's in JS and asserts they're identical, so a future change to
     one side fails CI until both move together. Memory's source of truth is
-    ``memory_headroom_thresholds``; disk's is ``_DEFAULT_DISK_WARN_PERCENT`` /
-    ``_DISK_FAIL_PERCENT`` — both in jasper/cli/doctor/memory.py.
+    ``jasper.memory_policy.memory_headroom_thresholds``; disk's is
+    ``_DEFAULT_DISK_WARN_PERCENT`` / ``_DISK_FAIL_PERCENT`` in
+    ``jasper/cli/doctor/memory.py``.
     """
     node = shutil.which("node")
     if not node:

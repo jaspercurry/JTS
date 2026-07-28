@@ -178,17 +178,20 @@ def write_golden_correction_bundle(
         "repeatability": repeatability,
     }
     position_analysis = {
-        "artifact_path": "position_analysis.json",
+        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
         "artifact_schema_version": 1,
-        "position_count": 1,
-        "freq_count": len(freqs),
-        "variance": {"max_range_db": 0.0, "median_std_db": 0.0},
-        "chart": {
-            "freqs_hz": freqs,
-            "min_db": [0.0, 1.0, 2.0, 1.0, 0.0],
-            "max_db": [0.0, 1.0, 2.0, 1.0, 0.0],
+        "session_id": session_id,
+        "correction_band_hz": [50.0, 350.0],
+        "freqs_hz": freqs,
+        "positions": [{
+            "position_index": 0,
+            "magnitude_db": [0.0, 1.0, 2.0, 1.0, 0.0],
+        }],
+        "spatial_average_db": [0.0, 1.0, 2.0, 1.0, 0.0],
+        "variance": {
             "std_db": [0.0, 0.0, 0.0, 0.0, 0.0],
             "range_db": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "summary": {"max_range_db": 0.0, "median_std_db": 0.0},
         },
         "bands": [],
         "feature_flags": [],

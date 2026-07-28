@@ -278,10 +278,15 @@ def _position_summary(
 ) -> dict[str, Any]:
     if not isinstance(position_analysis, dict):
         return {"available": False, "reason": "position_analysis.json unavailable"}
+    position_count = position_analysis.get("position_count")
+    if position_count is None:
+        positions = position_analysis.get("positions")
+        if isinstance(positions, list):
+            position_count = len(positions)
     available = position_analysis.get("available")
     if available is None:
         available = bool(
-            position_analysis.get("position_count")
+            position_count
             or position_analysis.get("positions")
             or position_analysis.get("bands")
             or position_analysis.get("chart")
@@ -292,7 +297,7 @@ def _position_summary(
     ]
     return {
         "available": bool(available),
-        "position_count": position_analysis.get("position_count"),
+        "position_count": position_count,
         "feature_flag_count": len(flags),
         "feature_flags": flags[:6],
         "bands": [

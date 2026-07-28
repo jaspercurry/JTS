@@ -452,7 +452,18 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
     assert info["bundle_schema_version"] == bundles.CURRENT_BUNDLE_SCHEMA_VERSION
     assert info["sweep_meta"] == snapshot["sweep"]
     assert info["current_correction_at_start"] == {"kind": "correction"}
-    assert info["config"]["sample_rate"] == 48000
+    assert info["config"] == {
+        "f1_hz": 20.0,
+        "f2_hz": 20000.0,
+        "duration_s": 1.0,
+        "sample_rate": 48000,
+        "amplitude_dbfs": sess.cfg.amplitude_dbfs,
+        "peq_f_low": 20.0,
+        "peq_f_high": 350.0,
+        "correction_strategy": "balanced",
+    }
+    assert info["correction_strategy"]["max_filters"] == 5
+    assert info["correction_strategy"]["cuts_only"] is True
 
     result = correction_status.result_json_payload(sess)
     assert set(result) == {

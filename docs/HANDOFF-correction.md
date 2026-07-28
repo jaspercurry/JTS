@@ -1223,8 +1223,11 @@
   `runtime_integrity.json`: system load/memory snapshots,
   capture sample-count sanity, fan-in and outputd content/DAC xrun
   deltas, and CamillaDSP runtime counters around each sweep/verify
-  pass. Runtime warnings and failures feed the same confidence report
-  and bundle validator.
+  pass. Memory warnings use the same RAM-tier-aware MemAvailable policy as
+  `jasper-doctor` (`jasper.memory_policy.memory_headroom_thresholds`), so a
+  correction bundle and the system health surface cannot disagree by Pi SKU.
+  Runtime warnings and failures feed the same confidence report and bundle
+  validator.
   Treat `captures/p<N>.wav` and `verify.wav` as canonical private raw
   evidence; every curve, confidence report, PEQ, and future FIR/agent
   judgment should be reproducible from those recordings plus sweep
@@ -3224,7 +3227,9 @@ Internal:
 
 ---
 
-Last verified: 2026-07-27 (flow-simplification PR-U3 — the Status bullet's
+Last verified: 2026-07-27 (runtime-integrity memory evidence rechecked against
+the shared RAM-tier-aware headroom policy; hardware-free tests only). Prior
+2026-07-27 (flow-simplification PR-U3 — the Status bullet's
 "16 captures" claim and the `POST /crossover/v2/session` endpoint-table entry
 now name both tiers; the tier chooser itself lives on the wizard's
 `microphone_check` screen, not documented page-by-page here — see

@@ -61,6 +61,34 @@ def test_runtime_integrity_flags_truncated_capture(tmp_path: Path):
     assert issues[0]["severity"] == "fail"
 
 
+def test_runtime_integrity_uses_ram_tier_aware_memory_thresholds(monkeypatch):
+    from jasper.correction import runtime_integrity
+
+    monkeypatch.setattr(
+        runtime_integrity,
+        "_read_meminfo_mb",
+        lambda: {"total_mb": 2_000, "available_mb": 150, "used_mb": 1_850},
+    )
+    monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(runtime_integrity, "_read_outputd_status", lambda: None)
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
+
+    report = RuntimeIntegrityReport("abc123")
+    issues = report.record_snapshot("sweep_start")
+
+    assert [issue["code"] for issue in issues] == ["memory_available_low"]
+    assert issues[0]["details"]["threshold_mb"] == 200
+    assert report.to_dict()["thresholds"] == {
+        "load_per_core_warn": runtime_integrity.LOAD_PER_CORE_WARN,
+        "mem_available_warn_mb": 200,
+        "mem_available_fail_mb": 60,
+        "capture_extra_seconds_warn": (
+            runtime_integrity.CAPTURE_EXTRA_SECONDS_WARN
+        ),
+        "capture_extra_ratio_warn": runtime_integrity.CAPTURE_EXTRA_RATIO_WARN,
+    }
+
+
 def test_runtime_integrity_flags_camilla_clipping_delta(monkeypatch):
     from jasper.correction import runtime_integrity
 
