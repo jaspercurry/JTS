@@ -1021,6 +1021,23 @@ reference. Currently:
   map, the mux-lease/voice-pause requirements, and the evidence-verified
   trap list. The design doc holds the why; this doc holds the what,
   exactly.
+- [`gating-v2-plan.md`](docs/gating-v2-plan.md)
+  — **Adopted work order (2026-07-28, issue #1790)** for the gating
+  overhaul motivated by the collapsed-gate incident: per-position masked
+  averaging replacing the fragile group-max validity floor, the
+  measure-path anomaly→retake/exclude policy (retake doubles as the
+  repeatability instrument), the AIC + matched-filter detector
+  (corpus-gated), the graded 1/T–2/T validity band, and session gate
+  invariants. Verbatim research behind it in
+  [`docs/research/2026-07-27-acoustics-round-2/`](docs/research/2026-07-27-acoustics-round-2/README.md).
+- [`room-correction-regime-plan.md`](docs/room-correction-regime-plan.md)
+  — **Adopted work order (2026-07-28, issue #1791)** re-scoping room
+  correction on evidence: per-room Schroeder-derived Tier A ceiling, the
+  bounded residual Tier B (correct only what the room added, against the
+  gated curve via a new applied-speaker-evidence seam), the layer-seam
+  SSOT (issue #1787), evidence-gated LF boosts on room-instrument
+  evidence, and the recorded FIR/phase rejection. Same research
+  directory as above.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
