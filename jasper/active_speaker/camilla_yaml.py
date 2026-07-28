@@ -841,6 +841,37 @@ def _validated_driver_corrections(
 # test asserts the two constants stay numerically equal.
 MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
+# Per-filter linearization BOOST ceiling (PR-L5) — the lockstep duplicate of
+# ``linearization_fit.PER_FILTER_BOOST_CAP_DB``, held here for the same reason
+# the filter count above is: the emitter re-validates what a persisted
+# candidate claims rather than importing the fit engine's policy. A pinning
+# test asserts the two stay numerically equal.
+#
+# This bounds ONE emitted biquad, not the correction. Total boost is uncapped
+# by the owner's 2026-07-27 ruling, and is made safe not by a number here but
+# by ``_linearization_headroom_db`` below, which folds the worst branch's
+# total positive boost into ``active_baseline_headroom`` — so the boosted band
+# lands at or under unity no matter how deep the correction is, and CamillaDSP's
+# 0 dB ceiling, the per-driver limiters, and tweeter protection are untouched.
+MAX_LINEARIZATION_BOOST_DB = 12.0
+
+# Ceiling on the program-domain attenuation ``active_baseline_headroom`` may
+# carry, dB. NOT a cap on the correction — it is a refusal.
+#
+# Total boost is uncapped by the owner's ruling, and the absorption mechanism
+# turns every dB of it into a dB of pre-split attenuation. Left unbounded that
+# is a silent failure mode rather than a safety one: eight filters at the
+# per-filter cap would charge 96 dB and emit a graph that is, to a household,
+# simply mute — with nothing in the journal naming why. So the emitter REFUSES
+# past this line instead of quietly muting the speaker (adversarial review N7).
+#
+# 40 dB is deliberately generous — it is the same bound
+# ``emit_active_speaker_baseline_config`` already validates
+# ``baseline_headroom_db`` against, it is far past any correction the fit's own
+# realization gates can produce, and a config asking for more has a defect
+# upstream of this file. Fail-safe stays fail-safe; it just says so.
+MAX_PROGRAM_HEADROOM_DB = 40.0
+
 _LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
 # A linearization shelf carries NO steepness of its own. Every shelf reaches
@@ -968,9 +999,10 @@ def _validated_linearization(
                 raise ActiveSpeakerConfigError(
                     f"linearization q for {role} must be positive"
                 )
-            if gain > 0:
+            if gain > MAX_LINEARIZATION_BOOST_DB:
                 raise ActiveSpeakerConfigError(
-                    f"linearization gain for {role} must not be positive"
+                    f"linearization gain for {role} must not exceed "
+                    f"{MAX_LINEARIZATION_BOOST_DB} dB"
                 )
             role_filters.append({
                 "biquad_type": biquad_type,
@@ -1290,6 +1322,37 @@ def _emit_sub_baseline_definitions(
     ]
 
 
+def linearization_headroom_db(
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+) -> float:
+    """Program-domain attenuation the emitted linearization boost needs, dB.
+
+    The WORST branch's total positive gain. Per-branch total (not the
+    max single filter) because overlapping boosts in one chain add — the same
+    upper-bound argument :func:`jasper.camilla_config_contract.
+    total_positive_boost_db` makes for room PEQ; worst-branch (not the sum
+    across branches) because the driver chains run in PARALLEL after the
+    split, so no single sample path ever sees two branches' boosts.
+
+    Public because the runtime contract's prover has to agree with the
+    emitter about this number, and ``jasper-doctor``/the ledger disclose it.
+    0.0 for a cut-only linearization, which is every one before PR-L5.
+    """
+    worst = 0.0
+    for filters in (linearization or {}).values():
+        if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
+            continue
+        total = 0.0
+        for entry in filters:
+            if not isinstance(entry, Mapping):
+                continue
+            gain = entry.get("gain")
+            if isinstance(gain, (int, float)) and gain > 0.0:
+                total += float(gain)
+        worst = max(worst, total)
+    return worst
+
+
 def _emit_baseline_filter_definitions(
     preset: ActiveSpeakerPreset,
     *,
@@ -1322,12 +1385,31 @@ def _emit_baseline_filter_definitions(
     # boosts are different: correction can raise a known room band above unity,
     # so its worst-case positive boost is folded into this headroom gain rather
     # than emitted as a separate room_headroom filter.
+    # Layer-1a linearization boost (PR-L5) joins the same fold for the same
+    # reason room-correction boost does: a per-driver correction can now raise
+    # a band above unity, so its worst-case positive boost is absorbed by this
+    # one common attenuation rather than left to clip. It rides the PRE-SPLIT
+    # gain because every branch sees the same program, so absorbing the worst
+    # branch's total covers all of them. This is the mechanism that lets the
+    # fit engine's boost stay uncapped while the 0 dB ceiling stays a hard
+    # rail. It is the SAME quantity the fit discloses as
+    # ``LinearizationFit.headroom_cost_db`` — both are the per-branch sum of
+    # positive gains — so what a household is told the correction costs is what
+    # the speaker actually gives up. Pinned by a test.
     trim_db = max(0.0, output_trim_db) if preference_filters else 0.0
     total_headroom_db = (
         baseline_headroom_db
         + total_positive_boost_db(room_peqs)
+        + linearization_headroom_db(linearization)
         + trim_db
     )
+    if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
+        raise ActiveSpeakerConfigError(
+            f"program-domain headroom {total_headroom_db:.3f} dB exceeds "
+            f"{MAX_PROGRAM_HEADROOM_DB} dB — refusing to emit a graph this "
+            "attenuated (check the linearization boost and room-correction "
+            "boost totals)"
+        )
     headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(

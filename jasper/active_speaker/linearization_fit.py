@@ -23,11 +23,36 @@ See docs/active-speaker-tuning-layers-design.md "Layer 1a concretely" for
 the adopted design this module implements (fit domain, adaptive band trim,
 target level, cut-preferred/normalize-downward policy, per-bin caps).
 
-**Cut-only invariant.** Every filter this module emits carries ``gain <= 0``
-— the whole correction posture is "spend sensitivity headroom downward,"
-never boost. This is enforced with an explicit ``raise`` before returning
-(not a bare ``assert`` — a hardware-bound safety invariant must survive
-``python -O``; see :func:`fit_driver_linearization`) and pinned by a test.
+**The allowed vocabulary is an INPUT, not a hardcode** (PR-L5). The fit core
+takes a measured response, an envelope, and a :class:`FitVocabulary` — "what
+moves am I allowed to make" — and returns filters. Nothing else about the
+speaker's topology reaches it: a 3-way active speaker fits three drivers
+through this same function, and a passive box is the 1-way case fitted on its
+summed chain. Do not add a way-count, a role branch, or a crossover
+assumption here; they belong to whoever composes the vocabulary.
+
+**Boost is allowed, uncapped, and evidence-gated** (PR-L5, owner ruling
+2026-07-27). A cut-only fit cannot represent "this driver is 9 dB dark", so
+for eight months the only way to raise a band was to cut everything else and
+give the level back through the trim — a realization that runs out at
+:data:`HF_SINGLE_SHELF_SPEND_CAP_DB`, which is where the 2026-07-27 profile
+stopped ~3 dB short of its own measured deficit. :data:`FitVocabulary.
+allow_boost` lifts that: the lift stage may emit ``gain > 0``, with no policy
+cap on the total. What replaced the cap is not nothing — it is the closed-loop
+delta probe (:mod:`jasper.active_speaker.delta_probe`), which measures what
+the speaker actually did and rolls the correction back automatically when it
+does not match. This module's docstring used to say boost was deferred "until
+the closed-loop verify machinery exists"; it exists, and this is the
+capability it was holding.
+
+What did NOT change: the headroom cost of a boost is **disclosed**
+(:attr:`LinearizationFit.headroom_cost_db`) and absorbed by the emitter's
+existing ``active_baseline_headroom`` gain, exactly as room-correction boost
+already is — so the CamillaDSP 0 dB ceiling, the per-driver limiters, and
+tweeter protection remain untouched hard rails. A vocabulary that forbids
+boost still enforces the cut-only invariant with an explicit ``raise`` before
+returning (not a bare ``assert`` — a hardware-bound safety invariant must
+survive ``python -O``; see :func:`fit_driver_linearization`), pinned by a test.
 
 **The fit domain is whatever grid the caller's ``EnvelopeCurve`` was
 composed on** — :data:`~jasper.active_speaker.linearization_envelope.
@@ -36,16 +61,15 @@ own default), read here as ``envelope.freqs_hz`` rather than re-imported as
 a separate constant, so this module can never silently disagree with the
 grid the envelope it is fitting against actually used.
 
-**Artifact-02 §6's boost-cap table is DORMANT, not implemented.** The
+**Artifact-02 §6's boost-cap table is SUPERSEDED, not implemented.** The
 driver-linearization research (``docs/research/2026-07-23-driver-
-linearization/02-engineering-spec.md`` §6) describes a future boost-capable
-mode (global +6 dB max, Q<=2, gated by closed-loop achieved-vs-predicted
-verification). This PR implements only the cut-only side of the design doc
-("Fitting policy: cut-preferred / normalize-downward... cuts generous").
-Boost support is intentionally NOT built here — it needs the closed-loop
-verify machinery (design doc build-order step 2) to land first, so an
-unverified boost claim never reaches a driver. Until then every filter this
-module can produce is a cut (see the cut-only invariant above).
+linearization/02-engineering-spec.md`` §6) described a boost-capable mode
+capped at a global +6 dB and gated by closed-loop achieved-vs-predicted
+verification. PR-L5 kept the gate and dropped the cap: the owner's 2026-07-27
+ruling is that "a 4 dB natural darkness gets its 4 dB" and that headroom spend
+is disclosed rather than limited. The +6 dB figure was a proxy for "do not let
+an unverified boost run away", and the delta probe measures the thing that
+proxy was standing in for.
 """
 from __future__ import annotations
 
@@ -139,6 +163,20 @@ SHELF_SLOPE_THRESHOLD_DB_PER_OCT: float = 3.0
 # Hard cap on filters per driver (shelf + peaking combined) — design doc
 # "Fitting policy" via the engineering-spec build-order.
 MAX_FILTERS_PER_DRIVER: int = 8
+
+# Per-filter BOOST ceiling, dB (PR-L5) — the mirror of PER_FILTER_CUT_CAP_DB,
+# and deliberately the same number.
+#
+# This is a REALIZATION bound, not a policy cap, which is why it survives the
+# owner's "arbitrary gain caps GO" ruling while the total stays uncapped. One
+# RBJ biquad asked for +12 dB already has a Q-dependent transition wide enough
+# to be doing something other than what the fit drew; past that the emitted
+# filter stops being a faithful realization of the requested shape, exactly as
+# on the cut side. TOTAL boost remains unbounded because a cascade composes:
+# a deeper deficit gets more filters, not one absurd one — the same way the
+# CD-horn stage clamps its Lowshelf at the per-filter cap and lets the peaking
+# residual absorb the rest.
+PER_FILTER_BOOST_CAP_DB: float = 12.0
 
 # A bin below this allowed-depth is treated as "the envelope permits
 # nothing here" (float noise / a taper's asymptotic tail rather than a
@@ -315,6 +353,135 @@ HF_CONTINUATION_POLICY: Mapping[str, str] = {
     "metal_dome": "taper",
     "unknown": "taper",
 }
+
+
+# --------------------------------------------------------------------------- #
+# the allowed vocabulary + the shared level frame (PR-L5)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class FitVocabulary:
+    """What moves this fit is allowed to make — the "allowed vocabulary in" of
+    the topology-agnostic fit core (plan PR-L5).
+
+    Kept deliberately small: every field here is a move the fit can MAKE, not
+    a fact about the speaker. Way count, driver roles, pad authority, and
+    alignment are the composer's business — an active speaker grants per-driver
+    channels and this vocabulary per driver; a passive box grants one channel
+    and this vocabulary once, on the summed chain. Neither shape is spelled
+    anywhere in this module.
+
+    ``allow_boost`` is the evidence gate. The conductor grants it only for a
+    session that will actually run the delta probe, so an unverified boost
+    claim cannot reach a driver — which is the whole condition under which the
+    engineering spec's boost mode was allowed to exist at all.
+    """
+
+    allow_boost: bool = False
+    #: Per-filter boost ceiling. TOTAL boost is uncapped by design (owner
+    #: ruling); this bounds one biquad's realization, not the correction.
+    per_filter_boost_cap_db: float = PER_FILTER_BOOST_CAP_DB
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allow_boost": self.allow_boost,
+            "per_filter_boost_cap_db": self.per_filter_boost_cap_db,
+        }
+
+
+#: The pre-PR-L5 posture, and the default: cuts only. Every existing caller
+#: that does not pass a vocabulary gets exactly the fit it got before this
+#: capability existed, byte for byte.
+CUT_ONLY_VOCABULARY = FitVocabulary()
+
+
+@dataclass(frozen=True)
+class SharedLevelFrame:
+    """ONE level frame both (or all) drivers' targets are expressed in.
+
+    **The defect this closes.** Before PR-L5 each driver was fitted to a flat
+    target at ITS OWN median (:func:`_target_and_plateau_db`) and the two
+    numbers had no stated relationship: on the 2026-07-27 JTS3 profile the
+    tweeter's was −7.24 dB and the woofer's −21.13 dB, 13.9 dB apart, and the
+    only stage that leveled the pair was the overlap-band trim — which was
+    itself carrying ~11 dB of frame error (PR-L3). PR-L4 added an ASSERTION
+    that the realized branch levels agree; this makes them agree by
+    construction, which is the difference between catching the bug and not
+    having it.
+
+    **How.** Each role proposes the system-referred level its own passband
+    would land at: ``core_level_db[role] + trim_db[role]``. The frame adopts
+    the LOUDEST proposal and derives every role's target from it, so
+    ``target[role] + trim[role]`` is one identical number for every role.
+    :attr:`offset_db` is what each role must move to get there.
+
+    **Why the loudest, not the mean or the quietest.** The quietest reference
+    cuts every other driver purely to match a dark one — spending real max SPL
+    to reach a level nothing wanted; the mean does half of that. The loudest
+    moves only the driver that is actually out of place, which is the owner's
+    "a 4 dB natural darkness gets its 4 dB" posture, and — crucially — that
+    move is realized in the TRIM, by reducing an attenuation the speaker was
+    already applying. It costs no headroom at all. This is the trim-domain
+    face of "reduce our own cuts before you boost".
+
+    **What it trusts.** ``trim_db`` is the measured branch trim, so a broken
+    trim propagates into the frame. That is the same input PR-L3 fixed and
+    PR-L4's measured-vs-datasheet cross-check and realized-level assertion
+    both grade; this frame does not add a second opinion, it removes a place
+    where two opinions could silently coexist.
+    """
+
+    system_level_db: float
+    reference_role: str
+    target_level_db: Mapping[str, float]
+    offset_db: Mapping[str, float]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "system_level_db": self.system_level_db,
+            "reference_role": self.reference_role,
+            "target_level_db": dict(self.target_level_db),
+            "offset_db": dict(self.offset_db),
+        }
+
+
+def solve_shared_level_frame(
+    core_level_db: Mapping[str, float], trim_db: Mapping[str, float],
+) -> SharedLevelFrame:
+    """Reconcile every role's own passband level into one shared frame.
+
+    ``core_level_db`` is each role's own core-passband level (what
+    :func:`driver_core_level_db` reads off the same curve the fit targets) and
+    ``trim_db`` its branch attenuation. Roles missing from ``trim_db`` are
+    read as 0 dB of trim.
+
+    Works for any number of roles — one (a passive box's summed chain, where
+    the frame is trivially that chain's own level and the offset is 0), two,
+    or N. Raises ``ValueError`` on an empty mapping rather than inventing a
+    frame from nothing.
+    """
+    if not core_level_db:
+        raise ValueError("a shared level frame needs at least one role")
+    proposals = {
+        role: float(level) + float(trim_db.get(role, 0.0))
+        for role, level in core_level_db.items()
+    }
+    reference_role = max(proposals, key=lambda r: (proposals[r], r))
+    system_level_db = proposals[reference_role]
+    targets = {
+        role: system_level_db - float(trim_db.get(role, 0.0))
+        for role in core_level_db
+    }
+    return SharedLevelFrame(
+        system_level_db=system_level_db,
+        reference_role=reference_role,
+        target_level_db=targets,
+        offset_db={
+            role: targets[role] - float(level)
+            for role, level in core_level_db.items()
+        },
+    )
 
 
 def _ladder_smooth(grid_hz: np.ndarray, magnitude_db: np.ndarray) -> np.ndarray:
@@ -498,6 +665,43 @@ class LinearizationFit:
     # carrying only flattening cuts anchors correctly too. When the CD-horn
     # stage fires this reads ≈ spend + the flattening peaks' own in-band share.
     correction_giveback_db: float = 0.0
+    # --- PR-L5 disclosure ------------------------------------------------
+    # "This correction costs N dB of maximum level." The SUM of this fit's
+    # positive filter gains — which is exactly the quantity the emitter
+    # CHARGES to ``active_baseline_headroom`` (the same gain room-correction
+    # boost already rides; see ``camilla_yaml.linearization_headroom_db``), so
+    # the number a household is told and the number the speaker gives up are
+    # one number.
+    #
+    # The sum and NOT the realized cascade peak, deliberately. Two bells at
+    # different centres never reach their combined height anywhere, so the peak
+    # understates the charge — measured on a two-boost fit, 1.71 dB peak
+    # against a 3.38 dB charge. The sum is the conservative bound, because
+    # overlapping boosts at ONE frequency do add and that is the case the
+    # headroom has to survive; the charge is therefore right, and the
+    # disclosure follows the charge rather than the other way round. Reporting
+    # the peak would tell a household its correction cost half what the
+    # speaker actually gave up.
+    # 0.0 for every cut-only fit — which is every fit before PR-L5.
+    headroom_cost_db: float = 0.0
+    # How far this driver had to move to reach the session's SHARED level
+    # frame (:class:`SharedLevelFrame`), positive = it was the dark one and
+    # needs lifting. Consumed by ``crossover_v2_flow._fit_linearization``,
+    # which adds it into the anchored trim so every branch realizes the same
+    # system level BY CONSTRUCTION rather than by later comparison. 0.0 when
+    # no frame was supplied (every pre-PR-L5 caller) and for whichever role
+    # the frame took as its reference.
+    level_frame_offset_db: float = 0.0
+    # The lift the boost vocabulary was asked for and what it delivered, in
+    # dB, over the fit band — non-zero only when the lift stage fired.
+    # ``lift_from_reduced_cuts_db`` is the share bought by SHRINKING this
+    # fit's own cuts rather than by adding gain (the first-class "reduce our
+    # own cuts" operation); it is free, and a large share of it is the sign
+    # of a healthy correction.
+    lift_requested_db: float = 0.0
+    lift_from_reduced_cuts_db: float = 0.0
+    lift_from_boost_db: float = 0.0
+    lift_suppressed_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -521,6 +725,12 @@ class LinearizationFit:
             "hf_continuation_suppressed_reason": self.hf_continuation_suppressed_reason,
             "measured_deficit_at_ceiling_db": self.measured_deficit_at_ceiling_db,
             "correction_giveback_db": self.correction_giveback_db,
+            "headroom_cost_db": self.headroom_cost_db,
+            "level_frame_offset_db": self.level_frame_offset_db,
+            "lift_requested_db": self.lift_requested_db,
+            "lift_from_reduced_cuts_db": self.lift_from_reduced_cuts_db,
+            "lift_from_boost_db": self.lift_from_boost_db,
+            "lift_suppressed_reason": self.lift_suppressed_reason,
         }
 
 
@@ -621,6 +831,37 @@ def linearization_filters_by_role(
             dict(entry) for entry in filters if isinstance(entry, Mapping)
         ]
     return out
+
+
+def worst_headroom_cost_db(linearization_mapping: Mapping[str, Any]) -> float:
+    """The max-level cost of a whole correction, dB — the WORST branch's
+    :attr:`LinearizationFit.headroom_cost_db` (PR-L5).
+
+    Worst branch and not the sum across branches, matching
+    ``camilla_yaml.linearization_headroom_db``'s own rule: the driver chains
+    run in PARALLEL after the split, so no single sample path ever sees two
+    branches' boosts and the graph gives up the largest one.
+
+    Takes a persisted ``{role: LinearizationFit.to_dict()}`` mapping — the
+    shape a candidate carries under its ``"linearization"`` key, after a JSON
+    round-trip — so it is defensive in the same way
+    :func:`linearization_filters_by_role` is: a malformed or era-older entry is
+    skipped rather than raising. Returns 0.0 when nothing was boosted or
+    nothing was fitted.
+
+    Defined here, once, because BOTH the conductor's own candidate payload and
+    the web layer's browser-visible ``_candidate_summary`` disclose this
+    number, and two reducers for one household-facing figure is exactly the
+    drift this ladder exists to remove.
+    """
+    worst = 0.0
+    for fit in (linearization_mapping or {}).values():
+        if not isinstance(fit, Mapping):
+            continue
+        cost = fit.get("headroom_cost_db")
+        if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
+            worst = max(worst, float(cost))
+    return worst
 
 
 def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
@@ -753,6 +994,38 @@ def _target_and_plateau_db(
     """
     band = smoothed_db[level_mask]
     return float(np.median(band)), float(np.max(band))
+
+
+def driver_core_level_db(
+    primary: DriverResponse, envelope: EnvelopeCurve,
+) -> float | None:
+    """One driver's own core-passband level — the number a
+    :class:`SharedLevelFrame` reconciles across drivers (PR-L5).
+
+    Deliberately NOT a second estimator. It runs the identical resample →
+    ladder-smooth → core-mask → median chain :func:`fit_driver_linearization`
+    runs, and returns the same ``target_level_db`` that fit would have chosen
+    on its own, so a frame built from this and a fit built from that cannot
+    disagree about where a driver sits. It exists as a separate entry point
+    only because the frame has to be solved across ALL drivers before any one
+    of them is fitted.
+
+    Returns ``None`` — not a number — when the envelope allows correction
+    nowhere. That driver's level is UNKNOWN, and a frame is a claim about
+    where drivers sit relative to each other; feeding it a placeholder would
+    let one unmeasurable driver move every other one. The caller leaves such a
+    role out of the frame, which leaves its offset at 0 and its branch where
+    the trim solve already put it.
+    """
+    grid_hz = envelope.freqs_hz
+    smoothed_db = _ladder_smooth(
+        grid_hz, np.interp(grid_hz, primary.freqs_hz, primary.magnitude_db)
+    )
+    envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
+    if not envelope_mask.any():
+        return None
+    level_mask = _core_or_fallback_mask(envelope, envelope_mask)
+    return _target_and_plateau_db(smoothed_db, level_mask)[0]
 
 
 def _adaptive_band_trim(
@@ -1200,8 +1473,294 @@ def _hf_continuation_stage(
     )
 
 
+# --------------------------------------------------------------------------- #
+# the lift stage: reduce our own cuts, then boost (PR-L5)
+# --------------------------------------------------------------------------- #
+
+# Bisection iterations used to find how far one existing cut can be shrunk
+# without overshooting the desired lift. 24 halvings take a 12 dB search range
+# to well under a micro-dB — far finer than any quantity here is meaningful to,
+# and the loop runs at most MAX_FILTERS_PER_DRIVER times per fit.
+_CUT_REDUCTION_BISECTION_STEPS: int = 24
+
+# Materiality slack (dB) on the permitted-headroom test.
+#
+# NOT float noise, and 1e-6 was the wrong value (adversarial review N2). A
+# biquad's response never reaches exactly 0 dB: a peaking filter cut at 1 kHz
+# still leaks a few thousandths of a dB across the whole grid, so at 1e-6 a
+# SINGLE far-field bin whose permitted headroom is fractionally negative vetoes
+# the entire shrink — measured, a -0.0034 dB leakage bin delivered 0.00 of a
+# wanted 4.00 dB, and 0.62 of 3.50 on the real CD-horn fit. The operation was
+# technically correct and practically inert.
+#
+# :data:`_ENVELOPE_NONZERO_EPS_DB` is the module's existing answer to exactly
+# this question — "below this, a per-bin dB figure is float noise or a taper's
+# asymptotic tail rather than a real allowance" — so it is reused rather than
+# given a second name. At 0.05 dB it sits ~15x above the 0.0034 dB leakage that
+# caused the veto and 10x below the smallest gain this module will emit
+# (:data:`_MIN_FILTER_GAIN_DB` = 0.5), so it can mask neither a real overshoot
+# nor a real filter.
+_CUT_REDUCTION_EPS_DB: float = _ENVELOPE_NONZERO_EPS_DB
+
+
+def reduce_cuts_for_lift(
+    filters: Sequence[LinearizationFilter],
+    wanted_db: np.ndarray,
+    headroom_db: np.ndarray,
+    grid_hz: np.ndarray,
+) -> tuple[tuple[LinearizationFilter, ...], np.ndarray]:
+    """Spend a desired lift by SHRINKING cuts we ourselves placed, before any
+    boost is considered. Returns ``(filters, delivered_lift_db)``.
+
+    **A first-class operation, distinct from boost** (plan PR-L5). When the fit
+    wants more level in a band where one of its own filters is cutting, the
+    right move is to cut less there — not to stack an opposing boost on top of
+    a cut. Two filters fighting each other cost a slot each, cost headroom the
+    shrink would not have cost, and leave a phase response neither of them
+    designed. Reducing the cut is free, uses no slot, and is exactly invertible.
+
+    Two arrays, two jobs, deliberately not one:
+
+    * ``wanted_db`` — how much lift would be USEFUL at each bin (``>= 0``).
+      Drives which filters are worth touching and when to stop.
+    * ``headroom_db`` — how much lift is PERMITTED at each bin. May be
+      negative (this bin is already at or above where it should be, so any
+      lift here is a regression) and may be ``+inf`` (nothing is claimed
+      here, e.g. outside the fit band). This is the SAFETY constraint, and it
+      is what stops a cut placed to tame a peak from being unwound to fill an
+      unrelated dip an octave away — the peak would simply come back.
+
+    Greedy, deepest cut first: each filter is shrunk by the largest amount
+    (bisection) that keeps its delivered lift inside ``headroom_db`` at EVERY
+    bin; what it delivered is then subtracted from both arrays and the next
+    filter is offered the residue. The delivered lift is computed with the real
+    RBJ evaluator at both gains — never a linear-in-gain approximation, which
+    is wrong by several tenths of a dB on a shelf and wrong in the unsafe
+    direction.
+
+    Filters at or above zero gain are returned untouched: there is no cut to
+    reduce. A filter shrunk to within :data:`_MIN_FILTER_GAIN_DB` of unity is
+    dropped rather than emitted as a cosmetic residue.
+    """
+    grid = np.asarray(grid_hz, dtype=np.float64)
+    wanted = np.maximum(np.asarray(wanted_db, dtype=np.float64), 0.0)
+    permitted = np.asarray(headroom_db, dtype=np.float64)
+    delivered_total = np.zeros_like(wanted)
+    if not filters or not np.any(wanted > 0.0):
+        return tuple(filters), delivered_total
+
+    def _response_db(spec: LinearizationFilter) -> np.ndarray:
+        return 20.0 * np.log10(
+            np.maximum(np.abs(complex_correction_response((spec,), grid)), 1e-12)
+        )
+
+    order = sorted(range(len(filters)), key=lambda i: filters[i].gain)
+    out = list(filters)
+    for i in order:
+        original = out[i]
+        if original.gain >= -_MIN_FILTER_GAIN_DB:
+            continue
+        if not np.any(wanted > 0.0):
+            break
+        base_db = _response_db(original)
+        budget = -float(original.gain)
+
+        def _delivered(shrink_db: float, _base=base_db, _f=original) -> np.ndarray:
+            trial = LinearizationFilter(
+                biquad_type=_f.biquad_type, freq=_f.freq, q=_f.q,
+                gain=_f.gain + shrink_db,
+            )
+            return _response_db(trial) - _base
+
+        def _fits(shrink_db: float) -> bool:
+            return bool(
+                np.all(
+                    _delivered(shrink_db) <= permitted + _CUT_REDUCTION_EPS_DB
+                )
+            )
+
+        if _fits(budget):
+            shrink = budget
+        else:
+            lo, hi = 0.0, budget
+            for _ in range(_CUT_REDUCTION_BISECTION_STEPS):
+                mid = 0.5 * (lo + hi)
+                if _fits(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            shrink = lo
+        if shrink < _MIN_FILTER_GAIN_DB:
+            continue
+        gained = np.maximum(_delivered(shrink), 0.0)
+        delivered_total = delivered_total + gained
+        wanted = np.maximum(wanted - gained, 0.0)
+        permitted = permitted - gained
+        new_gain = original.gain + shrink
+        if new_gain >= -_MIN_FILTER_GAIN_DB:
+            out[i] = LinearizationFilter(
+                biquad_type=original.biquad_type, freq=original.freq,
+                q=original.q, gain=0.0,
+            )
+        else:
+            out[i] = LinearizationFilter(
+                biquad_type=original.biquad_type, freq=original.freq,
+                q=original.q, gain=new_gain,
+            )
+    kept = tuple(f for f in out if abs(f.gain) >= _MIN_FILTER_GAIN_DB)
+    return kept, delivered_total
+
+
+@dataclass(frozen=True)
+class _Lift:
+    """Result of :func:`_lift_stage` — the filter list it produced plus its
+    own disclosure. ``filters`` is the WHOLE post-stage cascade (the stage may
+    have shrunk existing cuts, so it cannot return only its additions)."""
+
+    filters: tuple[LinearizationFilter, ...]
+    requested_db: float
+    from_reduced_cuts_db: float
+    from_boost_db: float
+    suppressed_reason: str
+
+
+def _lift_stage(
+    grid_hz: np.ndarray,
+    working_db: np.ndarray,
+    target_level_db: float,
+    envelope: EnvelopeCurve,
+    band_mask: np.ndarray,
+    filters: Sequence[LinearizationFilter],
+    vocabulary: FitVocabulary,
+) -> _Lift:
+    """Raise the bands a cut-only fit had to leave dark (PR-L5).
+
+    Runs LAST, on whatever deficit survives the shelf, peaking, and CD-horn
+    stages: ``target_level_db − working_db``, clipped at zero, inside the fit
+    band. Two moves, in this order:
+
+    1. :func:`reduce_cuts_for_lift` — shrink our own cuts. Free, no slot, no
+       headroom.
+    2. Boost filters for the residue, if and only if the vocabulary allows it.
+
+    **Null exclusion still binds.** The desired lift is clamped per bin by
+    ``envelope.allowed_depth_db``, the same ceiling the cut side honours — and
+    that array is already zero wherever the interference-null registry or the
+    position screen excluded a band. So boost cannot fill a measured
+    interference null, which is the one thing the owner's ruling kept:
+    "null-exclusion stays as a measured fact (registry-gated)". Nothing here
+    re-derives that judgement; it consumes it.
+
+    **Inert under a cut-only vocabulary**, and that is not a formality. A
+    cuts-only flattening loop deliberately leaves the whole curve at or BELOW
+    its target — every dip the driver has is a "deficit" by this stage's
+    arithmetic, and the module's standing position is that such a dip is the
+    driver's honest natural response, "accepted as the driver's honest natural
+    rolloff". Reducing cuts to chase it under a vocabulary that never intended
+    to add level would silently change what every pre-PR-L5 caller gets. So
+    the whole stage is a lift-vocabulary stage: no boost permission, no lift.
+
+    Suppressed (named, never silent) when no filter slots remain, when
+    ``design_peq`` cannot realize the residue, or when the realized cascade
+    overshoots the envelope's own allowance.
+    """
+    if not vocabulary.allow_boost:
+        return _Lift(tuple(filters), 0.0, 0.0, 0.0, "")
+
+    # How much lift is PERMITTED per bin: the distance to target inside the fit
+    # band (negative where the curve already sits above it — a cut there may
+    # not be unwound), and unconstrained outside it, where this fit makes no
+    # claim at all.
+    headroom_db = np.where(band_mask, target_level_db - working_db, np.inf)
+    # How much lift is WANTED: the positive part of the same distance, bounded
+    # per bin by the envelope's allowance. That allowance is a correction-DEPTH
+    # ceiling and is direction-agnostic — a bin the measurement cannot support
+    # a 3 dB cut at cannot support a 3 dB lift either — and it is already zero
+    # wherever the null registry or the position screen excluded a band.
+    wanted = np.minimum(
+        np.clip(np.where(band_mask, target_level_db - working_db, 0.0), 0.0, None),
+        np.maximum(envelope.allowed_depth_db, 0.0),
+    )
+    requested_db = float(np.max(wanted)) if wanted.size else 0.0
+    if requested_db < _MIN_FILTER_GAIN_DB:
+        return _Lift(tuple(filters), 0.0, 0.0, 0.0, "")
+
+    reduced, delivered = reduce_cuts_for_lift(
+        filters, wanted, headroom_db, grid_hz,
+    )
+    from_reduced_cuts_db = float(np.max(delivered)) if delivered.size else 0.0
+    residue = np.clip(wanted - delivered, 0.0, None)
+    residue_peak_db = float(np.max(residue)) if residue.size else 0.0
+    if residue_peak_db < _MIN_FILTER_GAIN_DB:
+        return _Lift(tuple(reduced), requested_db, from_reduced_cuts_db, 0.0, "")
+
+    slots_free = MAX_FILTERS_PER_DRIVER - len(reduced)
+    if slots_free <= 0:
+        return _Lift(
+            tuple(reduced), requested_db, from_reduced_cuts_db, 0.0,
+            "no_filter_budget",
+        )
+
+    band_idx = np.flatnonzero(band_mask)
+    f_low = float(grid_hz[band_idx[0]])
+    f_high = float(grid_hz[band_idx[-1]])
+    peqs = design_peq(
+        np.zeros_like(grid_hz), residue, grid_hz,
+        f_low=f_low, f_high=f_high,
+        max_filters=slots_free,
+        max_cut_db=0.0,
+        max_boost_db=min(residue_peak_db, vocabulary.per_filter_boost_cap_db),
+        cuts_only=False,
+        flatness_target_db=_PEAKING_FLATNESS_TARGET_DB,
+        q_max=_PEAKING_Q_MAX,
+        min_filter_gain_db=_MIN_FILTER_GAIN_DB,
+    )
+    boosts = [
+        LinearizationFilter(biquad_type="Peaking", freq=p.freq, q=p.q, gain=p.gain)
+        for p in peqs if p.gain > 0.0
+    ]
+    if not boosts:
+        return _Lift(
+            tuple(reduced), requested_db, from_reduced_cuts_db, 0.0,
+            "no_realizable_boost",
+        )
+
+    # Realization gate, the same posture ``_hf_continuation_stage`` takes: the
+    # cascade that will actually be emitted has to stay inside the envelope's
+    # own per-bin allowance. A greedy bell fit can overshoot between its
+    # centres, and an overshoot here is a correction claiming permission the
+    # measurement never granted it.
+    realized_db = 20.0 * np.log10(
+        np.maximum(np.abs(complex_correction_response(tuple(boosts), grid_hz)), 1e-12)
+    )
+    allowance = np.maximum(envelope.allowed_depth_db, 0.0)
+    if np.any(realized_db[band_mask] > allowance[band_mask] + _MIN_FILTER_GAIN_DB):
+        return _Lift(
+            tuple(reduced), requested_db, from_reduced_cuts_db, 0.0,
+            "exceeds_envelope",
+        )
+    return _Lift(
+        tuple([*reduced, *boosts]), requested_db, from_reduced_cuts_db,
+        float(np.max(realized_db)), "",
+    )
+
+
+#: Every ``lift_suppressed_reason`` a fit can carry — pinned by a test so a
+#: new suppression path cannot ship an un-enumerated reason string, exactly
+#: like :data:`HF_SUPPRESSION_REASONS`.
+LIFT_SUPPRESSION_REASONS: frozenset[str] = frozenset({
+    "no_filter_budget",
+    "no_realizable_boost",
+    "exceeds_envelope",
+})
+
+
 def fit_driver_linearization(
-    primary: DriverResponse, envelope: EnvelopeCurve,
+    primary: DriverResponse,
+    envelope: EnvelopeCurve,
+    *,
+    vocabulary: FitVocabulary = CUT_ONLY_VOCABULARY,
+    level_frame: SharedLevelFrame | None = None,
 ) -> LinearizationFit:
     """Fit one driver's cut-only linearization from its measured response
     and correction envelope.
@@ -1210,6 +1769,17 @@ def fit_driver_linearization(
     role, mic tier, driver class, repeat count, and (critically) the
     per-bin allowed correction depth — so this function reads context off
     ``envelope`` rather than taking redundant separate parameters.
+
+    ``vocabulary`` is the allowed-moves input of the topology-agnostic core
+    (:class:`FitVocabulary`); it defaults to :data:`CUT_ONLY_VOCABULARY`, so
+    a caller that does not opt into boost gets the pre-PR-L5 fit exactly.
+    ``level_frame`` is the session's :class:`SharedLevelFrame`; when supplied,
+    this driver's :attr:`~LinearizationFit.level_frame_offset_db` reports how
+    far it must move to reach that shared frame, which the conductor folds
+    into the anchored trim. The frame does NOT change what this function
+    flattens toward — a driver is flattened to its own passband, which is what
+    flattening means — it changes where that flattened passband is placed
+    relative to the other drivers', and that placement is a trim.
 
     Algorithm (design doc "Layer 1a concretely"):
       1. Resample ``primary``'s magnitude onto ``envelope``'s grid, ladder-
@@ -1231,6 +1801,11 @@ def fit_driver_linearization(
          above the ceiling). Gated by repeat agreement and realization
          fit-quality. When it fires, the residual/verify/observe claims are
          computed in the give-back frame (``target_level_db - spend``).
+      7. Lift stage (``_lift_stage``, PR-L5): whatever deficit survives steps
+         4-6 is spent first by SHRINKING this fit's own cuts
+         (:func:`reduce_cuts_for_lift`) and then, if ``vocabulary`` allows it,
+         by boost filters — envelope-bounded per bin, so a measured
+         interference null can never be filled.
 
     Returns a :class:`LinearizationFit` with zero filters (an honest no-op)
     when the envelope allows correction nowhere.
@@ -1310,21 +1885,54 @@ def fit_driver_linearization(
             np.maximum(np.abs(complex_correction_response(hf.filters, grid_hz)), 1e-12)
         )
 
+    # Lift stage (PR-L5): reduce our own cuts, then boost the residue. Runs
+    # LAST so its deficit is measured against everything the cut-only stages
+    # already achieved — and, when the CD-horn stage fired, in that stage's
+    # give-back frame (``target_level_db - hf.spend_db``), which is the level
+    # the branch will actually be trimmed back to. Grading the residue against
+    # the un-given-back median would ask the lift stage to re-deliver the whole
+    # spend the give-back is already returning for free.
+    lift = _lift_stage(
+        grid_hz, working_db, target_level_db - hf.spend_db, envelope,
+        band_mask, filters, vocabulary,
+    )
+    if lift.filters != tuple(filters):
+        filters = list(lift.filters)
+        # Rebuild ``working_db`` from the smoothed measurement and the WHOLE
+        # post-lift cascade rather than adding a delta: the stage can shrink a
+        # filter already folded into ``working_db``, so an incremental update
+        # would double-count it.
+        working_db = smoothed_db + 20.0 * np.log10(
+            np.maximum(
+                np.abs(complex_correction_response(tuple(filters), grid_hz)), 1e-12
+            )
+        )
+
     # N1 (adversarial review, 2026-07-24): an explicit raise, not a bare
     # `assert` -- this is a safety invariant on HARDWARE-BOUND output (a
     # filter here eventually reaches a real driver's EQ), and `assert` is
     # stripped entirely under `python -O`. A future bug in the shelf/PEQ/
-    # CD-horn stages above must still be caught in every runtime mode, not
-    # just an unoptimized one.
-    if any(f.gain > 0.0 for f in filters):
-        raise RuntimeError("linearization fit emitted a boost")
+    # CD-horn/lift stages above must still be caught in every runtime mode,
+    # not just an unoptimized one.
+    #
+    # PR-L5 made the invariant conditional on the VOCABULARY rather than
+    # unconditional. It did not weaken it: a cut-only vocabulary — every
+    # caller that does not explicitly ask for boost, including every pre-PR-L5
+    # one — is held to exactly the same raise as before.
+    if not vocabulary.allow_boost and any(f.gain > 0.0 for f in filters):
+        raise RuntimeError("linearization fit emitted a boost under a cut-only vocabulary")
 
-    # Per-filter cut cap is a HARD invariant on every emitted filter, and the
-    # total normalization budget can now legitimately exceed it (see
-    # MAX_NORMALIZATION_SPEND_DB), so re-prove it here rather than trusting each
-    # stage's own clamp — same explicit-raise posture as the cut-only check.
+    # Per-filter caps are HARD invariants on every emitted filter, and the
+    # total spend/boost can legitimately exceed them (see
+    # MAX_NORMALIZATION_SPEND_DB and PER_FILTER_BOOST_CAP_DB), so re-prove them
+    # here rather than trusting each stage's own clamp — same explicit-raise
+    # posture as the cut-only check.
     if any(f.gain < -PER_FILTER_CUT_CAP_DB - 1e-6 for f in filters):
         raise RuntimeError("linearization fit exceeded the per-filter cut cap")
+    if any(
+        f.gain > vocabulary.per_filter_boost_cap_db + 1e-6 for f in filters
+    ):
+        raise RuntimeError("linearization fit exceeded the per-filter boost cap")
 
     # The give-back this driver's correction actually removed from its own
     # reference (core) band — the SSOT the flow anchors its linearized trim on.
@@ -1380,6 +1988,15 @@ def fit_driver_linearization(
             for center, code in reason_summary.items()
         }
 
+    # "This correction costs N dB of maximum level" (PR-L5) — the SUM of the
+    # positive gains, which is the number the emitter charges. See the field's
+    # own comment for why the sum and not the realized cascade peak. Nothing
+    # when the fit is cut-only, which keeps every pre-PR-L5 fit's disclosure at
+    # a literal 0.0.
+    headroom_cost_db = float(
+        max(0.0, math.fsum(f.gain for f in filters if f.gain > 0.0))
+    )
+
     return LinearizationFit(
         role=envelope.role,
         filters=tuple(filters),
@@ -1401,4 +2018,13 @@ def fit_driver_linearization(
         hf_continuation_suppressed_reason=hf.suppressed_reason,
         measured_deficit_at_ceiling_db=hf.measured_deficit_at_ceiling_db,
         correction_giveback_db=correction_giveback_db,
+        headroom_cost_db=headroom_cost_db,
+        level_frame_offset_db=(
+            float(level_frame.offset_db.get(envelope.role, 0.0))
+            if level_frame is not None else 0.0
+        ),
+        lift_requested_db=lift.requested_db,
+        lift_from_reduced_cuts_db=lift.from_reduced_cuts_db,
+        lift_from_boost_db=lift.from_boost_db,
+        lift_suppressed_reason=lift.suppressed_reason,
     )

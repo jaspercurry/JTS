@@ -1107,17 +1107,43 @@ source, no drift.
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 | `driver_levels_disagree` | confirm seam | 0 (hard stop) | linearization-integrity PR-L4 item 1: after the committed trim the two drivers' realized levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Refused BEFORE the apply thread starts, so the speaker is untouched |
 | `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply |
+| `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself |
+| `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back |
+| `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
+| `correction_rollback_failed` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the probe found one of the three defects above AND the automatic rollback could not run (no binding, a refused restore, or a seam that raised). The correction is therefore **still applied**, and this row exists so the copy says so instead of promising a restore that did not happen. Names Undo as the manual action |
 
 **Auto-apply is no longer unconditional at the confirm seam.** PR-6b's
 `_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
 MEASURE's trust gates had already decided — true about the CAPTURE, silent
-about the CORRECTION built from it. `_assert_accountable` (PR-L4) runs the two
-rows above between the candidate build and the publish, so a refusal leaves no
-candidate for anything downstream to apply. Both raise through
+about the CORRECTION built from it. `_assert_accountable` runs its three pre-apply gates — PR-L5's level-frame
+agreement, then PR-L4's items 1 and 2, most-specific-first — between the
+candidate build and the publish, so a refusal leaves no candidate for anything
+downstream to apply. (The four `correction_*` rows are different: they fire
+after the apply, from the delta probe.) All three raise through
 `CrossoverV2Conductor._refuse`, which stamps `_last_failure_code`: the host's
 `CaptureBeginRefused` arm reads THAT, not the exception, and falls back to
 `relay_timeout` when it is unset — so raising any other way would render a
 deliberate refusal as a manufactured timeout.
+
+**The delta probe verifies the apply, and rolls it back itself** (PR-L5). The
+three `correction_*` rows above are the only refusals in this flow that fire
+after the speaker has already changed, so each one UNDOES the correction before
+it names itself — the household copy says "the previous sound has been put
+back" and that is already true when they read it. The rollback runs the same
+`handle_v2_restore` the Undo button runs (bound as the conductor's `rollback`
+seam by `bind_delta_probe_rollback`), never a second restore path that could
+drift from it; a conductor with no binding still refuses and says so on
+`event=correction.crossover_v2_delta_probe_rollback`.
+
+What the probe is, and what it is not: it classifies
+`measured − predicted` — the SAME comparison the `verify_out_of_tolerance`
+tracking check gates on, read off `ProgramAnalysis.verify_tracking_curve` so
+there is one construction and two consumers — but over **the band the
+correction actually commands something in**, where tracking looks only at the
+`[Fc/2, 2·Fc]` handoff window. On JTS3 that is the difference between seeing
+a 5–12 kHz shelf-realization defect and not: 2026-07-27's lived an octave and a
+half above tracking's band and no tolerance there could have caught it. Design
+and the verdict-priority rule: `jasper/active_speaker/delta_probe.py`.
 
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
@@ -1132,7 +1158,17 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(a
 journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_(opened|restored|restore_failed)'
 # Calibration handoff / uncalibrated warnings:
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
+# Accountability + delta probe (PR-L4/L5) — why a session refused, and what
+# the speaker actually did with the correction:
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_frame_refused|level_match_refused|prediction_refused|realized_level_match|delta_probe|delta_probe_rollback|delta_probe_restore)'
 ```
+
+`event=correction.crossover_v2_linearization_giveback` carries the shared
+level frame beside the trim it produced (`level_frame_system_db`,
+`level_frame_reference_role`, `level_frame_offset_db`, `headroom_cost_db`) — a
+large `level_frame_offset_db` is the 10 dB-dark shape being CORRECTED, not a
+new problem; a large `headroom_cost_db` is what the correction is spending of
+the speaker's maximum level to do it.
 
 ### Per-capture diagnostics — every capture logs its numbers
 

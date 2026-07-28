@@ -15,6 +15,8 @@ description for the offline sanity numbers.
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -25,24 +27,34 @@ from jasper.active_speaker.linearization_envelope import (
 )
 from jasper.active_speaker._common import DRIVER_CLASSES
 from jasper.active_speaker.linearization_fit import (
+    CUT_ONLY_VOCABULARY,
     HF_CONTINUATION_POLICY,
     HF_REALIZATION_TOLERANCE_DB,
     HF_SINGLE_SHELF_SPEND_CAP_DB,
     HF_SUPPRESSION_REASONS,
     HF_TAPER_MAX_DB,
+    LIFT_SUPPRESSION_REASONS,
     MAX_FILTERS_PER_DRIVER,
     MAX_NORMALIZATION_SPEND_DB,
+    PER_FILTER_BOOST_CAP_DB,
     PER_FILTER_CUT_CAP_DB,
+    _CUT_REDUCTION_EPS_DB,
+    _MIN_FILTER_GAIN_DB,
+    FitVocabulary,
     LinearizationFilter,
     LinearizationFit,
     _HF_MIN_OCCURRENCES,
+    _HIGHSHELF_Q,
     _core_or_fallback_mask,
     _highshelf_response_db,
     _ladder_smooth,
     _shelf_stage,
     complex_correction_response,
+    driver_core_level_db,
     fit_driver_linearization,
     linearization_filters_by_role,
+    reduce_cuts_for_lift,
+    solve_shared_level_frame,
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
@@ -1257,3 +1269,410 @@ def test_cd_horn_stage_is_role_agnostic():
     assert fit.role == "supertweeter"
     assert fit.hf_continuation_spend_db > 0.0
     assert fit.filters[0].biquad_type == "Lowshelf"
+
+
+# --------------------------------------------------------------------------- #
+# PR-L5 — the allowed vocabulary, the shared level frame, and the lift stage
+# --------------------------------------------------------------------------- #
+
+
+def _dip_response(depth_db: float = 6.0, center_hz: float = 1500.0, width=0.4):
+    """A driver with a real DIP — the shape a cut-only fit can never repair."""
+    db = -_bell(_NATIVE_FREQS_HZ, center_hz, depth_db, width)
+    resp = _driver_response("woofer", db)
+    return resp, _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+
+
+def test_the_default_vocabulary_is_cut_only():
+    """Every caller that does not explicitly ask for boost gets the fit it got
+    before boost existed. The default is the SAFE value, not the new one."""
+    assert CUT_ONLY_VOCABULARY.allow_boost is False
+    resp, envelope = _dip_response()
+    default = fit_driver_linearization(resp, envelope)
+    explicit = fit_driver_linearization(resp, envelope, vocabulary=CUT_ONLY_VOCABULARY)
+    assert default.to_dict() == explicit.to_dict()
+    assert all(f.gain <= 0.0 for f in default.filters)
+    assert default.headroom_cost_db == 0.0
+
+
+def test_a_cut_only_vocabulary_still_raises_on_a_boost():
+    """The hardware-bound invariant survives PR-L5 unchanged for a cut-only
+    vocabulary — an explicit raise, not a bare assert, so ``python -O`` cannot
+    strip it."""
+    import jasper.active_speaker.linearization_fit as fit_mod
+    from jasper.correction.peq import PEQ
+
+    resp, envelope = _dip_response()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            fit_mod, "design_peq",
+            lambda *a, **k: [PEQ(freq=1000.0, q=2.0, gain=+3.0)],
+        )
+        with pytest.raises(RuntimeError, match="cut-only vocabulary"):
+            fit_driver_linearization(resp, envelope)
+
+
+def test_a_boost_vocabulary_fills_a_dip_a_cut_only_fit_cannot():
+    """The doctrine amendment, end to end: "raise the tweeter" stops being
+    unrepresentable."""
+    resp, envelope = _dip_response(depth_db=6.0)
+    cut_only = fit_driver_linearization(resp, envelope)
+    boosted = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    assert cut_only.filters == ()
+    assert any(f.gain > 0.0 for f in boosted.filters)
+    # The dip is materially repaired, and the residual proves it.
+    assert boosted.residual_max_db < cut_only.residual_max_db - 3.0
+
+
+def test_total_boost_is_uncapped_but_one_filter_is_not():
+    """The owner's ruling, precisely: arbitrary caps on the CORRECTION go, the
+    per-filter realization bound stays. A gain past that bound raises rather
+    than being silently clamped — same posture as the cut side."""
+    import jasper.active_speaker.linearization_fit as fit_mod
+    from jasper.correction.peq import PEQ
+
+    resp, envelope = _dip_response()
+    vocab = FitVocabulary(allow_boost=True)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            fit_mod, "design_peq",
+            lambda *a, **k: [
+                PEQ(freq=1500.0, q=2.0, gain=PER_FILTER_BOOST_CAP_DB + 1.0)
+            ],
+        )
+        with pytest.raises(RuntimeError, match="per-filter boost cap"):
+            fit_driver_linearization(resp, envelope, vocabulary=vocab)
+
+
+def test_boost_cannot_fill_an_envelope_excluded_band():
+    """Null-exclusion stays a measured fact. The lift is clamped per bin by the
+    SAME ``allowed_depth_db`` the cut side honours, and that array is already
+    zero wherever the interference-null registry or the position screen
+    excluded a band — so this needs no separate null logic and cannot drift
+    from the cut side's."""
+    resp, _ = _dip_response(depth_db=8.0)
+    blocked = compose_envelope(
+        "woofer", resp, excited_band_hz=(150.0, 4000.0),
+        mic_tier="reference", driver_class="unknown",
+        excluded_bands_hz=((900.0, 2600.0),),
+    )
+    in_null = (blocked.freqs_hz >= 900.0) & (blocked.freqs_hz <= 2600.0)
+    assert not np.any(blocked.allowed_depth_db[in_null] > 0.05)
+    fit = fit_driver_linearization(
+        resp, blocked, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    assert all(f.gain <= 0.0 for f in fit.filters)
+    assert fit.headroom_cost_db == 0.0
+
+
+def test_reduce_cuts_for_lift_shrinks_a_cut_instead_of_stacking_a_boost():
+    """The first-class operation. Given a wanted lift where one of our own
+    filters cuts, the cut shrinks — no slot spent, no headroom spent."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    cut = LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=-6.0)
+    wanted = np.full_like(grid, 2.0)
+    reduced, delivered = reduce_cuts_for_lift(
+        (cut,), wanted, np.full_like(grid, 2.0), grid,
+    )
+    assert len(reduced) == 1
+    assert reduced[0].gain > cut.gain           # the cut shrank
+    assert reduced[0].gain < 0.0                # …but is still a cut
+    assert float(np.max(delivered)) == pytest.approx(2.0, abs=0.1)
+    # Nowhere did it deliver more lift than was permitted (up to the
+    # materiality slack the permitted test itself carries).
+    assert float(np.max(delivered)) <= 2.0 + _CUT_REDUCTION_EPS_DB
+
+
+def test_reduce_cuts_refuses_where_the_headroom_forbids_it():
+    """The safety constraint, and the reason a cut placed to tame a peak is
+    never unwound to fill an unrelated dip: raising that bin would simply bring
+    the peak back."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    cut = LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=-6.0)
+    reduced, delivered = reduce_cuts_for_lift(
+        (cut,), np.full_like(grid, 4.0), np.zeros_like(grid), grid,
+    )
+    assert reduced == (cut,)
+    assert float(np.max(delivered)) == 0.0
+
+
+def test_reduce_cuts_leaves_non_cutting_filters_alone():
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    boost = LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=+3.0)
+    reduced, delivered = reduce_cuts_for_lift(
+        (boost,), np.full_like(grid, 2.0), np.full_like(grid, 2.0), grid,
+    )
+    assert reduced == (boost,)
+    assert float(np.max(delivered)) == 0.0
+
+
+def test_reduce_cuts_uses_the_real_evaluator_not_a_linear_gain_model():
+    """A shelf's delivered lift is NOT linear in its gain, and assuming it is
+    errs in the unsafe direction. Pinned by comparing the reported delivery
+    against the same complex evaluator the emitter's graph realizes."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    shelf = LinearizationFilter(
+        biquad_type="Lowshelf", freq=4000.0, q=_HIGHSHELF_Q, gain=-9.0,
+    )
+    reduced, delivered = reduce_cuts_for_lift(
+        (shelf,), np.full_like(grid, 3.0), np.full_like(grid, 3.0), grid,
+    )
+    before = 20.0 * np.log10(np.abs(complex_correction_response((shelf,), grid)))
+    after = 20.0 * np.log10(np.abs(complex_correction_response(reduced, grid)))
+    assert np.allclose(delivered, np.maximum(after - before, 0.0), atol=1e-9)
+
+
+def test_the_lift_stage_is_inert_under_a_cut_only_vocabulary():
+    """Not a formality: a cuts-only flattening loop leaves the whole curve at
+    or BELOW its target, so every dip is a "deficit" by this stage's
+    arithmetic. Chasing it under a vocabulary that never intended to add level
+    would silently change what every pre-PR-L5 caller gets."""
+    resp, envelope = _dip_response()
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.lift_requested_db == 0.0
+    assert fit.lift_from_reduced_cuts_db == 0.0
+    assert fit.lift_from_boost_db == 0.0
+    assert fit.lift_suppressed_reason == ""
+
+
+def test_every_lift_suppression_reason_the_stage_returns_is_enumerated():
+    """The HF stage's own contract, applied to the lift stage: a new
+    suppression path cannot ship an un-enumerated reason string."""
+    import inspect
+    import jasper.active_speaker.linearization_fit as fit_mod
+
+    source = inspect.getsource(fit_mod._lift_stage)
+    # The reason is the LAST argument of every ``_Lift(...)`` the stage
+    # returns, so read those calls rather than every string in the function.
+    calls = re.findall(r"_Lift\((?:[^()]|\([^()]*\))*\)", source)
+    assert calls, "the lift stage must return _Lift results"
+    emitted = set()
+    for call in calls:
+        literals = re.findall(r'"([a-z_]*)"', call)
+        if literals:
+            emitted.add(literals[-1])
+    assert emitted - {""} <= LIFT_SUPPRESSION_REASONS
+    # …and every enumerated reason is actually reachable from the stage.
+    assert LIFT_SUPPRESSION_REASONS <= emitted
+
+
+def test_the_lift_stage_does_not_unwind_the_cd_horn_give_back():
+    """The CD-horn stage's Lowshelf is a DELIBERATE level move whose give-back
+    the trim returns — not a cut the lift stage may reclaim. The permitted-
+    headroom constraint protects it with no special case: after that stage the
+    sub-onset band already sits at the give-back frame's target, so there is no
+    headroom there to spend."""
+    mag = _cd_horn_db(_NATIVE_FREQS_HZ, _CD_HORN_ANCHOR_DB)
+    resp = _tweeter_response(mag, role="tweeter")
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="reference", driver_class="compression_horn",
+    )
+    cut_only = fit_driver_linearization(resp, envelope)
+    boosted = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    assert cut_only.filters == boosted.filters
+    assert boosted.hf_continuation_spend_db == cut_only.hf_continuation_spend_db
+    assert boosted.correction_giveback_db == pytest.approx(
+        cut_only.correction_giveback_db
+    )
+
+
+# --- the shared level frame ------------------------------------------------
+
+
+def test_the_shared_frame_puts_every_role_at_one_system_level():
+    """The structural close of PR-L4 item 1: ``target + trim`` is the SAME
+    number for every role, by construction rather than by later comparison."""
+    trims = {"woofer": 0.0, "tweeter": -24.74}
+    frame = solve_shared_level_frame({"woofer": -21.13, "tweeter": -7.24}, trims)
+    for role in ("woofer", "tweeter"):
+        assert frame.target_level_db[role] + trims[role] == pytest.approx(
+            frame.system_level_db
+        )
+
+
+def test_the_shared_frame_reproduces_the_2026_07_27_frame_error():
+    """Built from the incident's own numbers — the tweeter fitted at −7.24 dB
+    behind a −24.74 dB trim, against a woofer at −21.13 dB with no trim. The
+    frame reports 10.85 dB of disagreement, which is the 10.9 dB PR-L3
+    independently measured as the trim's own frame error on the same capture.
+    Two instruments, one number: that is what makes the offset trustworthy
+    enough to gate on."""
+    frame = solve_shared_level_frame(
+        {"woofer": -21.13, "tweeter": -7.24},
+        {"woofer": 0.0, "tweeter": -24.74},
+    )
+    assert frame.reference_role == "woofer"
+    assert frame.offset_db["woofer"] == pytest.approx(0.0)
+    assert frame.offset_db["tweeter"] == pytest.approx(10.85, abs=0.01)
+
+
+def test_the_shared_frame_never_cuts_a_driver_merely_to_match_another():
+    """The loudest proposal is the reference, so the offset is never negative:
+    only the driver that is actually out of place moves, and it moves UP. The
+    quietest reference would spend real max SPL to reach a level nothing
+    wanted."""
+    frame = solve_shared_level_frame({"a": -10.0, "b": -20.0, "c": -14.0}, {})
+    assert frame.reference_role == "a"
+    assert all(v >= 0.0 for v in frame.offset_db.values())
+    assert frame.offset_db["b"] == pytest.approx(10.0)
+
+
+def test_the_shared_frame_is_topology_agnostic():
+    """One role (a passive box's summed chain) is the trivial frame; three is
+    the same code. No way-count, no crossover, no role vocabulary."""
+    one = solve_shared_level_frame({"summed": -12.0}, {})
+    assert one.system_level_db == pytest.approx(-12.0)
+    assert one.offset_db["summed"] == pytest.approx(0.0)
+    three = solve_shared_level_frame(
+        {"woofer": -20.0, "midrange": -18.0, "tweeter": -22.0}, {},
+    )
+    assert set(three.offset_db) == {"woofer", "midrange", "tweeter"}
+    assert three.reference_role == "midrange"
+
+
+def test_an_empty_frame_raises_rather_than_being_invented():
+    with pytest.raises(ValueError, match="at least one role"):
+        solve_shared_level_frame({}, {})
+
+
+def test_driver_core_level_matches_the_fits_own_target_exactly():
+    """Not a second estimator: the frame and the fit must not be able to
+    disagree about where a driver sits."""
+    resp, envelope = _dip_response()
+    fit = fit_driver_linearization(resp, envelope)
+    assert driver_core_level_db(resp, envelope) == pytest.approx(
+        fit.target_level_db
+    )
+
+
+def test_an_unmeasurable_driver_is_left_out_of_the_frame_not_defaulted():
+    """``None``, never 0.0. A driver whose envelope allows correction nowhere
+    has an UNKNOWN level, and a placeholder would let one unmeasurable driver
+    move every other one."""
+    resp, envelope = _dip_response()
+    empty = compose_envelope(
+        "woofer", resp, excited_band_hz=(150.0, 4000.0),
+        mic_tier="reference", driver_class="unknown",
+        excluded_bands_hz=((0.0, 30000.0),),
+    )
+    assert driver_core_level_db(resp, empty) is None
+    assert driver_core_level_db(resp, envelope) is not None
+
+
+def test_the_frame_offset_is_reported_per_role_on_the_fit():
+    resp, envelope = _dip_response()
+    frame = solve_shared_level_frame({"woofer": -3.0, "tweeter": 0.0}, {})
+    fit = fit_driver_linearization(resp, envelope, level_frame=frame)
+    assert fit.level_frame_offset_db == pytest.approx(3.0)
+    assert fit.to_dict()["level_frame_offset_db"] == pytest.approx(3.0)
+    # No frame supplied -> 0.0, and the fit is otherwise unchanged.
+    assert fit_driver_linearization(resp, envelope).level_frame_offset_db == 0.0
+
+
+def test_reduce_cuts_survives_a_production_shaped_headroom_array():
+    """**N2 regression.** The permitted-headroom test is per-bin over the WHOLE
+    grid, and a biquad's response never reaches exactly zero — a cut at 1 kHz
+    still leaks thousandths of a dB at 20 kHz. At a float-noise epsilon a
+    single such bin, with fractionally negative permitted headroom, vetoed the
+    entire shrink: measured 0.00 of a wanted 4.00 dB. With a materiality
+    epsilon the operation delivers.
+
+    The headroom array here is production-shaped — mostly positive, with a
+    sliver of NEGATIVE residual at the extremes, which is exactly what
+    ``target − working`` looks like after a real flattening loop.
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    cut = LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=-6.0)
+    headroom = np.full_like(grid, 4.0)
+    headroom[grid > 15_000.0] = -0.0034   # the measured leakage-scale residual
+    reduced, delivered = reduce_cuts_for_lift(
+        (cut,), np.full_like(grid, 4.0), headroom, grid,
+    )
+    assert float(np.max(delivered)) > 1.0, "a sliver of residual must not veto"
+    assert reduced[0].gain > cut.gain
+
+
+def test_reduce_cuts_still_refuses_a_material_overshoot():
+    """The materiality epsilon must not become a licence: a genuinely negative
+    headroom (an order above the epsilon) still forbids the shrink."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    cut = LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=-6.0)
+    headroom = np.full_like(grid, 4.0)
+    headroom[np.argmin(np.abs(grid - 1000.0))] = -1.0
+    reduced, delivered = reduce_cuts_for_lift(
+        (cut,), np.full_like(grid, 4.0), headroom, grid,
+    )
+    assert reduced == (cut,)
+    assert float(np.max(delivered)) == 0.0
+
+
+def test_the_cut_reduction_epsilon_is_the_modules_own_materiality_floor():
+    """One definition of "this per-bin dB figure is noise, not an allowance"
+    across the envelope and the lift stage."""
+    import jasper.active_speaker.linearization_fit as fit_mod
+
+    assert _CUT_REDUCTION_EPS_DB == fit_mod._ENVELOPE_NONZERO_EPS_DB
+    # Comfortably above real biquad leakage, comfortably below the smallest
+    # gain this module will emit — so it can mask neither a real overshoot nor
+    # a real filter.
+    assert 0.0034 < _CUT_REDUCTION_EPS_DB < _MIN_FILTER_GAIN_DB
+
+
+def _two_dip_response(depth_db: float = 3.0):
+    """A driver with TWO separated dips — the shape whose fit makes the two
+    candidate headroom contracts diverge (two bells at different centres never
+    reach their combined height anywhere). Measured on this fixture: two boosts
+    of +2.90 and +2.68 dB, sum 5.58, realized cascade peak 2.91."""
+    db = -(
+        depth_db * np.exp(-0.5 * ((np.log2(_NATIVE_FREQS_HZ / 700.0) / 0.25) ** 2))
+        + depth_db * np.exp(-0.5 * ((np.log2(_NATIVE_FREQS_HZ / 5000.0) / 0.25) ** 2))
+    )
+    resp = _driver_response("woofer", db)
+    return resp, _envelope("woofer", resp, excited_band_hz=(150.0, 8000.0))
+
+
+def test_headroom_cost_is_the_sum_the_emitter_charges_not_the_cascade_peak():
+    """**S2.** The disclosed number and the charged number are one number.
+
+    Pinned on a fixture where the two candidate contracts DIVERGE — an
+    earlier version used a single-boost fit, where sum and peak are trivially
+    equal, so it would have passed against either implementation and regressed
+    nothing (adversarial review SF2).
+
+    The SUM is correct because overlapping boosts at one frequency DO add, and
+    that is the case the headroom has to survive; the realized peak understates
+    it whenever the boosts sit apart. Reporting the peak would have told a
+    household its correction cost half what the speaker actually gave up.
+    """
+    from jasper.active_speaker.camilla_yaml import linearization_headroom_db
+
+    resp, envelope = _two_dip_response()
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    boosts = [f.gain for f in fit.filters if f.gain > 0.0]
+    assert len(boosts) >= 2, "the contracts only diverge with separated boosts"
+    cascade_peak_db = float(np.max(20.0 * np.log10(
+        np.abs(complex_correction_response(fit.filters, envelope.freqs_hz))
+    )))
+    # The fixture really does separate the two contracts…
+    assert sum(boosts) > cascade_peak_db + 1.0, (sum(boosts), cascade_peak_db)
+    # …and the field follows the SUM, not the peak.
+    assert fit.headroom_cost_db == pytest.approx(sum(boosts))
+    assert fit.headroom_cost_db != pytest.approx(cascade_peak_db, abs=0.5)
+    # …which is literally the emitter's own charge for this fit, and survives
+    # the JSON round-trip the candidate takes to reach a household.
+    assert fit.headroom_cost_db == pytest.approx(
+        linearization_headroom_db({fit.role: [f.to_dict() for f in fit.filters]})
+    )
+    assert fit.to_dict()["headroom_cost_db"] == fit.headroom_cost_db
+
+
+def test_headroom_cost_is_zero_for_every_cut_only_fit():
+    resp, envelope = _dip_response()
+    assert fit_driver_linearization(resp, envelope).headroom_cost_db == 0.0

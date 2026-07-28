@@ -49,6 +49,7 @@ from jasper.output_topology import (
 
 from ._common import issue as _issue
 from .camilla_yaml import (
+    BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
@@ -1083,15 +1084,100 @@ def _baseline_gain_limiter_safe(
     )
 
 
+# Float slack (dB) on the boost-vs-headroom proof. The emitter writes both
+# numbers with 3-decimal formatting, so an exactly-absorbed boost can read a
+# hair over its allowance after the YAML round-trip; this keeps a graph that
+# is correct by construction from failing its own proof on the last digit.
+_LINEARIZATION_BOOST_EPS_DB: float = 1e-3
+
+
+def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
+    """How much positive linearization gain THIS graph has already paid for.
+
+    The magnitude of the program-domain ``active_baseline_headroom`` gain —
+    the pre-split common attenuation the emitter folds baseline headroom,
+    room-correction boost, and (since PR-L5) linearization boost into —
+    **minus the contributors that are not linearization's**. A branch whose
+    boosts total no more than what is left cannot drive the chain past unity,
+    so the CamillaDSP 0 dB ceiling holds by arithmetic rather than by a policy
+    number written down twice.
+
+    Attributing the share matters, and reading the whole magnitude was wrong
+    (adversarial review S1, reproduced): that gain also absorbs room-correction
+    boost, so on a cut-only linearization sitting behind, say, 8 dB of room
+    boost, a tampered +5 dB linearization filter "spent" headroom that was
+    already committed to the room PEQs and the graph proved safe while the two
+    together could clip. Room-PEQ boost is recoverable from the graph — the
+    filters are named and their gains are readable — so it is subtracted here,
+    exactly as the emitter added it.
+
+    **Residual slack, stated rather than hidden**: ``output_trim_db`` (the
+    household's manual headroom / loudness-match attenuation) is also folded
+    into the same gain and is NOT recoverable from the graph. The emitter only
+    ever adds it when preference EQ is present, so on a graph with no
+    preference filters this allowance is exact; with preference EQ it is
+    generous by at most that trim. Generous, never tight — the failure
+    direction is a tamper spending the household's own trim as boost headroom,
+    which is bounded and far narrower than the pre-fix behaviour.
+
+    **One stated coincidence**: the emitter adds a CALLER-SUPPLIED
+    ``baseline_headroom_db`` (validated 0..40), while this subtracts the module
+    DEFAULT :data:`~jasper.active_speaker.camilla_yaml.BASELINE_HEADROOM_DB`.
+    They agree only because every production emit path takes the default, which
+    is 0.0 — pinned by a test rather than left to be discovered. A caller that
+    passed a non-default value would make this allowance generous by exactly
+    that amount (never tight, the same direction as the ``output_trim_db``
+    slack above), and the pin is what would catch it.
+
+    Returns 0.0 when the filter is absent or non-negative — which is the
+    driver-domain (follower) graph, where the leader owns Layer B/C and no
+    program-domain headroom exists. That graph therefore proves the ORIGINAL
+    cut-only invariant, which is the correct fail-closed answer: a follower
+    has nothing to absorb a boost with.
+    """
+    if _filter_type(payload, "active_baseline_headroom") != "Gain":
+        return 0.0
+    gain = _strict_finite_number(
+        _filter_params(payload, "active_baseline_headroom").get("gain")
+    )
+    if gain is None or gain >= 0.0:
+        return 0.0
+    absorbed_db = -float(gain)
+    filters = payload.get("filters")
+    room_boost_db = 0.0
+    if isinstance(filters, Mapping):
+        for name in filters:
+            if not isinstance(name, str) or not name.startswith("room_peq"):
+                continue
+            room_gain = _strict_finite_number(
+                _filter_params(payload, name).get("gain")
+            )
+            if room_gain is not None and room_gain > 0.0:
+                room_boost_db += float(room_gain)
+    return max(0.0, absorbed_db - BASELINE_HEADROOM_DB - room_boost_db)
+
+
 def _linearization_filter_safe(
-    payload: dict[str, Any], *, name: str, biquad_types: tuple[str, ...],
+    payload: dict[str, Any],
+    *,
+    name: str,
+    biquad_types: tuple[str, ...],
+    max_gain_db: float,
 ) -> bool:
     """One named linearization Biquad proves its declared type is one of the
-    allowed ``biquad_types`` for its slot + the cut-only invariant (gain <= 0)
-    -- the same posture ``linearization_fit.fit_driver_linearization`` enforces
-    at fit time, re-proved independently here against the emitted graph. The
-    shelf slot allows Highshelf OR Lowshelf (#1668 CD-horn backbone); the peak
-    slot allows Peaking; the taper slot allows Highshelf."""
+    allowed ``biquad_types`` for its slot, and that its gain is inside what
+    this graph can carry -- the same posture
+    ``linearization_fit.fit_driver_linearization`` enforces at fit time,
+    re-proved independently here against the emitted graph. The shelf slot
+    allows Highshelf OR Lowshelf (#1668 CD-horn backbone); the peak slot
+    allows Peaking; the taper slot allows Highshelf.
+
+    ``max_gain_db`` replaced a hardcoded ``gain <= 0.0`` in PR-L5. It is not a
+    loosening of the rail, it is the rail expressed as the physical quantity
+    it always stood for: cuts are unconditionally safe (any negative gain
+    passes, as before), and a boost passes only up to the attenuation the
+    graph itself provably applies ahead of the split. On a graph with no such
+    attenuation the allowance is 0.0 and this is bit-for-bit the old check."""
 
     if _filter_type(payload, name) != "Biquad":
         return False
@@ -1099,7 +1185,7 @@ def _linearization_filter_safe(
     if str(params.get("type") or "") not in biquad_types:
         return False
     gain = _strict_finite_number(params.get("gain"))
-    return gain is not None and gain <= 0.0
+    return gain is not None and gain <= max_gain_db
 
 
 def _consume_linearization_chain(
@@ -1130,22 +1216,39 @@ def _consume_linearization_chain(
 
     Returns ``(new_cursor, ok)``. ``ok`` is False iff a recognized
     linearization-named filter proves UNSAFE (wrong Biquad subtype for its
-    slot, or positive gain) — fail closed, exactly like every other named-
-    filter proof in this module. The shelf slot accepts Highshelf or Lowshelf;
-    the taper slot accepts only Highshelf; both, like the peaks, must be
-    non-positive gain. A name at ``cursor`` that does not match the
-    linearization naming convention is not an error: zero filters are
-    consumed, and the ordinary tail check the caller runs next decides
-    whether what remains (unshifted) is a legal chain.
+    slot, or gain outside what the graph can carry) — fail closed, exactly
+    like every other named-filter proof in this module. The shelf slot accepts
+    Highshelf or Lowshelf; the taper slot accepts only Highshelf. A name at
+    ``cursor`` that does not match the linearization naming convention is not
+    an error: zero filters are consumed, and the ordinary tail check the caller
+    runs next decides whether what remains (unshifted) is a legal chain.
+
+    **Boost accounting (PR-L5).** Cuts are unconditionally safe. A boost is
+    safe only if the graph attenuates the program by at least as much ahead of
+    the split, so this walk sums the chain's POSITIVE gains and proves the
+    total against :func:`_linearization_boost_allowance_db` — the same
+    per-branch total (not per-filter maximum) the emitter absorbs in
+    ``camilla_yaml.linearization_headroom_db``, because overlapping boosts in
+    one chain add. On a graph with no program-domain headroom the allowance is
+    0.0 and this is the original cut-only proof exactly.
     """
 
     index = cursor
+    allowance_db = _linearization_boost_allowance_db(payload)
+    boost_total_db = 0.0
+
+    def _gain_db(name: str) -> float:
+        value = _strict_finite_number(_filter_params(payload, name).get("gain"))
+        return float(value) if value is not None else 0.0
+
     shelf_name = _linearization_shelf_name(role)
     if index < len(chain) and chain[index] == shelf_name:
         if not _linearization_filter_safe(
             payload, name=shelf_name, biquad_types=("Highshelf", "Lowshelf"),
+            max_gain_db=allowance_db,
         ):
             return index, False
+        boost_total_db += max(0.0, _gain_db(shelf_name))
         index += 1
     peak_number = 1
     while index < len(chain):
@@ -1154,17 +1257,23 @@ def _consume_linearization_chain(
             break
         if not _linearization_filter_safe(
             payload, name=peak_name, biquad_types=("Peaking",),
+            max_gain_db=allowance_db,
         ):
             return index, False
+        boost_total_db += max(0.0, _gain_db(peak_name))
         index += 1
         peak_number += 1
     taper_name = _linearization_taper_name(role)
     if index < len(chain) and chain[index] == taper_name:
         if not _linearization_filter_safe(
             payload, name=taper_name, biquad_types=("Highshelf",),
+            max_gain_db=allowance_db,
         ):
             return index, False
+        boost_total_db += max(0.0, _gain_db(taper_name))
         index += 1
+    if boost_total_db > allowance_db + _LINEARIZATION_BOOST_EPS_DB:
+        return index, False
     return index, True
 
 

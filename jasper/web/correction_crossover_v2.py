@@ -1166,6 +1166,20 @@ def _finite(value: Any) -> float | None:
     return number if number == number and abs(number) != float("inf") else None
 
 
+def _candidate_headroom_cost_db(linearization: Any) -> float:
+    """The applied correction's disclosed max-level cost, dB (PR-L5).
+
+    Thin adapter over the fit module's own reducer — defined there once so this
+    browser payload and the conductor's cannot disagree about a
+    household-facing number.
+    """
+    from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
+
+    if not isinstance(linearization, Mapping):
+        return 0.0
+    return worst_headroom_cost_db(linearization)
+
+
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
     """Gauge fix (2026-07-24): per-role OBSERVE-layer octave deficits
     (``LinearizationFit.observe_octave_summary`` — already computed by the
@@ -1222,6 +1236,21 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # Gauge fix (2026-07-24): per-role top-octave deficits (the number
         # that says "the top octave is 9 dB down and nothing corrected it").
         "linearization_octaves": _candidate_octave_summary(candidate.linearization),
+        # "This correction costs N dB of maximum level" (linearization-integrity
+        # PR-L5). The owner's ruling on boost is that headroom spend is
+        # DISCLOSED, never silently limited — and a number that only reaches the
+        # journal is not disclosed to the household that owns the speaker. This
+        # is the payload the envelope's own screens read, so putting it here is
+        # what makes the ruling true rather than merely intended.
+        #
+        # The WORST branch's charge, matching the emitter's own worst-branch
+        # rule (``camilla_yaml.linearization_headroom_db``): the driver chains
+        # run in parallel after the split, so the graph gives up the largest
+        # branch's boost, not the sum across branches. 0.0 for every cut-only
+        # correction, which is every correction before PR-L5 — present and
+        # zero rather than absent, so a surface never has to guess whether the
+        # field is missing or the cost is nothing.
+        "headroom_cost_db": _candidate_headroom_cost_db(candidate.linearization),
     }
 
 
@@ -3216,6 +3245,7 @@ def prepare_v2_session(
                 publish_cloud=bind_cloud_publisher(
                     evidence_store, relay_session_id, refs
                 ),
+                rollback=bind_delta_probe_rollback(run_async, camilla_factory),
             ),
             tier=plan_shape.tier,
             # The conductor's index→phase map is built from the SAME resolved
@@ -3592,6 +3622,49 @@ def handle_v2_apply(
         candidate_fingerprint=expected,
     )
     return payload
+
+
+def bind_delta_probe_rollback(run_async: Any, camilla_factory: Any) -> Any:
+    """The conductor's ``rollback`` seam (linearization-integrity PR-L5).
+
+    Runs the SAME restore the household's Undo button runs — one restore path,
+    not a second one that could drift from it — and returns True when the
+    previous profile is back on the speaker. The only difference is who
+    pressed it: here the delta probe did, because it measured that the applied
+    correction is not doing what its own filters commanded.
+
+    Catches :class:`CrossoverV2Refused`, which is the ordinary outcome for an
+    automatic caller — a first-ever apply has nothing stashed to go back to,
+    and a changed output topology makes the stash unsafe to reload — and
+    reports "not restored" so the conductor's refusal still reaches the
+    household with the Undo button on it. A rollback that could not run must
+    not swallow the verdict that asked for it.
+
+    It does NOT claim to catch everything: an OSError from the CamillaDSP
+    socket or a malformed stash still propagates, and the conductor's own
+    ``_delta_probe_refusal`` catches that wider family on the other side of
+    the seam (it has to — a conductor with a different binding gets the same
+    protection). Two honest halves rather than one dishonest "never raises".
+    """
+
+    def _rollback(reason: str) -> bool:
+        try:
+            payload = handle_v2_restore(run_async, camilla_factory)
+        except CrossoverV2Refused as exc:
+            log_event(
+                logger, "correction.crossover_v2_delta_probe_restore_refused",
+                level=logging.WARNING, reason=reason, detail=str(exc),
+            )
+            return False
+        restored = payload.get("status") == "restored"
+        log_event(
+            logger, "correction.crossover_v2_delta_probe_restore",
+            level=logging.WARNING if not restored else logging.INFO,
+            reason=reason, status=payload.get("status"),
+        )
+        return restored
+
+    return _rollback
 
 
 def handle_v2_restore(
