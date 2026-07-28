@@ -399,7 +399,8 @@ class PollState:
     # Session-spanning plans: the phone's current
     # `begin_capture {index, attempt}` request context, and the relay's
     # per-index blob summary (`{"<capture_index>": {size, integrity}}`).
-    # Both `None` on v2 sessions — v2 readers never touch them.
+    # Both `None` on a plan-free session — single-capture readers never
+    # touch them.
     begin_capture: dict | None = None
     blobs: dict | None = None
 
