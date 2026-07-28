@@ -1660,9 +1660,14 @@ def build_crossover_sweep_spec(
 
     ``guided_captures`` (> 0) declares that this summed session is a GUIDED
     SPATIAL CLOUD of that many prompted CAPTURES — the count the phone itself
-    counts down ("measurement 4 of 16"), NOT the smaller number of distinct mic
-    positions the conductor thinks in (its per-entry screens say "Spot 3 of
-    9"). The consent copy is written against captures because that is what the
+    counts down ("Measurement 4 of 16" at the Full tier's shipped defaults,
+    "Measurement 4 of 7" on the flow-simplification Express tier), NOT the
+    smaller number of distinct mic positions the conductor thinks in.
+    (Flow-simplification §2.1 retired the older per-group "Spot i of n"
+    counter this comment used to contrast against — every entry now carries
+    the SAME single, server-derived ``screen.progress`` counter, which is
+    already the capture count this paragraph describes, not a position
+    count.) The consent copy is written against captures because that is what the
     household is promising about: one held-still sweep each. It selects the
     consent surface to match: the placement instruction, the steps, the button, and the
     acknowledgement policy/label all describe a walk instead of a stationary

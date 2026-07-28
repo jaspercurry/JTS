@@ -456,4 +456,115 @@ check(
   "(g) click-swallowing: runAction ran to completion and the row re-enabled",
 );
 
+// --- (h) tier chooser: description + Recommended badge (flow-simplification
+// PR-U3, S1/S2 fixes from the adversarial review of PR #1780) render via a
+// dedicated `.tier-choices` grid of `.measurement-row` cards — equal-width,
+// flush-left peers, badge the only differentiator, no duplicated label — and
+// every OTHER action (every scenario above — none carries `description`)
+// renders as a bare button/link, unchanged. -------------------------------
+const recommendedTierAction = {
+  id: "start_v2_session_full",
+  label: "Full measurement",
+  description:
+    "About 11 min — 16 measurements; re-checks the result at several spots around the mark.",
+  recommended: true,
+  endpoint: "/correction/crossover/v2/session",
+  body: { tier: "full" },
+};
+const otherTierAction = {
+  id: "start_v2_session_express",
+  label: "Quick tune",
+  description: "About 5 min — 7 measurements; confirms the result at the mark.",
+  recommended: false,
+  endpoint: "/correction/crossover/v2/session",
+  body: { tier: "express" },
+};
+render({
+  verdict_text: "Choose how thorough a measurement to run below.",
+  steps: [],
+  nudges: [],
+  relay: null,
+  next_action: recommendedTierAction,
+  alternate_actions: [otherTierAction],
+});
+// S1: the action row itself holds ONE dedicated container, not two
+// independently-sized/right-aligned cards.
+check(
+  actionRowChildren().length === 1 && actionRowChildren()[0].className === "tier-choices",
+  "(h) tier chooser: the two cards render inside one dedicated .tier-choices container",
+);
+const tierRows = actionRowChildren()[0].children;
+check(tierRows.length === 2, "(h) tier chooser: two rows render, one per tier");
+const [primaryRow, otherRow] = tierRows;
+check(
+  primaryRow.className === "measurement-row" && otherRow.className === "measurement-row",
+  "(h) tier chooser: both wrap in the shared measurement-row shape (description present)",
+);
+const [primaryText, primaryButton] = primaryRow.children;
+const [primaryHead, primaryMeta] = primaryText.children;
+// S2: title + badge sit in their own flex head row (gap 0.6rem, mirroring
+// wake_setup.py's .wake-row__head), not a zero-gap child of the title itself.
+check(
+  primaryHead.className === "measurement-row__head",
+  "(h) tier chooser: title + badge share a dedicated flex head row",
+);
+const [primaryTitle] = primaryHead.children;
+check(
+  primaryTitle.className === "measurement-row__title",
+  "(h) tier chooser: the title paragraph uses the shared title class",
+);
+check(
+  primaryTitle.textContent === "Full measurement",
+  "(h) tier chooser: the title text is the action's label",
+);
+check(
+  primaryHead.children.length === 2 && primaryHead.children[1].className === "badge"
+    && primaryHead.children[1].textContent === "Recommended",
+  "(h) tier chooser: the recommended action's head carries a Recommended badge",
+);
+check(
+  primaryMeta.className === "measurement-row__meta" && primaryMeta.textContent === recommendedTierAction.description,
+  "(h) tier chooser: the meta line is the action's one-line claims description, verbatim",
+);
+// S2: the button no longer repeats the row's own title.
+check(
+  primaryButton.textContent === "Start",
+  "(h) tier chooser: the control is a short 'Start' CTA, not a duplicate of the row title",
+);
+// S1: both cards are equal-weight peers — the badge is the ONLY visual
+// differentiator, so both buttons carry the SAME class.
+check(
+  String(primaryButton.className).includes("btn--primary"),
+  "(h) tier chooser: the recommended action's own button is primary",
+);
+const [otherText, otherButton] = otherRow.children;
+const [otherHead] = otherText.children;
+check(
+  otherHead.children.length === 1,
+  "(h) tier chooser: the non-recommended action's head carries no badge",
+);
+check(
+  String(otherButton.className).includes("btn--primary")
+    && otherButton.className === primaryButton.className,
+  "(h) tier chooser: the non-recommended action's button matches the recommended one's class — badge is the only differentiator",
+);
+check(!relayLinkVisible(), "(h) tier chooser: no relay in flight, nothing to hide");
+
+// Every earlier scenario's actions had no `description` — confirm those
+// still render as bare buttons (no .tier-choices/.measurement-row wrapper
+// introduced by this change).
+render({
+  verdict_text: "Ready",
+  steps: [],
+  nudges: [],
+  relay: null,
+  next_action: nextAction,
+  alternate_actions: [],
+});
+check(
+  actionRowChildren()[0].className !== "measurement-row"
+    && actionRowChildren()[0].className !== "tier-choices",
+  "(h) tier chooser: an action with no description still renders as a bare control",
+);
+
 console.log(JSON.stringify({ ok: true, passed }));

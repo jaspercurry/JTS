@@ -241,72 +241,138 @@ function renderCandidateReview(review) {
   );
 }
 
+// Wraps a rendered action `control` (button/link/form) in the shared
+// `.measurement-row` title/meta shape when the action carries a
+// `description` — a one-line claim, so far only the microphone_check
+// screen's tier chooser (flow-simplification PR-U3, crossover_envelope_v2.py's
+// `_tier_choice_actions`). Every other action on every other screen (Try
+// again, Undo, Re-measure, Continue, ...) has no `description` and this
+// returns `control` untouched — no other screen's markup changes.
+//
+// S2 fix (adversarial review of PR #1780): the row's own title already
+// carries the tier's full name, so the control need not repeat it — a
+// "Quick tune" title above a "Quick tune" button read as a duplicated
+// label. Shortening the control to "Start" removes the duplication without
+// losing information (the title + one-line description say everything the
+// control's own text would have).
+//
+// The badge sits in its own `.measurement-row__head` flex row with the
+// title (gap 0.6rem), mirroring wake_setup.py's `.wake-row__head` convention
+// (deploy/assets/wake/wake.css) rather than the earlier zero-gap inline
+// child. Reuses the existing `.measurement-row`/`.measurement-row__title`/
+// `.measurement-row__meta` classes (the candidate-review rows already use
+// them) and the shared `.badge` pill (app.css) for "Recommended"; only
+// `.measurement-row__head` (crossover.css) is new, scoped to this page like
+// its other single-page visuals.
+function wrapChoice(action, control) {
+  if (!action.description) return control;
+  control.textContent = 'Start';
+  const head = el('div', {class: 'measurement-row__head'}, [
+    el('p', {class: 'measurement-row__title', text: action.label || 'Continue'}),
+    ...(action.recommended ? [el('span', {class: 'badge', text: 'Recommended'})] : []),
+  ]);
+  return el('div', {class: 'measurement-row'}, [
+    el('div', {}, [
+      head,
+      el('p', {class: 'measurement-row__meta', text: action.description}),
+    ]),
+    control,
+  ]);
+}
+
 function renderActions(primary, alternates = []) {
   els.action.replaceChildren();
   const actions = [primary, ...(Array.isArray(alternates) ? alternates : [])]
     .filter(Boolean);
+  // S1 fix (adversarial review of PR #1780): choice cards (tier-chooser
+  // actions, carrying `description`) collect separately from plain actions
+  // and render inside a dedicated `.tier-choices` grid — one column, equal
+  // width, flush-left at every breakpoint — rather than `#crossover-action`'s
+  // own `flex; justify-content: flex-end` row, which sized each card to its
+  // own content and right-aligned them, so the shorter (often the
+  // Recommended) card rendered narrower and visibly indented next to the
+  // other. Every other screen's plain actions are unaffected: with no
+  // `description` present, `choices` stays empty and this collapses to the
+  // original per-action append.
+  const choices = [];
   actions.forEach((action, index) => {
-    const className = index === 0 ? 'btn btn--primary' : 'btn btn--ghost';
+    // Choice cards are equal-weight peers — the household picks ONE of two
+    // legitimate options, not a primary path plus a subordinate escape
+    // hatch — so both render as `btn--primary` and the Recommended badge is
+    // the ONLY visual differentiator (S1). Every other action keeps the
+    // existing first-action-is-primary convention.
+    const className = action.description
+      ? 'btn btn--primary'
+      : (index === 0 ? 'btn btn--primary' : 'btn btn--ghost');
+    let control;
     if (action.href) {
-      els.action.append(el('a', {
+      control = el('a', {
         class: className,
         href: action.href,
         text: action.label || 'Continue',
-      }));
-      return;
-    }
-    const fields = Array.isArray(action.fields) ? action.fields : [];
-    if (!fields.length) {
-      const button = el('button', {
-        class: className,
-        type: 'button',
-        disabled: busy || action.enabled === false,
-        text: action.label || 'Continue',
       });
-      button.addEventListener('click', () => runAction(action, button));
-      els.action.append(button);
-      return;
+    } else {
+      const fields = Array.isArray(action.fields) ? action.fields : [];
+      if (!fields.length) {
+        const button = el('button', {
+          class: className,
+          type: 'button',
+          disabled: busy || action.enabled === false,
+          text: action.label || 'Continue',
+        });
+        button.addEventListener('click', () => runAction(action, button));
+        control = button;
+      } else {
+        const form = el('form', {class: 'action-form'});
+        const inputs = [];
+        fields.forEach((field, fieldIndex) => {
+          const inputId = `crossover-action-${index}-${fieldIndex}`;
+          const inputAttrs = {
+            id: inputId,
+            type: field.type || 'text',
+            name: field.name || '',
+            step: field.step || 'any',
+          };
+          if (field.required) inputAttrs.required = '';
+          const input = el('input', inputAttrs);
+          inputs.push({field, input});
+          form.append(el('div', {class: 'field'}, [
+            el('label', {
+              for: inputId,
+              text: field.label || field.name || 'Value',
+            }),
+            input,
+          ]));
+        });
+        const button = el('button', {
+          class: className,
+          type: 'submit',
+          disabled: busy || action.enabled === false,
+          text: action.label || 'Continue',
+        });
+        form.append(button);
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          if (!form.reportValidity()) return;
+          const body = {...(action.body || {})};
+          inputs.forEach(({field, input}) => {
+            body[field.name] = field.type === 'number'
+              ? Number(input.value) : input.value;
+          });
+          runAction({...action, body}, button);
+        });
+        control = form;
+      }
     }
-    const form = el('form', {class: 'action-form'});
-    const inputs = [];
-    fields.forEach((field, fieldIndex) => {
-      const inputId = `crossover-action-${index}-${fieldIndex}`;
-      const inputAttrs = {
-        id: inputId,
-        type: field.type || 'text',
-        name: field.name || '',
-        step: field.step || 'any',
-      };
-      if (field.required) inputAttrs.required = '';
-      const input = el('input', inputAttrs);
-      inputs.push({field, input});
-      form.append(el('div', {class: 'field'}, [
-        el('label', {
-          for: inputId,
-          text: field.label || field.name || 'Value',
-        }),
-        input,
-      ]));
-    });
-    const button = el('button', {
-      class: className,
-      type: 'submit',
-      disabled: busy || action.enabled === false,
-      text: action.label || 'Continue',
-    });
-    form.append(button);
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      if (!form.reportValidity()) return;
-      const body = {...(action.body || {})};
-      inputs.forEach(({field, input}) => {
-        body[field.name] = field.type === 'number'
-          ? Number(input.value) : input.value;
-      });
-      runAction({...action, body}, button);
-    });
-    els.action.append(form);
+    if (action.description) {
+      choices.push(wrapChoice(action, control));
+    } else {
+      els.action.append(control);
+    }
   });
+  if (choices.length) {
+    els.action.append(el('div', {class: 'tier-choices'}, choices));
+  }
 }
 
 // `suppressConnectAffordance` keeps the relay ACTIVE (so polling continues and

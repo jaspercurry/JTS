@@ -79,6 +79,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -92,6 +93,7 @@ from jasper.active_speaker.linearization_fit import (
     complex_correction_response,
     fit_driver_linearization,
 )
+from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
@@ -5641,7 +5643,8 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     than it might have. The restore ladder ("exact" then the -60 dBFS emergency
     floor) and the restore-once latch are untouched.
 
-    At the shipped 16-entry cloud this is 1800 + 13*120 = 3360 s; at the
+    At the Full tier's shipped 16-entry cloud this is 1800 + 13*120 = 3360 s;
+    at the Express tier's 7-entry cloud, 1800 + 4*120 = 2280 s; at the
     19-entry maximum the unclamped value would be 3720 s and the plan's hard
     cap binds at 3600 s.
     """
@@ -5663,6 +5666,100 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
 # to spare. See ``session_wall_clock_ceiling_s`` for why it is generous and
 # what it is NOT (a measurement).
 WALL_CLOCK_CEILING_PER_ENTRY_S = 120.0
+
+# A fixed, representative 2-way RoleBand pair for :func:`tier_display_info`
+# ONLY — never the household's actual excitation ceilings/topology. See that
+# function's docstring for why a representative pair is honest here. The
+# tweeter's lower edge is deliberately the CONSERVATIVE end of a physically
+# plausible tweeter (~1.5-2 kHz, not the 300 Hz woofer/midrange territory an
+# earlier revision used) — S3 review finding, adversarial review of PR #1780:
+# a too-low f1 biased the estimated sweep duration (and so the displayed
+# minutes) SHORT, the wrong failure direction for a number the household
+# reads as a promise.
+_DISPLAY_ROLES_BANDS = (
+    RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+    RoleBand("tweeter", 1, FrequencyBand(1800.0, 20000.0)),
+)
+_DISPLAY_FC_HZ = 1600.0
+
+
+def tier_display_info() -> dict[str, dict[str, int]]:
+    """Per-tier ``{capture_target, estimated_minutes}`` for the wizard's
+    pre-session tier chooser (flow-simplification §1.1/§3).
+
+    The chooser must show the SAME derived duration a live session's own
+    capture plan would display, never a hand-written prettier figure
+    (§1.1). But at chooser time no session exists yet, and resolving the
+    household's REAL excitation ceilings/topology
+    (:func:`~jasper.web.correction_crossover_v2.resolve_conductor_context`)
+    is refuse-if-not-ready and can regenerate the crossover preview file as
+    a side effect — wrong for a value this module computes on every ~1.5 s
+    poll of the ``microphone_check`` screen, which must render the chooser
+    regardless of whether that heavier resolution would currently succeed.
+
+    **A fixed representative :class:`RoleBand` pair is honest here, but NOT
+    because program length is invariant to the band (S3 fix, adversarial
+    review of PR #1780 — an earlier revision of this docstring overclaimed
+    that).** The realized sweep length genuinely varies with the swept
+    band's edges: each sweep's MESM inter-sweep gap
+    (:func:`~jasper.audio_measurement.program.mesm_gap_samples`) and its own
+    Novak-synchronized sample count both depend on ``f1``/``f2`` — a
+    narrower or differently-centered band realizes a measurably different
+    duration, not the same one. The invariant that actually makes a fixed
+    pair honest is narrower: :meth:`CapturePlan.estimated_minutes`'s
+    ceil-to-whole-minutes quantum absorbs that variance across the
+    PLAUSIBLE 2-way band space. Swept empirically across several genuinely
+    different plausible topologies (varying woofer/tweeter bands and
+    ``fc_hz`` — see ``tests/test_crossover_v2_conductor.py``'s
+    ``test_tier_display_info_minutes_hold_across_plausible_topologies``),
+    Full displays 11 minutes and Express displays 5 minutes in every case
+    checked, with Express the tighter margin (on the order of 10-15 s of
+    headroom before the next minute boundary, at this representative pair —
+    the number that would need re-deriving if a future change genuinely
+    widened the plausible band space). ``capture_target`` needs no audio
+    program at all — it is pure arithmetic on the resolved
+    :class:`V2PlanShape`.
+
+    **Memoized (N1 fix, adversarial review of PR #1780).** The representative
+    inputs are fixed module constants, so the result never changes within a
+    process — computing it fresh cost 4 :func:`build_v2_capture_plan` calls
+    per envelope render (:func:`~jasper.active_speaker.crossover_envelope_v2._tier_choice_actions`
+    calls this once per tier action) on every ~1.5 s wizard poll, ~8 ms on a
+    fast Mac and worse on a Pi 5. :func:`functools.lru_cache` does not cache
+    an exception, so a genuine regression in the representative build would
+    otherwise re-raise on every poll forever; the try/except below is a
+    one-time fallback specifically for that residual path (N5b), not a
+    per-poll retry.
+    """
+    try:
+        return _tier_display_info_cached()
+    except (CrossoverV2FlowError, ValueError) as exc:
+        log_event(
+            logger, "correction.tier_display_info_failed",
+            level=logging.WARNING, error=str(exc),
+        )
+        return {
+            tier: {
+                "capture_target": resolve_plan_shape(tier).capture_target,
+                "estimated_minutes": 0,
+            }
+            for tier in TIERS
+        }
+
+
+@lru_cache(maxsize=1)
+def _tier_display_info_cached() -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for tier in TIERS:
+        shape = resolve_plan_shape(tier)
+        plan = build_v2_capture_plan(
+            _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
+        )
+        out[tier] = {
+            "capture_target": shape.capture_target,
+            "estimated_minutes": plan.estimated_minutes(),
+        }
+    return out
 
 
 def build_v2_session_spec(
@@ -5910,6 +6007,7 @@ __all__ = [
     "express_cloud_measure_positions",
     "normalize_tier",
     "resolve_plan_shape",
+    "tier_display_info",
     "capture_progress_label",
     "REVERIFY_NO_REWALK_HEADLINE",
     "PhaseVerdict",

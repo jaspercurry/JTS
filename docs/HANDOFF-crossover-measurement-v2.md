@@ -2,10 +2,18 @@
 
 The v2 flow measures and applies a fully-active 2-way crossover's
 **level, delay, and polarity** from a **guided spatial cloud** — 16
-captures at the shipped defaults, walked through a handful of prompted
-microphone positions around one mark. (It was three captures at a
-single fixed position until flat-linearization PR-3b made the cloud the
+captures at the **Full tier's** defaults, walked through a handful of
+prompted microphone positions around one mark. (It was three captures at
+a single fixed position until flat-linearization PR-3b made the cloud the
 measurement; see "Position groups" below for what did and did not move.)
+Since the flow-simplification work order's PR-U1
+([`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md))
+there is also an **Express tier** — 7 captures, a 4-position pre-apply
+cloud and a mark-only post-apply check, no cross-position post-apply
+claim. The household picks explicitly, every session, on the
+`/correction/` wizard; the rest of this doc describes the Full tier's
+walk unless a section says otherwise — read the plan doc for Express's
+exact shape and its degraded-claims table.
 The phone is a dumb recorder; the Pi is
 the conductor; the analysis is a pure function of
 `(ExcitationProgram, captured WAV)`. It replaces the legacy per-driver
@@ -21,13 +29,19 @@ this doc is the current operational truth.
 - **Household surface:** `http://jts.local/correction/` → the crossover
   step. The screens are `speaker_setup → microphone_check → measure →
   apply → verify`. The one-liner: place the mic ~1 m in front of the
-  speaker at tweeter height, tap Start, then follow the phone — apply is
-  automatic (owner ruling, 2026-07-20; gotcha #18), no browser-tab step
-  in between. Since flat-linearization PR-3b the phone also prompts a
-  series of small mic moves inside the measure and verify steps (the
-  spatial cloud); the wizard's five screens are unchanged, because the
-  cloud changed how many captures a step takes, not what the household
-  is doing.
+  speaker at tweeter height, choose Quick tune or Full measurement (the
+  `microphone_check` screen's tier chooser, flow-simplification PR-U3 —
+  both first-class; **Full carries the Recommended badge until a Full
+  commission has completed on this topology** — S4, adversarial review of
+  PR #1780 — then Quick tune does, so an express-only household is never
+  nudged away from the wider walk that mitigates §1.3's HF-null row), tap
+  Start, then follow the phone — apply is automatic (owner ruling,
+  2026-07-20; gotcha #18), no
+  browser-tab step in between. Since flat-linearization PR-3b the phone
+  also prompts a series of small mic moves inside the measure and verify
+  steps (the spatial cloud); the wizard's five screens are unchanged,
+  because the cloud changed how many captures a step takes, not what the
+  household is doing.
 - **Only flow — v2.** W5b (2026-07-24) retired the legacy per-driver
   flow and the `JASPER_CROSSOVER_FLOW` selector.
   `build_crossover_envelope` dispatches straight to
@@ -293,8 +307,8 @@ fit runs" below) — and tests inject fakes.
 ### The capture flow
 
 One relay session (`crossover_v2:session`) spans **16 captures** at the
-shipped defaults. The conductor hands `authorize_begin` / `on_armed` /
-`consume_capture` to `run_capture_plan`
+**Full tier's** shipped defaults (`TIER_FULL`). The conductor hands
+`authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`):
 
 | index | phase | gate | what it is |
@@ -304,6 +318,22 @@ shipped defaults. The conductor hands `authorize_begin` / `on_armed` /
 | 3–10 | `cloud_measure` | tap each | 8 prompted pre-apply positions |
 | 11 | `verify` | on apply | design-axis anchor, summed |
 | 12–16 | `cloud_verify` | tap each | 5 prompted post-apply positions |
+
+**Express tier (`TIER_EXPRESS`, flow-simplification PR-U1)** is the same
+layout at a smaller shape — 7 captures, (N=5, M=1): index 1 `check`,
+index 2 `measure` anchor, indexes 3–6 (4 prompted `cloud_measure`
+positions), index 7 `verify` anchor. `M=1` means **no `cloud_verify`
+phase at all** — the done screen rides the VERIFY entry itself, and there
+is no post-apply cross-position claim (see
+[`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
+§1.3's degraded-claims table). `resolve_plan_shape` in
+`crossover_v2_flow.py` is the single place both counts are resolved from
+a tier id; `express_cloud_measure_positions()` derives the 5 (the
+`cloud_measure` group's total captures — the anchor plus 4 prompted
+positions) from `CLOUD_POSITION_PROMPTS`' wide-offset guarantee, never a
+hardcoded literal (N3 fix, adversarial review of PR #1780: the function
+derives the position COUNT, not the curve count the anchor is excluded
+from — see "Positions are not curves" below).
 
 The two `cloud_*` phases are **position groups** (flat-linearization
 PR-3b): one phase spanning many capture indexes, one prompted mic move
@@ -539,9 +569,17 @@ together. Design rationale:
 
 - **Constants** (`crossover_v2_flow.py`, each with its rationale in
   place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 12),
-  `DEFAULT_CLOUD_VERIFY_POSITIONS` 6, `GEOMETRY_RETRY_POSITIONS` 2. The
-  counts are wall-clock choices, not statistical optima — S0's stability
-  data says more positions is strictly better.
+  `DEFAULT_CLOUD_VERIFY_POSITIONS` 6, `GEOMETRY_RETRY_POSITIONS` 2 — the
+  **Full tier's** rules; `MIN_CLOUD_MEASURE_POSITIONS` never moves for
+  Express. The counts are wall-clock choices, not statistical optima —
+  S0's stability data says more positions is strictly better. **Express**
+  (`TIER_EXPRESS`) is a distinct named shape, not a loosened Full floor:
+  `express_cloud_measure_positions()` (= 5, derived —
+  `_min_positions_for_two_wide_offsets()`) and
+  `EXPRESS_CLOUD_VERIFY_POSITIONS` (= 1, no cloud-verify group at all).
+  `resolve_plan_shape(tier)` is the one function both `build_v2_capture_plan`
+  and `build_v2_cloud_index_phase_map` resolve their (N, M) from — see "The
+  capture flow" above.
 - **Positions are not curves.** Both counts include the group's anchor,
   so each group combines `N − 1` / `M − 1` **summed curves**: MEASURE's
   anchor is a per-driver capture with no `summed_response` at all, and
@@ -567,7 +605,12 @@ together. Design rationale:
   ORDER is load-bearing: both groups walk the same table from the front,
   so two wide (~forearm) offsets must sit inside the first
   `MIN_CLOUD_MEASURE_POSITIONS − 1` entries or the LF half of the
-  measurement quietly disappears. Pinned by test.
+  measurement quietly disappears. Express walks the SAME table from the
+  front at its own, shorter length (`express_cloud_measure_positions()`),
+  derived from exactly where the table's second wide offset falls — a
+  reordered table moves Express's floor with it rather than shipping a
+  silently one-wide "quick tune". Pinned by test
+  (`test_cloud_prompts_front_load_the_wide_offsets`).
 - **Geometry-locked retake.** At group end the conductor runs
   `combine_cloud_positions` once and reads its `geometry` field for this
   retake decision (N3 review finding, 2026-07-27: this bullet's prior
@@ -598,8 +641,8 @@ together. Design rationale:
 - **Session budget.** `session_wall_clock_ceiling_s(plan)` scales the
   walked-away measurement-volume ceiling with plan length
   (1800 s + 120 s per capture beyond the 3-entry baseline = 3360 s for the
-  shipped 16-capture plan, hard-capped by
-  `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s). The
+  Full tier's shipped 16-capture plan, 2280 s for Express's 7, hard-capped
+  by `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s). The
   restore ladder and the restore-once latch are unchanged: a walked-away
   household can never leave the speaker at measurement volume.
 - **Resume is unchanged (§5.6).** A new relay session invalidates every
@@ -828,8 +871,9 @@ mic first.
 opens with three short ~1 kHz beeps + ~3 s of silence
 from the speaker under test itself, before that phase's own content
 resumes — a "quiet please, a measurement is starting" warning ahead of
-each capture (16 of them in a shipped cloud session, where it used to be
-3), replacing the 2026-07-23 lab-only interim (a Mac-side `osascript
+each capture (16 of them in a Full-tier cloud session, 7 on Express,
+where it used to be 3), replacing the 2026-07-23 lab-only interim (a
+Mac-side `osascript
 beep`, then a fan-in-TTS-lane 3-beep burst). It is composed as an ordinary
 prepended segment group on the SAME `ExcitationProgram` the phase already
 plays and admits — never a second playback path — so it rides the session's
@@ -943,8 +987,9 @@ most visible thing on the screen.
    `DEFAULT_WALL_CLOCK_CEILING_S` (1800 s) plus
    `WALL_CLOCK_CEILING_PER_ENTRY_S` (120 s) per capture beyond the
    3-entry baseline, hard-capped at `MAX_WALL_CLOCK_CEILING_S`
-   (3600 s) — so the 16-capture cloud gets 3360 s and the 1-entry
-   re-verify gets the bare 1800 s. **The number moves with the plan; the
+   (3600 s) — so the Full tier's 16-capture cloud gets 3360 s, Express's
+   7-capture cloud gets 2280 s, and the 1-entry re-verify gets the bare
+   1800 s. **The number moves with the plan; the
    cap is what makes the guarantee.** A user who walks away can never
    leave the speaker pinned at measurement volume. The voice-daemon measurement pause is held for
    the *whole* session (acquired before the first volume set) so the
@@ -1020,8 +1065,8 @@ additional `log_event` per consumed capture, **on the accepted path AND
 every rejection**, carrying that phase's full numeric diagnostics (pure
 additive observability — none of these calls choose a verdict). The two
 position groups emit `crossover_v2_cloud_diag`, which is 13 of the 16
-captures in a shipped session — grep for `check|measure|verify` alone and
-you see three:
+captures in a Full-tier session (4 of Express's 7) — grep for
+`check|measure|verify` alone and you see three:
 
 ```sh
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(check|measure|verify|cloud)_diag'

@@ -11,6 +11,19 @@
 > 2026-07-25 (see "Owner decisions" below). Written by the Fable
 > architect session for execution by Opus/Sonnet implementer sessions.
 
+> **UX surface superseded (2026-07-27), instrument unaffected.** This
+> work order's PR-6/PR-7 shipped the wizard/capture-page UX described
+> below as of that PR ladder: a single 16-capture instrument, per-group
+> "Spot i of n" screen copy, and no tier choice. The **flow-simplification
+> work order**
+> ([`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md))
+> subsequently replaced that UX surface — the one-instruction-per-step
+> screen grammar, the Express tier (7 captures) alongside Full (16), and
+> the wizard's tier chooser — without touching the honesty machinery this
+> doc productized (`combine_positions`, the null identification method,
+> `detect_echo`, the spec-flatness gauge). Read that plan for the current
+> UX; read this doc for the instrument it still accurately describes.
+
 ## Mission
 
 Take the S0-proven honesty machinery — the spatial cloud
@@ -489,8 +502,12 @@ parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
   plan's physics: ≥10 cm spread for HF decorrelation, at least two
   wide (~30 cm+) offsets for the LF edge (the plan's "≥30 cm LF
   spread is load-bearing" side-finding).
-- **Defaults:** N = 8 cloud-measure positions (min 6 to proceed,
-  max 12), M = 6 cloud-verify. One geometry-locked retry loop: when
+- **Defaults:** N = 9 cloud-measure positions (min 6 to proceed,
+  max 12), M = 6 cloud-verify (`DEFAULT_CLOUD_MEASURE_POSITIONS` /
+  `DEFAULT_CLOUD_VERIFY_POSITIONS`, `crossover_v2_flow.py` — N counts the
+  MEASURE anchor plus 8 prompted positions, which is why the default is 9
+  and not 8; see `HANDOFF-crossover-measurement-v2.md`'s "Position groups"
+  section). One geometry-locked retry loop: when
   the group-end combine reports `geometry.locked` (and not
   `thin_evidence`-soft), the conductor prompts up to 2 extra
   wider-spread positions, once. Bounded, then proceed with the

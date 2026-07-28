@@ -108,7 +108,10 @@ def test_setup_not_ready_blocks_before_any_capture():
 def test_check_phase_screen():
     env = build_crossover_envelope_v2(_status(phase="check"))
     assert env["screen"] == "microphone_check"
-    assert env["next_action"]["id"] == "start_v2_session"
+    # Flow-simplification §3: on a fresh topology (no applied_crossover),
+    # Full is the recommended (primary) tier — the first-ever-commission
+    # case, never a silent express default.
+    assert env["next_action"]["id"] == "start_v2_session_full"
     statuses = _step_statuses(env)
     assert statuses["speaker_setup"] == "done"
     assert statuses["microphone_check"] == "active"
@@ -129,6 +132,138 @@ def test_check_phase_screen():
     assert "mark" in verdict
     assert "guide you to" in verdict
     assert "whole measurement" not in verdict
+
+
+# --- tier chooser (flow-simplification §3) --------------------------------------
+
+
+def test_check_phase_offers_both_tiers_first_class():
+    """Both tiers render every session — never a silent default. The choice
+    posts ``{tier}`` to the same session-start endpoint the old single
+    "Start measurement" button used."""
+    env = build_crossover_envelope_v2(_status(phase="check"))
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    assert set(actions) == {"start_v2_session_full", "start_v2_session_express"}
+    for action_id, tier in (
+        ("start_v2_session_full", "full"),
+        ("start_v2_session_express", "express"),
+    ):
+        action = actions[action_id]
+        assert action["endpoint"] == "/correction/crossover/v2/session"
+        assert action["body"] == {"tier": tier}
+
+
+def test_check_phase_tier_durations_and_counts_are_derived_not_hand_written():
+    """§1.1: the displayed minutes/counts must come from
+    ``tier_display_info`` (built from the two plan shapes), never a
+    hand-written prettier figure."""
+    from jasper.active_speaker.crossover_v2_flow import tier_display_info
+
+    info = tier_display_info()
+    env = build_crossover_envelope_v2(_status(phase="check"))
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    full = actions["start_v2_session_full"]
+    express = actions["start_v2_session_express"]
+    assert str(info["full"]["estimated_minutes"]) in full["description"]
+    assert str(info["full"]["capture_target"]) in full["description"]
+    assert str(info["express"]["estimated_minutes"]) in express["description"]
+    assert str(info["express"]["capture_target"]) in express["description"]
+    # The one-line claims difference (§1.3): express confirms at the mark,
+    # full re-checks at several spots around the mark. B2 fix (adversarial
+    # review of PR #1780): "across the room" overclaimed past what the
+    # post-apply cloud actually samples.
+    assert "confirms the result at the mark" in express["description"]
+    assert "re-checks the result at several spots around the mark" in full["description"]
+
+
+def test_check_phase_recommends_full_on_a_first_commission():
+    """No applied_crossover at all — never measured before on this topology
+    — recommends Full (§3)."""
+    env = build_crossover_envelope_v2(_status(phase="check"))
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    assert actions["start_v2_session_full"]["recommended"] is True
+    assert actions["start_v2_session_express"]["recommended"] is False
+    assert env["next_action"]["id"] == "start_v2_session_full"
+
+
+def test_check_phase_full_commissioned_recommends_quick():
+    """S4 (coordinator ruling, adversarial review of PR #1780): Full
+    recommended UNTIL a Full-tier commission has completed on this
+    topology. An automatic crossover valid for THIS topology
+    (``applied_crossover.owner == "automatic"``) AND the durable v2 state's
+    own ``tier`` recording ``"full"`` — a completed Full commission — is
+    exactly when Quick tune becomes recommended (a re-tune)."""
+    status = {
+        "active": True,
+        "setup": {
+            "active": True,
+            "status": "ready",
+            "applied_crossover": {"valid": True, "owner": "automatic"},
+        },
+        "crossover_v2": {"phase": "check", "tier": "full"},
+    }
+    env = build_crossover_envelope_v2(status)
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    assert actions["start_v2_session_express"]["recommended"] is True
+    assert actions["start_v2_session_full"]["recommended"] is False
+    assert env["next_action"]["id"] == "start_v2_session_express"
+
+
+def test_check_phase_express_commissioned_still_recommends_full():
+    """S4: an automatic crossover applied from a Quick-tune (Express)
+    commission still recommends Full — the household has never actually
+    walked the wider, comb-decorrelating cloud on this topology, so §1.3's
+    HF-null mitigation keeps recommending it (never a silent express
+    default just because SOMETHING is applied)."""
+    status = {
+        "active": True,
+        "setup": {
+            "active": True,
+            "status": "ready",
+            "applied_crossover": {"valid": True, "owner": "automatic"},
+        },
+        "crossover_v2": {"phase": "check", "tier": "express"},
+    }
+    env = build_crossover_envelope_v2(status)
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    assert actions["start_v2_session_full"]["recommended"] is True
+    assert actions["start_v2_session_express"]["recommended"] is False
+    assert env["next_action"]["id"] == "start_v2_session_full"
+
+
+def test_check_phase_applied_automatic_with_unknown_tier_recommends_full():
+    """S4: an applied automatic crossover with NO recorded tier (state
+    written before tiers existed, or a legacy per-driver flow's measured
+    result — N5a: "automatic" is not exclusively v2-measured) still
+    recommends Full — the tier signal must say "full" explicitly, never be
+    assumed from "something is applied"."""
+    status = {
+        "active": True,
+        "setup": {
+            "active": True,
+            "status": "ready",
+            "applied_crossover": {"valid": True, "owner": "automatic"},
+        },
+        "crossover_v2": {"phase": "check"},
+    }
+    env = build_crossover_envelope_v2(status)
+    assert env["next_action"]["id"] == "start_v2_session_full"
+
+
+def test_check_phase_manual_applied_still_recommends_full():
+    """A manually-authored applied crossover (never run through the guided
+    v2 flow) is NOT a prior automatic commission — still recommend Full."""
+    status = {
+        "active": True,
+        "setup": {
+            "active": True,
+            "status": "ready",
+            "applied_crossover": {"valid": True, "owner": "manual"},
+        },
+        "crossover_v2": {"phase": "check"},
+    }
+    env = build_crossover_envelope_v2(status)
+    assert env["next_action"]["id"] == "start_v2_session_full"
 
 
 def test_measure_phase_is_phone_driven():
@@ -259,6 +394,33 @@ def test_verify_phase_screen():
     assert env["screen"] == "verify"
     assert env["next_action"] is None
     assert _step_statuses(env)["verify"] == "active"
+    # Full's VERIFY anchor is followed by the post-apply cloud — no
+    # express-only disclosure here.
+    assert "only check" not in env["verdict_text"].lower()
+
+
+def test_verify_phase_express_discloses_its_the_only_check():
+    """Express (M=1) has no post-apply cloud — this VERIFY anchor is the
+    WHOLE post-apply check, not the first of several (flow-simplification
+    §1.3 degraded-claims table)."""
+    env = build_crossover_envelope_v2(_status(phase="verify", tier="express"))
+    assert env["screen"] == "verify"
+    assert "only check" in env["verdict_text"].lower()
+    assert "at the mark" in env["verdict_text"].lower()
+
+
+def test_verify_phase_express_discloses_before_tuning_flatness_from_measure_cloud():
+    """B1 fix (adversarial review of PR #1780): express's pre-apply cloud has
+    already closed by the time this screen renders (it walks BEFORE VERIFY),
+    so its flatness/carve-out disclosure is available here too, not just on
+    the done screen — read from CLOUD_MEASURE (express's only cloud), never
+    CLOUD_VERIFY (which express never produces)."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", tier="express", cloud=_cloud_measure_flatness_status(),
+    ))
+    details = env["expert_details"]
+    assert details, "express's VERIFY screen must not sit on unread measure-block data"
+    assert any("Measured before tuning:" in line for line in details)
 
 
 # --- done / RESULT screen (owner ruling, 2026-07-20) ----------------------------
@@ -288,6 +450,46 @@ def test_done_gives_undo_the_primary_action_and_continue_as_alternate():
     assert action["endpoint"] == "/correction/crossover/v2/restore"
     alternates = {a["id"]: a for a in env["alternate_actions"]}
     assert alternates["room"]["href"] == "/correction/room/"
+    assert "run_full_measurement" not in alternates
+
+
+def test_done_express_discloses_the_degraded_claim_and_the_upgrade_path():
+    """Flow-simplification §1.3: express's done screen states plainly what
+    was verified ("confirmed at the mark") and names the Full upgrade path
+    — never a claim wider than what express measured."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express",
+        verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == "done"
+    verdict = env["verdict_text"].lower()
+    assert "confirmed at the mark" in verdict
+    assert "full measurement" in verdict
+    assert env["tier"] == "express"
+    # Undo stays the primary action (owner ruling) even on the express path.
+    assert env["next_action"]["id"] == "verify_undo"
+    alternates = {a["id"]: a for a in env["alternate_actions"]}
+    assert alternates["room"]["href"] == "/correction/room/"
+    upgrade = alternates["run_full_measurement"]
+    assert upgrade["endpoint"] == "/correction/crossover/v2/session"
+    assert upgrade["body"] == {"tier": "full"}
+
+
+def test_done_full_tier_has_no_upgrade_action_and_reports_its_own_tier():
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="full",
+        verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    alternates = {a["id"]: a for a in env["alternate_actions"]}
+    assert "run_full_measurement" not in alternates
+    assert env["tier"] == "full"
+
+
+def test_envelope_tier_key_is_none_when_the_state_does_not_say():
+    """Pre-tier durable state (or no session yet) reports ``None`` — never a
+    guessed default (mirrors ``crossover_v2_status_block``'s own rule)."""
+    env = build_crossover_envelope_v2(_status(phase="measure"))
+    assert env["tier"] is None
 
 
 def test_done_candidate_review_carries_the_measured_numbers():
@@ -536,6 +738,27 @@ def _cloud_flatness_status(**overrides):
     }
 
 
+# B1 fix (adversarial review of PR #1780): express (M=1) never closes a
+# CLOUD-VERIFY group, so its flatness/carve-out disclosure reads the SAME
+# compact shape off CLOUD-MEASURE instead — this mirrors
+# ``_cloud_flatness_status`` above but keys the entry on PHASE_CLOUD_MEASURE.
+def _cloud_measure_flatness_status(*, carve_outs=None, **overrides):
+    flatness = {
+        "max_db": -4.85, "max_hz": 11480.0, "max_band_hz": [8000.0, 16000.0],
+        "tolerance_db": 2.5, "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
+        "evaluable": True, "passed": False,
+    }
+    flatness.update(overrides)
+    return {
+        PHASE_CLOUD_MEASURE: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_passed": False,
+            "excluded_interval_count": 3, "flatness": flatness,
+            "carve_outs": carve_outs or [],
+        },
+    }
+
+
 def test_verify_fail_folds_spec_flatness_alongside_integration_evidence():
     """PR-5: flatness is a SIBLING claim, distinctly labeled from the
     integration-verify numbers above — both travel in the SAME collapsed
@@ -668,10 +891,83 @@ def test_cloud_measure_flatness_never_renders_as_the_speakers_flatness():
     """``cloud_measure`` is the PRE-APPLY, uncorrected baseline that exists in
     order to be out of spec — the same distinction PR-4's doctor blocker
     drew. Rendering it here would report a correctly-corrected speaker as bad
-    forever, so only ``cloud_verify`` feeds the gauge."""
+    forever, so only ``cloud_verify`` feeds the gauge — for the FULL tier
+    (unchanged by the B1 fix below, which only redirects EXPRESS)."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
         cloud={PHASE_CLOUD_MEASURE: _cloud_flatness_status()[PHASE_CLOUD_VERIFY]},
+    ))
+    assert env["expert_details"] == []
+
+
+def test_cloud_measure_flatness_never_renders_as_the_speakers_flatness_tier_full():
+    """Same as above, with an explicit ``tier="full"`` — confirms the B1
+    tier branch reads the durable tier, not just its absence."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="full", verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        cloud={PHASE_CLOUD_MEASURE: _cloud_flatness_status()[PHASE_CLOUD_VERIFY]},
+    ))
+    assert env["expert_details"] == []
+
+
+def test_express_done_discloses_before_tuning_flatness_from_measure_cloud():
+    """B1 fix (adversarial review of PR #1780) — coordinator design
+    direction: express (M=1) never closes a CLOUD-VERIFY group, so its
+    done-screen expert disclosure must not sit on unread CLOUD-MEASURE data.
+    Renders the SAME numeric lines as the full tier's CLOUD-VERIFY path, but
+    framed explicitly as the BEFORE-TUNING state — never presented as "how
+    flat your speaker is now" (express made no post-apply cross-position
+    claim at all)."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express", verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        cloud=_cloud_measure_flatness_status(),
+    ))
+    details = env["expert_details"]
+    assert details, "express's done screen must not sit on unread measure-block data"
+    combined = " ".join(details)
+    assert "Measured before tuning:" in combined
+    assert "confirmed at the mark only" in combined
+    # The same numeric arithmetic the full tier's CLOUD-VERIFY path reports —
+    # one construction (_flatness_lines_from_block), not two.
+    assert "flatness -4.85 dB from the spec reference at 11480 Hz" in combined
+    assert "flatness average error 1.37 dB across the spec bands" in combined
+    assert (
+        "42 of 942 spec-band bins excluded from grading (interference, or "
+        "below the measurement's validity floor)"
+    ) in combined
+    # Never claims the CURRENT state — that claim needs a post-apply cloud,
+    # which express does not make.
+    assert "how flat your speaker is now" not in combined.lower()
+
+
+def test_express_done_carve_outs_render_verbatim_from_measure_cloud():
+    """Owner decision 1: carve-outs are a post-apply-persistent fact ("EQ
+    cannot fill these") disclosed on EVERY tier — express renders them
+    verbatim from CLOUD_MEASURE, not re-composed or reframed."""
+    carve_out_line = (
+        "8.7 kHz (rung 26, 6.2 dB deep); delay τ 299 µs, reflection ratio "
+        "r 0.375 measured in time"
+    )
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express", verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+        cloud=_cloud_measure_flatness_status(carve_outs=[
+            {"band_hz": [8000.0, 16000.0], "expert": carve_out_line},
+        ]),
+    ))
+    details = env["expert_details"]
+    assert any(carve_out_line in line for line in details)
+
+
+def test_express_done_says_nothing_when_the_measure_cloud_never_closed():
+    """No CLOUD-MEASURE entry at all — nothing measured, nothing to say
+    (the same honest-silence rule the full tier's cloud-absent states
+    follow), never a fabricated before-tuning claim."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express", verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
     ))
     assert env["expert_details"] == []
 
