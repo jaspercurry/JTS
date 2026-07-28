@@ -4520,6 +4520,14 @@ class CrossoverV2Conductor:
         exactly the wrong answer for an accountability refusal — quietly
         shipping an unlinearized candidate is the silent-failure shape this PR
         exists to remove.
+
+        On the pre-cloud 3-entry shape — which no production caller constructs
+        (see :meth:`_measure_verdict`'s own note) — this method is reached from
+        ``consume_capture`` instead, so a refusal propagates out of THAT seam
+        rather than the confirm one and lands in the host's catch-all as
+        ``internal_error``. Still loud, still leaves the speaker untouched, just
+        without the named screen; a caller reviving that shape has to wire its
+        own refusal handling, exactly as it has to wire its own apply trigger.
         """
         candidate = self._build_candidate(analysis, cloud)
         # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
