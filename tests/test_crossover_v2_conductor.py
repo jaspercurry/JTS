@@ -3487,22 +3487,24 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # RE-DERIVED 2026-07-28 (issue #1823): MEASURE's entry — index 1 of both the
 # cloud and express plans — flipped from `auto_advance: countdown` to `tap`,
 # dropping the countdown-only `countdown_s`/`cancelable` keys with it, and its
-# `body` now names what the tap is consenting to. Net +12 bytes on each plan:
-# the removed keys are smaller than the added sentence. The copy is HEDGED
-# ("can be the loudest") because #1825/#1829 landed between the first
-# derivation and this one and made a flat "louder" false in a quiet room — a
-# reminder that these pins are re-derived against the tree they ship on, not
-# copied forward. The 1-entry re-verify plan has no MEASURE entry and its
-# digest is byte-for-byte unchanged, which is the check that this edit touched
-# only what it meant to.
+# `body` now names what the tap is consenting to. Net +32 bytes on each plan:
+# the removed countdown keys are smaller than the added sentence. That sentence
+# was rewritten TWICE before landing, which is the useful part of the story —
+# #1825/#1829 landed mid-review and made a flat "louder" false in a quiet room
+# (hence the "can be the loudest" hedge), and a plain-language ruling then
+# replaced "at the level the fit needs" with wording that says what the level
+# is FOR. Both are household-visible copy, so both moved these digests; the
+# pins are re-derived against the tree they ship on, never copied forward. The
+# 1-entry re-verify plan has no MEASURE entry and its digest is byte-for-byte
+# unchanged, which is the check that this edit touched only what it meant to.
 _GOLDEN_V2_PLAN_BYTES = {
     "cloud": (
-        3909,
-        "1d024f04e7312db87579afa6232173d49b97b2e8fe1d3b84cd9eeb15e710d2ec",
+        3929,
+        "4c9deaf3064d6e67f1c12645a099eced6548284cd74b9175bca999efe10e974b",
     ),
     "express": (
-        2119,
-        "c93bed99dde6c3183073981b8c8eac0d7ad6eb36023d8bd4f6f3f81bcdf45a10",
+        2139,
+        "dfe0f6be42340b272e3c7770aac0b5c6c7dce9a8f25e3a7f2505a21dc0a9df76",
     ),
     "1-entry": (
         324,

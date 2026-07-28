@@ -274,9 +274,11 @@ transient state channel only ("Playing the measurement tone…",
   can be its loudest, and rolling into it unasked contradicted the
   confirm-then-tone grammar's spirit. It is now `AUTO_ADVANCE_TAP` with
   copy that sets the expectation ("longer, and can be the loudest — it
-  measures each driver alone at the level the fit needs"; the hedge is
-  load-bearing since #1825/#1829 solve each driver's level to the SNR the
-  fit needs, so a quiet room gets a quiet MEASURE).
+  measures each driver alone at the level it needs to hear each one
+  clearly"; the hedge is load-bearing since #1825/#1829 solve each
+  driver's level to the SNR the fit needs, so a quiet room gets a quiet
+  MEASURE — and the tail says what the level is FOR rather than naming
+  the stage that asked for it, per the 2026-07-28 plain-language ruling).
   The countdown vocabulary stays in the plan grammar and on the page for a
   future same-spot transition that earns it.
 - **VERIFY becomes hold-then-tap — the step-11 fix.** Today

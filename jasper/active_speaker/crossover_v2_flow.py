@@ -7033,9 +7033,15 @@ def build_v2_capture_plan(
                 # vocabulary stays in the plan grammar (AUTO_ADVANCE_COUNTDOWN,
                 # AUTO_ADVANCE_COUNTDOWN_S, and the page's renderPlanCountdown)
                 # for a future same-spot transition that earns it.
+                #
+                # Household language, not ours (coordinator ruling, 2026-07-28):
+                # the tail says what the level is FOR, not which internal stage
+                # asked for it. "The fit" is a word for this file, not for
+                # someone holding a phone.
                 "body": (
                     "This one is longer, and can be the loudest — it measures "
-                    "each driver alone at the level the fit needs."
+                    "each driver alone at the level it needs to hear each one "
+                    "clearly."
                 ),
                 "auto_advance": AUTO_ADVANCE_TAP,
             },
