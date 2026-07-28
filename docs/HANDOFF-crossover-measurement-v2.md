@@ -933,8 +933,9 @@ window (~±0.3 m distance, ±10 cm height) for that mark. The session
 starts there, returns to it for MEASURE and VERIFY, and prompts small
 moves around it for the two position groups — so the mic is stationary
 *per sweep*, never *per session*. Taps: CHECK is the one tap before any
-measuring, MEASURE takes a second one (same spot, but it is the loudest
-capture in the session — issue #1823), a trusted candidate auto-arms
+measuring, MEASURE takes a second one (same spot, but it is the longest
+capture and the one that can be the loudest — issues #1823/#1825), a
+trusted candidate auto-arms
 VERIFY with no household action in between, and each prompted cloud
 position needs its own tap because the household has to move the mic
 first.

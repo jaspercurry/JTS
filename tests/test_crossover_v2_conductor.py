@@ -2699,15 +2699,19 @@ def test_capture_plan_entries_carry_auto_advance_policy():
     assert check.screen["auto_advance"] == AUTO_ADVANCE_TAP
     # MEASURE used to auto-advance behind a 5 s cancelable countdown (same
     # spot, no movement needed). Issue #1823: it is also the session's longest
-    # and LOUDEST capture, and rolling into it unasked read as the speaker
-    # taking a liberty — so it takes a tap, behind copy that says what is
-    # coming. The countdown vocabulary is retained for a future same-spot
-    # transition; it is simply unused by this entry, so the countdown-only
-    # keys are gone with it.
+    # capture and the one that can be its loudest, and rolling into it unasked
+    # read as the speaker taking a liberty — so it takes a tap, behind copy
+    # that says what is coming. The countdown vocabulary is retained for a
+    # future same-spot transition; it is simply unused by this entry, so the
+    # countdown-only keys are gone with it.
     assert measure.screen["auto_advance"] == AUTO_ADVANCE_TAP
     assert "countdown_s" not in measure.screen
     assert "cancelable" not in measure.screen
-    assert "longer and louder" in measure.screen["body"]
+    # HEDGED on purpose. #1825/#1829 solve each driver's MEASURE level to the
+    # SNR the fit needs in its own band, so a quiet room gets a quiet MEASURE —
+    # "louder" flat would be a promise the speaker no longer keeps.
+    assert "can be the loudest" in measure.screen["body"]
+    assert "louder —" not in measure.screen["body"]
     # The vocabulary itself survives the flip — the page still implements the
     # policy and a future same-spot transition can earn it back — but no
     # SHIPPED entry uses it today. Pinned so "unused, delete it" and "silently
@@ -3483,18 +3487,22 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # RE-DERIVED 2026-07-28 (issue #1823): MEASURE's entry — index 1 of both the
 # cloud and express plans — flipped from `auto_advance: countdown` to `tap`,
 # dropping the countdown-only `countdown_s`/`cancelable` keys with it, and its
-# `body` now names what the tap is consenting to ("longer and louder"). An
-# intended consent change; the 1-entry re-verify plan has no MEASURE entry and
-# its digest is byte-for-byte unchanged, which is the check that this edit
-# touched only what it meant to.
+# `body` now names what the tap is consenting to. Net +12 bytes on each plan:
+# the removed keys are smaller than the added sentence. The copy is HEDGED
+# ("can be the loudest") because #1825/#1829 landed between the first
+# derivation and this one and made a flat "louder" false in a quiet room — a
+# reminder that these pins are re-derived against the tree they ship on, not
+# copied forward. The 1-entry re-verify plan has no MEASURE entry and its
+# digest is byte-for-byte unchanged, which is the check that this edit touched
+# only what it meant to.
 _GOLDEN_V2_PLAN_BYTES = {
     "cloud": (
-        3874,
-        "f5ee7acd723dd530d6d906daaff64e38b0fa87b74fc9c8e34460c97923b960d0",
+        3909,
+        "1d024f04e7312db87579afa6232173d49b97b2e8fe1d3b84cd9eeb15e710d2ec",
     ),
     "express": (
-        2084,
-        "59e96eb97d03e734e40862d070da82247092f4c2bc9f01fce31b217949c7d9dc",
+        2119,
+        "c93bed99dde6c3183073981b8c8eac0d7ad6eb36023d8bd4f6f3f81bcdf45a10",
     ),
     "1-entry": (
         324,

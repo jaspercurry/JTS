@@ -7019,9 +7019,12 @@ def build_v2_capture_plan(
             screen={
                 "progress": capture_progress_label(2, target),
                 "title": "Keep the phone still — this spot is the mark.",
-                # MEASURE is the session's LONGEST and LOUDEST capture (each
-                # driver is measured on its own, at its solved gain), and until
-                # issue #1823 it rolled straight out of CHECK on a countdown:
+                # MEASURE is the session's LONGEST capture and the one that
+                # CAN be its loudest — since #1825/#1829 each driver's level is
+                # solved to the SNR the fit needs in its own band, so a quiet
+                # room gets a quiet MEASURE and a noisy one still gets the full
+                # level. Until issue #1823 it rolled straight out of CHECK on a
+                # countdown:
                 # the household went from one capture into a much louder one
                 # with no chance to say "not yet". Same-spot auto-advance was
                 # the right instinct — no movement is needed — but it read as
@@ -7031,8 +7034,8 @@ def build_v2_capture_plan(
                 # AUTO_ADVANCE_COUNTDOWN_S, and the page's renderPlanCountdown)
                 # for a future same-spot transition that earns it.
                 "body": (
-                    "This one is longer and louder — it measures each driver "
-                    "on its own."
+                    "This one is longer, and can be the loudest — it measures "
+                    "each driver alone at the level the fit needs."
                 ),
                 "auto_advance": AUTO_ADVANCE_TAP,
             },

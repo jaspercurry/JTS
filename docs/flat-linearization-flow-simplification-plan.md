@@ -270,10 +270,13 @@ transient state channel only ("Playing the measurement tone…",
   no placement to confirm, and the cancel affordance preserves control.
   Owner-reversible; flagged in §5. **REVERSED 2026-07-28 (issue #1823),
   after the owner ran it:** the reasoning held for placement but missed
-  level — MEASURE is the longest AND loudest capture of the session, and
-  rolling into it unasked contradicted the confirm-then-tone grammar's
-  spirit. It is now `AUTO_ADVANCE_TAP` with copy that sets the
-  expectation ("longer and louder — it measures each driver on its own").
+  level — MEASURE is the longest capture of the session and the one that
+  can be its loudest, and rolling into it unasked contradicted the
+  confirm-then-tone grammar's spirit. It is now `AUTO_ADVANCE_TAP` with
+  copy that sets the expectation ("longer, and can be the loudest — it
+  measures each driver alone at the level the fit needs"; the hedge is
+  load-bearing since #1825/#1829 solve each driver's level to the SNR the
+  fit needs, so a quiet room gets a quiet MEASURE).
   The countdown vocabulary stays in the plan grammar and on the page for a
   future same-spot transition that earns it.
 - **VERIFY becomes hold-then-tap — the step-11 fix.** Today
