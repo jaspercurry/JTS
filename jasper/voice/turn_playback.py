@@ -7,12 +7,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Awaitable, Callable
 
 from ..audio_io import TtsPlayout
 from ..log_event import log_event
 from .session import AudioOutChunk, LiveTurn
 
 logger = logging.getLogger("jasper.voice_daemon")
+
+# First-audio telemetry is useful but cannot be allowed to hold up speech.
+_RESPONSE_OBSERVER_TIMEOUT_SEC = 0.1
 
 
 async def _turn_audio_chunks(turn: LiveTurn):
@@ -116,6 +120,7 @@ async def _play_responses(
     tts: TtsPlayout,
     *,
     barge_in_enabled: bool = False,
+    on_response_started: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Drain turn.audio_out() to the speaker. Barge-in handling: race
     each write against an interrupt signal so a user-interrupted-the-model
@@ -145,8 +150,28 @@ async def _play_responses(
     write_task: asyncio.Task | None = None
     drain_task: asyncio.Task | None = None
     flush_failed = False
+    response_started = False
     try:
         async for chunk in _turn_audio_chunks(turn):
+            # This is the one provider-neutral response boundary: the first
+            # non-empty assistant PCM chunk has left the adapter and reached
+            # the daemon. Observe it before local playout so a TTS write
+            # failure does not falsely erase the fact that the model replied.
+            if not response_started and chunk.pcm:
+                response_started = True
+                if on_response_started is not None:
+                    try:
+                        await asyncio.wait_for(
+                            on_response_started(),
+                            timeout=_RESPONSE_OBSERVER_TIMEOUT_SEC,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("turn response observer timed out")
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "turn response observer failed: %s",
+                            e,
+                        )
             if interrupt_task is None or interrupt_task.done():
                 interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
             write_task = asyncio.create_task(

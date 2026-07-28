@@ -106,6 +106,99 @@ async def test_unknown_tool_returns_error():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_observer_sees_registered_call_start_and_completion():
+    async def echo(x: str) -> dict:
+        """echo back the argument."""
+        return {"got": x}
+
+    events: list[tuple[str, str]] = []
+
+    async def observe(stage: str, name: str) -> None:
+        events.append((stage, name))
+
+    reg = _registry(echo)
+    reg.set_dispatch_observer(observe)
+
+    assert await dispatch_tool(reg, "echo", {"x": "hi"}) == {"got": "hi"}
+    assert events == [("called", "echo"), ("completed", "echo")]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_observer_completion_includes_tool_error_payloads():
+    async def boom() -> dict:
+        """always raises."""
+        raise RuntimeError("kaboom")
+
+    events: list[tuple[str, str]] = []
+
+    async def observe(stage: str, name: str) -> None:
+        events.append((stage, name))
+
+    reg = _registry(boom)
+    reg.set_dispatch_observer(observe)
+
+    assert await dispatch_tool(reg, "boom", {}) == {"error": "kaboom"}
+    assert events == [("called", "boom"), ("completed", "boom")]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_observer_ignores_unknown_tool_names():
+    events: list[tuple[str, str]] = []
+
+    async def observe(stage: str, name: str) -> None:
+        events.append((stage, name))
+
+    reg = ToolRegistry()
+    reg.set_dispatch_observer(observe)
+
+    assert await dispatch_tool(reg, "nope", {}) == {"error": "unknown tool nope"}
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_observer_failure_does_not_block_tool(caplog):
+    async def echo() -> dict:
+        """return a normal payload."""
+        return {"ok": True}
+
+    async def broken_observer(_stage: str, _name: str) -> None:
+        raise OSError("telemetry disk unavailable")
+
+    reg = _registry(echo)
+    reg.set_dispatch_observer(broken_observer)
+
+    with caplog.at_level(logging.WARNING, logger="jasper.tools"):
+        assert await dispatch_tool(reg, "echo", {}) == {"ok": True}
+
+    assert caplog.text.count("lifecycle observer failed") == 2
+
+
+@pytest.mark.asyncio
+async def test_dispatch_observer_timeout_does_not_block_tool(monkeypatch, caplog):
+    import jasper.tools as tools_module
+
+    async def echo() -> dict:
+        """return a normal payload."""
+        return {"ok": True}
+
+    async def stuck_observer(_stage: str, _name: str) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(tools_module, "_DISPATCH_OBSERVER_TIMEOUT_SEC", 0.01)
+    reg = _registry(echo)
+    reg.set_dispatch_observer(stuck_observer)
+
+    with caplog.at_level(logging.WARNING, logger="jasper.tools"):
+        result = await asyncio.wait_for(
+            dispatch_tool(reg, "echo", {}),
+            timeout=0.2,
+        )
+
+    assert result == {"ok": True}
+    assert caplog.text.count("lifecycle observer timed out") == 2
+
+
+@pytest.mark.asyncio
 async def test_exception_becomes_error_payload():
     async def boom() -> dict:
         """always raises."""
@@ -124,11 +217,18 @@ async def test_timeout_returns_error_and_respects_per_tool_budget():
         return {"never": True}
 
     reg = _registry(slow)
+    events: list[tuple[str, str]] = []
+
+    async def observe(stage: str, name: str) -> None:
+        events.append((stage, name))
+
+    reg.set_dispatch_observer(observe)
     # The tool's own 10ms budget must apply (not the 12s default), so this
     # resolves promptly into the speakable timeout error rather than
     # hanging the session.
     out = await asyncio.wait_for(dispatch_tool(reg, "slow", {}), timeout=2)
     assert out == {"error": "slow timed out"}
+    assert events == [("called", "slow"), ("completed", "slow")]
 
 
 @pytest.mark.asyncio

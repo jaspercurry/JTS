@@ -110,6 +110,15 @@ an already-acquired turn without asking the provider to generate yet, so the
 normal user-audio VAD path still decides whether to commit input. The research
 ready yes/no window is the first caller.
 
+Wake-funnel response/tool telemetry is likewise composed below the provider
+adapters. The shared `_play_responses()` drain marks the first non-empty
+assistant PCM chunk; the host injects a narrow lifecycle observer into
+`ToolRegistry`, and the single `dispatch_tool()` seam marks registered-tool
+call/completion around execution. Observer calls are capped at 100 ms so
+telemetry cannot wedge speech or tool results. Adapters only parse/package
+provider wire formats. The full schema and bounded tool-funnel summary
+semantics live in [HANDOFF-wake-telemetry.md](HANDOFF-wake-telemetry.md).
+
 The single switch point is `_make_connection(cfg)` in
 [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py). Provider session
 preprocessing is resolved through
@@ -464,7 +473,8 @@ should be:
    Route every model-issued tool call through
    `jasper.tools.dispatch_tool(registry, name, args)` — it owns the
    per-tool timeout (`tool.timeout`), the `{"error": …}` failure
-   shapes, scalar wrapping, and the provider-uniform timing logs.
+   shapes, scalar wrapping, provider-uniform timing logs, and the
+   host-injected lifecycle observer used by wake telemetry.
    The adapter keeps only its wire-format parts: parsing the call's
    args and packaging the returned payload. Do not re-inline the
    dispatch body; all three existing adapters route through it
@@ -614,7 +624,11 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-07-12 (Gemini switcher catalog/effective-owner contract;
+Last verified: 2026-07-27 (provider-neutral response/tool telemetry ownership
+rechecked against `jasper/voice/turn_playback.py`,
+`jasper/tools/__init__.py`, `jasper/voice/daemon_main.py`, and
+`jasper/voice_daemon.py`; prior 2026-07-12 pass: Gemini switcher
+catalog/effective-owner contract;
 prior 2026-07-06 pass verified that the cap + `/voice` card sum the voice ledger
 and the P6 tuning ledger via
 `usage.py`'s `household_usage_reader`, verified against `jasper/usage.py`,
