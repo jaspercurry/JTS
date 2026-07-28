@@ -301,6 +301,13 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
     spec: {
       kind: "crossover_sweep",
       sample_rate_hz: 48000,
+      // #1824 D1: a single aborted poll is now absorbed and the RECORDING
+      // WINDOW is the bound, so this scenario (every poll aborts, forever)
+      // resolves when the window runs out. Pin the window at its floor so the
+      // harness spends 5 s here rather than the 20 s default — the assertion
+      // is about the copy an unrecoverable outage produces, not the length of
+      // the wait.
+      duration_ms: 5000,
       constraints: {},
       validity: { clean_capture: "refuse" },
       run_token: "run-test",
@@ -314,6 +321,13 @@ async function testAbortErrorDuringSweepGetsFriendlyCopy() {
   assert.ok(
     statusHistory.some((line) => line.includes("Lost the connection")),
     `expected friendly connectivity copy, got: ${JSON.stringify(statusHistory)}`,
+  );
+  // …and the household is told what is happening WHILE it happens, not only
+  // at the end (#1824 D1): the page keeps polling behind a "still measuring"
+  // line instead of ending the capture on the first slow request.
+  assert.ok(
+    statusHistory.some((line) => line.includes("reconnecting")),
+    "a connectivity blip renders the reconnecting line while it retries",
   );
   assert.ok(
     !statusHistory.some((line) => line.includes("signal is aborted")),

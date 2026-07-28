@@ -9,7 +9,7 @@
 //      event now carries `duration_s` (see
 //      jasper.web.correction_crossover_flow.run_crossover_relay_transport's
 //      `post_phase("ambient_started", duration_s=...)`), and the page renders
-//      a live "the tone starts in about N seconds" countdown from it instead
+//      a live "stay quiet for about N seconds" countdown from it instead
 //      of a fixed, unexplained-silence status line.
 //   2. A phone-tappable Stop — `stopCapture()` (wired to the shared "stop"
 //      button action) calls whichever capture leg's own `abort(reason)` is
@@ -247,7 +247,7 @@ async function testAmbientCountdownRendersFromHostEventDuration() {
     client,
   });
 
-  const countdown = "Listening to the room… the tone starts in about 5 seconds";
+  const countdown = "Listening to the room… stay quiet for about 5 seconds";
   const countdownHits = statusHistory.filter((line) => line === countdown);
   assert.equal(
     countdownHits.length,
@@ -314,7 +314,7 @@ async function testAmbientPhaseWithoutDurationFallsBackToStaticCopy() {
     "missing duration_s degrades to the original static copy",
   );
   assert.ok(
-    !statusHistory.some((line) => line.includes("the tone starts in about")),
+    !statusHistory.some((line) => line.includes("stay quiet for about")),
     "no countdown is rendered without a real duration",
   );
   ok();
@@ -451,9 +451,79 @@ async function testStopDuringLevelRampRendersStoppedScreen() {
   ok();
 }
 
+// ============================================================================
+// 5 (#1824 D4). The pre-tone phase LADDER. The Pi now posts what is actually
+// audible, in order — `prelude_started` (three beeps, then the settle),
+// `ambient_started` (the room-listening window), `sweep_started` (the tone) —
+// instead of one `sweep_started` at arm time, ~4.6 s before any sound. Pin
+// the phone's half: each phase gets its own line, and "Playing the
+// measurement tone…" is never on screen before the tone.
+// ============================================================================
+async function testPreToneLadderNeverClaimsTheToneEarly() {
+  statusHistory.length = 0;
+  const { onStart } = await loadModule();
+
+  globalThis.__recorder = makeRecorder();
+  globalThis.document = {
+    createElement: (tag) => makeNode(tag),
+    getElementById: () => statusEl,
+  };
+  const statusEl = makeStatusEl();
+
+  const phases = [
+    { phase: "prelude_started" },
+    { phase: "ambient_started", duration_s: 1 },
+    { phase: "sweep_started" },
+    { phase: "sweep_cancelled" },
+  ];
+  let call = 0;
+  const client = {
+    async postEvent() {},
+    async fetchPhoneStatus() {
+      const host_event = phases[Math.min(call, phases.length - 1)];
+      call += 1;
+      return { host_event };
+    },
+  };
+
+  await onStart({
+    spec: {
+      kind: "crossover_sweep",
+      sample_rate_hz: 48000,
+      constraints: {},
+      validity: { clean_capture: "refuse" },
+      run_token: "run-test",
+    },
+    contentKeyB64: "unused",
+    captureRefs: {},
+    screenEl: makeScreenEl(),
+    client,
+  });
+
+  const prelude = "Listen for three beeps, then stay quiet — the tone follows.";
+  const tone = "Playing the measurement tone…";
+  assert.ok(statusHistory.includes(prelude), `missing the prelude line: ${JSON.stringify(statusHistory)}`);
+  assert.ok(statusHistory.includes(tone), "the tone still gets its own line");
+  assert.ok(
+    statusHistory.indexOf(prelude) < statusHistory.indexOf(tone),
+    "the beeps are announced BEFORE the tone, never after",
+  );
+  assert.ok(
+    statusHistory.some((line) => line.includes("stay quiet for about 1 second")),
+    "the room-listening window still renders its countdown between the two",
+  );
+  assert.ok(
+    statusHistory.indexOf("Listening to the room… stay quiet for about 1 second")
+      < statusHistory.indexOf(tone),
+    "the ladder is ordered: beeps, room, tone",
+  );
+  ok();
+}
+
 const tests = [
   testAmbientCountdownRendersFromHostEventDuration,
   testAmbientPhaseWithoutDurationFallsBackToStaticCopy,
+  testPreToneLadderNeverClaimsTheToneEarly,
   testStopDuringSweepCapturePostsAbortAndRendersStoppedScreen,
   testStopDuringLevelRampRendersStoppedScreen,
 ];

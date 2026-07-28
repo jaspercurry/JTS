@@ -48,6 +48,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_CORRECTION_ROLLBACK_FAILED,
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     AUTO_ADVANCE_COUNTDOWN,
+    AUTO_ADVANCE_COUNTDOWN_S,
     AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
     CAPTURE_ENTRY_MARGIN_MS,
@@ -2692,14 +2693,30 @@ def test_capture_plan_entries_carry_auto_advance_policy():
     check, measure = plan.entries[0], plan.entries[1]
     verify = plan.entries[DEFAULT_CLOUD_MEASURE_POSITIONS + 1]
     assert verify.kind_label == "verify"
-    # One tap per session BEFORE the cloud: CHECK is the tap; MEASURE
-    # auto-advances behind a visible cancelable countdown; VERIFY arms on
-    # apply. Every prompted cloud position needs its own tap, because the
-    # operator has to physically move the mic between them.
+    # CHECK and MEASURE each take a tap; VERIFY arms on apply. Every prompted
+    # cloud position needs its own tap, because the operator has to physically
+    # move the mic between them.
     assert check.screen["auto_advance"] == AUTO_ADVANCE_TAP
-    assert measure.screen["auto_advance"] == AUTO_ADVANCE_COUNTDOWN
-    assert measure.screen["cancelable"] == "1"
-    assert int(measure.screen["countdown_s"]) > 0
+    # MEASURE used to auto-advance behind a 5 s cancelable countdown (same
+    # spot, no movement needed). Issue #1823: it is also the session's longest
+    # and LOUDEST capture, and rolling into it unasked read as the speaker
+    # taking a liberty — so it takes a tap, behind copy that says what is
+    # coming. The countdown vocabulary is retained for a future same-spot
+    # transition; it is simply unused by this entry, so the countdown-only
+    # keys are gone with it.
+    assert measure.screen["auto_advance"] == AUTO_ADVANCE_TAP
+    assert "countdown_s" not in measure.screen
+    assert "cancelable" not in measure.screen
+    assert "longer and louder" in measure.screen["body"]
+    # The vocabulary itself survives the flip — the page still implements the
+    # policy and a future same-spot transition can earn it back — but no
+    # SHIPPED entry uses it today. Pinned so "unused, delete it" and "silently
+    # reinstated on MEASURE" are both visible changes.
+    assert AUTO_ADVANCE_COUNTDOWN_S > 0
+    assert all(
+        entry.screen.get("auto_advance") != AUTO_ADVANCE_COUNTDOWN
+        for entry in plan.entries
+    )
     assert verify.screen["auto_advance"] == AUTO_ADVANCE_ON_APPLY
     for entry in plan.entries:
         if entry.kind_label.startswith("cloud_"):
@@ -3462,14 +3479,22 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # (3897 / 2107 / 324 bytes before and after), because the digit counts of the
 # changed numbers did not change — which is precisely why these pins are
 # hashes and not lengths.
+#
+# RE-DERIVED 2026-07-28 (issue #1823): MEASURE's entry — index 1 of both the
+# cloud and express plans — flipped from `auto_advance: countdown` to `tap`,
+# dropping the countdown-only `countdown_s`/`cancelable` keys with it, and its
+# `body` now names what the tap is consenting to ("longer and louder"). An
+# intended consent change; the 1-entry re-verify plan has no MEASURE entry and
+# its digest is byte-for-byte unchanged, which is the check that this edit
+# touched only what it meant to.
 _GOLDEN_V2_PLAN_BYTES = {
     "cloud": (
-        3897,
-        "b67a654afdc8060562c6a43291e78ae4c739de80d9d4ee879eaa10b7ceb0bf43",
+        3874,
+        "f5ee7acd723dd530d6d906daaff64e38b0fa87b74fc9c8e34460c97923b960d0",
     ),
     "express": (
-        2107,
-        "fb502b66d1d5975a6a93f1f9e6b330b09e82e147c8107e3666ef9fd497654ed8",
+        2084,
+        "59e96eb97d03e734e40862d070da82247092f4c2bc9f01fce31b217949c7d9dc",
     ),
     "1-entry": (
         324,

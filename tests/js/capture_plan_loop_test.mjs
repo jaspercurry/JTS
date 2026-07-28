@@ -2931,6 +2931,349 @@ async function testRetakeOnTheCountdownScreenClearsItsFrozenCounter() {
   ok();
 }
 
+// ============================================================================
+// 43 (#1824 D1). ONE slow relay poll must cost one poll interval, not the
+// session. Forensics from cap_lMo1I-yxZqZyQ6lr4nuZlA: capture 5 of 7 played
+// fully on the Pi while a single control fetch out of ~60 exceeded
+// relay-client.js's flat RELAY_CONTROL_TIMEOUT_MS — the bare await inside the
+// sweep wait threw, and the whole express session died mid-tone. The blip is
+// absorbed, the true phase line comes back when the relay answers, and the
+// capture completes normally.
+// ============================================================================
+function makeSweepBlipClient({ blips = 1 } = {}) {
+  const posted = [];
+  let last = {};
+  let armedPolls = 0;
+  let blipsLeft = blips;
+  return {
+    posted,
+    blipsUsed: () => blips - blipsLeft,
+    async postEvent(event) {
+      posted.push(event);
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        last = { phase: "capture_authorized", index, attempt };
+      } else if (event.armed) {
+        last = { phase: "sweep_started" };
+        armedPolls = 0;
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      if (last.phase === "sweep_started") {
+        armedPolls += 1;
+        // The blip lands mid-tone, AFTER the phone has rendered the sweep
+        // line — the shape the forensics captured.
+        if (armedPolls === 2 && blipsLeft > 0) {
+          blipsLeft -= 1;
+          throw new DOMException(
+            "timed out waiting for the speaker's measurement relay",
+            "AbortError",
+          );
+        }
+        if (armedPolls >= 4) last = { phase: "sweep_complete" };
+      }
+      return { host_event: last };
+    },
+    async putBlob() {
+      last = { phase: "capture_set_complete", accepted: 1, capture_target: 1 };
+      return { ok: true };
+    },
+  };
+}
+
+async function testOneAbortedPollMidSweepDoesNotEndTheSession() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const client = makeSweepBlipClient({ blips: 1 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(client.blipsUsed(), 1, "fixture sanity: the blip really fired");
+  assert.equal(
+    headingText(ctx.screenEl),
+    "All measurements done",
+    "a single aborted poll must not end a capture the speaker completed",
+  );
+  assert.ok(
+    statusHistory.includes("The speaker is still measuring — reconnecting…"),
+    `expected the reconnecting line, got: ${JSON.stringify(statusHistory)}`,
+  );
+  // The true phase line is restored once the relay answers again — otherwise
+  // "reconnecting…" would sit frozen for the rest of the tone (the sweep line
+  // renders once, on transition, and nothing else repaints it).
+  assert.equal(
+    statusHistory.filter((line) => line === "Playing the measurement tone…").length,
+    2,
+    "the sweep line is rendered, replaced by the blip copy, then put back",
+  );
+  assert.equal(
+    client.posted.filter((e) => e.begin_capture && !e.armed).length,
+    1,
+    "the recovery re-polls the SAME capture; it never re-begins",
+  );
+  ok();
+}
+
+// ============================================================================
+// 44 (#1824 D2). The armed post itself is re-sent across a connectivity abort
+// rather than ending the round: the Pi is holding this exact (index, attempt)
+// in `awaiting_arm`, the relay's phone-event slot is last-write-wins, and the
+// recorder is already running — so the recovery happens IN PLACE, with no
+// screen teardown and no second begin.
+// ============================================================================
+async function testArmedPostAbortRetriesTheSameCaptureInPlace() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const posted = [];
+  let last = {};
+  let armedPosts = 0;
+  const client = {
+    async postEvent(event) {
+      if (event.armed) {
+        armedPosts += 1;
+        if (armedPosts === 1) {
+          // The POST landed in the relay's slot or it did not — the phone
+          // cannot tell. Re-posting the identical event is the only way to
+          // use the slot the speaker is holding open.
+          throw new DOMException(
+            "timed out waiting for the speaker's measurement relay",
+            "AbortError",
+          );
+        }
+        last = { phase: "sweep_complete" };
+      } else if (event.begin_capture) {
+        const { index, attempt } = event.begin_capture;
+        last = { phase: "capture_authorized", index, attempt };
+      }
+      posted.push(event);
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: last };
+    },
+    async putBlob() {
+      last = { phase: "capture_set_complete", accepted: 1, capture_target: 1 };
+      return { ok: true };
+    },
+  };
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(armedPosts, 2, "the armed event is re-sent once after the abort");
+  assert.equal(
+    headingText(ctx.screenEl),
+    "All measurements done",
+    "a blip on the armed post is recoverable, never the terminal screen",
+  );
+  assert.equal(
+    posted.filter((e) => e.begin_capture && !e.armed).length,
+    1,
+    "the retry re-posts `armed`, never a second begin for a consumed slot",
+  );
+  const armed = posted.filter((e) => e.armed);
+  assert.deepEqual(
+    armed.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1]],
+    "the re-post carries the SAME (index, attempt)",
+  );
+  ok();
+}
+
+// ============================================================================
+// 45 (#1821, phone half). A TERMINAL `capture_result` posted while the phone
+// is waiting for the tone (the Pi's play seam refusing — see
+// jasper.web.correction_crossover_v2's _post_terminal_failure_host_event) is
+// read and named. Until this fix the sweep wait recognized only sweep_*/
+// ambient phases, polled straight through the refusal into the Pi's session
+// purge, and rendered "this link expired" over a speaker that had said
+// exactly why it stopped.
+// ============================================================================
+async function testTerminalCaptureResultMidSweepNamesTheReason() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 2 });
+  const reason =
+    "This speaker's profile is not confirmed, so it cannot play a measurement.";
+  let last = {};
+  let uploads = 0;
+  const client = {
+    async postEvent(event) {
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        last = { phase: "capture_authorized", index, attempt };
+      } else if (event.armed) {
+        const { index, attempt } = event.begin_capture;
+        last = {
+          phase: "capture_result",
+          index,
+          attempt,
+          accepted: false,
+          code: "program_unplayable",
+          reason,
+        };
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: last };
+    },
+    async putBlob() {
+      uploads += 1;
+      return { ok: true };
+    },
+  };
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(headingText(ctx.screenEl), "Measurement failed");
+  assert.notEqual(
+    headingText(ctx.screenEl),
+    "Link expired",
+    "a named refusal must never be reported as an expired link",
+  );
+  assert.ok(
+    noteText(ctx.screenEl).includes(reason),
+    `expected the speaker's own reason, got: ${noteText(ctx.screenEl)}`,
+  );
+  assert.equal(uploads, 0, "a refused capture never uploads a sweep-less window");
+  ok();
+}
+
+// ============================================================================
+// 46 (#1821, the matching hazard). The relay's host-event slot is
+// last-write-wins and nothing clears it when the phone consumes a verdict, so
+// a RETRY's first sweep poll reads the PREVIOUS attempt's rejected verdict.
+// Reading that as this attempt's refusal would kill every retry — the exact
+// trap waitForCaptureAuthorized documents. The stale verdict is ignored
+// because its (index, attempt) is not the armed one.
+// ============================================================================
+async function testStaleRejectedVerdictMidSweepIsIgnored() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({ target: 1, maxAttempts: 3 });
+  const stale = {
+    phase: "capture_result",
+    index: 1,
+    attempt: 1,
+    accepted: false,
+    reason: "Too quiet — move the phone closer.",
+  };
+  let last = {};
+  let armedAttempt = 0;
+  let sweepPolls = 0;
+  const client = {
+    async postEvent(event) {
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        last = { phase: "capture_authorized", index, attempt };
+      } else if (event.armed) {
+        armedAttempt = event.begin_capture.attempt;
+        sweepPolls = 0;
+        // Attempt 2 arms with the PREVIOUS attempt's rejection still sitting
+        // in the slot; attempt 1 runs normally.
+        last = armedAttempt === 1 ? { phase: "sweep_complete" } : stale;
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      if (last === stale) {
+        sweepPolls += 1;
+        if (sweepPolls >= 2) last = { phase: "sweep_complete" };
+        return { host_event: stale };
+      }
+      return { host_event: last };
+    },
+    async putBlob(blob, plaintextLen, sha256, captureIndex) {
+      last = captureIndex === 0
+        ? { ...stale }
+        : { phase: "capture_set_complete", accepted: 1, capture_target: 1 };
+      return { ok: true };
+    },
+  };
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  // Attempt 1 was rejected: the page offers the same slot again.
+  assert.equal(headingText(ctx.screenEl), "Take that measurement again");
+  const retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await retry._listeners.click[0]();
+
+  assert.equal(
+    headingText(ctx.screenEl),
+    "All measurements done",
+    "the retry must survive the stale verdict its first sweep poll reads",
+  );
+  ok();
+}
+
+// ============================================================================
+// 47 (#1823 / #1824 D5). The auto-advance countdown blanks its own counter on
+// the way into the capture. The owner's field run saw "Starting in 1…" still
+// on screen while measurement 2 was audibly playing: the countdown screen's
+// notes survive into the round (the round's own progress goes to #status), so
+// nothing else ever repainted it. The cancel/retake path already cleared it;
+// the auto-begin path did not.
+// ============================================================================
+async function testAutoBeginClearsTheCountdownCounter() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = planSpec({
+    target: 2,
+    maxAttempts: 3,
+    entries: [
+      { index: 0, kind_label: "check", duration_ms: 25000, screen: { title: "On the mark", auto_advance: "tap" } },
+      {
+        index: 1,
+        kind_label: "measure",
+        duration_ms: 16000,
+        // 1 s so the harness waits one real interval tick for the auto-begin
+        // rather than the shipped 5.
+        screen: { title: "Hold still", auto_advance: "countdown", countdown_s: "1" },
+      },
+    ],
+  });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 3 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  const counter = ctx.screenEl.children.find(
+    (c) => c.tagName === "P" && String(c.textContent).includes("Starting in"),
+  );
+  assert.ok(counter, "fixture sanity: the countdown rendered its counter");
+
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await settle();
+
+  assert.equal(
+    counter.textContent,
+    "",
+    "the elapsed countdown blanks its counter before the capture starts",
+  );
+  assert.equal(ctx.autoAdvanceInterval, null, "and leaves no live interval behind");
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -2979,6 +3322,11 @@ const tests = [
   testPreArmFailureOnTheCountdownScreenNamesARealControl,
   testTheRetakeControlIsDisabledOnceItsWindowShuts,
   testRetakeOnTheCountdownScreenClearsItsFrozenCounter,
+  testOneAbortedPollMidSweepDoesNotEndTheSession,
+  testArmedPostAbortRetriesTheSameCaptureInPlace,
+  testTerminalCaptureResultMidSweepNamesTheReason,
+  testStaleRejectedVerdictMidSweepIsIgnored,
+  testAutoBeginClearsTheCountdownCounter,
 ];
 
 let failure = null;
