@@ -1014,7 +1014,8 @@ most visible thing on the screen.
    the reference level; more-sensitive drivers attenuate down digitally.
    `min(caps)` starved multi-way systems (a woofer 40 dB under —
    hardware-found). The value is latched once per session and refused
-   below the −60 dB emergency floor.
+   below the −60 dB emergency floor. **Nothing moves it, including the
+   apply boundary** — see invariant 10a.
 4. **Analysis is a pure function of `(program, WAV)`.** No side-channel
    state. The `program_id` is a content hash and fingerprints the
    analysis and the candidate, so a re-run can never be mistaken for a
@@ -1060,10 +1061,72 @@ most visible thing on the screen.
    cap is what makes the guarantee.** A user who walks away can never
    leave the speaker pinned at measurement volume. The voice-daemon measurement pause is held for
    the *whole* session (acquired before the first volume set) so the
-   idle reconciler can't revert it.
+   idle reconciler can't revert it. A **failed auto-apply** drains the
+   plan proactively too (#1811): that failure is terminal — the
+   `apply_failed` seam turns VERIFY's hold into a refusal — so the level
+   is restored the moment the apply dies rather than at the phone's next
+   begin, which is what every other enforcement here waits for (the
+   wall-clock ceiling and the stale-active reconcile are both
+   lazy-on-read).
 10. **CamillaDSP safety ceiling stays.** As everywhere in the DSP
     graph, `devices.volume_limit = 0.0` and positive writes clamp to
     0 dB. The program graph adds no headroom beyond the main volume.
+
+    **10a. The apply boundary's level move is DECLARED, never
+    compensated (#1811).** The conductor's auto-apply swaps the
+    production graph ~3 s before VERIFY arms. The applied graph absorbs
+    its correction's boost as a pre-split common attenuation
+    (`camilla_yaml.linearization_headroom_db` → `active_baseline_headroom`),
+    so the same commanded volume drives the speaker measurably quieter —
+    −7.9 dB broadband, −14.5/−18 dB in the pilot band, on the session whose
+    apply moved that attenuation 0 → −22.458 dB.
+
+    **That attenuation is the excitation-safety property, not a bug to
+    cancel.** It is what makes the emitted boost safe: the graph is
+    `−H` pre-split and `+L_r(f)` post-split with `L_r ≤ H`, so a boosted
+    band lands at or under unity no matter how deep the correction
+    (`camilla_yaml.MAX_LINEARIZATION_BOOST_DB`'s note). The compose-time
+    excitation clamp (`_compose_verify_program` → `back_off_gain`) models
+    `program_peak + session_volume ≤ min(caps)` and knows nothing of
+    `L_r`, so raising the commanded volume by `H` to "restore" the level
+    would put the boosted band at `min(caps) + L_r(f)` — over the
+    compression driver's cap by the branch's own boost, on a sustained
+    swept sine, far below the per-driver limiters' −12 dBFS reach. The
+    exactly-safe grant is `H − max(L_peak) = 0`. **VERIFY therefore
+    measures the corrected speaker at the unchanged commanded level.**
+
+    What the move needs is to be *declared to the analysis*, because the
+    post-apply capture is compared against a prediction that carries no
+    such term. `handle_v2_apply` computes it
+    (`baseline_profile.applied_program_level_delta_db` — a difference of
+    two `linearization_headroom_db` calls, so it cannot drift from the
+    emitted gain) and `observe_apply_success` persists it as
+    `expected_post_apply_offset_db` in the **same state write** as the
+    `applied` flag — so the flag that releases VERIFY's hold can never
+    become visible without the offset beside it. The conductor reads it
+    back through the `applied_offset_db` seam and hands it to
+    `classify_delta_probe`, which removes it before classifying.
+
+    The **VERIFY tracking gate needs no such treatment** — it is already
+    level-offset-invariant (`audio_measurement.analysis.
+    _offset_invariant_rms_and_max` mean-centers; pinned by
+    `test_the_notch_excluded_gate_is_level_offset_invariant_too`). The
+    delta probe deliberately is not, because a level shortfall is one of
+    the things it classifies, which is exactly why it needs the offset
+    handed to it explicitly.
+
+    The declared offset is an honest **partial** account: it reads the
+    linearization headroom only, so a household with room-PEQ or
+    output-trim attenuation can carry a real move it does not see. That
+    remainder is measured where the correction commanded nothing and
+    surfaces as `delta_probe.VERDICT_LEVEL_MISMATCH` — a named finding,
+    not a rollback (see that constant's own note for why reverting on our
+    own bookkeeping gap would be a false accusation).
+
+    The household-facing loudness drop is **not** owned here: its root
+    cause is the size of the charge (#1808 shrinks it to ~4 dB) and the
+    two-stage flow (#1806) makes the apply user-confirmed, so the change
+    stops being a surprise.
 11. **Linearization emission is independently re-validated at every
     boundary, never trust-the-caller (#1668 PR-D).** The emitter
     (`_validated_linearization`) and the runtime-safety verifier
@@ -1145,6 +1208,22 @@ a 5–12 kHz shelf-realization defect and not: 2026-07-27's lived an octave and 
 half above tracking's band and no tolerance there could have caught it. Design
 and the verdict-priority rule: `jasper/active_speaker/delta_probe.py`.
 
+Unlike the tracking check, this comparison is **not** level-offset-invariant —
+a level shortfall is one of the things it classifies — so it takes the apply
+boundary's declared move (`expected_offset_db`, invariant 10a) and removes it
+before classifying. What survives is measured where the correction commanded
+nothing and reported as `residual_offset_db`; a material, sufficient residual
+is the `level_mismatch` verdict, which is a finding, not a rollback.
+
+Because it is not a rollback it reaches no refusal screen, so it is surfaced
+three other ways instead of passing silently: the probe logs at WARNING, the
+verdict is persisted as `verify.delta_probe` (four scalars — verdict, reason,
+and the two level numbers), and the done screen carries a caveat nudge
+alongside its "Verified." badge. When there are too few quiet bins to run the
+discriminator at all, the verdict below it carries a
+`|level_check_unavailable` suffix in its `reason` — a rollback decided without
+that check says so.
+
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
 relay plan's `max_attempts` bounds the whole session.
@@ -1154,8 +1233,14 @@ Key `event=` lines (via `jasper.log_event`):
 ```sh
 # Conductor phase walk (the /correction/ wizard runs under jasper-correction-web):
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry)'
-# Session volume lifecycle (fail-closed):
-journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_(opened|restored|restore_failed)'
+# Session volume lifecycle (fail-closed). ``persist_failed`` is CRITICAL and
+# means the durable intent could not be written — it belongs in any sweep of
+# this family, not just the happy three:
+journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_(opened|restored|restore_failed|persist_failed)'
+# Apply boundary (#1811): the declared level move, the proactive volume close
+# when the auto-apply dies, and the CRITICAL line when that close could not be
+# confirmed (a speaker possibly still at measurement volume — sweep for it):
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|apply_failure_volume_closed|volume_abandon_failed)'
 # Calibration handoff / uncalibrated warnings:
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
 # Accountability + delta probe (PR-L4/L5) — why a session refused, and what

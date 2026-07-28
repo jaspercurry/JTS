@@ -499,6 +499,67 @@ def test_done_headline_is_unchanged_when_no_spec_verdict_exists():
     assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
 
 
+def test_a_level_mismatch_caveats_the_pass_screen():
+    """#1811 SF1: a non-rollback probe finding must not render as a clean pass.
+
+    ``level_mismatch`` is deliberately NOT a rollback — reverting a household's
+    correction over a gap in our own offset accounting would be a false
+    accusation — but it means the probe never answered the shape question,
+    while every other word on this screen says "Verified." The caveat rides
+    BESIDE the badge rather than replacing it: the tracking comparator really
+    did pass, and that claim stays true.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass",
+            "delta_probe": {
+                "verdict": "level_mismatch",
+                "reason": "uncommanded_level_shift",
+                "expected_offset_db": -22.458,
+                "residual_offset_db": -4.0,
+            },
+        },
+        candidate=_candidate_summary(),
+    ))
+    codes = {n["code"] for n in env["nudges"]}
+    assert codes == {"crossover_v2_verified", "crossover_v2_level_mismatch"}
+    caveat = next(
+        n for n in env["nudges"] if n["code"] == "crossover_v2_level_mismatch"
+    )
+    assert caveat["severity"] == "warn"
+    assert "could not confirm" in caveat["text"]
+    # No hardware noun — the same copy rule the refusal reasons carry.
+    assert not any(
+        word in caveat["text"].lower()
+        for word in ("tweeter", "woofer", "amplifier", "horn")
+    )
+
+
+def test_a_level_mismatch_rides_beside_an_out_of_spec_badge_too():
+    """Two instruments, two claims, neither silencing the other."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass",
+            "delta_probe": {"verdict": "level_mismatch"},
+        },
+        candidate=_candidate_summary(), cloud=_cloud_verify_spec(False),
+    ))
+    assert {n["code"] for n in env["nudges"]} == {
+        "crossover_v2_out_of_spec", "crossover_v2_level_mismatch",
+    }
+
+
+def test_a_matched_probe_adds_no_caveat():
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "delta_probe": {"verdict": "matched"}},
+        candidate=_candidate_summary(),
+    ))
+    assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
+
+
 def test_done_headline_says_so_when_the_result_was_never_graded():
     """PR-L4 item 4: a session ending applied-but-ungraded says the words.
 

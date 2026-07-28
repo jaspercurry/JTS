@@ -160,6 +160,32 @@ def test_tracking_error_is_level_offset_invariant():
     assert shifted == pytest.approx(base)
 
 
+def test_the_notch_excluded_gate_is_level_offset_invariant_too():
+    """The VERIFY gate itself, not just its sibling (#1811).
+
+    ``crossover_v2_flow._consume_verify`` gates on ``max_db_notch_excluded``,
+    so THIS is the function that has to survive the apply boundary — the
+    applied graph charges its correction's boost as a pre-split attenuation
+    and every post-apply capture arrives that many dB down. It does: it shares
+    ``_offset_invariant_rms_and_max``'s mean-centering. Pinned here so the
+    delta probe's need for an explicit ``expected_offset_db`` stays a
+    statement about the delta probe alone, and a future change that quietly
+    dropped the centering here could not pass unnoticed.
+    """
+    freqs = np.geomspace(1_000.0, 16_000.0, 300)
+    predicted = -3.0 * np.log2(freqs / 4_000.0)
+    ripple = 0.4 * np.sin(np.log(freqs))
+    band = (2_000.0, 12_000.0)
+    base = notch_excluded_tracking_error_db(
+        freqs, predicted + ripple, predicted, band, notch_exclusion_db=10.0,
+    )
+    shifted = notch_excluded_tracking_error_db(
+        freqs, predicted + ripple - 22.458, predicted, band,
+        notch_exclusion_db=10.0,
+    )
+    assert shifted == pytest.approx(base)
+
+
 # --------------------------------------------------------------------------- #
 # notch-excluded VERIFY tracking (W6.7 ruling 1)
 # --------------------------------------------------------------------------- #
