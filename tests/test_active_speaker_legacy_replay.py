@@ -124,7 +124,7 @@ def _fixture(tmp_path: Path, *, calibrated: bool = True):
         acknowledgement_binding="ack-near",
         relay_session_id="relay-near",
         capture_page={
-            "capture_protocol_version": 2,
+            "capture_protocol_version": 3,
             "capture_page_build": "20260713.1",
         },
         speaker_group_id="mono",

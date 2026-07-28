@@ -136,12 +136,11 @@ assert.equal(globalThis.__wakeReleased, true, "host Stop releases the wake lock"
 assert.equal(uploads, 0, "host Stop prevents a late upload");
 assert.equal(statusEl.dataset.kind, "info", "host Stop stays expected control flow");
 
-// v2 regression pin (this spec carries no capture_protocol_version, i.e. the
-// legacy/v1-v2 shape): captureAmbientNoise()'s new `samples` field must
-// never leak onto the wire — noise_floor stays exactly {duration_ms,
-// rms_dbfs} — and the ambient_stats fields ride alongside on the SAME
-// already-awaited `armed` post for a crossover_sweep capture (no separate
-// relay round trip).
+// Single-capture (plan-free) regression pin: captureAmbientNoise()'s
+// `samples` field must never leak onto the wire — noise_floor stays exactly
+// {duration_ms, rms_dbfs} — and the ambient_stats fields ride alongside on
+// the SAME already-awaited `armed` post for a crossover_sweep capture (no
+// separate relay round trip).
 assert.deepEqual(
   new Set(Object.keys(posted[0].noise_floor)),
   new Set(["duration_ms", "rms_dbfs"]),

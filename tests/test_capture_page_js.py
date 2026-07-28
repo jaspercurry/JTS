@@ -96,8 +96,14 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert version == {
         "schema_version": 1,
         "capture_protocol_version": 3,
-        "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260727.1",
+        # ONE protocol. The supported list is not a negotiation surface any
+        # more — protocols 1 and 2 never reached a public page and were
+        # deleted, so a page advertising anything else is simply stale. The
+        # list survives as the wire shape the Pi's handshake reads, and stays
+        # a superset-of-one until a future protocol is rolled out
+        # page-before-Pi.
+        "supported_capture_protocol_versions": [3],
+        "capture_page_build": "20260727.2",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -105,7 +111,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260727-1" in index_html
+    assert "main.js?v=20260727-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -749,21 +755,20 @@ def test_crossover_candidate_review_collapses_provenance_hashes():
 # ---------------------------------------------------------------------------
 
 
-def test_capture_page_v3_plan_routes_begin_capture_to_the_plan_loop():
-    """A capture_protocol_version=3 spec with a capture_plan wires the
-    spec-rendered Start button to onPlanStart(); anything else (v1/v2, or a
-    v3-shaped protocol number with no plan — impossible per
-    CaptureSpec.validate() but checked defensively anyway) keeps today's
-    single-capture onStart() untouched."""
+def test_capture_page_plan_routes_begin_capture_to_the_plan_loop():
+    """A `capture_plan` — and ONLY a `capture_plan` — wires the spec-rendered
+    Start button to onPlanStart(); a plan-free spec keeps the single-capture
+    onStart(). The protocol number is deliberately NOT part of this test: with
+    one protocol, every spec carries the same version, so a
+    `capture_protocol_version === 3` conjunct would be dead weight that reads
+    as if plan-ness were still version-encoded."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert (
-        "const isPlanSpec = spec.capture_protocol_version === 3 && Boolean(spec.capture_plan);"
-        in main_js
-    )
+    assert "const isPlanSpec = Boolean(spec.capture_plan);" in main_js
+    assert "capture_protocol_version === 3" not in main_js
     assert "begin_capture: () => (isPlanSpec ? onPlanStart(ctx) : onStart(ctx))," in main_js
-    # v2 keeps its exact single-capture behavior — the "retry" action (a v2-
-    # only affordance; v3 never emits it) is untouched, still onStart.
+    # The single-capture path keeps its exact behavior — the "retry" action
+    # (which a plan spec never emits) is untouched, still onStart.
     assert "retry: () => onStart(ctx)," in main_js
 
 

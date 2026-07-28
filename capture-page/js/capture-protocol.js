@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Jasper Curry
 // SPDX-License-Identifier: Apache-2.0
 
-// Public-page/Pi compatibility contract. Specs created before this handshake
-// had no explicit version; their shipped behavior is protocol 1. Keeping that
-// one narrow legacy mapping lets the page be published before Pi upgrades.
-export const LEGACY_CAPTURE_PROTOCOL_VERSION = 1;
-
+// Public-page/Pi compatibility contract. Every spec states its protocol
+// explicitly; a spec that omits one is incompatible, not legacy. (An earlier
+// rule read a missing version as protocol 1 so the page could ship ahead of
+// the Pi. Protocols 1 and 2 never reached a public page and were deleted, so
+// that mapping now only exists to be silently wrong.)
 export function requiredCaptureProtocol(spec) {
   const raw = spec && spec.capture_protocol_version;
-  if (raw === undefined || raw === null) return LEGACY_CAPTURE_PROTOCOL_VERSION;
   const version = Number(raw);
   return Number.isInteger(version) && version > 0 ? version : null;
 }

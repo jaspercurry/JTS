@@ -98,7 +98,7 @@ def _measurements(*driver_specs) -> dict:
                 "confirmation_source": "relay_begin_capture",
                 "acknowledgement_binding_sha256": "5" * 64,
                 "relay_session_id": f"relay-{group}-{role}",
-                "capture_protocol_version": 2,
+                "capture_protocol_version": 3,
                 "capture_page_build": "20260711.1",
                 "speaker_group_id": group,
                 "role": role,

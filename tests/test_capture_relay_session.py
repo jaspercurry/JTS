@@ -52,9 +52,9 @@ from jasper.capture_relay.spec import build_crossover_sweep_spec
 
 _CAPTURE_PAGE = {
     "schema_version": 1,
-    "capture_protocol_version": 1,
-    "supported_capture_protocol_versions": [1],
-    "capture_page_build": "20260710.1",
+    "capture_protocol_version": 3,
+    "supported_capture_protocol_versions": [3],
+    "capture_page_build": "20260727.2",
 }
 
 
@@ -63,6 +63,31 @@ class FakeRelayBackend:
 
     def __init__(self) -> None:
         self.sessions: dict[str, dict] = {}
+        # Phone events are ALWAYS authenticated (the unauthenticated protocol-1
+        # path is deleted), so the fake phone needs the session's E2E content
+        # key to mint a valid envelope. The real relay never learns this key —
+        # only this in-memory stand-in for the phone does.
+        self.content_keys: dict[str, bytes] = {}
+
+    def bind_phone(self, session) -> None:
+        """Hand the fake phone the E2E key it would read from the tap link."""
+        self.content_keys[session.session_id] = session.content_key
+
+    def _authenticate(self, sid, event, *, auth_session=None, sequence=1):
+        if auth_session is not None:
+            return authenticated_phone_event(
+                auth_session.content_key,
+                auth_session.session_id,
+                event,
+                sequence=sequence,
+            )
+        key = self.content_keys.get(sid)
+        if key is None:
+            raise AssertionError(
+                f"no content key bound for {sid} — call backend.bind_phone(session); "
+                "every phone event must be authenticated"
+            )
+        return authenticated_phone_event(key, sid, event, sequence=sequence)
 
     def __call__(self, method, url, headers, body):
         path = urllib.parse.urlsplit(url).path
@@ -154,27 +179,26 @@ class FakeRelayBackend:
             event["setup"] = setup
         if acknowledgement is not None:
             event["acknowledgement"] = acknowledgement
-        self.sessions[sid]["event"] = (
-            authenticated_phone_event(
-                auth_session.content_key,
-                auth_session.session_id,
-                event,
-                sequence=sequence,
-            )
-            if auth_session is not None
-            else event
+        self.sessions[sid]["event"] = self._authenticate(
+            sid, event, auth_session=auth_session, sequence=sequence
         )
 
-    def phone_setup_validate(self, sid, setup, *, token="setup-token"):
-        self.sessions[sid]["event"] = {
-            "setup_validate": True,
-            "setup_token": token,
-            "setup": setup,
-            "capture_page": dict(_CAPTURE_PAGE),
-        }
+    def phone_setup_validate(self, sid, setup, *, token="setup-token", sequence=1):
+        self.sessions[sid]["event"] = self._authenticate(
+            sid,
+            {
+                "setup_validate": True,
+                "setup_token": token,
+                "setup": setup,
+                "capture_page": dict(_CAPTURE_PAGE),
+            },
+            sequence=sequence,
+        )
 
-    def phone_abort(self, sid, reason="backgrounded"):
-        self.sessions[sid]["event"] = {"aborted": True, "abort_reason": reason}
+    def phone_abort(self, sid, reason="backgrounded", *, sequence=1):
+        self.sessions[sid]["event"] = self._authenticate(
+            sid, {"aborted": True, "abort_reason": reason}, sequence=sequence
+        )
 
     def phone_upload(self, sid, content_key, wav):
         iv = os.urandom(crypto.IV_BYTES)
@@ -204,6 +228,7 @@ def _mint(backend):
     )
     client = RelayClient("https://relay.test", transport=backend)
     register_session(client, session)
+    backend.bind_phone(session)
     return client, session
 
 
@@ -308,15 +333,9 @@ def test_required_acknowledgement_is_verified_before_stimulus():
     )
     client = RelayClient("https://relay.test", transport=backend)
     register_session(client, session)
-    page_v2 = {
-        **_CAPTURE_PAGE,
-        "capture_protocol_version": 2,
-        "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.1",
-    }
+    backend.bind_phone(session)
     backend.phone_arm(
         session.session_id,
-        capture_page=page_v2,
         acknowledgement={
             "schema_version": 1,
             "id": "driver_same_distance_v1",
@@ -351,7 +370,6 @@ def test_required_acknowledgement_is_verified_before_stimulus():
 
     backend.phone_arm(
         session.session_id,
-        capture_page=page_v2,
         acknowledgement={
             "schema_version": 1,
             "id": "driver_same_distance_v1",
@@ -386,17 +404,8 @@ def _activity_probe_fixture():
     )
     client = RelayClient("https://relay.test", transport=backend)
     register_session(client, session)
-    backend.phone_arm(
-        session.session_id,
-        auth_session=session,
-        capture_page={
-            **_CAPTURE_PAGE,
-            "capture_protocol_version": 2,
-            "supported_capture_protocol_versions": [1, 2],
-            "capture_page_build": "20260711.1",
-        },
-        sequence=1,
-    )
+    backend.bind_phone(session)
+    backend.phone_arm(session.session_id, auth_session=session, sequence=1)
     return backend, session, CaptureActivityProbe(client, session)
 
 
@@ -510,14 +519,9 @@ def test_invalid_placement_acknowledgement_never_reaches_playback(
     )
     client = RelayClient("https://relay.test", transport=backend)
     register_session(client, session)
+    backend.bind_phone(session)
     backend.phone_arm(
         session.session_id,
-        capture_page={
-            **_CAPTURE_PAGE,
-            "capture_protocol_version": 2,
-            "supported_capture_protocol_versions": [1, 2],
-            "capture_page_build": "20260711.1",
-        },
         acknowledgement=acknowledgement,
         auth_session=session,
     )
@@ -540,7 +544,7 @@ def test_invalid_placement_acknowledgement_never_reaches_playback(
 
 
 @pytest.mark.parametrize("failure_mode", ["unsigned", "tampered", "other-session"])
-def test_protocol_two_control_integrity_fails_before_playback(failure_mode):
+def test_control_integrity_fails_before_playback(failure_mode):
     backend = FakeRelayBackend()
     binding = "placement_abcdefghijklmnopqrstuv"
     session = mint_session(
@@ -554,12 +558,7 @@ def test_protocol_two_control_integrity_fails_before_playback(failure_mode):
     )
     client = RelayClient("https://relay.test", transport=backend)
     register_session(client, session)
-    page_v2 = {
-        **_CAPTURE_PAGE,
-        "capture_protocol_version": 2,
-        "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260711.3",
-    }
+    backend.bind_phone(session)
     acknowledgement = {
         "schema_version": 1,
         "id": "driver_same_distance_v1",
@@ -567,11 +566,14 @@ def test_protocol_two_control_integrity_fails_before_playback(failure_mode):
         "accepted": True,
     }
     if failure_mode == "unsigned":
-        backend.phone_arm(
-            session.session_id,
-            capture_page=page_v2,
-            acknowledgement=acknowledgement,
-        )
+        # Written past the fake phone's helper on purpose: nothing in the
+        # product can emit a bare event any more, so the only way to test the
+        # refusal is to forge the relay slot directly.
+        backend.sessions[session.session_id]["event"] = {
+            "armed": True,
+            "capture_page": dict(_CAPTURE_PAGE),
+            "acknowledgement": acknowledgement,
+        }
     elif failure_mode == "other-session":
         other = mint_session(
             session.spec,
@@ -580,14 +582,12 @@ def test_protocol_two_control_integrity_fails_before_playback(failure_mode):
         )
         backend.phone_arm(
             session.session_id,
-            capture_page=page_v2,
             acknowledgement=acknowledgement,
             auth_session=other,
         )
     else:
         backend.phone_arm(
             session.session_id,
-            capture_page=page_v2,
             acknowledgement=acknowledgement,
             auth_session=session,
         )
@@ -615,11 +615,16 @@ def test_protocol_two_control_integrity_fails_before_playback(failure_mode):
 def test_stale_capture_page_fails_before_stimulus_and_publishes_reason(caplog):
     backend = FakeRelayBackend()
     client, session = _mint(backend)
-    backend.phone_arm(session.session_id)
-    backend.sessions[session.session_id]["event"].pop("capture_page")
+    # A properly AUTHENTICATED armed event that simply carries no page
+    # identity: integrity passes, the compatibility handshake still refuses.
+    # (Popping the key after signing would fail integrity first and never
+    # reach the check this test is about.)
+    backend.sessions[session.session_id]["event"] = backend._authenticate(
+        session.session_id, {"armed": True}
+    )
     armed_calls = []
 
-    with pytest.raises(CapturePageIncompatible, match="expected protocol 1"):
+    with pytest.raises(CapturePageIncompatible, match="expected protocol 3"):
         run_capture(
             client,
             session,
@@ -667,7 +672,9 @@ def test_setup_validation_callback_runs_before_armed_capture():
 
     def on_setup(state):
         setup_calls.append((state.setup_token, state.setup))
-        backend.phone_arm(session.session_id, setup=state.setup)
+        # sequence=2: the setup_validate event above is sequence 1, and the
+        # authenticated envelope is strictly monotonic per session.
+        backend.phone_arm(session.session_id, setup=state.setup, sequence=2)
 
     def on_armed(state):
         armed_calls.append(state.setup)

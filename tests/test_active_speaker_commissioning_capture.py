@@ -1007,7 +1007,7 @@ def _reference_axis_proof(
         "confirmation_source": "relay_begin_capture",
         "acknowledgement_binding_sha256": "d" * 64,
         "relay_session_id": relay_session_id,
-        "capture_protocol_version": 2,
+        "capture_protocol_version": 3,
         "capture_page_build": "20260712.1",
         "policy_id": "driver_reference_axis_v1",
         "comparison_set_id": comparison_hex * 32,
@@ -1018,17 +1018,33 @@ def _reference_axis_proof(
     }
 
 
+def test_placement_proof_allowlist_tracks_the_one_capture_protocol():
+    """The allowlist duplicates `CAPTURE_PROTOCOL_VERSION` as a literal because
+    capture_relay.spec imports capture_geometry (not the other way round), so
+    the module cannot import the constant back without inverting that
+    dependency. Pin the equality here instead."""
+    from jasper.active_speaker.capture_geometry import (
+        PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS,
+    )
+    from jasper.capture_relay.spec import CAPTURE_PROTOCOL_VERSION
+
+    assert PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS == (
+        CAPTURE_PROTOCOL_VERSION,
+    )
+
+
 @pytest.mark.parametrize(
-    ("protocol", "valid"), [(1, False), (2, True), (3, True), (4, False)]
+    ("protocol", "valid"), [(1, False), (2, False), (3, True), (4, False)]
 )
 def test_placement_proof_capture_protocol_is_an_explicit_allowlist(
     protocol, valid
 ):
     """PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS is a deliberate
-    allowlist, not a ``>= 2`` floor: protocol 1 has no acknowledgement
-    machinery for a proof to stand on, and a future protocol 4 must be a
-    deliberate addition here, never a silent pass-through (see the
-    constant's comment in jasper.active_speaker.capture_geometry)."""
+    allowlist, not a ``>=`` floor. Protocols 1 and 2 are deleted, so a proof
+    stamped with either is evidence from a build that no longer exists and is
+    refused; a future protocol 4 must be a deliberate addition here, never a
+    silent pass-through (see the constant's comment in
+    jasper.active_speaker.capture_geometry)."""
     from jasper.active_speaker.capture_geometry import (
         placement_proof_shape_valid,
     )
@@ -1818,7 +1834,7 @@ def _capture_summed(
             acknowledgement_binding=f"binding-{playback_id}-abcdefghijkl",
             relay_session_id=f"relay-{playback_id}",
             capture_page={
-                "capture_protocol_version": 2,
+                "capture_protocol_version": 3,
                 "capture_page_build": "20260712.2",
             },
             speaker_group_id="mono",

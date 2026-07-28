@@ -57,8 +57,8 @@ this doc is the current operational truth.
   preview alias and the production domain keeps serving the stale page
   (the W6.10 Chrome-deadlock bug class); the custom domain lags the
   deploy by ~5 min. See the capture-page README's release ordering —
-  the page's `supported_capture_protocol_versions` must include a
-  protocol before the Pi emits it.
+  the page's `supported_capture_protocol_versions` must advertise a
+  protocol before the Pi emits it, and it holds exactly one entry.
 - **Relay Worker:** the Cloudflare Worker under
   [`relay/`](../relay/README.md), served at `relay.jasper.tech`. It is a
   **third independent release**, and like the page it ships **before**
@@ -952,8 +952,8 @@ most visible thing on the screen.
 | [`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | Layer-1a correction envelope (#1668 PR-B): `compose_envelope` → per-bin allowed correction depth + `ReasonCode`, `compute_sigma_curve`, and the term functions it takes the `min` across — `mic_trust_limit` / `repeatability_limit` / `class_prior_limit`, the two stubs, plus the optional cloud-derived `spatial_exclusion_limit` / `position_stability_limit` (flat-linearization PR-6a). Read the module for the current set; this list is illustrative, not a contract. Pure computation, no policy. |
 | [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only rising Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, the CD-horn top-octave `_hf_continuation_stage` — a Lowshelf-backbone give-back + declared-class hold/taper policy, #1668 — `MAX_NORMALIZATION_SPEND_DB` budget now 18 dB, `correction_giveback_db` (the SSOT the conductor's anchored trim consumes), the `verify_band_hz`/`observe_octave_summary` honesty-ladder fields added in PR-D). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. Also owns `linearization_filters_by_role`, the reduction the two rich-candidate emission call sites share (`recompose_applied_baseline_yaml` deliberately does not call it — see "Linearization EMISSION" above). |
 | [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter. `emit_active_speaker_baseline_config`'s `linearization` parameter (#1668 PR-D) is what actually plays the Layer-1a fit — see "Linearization EMISSION" above; `_validated_linearization` independently re-validates it (Peaking/Highshelf/Lowshelf, non-positive gain, one leading shelf + one optional trailing Highshelf taper) before any filter reaches CamillaDSP. |
-| [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Relay protocol v3: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. |
-| [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the v3 session loop; `version.json` carries the supported protocol versions. |
+| [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Session-spanning capture plans: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. Also the one `CAPTURE_PROTOCOL_VERSION`. |
+| [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the session-spanning loop when the spec carries a `capture_plan`; `version.json` carries the supported capture protocol. |
 
 ## Contracts & invariants (preserve these)
 

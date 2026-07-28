@@ -19,7 +19,7 @@ they communicate only through the relay.
 The page **holds the microphone and the E2E `content_key`** (in its URL
 fragment). The `capture_spec` it renders arrives across the **untrusted relay**.
 The Pi binds the exact spec bytes to that fragment with HMAC-SHA-256, and
-protocol-v2 phone events are likewise authenticated before the Pi interprets
+phone events are likewise authenticated before the Pi interprets
 page identity, acknowledgement, or `armed`; see
 [`js/transport-integrity.js`](js/transport-integrity.js). The relay may deny
 service, but it cannot silently rewrite those controls.
@@ -42,7 +42,7 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/crypto.js` | AES-256-GCM encrypt + plaintext SHA-256 integrity | `capture_crypto_test.mjs` |
 | `js/transport-integrity.js` | Fragment-key-derived spec + phone-event HMAC | `capture_transport_integrity_test.mjs` |
 | `js/relay-client.js` | Phone-side relay requests (upload_token) | `capture_relay_client_test.mjs` |
-| `js/capture-protocol.js` | Public-page/Pi protocol compatibility (including the one legacy-v1 mapping) | `capture_protocol_test.mjs` |
+| `js/capture-protocol.js` | Public-page/Pi protocol compatibility handshake | `capture_protocol_test.mjs` |
 | `js/setup-store.js` | Privacy-bounded frozen setup reuse (sliding 20-minute idle, fixed 2-hour absolute expiry) | `capture_setup_store_test.mjs` |
 | `js/return-url.js` | Sanitized local-Pi return URL for the done CTA | `capture_return_url_test.mjs` |
 | `js/fragment.js` | Parse `#s=&u=&k=&a=` (key/spec MAC never leave the fragment) | `capture_fragment_test.mjs` |
@@ -51,9 +51,9 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
 | `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
-| `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload; session-spanning capture plans (protocol v3) | `capture_plan_loop_test.mjs`, on-device |
+| `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload; session-spanning capture plans | `capture_plan_loop_test.mjs`, on-device |
 | `index.html` | Static shell + CSP + base styles | `node --check` |
-| `version.json` | Live page build + supported capture-protocol versions | `test_capture_page_js.py` |
+| `version.json` | Live page build + the supported capture protocol | `test_capture_page_js.py` |
 
 The page **reuses** the canonical JTS browser capture helper
 (`deploy/assets/shared/js/measurement-audio.js`) — the build copies it into the
@@ -94,10 +94,21 @@ change must use this order so an upgraded Pi never reaches a stale public page.
 relay **capacity** changes — see [`relay/README.md`](../relay/README.md)
 "Release order". Both rules put the Pi last; neither replaces the other.)
 
-1. Add the new protocol to `version.json`'s
-   `supported_capture_protocol_versions` **without removing the currently
-   deployed protocol**. The page treats an old spec with no explicit version as
-   legacy protocol 1; this is the only implicit compatibility rule.
+**There is exactly one capture protocol**, and a spec must state it
+explicitly — a spec with no `capture_protocol_version` is incompatible, not
+legacy. (Protocols 1 and 2 existed only during development and were deleted:
+no public page ever served them, so there was no fleet to stay compatible
+with. That also retired the old "add the new protocol, ship, then remove the
+old one" dance — with nothing deployed to strand, the supported list never had
+to hold two entries.)
+
+The page-before-Pi order still binds, because the page is the artifact the Pi
+checks against:
+
+1. Set `version.json`'s `capture_protocol_version` and
+   `supported_capture_protocol_versions` to the new protocol, and bump
+   `capture_page_build` (plus `index.html`'s `main.js?v=` stamp — the page's
+   only cache-invalidation mechanism).
 2. Build and test the page: `bash capture-page/build.sh` and
    `python3 -m pytest -q tests/test_capture_page_js.py`.
 3. Publish `capture-page/dist` to the production Pages project.
@@ -107,8 +118,13 @@ relay **capacity** changes — see [`relay/README.md`](../relay/README.md)
    `supported_capture_protocol_versions`.
 5. Only then deploy the Pi code that emits the new
    `CaptureSpec.capture_protocol_version`.
-6. After the fleet is upgraded, a later page-only release may remove the old
-   protocol from the supported list.
+
+Between steps 3 and 5 a not-yet-upgraded Pi emits the OLD protocol against a
+page that no longer supports it, so the handshake refuses it — loudly, before
+any tone. Keep that window short, and treat step 5 as the same release day. If
+a future protocol ever has to span a long-lived fleet, that is the moment to
+reintroduce a two-entry supported list — deliberately, not by leaving one
+lying around.
 
 Every phone control event carries the loaded page identity. The Pi validates it
 before setup or `armed` can invoke tone playback and logs
@@ -141,7 +157,7 @@ node tests/js/capture_level_events_test.mjs  # batched phone-side level events
 node tests/js/capture_setup_store_test.mjs   # sliding + absolute setup expiry
 node tests/js/capture_protocol_test.mjs      # page/Pi release compatibility
 node tests/js/capture_ambient_stats_test.mjs # per-octave-band ambient stats (Wave 2)
-node tests/js/capture_plan_loop_test.mjs     # session-spanning capture plan loop (protocol v3)
+node tests/js/capture_plan_loop_test.mjs     # session-spanning capture plan loop
 node tests/js/capture_calibration_confirm_test.mjs  # one-tap household-mic confirm (Wave 2)
 node tests/js/capture_defect_fixes_test.mjs  # run-19 field-telemetry defect fixes
 ```

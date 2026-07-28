@@ -714,10 +714,11 @@ def _plan_spec(**overrides):
     return build_crossover_sweep_spec(**kwargs)
 
 
-def test_capture_plan_marker_is_dormant_for_every_shipped_builder():
-    # PR-1 dormancy: NO shipped builder emits the v3 marker or a plan. The
-    # follow-up capture-page PR flips it on; until then every emitted spec is
-    # byte-identical to the pre-plan contract.
+def test_every_shipped_builder_emits_the_one_capture_protocol():
+    # There is exactly ONE capture protocol; a builder may not opt into a
+    # different one. This replaces the old per-builder 1/2/3 split, where
+    # room_sweep/sync_marker emitted 1 and level_ramp emitted 2 — a page
+    # advertising only the current protocol could not have served them.
     from jasper.capture_relay.spec import BUILDERS
 
     for kind, builder in BUILDERS.items():
@@ -726,16 +727,19 @@ def test_capture_plan_marker_is_dormant_for_every_shipped_builder():
             if kind == "crossover_sweep"
             else builder()
         )
+        assert spec.capture_protocol_version == CAPTURE_PROTOCOL_VERSION, kind
+        # A plan is opt-in per call, never implied by the protocol.
         assert spec.capture_plan is None, kind
         assert "capture_plan" not in spec.to_dict(), kind
-        assert spec.capture_protocol_version < 3, kind
 
 
-def test_capture_plan_opts_the_crossover_spec_into_protocol_three():
+def test_capture_plan_serializes_without_changing_the_protocol():
     spec = _plan_spec()
-    assert spec.capture_protocol_version == 3
+    # Carrying a plan does NOT move the protocol — plan-ness is the plan's
+    # presence alone (the capture page branches on exactly this).
+    assert spec.capture_protocol_version == CAPTURE_PROTOCOL_VERSION
     d = spec.to_dict()
-    assert d["capture_protocol_version"] == 3
+    assert d["capture_protocol_version"] == CAPTURE_PROTOCOL_VERSION
     assert d["capture_plan"] == {
         "schema_version": 1,
         "capture_target": 3,
@@ -744,7 +748,7 @@ def test_capture_plan_opts_the_crossover_spec_into_protocol_three():
     # Round-trips through the inbound validation path.
     rebuilt = CaptureSpec.from_dict(d)
     assert rebuilt.capture_plan == spec.capture_plan
-    assert rebuilt.capture_protocol_version == 3
+    assert rebuilt.capture_protocol_version == CAPTURE_PROTOCOL_VERSION
 
 
 def test_capture_plan_requires_an_acknowledgement_binding():
@@ -752,20 +756,25 @@ def test_capture_plan_requires_an_acknowledgement_binding():
         _plan_spec(acknowledgement_binding="")
 
 
-def test_capture_plan_requires_protocol_three_and_vice_versa():
+def test_capture_plan_presence_is_decoupled_from_the_protocol():
+    # The old contract was a biconditional: a plan REQUIRED protocol 3 and
+    # protocol 3 REQUIRED a plan. With one protocol both halves are gone —
+    # keeping the "protocol 3 requires a plan" half would have rejected every
+    # plan-free flow (room_sweep, level_ramp, sync_marker), which all now
+    # emit this same protocol.
     from dataclasses import replace
 
     from jasper.capture_relay.spec import CapturePlan
 
     base = _plan_spec()
-    with pytest.raises(CaptureSpecError, match="capture protocol 3"):
-        replace(base, capture_protocol_version=2).validate()
-    with pytest.raises(CaptureSpecError, match="requires a capture_plan"):
-        replace(base, capture_plan=None).validate()
-    # A plan-free spec at protocol 2 stays valid (the v2 path).
-    replace(
-        base, capture_plan=None, capture_protocol_version=2
-    ).validate()
+    # A plan-free spec at the one protocol is valid...
+    replace(base, capture_plan=None).validate()
+    # ...and so is a plan-carrying one.
+    base.validate()
+    # Any other protocol number is refused outright — no negotiation.
+    for bogus in (1, 2, 4):
+        with pytest.raises(CaptureSpecError, match="capture_protocol_version"):
+            replace(base, capture_protocol_version=bogus).validate()
     assert CapturePlan(capture_target=3, max_attempts=4).schema_version == 1
 
 
@@ -956,7 +965,11 @@ def test_plan_attempt_ceiling_stays_in_lockstep_with_the_worker():
         "worker must reject index >= the attempt cap (valid indexes are "
         "exactly 0..cap-1, one per admitted attempt)"
     )
-    assert spec_mod.SUPPORTED_CAPTURE_PROTOCOL_VERSIONS == (1, 2, 3)
+    assert spec_mod.CAPTURE_PROTOCOL_VERSION == 3
+    # One protocol, one constant: the multi-version surface is deleted, not
+    # merely emptied. A reintroduced list is how a legacy branch creeps back.
+    assert not hasattr(spec_mod, "SUPPORTED_CAPTURE_PROTOCOL_VERSIONS")
+    assert not hasattr(spec_mod, "SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION")
 
 
 def test_worker_stays_opaque_to_capture_plan_entries():
@@ -1148,41 +1161,46 @@ def test_capture_plan_entries_from_dict_rejects_unknown_keys_and_bad_shapes():
         )
 
 
-def test_compat_matrix_v3_spec_refuses_todays_v2_page():
-    # v3 Pi session + v2-only page → fail closed BEFORE any tone (the page
-    # cannot run the session-spanning choreography it never implemented).
+def test_compat_matrix_a_page_without_the_current_protocol_is_refused():
+    # The page/Pi handshake is the surviving compatibility mechanism, and it
+    # still fails closed BEFORE any tone: a stale page that advertises only
+    # the deleted protocols cannot run today's choreography.
     from jasper.capture_relay.session import (
         CapturePageIncompatible,
         validate_capture_page,
     )
 
     spec = _plan_spec()
-    todays_page = {
+    stale_page = {
         "schema_version": 1,
         "capture_protocol_version": 2,
         "supported_capture_protocol_versions": [1, 2],
         "capture_page_build": "20260716.1",
     }
     with pytest.raises(CapturePageIncompatible, match="expected protocol 3"):
-        validate_capture_page(todays_page, spec)
+        validate_capture_page(stale_page, spec)
 
 
-def test_compat_matrix_v3_page_serves_v2_spec():
-    # A future page that ALSO supports protocol 3 keeps serving today's v2
-    # specs — the marker, not the page build, selects the choreography.
+def test_compat_matrix_current_page_serves_plan_free_and_plan_specs_alike():
+    # One protocol covers BOTH shapes, so the same published page serves a
+    # plan-free capture and a session-spanning one. Before the deletion the
+    # plan-free crossover spec was protocol 2 and this page would have had to
+    # advertise two versions to serve both.
     from jasper.capture_relay.session import validate_capture_page
 
-    v2_spec = build_crossover_sweep_spec(
+    plan_free = build_crossover_sweep_spec(
         driver_label="Woofer driver",
         driver_role="woofer",
         acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
         stimulus_duration_ms=4000,
     )
-    assert v2_spec.capture_protocol_version == 2
-    v3_page = {
+    assert plan_free.capture_plan is None
+    assert plan_free.capture_protocol_version == CAPTURE_PROTOCOL_VERSION
+    current_page = {
         "schema_version": 1,
         "capture_protocol_version": 3,
-        "supported_capture_protocol_versions": [1, 2, 3],
+        "supported_capture_protocol_versions": [3],
         "capture_page_build": "20260801.1",
     }
-    validate_capture_page(v3_page, v2_spec)  # no raise
+    validate_capture_page(current_page, plan_free)  # no raise
+    validate_capture_page(current_page, _plan_spec())  # no raise

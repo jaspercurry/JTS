@@ -729,14 +729,15 @@
   loop instead of once per wizard POST. Session progress publishes into the
   relay status snapshot so the wizard envelope's passive "N of 3 done"
   mirror (`crossover_envelope._plan_measuring_verdict`) has live data.
-  Summed/verification captures and `level_ramp` are untouched (still v2,
-  one session per capture). **The marker (`capture_protocol_version: 3`) is
-  emitted unconditionally in code for every driver capture — there is no env
-  gate.** Dormancy now rests on deploy sequencing alone (the in-repo Wave-2
-  page declares protocols `[1, 2, 3]` since #1560): a v3 spec against an
-  OLDER pre-Wave-2 DEPLOYED page fails the page-identity check
-  (`validate_capture_page`) before any tone plays, so the rollout order is
-  Worker → page publish → the Pi build carrying this flip deploys last. See
+  Summed/verification captures and `level_ramp` are untouched: one session
+  per capture, carrying no `capture_plan`. **`capture_plan` presence is the
+  ONLY thing that selects the session-spanning loop** — it is emitted
+  unconditionally in code for every driver capture, with no env gate, and the
+  protocol number says nothing about it (there is exactly one capture
+  protocol, so every spec carries the same value; the in-repo page declares
+  `[3]`). A spec whose protocol the DEPLOYED page does not advertise fails the
+  page-identity check (`validate_capture_page`) before any tone plays, so the
+  rollout order stays Worker → page publish → the Pi build last. See
   [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
   capture plans" section for the wire choreography.
   **Infra-phase failures are refunded from the acceptance budget (#1513):**
@@ -796,7 +797,7 @@
   baffle,” so incomparable woofer/tweeter captures could replace a manual trim.
   Driver captures now use one fixed 3 cm capsule-to-radiating-surface geometry,
   name the exact driver/horn target, and require a role-specific acknowledgement
-  before the Pi may play. The acknowledgement is capture-protocol v2 data,
+  before the Pi may play. The acknowledgement is capture-protocol data,
   bound to the relay session and verified before `on_armed`; a normalized
   server-owned proof is persisted with the record. A successful crossover level
   sequence starts one durable comparison set binding the protected profile,
@@ -828,10 +829,12 @@
   public page release that implements this crossover contract, including UMIK-2
   model/mode preselection (the
   serial is still entered and validated once; there is no automatic
-  calibration-file match), is `capture_page_build=20260712.3`, supporting
-  protocols 1 and 2. The public
+  calibration-file match), was `capture_page_build=20260712.3`, and the public
   `https://capture.jasper.tech/version.json` reported `20260712.3` on
-  2026-07-12. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
+  2026-07-12. **That build is superseded and can no longer serve a session:**
+  it advertised protocols 1 and 2, both of which were deleted on 2026-07-27
+  (see the capture-page README's release order). The current in-repo build is
+  `20260727.2`, advertising `[3]`. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
   renders host `sweep_cancelled` as expected Stop control flow, and keeps a
   safely bounded level walk alive across a transient relay status-poll failure;
   the page entry and relay-client import both use the matching `20260715-3`
@@ -913,12 +916,13 @@
   re-posted per sweep. Their authenticated `armed` event reports the realized
   device for a pre-playback identity check. Active crossover retains the compact
   setup binding and bounded browser-storage lifetime. The page publishes its
-  build and supported wire versions
+  build and supported wire version
   at `https://capture.jasper.tech/version.json`; every phone event carries that
   identity and the Pi refuses/logs an incompatible page before a setup or armed
-  callback can play a tone. Publish the compatible Pages build and verify that
-  URL before deploying a Pi protocol bump (the exact release procedure lives in
-  `capture-page/README.md`). It performs the ambient-baselined automatic level check
+  callback can play a tone. The supported list holds exactly one protocol, so
+  publish the compatible Pages build and verify that URL before deploying a Pi
+  protocol bump (the exact release procedure, and the failure mode in the
+  window between the two, live in `capture-page/README.md`). It performs the ambient-baselined automatic level check
   before any sweep, captures passive room noise, and records until the
   Pi publishes `sweep_complete` through the relay. The Pi also includes a
   local `return_url` in each relay spec, so once the phone upload finishes the
@@ -3322,7 +3326,7 @@ recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata
 transport rechecked against the Lane-E admission boundary; prior 2026-07-11
 pass covered driver-specific crossover level sequence,
-authenticated capture-page protocol v2 control data, and the placement/
+authenticated capture-page control data, and the placement/
 comparison-set contract reviewed against the relay, persistence, envelope, and
 baseline-apply paths; prior JTS3 UMIK-2 on-device level-ramp evidence,
 renewable measurement-scoped voice-reconciler guard, and the 12 dB / −3 dB

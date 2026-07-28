@@ -54,9 +54,9 @@ function makeClient(fetchImpl) {
   });
   client.setCapturePageIdentity({
     schema_version: 1,
-    capture_protocol_version: 1,
-    supported_capture_protocol_versions: [1],
-    capture_page_build: "20260710.1",
+    capture_protocol_version: 3,
+    supported_capture_protocol_versions: [3],
+    capture_page_build: "20260727.2",
   });
   return client;
 }
@@ -87,15 +87,15 @@ async function testPostEvent() {
     armed: true,
     capture_page: {
       schema_version: 1,
-      capture_protocol_version: 1,
-      supported_capture_protocol_versions: [1],
-      capture_page_build: "20260710.1",
+      capture_protocol_version: 3,
+      supported_capture_protocol_versions: [3],
+      capture_page_build: "20260727.2",
     },
   });
   ok();
 }
 
-async function testProtocolTwoPostEventUsesAuthenticatedEnvelope() {
+async function testPostEventUsesAuthenticatedEnvelope() {
   const f = mockFetch(() => res(200, { ok: true }));
   const client = makeClient(f);
   const seen = [];
@@ -110,7 +110,7 @@ async function testProtocolTwoPostEventUsesAuthenticatedEnvelope() {
   assert.equal(posted.authenticated_event.sequence, 1);
   assert.equal(posted.authenticated_event.mac, "tag");
   assert.equal(seen[0].payload.armed, true);
-  assert.equal(seen[0].payload.capture_page.capture_protocol_version, 1);
+  assert.equal(seen[0].payload.capture_page.capture_protocol_version, 3);
   ok();
 }
 
@@ -277,7 +277,7 @@ async function testConstructorValidates() {
 const tests = [
   testFetchSpec,
   testPostEvent,
-  testProtocolTwoPostEventUsesAuthenticatedEnvelope,
+  testPostEventUsesAuthenticatedEnvelope,
   testFetchPhoneStatus,
   testControlFetchAbortsBeforePiFeedLossWindow,
   testControlFetchTimeoutAbortsWithANamedReason,
