@@ -516,3 +516,65 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     if not parts:
         return CheckResult(label, "ok", "no closed cloud groups recorded yet")
     return CheckResult(label, "warn" if any_fail else "ok", "; ".join(parts))
+
+
+@doctor_check(order=32.7, group="correction")
+def check_crossover_v2_applied_is_graded() -> CheckResult:
+    """A correction is on the speaker; was it ever graded after it landed?
+
+    Linearization-integrity PR-L4 item 6 — the companion to
+    :func:`check_crossover_v2_cloud_pipeline`, not a change to it. That check
+    deliberately gates its warn on ``PHASE_CLOUD_VERIFY``'s spec verdict alone,
+    which is right and is left alone; the hole it leaves is the case where that
+    verdict does not EXIST. On 2026-07-27 the doctor printed a green tick over a
+    speaker running an applied profile whose only post-apply grade was absent,
+    because a check that only warns on a failing grade cannot warn about a
+    missing one.
+
+    Two distinct silences, reported distinctly:
+
+    * ``applied`` with no post-apply cloud group and no VERIFY outcome — the
+      correction was never checked at all;
+    * ``applied`` with a VERIFY outcome of ``inconclusive`` — it was checked and
+      the check could not decide.
+
+    WARN, never FAIL, matching this module's severity doctrine: an ungraded
+    correction is a measurement finding for the household to act on at
+    ``/correction/``, not a broken daemon. Express-tier sessions legitimately
+    omit the post-apply position group, so the VERIFY outcome is what carries
+    them — which is why both are consulted and either one satisfies this check.
+    """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
+    from jasper.web.correction_crossover_v2 import crossover_v2_status_block
+
+    label = "crossover v2 applied profile graded"
+    block = crossover_v2_status_block() or {}
+    if not block.get("applied"):
+        return CheckResult(label, "ok", "no applied measured crossover")
+
+    verify = block.get("verify")
+    outcome = str((verify or {}).get("outcome") or "") if isinstance(verify, dict) else ""
+    cloud = block.get("cloud")
+    post_apply = (
+        cloud.get(PHASE_CLOUD_VERIFY) if isinstance(cloud, dict) else None
+    )
+    graded_by_cloud = (
+        isinstance(post_apply, dict) and post_apply.get("overall_passed") is not None
+    )
+    if outcome == "pass" or graded_by_cloud:
+        return CheckResult(
+            label, "ok",
+            f"applied and graded (verify={outcome or 'n/a'}, "
+            f"post_apply_cloud={'yes' if graded_by_cloud else 'no'})",
+        )
+    if outcome in {"fail", "inconclusive"}:
+        return CheckResult(
+            label, "warn",
+            f"applied but the post-apply check came back {outcome} — re-verify "
+            "at /correction/ or undo to restore the previous sound",
+        )
+    return CheckResult(
+        label, "warn",
+        "applied but never graded: no post-apply check completed for this "
+        "correction — re-verify at /correction/ to confirm it, or undo",
+    )

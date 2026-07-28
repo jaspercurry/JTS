@@ -240,6 +240,37 @@ RIPPLE_TRIM_SANITY_MARGIN_DB = 6.0
 RIPPLE_TRIM_MAX_DB = 0.0
 RIPPLE_TRIM_MIN_DB = -60.0
 
+# How far the two branches' REALIZED passband levels may sit apart, after the
+# committed trim, before the pair is refused (linearization-integrity PR-L4
+# item 1 — the assertion nothing in the chain made). The design intent is that
+# they are EQUAL: a 2-way's summed response is flat only when each branch hands
+# off at the same level, which is the whole purpose of a trim. This is the
+# acceptance check on that intent, read by
+# :func:`realized_branch_level_match`.
+#
+# Why 3.0 dB, from both directions:
+#
+# * FLOOR — the honest disagreement this estimator shows on real captures.
+#   Across all five archived 2026-07-24/25 JTS3 cdhorn MEASURE captures the
+#   level-match frame and the fit frame agree to 1.08-1.30 dB after PR-L3, and
+#   the estimator carries a KNOWN +0.54 dB linear-bin systematic
+#   (:func:`solve_branch_trims`' own N1 note). A tolerance near that floor would
+#   turn a normal session into a refusal, which is the one failure mode a
+#   safety assertion must not have.
+# * CEILING — the level error at which the flat spec must fail anyway. An
+#   inter-branch level error of D dB appears in the summed response as a step
+#   across Fc; the spec's reference is a power mean spanning BOTH sides
+#   (250 Hz-8 kHz), so each side lands roughly D/2 off it. At D = 3.0 that is
+#   1.5 dB per side — exactly ``flat_spec.SPEC_BANDS[0]``'s tolerance. Above
+#   3 dB the speaker is out of spec on tonal balance alone, whatever else the
+#   fit achieved.
+#
+# So the band between "measurable" and "already out of spec" is narrow, and
+# 3.0 dB is the top of it: every level error the spec itself calls a failure is
+# caught, with 2.3x margin over the worst honest frame disagreement measured.
+# The 2026-07-27 profile the owner heard as dark would have refused here.
+REALIZED_LEVEL_MATCH_TOLERANCE_DB = 3.0
+
 # Direct-arrival window used to isolate each driver's IR before deconvolution
 # magnitude / alignment (mirrors deconv defaults; the pre guard catches the
 # non-causal deconvolution shoulder).
@@ -2033,6 +2064,108 @@ def solve_branch_trims(
     )
     target = min(level_w, level_t)  # attenuate the louder branch
     return target - level_w, target - level_t, level_w, level_t
+
+
+@dataclass(frozen=True)
+class RealizedLevelMatch:
+    """What the two branches ACTUALLY hand off at, once the trim is applied.
+
+    ``difference_db`` is ``level_t_db - level_w_db``: the signed inter-driver
+    level error, whose design intent is **zero**. Sign is kept because "the
+    tweeter is 9 dB down" and "the tweeter is 9 dB up" are opposite defects and
+    a bare magnitude hides which one shipped.
+
+    ``matched`` is ``abs(difference_db) <= tolerance_db``. It is the verdict; it
+    is not advice.
+    """
+
+    level_w_db: float
+    level_t_db: float
+    difference_db: float
+    tolerance_db: float
+    matched: bool
+    woofer_band_hz: tuple[float, float]
+    tweeter_band_hz: tuple[float, float]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "level_w_db": self.level_w_db,
+            "level_t_db": self.level_t_db,
+            "difference_db": self.difference_db,
+            "tolerance_db": self.tolerance_db,
+            "matched": self.matched,
+            "woofer_band_hz": list(self.woofer_band_hz),
+            "tweeter_band_hz": list(self.tweeter_band_hz),
+        }
+
+
+def realized_branch_level_match(
+    freqs: np.ndarray,
+    W: np.ndarray,
+    T: np.ndarray,
+    fc_hz: float,
+    *,
+    trim_w_db: float,
+    trim_t_db: float,
+    woofer_span_hz: tuple[float, float] | None = None,
+    tweeter_span_hz: tuple[float, float] | None = None,
+    tolerance_db: float = REALIZED_LEVEL_MATCH_TOLERANCE_DB,
+) -> RealizedLevelMatch:
+    """Each branch's REALIZED power-band level, on its own side of Fc, after the
+    committed trim — and whether the two agree.
+
+    **The assertion nothing in the chain made** (linearization-integrity PR-L4
+    item 1). Of the comparators the 2026-07-27 forensics inventoried, three
+    compare the speaker to itself, one compares it to flat, and *none* compared
+    the two drivers' realized passband levels to each other. That is the gap a
+    ~9 dB-dark tweeter walked through: every stage was individually satisfied,
+    because no stage was asked the one question whose answer was wrong.
+
+    ``W``/``T`` are the branch transfer functions **as they will be emitted** —
+    on the v2 path, the linearized pair ``resp.complex_tf * correction``, not
+    the raw measurement. ``trim_*_db`` are the trims the graph will actually
+    carry. This function applies them and re-reads the levels, so it grades the
+    committed decision rather than re-litigating it.
+
+    **One estimator, not a second opinion.** The levels come from
+    :func:`solve_branch_trims` on the trimmed pair — the SAME power-band average
+    over the SAME :func:`branch_level_bands_hz` halves that set the trim in the
+    first place. That is deliberate: a check with its own band or its own
+    averaging rule would be a rival estimate, and a disagreement between two
+    rivals tells you nothing about which is right (the repo already carries that
+    lesson as the measured-vs-datasheet gap this PR's item 3 closes). Reusing
+    the estimator makes this a strict closed-loop question — *did the trim we
+    are about to ship do what a trim is for?* — and it inherits the estimator's
+    known +0.54 dB systematic rather than adding an unknown one.
+
+    Each branch is read only on its own side of Fc, never the shared
+    both-branches-excited overlap: reading a branch inside the other's crossover
+    skirt measures skirt depth, not level, which is PR-L3's whole finding.
+
+    Raises ``ValueError`` (through :func:`branch_level_bands_hz`) when a span
+    does not reach Fc, and (through :func:`_band_average_db`) when a half
+    contains no bins — the same raise surface, into the same ``internal_error``
+    seam, as the trim solve it wraps. Never a guessed verdict.
+    """
+    g_w = 10.0 ** (float(trim_w_db) / 20.0)
+    g_t = 10.0 ** (float(trim_t_db) / 20.0)
+    _residual_w, _residual_t, level_w, level_t = solve_branch_trims(
+        freqs, W * g_w, T * g_t, fc_hz,
+        woofer_span_hz=woofer_span_hz, tweeter_span_hz=tweeter_span_hz,
+    )
+    woofer_band, tweeter_band = branch_level_bands_hz(
+        fc_hz, woofer_span_hz=woofer_span_hz, tweeter_span_hz=tweeter_span_hz,
+    )
+    difference = float(level_t - level_w)
+    return RealizedLevelMatch(
+        level_w_db=float(level_w),
+        level_t_db=float(level_t),
+        difference_db=difference,
+        tolerance_db=float(tolerance_db),
+        matched=abs(difference) <= float(tolerance_db),
+        woofer_band_hz=woofer_band,
+        tweeter_band_hz=tweeter_band,
+    )
 
 
 def solve_ripple_optimal_trim(

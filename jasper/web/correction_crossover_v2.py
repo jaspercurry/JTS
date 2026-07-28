@@ -1053,7 +1053,71 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # its own re-decimation ceiling, which is the actual size mitigation.
         "cloud_chart": _chart_cloud_status((state or {}).get("cloud")),
     }
+    block["post_apply_grade"] = _post_apply_grade(block)
     return block
+
+
+# The vocabulary of ``crossover_v2.post_apply_grade.state`` (PR-L4 item 4).
+GRADE_NOT_APPLIED = "not_applied"
+GRADE_GRADED = "graded"
+GRADE_INCONCLUSIVE = "inconclusive"
+GRADE_FAILED = "failed"
+GRADE_UNVERIFIED = "unverified"
+
+
+def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
+    """Was the correction now ON the speaker ever checked after it landed?
+
+    **Applied implies graded** (linearization-integrity PR-L4 item 4). A
+    session can end ``applied: true`` with no passing post-apply grade — VERIFY
+    inconclusive, VERIFY failed and never retried, or a session that simply
+    stopped after the apply — and before this the only trace was a phase name
+    and an empty ``verify`` block that every surface read as "nothing to
+    report". That is how a 10 dB-dark profile sat on JTS3 with a green tick
+    over it.
+
+    **Surface, not auto-restore.** The work order allowed either; this is the
+    deliberate choice and the reason is that the two failure modes are not
+    distinguishable at this seam. A missing grade means "we do not know", and
+    the commonest way to reach it is a household that closed the phone after
+    the apply — auto-restoring would silently undo a correction that is very
+    probably fine, on evidence that says nothing about the correction at all.
+    Worse, express-tier sessions omit the post-apply position group by design,
+    so an auto-restore keyed on a missing cloud grade would revert every
+    express session ever run. Undo already exists, is the PRIMARY button on the
+    done screen, and is the household's call. What was missing is being told.
+
+    The returned ``state`` is one of the ``GRADE_*`` constants above;
+    ``graded`` is the single boolean a caller can key on without knowing the
+    vocabulary. Both a passing VERIFY outcome and a graded post-apply cloud
+    count — either instrument is a real check, and the tiers differ in which
+    one they run.
+    """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
+
+    if not block.get("applied"):
+        return {"state": GRADE_NOT_APPLIED, "graded": True, "verify_outcome": None}
+    verify = block.get("verify")
+    outcome = str((verify or {}).get("outcome") or "") if isinstance(verify, Mapping) else ""
+    cloud = block.get("cloud")
+    post_apply = cloud.get(PHASE_CLOUD_VERIFY) if isinstance(cloud, Mapping) else None
+    cloud_verdict = (
+        post_apply.get("overall_passed") if isinstance(post_apply, Mapping) else None
+    )
+    if outcome == "pass" or isinstance(cloud_verdict, bool):
+        state = GRADE_GRADED
+    elif outcome == "inconclusive":
+        state = GRADE_INCONCLUSIVE
+    elif outcome == "fail":
+        state = GRADE_FAILED
+    else:
+        state = GRADE_UNVERIFIED
+    return {
+        "state": state,
+        "graded": state == GRADE_GRADED,
+        "verify_outcome": outcome or None,
+        "post_apply_spec_passed": cloud_verdict if isinstance(cloud_verdict, bool) else None,
+    }
 
 
 # --------------------------------------------------------------------------- #

@@ -1079,6 +1079,19 @@ source, no drift.
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
 | `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18) |
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
+| `driver_levels_disagree` | confirm seam | 0 (hard stop) | linearization-integrity PR-L4 item 1: after the committed trim the two drivers' REALIZED passband levels sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Refused BEFORE the apply thread starts, so the speaker is untouched |
+| `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply |
+
+**Auto-apply is no longer unconditional at the confirm seam.** PR-6b's
+`_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
+MEASURE's trust gates had already decided — true about the CAPTURE, silent
+about the CORRECTION built from it. `_assert_accountable` (PR-L4) runs the two
+rows above between the candidate build and the publish, so a refusal leaves no
+candidate for anything downstream to apply. Both raise through
+`CrossoverV2Conductor._refuse`, which stamps `_last_failure_code`: the host's
+`CaptureBeginRefused` arm reads THAT, not the exception, and falls back to
+`relay_timeout` when it is unset — so raising any other way would render a
+deliberate refusal as a manufactured timeout.
 
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
@@ -1695,4 +1708,4 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-07-27
+Last verified: 2026-07-28

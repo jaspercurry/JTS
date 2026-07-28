@@ -438,6 +438,92 @@ def test_done_is_the_result_screen_plain_outcome_first():
     assert any(n["code"] == "crossover_v2_verified" for n in env["nudges"])
 
 
+def _cloud_verify_spec(passed: bool):
+    return {
+        PHASE_CLOUD_VERIFY: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [],
+            "overall_passed": passed, "excluded_interval_count": 0,
+            "flatness": {
+                "max_db": -4.85, "max_hz": 11480.0,
+                "max_band_hz": [8000.0, 16000.0], "tolerance_db": 2.5,
+                "rms_db": 1.37, "n_bins": 900, "n_excluded": 0,
+                "evaluable": True, "passed": passed,
+            },
+            "carve_outs": [],
+        },
+    }
+
+
+def test_done_headline_states_an_out_of_spec_result_in_primary_copy():
+    """PR-L4 item 7: the spec verdict gets a vote where it cannot be collapsed.
+
+    The headline and the "Verified." badge both read the TRACKING comparator,
+    which asks whether the speaker matched its own prediction — not whether it
+    is flat. On 2026-07-27 the one instrument that compares the result to flat
+    failed all three bands and reached only a line inside a collapsed
+    disclosure, so a household read "Your speaker is tuned" over it."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"},
+        candidate=_candidate_summary(), cloud=_cloud_verify_spec(False),
+    ))
+    verdict = env["verdict_text"].lower()
+    assert "further from flat" in verdict
+    assert "undo" in verdict
+    # The badge stops claiming more than the evidence, and says which
+    # instrument passed rather than dropping the distinction.
+    codes = {n["code"] for n in env["nudges"]}
+    assert codes == {"crossover_v2_out_of_spec"}
+    assert all(n["severity"] == "warn" for n in env["nudges"])
+    # The numbers still ride the disclosure — the verdict moved, not the data.
+    assert env["expert_details"]
+
+
+def test_done_headline_is_unchanged_when_the_spec_passed():
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"},
+        candidate=_candidate_summary(), cloud=_cloud_verify_spec(True),
+    ))
+    assert "further from flat" not in env["verdict_text"].lower()
+    assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
+
+
+def test_done_headline_is_unchanged_when_no_spec_verdict_exists():
+    """Absence of a verdict is not a failing one. Express never produces a
+    post-apply cloud, and manufacturing a caveat out of a missing measurement
+    would be its own dishonesty."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert "further from flat" not in env["verdict_text"].lower()
+    assert {n["code"] for n in env["nudges"]} == {"crossover_v2_verified"}
+
+
+def test_done_headline_says_so_when_the_result_was_never_graded():
+    """PR-L4 item 4: a session ending applied-but-ungraded says the words.
+
+    Surfaced rather than auto-restored — the work order allowed either, and a
+    missing grade says nothing about the correction itself (the commonest way
+    to reach it is a household closing the phone after the apply). Undo is
+    already the primary button; what was missing was being told."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={}, candidate=_candidate_summary(),
+        post_apply_grade={"state": "unverified", "graded": False},
+    ))
+    verdict = env["verdict_text"].lower()
+    assert "unverified" in verdict
+    assert "re-verify" in verdict
+    assert env["next_action"]["id"] == "verify_undo"
+
+
+def test_done_headline_trusts_a_graded_result():
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+        post_apply_grade={"state": "graded", "graded": True},
+    ))
+    assert "unverified" not in env["verdict_text"].lower()
+
+
 def test_done_gives_undo_the_primary_action_and_continue_as_alternate():
     """Undo prominent (owner ruling): the PRIMARY button is Undo, not
     Continue — the household's safety net is the most visible thing on the

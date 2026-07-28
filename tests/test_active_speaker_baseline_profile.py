@@ -24,6 +24,7 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
 )
 from jasper.active_speaker.baseline_profile import (
+    MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB,
     PROVENANCE_MANUAL,
     PROVENANCE_MEASURED,
     PROVENANCE_PRESERVED,
@@ -1137,8 +1138,76 @@ def test_superseded_applied_profile_revalidates_without_raw_driver_measurements(
         == "applied_profile_revalidation"
     )
     assert payload["verification"]["summed_validation_complete"] is True
+    # PR-L4 item 5: a `complete: true` must name the lane that satisfied it and
+    # show that lane's own count. This test used to stop at the booleans, which
+    # is how `summed_validation_complete: true` beside a zero count got pinned
+    # as intended — the shape the 2026-07-27 forensics found in the record of a
+    # 10 dB-dark speaker. Nothing here is vacuous: the summed flag is carried by
+    # a real recorded validation, and the driver flag by a named non-measurement
+    # source, which is why `captured_driver_count` is legitimately 0.
+    assert payload["verification"]["summed_validation_source"] == "measurements"
+    assert payload["verification"]["validated_summed_group_count"] >= 1
+    assert payload["verification"]["captured_driver_count"] == 0
+    assert payload["verification"]["measured_candidate_evidence"] == {
+        "driver": 0, "summed": 0,
+    }
     assert payload["revalidation"]["required"] is True
     assert payload["revalidation"]["next_step"] == "save_profile"
+
+
+def test_completeness_flags_are_never_true_without_a_named_evidence_lane(
+    tmp_path: Path,
+) -> None:
+    """PR-L4 item 5, as an invariant rather than a single scenario.
+
+    Across the shapes a profile can be compiled from, no ``*_complete: true``
+    may be published with its source reading ``missing`` — and a source naming
+    a lane must have a non-zero count in that lane. This is the assertion whose
+    absence let a candidate object's mere existence stand in for measured
+    evidence.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+
+    def _verification(**kwargs):
+        return build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            write=False,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            **kwargs,
+        )["verification"]
+
+    lanes = {
+        "measured_candidate": "measured_candidate_evidence",
+        "measurements": None,  # counted by the two summary counts below
+    }
+    candidates = [
+        _verification(measurements={}),
+        _verification(measurements=_measurements(topology, tmp_path)),
+    ]
+    # A blocked payload publishes `verification: {}` — no flags, so no claim.
+    # That is the honest shape and there is nothing here to check; the invariant
+    # is about blocks that DO claim something.
+    graded = [v for v in candidates if v]
+    assert graded, "at least one shape must reach a verification block"
+    for verification in graded:
+        for flag, source_key, lane_count in (
+            ("driver_target_proof_complete", "driver_target_proof_source", "driver"),
+            ("summed_validation_complete", "summed_validation_source", "summed"),
+        ):
+            source = verification[source_key]
+            if not verification[flag]:
+                assert source == "missing"
+                continue
+            assert source != "missing", (flag, verification)
+            assert source in lanes or source == "applied_profile_revalidation"
+            if source == "measured_candidate":
+                assert verification["measured_candidate_evidence"][lane_count] > 0
 
 
 def test_baseline_profile_never_emits_positive_driver_gain(
@@ -2839,7 +2908,11 @@ def _acoustic_measurements(
 
 def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
     topology = _dual_apple_topology()
-    # Datasheet says the horn is 25.2 dB hotter; the MEASURED capture says 18 dB.
+    # Datasheet says the horn is 25.2 dB hotter; the MEASURED capture says 21 dB.
+    # The 4.2 dB gap is a real measured refinement and stays inside
+    # MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB — the two frames still agree about
+    # what speaker this is, which is what lets the measured value win. A gap
+    # BEYOND that tolerance is a different situation and has its own test.
     draft = build_design_draft(
         topology,
         driver_research=_research_with_sensitivity(),  # fc 2000, 25.2 dB gap
@@ -2847,7 +2920,7 @@ def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
     )
     measurements["summary"]["latest_summed_validations"]["mono"]["acoustic"] = {
         "verdict": "blend_ok",
@@ -2867,9 +2940,9 @@ def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
     )
 
     assert payload["status"] == "ready_to_apply"
-    # The MEASURED ~18 dB trim is used, not the 25.2 dB datasheet estimate.
+    # The MEASURED ~21 dB trim is used, not the 25.2 dB datasheet estimate.
     tweeter_trim = payload["corrections"]["tweeter"]["gain_db"]
-    assert tweeter_trim == pytest.approx(-18.0, abs=1.5)
+    assert tweeter_trim == pytest.approx(-21.0, abs=1.5)
     assert abs(tweeter_trim - (-25.2)) > 3.0
     assert payload["corrections"]["woofer"]["gain_db"] == 0.0
     assert payload["corrections_source"]["tweeter"] == "measured"
@@ -2879,6 +2952,139 @@ def test_baseline_measured_trim_overrides_datasheet(tmp_path: Path) -> None:
     assert "driver_gain_derived_from_measurement" in codes
     assert "driver_gain_derived_from_sensitivity" not in codes
     assert "baseline_level_match_provisional" not in codes
+
+
+def test_measured_trim_far_from_the_datasheet_is_refused_with_both_numbers(
+    tmp_path: Path, caplog,
+) -> None:
+    """PR-L4 item 3(a): the two level frames finally meet.
+
+    The pad-folded datasheet gap and the measured phone level match answer the
+    same physical question from independent evidence, and the precedence ladder
+    used to silently drop whichever lost. On the 2026-07-27 JTS3 run they were
+    ~12 dB apart — the datasheet right, the measurement carrying the frame
+    defect PR-L3 later located — and no line of code held both at once.
+
+    Beyond tolerance the measured value is refused (the datasheet rung, the one
+    with a physical model behind it, carries the trim) and BOTH numbers reach
+    the household copy, because "your measurement and your driver spec disagree
+    by 13 dB" is the actionable sentence, not a silently different gain.
+    """
+    caplog.set_level(logging.WARNING, logger="jasper.active_speaker.baseline_profile")
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),  # 25.2 dB datasheet gap
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    # 12.0 dB measured against a 25.2 dB datasheet: 13.2 dB apart, the shape
+    # the forensics found. Well beyond anything datasheet tolerance, pad
+    # impedance, and estimator spread can jointly explain.
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=12.0
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["corrections_source"]["tweeter"] == "sensitivity"
+    assert payload["corrections"]["tweeter"]["gain_db"] == pytest.approx(-25.2, abs=0.1)
+    issues = {issue["code"]: issue for issue in payload["issues"]}
+    assert "driver_level_frame_disagreement" in issues
+    # Both numbers, in the copy — the whole point of the check.
+    message = issues["driver_level_frame_disagreement"]["message"]
+    assert "-12.0 dB" in message and "-25.2 dB" in message
+    assert "13.2 dB apart" in message
+    # The refusal is per role and is recorded on the level-match ledger; the
+    # woofer's own measured reference (0 dB) is untouched by the tweeter's
+    # broken frame, so `applied` stays true and the ledger says what was dropped.
+    assert payload["level_match"]["frame_disagreements"] == [
+        "tweeter measured -12.0 dB vs datasheet -25.2 dB (13.2 dB apart)"
+    ]
+    assert payload["level_match"]["frame_tolerance_db"] == (
+        MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
+    )
+    assert "event=baseline_profile.level_frame_disagreement" in caplog.text
+
+
+def test_the_two_level_estimators_are_cross_checked_and_disclosed(
+    tmp_path: Path, caplog,
+) -> None:
+    """PR-L4 item 3(b) / PR-L3 review N2: the point-at-Fc reader and the
+    band-average solve finally get compared.
+
+    A v2 measured candidate carries ``solve_branch_trims``' band average; the
+    saved phone level-match captures carry ``driver_acoustics``' point-at-Fc
+    read of the same pair. Disclosed rather than refused — see
+    ``_estimator_cross_check`` for why between-sitting placement makes this
+    weaker evidence than item 3(a)'s.
+    """
+    caplog.set_level(logging.WARNING, logger="jasper.active_speaker.baseline_profile")
+    topology = _dual_apple_topology()
+    draft = build_design_draft(
+        topology,
+        driver_research=_research_with_sensitivity(),
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    # The phone level match measured a 12 dB gap...
+    measurements = _acoustic_measurements(
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=12.0
+    )
+    preset, _issues, _gates = compile_preset_from_crossover_preview(
+        topology, dict(preview)
+    )
+    # ...and the crossover sweep's candidate says 25 dB. 13 dB apart.
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-v2-estimators",
+        analysis={"drift_ppm": 3.0},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -25.0},
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        measured_candidate=candidate,
+        tuning_owner="automatic",
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    notes = payload["level_match"]["estimator_disagreements"]
+    assert notes and "13.0 dB apart" in notes[0]
+    assert "crossover sweep -25.0 dB" in notes[0]
+    assert "phone level match -12.0 dB" in notes[0]
+    assert "driver_level_estimator_disagreement" in {
+        issue["code"] for issue in payload["issues"]
+    }
+    assert "event=baseline_profile.level_estimator_disagreement" in caplog.text
+    # Disclosed, NOT refused: the candidate's own trim still ships.
+    assert payload["corrections"]["tweeter"]["gain_db"] == pytest.approx(-25.0)
+
+
+def test_measured_vs_datasheet_tolerance_clears_its_own_error_budget() -> None:
+    """The tolerance's derivation, pinned rather than left in prose: it must
+    clear the sum of what CAN honestly differ between the two frames
+    (~2 dB datasheet spec + ~2 dB realized pad impedance + ~1.3 dB measured
+    frame spread + ~0.5 dB estimator systematic) and stay well under the ~12 dB
+    defect it exists to catch."""
+    honest_worst_case_db = 2.0 + 2.0 + 1.3 + 0.5
+    assert MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB > honest_worst_case_db
+    assert MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB < 12.0
 
 
 def test_baseline_measured_trim_overrides_ui_sensitivity_estimate(
@@ -2901,7 +3107,7 @@ def test_baseline_measured_trim_overrides_ui_sensitivity_estimate(
     )
     preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
     measurements = _acoustic_measurements(
-        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=18.0
+        topology, preview, tmp_path, fc=2000.0, tweeter_hotter_db=21.0
     )
 
     payload = build_baseline_profile_candidate(
@@ -2916,7 +3122,7 @@ def test_baseline_measured_trim_overrides_ui_sensitivity_estimate(
     )
 
     assert payload["corrections"]["tweeter"]["gain_db"] == pytest.approx(
-        -18.0, abs=1.5
+        -21.0, abs=1.5
     )
     assert payload["corrections_source"]["tweeter"] == "measured"
     assert payload["gain_provenance"]["tweeter"] == "sensitivity_estimate"
