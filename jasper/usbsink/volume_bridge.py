@@ -186,6 +186,10 @@ class VolumeBridge:
         self._last_published_pct: Optional[int] = None
         self._last_attempted_pct: Optional[int] = None
         self._retry_not_before: float = 0.0
+        # First mixer snapshot after bridge startup is state discovery, not
+        # proof of a new host action. Keep its identity through bounded retries
+        # so a restarted bridge cannot erase a mute asserted by another surface.
+        self._initial_observed_pct: Optional[int] = None
 
         # Bound once `run()` clears mixer discovery (mirrors where the old
         # httpx client was opened). None means discovery has not succeeded
@@ -343,6 +347,8 @@ class VolumeBridge:
 
         # Map raw → percent. Mute overrides to 0.
         pct = 0 if muted else self._raw_to_pct(raw_vol)
+        if self._initial_observed_pct is None:
+            self._initial_observed_pct = pct
         if pct == self._last_published_pct:
             return
         now = time.monotonic()
@@ -352,7 +358,13 @@ class VolumeBridge:
         ):
             return
         self._last_attempted_pct = pct
-        accepted = await self._post(pct)
+        accepted = await self._post(
+            pct,
+            initial=(
+                self._last_published_pct is None
+                and pct == self._initial_observed_pct
+            ),
+        )
         if accepted:
             self._last_published_pct = pct
             self._retry_not_before = 0.0
@@ -437,11 +449,15 @@ class VolumeBridge:
     # jasper-control POST
     # ------------------------------------------------------------------
 
-    async def _post(self, pct: int) -> bool:
+    async def _post(self, pct: int, *, initial: bool = False) -> bool:
         if self._control is None:
             return False
         try:
-            resp = await self._control.set_volume(pct, source="usbsink")
+            resp = await self._control.set_volume(
+                pct,
+                source="usbsink",
+                observation_initial=initial,
+            )
         except ControlError as e:
             log_event(
                 logger,

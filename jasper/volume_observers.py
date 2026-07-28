@@ -94,6 +94,15 @@ class VolumeObserver:
             Source.SPOTIFY: None,
             Source.BLUETOOTH: None,
         }
+        # Renderer values are not unique transition identities: two rapid
+        # mutes can both present zero. Track the coordinator-owned revision
+        # alongside the native value so a new mute token is observed even
+        # when the renderer number did not change.
+        self._last_seen_revision: dict[Source, str | None] = {
+            Source.AIRPLAY: None,
+            Source.SPOTIFY: None,
+            Source.BLUETOOTH: None,
+        }
         # Last observed active_source (idle / airplay / spotify / bt).
         # When this changes we fire the coordinator's transition
         # handler, which manages camilla across the boundary so
@@ -153,6 +162,7 @@ class VolumeObserver:
                 # cached value from an older session. Forward one
                 # observation so push-mode guards can self-heal.
                 self._last_seen[current_active] = None
+                self._last_seen_revision[current_active] = None
             self._last_active_source = current_active
 
         airplay_db, spotify_pct, bt_vol = await asyncio.gather(
@@ -189,6 +199,8 @@ class VolumeObserver:
 
     async def _maybe_observe(self, source: Source, value: float) -> None:
         last = self._last_seen[source]
+        revision = self._coord.source_observation_revision(source)
+        last_revision = self._last_seen_revision[source]
         # First observation per source DOES propagate. Each source
         # owns its own remembered volume (Spotify cloud restores
         # per-account; macOS restores per-AirPlay-device; phone
@@ -197,9 +209,22 @@ class VolumeObserver:
         # Subsequent observations propagate only on a real change
         # (>0.5 unit delta) — AirPlay's dB is fractional and can
         # jitter; we don't want polling churn.
-        if last is None or abs(value - last) > 0.5:
-            self._last_seen[source] = value
-            await self._coord.observe_source_volume(source, value)
+        if (
+            last is None
+            or abs(value - last) > 0.5
+            or revision != last_revision
+        ):
+            accepted = await self._coord.observe_source_volume(
+                source,
+                value,
+                initial=last is None,
+            )
+            # A declined observation has not crossed the coordinator's
+            # source/mute/echo policy. Do not cache it as truth: retry on the
+            # next bounded poll even if the renderer value remains unchanged.
+            if accepted:
+                self._last_seen[source] = value
+                self._last_seen_revision[source] = revision
 
     # ------------------------------------------------------------------
     # Per-source readers — each returns None on "source not active /

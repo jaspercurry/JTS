@@ -73,7 +73,12 @@ while keeping mux as the single fan-in policy owner, then releases only its own
 lease.
 The host-volume observer remains `jasper-usbsink-volume.service` /
 `volume_bridge.py`; the host slider is inbound volume intent, not a second audio
-data plane.
+data plane. Its unchanged startup mixer read is discovery, tagged
+`observation_initial=true` and retried until the active-source gate accepts it;
+it yields to a JTS temporary mute already established by another surface. A
+real later host value change drops that tag and remains authoritative. The
+cross-surface mute policy is canonical in
+[HANDOFF-volume.md](HANDOFF-volume.md).
 
 Operational checks:
 
@@ -2336,10 +2341,13 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-24 (live UAC2 volume evidence confirmed the kernel
-step-index/TLV model and replaced the double-correcting dB-amplitude mapping
-with the observed square-law inverse: Mac 13%→step 18→13%, 25%→25→25%, and
-64%→40→64%. Prior 2026-07-22: source-neutral latest-start-wins arbitration,
+Last verified: 2026-07-28 (the USB volume bridge's startup-snapshot metadata
+and retry/acknowledgement path were rechecked against
+`jasper/usbsink/volume_bridge.py`, `jasper/control/client.py`, and the central
+coordinator mute policy. Prior 2026-07-24: live UAC2 volume evidence confirmed
+the kernel step-index/TLV model and replaced the double-correcting
+dB-amplitude mapping with the observed square-law inverse: Mac 13%→step
+18→13%, 25%→25→25%, and 64%→40→64%. Prior 2026-07-22: source-neutral latest-start-wins arbitration,
 process-local activation order, persistent-pin/disable opt-outs, alert/patrol
 single-policy ownership, AirPlay receiver-session cleanup after USB wins, and
 UI guidance rechecked against `jasper/mux.py`, mux contract tests, and both

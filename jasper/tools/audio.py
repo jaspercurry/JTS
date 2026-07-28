@@ -143,7 +143,8 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
             if "error" in fwd:
                 return fwd
             return {"percent": int(fwd.get("percent", 0))}
-        return {"percent": coordinator.get_listening_level()}
+        state = coordinator.get_volume_state()
+        return {"percent": state.effective_percent}
 
     @tool(labels=("music", "volume"))
     async def set_volume(percent: int) -> dict:

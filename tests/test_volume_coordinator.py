@@ -193,6 +193,23 @@ class _RecordingCoordinator(VolumeCoordinator):
         return ok
 
 
+class _BlockingMuteCoordinator(_RecordingCoordinator):
+    """Pause only the Spotify 0% write to expose the persisted pre-push gap."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.mute_push_started = asyncio.Event()
+        self.release_mute_push = asyncio.Event()
+
+    async def _set_spotify(self, level: int) -> bool:
+        self.spotify_writes.append(level)
+        if level == 0:
+            self.mute_push_started.set()
+            await self.release_mute_push.wait()
+        self._stamp_outbound(Source.SPOTIFY, level)
+        return True
+
+
 def _coord(
     tmp_path,
     *,
@@ -560,18 +577,147 @@ async def test_adjust_clamps_to_0_and_100(tmp_path):
 
 
 async def test_mute_then_unmute(tmp_path):
-    coord, cam, _ = _coord(tmp_path, active={"spotactive": True})
+    coord, cam, persistence = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(70)
     saved = await coord.mute()
     assert saved == 70
     assert coord.spotify_writes[-1] == 0  # silence
     assert cam.mute_calls[-1] is True
     assert coord.is_muted()
+    # The canonical level remains the restore target; every external surface
+    # consumes the shared effective projection and therefore renders 0%.
+    assert coord.get_listening_level() == 70
+    assert coord.get_volume_state().effective_percent == 0
+    assert coord.get_volume_state().restore_percent == 70
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 70
+    assert record.pre_mute_level == 70
     restored = await coord.unmute()
     assert restored == 70
     assert coord.spotify_writes[-1] == 70
     assert cam.mute_calls[-1] is False
     assert not coord.is_muted()
+
+
+async def test_push_observer_preserves_cross_process_mute_restore_level(tmp_path):
+    """A remote mute's renderer-side 0% echo cannot overwrite its restore level."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"spotactive": True})
+    control_coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=backend,
+        spotify_router=None,
+    )
+    observer_coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=backend,
+        spotify_router=None,
+    )
+
+    await control_coord.set_listening_level(60)
+    await control_coord.mute()
+
+    accepted = await observer_coord.observe_source_volume(Source.SPOTIFY, 0)
+
+    assert accepted is True
+    state = observer_coord.get_volume_state()
+    assert state.effective_percent == 0
+    assert state.restore_percent == 60
+    assert persistence.load().listening_level == 60
+    assert persistence.load().pre_mute_level == 60
+
+    # A subsequent, explicit non-zero source-side change ends the temporary
+    # mute and becomes the new canonical level.
+    await observer_coord.observe_source_volume(Source.SPOTIFY, 65)
+    state = observer_coord.get_volume_state()
+    assert state.effective_percent == 65
+    assert state.restore_percent is None
+
+
+async def test_push_observer_rejects_stale_nonzero_while_mute_push_pending(
+    tmp_path,
+):
+    """A pre-push renderer reading cannot cancel another process's mute."""
+    state_path = str(tmp_path / "speaker_volume.json")
+    control_persistence = VolumePersistence(state_path)
+    observer_persistence = VolumePersistence(state_path)
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"spotactive": True})
+    control_coord = _BlockingMuteCoordinator(
+        camilla=cam,
+        persistence=control_persistence,
+        backend=backend,
+        spotify_router=None,
+    )
+    observer_coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=observer_persistence,
+        backend=backend,
+        spotify_router=None,
+    )
+    await control_coord.set_listening_level(60)
+
+    mute_task = asyncio.create_task(control_coord.mute())
+    await control_coord.mute_push_started.wait()
+
+    # mute() has persisted its latch and asserted Camilla main_mute, but the
+    # slow source surface still exposes its old 60%. A second process waits for
+    # the in-flight intent to finish rather than interpreting half-applied
+    # physical state.
+    observation = asyncio.create_task(
+        observer_coord.observe_source_volume(Source.SPOTIFY, 60),
+    )
+    await asyncio.sleep(0)
+    assert observation.done() is False
+
+    control_coord.release_mute_push.set()
+    await mute_task
+    accepted = await observation
+    assert accepted is False
+    pending = observer_coord.get_volume_state()
+    assert pending.effective_percent == 0
+    assert pending.restore_percent == 60
+    assert pending.mute_token is not None
+
+    # Seeing zero for this exact mute token opens the barrier. A later nonzero
+    # observation is now an unambiguous source-side user edit.
+    assert await observer_coord.observe_source_volume(Source.SPOTIFY, 0) is True
+    assert await observer_coord.observe_source_volume(Source.SPOTIFY, 65) is True
+    settled = observer_coord.get_volume_state()
+    assert settled.effective_percent == 65
+    assert settled.restore_percent is None
+    assert settled.mute_token is None
+
+
+async def test_push_observer_requires_zero_for_each_new_mute_token(tmp_path):
+    """Confirmation from an older mute cannot authorize a newer transition."""
+    state_path = str(tmp_path / "speaker_volume.json")
+    writer = VolumePersistence(state_path)
+    observer = _RecordingCoordinator(
+        camilla=_FakeCamilla(db=0.0),
+        persistence=VolumePersistence(state_path),
+        backend=_FakeBackend(active={"spotactive": True}),
+        spotify_router=None,
+    )
+    writer.save_listening_level(60)
+    writer.save_mute_state(60, "mute-a")
+    assert await observer.observe_source_volume(Source.SPOTIFY, 0) is True
+
+    # Simulate an unmute + a second mute that both land between observer polls.
+    # The remembered token-A confirmation must not leak into token B.
+    writer.save_mute_state(None, None)
+    writer.save_listening_level(60)
+    writer.save_mute_state(60, "mute-b")
+
+    assert await observer.observe_source_volume(Source.SPOTIFY, 60) is False
+    state = observer.get_volume_state()
+    assert state.effective_percent == 0
+    assert state.restore_percent == 60
+    assert state.mute_token == "mute-b"
 
 
 async def test_unmute_without_prior_mute_uses_fallback(tmp_path):
@@ -814,6 +960,25 @@ async def test_observe_respects_recent_cross_process_write(tmp_path):
     assert rec is not None and rec.listening_level == 80
 
 
+async def test_observe_revalidates_active_source_at_mutation_boundary(tmp_path):
+    """A queued observation cannot land after mux has switched lanes."""
+    coord, _, persistence = _coord(
+        tmp_path,
+        active={"spotactive": True},
+    )
+    coord._level = 60
+    persistence.save_listening_level(60)
+    active_sources = iter([Source.SPOTIFY, Source.BLUETOOTH])
+
+    async def changing_active_source():
+        return next(active_sources)
+
+    coord._active_source = changing_active_source
+
+    assert await coord.observe_source_volume(Source.SPOTIFY, 40) is False
+    assert coord.get_volume_state().effective_percent == 60
+
+
 # ---------- initialize / boot regression ----------------------------------
 
 
@@ -975,6 +1140,26 @@ async def test_handoff_spotify_to_airplay_guards_camilla_before_gate(tmp_path):
     assert handoff.ok
     assert handoff.guard_db == pytest.approx(percent_to_db(50))
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(50))
+
+
+async def test_handoff_finalize_honors_mute_landed_after_prepare(tmp_path):
+    """A remote mute between prepare and finalize must keep the new lane silent."""
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=0.0,
+    )
+    await coord.set_listening_level(60)
+    handoff = await coord.prepare_source_handoff(
+        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
+    )
+    assert handoff.ok
+
+    # Simulate jasper-control handling the remote while mux owns this
+    # coordinator's source-transition sequence.
+    persistence.save_pre_mute_level(60)
+
+    assert await coord.finalize_source_handoff(handoff) is True
+    assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
+    assert cam.mute_calls[-1] is True
 
 
 async def test_handoff_catches_lower_level_during_guard_settle(tmp_path):
@@ -1510,16 +1695,19 @@ async def test_overlapping_push_writes_keep_source_persistence_and_context_align
 
     older = asyncio.create_task(first.set_listening_level(20))
     await first_started.wait()
-    assert await second.set_listening_level(80) == 80
+    newer = asyncio.create_task(second.set_listening_level(80))
+    await asyncio.sleep(0)
+    assert newer.done() is False
     release_first.set()
     assert await older == 20
+    assert await newer == 80
 
     record = persistence.load()
     assert record is not None
     newest_context = max(published, key=lambda context: context.stamp_boot_ns)
-    assert applied[-1] == 20
-    assert record.listening_level == 20
-    assert newest_context.canonical_db == pytest.approx(percent_to_db(20))
+    assert applied[-1] == 80
+    assert record.listening_level == 80
+    assert newest_context.canonical_db == pytest.approx(percent_to_db(80))
 
 
 async def test_persisted_mute_intent_wins_stale_unmuted_camilla(tmp_path):
@@ -1925,6 +2113,64 @@ async def test_reconcile_converges_when_camilla_above_expected(tmp_path):
     assert cam.set_calls and cam.set_calls[-1] == pytest.approx(percent_to_db(70))
 
 
+async def test_reconcile_revalidates_after_cross_daemon_volume_change(tmp_path):
+    """A stale preflight cannot overwrite a newer user command.
+
+    The observer and control daemon have separate coordinator/persistence
+    instances in production. The reconciler may begin a Camilla read just
+    before jasper-control lowers the volume; once it joins the shared
+    operation lease, it must re-read both canonical intent and Camilla instead
+    of writing its stale, louder target.
+    """
+    path = str(tmp_path / "speaker_volume.json")
+    observer_persistence = VolumePersistence(path)
+    control_persistence = VolumePersistence(path)
+    observer_persistence.save_listening_level(60, mark_user_change=True)
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={})
+    observer = VolumeCoordinator(
+        camilla=cam,
+        persistence=observer_persistence,
+        backend=backend,
+        spotify_router=None,
+    )
+    control = VolumeCoordinator(
+        camilla=cam,
+        persistence=control_persistence,
+        backend=backend,
+        spotify_router=None,
+    )
+    read_started = asyncio.Event()
+    release_stale_read = asyncio.Event()
+    original_read = observer._read_camilla_volume_and_mute
+    read_count = 0
+
+    async def stale_first_read():
+        nonlocal read_count
+        read_count += 1
+        if read_count == 1:
+            read_started.set()
+            await release_stale_read.wait()
+            return 0.0, False
+        return await original_read()
+
+    observer._read_camilla_volume_and_mute = stale_first_read
+    reconcile = asyncio.create_task(observer.maybe_reconcile_camilla())
+    await read_started.wait()
+
+    await control.set_listening_level(20)
+    control_write_count = len(cam.set_calls)
+    release_stale_read.set()
+    await reconcile
+
+    assert cam._db == pytest.approx(percent_to_db(20))
+    assert len(cam.set_calls) == control_write_count
+    record = observer_persistence.load()
+    assert record is not None
+    assert record.listening_level == 20
+    assert record.main_volume_db == pytest.approx(percent_to_db(20), abs=0.01)
+
+
 async def test_reconcile_corrects_deep_loud_drift(tmp_path):
     """Deep quiet drift can be a cue duck; deep loud drift is unsafe
     and should always be pulled back to the canonical level."""
@@ -2254,6 +2500,21 @@ async def test_get_camilla_target_db_push_mode_zero_returns_mute_floor(tmp_path)
     assert target == pytest.approx(percent_to_db(0))
 
 
+async def test_get_camilla_target_db_uses_effective_temporary_mute(tmp_path):
+    """Every carrier path interprets remembered-level + mute through VolumeState."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(70)
+    persistence.save_pre_mute_level(70)
+    coord = VolumeCoordinator(
+        camilla=_FakeCamilla(db=percent_to_db(0)),
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+
+    assert await coord.get_camilla_target_db() == pytest.approx(percent_to_db(0))
+
+
 async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
     """Cross-process staleness guard for the duck-restore path. The
     control daemon (dial / HTTP) writes listening_level to disk on
@@ -2300,6 +2561,24 @@ async def test_transition_refreshes_from_disk(tmp_path):
     # Spotify was pushed the disk-truth 80%, not the in-memory 50%.
     assert coord.spotify_writes == [80]
     assert coord.get_listening_level() == 80
+
+
+async def test_transition_uses_effective_level_while_temporarily_muted(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(80)
+    persistence.save_pre_mute_level(80)
+    coord = _RecordingCoordinator(
+        camilla=_FakeCamilla(db=percent_to_db(0)),
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+        spotify_router=None,
+        handoff_settle_sec=0.0,
+    )
+
+    await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
+
+    assert coord.spotify_writes == [0]
+    assert coord.get_volume_state().restore_percent == 80
 
 
 # ---------- camilla restart-blip survival ---------------------------------
@@ -2382,6 +2661,36 @@ async def test_observe_usbsink_updates_listening_level_when_active(tmp_path):
     assert persistence.load().listening_level == 45
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(45))
     assert cam.mute_calls[-1] is False
+
+
+async def test_observe_usbsink_initial_snapshot_cannot_clear_remote_mute(tmp_path):
+    """Bridge activation/restart state yields to an already-latched mute."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(60)
+    persistence.save_mute_state(60, "remote-mute")
+    cam = _FakeCamilla(db=percent_to_db(60))
+    cam.muted = True
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"usbsinkactive": True}),
+        spotify_router=None,
+    )
+
+    accepted = await coord.observe_source_volume(
+        Source.USBSINK,
+        60,
+        initial=True,
+    )
+
+    assert accepted is False
+    state = coord.get_volume_state()
+    assert state.effective_percent == 0
+    assert state.restore_percent == 60
+
+    # A later changed host value is explicit intent and may end the mute.
+    assert await coord.observe_source_volume(Source.USBSINK, 65) is True
+    assert coord.get_volume_state().effective_percent == 65
 
 
 async def test_observe_usbsink_updates_when_selected_even_if_probe_idle(

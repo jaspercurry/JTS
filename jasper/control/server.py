@@ -24,10 +24,11 @@ own the dispatch in one place rather than mirroring the list here
 
 Volume dispatch: requests build a fresh VolumeCoordinator per call
 (matches the per-request _dispatch_transport pattern). The coordinator
-reads the canonical listening_level from /var/lib/jasper/speaker_volume.json,
-applies the change, dispatches to the active source (or CamillaDSP
-when idle), persists. This daemon doesn't run inbound observers —
-that's voice_daemon's job. Both daemons converge through persistence.
+reads the canonical volume state from /var/lib/jasper/speaker_volume.json,
+applies the change, dispatches the derived effective level to the active
+source (or CamillaDSP when idle), and persists it. This daemon doesn't
+run inbound observers — that's voice_daemon's job. Both daemons converge
+through persistence and expose the same VolumeState interpretation.
 """
 from __future__ import annotations
 
@@ -47,9 +48,12 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from jasper.log_event import log_event
+
+if TYPE_CHECKING:
+    from ..volume_coordinator import VolumeState
 
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..audio_quality import (
@@ -524,6 +528,7 @@ _db_to_percent = _volume_ops._db_to_percent
 _percent_to_db = _volume_ops._percent_to_db
 _delta_db_to_delta_percent = _volume_ops._delta_db_to_delta_percent
 _spotify_redirect_uri = _volume_ops._spotify_redirect_uri
+_read_volume_state = _volume_ops.read_volume_state
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -1397,9 +1402,8 @@ def _make_handler(
 ) -> type[BaseHTTPRequestHandler]:
 
     # One probe instance per handler — it's stateless (just closes
-    # over voice_socket_path), so all volume ops share it. Read-only
-    # `_get_op` doesn't need it (`get_listening_level` doesn't touch
-    # camilla), but passing None there keeps the construction uniform.
+    # over voice_socket_path), so all mutating volume ops share it.
+    # Read-only `_get_op` bypasses coordinator/actuator construction.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
     state_response_cache = _SingleFlightTTLCache(STATE_RESPONSE_CACHE_TTL_SEC)
     if ha_status_cache is None:
@@ -1407,16 +1411,22 @@ def _make_handler(
 
         ha_status_cache = HomeAssistantStatusCache()
 
-    async def _set_op(percent: int):
+    async def _set_op(percent: int) -> VolumeState:
         async def _op(coord):
-            return await coord.set_listening_level(percent)
+            await coord.set_listening_level(percent)
+            return coord.get_volume_state()
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
             duck_active_probe=duck_active_probe,
         )
 
-    async def _observe_op(source_name: str, percent: int) -> tuple[int, bool]:
+    async def _observe_op(
+        source_name: str,
+        percent: int,
+        *,
+        initial: bool = False,
+    ) -> tuple[VolumeState, bool]:
         """Route a source-observed volume change (e.g. host slider on
         the USB gadget) through the coordinator's echo-prevented
         observe path. Unknown source names fall back to the
@@ -1439,62 +1449,46 @@ def _make_handler(
             return await _set_op(percent), True
 
         async def _op(coord):
-            applied = await coord.observe_source_volume(source_enum, percent)
-            # The coordinator's level either took our value or stayed
-            # put (echo-suppressed). Return whatever's now canonical
-            # for the client to render.
-            return coord.get_listening_level(), bool(applied)
+            applied = await coord.observe_source_volume(
+                source_enum,
+                percent,
+                initial=initial,
+            )
+            # The coordinator either took our value or stayed put
+            # (echo-suppressed). Return the one canonical state projection
+            # rather than asking this boundary to reinterpret mute.
+            return coord.get_volume_state(), bool(applied)
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
             duck_active_probe=duck_active_probe,
         )
 
-    async def _adjust_op(delta_percent: int):
+    async def _adjust_op(delta_percent: int) -> VolumeState:
         async def _op(coord):
-            return await coord.adjust_listening_level(delta_percent)
+            await coord.adjust_listening_level(delta_percent)
+            return coord.get_volume_state()
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
             duck_active_probe=duck_active_probe,
         )
 
-    async def _get_op():
-        async def _op(coord):
-            return coord.get_listening_level()
-        return await _with_coordinator(
-            _op,
-            camilla_host=camilla_host, camilla_port=camilla_port,
-        )
+    async def _get_op() -> VolumeState:
+        return _read_volume_state()
 
-    async def _mute_set_op(want_muted: bool):
+    async def _mute_set_op(want_muted: bool) -> VolumeState:
         async def _op(coord):
-            # Explicit set, idempotent: mute-when-muted stays muted,
-            # unmute-when-unmuted returns the current level untouched.
-            # Voice has distinct mute/unmute INTENTS, so it needs this
-            # rather than the toggle (a toggle would invert a stale
-            # intent — "mute" while already muted must not unmute).
-            if want_muted:
-                if not coord.is_muted():
-                    await coord.mute()
-                return 0
-            if coord.is_muted():
-                return await coord.unmute()
-            return coord.get_listening_level()
+            return await coord.set_muted(want_muted)
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
             duck_active_probe=duck_active_probe,
         )
 
-    async def _mute_toggle_op():
+    async def _mute_toggle_op() -> VolumeState:
         async def _op(coord):
-            # If currently muted, unmute and return restored level.
-            # Otherwise mute and return 0 (the new actual level).
-            if coord.is_muted():
-                return await coord.unmute()
-            await coord.mute()
-            return 0
+            return await coord.toggle_mute()
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
@@ -1650,11 +1644,21 @@ def _make_handler(
             self.send_error(HTTPStatus.NOT_FOUND)
             return False
 
-        def _volume_payload(self, percent: int) -> dict[str, Any]:
-            # `db` is computed for back-compat with the dial firmware
-            # which reads `percent` but logs `db`. Use the same calibrated
-            # curve as the live audio path so diagnostics match what is heard.
-            return {"db": round(_percent_to_db(percent), 3), "percent": percent}
+        def _volume_payload(self, state: VolumeState) -> dict[str, Any]:
+            """Serialize the coordinator's one canonical volume projection.
+
+            ``percent`` and ``db`` are always the currently effective values.
+            A temporary mute therefore reports 0 while preserving its separate
+            restore target. Existing dial/USB clients can keep reading only
+            ``percent``; richer clients no longer have to infer mute.
+            """
+            percent = int(state.effective_percent)
+            return {
+                "db": round(_percent_to_db(percent), 3),
+                "percent": percent,
+                "muted": bool(state.muted),
+                "restore_percent": state.restore_percent,
+            }
 
         def _maybe_forward_pair_action_to_leader(self) -> bool:
             """Bonded-follower pair-action proxy. Returns True when the request
@@ -1797,12 +1801,12 @@ def _make_handler(
             if self._maybe_forward_pair_action_to_leader():
                 return
             try:
-                percent = asyncio.run(_get_op())
+                state = asyncio.run(_get_op())
             except Exception as e:  # noqa: BLE001
                 logger.exception("get volume failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
-            self._send_json(self._volume_payload(percent))
+            self._send_json(self._volume_payload(state))
 
         def _get_mic(self) -> None:
             # Read mic mute state from the voice daemon's STATUS
@@ -2226,7 +2230,7 @@ def _make_handler(
                 )
                 return
             try:
-                new_pct = asyncio.run(_adjust_op(delta_pct))
+                state = asyncio.run(_adjust_op(delta_pct))
             except Exception as e:  # noqa: BLE001
                 logger.exception("adjust volume failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -2235,10 +2239,10 @@ def _make_handler(
                 logger,
                 "volume.adjust",
                 delta_pct=delta_pct,
-                new_pct=new_pct,
+                new_pct=state.effective_percent,
                 client=self.address_string(),
             )
-            self._send_json(self._volume_payload(new_pct))
+            self._send_json(self._volume_payload(state))
 
         def _post_volume_set(self) -> None:
             if self._maybe_forward_pair_action_to_leader():
@@ -2286,14 +2290,25 @@ def _make_handler(
             # `source`, the caller is treated as authoritative
             # (dial twist, voice "louder", etc.).
             source_name = body.get("source")
+            observation_initial = body.get("observation_initial", False)
+            if not isinstance(observation_initial, bool):
+                self._send_json(
+                    {"error": "observation_initial must be a boolean"},
+                    status=400,
+                )
+                return
             observation_applied: bool | None = None
             try:
                 if source_name:
-                    new_pct, observation_applied = asyncio.run(
-                        _observe_op(str(source_name), target_pct),
+                    state, observation_applied = asyncio.run(
+                        _observe_op(
+                            str(source_name),
+                            target_pct,
+                            initial=observation_initial,
+                        ),
                     )
                 else:
-                    new_pct = asyncio.run(_set_op(target_pct))
+                    state = asyncio.run(_set_op(target_pct))
             except Exception as e:  # noqa: BLE001
                 logger.exception("set volume failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -2301,12 +2316,12 @@ def _make_handler(
             log_event(
                 logger,
                 "volume.set",
-                new_pct=new_pct,
+                new_pct=state.effective_percent,
                 source=source_name or "authoritative",
                 observation_applied=observation_applied,
                 client=self.address_string(),
             )
-            payload = self._volume_payload(new_pct)
+            payload = self._volume_payload(state)
             if observation_applied is not None:
                 payload["observation_applied"] = observation_applied
             self._send_json(payload)
@@ -2560,9 +2575,9 @@ def _make_handler(
                 return
             try:
                 if explicit is None:
-                    new_pct = asyncio.run(_mute_toggle_op())
+                    state = asyncio.run(_mute_toggle_op())
                 else:
-                    new_pct = asyncio.run(_mute_set_op(explicit))
+                    state = asyncio.run(_mute_set_op(explicit))
             except Exception as e:  # noqa: BLE001
                 logger.exception("mute failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -2570,11 +2585,11 @@ def _make_handler(
             log_event(
                 logger,
                 "volume.mute",
-                new_pct=new_pct,
+                new_pct=state.effective_percent,
                 explicit=str(explicit),
                 client=self.address_string(),
             )
-            self._send_json(self._volume_payload(new_pct))
+            self._send_json(self._volume_payload(state))
             return
 
         def _post_transport(self) -> None:

@@ -22,6 +22,11 @@ Core fields tracked:
   Spotify/BT push-mode playback (so we don't double-attenuate) and
   tracks listening_level during idle and AirPlay.
 
+- `pre_mute_level` + `mute_token`: the temporary-mute latch and its
+  transition identity. The token lets a different process distinguish a
+  stale pre-mute renderer observation from a later user change after that
+  exact mute has reached the renderer.
+
 Soft regression at boot. If the saved listening_level is from "long
 enough ago" (default 30 min), we clamp into a safe range [20%, 70%]
 before applying. Yesterday's late-night 90% gets clamped to safe_high
@@ -34,6 +39,8 @@ File format (JSON, atomic write via tmp+rename, v2):
         "version": 2,
         "listening_level": 70,
         "last_used_at": "2026-05-07T15:30:00Z",
+        "pre_mute_level": 70,
+        "mute_token": "8d2a1c...",
         "main_volume_db": 0.0,
         "updated_at": "2026-05-07T15:30:00Z"
     }
@@ -45,15 +52,17 @@ Camilla-only path, so the migration preserves the user's last setting.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .atomic_io import atomic_write_text
+from .atomic_io import advisory_file_lock, atomic_write_text
 from .volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
@@ -90,6 +99,11 @@ class VolumeRecord:
     # an earlier call. Cleared by initialize() at boot — mute state is
     # per-session, not per-deployment.
     pre_mute_level: int | None = None
+    # Opaque identity for one temporary-mute transition. A long-lived source
+    # observer confirms renderer zero against this token before it may treat a
+    # later nonzero observation as a new user intent. None is accepted for
+    # rolling-upgrade / legacy records and migrated by the coordinator.
+    mute_token: str | None = None
 
 
 class VolumePersistence:
@@ -112,6 +126,10 @@ class VolumePersistence:
 
     def __init__(self, path: str | None = None) -> None:
         self._path = Path(path or self.DEFAULT_PATH)
+        self._state_lock_path = self._path.with_name(f".{self._path.name}.lock")
+        self._operation_lock_path = self._path.with_name(
+            f".{self._path.name}.operation.lock",
+        )
         self._last_written_db: float | None = None
         self._last_written_at_mono: float = 0.0
         # In-memory copy of all persisted fields, so we can write the
@@ -121,10 +139,72 @@ class VolumePersistence:
         self._current_listening_level: int | None = None
         self._current_last_used_at: datetime | None = None
         self._current_pre_mute_level: int | None = None
+        self._current_mute_token: str | None = None
+        self._state_transaction_depth = 0
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @contextmanager
+    def _state_update(self):
+        """Serialize one fresh read-modify-write across daemon processes."""
+        if self._state_transaction_depth > 0:
+            yield
+            return
+        with advisory_file_lock(
+            self._state_lock_path,
+            mode=0o660,
+            group_from_parent=True,
+        ):
+            self._state_transaction_depth += 1
+            try:
+                self.load()
+                yield
+            finally:
+                self._state_transaction_depth -= 1
+
+    @asynccontextmanager
+    async def operation_lock(self, *, timeout_sec: float = 10.0):
+        """Serialize source-changing volume intents across all daemons.
+
+        The state-file lock above is deliberately tiny. This separate lease may
+        span a slow Spotify/Bluetooth actuator without blocking unrelated state
+        readers or handoff diagnostics. Acquisition runs off the event loop so
+        jasper-voice remains responsive while another process owns the lease.
+        """
+        lock = advisory_file_lock(
+            self._operation_lock_path,
+            mode=0o660,
+            group_from_parent=True,
+            timeout_sec=timeout_sec,
+        )
+        acquire = asyncio.create_task(asyncio.to_thread(lock.__enter__))
+        acquired = False
+        try:
+            try:
+                await asyncio.shield(acquire)
+                acquired = True
+            except asyncio.CancelledError:
+                # The worker thread cannot be cancelled while blocked in
+                # flock(). Wait for its bounded acquisition, release if it
+                # succeeded, and collect an acquisition failure so it cannot
+                # replace the caller's cancellation or become an unretrieved
+                # task exception.
+                try:
+                    await acquire
+                except (OSError, ValueError):
+                    # Acquisition result is secondary to caller cancellation.
+                    pass
+                else:
+                    acquired = True
+                raise
+            yield
+        finally:
+            if acquired:
+                await asyncio.shield(
+                    asyncio.to_thread(lock.__exit__, None, None, None),
+                )
 
     def load(self) -> VolumeRecord | None:
         """Read the persisted record. Returns None on missing /
@@ -211,26 +291,41 @@ class VolumePersistence:
                     )
         except (TypeError, ValueError):
             pre_mute_level = None
+        mute_token: str | None = None
+        raw_mute_token = data.get("mute_token")
+        if (
+            pre_mute_level is not None
+            and isinstance(raw_mute_token, str)
+            and 0 < len(raw_mute_token) <= 128
+        ):
+            mute_token = raw_mute_token
+        elif raw_mute_token is not None:
+            logger.warning(
+                "volume persistence: invalid mute_token; ignoring",
+            )
         # Cache loaded values so subsequent partial-update writes don't
         # lose any field.
         self._current_main_volume_db = db
         self._current_listening_level = listening_level
         self._current_last_used_at = last_used_at
         self._current_pre_mute_level = pre_mute_level
+        self._current_mute_token = mute_token
         return VolumeRecord(
             main_volume_db=db,
             updated_at=updated_at,
             listening_level=listening_level,
             last_used_at=last_used_at,
             pre_mute_level=pre_mute_level,
+            mute_token=mute_token,
         )
 
     def save_now(self, main_volume_db: float) -> None:
         """Force-write main_volume to disk immediately. Used for
         explicit user actions (set_volume voice tool, mute) where we
         want the new level captured before any restart could lose it."""
-        self._current_main_volume_db = float(main_volume_db)
-        self._write_full()
+        with self._state_update():
+            self._current_main_volume_db = float(main_volume_db)
+            self._write_full()
         self._last_written_db = self._current_main_volume_db
         self._last_written_at_mono = time.monotonic()
 
@@ -252,11 +347,9 @@ class VolumePersistence:
                 return False
             if now - self._last_written_at_mono < self.DEBOUNCE_SEC:
                 return False
-        # Refresh listening_level + last_used_at from disk so a write
-        # by another process isn't lost.
-        self.load()
-        self._current_main_volume_db = db
-        self._write_full()
+        with self._state_update():
+            self._current_main_volume_db = db
+            self._write_full()
         self._last_written_db = db
         self._last_written_at_mono = now
         return True
@@ -264,32 +357,52 @@ class VolumePersistence:
     def save_pre_mute_level(self, level: int | None) -> None:
         """Persist the pre-mute level (or clear it with None).
 
-        Called by VolumeCoordinator.mute() to record the level we should
-        restore on unmute, and by unmute()/set/adjust to clear once the
-        muted state ends. Persisted so a per-request coordinator (e.g.
-        jasper-control building one per HTTP call) can see prior mute
-        state set by an earlier call.
+        Compatibility wrapper for callers that predate transition tokens.
+        VolumeCoordinator uses ``save_mute_state`` so the latch and token land
+        atomically.
         """
+        with self._state_update():
+            token = self._current_mute_token if level is not None else None
+            self._save_mute_state_locked(level, token)
+
+    def save_mute_state(
+        self,
+        level: int | None,
+        mute_token: str | None,
+    ) -> None:
+        """Atomically persist or clear one temporary-mute transition.
+
+        ``level`` is the restore target. ``mute_token`` identifies this exact
+        mute across jasper-control and jasper-voice so an observer cannot
+        mistake the renderer's stale pre-push value for a post-mute user edit.
+        """
+        with self._state_update():
+            self._save_mute_state_locked(level, mute_token)
+
+    def _save_mute_state_locked(
+        self,
+        level: int | None,
+        mute_token: str | None,
+    ) -> None:
+        """Apply a mute-state partial update while ``_state_update`` is held."""
         if level is not None:
             level = max(0, min(100, int(level)))
+            if mute_token is not None:
+                mute_token = str(mute_token)
+                if not mute_token or len(mute_token) > 128:
+                    raise ValueError("mute_token must contain 1..128 characters")
+        else:
+            mute_token = None
         self._current_pre_mute_level = level
-        # Caller (mute/unmute) may not have populated main_volume_db
-        # yet on a fresh persistence instance — guard against
-        # _write_full's "no main_volume" early-return by deriving it
-        # from listening_level if needed.
+        self._current_mute_token = mute_token
         if self._current_main_volume_db is None:
-            base = self._current_listening_level
-            if base is None:
-                # Nothing on disk yet, nothing in memory. Reading load()
-                # will populate it; pre_mute by itself isn't urgent
-                # enough to force a synthetic main_volume default.
-                self.load()
-            if self._current_main_volume_db is None:
-                logger.debug(
-                    "volume persistence: skipping pre_mute write "
-                    "(no main_volume context yet)",
-                )
-                return
+            # No disk record and no main-volume context. A mute latch by itself
+            # is not enough to invent a synthetic listening level.
+            logger.debug(
+                "volume persistence: skipping pre_mute write "
+                "(no main_volume context yet)",
+            )
+            return
         self._write_full()
 
     def save_listening_level(
@@ -310,12 +423,13 @@ class VolumePersistence:
         always has a coherent main_volume_db field for diagnostics and
         external readers of the persisted schema."""
         clamped = max(0, min(100, int(percent)))
-        self._current_listening_level = clamped
-        if mark_user_change:
-            self._current_last_used_at = datetime.now(timezone.utc)
-        if self._current_main_volume_db is None:
-            self._current_main_volume_db = percent_to_db(clamped)
-        self._write_full()
+        with self._state_update():
+            self._current_listening_level = clamped
+            if mark_user_change:
+                self._current_last_used_at = datetime.now(timezone.utc)
+            if self._current_main_volume_db is None:
+                self._current_main_volume_db = percent_to_db(clamped)
+            self._write_full()
 
     def _write_full(self) -> None:
         """Write the current in-memory state to disk atomically.
@@ -352,6 +466,8 @@ class VolumePersistence:
             ).replace("+00:00", "Z")
         if self._current_pre_mute_level is not None:
             payload["pre_mute_level"] = int(self._current_pre_mute_level)
+            if self._current_mute_token is not None:
+                payload["mute_token"] = self._current_mute_token
         body = json.dumps(payload, indent=2)
         try:
             # Atomic write via the canonical helper (same-dir tempfile +

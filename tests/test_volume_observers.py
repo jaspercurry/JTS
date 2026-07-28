@@ -39,8 +39,11 @@ class _FakeCoordinator:
     def __init__(self, active: Source = Source.AIRPLAY) -> None:
         self.active = active
         self.observed: list[tuple[Source, float]] = []
+        self.observation_initials: list[bool] = []
         self.transitions: list[tuple[Source, Source]] = []
         self.reconcile_calls: int = 0
+        self.observation_revision: str | None = None
+        self.accept_observations = True
 
     async def _active_source(self):
         return self.active
@@ -48,8 +51,13 @@ class _FakeCoordinator:
     async def apply_active_source_transition(self, prev, current):
         self.transitions.append((prev, current))
 
-    async def observe_source_volume(self, source, value):
+    def source_observation_revision(self, source):
+        return self.observation_revision
+
+    async def observe_source_volume(self, source, value, *, initial=False):
         self.observed.append((source, float(value)))
+        self.observation_initials.append(initial)
+        return self.accept_observations
 
     async def maybe_reconcile_camilla(self) -> None:
         self.reconcile_calls += 1
@@ -252,6 +260,38 @@ async def test_maybe_observe_fires_on_real_change():
     assert coord.observed == [
         (Source.AIRPLAY, -10.0),
         (Source.AIRPLAY, -15.0),
+    ]
+
+
+async def test_maybe_observe_same_zero_again_for_new_mute_revision():
+    """A second mute token must cross the observer even if Spotify stayed 0."""
+    coord = _FakeCoordinator()
+    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.json")
+
+    coord.observation_revision = "mute-a"
+    await obs._maybe_observe(Source.SPOTIFY, 0.0)
+    coord.observation_revision = "mute-b"
+    await obs._maybe_observe(Source.SPOTIFY, 0.0)
+
+    assert coord.observed == [
+        (Source.SPOTIFY, 0.0),
+        (Source.SPOTIFY, 0.0),
+    ]
+    assert coord.observation_initials == [True, False]
+
+
+async def test_maybe_observe_retries_declined_unchanged_value():
+    """Declined policy input is not cached as if it became canonical truth."""
+    coord = _FakeCoordinator()
+    coord.accept_observations = False
+    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.json")
+
+    await obs._maybe_observe(Source.SPOTIFY, 65.0)
+    await obs._maybe_observe(Source.SPOTIFY, 65.0)
+
+    assert coord.observed == [
+        (Source.SPOTIFY, 65.0),
+        (Source.SPOTIFY, 65.0),
     ]
 
 

@@ -82,6 +82,29 @@ def test_volume_slider_suppresses_poll_while_local_write_pending() -> None:
     )
 
 
+def test_volume_slider_polls_faster_only_while_page_is_visible() -> None:
+    script = _volume_slider_script(_index_html())
+
+    assert "var POLL_MS = 500;" in script
+    assert "setInterval(poll, POLL_MS);" in script
+    assert re.search(
+        r"async function poll\(\).*?"
+        r"if \(document\.visibilityState === 'hidden'\) return;.*?"
+        r"fetch\('/volume'\)",
+        script,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"async function poll\(\).*?"
+        r"if \(pollInFlight\) return;.*?"
+        r"pollInFlight = true;.*?"
+        r"fetch\('/volume'\).*?"
+        r"finally \{\s*pollInFlight = false;",
+        script,
+        re.DOTALL,
+    )
+
+
 def test_volume_slider_ignores_stale_post_responses() -> None:
     html = _index_html()
 
