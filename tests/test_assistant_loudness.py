@@ -196,6 +196,37 @@ def test_ensure_seed_profile_passes_bounded_retry_options(tmp_path, monkeypatch)
     }
 
 
+def test_active_seed_backend_reuses_cue_provider_dispatch(monkeypatch):
+    from jasper.cues import factory
+
+    sentinel = object()
+    observed = {}
+
+    def fake_build(cfg, provider, *, max_attempts, retry_backoff_sec):
+        observed.update({
+            "cfg": cfg,
+            "provider": provider,
+            "max_attempts": max_attempts,
+            "retry_backoff_sec": retry_backoff_sec,
+        })
+        return sentinel, "voice"
+
+    monkeypatch.setattr(factory, "build_provider_tts_backend", fake_build)
+    cfg = SimpleNamespace(voice_provider="gemini")
+
+    assert assistant_loudness._build_active_seed_backend(
+        cfg,
+        max_attempts=0,
+        retry_backoff_sec=-1.0,
+    ) is sentinel
+    assert observed == {
+        "cfg": cfg,
+        "provider": "gemini",
+        "max_attempts": 0,
+        "retry_backoff_sec": -1.0,
+    }
+
+
 def test_gemini_tts_generator_honors_single_attempt(monkeypatch):
     calls = []
     sleeps = []

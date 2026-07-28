@@ -63,7 +63,6 @@ P3b wiring notes (deliberate, so they are not forgotten):
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -79,6 +78,7 @@ from jasper.audio_measurement.ramp import (
     RampLockKind,
     RampState,
 )
+from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -94,19 +94,6 @@ _FEED_ERRORS = (
     AttributeError,
     LookupError,
 )
-
-
-def _env_float(name: str, default: float, *, lo: float, hi: float) -> float:
-    """Deploy-time knob reader (alignment._env_threshold pattern)."""
-    raw = os.environ.get(name, "").strip()
-    if raw:
-        try:
-            value = float(raw)
-        except ValueError:
-            return default
-        if lo <= value <= hi:
-            return value
-    return default
 
 
 # --- geometry ----------------------------------------------------------------
@@ -337,11 +324,11 @@ def check_level_drift(
     Thresholds default to the deploy-time knobs (H1 supplies real numbers).
     """
     if uniform_shift_db is None:
-        uniform_shift_db = _env_float(
+        uniform_shift_db = bounded_env_float(
             "JASPER_RAMP_DRIFT_UNIFORM_DB", 3.0, lo=0.0, hi=24.0
         )
     if band_tolerance_db is None:
-        band_tolerance_db = _env_float(
+        band_tolerance_db = bounded_env_float(
             "JASPER_RAMP_DRIFT_BAND_TOL_DB", 2.0, lo=0.0, hi=24.0
         )
 

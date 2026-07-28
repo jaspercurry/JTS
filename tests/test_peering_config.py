@@ -247,6 +247,20 @@ def test_read_state_missing_file_is_empty(tmp_path, monkeypatch):
     assert read_state(str(tmp_path / "missing.env")) == {}
 
 
+def test_read_state_uses_canonical_quoted_value_semantics(tmp_path, monkeypatch):
+    _clear_peer_env(monkeypatch)
+    env_file = tmp_path / "peering.env"
+    env_file.write_text(
+        'JASPER_PEERING="on"\n'
+        "JASPER_PEER_ROOM='living-room'\n",
+    )
+
+    assert read_state(str(env_file)) == {
+        "JASPER_PEERING": "on",
+        "JASPER_PEER_ROOM": "living-room",
+    }
+
+
 def test_state_helpers_preserve_web_precedence(monkeypatch):
     """Persisted state wins, with process env only as a manual fallback."""
     _clear_peer_env(monkeypatch)

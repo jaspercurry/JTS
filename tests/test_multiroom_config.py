@@ -211,6 +211,22 @@ def test_enabled_valid_leader_parses(tmp_path):
     assert cfg.error is None
 
 
+def test_enabled_valid_leader_accepts_systemd_quoted_values(tmp_path):
+    path = _write_env(
+        tmp_path,
+        _leader_env()
+        .replace("JASPER_GROUPING=on", 'JASPER_GROUPING="on"')
+        .replace(
+            "JASPER_GROUPING_BOND_ID=living-room",
+            "JASPER_GROUPING_BOND_ID='living-room'",
+        ),
+    )
+    cfg = load_config(path)
+    assert cfg.enabled is True
+    assert cfg.bond_id == "living-room"
+    assert cfg.error is None
+
+
 def test_enabled_valid_follower_parses(tmp_path):
     body = (
         "JASPER_GROUPING=on\n"

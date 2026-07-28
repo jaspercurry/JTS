@@ -37,6 +37,7 @@ import re
 from dataclasses import dataclass, field
 
 from .bluetooth.avrcp import bluetooth_avrcp_call
+from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ async def resolve_target(
 
     librespot_id = _find_librespot_id(devices.get("devices", []), librespot_name_pattern)
 
-    if renderers.get("aplactive"):
+    if renderers.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY]):
         if _match_track(song, playback):
             return Resolution(
                 device_id=playback["device"]["id"],
@@ -143,7 +144,7 @@ async def resolve_target(
             reason="airplay carrying non-spotify",
         )
 
-    if renderers.get("btactive"):
+    if renderers.get(SOURCE_TO_ACTIVE_KEY[Source.BLUETOOTH]):
         return Resolution(
             device_id=librespot_id,
             stop_renderers=["bluetooth"],
@@ -154,7 +155,11 @@ async def resolve_target(
     return Resolution(
         device_id=librespot_id,
         stop_renderers=[],
-        reason="librespot active or idle" if renderers.get("spotactive") else "idle",
+        reason=(
+            "librespot active or idle"
+            if renderers.get(SOURCE_TO_ACTIVE_KEY[Source.SPOTIFY])
+            else "idle"
+        ),
     )
 
 

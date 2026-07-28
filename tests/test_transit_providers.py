@@ -40,6 +40,10 @@ def test_covering_filters_by_bbox():
     assert transit.covering(51.5, -0.1) == ()
 
 
+def test_nyc_providers_share_one_city_coverage_box():
+    assert nyc_bus.NYC_BBOX is nyc_subway.NYC_BBOX
+
+
 def test_all_env_keys_dedupes_and_preserves_order():
     keys = transit.all_env_keys()
     # No duplicates across providers, even though both touch NYC.

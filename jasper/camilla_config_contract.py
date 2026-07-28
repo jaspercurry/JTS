@@ -30,6 +30,11 @@ DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
 ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
 DEFAULT_PLAYBACK_FORMAT = "S16_LE"
+# Canonical live pair-balance Gain identity for the active driver-domain graph.
+# The emitter and runtime patcher share this lightweight vocabulary; the safety
+# verifier deliberately retains an independent private literal and re-proves
+# compatibility through the driver-domain round-trip tests.
+DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 
 _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
     DEFAULT_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,

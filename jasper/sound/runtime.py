@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -80,11 +79,9 @@ def _log_reconcile_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def default_camilla_factory():
-    from jasper.camilla import CamillaController
+    from jasper.camilla import primary_controller
 
-    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
-    return CamillaController(host, port)
+    return primary_controller()
 
 
 def _paths_match(left: str | Path, right: str | Path) -> bool:

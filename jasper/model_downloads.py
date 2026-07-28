@@ -24,6 +24,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from jasper.env_load import parse_env_file
+
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_RETRIES = 3
@@ -292,8 +294,8 @@ def active_wake_model(
     wake_env_path: str = "/var/lib/jasper/wake_model.env",
 ) -> str:
     model = env.get("JASPER_WAKE_MODEL", "").strip()
-    model = _read_env_file(jasper_env_path).get("JASPER_WAKE_MODEL", model).strip()
-    model = _read_env_file(wake_env_path).get("JASPER_WAKE_MODEL", model).strip()
+    model = parse_env_file(jasper_env_path).get("JASPER_WAKE_MODEL", model).strip()
+    model = parse_env_file(wake_env_path).get("JASPER_WAKE_MODEL", model).strip()
     return model or "hey_jarvis"
 
 
@@ -334,21 +336,6 @@ def _download_once(
 def _log(log: Callable[[str], None] | None, msg: str) -> None:
     if log is not None:
         log(msg)
-
-
-def _read_env_file(path: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                values[key.strip()] = value.strip()
-    except FileNotFoundError:
-        pass
-    return values
 
 
 def _stage_cli(args: argparse.Namespace) -> int:

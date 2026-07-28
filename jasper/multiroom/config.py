@@ -45,6 +45,7 @@ from jasper.camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_HI,
     BASS_MANAGEMENT_CORNER_HZ_LO,
 )
+from jasper.env_load import read_env_file_state
 
 logger = logging.getLogger(__name__)
 
@@ -257,27 +258,11 @@ _DISABLED = GroupingConfig(
 
 
 def _read_env_file(path: str) -> Mapping[str, str]:
-    """Parse a systemd-style EnvironmentFile (KEY=VALUE per line).
-
-    Mirrors jasper.peering.config._read_env_file — kept local so this
-    module stays importable without dragging any heavier package in.
-    Total: a missing or unreadable file yields an empty mapping, never
-    an exception.
-    """
-    out: dict[str, str] = {}
-    try:
-        with open(path) as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                out[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.warning("could not read %s: %s", path, e)
-    return out
+    """Read an EnvironmentFile through the dependency-free canonical parser."""
+    state = read_env_file_state(path)
+    if state.status == "unreadable":
+        logger.warning("could not read %s: %s", path, state.error)
+    return state.values
 
 
 def _parse_enabled(raw: str) -> bool:

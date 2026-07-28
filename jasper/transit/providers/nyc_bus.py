@@ -40,7 +40,8 @@ if TYPE_CHECKING:
     import httpx
 
 from ...log_event import log_event
-from ..base import BoundingBox, CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
+from ..base import CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
+from ._nyc import NYC_BBOX
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,6 @@ BUSTIME_SIRI_URL = (
     "https://bustime-classic.mta.info/api/siri/stop-monitoring.json"
 )
 HTTP_TIMEOUT = 4.0
-
-# Same metro bbox as the subway provider.
-NYC_BBOX = BoundingBox(
-    lat_min=40.49, lat_max=40.92,
-    lon_min=-74.26, lon_max=-73.69,
-)
 
 # A 0.01° span is ~1 km at NYC latitudes. Dense enough to surface
 # plenty of candidates in Manhattan, narrow enough to keep the

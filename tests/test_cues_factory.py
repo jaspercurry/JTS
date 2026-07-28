@@ -7,10 +7,11 @@
 AGENTS.md promises that cue WAVs are baked from the *active provider's*
 TTS endpoint so cues sound in the assistant's own voice, and the
 "adding a fourth provider" checklist includes a cue TTS generator path.
-``build_cue_tts_backend`` dispatches on hardcoded ``provider == "<id>"``
-branches, so a provider added to ``jasper/voice/catalog.py`` without a
-factory branch would not error — it would silently hit the wrong-voice
-fallback chain (or disable cue regen) even with its key configured.
+``build_provider_tts_backend`` owns the necessary provider-specific
+constructors, and ``build_cue_tts_backend`` adds the cue fallback policy.
+A provider added to ``jasper/voice/catalog.py`` without a constructor branch
+would not error — it would silently hit the wrong-voice fallback chain (or
+disable cue regen) even with its key configured.
 This pins the N-way completeness: for every catalog provider with only
 its own key configured, the factory must return a backend without
 taking the "falling back" path.
@@ -53,7 +54,7 @@ def test_every_catalog_provider_has_a_cue_tts_dispatch_branch(caplog) -> None:
         assert backend is not None and not fellback, (
             f"provider {provider.id!r} (with only its own key configured) "
             "did not get a first-class branch in "
-            "jasper/cues/factory.py:build_cue_tts_backend — cues would "
+            "jasper/cues/factory.py:build_provider_tts_backend — cues would "
             "bake in a fallback provider's voice (or not at all). Add the "
             "dispatch branch per the 'adding a fourth provider' checklist."
         )

@@ -38,6 +38,19 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def test_active_wake_model_uses_canonical_env_file_precedence(tmp_path: Path):
+    jasper_env = tmp_path / "jasper.env"
+    wake_env = tmp_path / "wake_model.env"
+    jasper_env.write_text('JASPER_WAKE_MODEL="alexa"\n')
+    wake_env.write_text("JASPER_WAKE_MODEL='hey_mycroft'\n")
+
+    assert model_downloads.active_wake_model(
+        env={"JASPER_WAKE_MODEL": "hey_jarvis"},
+        jasper_env_path=str(jasper_env),
+        wake_env_path=str(wake_env),
+    ) == "hey_mycroft"
+
+
 def test_download_model_file_writes_verified_file(monkeypatch, tmp_path: Path):
     payload = b"onnx payload"
     calls = []

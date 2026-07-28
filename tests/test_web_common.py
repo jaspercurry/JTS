@@ -939,3 +939,17 @@ def test_read_form_accepts_body_at_the_bound():
     h = _FormHandler(payload, str(len(payload)))
     parsed = _common.read_form(h)
     assert parsed["k"] == "v" * (_common.MAX_FORM_BODY_BYTES - 2)
+
+
+def test_read_env_file_uses_canonical_quoted_value_semantics(tmp_path):
+    path = tmp_path / "wizard.env"
+    path.write_text(
+        'JASPER_PROVIDER="openai"\n'
+        "JASPER_MODEL='gpt-realtime'\n"
+        "MALFORMED\n",
+    )
+
+    assert _common.read_env_file(str(path)) == {
+        "JASPER_PROVIDER": "openai",
+        "JASPER_MODEL": "gpt-realtime",
+    }

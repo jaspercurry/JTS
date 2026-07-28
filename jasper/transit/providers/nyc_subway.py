@@ -19,18 +19,10 @@ import logging
 from collections.abc import Mapping
 
 from .._mta_stations import Station, load_stations
-from ..base import BoundingBox, Stop, haversine_miles
+from ..base import Stop, haversine_miles
+from ._nyc import NYC_BBOX
 
 logger = logging.getLogger(__name__)
-
-
-# NYC envelope from Staten Island Ferry terminal up to Wakefield, plus
-# a small margin. A coarse rectangle is fine because the wizard
-# double-checks by dropping providers whose nearest stop is too far.
-NYC_BBOX = BoundingBox(
-    lat_min=40.49, lat_max=40.92,
-    lon_min=-74.26, lon_max=-73.69,
-)
 
 
 _BOROUGH_DISPLAY = {

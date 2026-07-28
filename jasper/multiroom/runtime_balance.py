@@ -17,17 +17,19 @@ import asyncio
 import json
 import logging
 import math
-import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
+from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.log_event import log_event
 
 from .config import GROUPING_ENV_FILE, GroupingConfig, TRIM_DB_MAX, TRIM_DB_MIN, load_config
 
 logger = logging.getLogger(__name__)
 
-PAIR_BALANCE_FILTER = "pair_balance_trim"
+# Compatibility alias for callers/tests that imported this module's old name.
+# The driver-domain emitter owns the actual Camilla filter identity.
+PAIR_BALANCE_FILTER = DRIVER_DOMAIN_PAIR_TRIM_FILTER
 OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
 
 ApplyMode = Literal["active_camilla", "outputd", "not_bonded"]
@@ -98,11 +100,9 @@ def _active_endpoint_camilla(cfg: GroupingConfig):
 
         return crossover_controller()
 
-    from jasper.camilla import CamillaController
+    from jasper.camilla import primary_controller
 
-    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
-    return CamillaController(host, port)
+    return primary_controller()
 
 
 async def _outputd_command(

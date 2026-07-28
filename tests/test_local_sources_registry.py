@@ -2,13 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
+from pathlib import Path
+
 from jasper.local_sources import (
     local_source_lifecycle,
     local_source_audio_refresh_units,
     local_source_lifecycles,
     local_source_park_units,
 )
-from jasper.music_sources import MUSIC_SOURCE_SPECS, Source
+from jasper.music_sources import (
+    MUSIC_SOURCE_SPECS,
+    SOURCE_TO_ACTIVE_KEY,
+    Source,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_every_declared_music_source_has_lifecycle():
@@ -76,3 +86,47 @@ def test_shared_source_infrastructure_parks_with_sources():
     """Mux is shared source infrastructure, not one source's daemon."""
     assert "jasper-mux.service" in local_source_park_units()
     assert "jasper-mux.service" not in local_source_audio_refresh_units()
+
+
+def test_renderer_active_keys_are_consumed_from_source_registry():
+    """Keep renderer wire keys declaration-owned instead of hand-copied.
+
+    These consumers may branch on source behavior, but the stable renderer
+    state key itself belongs to ``MusicSourceSpec.renderer_active_key``.
+    """
+
+    consumers = (
+        "jasper/renderer.py",
+        "jasper/spotify_routing.py",
+        "jasper/volume_coordinator.py",
+        "jasper/tools/spotify.py",
+        "jasper/tools/transport.py",
+    )
+    active_keys = set(SOURCE_TO_ACTIVE_KEY.values())
+
+    for relative_path in consumers:
+        tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
+        literal_uses: list[tuple[int, str]] = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in active_keys
+            ):
+                literal_uses.append((node.lineno, str(node.args[0].value)))
+            elif isinstance(node, ast.Dict):
+                literal_uses.extend(
+                    (key.lineno, str(key.value))
+                    for key in node.keys
+                    if (
+                        isinstance(key, ast.Constant)
+                        and key.value in active_keys
+                    )
+                )
+        assert not literal_uses, (
+            f"{relative_path} hard-codes renderer active keys: {literal_uses}; "
+            "use SOURCE_TO_ACTIVE_KEY"
+        )

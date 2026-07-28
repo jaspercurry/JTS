@@ -790,19 +790,25 @@ class CamillaController:
             raise
 
 
+def primary_controller() -> CamillaController:
+    """Return the always-on primary CamillaDSP controller (camilla#1).
+
+    Read only the two controller-specific environment values rather than
+    constructing :class:`jasper.config.Config`, whose unrelated provider
+    validation must not block low-level DSP recovery and setup paths.
+    """
+    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
+    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
+    return CamillaController(host, port)
+
+
 def crossover_controller() -> CamillaController:
     """A :class:`CamillaController` bound to camilla#2 — the endpoint-crossover
     CamillaDSP instance (``:1235``) on an active leader.
 
-    The always-on camilla#1 controller is constructed directly as
-    ``CamillaController(cfg.camilla_host, cfg.camilla_port)`` (voice daemon /
-    web setup / control server). This factory is the camilla#2 analogue: it
-    reads the same env vars the matching :class:`~jasper.config.Config` fields
-    parse (``JASPER_CAMILLA2_HOST`` / ``JASPER_CAMILLA2_PORT``, defaults
-    ``127.0.0.1`` / ``1235``). It reads ``os.environ`` directly rather than
-    constructing ``Config.from_env()`` — mirroring ``leader_config._camilla``
-    and ``cli.active_speaker._camilla_controller`` — so a low-level controller
-    handle never trips ``Config``'s voice-provider validation.
+    This is :func:`primary_controller`'s camilla#2 analogue: it reads the
+    matching ``JASPER_CAMILLA2_HOST`` / ``JASPER_CAMILLA2_PORT`` values
+    (defaults ``127.0.0.1`` / ``1235``) without constructing ``Config``.
 
     Constructed in production by the live pair-balance-trim path
     (:func:`jasper.multiroom.runtime_balance._active_endpoint_camilla`, when

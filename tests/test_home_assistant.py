@@ -940,6 +940,21 @@ def test_read_ha_env_file_preserves_equals_in_value(tmp_path):
     assert out == {"JASPER_HA_TOKEN": "eyJ0eXAi.eyJpc3M9aWQ=.sig=="}
 
 
+def test_read_ha_env_file_uses_canonical_quoted_value_semantics(tmp_path):
+    from jasper.home_assistant import read_ha_env_file
+
+    p = tmp_path / "ha.env"
+    p.write_text(
+        'JASPER_HA_URL="http://homeassistant.local:8123"\n'
+        "JASPER_HA_TOKEN='quoted-token=='\n"
+    )
+
+    assert read_ha_env_file(str(p)) == {
+        "JASPER_HA_URL": "http://homeassistant.local:8123",
+        "JASPER_HA_TOKEN": "quoted-token==",
+    }
+
+
 def test_read_ha_env_file_skips_malformed_lines(tmp_path):
     """Lines without `=` are skipped (not crash, not parsed weirdly).
     A malformed env file shouldn't take down the daemon."""

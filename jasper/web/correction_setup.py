@@ -1452,11 +1452,8 @@ def _camilla() -> "Any":
     Factored so tests can monkeypatch a single seam — and so the
     /start reset path doesn't drift from the /apply + /reset paths.
     """
-    from jasper.camilla import CamillaController
-    return CamillaController(
-        host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
-    )
+    from jasper.camilla import primary_controller
+    return primary_controller()
 
 
 def _calibration_root() -> Path:
@@ -3070,7 +3067,6 @@ def _handle_autolevel_start(
       4. Poll GET /status; `autolevel.status` becomes `locked`,
          `maxed_out`, `cancelled`, or `error`.
     """
-    from jasper.camilla import CamillaController
     from jasper.correction import coordinator, playback
     from jasper.correction.session import AutolevelStatus, SessionState
 
@@ -3095,10 +3091,7 @@ def _handle_autolevel_start(
         )
     previous_data = sess.autolevel
 
-    cam = CamillaController(
-        host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
-    )
+    cam = _camilla()
 
     async def _run_autolevel() -> None:
         try:

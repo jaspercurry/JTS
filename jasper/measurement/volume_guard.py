@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
@@ -241,12 +240,9 @@ async def _set_snapcast_snapshot(
 
 
 def _camilla() -> Any:
-    from jasper.camilla import CamillaController
+    from jasper.camilla import primary_controller
 
-    return CamillaController(
-        host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
-    )
+    return primary_controller()
 
 
 @asynccontextmanager

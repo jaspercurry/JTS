@@ -230,11 +230,9 @@ _output_topology_write_lock = threading.Lock()
 
 
 def _camilla():
-    from jasper.camilla import CamillaController
+    from jasper.camilla import primary_controller
 
-    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", "1234"))
-    return CamillaController(host, port)
+    return primary_controller()
 
 
 def _state_payload(

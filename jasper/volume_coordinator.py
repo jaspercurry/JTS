@@ -57,7 +57,7 @@ from .assistant_volume import (
 )
 from .assistant_loudness import tts_envelope_lufs_for_level
 from .log_event import log_event
-from .music_sources import Source, VolumeMode, volume_mode
+from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
 from . import bluealsa_probe
 from . import volume_diagnostics
 from .volume_persistence import (
@@ -1697,13 +1697,13 @@ class VolumeCoordinator:
         except Exception as e:  # noqa: BLE001
             logger.debug("active_renderers() failed (%s); treating as idle", e)
             return Source.IDLE
-        if active.get("aplactive"):
+        if active.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY]):
             return Source.AIRPLAY
-        if active.get("spotactive"):
+        if active.get(SOURCE_TO_ACTIVE_KEY[Source.SPOTIFY]):
             return Source.SPOTIFY
-        if active.get("btactive"):
+        if active.get(SOURCE_TO_ACTIVE_KEY[Source.BLUETOOTH]):
             return Source.BLUETOOTH
-        if active.get("usbsinkactive"):
+        if active.get(SOURCE_TO_ACTIVE_KEY[Source.USBSINK]):
             return Source.USBSINK
         return Source.IDLE
 

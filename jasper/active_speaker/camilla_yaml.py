@@ -27,6 +27,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
+    DRIVER_DOMAIN_PAIR_TRIM_FILTER,
     SHELF_Q,
     SHELF_Q_EMIT_DECIMALS,
     FilterSpec,
@@ -1470,7 +1471,7 @@ def _emit_driver_domain_pipeline(
     lines.extend([
         "  - type: Filter",
         "    channels: [0, 1]",
-        "    names: [pair_balance_trim]",
+        f"    names: [{DRIVER_DOMAIN_PAIR_TRIM_FILTER}]",
     ])
     lines.extend([
         "  - type: Mixer",
@@ -2807,7 +2808,9 @@ def emit_active_speaker_driver_domain_config(
         corrections=safe_corrections,
         bass_extension=bass_extension,
     )
-    filter_lines.extend(emit_gain_filter("pair_balance_trim", -pair_trim_db))
+    filter_lines.extend(
+        emit_gain_filter(DRIVER_DOMAIN_PAIR_TRIM_FILTER, -pair_trim_db)
+    )
     filter_yaml = "\n".join(filter_lines)
     # channel_select FIRST (inter-speaker pick), then the intra-speaker split.
     # apply_region_polarity=False: this graph carries polarity through
