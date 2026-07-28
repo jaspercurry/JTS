@@ -5648,3 +5648,80 @@ def test_v2_session_start_refuses_by_name_when_draft_cannot_produce_a_ready_prev
     assert preview_path.exists()
     blocked = json.loads(preview_path.read_text(encoding="utf-8"))
     assert blocked["status"] == "blocked"
+
+
+# --------------------------------------------------------------------------- #
+# CHECK evidence artifact — the per-role MEASURE level solve (issue #1825)
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingEvidenceStore:
+    """Minimal stand-in for the commissioning evidence store."""
+
+    session_id = "bundle-session"
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict]] = []
+
+    def publish_json_artifact(self, relpath, payload):
+        self.published.append((relpath, payload))
+        return SimpleNamespace(fingerprint="fp-check")
+
+
+def test_check_evidence_artifact_carries_the_per_role_level_solve():
+    """`check.json` is the session's durable record of what MEASURE was about
+    to be played at. The solved gains alone are not self-explaining, so the
+    artifact carries the derivation beside them — which limit chose each
+    driver's level, and the ambient band it was solved against."""
+    from jasper.audio_measurement.program_analysis import GainPlan, RoleGainSolve
+
+    store = _RecordingEvidenceStore()
+    publish_check, _publish_candidate, refs = v2host.bind_evidence_publishers(
+        store, "relay-session"
+    )
+    plan = GainPlan(
+        gain_db={"woofer": -19.0, "tweeter": -31.0},
+        predicted_peak_dbfs=-19.0,
+        snr_floor_ok=True,
+        role_solves={
+            "tweeter": RoleGainSolve(
+                role="tweeter", gain_db=-31.0, flat_target_gain_db=-13.0,
+                bound_by="room_snr", band_hz=(1500.0, 20000.0),
+                ambient_dbfs=-72.0, required_snr_db=41.0,
+                required_capture_dbfs=-31.0,
+            ),
+        },
+    )
+    publish_check(plan, {"bands": [{"band_id": "mid", "level_dbfs": -72.0}]})
+
+    assert refs["check_artifact"] == "fp-check"
+    (relpath, raw_payload), = store.published
+    assert relpath == "crossover_v2/relay-session/check.json"
+    # Round-trips as JSON — the evidence store re-opens what it writes.
+    payload = json.loads(json.dumps(raw_payload))
+    assert payload["gain_plan_db"] == {"woofer": -19.0, "tweeter": -31.0}
+    tweeter = payload["role_solves"]["tweeter"]
+    assert tweeter["bound_by"] == "room_snr"
+    assert tweeter["reduction_db"] == pytest.approx(18.0)
+    assert tweeter["ambient_dbfs"] == pytest.approx(-72.0)
+    assert tweeter["band_hz"] == [1500.0, 20000.0]
+
+
+def test_check_evidence_artifact_tolerates_a_plan_without_solves():
+    """A legacy plan carries no ``role_solves``; the artifact publishes an
+    empty map rather than failing — and an empty map is "no derivation
+    published", never a claim that nothing moved."""
+    from jasper.audio_measurement.program_analysis import GainPlan
+
+    store = _RecordingEvidenceStore()
+    publish_check, _publish_candidate, _refs = v2host.bind_evidence_publishers(
+        store, "relay-session"
+    )
+    publish_check(
+        GainPlan(
+            gain_db={"woofer": -11.0}, predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+        {"bands": []},
+    )
+    (_relpath, payload), = store.published
+    assert payload["role_solves"] == {}

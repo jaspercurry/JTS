@@ -389,8 +389,10 @@ once.
 1. **CHECK** (~25 s, one tap). Ambient silence + two band-limited pilot
    chirps per driver at two levels (−10 dB apart). Yields the ambient
    floor, the behavioral AGC/linearity verdict, channel-map sanity, and
-   the **solved gain plan** for MEASURE. Replaces the legacy per-driver
-   level ramps and ambient waits.
+   the **solved gain plan** for MEASURE — per driver, at the quietest
+   level that still clears the SNR the fit needs in that driver's own
+   band (gotcha #22). Replaces the legacy per-driver level ramps and
+   ambient waits.
 2. **MEASURE** (~33 s, auto-advances behind a cancelable countdown).
    2-channel routing: pilot pair + guard silence + **three interleaved
    woofer/tweeter sweep cycles** — `w1 → t1 → w2 → t2 → w3 → t3`
@@ -1844,6 +1846,75 @@ no retries-as-bodge). Treat these as regression fences.
     (`test_no_audible_content_precedes_the_first_courtesy_beep` is the
     missing half). PR #1771 owed an on-device listen; the session that
     provided it is the one that failed.
+22. **MEASURE's level is solved against the ROOM now, not the ADC**
+    (#1825, 2026-07-28). MEASURE is the only phase in a v2 session whose
+    level is solved — CHECK's pilots and every summed-sweep phase (VERIFY
+    and both cloud groups) ride `BASE_STIMULUS_PEAK_DBFS` clamped by the
+    driver cap — and `_solve_gain_plan` used to drive each driver until
+    its capture peak hit `MeasurementPriors.target_capture_dbfs`
+    (−10.5 dBFS) no matter how quiet the room was. That made capture 2 of
+    every session structurally the loudest thing the household hears
+    ("measurement 2 is way louder than everything else", owner
+    2026-07-28). The solve now targets the SNR the fit actually needs, per
+    driver, in that driver's own measurement band: the worst overlapping
+    ambient band from CHECK's own report plus that band's requirement from
+    the shipped split-SNR policy (`DRIVER.alignment_snr_ok_db` inside the
+    crossover overlap window, where MEASURE's delay/polarity estimate
+    lives; `DRIVER.snr_ok_db` outside it) plus
+    `MEASURE_SNR_SOLVE_MARGIN_DB`. Three things bound it: the old flat
+    target is now the CEILING (this can only make MEASURE quieter or
+    leave it alone), the leading pilot pair's own `PILOT_MIN_SNR_DB` guard
+    is a floor, and `DRIVER.peak_too_low_dbfs` is the backstop against a
+    near-silent ambient report proposing an inaudible sweep. Per-role
+    gains diverge; per-REPEAT gains do not (the drift estimator needs
+    bit-identical repeats — `build_measure_program` applies one gain per
+    role to every occurrence). `GainPlan.role_solves` carries the
+    derivation into `check.json` and into
+    `event=correction.crossover_v2_measure_level_solve`, including the
+    disclosed `no_ambient_evidence` fallback. **Not hardware-validated**
+    — the room-noise floor a real phone mic reports is what decides how
+    much this actually backs off.
+
+    **What to expect per driver.** The reduction is mostly the *tweeter's*.
+    The ambient table (`snr_policy.CROSSOVER_SNR_BANDS_HZ`) has wide rows and
+    overlap is overlap, so a woofer swept from 150 Hz clips the 80–160 Hz
+    `bass` row by 10 Hz and inherits that row's full, LF-heavy level —
+    expect woofers to report `bound_by=flat_target` (unchanged from today)
+    far more often than tweeters. The table also stops at 12 kHz, so a
+    tweeter's top ~2/3 octave contributes no demand; room noise there is
+    below every lower band in any real room, so the omitted rows cannot be
+    the ones that would have won. Both coarsenesses err LOUD — toward
+    today's behavior — which is why neither is worth a finer table before
+    bench data asks for one.
+
+    **The acceptance session is flying without one instrument.**
+    `DriverResponse.snr` — the per-driver band-SNR block that would most
+    directly answer "did the quieter sweep still clear the floor?" — is
+    structurally `None` on the whole v2 path: nothing threads an
+    `ambient_report` into `MeasurementPriors` for MEASURE, so the field has
+    never been populated here (issue #1830; it predates #1825 and is not
+    caused by it). Until that lands, judge a quieter MEASURE by: the
+    disclosure event's `bound_by` + `solved_gain_db` + `ambient_dbfs` as the
+    primary readout (it states what the solve believed and why), then
+    `DriverResponse.validity_floor_hz` and the gate window, the alignment
+    estimate's `confidence` / `status`, and VERIFY's own tracking residual.
+    A capture that got too quiet degrades those visibly — a rising validity
+    floor, a collapsing alignment confidence, a widening VERIFY residual —
+    before it degrades anything the household would hear.
+
+    Two premises in the filed issue did **not** survive tracing, and are
+    recorded here so they are not re-derived: (a) `build_v2_capture_plan`'s
+    `nominal_gains = BASE_STIMULUS_PEAK_DBFS` is a *duration budget* — that
+    program is measured with `_program_duration_ms` and never played, and
+    sweep/gap lengths are gain-independent; (b) the `branch_level_match`
+    reading (`level_w` −18.8 vs `level_t` −7.3) is **not** a drive-level
+    difference. `program.segment_stimulus` regenerates the deconvolution
+    reference at the segment's own `gain_db`, and
+    `deconv.regularized_deconvolution_full`'s Tikhonov epsilon is relative
+    to `|X|²`, so the drive cancels *mathematically exactly* in the
+    deconvolution and every downstream consumer (`solve_branch_trims`,
+    `realized_branch_level_match`, the Layer-1a shared level frame) works
+    per-unit-drive. That 11.5 dB is a sensitivity delta, not a drive delta.
 
 ## Future work — the post-W6 follow-ups issue
 

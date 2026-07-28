@@ -2005,6 +2005,14 @@ def bind_evidence_publishers(
                 "gain_plan_db": dict(gain_plan.gain_db),
                 "predicted_peak_dbfs": gain_plan.predicted_peak_dbfs,
                 "snr_floor_ok": gain_plan.snr_floor_ok,
+                # #1825: the per-role derivation behind ``gain_plan_db`` —
+                # which limit chose each driver's MEASURE level and the
+                # ambient evidence it rests on. Empty for a legacy plan that
+                # carries no solves (never a claim that nothing moved).
+                "role_solves": {
+                    role: solve.to_dict()
+                    for role, solve in (gain_plan.role_solves or {}).items()
+                },
                 "ambient_report": dict(ambient_report),
             },
         )

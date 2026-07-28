@@ -290,9 +290,47 @@ IR_POST_MS = 60.0
 DECONV_PRE_GUARD_S = 0.25
 
 # Gain solve: land the MEASURE capture peak in [-12, -9] dBFS with ≥6 dB guard.
+# Since #1825 this is the solve's CEILING rather than its target — see
+# `_solve_role_gain`.
 DEFAULT_TARGET_CAPTURE_DBFS = -10.5
 GAIN_GUARD_DB = 6.0
 GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
+
+# --- SNR-solved MEASURE level (issue #1825) --------------------------------- #
+#
+# MEASURE is the only phase in a v2 session whose level is solved: CHECK's
+# pilots and every summed-sweep phase (VERIFY + both cloud groups) ride
+# `program.BASE_STIMULUS_PEAK_DBFS` clamped by the driver cap, while MEASURE
+# was driven until its capture peak hit `DEFAULT_TARGET_CAPTURE_DBFS`
+# regardless of how quiet the room actually was. That is what the household
+# hears as "measurement 2 is way louder than everything else" (owner,
+# 2026-07-28). The room's noise floor — not the ADC's headroom — is what
+# decides how much signal the fit needs, and CHECK already measures it.
+#
+# The solve's own insurance on top of a band's SNR requirement. The ambient
+# evidence is CHECK's 12 s window, measured up to a minute before MEASURE
+# plays and (per `program`'s module docstring) deliberately taken BEFORE the
+# courtesy beeps ask the household to quiet down; `k` comes from 0.8 s pilots
+# rather than from the sweep itself. 6 dB is the same figure
+# `jasper.audio_measurement.level_solver.SOLVER_MARGIN_DB` carries for the
+# same job in the ramp-driven solver. Deliberately NOT imported from there:
+# the two solvers are independent, and sharing the symbol would let a tuning
+# change to one silently retune the other.
+MEASURE_SNR_SOLVE_MARGIN_DB = 6.0
+
+# Vocabulary for `RoleGainSolve.bound_by` — which limit chose the level.
+GAIN_BOUND_FLAT_TARGET = "flat_target"          # room too noisy to back off
+GAIN_BOUND_ROOM_SNR = "room_snr"                # the fit's own SNR need
+GAIN_BOUND_PILOT_SNR = "pilot_snr"              # the quiet pilot's SNR guard
+GAIN_BOUND_CAPTURE_FLOOR = "capture_floor"      # `DRIVER.peak_too_low_dbfs`
+GAIN_BOUND_NO_AMBIENT_EVIDENCE = "no_ambient_evidence"  # disclosed fallback
+GAIN_BOUNDS = frozenset({
+    GAIN_BOUND_FLAT_TARGET,
+    GAIN_BOUND_ROOM_SNR,
+    GAIN_BOUND_PILOT_SNR,
+    GAIN_BOUND_CAPTURE_FLOOR,
+    GAIN_BOUND_NO_AMBIENT_EVIDENCE,
+})
 
 # Behavioral linearity tolerance (design §3.4): captured delta within this of
 # the programmed delta. Measured band-relative + ambient-compensated (see
@@ -763,12 +801,88 @@ class PilotObservation:
 
 
 @dataclass(frozen=True)
+class RoleGainSolve:
+    """One driver's MEASURE level solve, and the evidence it rests on (#1825).
+
+    ``gain_db`` is the digital gain the MEASURE composer will actually
+    schedule for this role; ``flat_target_gain_db`` is what the pre-#1825
+    solve would have scheduled (land the capture peak on
+    ``MeasurementPriors.target_capture_dbfs``, clamped by the ≥6 dB digital
+    guard). The solve never exceeds that flat figure, so this pair is also
+    the disclosure of how much quieter this session's MEASURE got and why.
+
+    ``bound_by`` names which limit chose the number — one of the
+    ``GAIN_BOUND_*`` constants. It is the honesty field: a
+    ``GAIN_BOUND_NO_AMBIENT_EVIDENCE`` solve is the disclosed fallback to the
+    flat target (never a silent guess), and ``GAIN_BOUND_FLAT_TARGET`` means
+    the room was noisy enough that the SNR requirement wanted at least the
+    flat level, so nothing moved.
+
+    ``ambient_dbfs`` / ``required_snr_db`` / ``required_capture_dbfs`` are the
+    ROOM-SNR demand, and only that: the worst overlapping ambient band's
+    level, the SNR this solve demanded above it, and their sum. They are a
+    coherent triple (the third is the first two added) and they stay the room
+    demand even when a DIFFERENT floor won — read ``bound_by`` for which one
+    did, and ``gain_db`` for the level actually scheduled. When ``bound_by``
+    is ``GAIN_BOUND_PILOT_SNR`` or ``GAIN_BOUND_CAPTURE_FLOOR``,
+    ``required_capture_dbfs`` is therefore the (lower) room demand that floor
+    overrode, not the capture peak aimed at. All three are ``None`` on the
+    no-evidence fallback — a missing number is never a zero.
+    """
+
+    role: str
+    gain_db: float
+    flat_target_gain_db: float
+    bound_by: str
+    band_hz: tuple[float, float] | None = None
+    ambient_dbfs: float | None = None
+    required_snr_db: float | None = None
+    required_capture_dbfs: float | None = None
+
+    @property
+    def reduction_db(self) -> float:
+        """How much quieter than the flat target this solve is (≥ 0)."""
+        return self.flat_target_gain_db - self.gain_db
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "role": self.role,
+            "gain_db": round(self.gain_db, 3),
+            "flat_target_gain_db": round(self.flat_target_gain_db, 3),
+            "reduction_db": round(self.reduction_db, 3),
+            "bound_by": self.bound_by,
+            "band_hz": (
+                [round(self.band_hz[0], 1), round(self.band_hz[1], 1)]
+                if self.band_hz is not None else None
+            ),
+            "ambient_dbfs": (
+                round(self.ambient_dbfs, 2) if self.ambient_dbfs is not None else None
+            ),
+            "required_snr_db": (
+                round(self.required_snr_db, 2)
+                if self.required_snr_db is not None else None
+            ),
+            "required_capture_dbfs": (
+                round(self.required_capture_dbfs, 2)
+                if self.required_capture_dbfs is not None else None
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class GainPlan:
-    """Solved MEASURE digital gains (design §5.2)."""
+    """Solved MEASURE digital gains (design §5.2).
+
+    ``role_solves`` (#1825) carries the per-role derivation behind
+    ``gain_db`` — see :class:`RoleGainSolve`. Empty for a construction site
+    that predates the field (fixtures, legacy callers); a consumer must read
+    that as "no derivation published", never as "no reduction happened".
+    """
 
     gain_db: Mapping[str, float]
     predicted_peak_dbfs: float
     snr_floor_ok: bool
+    role_solves: Mapping[str, RoleGainSolve] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -2794,6 +2908,180 @@ def _channel_map_ok(
     return True, target_rise, worst_cross_rise
 
 
+def _bands_overlap(
+    lo_a: float, hi_a: float, lo_b: float, hi_b: float
+) -> bool:
+    return hi_a > lo_b and lo_a < hi_b
+
+
+def _ambient_rows_in_band(
+    band_hz: tuple[float, float],
+    ambient_bands: Sequence[Any],
+) -> list[tuple[float, float, float]]:
+    """The ``(lo_hz, hi_hz, level_dbfs)`` ambient rows overlapping ``band_hz``.
+
+    A row this cannot read is skipped rather than raised on. More than one
+    producer writes ambient band rows (``snr_policy.framed_ambient_band_report``
+    here, plus the legacy bare-band shape ``snr_policy.unwrap_noise_report``
+    still normalizes), so an unreadable row must cost this solve that row's
+    evidence — which the caller then discloses — never crash inside CHECK's
+    accept path.
+    """
+    lo, hi = band_hz
+    rows: list[tuple[float, float, float]] = []
+    for entry in ambient_bands or ():
+        if not isinstance(entry, Mapping):
+            continue
+        edges = entry.get("band_hz")
+        if not (isinstance(edges, (list, tuple)) and len(edges) == 2):
+            continue
+        try:
+            b_lo, b_hi, level = (
+                float(edges[0]), float(edges[1]), float(entry["level_dbfs"])
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (math.isfinite(b_lo) and math.isfinite(b_hi) and math.isfinite(level)):
+            continue
+        if _bands_overlap(lo, hi, b_lo, b_hi):
+            rows.append((b_lo, b_hi, level))
+    return rows
+
+
+def _band_required_snr_db(
+    lo_hz: float, hi_hz: float, overlap_hz: tuple[float, float] | None
+) -> float:
+    """The SNR the fit needs in one band, per the split SNR policy.
+
+    ``jasper.audio_measurement.snr_policy`` splits SNR trust by what a number
+    is used FOR: a magnitude/trim decision is usable at
+    ``DRIVER.snr_ok_db``, while a null/alignment decision (MEASURE's GCC
+    delay + polarity estimate, which reads the crossover overlap band) needs
+    ``DRIVER.alignment_snr_ok_db``. A band inside the overlap window carries
+    the alignment requirement; every other band carries the magnitude one.
+
+    ``overlap_hz`` is ``None`` when no Fc prior reached this analysis. That
+    resolves to the alignment requirement EVERYWHERE — the conservative
+    direction, since a higher requirement means a LOUDER solve, i.e. closer
+    to today's behavior. An unknown Fc must never buy a quieter measurement.
+    """
+    if overlap_hz is None or _bands_overlap(
+        lo_hz, hi_hz, overlap_hz[0], overlap_hz[1]
+    ):
+        return DRIVER.alignment_snr_ok_db
+    return DRIVER.snr_ok_db
+
+
+def _solve_role_gain(
+    *,
+    role: str,
+    k_db: float,
+    flat_target_gain_db: float,
+    band_hz: tuple[float, float] | None,
+    pilot_delta_db: float,
+    ambient_bands: Sequence[Any],
+    overlap_hz: tuple[float, float] | None,
+) -> RoleGainSolve:
+    """The quietest MEASURE gain for one driver that still serves the fit.
+
+    ``k_db`` is this driver's measured chain gain (captured peak minus the
+    digital gain that produced it), so a target capture peak ``C`` is reached
+    at digital gain ``C - k_db``. Three floors compete for the number, and the
+    LOUDEST of them wins because each is a genuine requirement:
+
+    * **room SNR** — the worst ``ambient + required_snr`` across the ambient
+      bands overlapping this driver's own measurement band. Band-scoped on
+      purpose: a room's noise is overwhelmingly low-frequency, so a tweeter
+      measured from 2 kHz up genuinely needs less drive than a woofer
+      measured from 150 Hz, and pinning both to one broadband figure is what
+      made MEASURE louder than it had to be.
+
+      Two known coarsenesses in the ambient table
+      (``snr_policy.CROSSOVER_SNR_BANDS_HZ``), both erring LOUD, i.e. toward
+      today's behavior — neither is worth a finer table until bench data says
+      so. (1) Its rows are wide, and overlap is overlap: a woofer swept from
+      ``MEASURE_SWEEP_F_LO_HZ`` (150 Hz) clips the 80-160 Hz ``bass`` row by
+      only 10 Hz yet inherits that row's full — LF-heavy, therefore loud —
+      level. Expect woofers to sit at ``GAIN_BOUND_FLAT_TARGET`` far more
+      often than tweeters; the reduction this solve buys is mostly the
+      tweeter's. (2) The table stops at 12 kHz, so a tweeter's top ~2/3
+      octave contributes no demand at all. Room noise up there is below every
+      lower band in any real room, so an omitted row cannot be the one that
+      would have won — the worst-band max is unaffected.
+    * **pilot SNR** — MEASURE opens on a two-level pilot pair whose QUIET
+      side sits ``pilot_delta_db`` below the sweep gain, and issue #1816's
+      guard refuses the capture when that pilot's own in-band SNR falls under
+      ``PILOT_MIN_SNR_DB``. Backing a driver's sweep off without carrying its
+      pilots along would trade a loud measurement for a failing one, so the
+      pilot floor is part of "the SNR the fit needs". Applied to every role
+      rather than only the role that actually carries the leading pilots
+      (``crossover_v2_flow.CrossoverV2Conductor._compose_measure_program``
+      puts them on the woofer today): it is a floor, so applying it more
+      widely can only keep a level closer to today's, and it stays correct if
+      the composer ever moves the pair. The conductor's clip retry
+      (``_rearm_measure_after_transient``) subtracts a further
+      ``CLIP_RETRY_BACKOFF_DB`` (3 dB) from whatever this returns, which
+      ``MEASURE_SNR_SOLVE_MARGIN_DB`` absorbs with room to spare — and a
+      clip is far less likely from a level solved down toward the floor
+      than from one driven at the ADC's headroom.
+    * **capture floor** — ``DRIVER.peak_too_low_dbfs``, the shipped
+      capture-quality model's "a capture peak below this is too low to
+      trust". Guards the degenerate case where an ambient report reads near
+      the dBFS floor and the SNR math alone would propose an inaudible sweep.
+
+    The result is then clamped by ``flat_target_gain_db``: this solve can only
+    make MEASURE quieter than (or equal to) what it does today, never louder.
+    """
+    rows = _ambient_rows_in_band(band_hz, ambient_bands) if band_hz else []
+    if not rows:
+        # Disclosed fallback (never a silent guess): with no ambient evidence
+        # for this driver's band there is nothing to solve against, so keep
+        # today's flat target and say so.
+        return RoleGainSolve(
+            role=role,
+            gain_db=flat_target_gain_db,
+            flat_target_gain_db=flat_target_gain_db,
+            bound_by=GAIN_BOUND_NO_AMBIENT_EVIDENCE,
+            band_hz=band_hz,
+        )
+
+    demands: list[tuple[float, float, float]] = []
+    for lo, hi, level in rows:
+        required_snr = (
+            _band_required_snr_db(lo, hi, overlap_hz) + MEASURE_SNR_SOLVE_MARGIN_DB
+        )
+        demands.append((level + required_snr, level, required_snr))
+    required_capture_dbfs, ambient_dbfs, required_snr_db = max(
+        demands, key=lambda item: item[0]
+    )
+    worst_ambient_dbfs = max(level for _lo, _hi, level in rows)
+    pilot_floor_dbfs = (
+        worst_ambient_dbfs + pilot_delta_db + PILOT_MIN_SNR_DB
+        + MEASURE_SNR_SOLVE_MARGIN_DB
+    )
+    capture_dbfs, bound_by = max(
+        (
+            (required_capture_dbfs, GAIN_BOUND_ROOM_SNR),
+            (pilot_floor_dbfs, GAIN_BOUND_PILOT_SNR),
+            (DRIVER.peak_too_low_dbfs, GAIN_BOUND_CAPTURE_FLOOR),
+        ),
+        key=lambda item: item[0],
+    )
+    gain_db = capture_dbfs - k_db
+    if gain_db >= flat_target_gain_db:
+        gain_db, bound_by = flat_target_gain_db, GAIN_BOUND_FLAT_TARGET
+    return RoleGainSolve(
+        role=role,
+        gain_db=gain_db,
+        flat_target_gain_db=flat_target_gain_db,
+        bound_by=bound_by,
+        band_hz=band_hz,
+        ambient_dbfs=ambient_dbfs,
+        required_snr_db=required_snr_db,
+        required_capture_dbfs=required_capture_dbfs,
+    )
+
+
 def _solve_gain_plan(
     program: ExcitationProgram,
     pilots: Sequence[PilotObservation],
@@ -2801,7 +3089,19 @@ def _solve_gain_plan(
     priors: MeasurementPriors,
 ) -> GainPlan:
     target = priors.target_capture_dbfs
+    ambient_bands = (
+        ambient_report.get("bands") if isinstance(ambient_report, Mapping) else None
+    ) or ()
+    # The nominal Fc ± 1 octave window, UNCLAMPED by the true sweep overlap:
+    # `overlap_band_hz`'s clamps only narrow the band, and a narrower band
+    # would demote bands to the (lower) magnitude requirement, i.e. buy a
+    # quieter solve on a technicality. The wider window is the safe read here.
+    overlap_hz = (
+        overlap_band_hz(float(priors.crossover_fc_hz))
+        if priors.crossover_fc_hz else None
+    )
     gains: dict[str, float] = {}
+    solves: dict[str, RoleGainSolve] = {}
     predicted_peaks: list[float] = []
     for pilot in pilots:
         lo_seg = program.segment(f"pilot_{pilot.role}_lo")
@@ -2815,17 +3115,44 @@ def _solve_gain_plan(
         k_lo = pilot.peak_lo_dbfs - lo_seg.gain_db
         k_hi = pilot.peak_hi_dbfs - hi_seg.gain_db
         k = (k_lo + k_hi) / 2.0
-        gain = target - k
-        gain = min(gain, GAIN_MAX_DIGITAL_PEAK_DBFS)  # ≥6 dB guard
-        gains[pilot.role] = gain
-        predicted_peaks.append(gain)
+        # The pre-#1825 answer, now the CEILING of the solve below.
+        flat_gain = min(target - k, GAIN_MAX_DIGITAL_PEAK_DBFS)  # ≥6 dB guard
+        solve = _solve_role_gain(
+            role=pilot.role,
+            k_db=k,
+            flat_target_gain_db=flat_gain,
+            # A CHECK pilot's band IS the role's MEASURE sweep band: both
+            # come from `_intersect_band(rb.band, MEASURE_SWEEP_F_LO_HZ,
+            # MEASURE_SWEEP_F_HI_HZ)` in `program`'s composers, so the band
+            # is read off the segment already in hand rather than plumbed in
+            # a second time (and cannot drift from what MEASURE will sweep).
+            band_hz=(
+                (float(lo_seg.f1_hz), float(lo_seg.f2_hz))
+                if lo_seg.f1_hz is not None and lo_seg.f2_hz is not None
+                else None
+            ),
+            pilot_delta_db=abs(hi_seg.gain_db - lo_seg.gain_db),
+            ambient_bands=ambient_bands,
+            overlap_hz=overlap_hz,
+        )
+        gains[pilot.role] = solve.gain_db
+        solves[pilot.role] = solve
+        predicted_peaks.append(solve.gain_db)
     predicted_peak = max(predicted_peaks) if predicted_peaks else GAIN_MAX_DIGITAL_PEAK_DBFS
 
+    # Deliberately still judged at `target_capture_dbfs`, NOT at the solved
+    # level. This is the room-quality gate ("is this room quiet enough to
+    # commission in at all"), asked of the reference target against the whole
+    # ambient report — including the sub-bass band no driver's sweep reaches.
+    # The solve answers a different question (how much drive this fit needs,
+    # per driver, in that driver's own band), and folding the two together
+    # would silently change which sessions CHECK accepts.
     snr_floor_ok = _snr_floor_ok(ambient_report, target)
     return GainPlan(
         gain_db=gains,
         predicted_peak_dbfs=predicted_peak,
         snr_floor_ok=snr_floor_ok,
+        role_solves=solves,
     )
 
 
@@ -3525,6 +3852,15 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out["gain_plan_predicted_peak_dbfs"] = round(
             float(gain_plan.predicted_peak_dbfs), 3
         )
+        # #1825: the per-role MEASURE level solve, flattened one field per
+        # role so the forensic dump reads like every other per-role block
+        # above it.
+        for role, solve in (getattr(gain_plan, "role_solves", None) or {}).items():
+            out[f"{role}_measure_gain_db"] = round(float(solve.gain_db), 3)
+            out[f"{role}_measure_gain_reduction_db"] = round(
+                float(solve.reduction_db), 3
+            )
+            out[f"{role}_measure_gain_bound_by"] = solve.bound_by
 
     for flag in ("pilot_snr_ok", "linearity_ok", "channel_map_ok"):
         value = getattr(analysis, flag, None)

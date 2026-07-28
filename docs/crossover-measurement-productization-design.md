@@ -240,6 +240,11 @@ misfires the linearity ratio on noise rather than AGC behavior).
   plan** for MEASURE (target capture peak −12…−9 dBFS, ≥6 dB guard, SNR floor
   from ambient). Replaces: both per-driver ramp level-matches, the separate
   ambient wait before every sweep, and the AGC attestation gate.
+  *(Amended 2026-07-28, issue #1825: the −12…−9 dBFS capture-peak target is
+  now the solve's CEILING rather than its aim — each driver is solved down to
+  the SNR the fit needs in its own band, which is quieter in a quiet room. The
+  ≥6 dB guard and the ambient SNR floor are unchanged. See gotcha #22 in the
+  HANDOFF for the shipped behavior.)*
 - **MEASURE (~20 s capture, one phone tap).** Program (2-channel routing,
   §5.4): guard silence + **woofer sweep → tweeter sweep → woofer sweep
   repeat**, gaps sized by the MESM constraint (next IR must clear the prior
