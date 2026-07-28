@@ -812,6 +812,13 @@ def test_stale_protection_report_names_failed_checks_and_persists_report(
     and writes the full live protection report into the session bundle
     directory, so the wall no longer requires re-running the sweep to
     diagnose.
+
+    Issue #1820 moved WHERE those names live without weakening the promise.
+    ``web_commissioning`` renders this exception's ``str()`` verbatim in a
+    ``/sound/`` issue list, so the raw refusal slugs and failing check names
+    were one refusal away from the household's screen. They now ride the
+    journal line and the exception's ``refusal_codes`` — both asserted below —
+    while the MESSAGE is the one sentence an operator can act on.
     """
 
     topology, profile, _targets, comparison, applied, raw, load_payload = _context(
@@ -828,9 +835,7 @@ def test_stale_protection_report_names_failed_checks_and_persists_report(
         return -4.0
 
     with caplog.at_level(logging.INFO, logger=_ADMISSION_LOGGER_NAME):
-        with pytest.raises(
-            ActiveCommissioningAdmissionError, match="protection_evidence_stale"
-        ) as excinfo:
+        with pytest.raises(ActiveCommissioningAdmissionError) as excinfo:
             asyncio.run(
                 play_admitted_driver_capture(
                     topology=topology,
@@ -855,12 +860,22 @@ def test_stale_protection_report_names_failed_checks_and_persists_report(
                 )
             )
 
-    assert "protection checks failing: graph_volume_ceiling" in str(excinfo.value)
+    # The household-facing half: one actionable sentence, no slugs, no check
+    # names, no colon-delimited diagnostic tail (this string reaches the DOM).
+    message = str(excinfo.value)
+    assert message == "the live speaker graph changed; start this capture again"
+    for jargon in ("protection_evidence_stale", "graph_volume_ceiling", "refused:"):
+        assert jargon not in message
+    # The forensic half: slugs on the exception for the caller's payload, and
+    # both the slug and the failing check names in the journal.
+    assert excinfo.value.refusal_codes == ("protection_evidence_stale",)
     assert (
         "event=active_speaker.driver_capture_protection_evidence_stale"
         in caplog.text
     )
     assert "failed_checks=graph_volume_ceiling" in caplog.text
+    assert "refusal_codes=protection_evidence_stale" in caplog.text
+    assert "failed_protection_checks=graph_volume_ceiling" in caplog.text
 
     report_path = (
         tmp_path / comparison["bundle_session_id"] / "protection_report.json"

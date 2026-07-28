@@ -53,7 +53,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
@@ -134,6 +134,62 @@ class CrossoverV2LocalSeamError(RuntimeError):
     honest ``internal_error`` classification instead — a genuine transport
     ``OSError`` (never wrapped) still hits the relay-death arm unchanged.
     """
+
+
+def classify_program_failure(
+    exc: BaseException,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Map a program-seam exception to its §5.10 reason code + refusal slugs.
+
+    Returns ``None`` for anything outside the program family, so a caller can
+    tell "not mine" from "mine, and here is the honest code".
+
+    Issue #1820 defect 4: the session runner's catch-all arm used to fold the
+    WHOLE family — ``ProgramPlaybackError``, ``ProgramAdmissionError``,
+    ``CrossoverV2FlowError`` — into a single
+    :data:`~jasper.active_speaker.crossover_v2_flow.REASON_PROGRAM_UNPLAYABLE`,
+    so a deterministic "the household has not confirmed the safety limits" and
+    a genuine level-ceiling failure rendered the same sentence and offered the
+    same (for the former, actively harmful) action. Refusal identity survives
+    the boundary now: ``PROFILE_NOT_CONFIRMED`` gets its own code and screen,
+    and every other refusal keeps ``program_unplayable`` but carries its own
+    slugs out for forensics (persisted under ``state["failure"]["refusals"]``
+    and logged) instead of being erased.
+
+    This is the ONE classifier. ``build_v2_run_and_consume``'s cleanup arm and
+    ``jasper.web.correction_setup._relay_failure_message`` both call it, so the
+    phone's failure screen and the operator wizard's relay status line can
+    never disagree about which refusal happened — the drift that let a raw
+    ``"program re-admission refused: program_profile_not_confirmed"`` reach the
+    wizard's DOM while the phone was told something else entirely.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+        REASON_PROGRAM_UNPLAYABLE,
+        CrossoverV2FlowError,
+    )
+    from jasper.active_speaker.program_admission import (
+        ProgramAdmissionError,
+        ProgramAdmissionRefusal,
+    )
+    from jasper.active_speaker.program_playback import (
+        ProgramPlaybackError,
+        ProgramPlaybackRefused,
+    )
+
+    if not isinstance(
+        exc, (ProgramPlaybackError, ProgramAdmissionError, CrossoverV2FlowError)
+    ):
+        return None
+    refusals: tuple[str, ...] = ()
+    if isinstance(exc, ProgramPlaybackRefused):
+        refusals = tuple(reason.value for reason in exc.admission.refusals)
+    code = (
+        REASON_PROGRAM_PROFILE_NOT_CONFIRMED
+        if ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED.value in refusals
+        else REASON_PROGRAM_UNPLAYABLE
+    )
+    return code, refusals
 
 
 # --------------------------------------------------------------------------- #
@@ -1378,8 +1434,17 @@ def persist_conductor_state(
     *,
     failure_code: str | None,
     evidence: Mapping[str, Any] | None = None,
+    failure_refusals: Sequence[str] = (),
 ) -> None:
-    """Write the conductor's durable snapshot + host-observed failure state."""
+    """Write the conductor's durable snapshot + host-observed failure state.
+
+    ``failure_refusals`` are the underlying admission-refusal slugs behind a
+    program failure (issue #1820). They are FORENSICS, never household copy:
+    the envelope renders ``failure["code"]`` through the reason registry and
+    ignores this key. It exists so a support read of the state file can tell
+    which of ``program_unplayable``'s several causes actually fired, which the
+    old single-code collapse erased.
+    """
     snap = conductor.snapshot()
     verify_outcome = conductor.verify_outcome
     state: dict[str, Any] = {
@@ -1437,7 +1502,16 @@ def persist_conductor_state(
             }
             if verify_outcome is not None else None
         ),
-        "failure": {"code": failure_code} if failure_code else None,
+        "failure": (
+            {
+                "code": failure_code,
+                **(
+                    {"refusals": [str(slug) for slug in failure_refusals]}
+                    if failure_refusals else {}
+                ),
+            }
+            if failure_code else None
+        ),
         # Position-group outcome (PR-3b): the closing geometry verdict and the
         # position ids behind it, per group. Present only for groups that have
         # CLOSED — an absent key means "still walking", never "geometry was
@@ -1593,7 +1667,9 @@ def persist_conductor_state(
     save_v2_state(state)
 
 
-def _persist_terminal_failure(conductor: Any, code: str) -> None:
+def _persist_terminal_failure(
+    conductor: Any, code: str, *, refusals: Sequence[str] = (),
+) -> None:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
     with the session (restart at CHECK); post-apply, the applied candidate +
     verify priors survive so ``/v2/verify`` can re-arm.
@@ -1612,7 +1688,9 @@ def _persist_terminal_failure(conductor: Any, code: str) -> None:
     """
     from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
 
-    persist_conductor_state(conductor, failure_code=code)
+    persist_conductor_state(
+        conductor, failure_code=code, failure_refusals=refusals,
+    )
     state = load_v2_state()
     if state is None:
         return
@@ -2397,17 +2475,13 @@ def build_v2_run_and_consume(
             PHASE_DONE,
             REASON_APPLY_FAILED,
             REASON_INTERNAL_ERROR,
-            REASON_PROGRAM_UNPLAYABLE,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
             REASON_REVIEW_HOLD_TIMEOUT,
             REASON_USER_STOPPED,
             V2_FIRST_BEGIN_TIMEOUT_S,
             TRANSIENT_AUTO_RETRY_CODES,
-            CrossoverV2FlowError,
         )
-        from jasper.active_speaker.program_admission import ProgramAdmissionError
-        from jasper.active_speaker.program_playback import ProgramPlaybackError
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
         from jasper.correction.coordinator import MeasurementWindowError
 
@@ -2879,22 +2953,25 @@ def build_v2_run_and_consume(
             # failure, drain the volume (whose hook also releases the session
             # measurement pause), purge the relay session, then RE-RAISE so
             # the outer relay net still logs and flips /status.relay to
-            # failed. Program-side classes keep their distinct
-            # program_unplayable code; everything else is internal_error.
-            code = (
-                REASON_PROGRAM_UNPLAYABLE
-                if isinstance(
-                    exc,
-                    (
-                        ProgramPlaybackError,
-                        ProgramAdmissionError,
-                        CrossoverV2FlowError,
-                    ),
+            # failed. Program-side classes keep their own honest code via
+            # ``classify_program_failure`` (issue #1820: a not-confirmed safety
+            # profile is NOT the same failure as a level ceiling, and the
+            # underlying refusal slugs ride out with it); everything else is
+            # internal_error.
+            classified = classify_program_failure(exc)
+            code = classified[0] if classified else REASON_INTERNAL_ERROR
+            refusals = classified[1] if classified else ()
+            if classified:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_program_failure",
+                    level=logging.WARNING,
+                    code=code,
+                    refusals=",".join(refusals),
+                    error_type=type(exc).__name__,
                 )
-                else REASON_INTERNAL_ERROR
-            )
             await _post_terminal_failure_host_event(code)
-            _persist_terminal_failure(conductor, code)
+            _persist_terminal_failure(conductor, code, refusals=refusals)
             await _abandon_best_effort()
             # Finding H: give the just-posted terminal host event a bounded
             # grace window to reach the phone before the session is purged
@@ -3073,13 +3150,30 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
 
     Fail-closed: every missing input is a :class:`CrossoverV2Refused` naming
     what to finish first — never a guessed default.
+
+    This runs at SESSION OPEN — ``prepare_v2_session`` calls it before the
+    relay session is registered and the phone link minted, and
+    ``prepare_v2_verify`` before its re-arm — which is what makes the driver-
+    safety-profile gate below a pre-flight rather than a surprise (issue
+    #1821). Before that gate existed, this function checked only that a
+    profile object was PRESENT while its refusal text claimed confirmation had
+    been checked; the real confirmation gate lived four screens later inside
+    ``prepare_driver_excitation_plan`` at CHECK-phase program admission. A
+    household with an un-confirmed profile therefore burned a link, walked to
+    the phone, and hit a deterministic refusal that was knowable before any of
+    it — the exact 2026-07-28 JTS3 dead-end.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
-    from jasper.active_speaker.crossover_v2_flow import derive_session_volume_db
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+        REASON_REGISTRY,
+        derive_session_volume_db,
+    )
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
         load_design_draft,
     )
+    from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
         resolve_driver_excitation_ceilings,
@@ -3108,10 +3202,26 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         raise CrossoverV2Refused("the v2 conductor flow is scoped to 2-way presets")
     draft = load_design_draft(topology=topology)
     safety_profile = draft.get("driver_safety_profile")
-    if not isinstance(safety_profile, Mapping):
+    # The gate the refusal text has always CLAIMED (issue #1821). Evaluated
+    # against the live topology, so a stale profile (an output change) and an
+    # un-confirmed one (a driver-detail edit rotated the fingerprint) are both
+    # caught here rather than at play time. Copy comes from the SAME registry
+    # entry the phone's terminal failure screen renders, so the two surfaces
+    # cannot say different things about the same missing confirmation.
+    safety_evaluation = evaluate_driver_safety_profile(safety_profile, topology)
+    if not safety_evaluation.confirmed_and_current or not isinstance(
+        safety_profile, Mapping
+    ):
+        log_event(
+            logger,
+            "correction.crossover_v2_profile_not_confirmed",
+            level=logging.WARNING,
+            gate="session_open",
+            profile_status=safety_evaluation.status,
+            reasons=",".join(safety_evaluation.reasons),
+        )
         raise CrossoverV2Refused(
-            "driver safety limits are not confirmed; finish the driver details "
-            "in speaker setup"
+            REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
         )
     targets_raw = status.get("targets")
     drivers = (

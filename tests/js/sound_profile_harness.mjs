@@ -620,7 +620,10 @@ function setupHarness(fetchHandler, options = {}) {
     },
     setTimeout,
     clearTimeout,
-    location: { href: "" },
+    // `hash` is read by the /sound/ deep-link entry point
+    // (applyConfirmSafetyDeepLink); a real browser always has it, so the
+    // harness does too — empty means "no fragment", the ordinary page load.
+    location: { href: "", hash: options.hash || "" },
   };
   Object.defineProperty(globalThis, "navigator", {
     value: { clipboard: { async writeText() {} } },
@@ -6080,6 +6083,149 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
   return { subwooferWithSpareOutputHidesWirelessCta: true };
 }
 
+// Issue #1820 defect 3. An unconfirmed driver-safety profile refuses EVERY
+// crossover measurement, and "Confirm safety limits" is the only control that
+// clears it — but #1819 left that control inside the default-closed Advanced
+// disclosure while promoting the enclosure selector (whose edit rotates the
+// profile fingerprint and so clears the confirmation) into the always-visible
+// form. These render the real card and assert the hoisted callout is there,
+// ahead of the disclosure, and gone once the profile is confirmed.
+function designDraftWithSafety(evaluation) {
+  return {
+    status: "ready_for_review",
+    revision: 3,
+    summary: {},
+    operator_inputs: {},
+    driver_safety_profile: { status: evaluation.status === "confirmed"
+      ? "confirmed" : "needs_confirmation" },
+    driver_safety_profile_evaluation: evaluation,
+    permissions: { may_confirm_visible_driver_safety_profile: true },
+  };
+}
+
+async function harnessWithSafetyEvaluation(evaluation, options = {}) {
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(
+      response(designDraftWithSafety(evaluation))
+    ),
+  }), options);
+  await loadAndSetActiveState(harness);
+  return harness;
+}
+
+async function testUnconfirmedSafetyProfileHoistsTheConfirmControl() {
+  const harness = await harnessWithSafetyEvaluation({
+    status: "unconfirmed",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_profile_not_confirmed"],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+
+  const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  const advancedAt = html.indexOf("data-driver-advanced");
+  if (calloutAt < 0) {
+    fail("an unconfirmed safety profile must hoist the confirm callout", { html });
+  }
+  if (!(calloutAt < advancedAt)) {
+    fail("the confirm callout must render before the Advanced disclosure", {
+      calloutAt, advancedAt, html,
+    });
+  }
+  const callout = html.slice(calloutAt, advancedAt);
+  if (!callout.includes('class="btn btn--primary" data-act="confirm-driver-safety"')) {
+    fail("the hoisted control must be the primary confirm action", { callout });
+  }
+  if (!callout.includes("will not play a measurement signal until you confirm")) {
+    fail("the callout must say why it blocks measurement", { callout });
+  }
+  return { unconfirmedSafetyProfileHoistsTheConfirmControl: true };
+}
+
+async function testConfirmedSafetyProfileRendersNoCallout() {
+  const harness = await harnessWithSafetyEvaluation({
+    status: "confirmed",
+    confirmed_and_current: true,
+    reasons: [],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes('id="confirm-safety-limits"')) {
+    fail("a confirmed profile must not nag with the hoisted callout", { html });
+  }
+  // The Advanced re-confirm button stays where it was — this hoists, it does
+  // not move.
+  if (!html.includes('data-act="confirm-driver-safety"')) {
+    fail("the Advanced confirm control must still exist", { html });
+  }
+  return { confirmedSafetyProfileRendersNoCallout: true };
+}
+
+async function testIncompleteSafetyProfileExplainsWithoutADeadButton() {
+  const harness = await harnessWithSafetyEvaluation({
+    status: "incomplete",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_missing_values"],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+  const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  if (calloutAt < 0) {
+    fail("an incomplete profile still needs the explanation", { html });
+  }
+  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
+  if (!callout.includes("Some safety limits are still missing")) {
+    fail("an incomplete profile must name the add-the-values action", { callout });
+  }
+  // build_driver_safety_profile REFUSES a confirm while values are missing, so
+  // offering the button here would only produce a 400.
+  if (callout.includes('data-act="confirm-driver-safety"')) {
+    fail("an incomplete profile must not offer a confirm the server refuses", {
+      callout,
+    });
+  }
+  return { incompleteSafetyProfileExplainsWithoutADeadButton: true };
+}
+
+async function testConfirmSafetyDeepLinkOpensTheComponentStep() {
+  const unconfirmed = {
+    status: "unconfirmed",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_profile_not_confirmed"],
+  };
+  const harness = await harnessWithSafetyEvaluation(
+    unconfirmed, { hash: "#confirm-safety-limits" },
+  );
+  await harness.flush();
+  const html = harness.elements.get("view-body").innerHTML;
+  // The component step's <details> is OPEN, so the deep-linked control is
+  // actually on screen rather than behind a collapsed summary — the whole
+  // point of not relying on bare fragment behaviour.
+  const stepAt = html.indexOf('data-output-step="research"');
+  if (stepAt < 0) fail("the component step must render", { html });
+  if (!html.slice(stepAt, stepAt + 60).includes(" open>")) {
+    fail("the deep link must open the component step", {
+      step: html.slice(stepAt, stepAt + 200),
+    });
+  }
+  if (html.indexOf('id="confirm-safety-limits"') < 0) {
+    fail("the deep-linked control must be rendered", { html });
+  }
+
+  // And a page opened at the same fragment with nothing to confirm must NOT be
+  // yanked into the component step by a stale bookmark.
+  const confirmed = await harnessWithSafetyEvaluation(
+    { status: "confirmed", confirmed_and_current: true, reasons: [] },
+    { hash: "#confirm-safety-limits" },
+  );
+  await confirmed.flush();
+  const confirmedHtml = confirmed.elements.get("view-body").innerHTML;
+  const confirmedStepAt = confirmedHtml.indexOf('data-output-step="research"');
+  if (confirmedStepAt >= 0 &&
+      confirmedHtml.slice(confirmedStepAt, confirmedStepAt + 60).includes(" open>")) {
+    fail("a stale fragment must not open the component step", { confirmedHtml });
+  }
+  return { confirmSafetyDeepLinkOpensTheComponentStep: true };
+}
+
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
@@ -6153,5 +6299,9 @@ results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndOffersWirelessCta());
 results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
+results.push(await testUnconfirmedSafetyProfileHoistsTheConfirmControl());
+results.push(await testConfirmedSafetyProfileRendersNoCallout());
+results.push(await testIncompleteSafetyProfileExplainsWithoutADeadButton());
+results.push(await testConfirmSafetyDeepLinkOpensTheComponentStep());
 
 console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));

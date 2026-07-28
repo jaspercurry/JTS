@@ -1209,7 +1209,8 @@ source, no drift.
 | `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped (#1765) |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
 | `locate_failed` | any | 1 | couldn't hear the speaker |
-| `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile) |
+| `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
+| `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current. Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `internal_error` | any host fault | 0 | catch-all cleanup arm caught a seam raise |
 | `relay_timeout` | any | new session | link/session died — Start over mints a fresh one |
 | `user_stopped` | any | new session | the household tapped Stop on the phone — honest copy, not a manufactured "timed out" (gotcha #18) |
@@ -1915,6 +1916,33 @@ no retries-as-bodge). Treat these as regression fences.
     deconvolution and every downstream consumer (`solve_branch_trims`,
     `realized_branch_level_match`, the Layer-1a shared level frame) works
     per-unit-drive. That 11.5 dB is a sensitivity delta, not a drive delta.
+
+22. **A deterministic pre-condition must be checked before the link is
+    minted** (#1820, #1821, 2026-07-28). `resolve_conductor_context`'s
+    driver-safety gate checked only that a profile object was PRESENT
+    while its refusal text claimed confirmation had been checked; the
+    real confirmation gate lived four screens later, inside
+    `prepare_driver_excitation_plan` at CHECK-phase program admission.
+    A household whose profile had gone un-confirmed (an enclosure-kind
+    declaration rotated the fingerprint) therefore minted a phone link,
+    walked to the speaker, and hit a refusal that was knowable at the
+    tap. It now calls `evaluate_driver_safety_profile(...)
+    .confirmed_and_current` at session open — before relay registration,
+    on both `prepare_v2_session` and `prepare_v2_verify` — and raises
+    `CrossoverV2Refused` carrying the SAME registry copy the phone's
+    failure screen would have rendered. The crossover preview is not a
+    substitute: `save_crossover_preview` never looks at the safety
+    profile's confirmation, so a preview can be
+    `ready_for_protected_staging` while the profile is un-confirmed.
+    The same session also exposed three refusal-surface defects fixed
+    together: the raw slug leak (`ProgramPlaybackRefused`'s `str(exc)`
+    reached the wizard's relay status line — `_relay_failure_message`
+    had no branch for the program family, and the "never a bare code
+    reaches the household" contract had no test), the classification
+    collapse (see the `program_profile_not_confirmed` row above), and
+    `/sound/`'s confirm control being demoted into a default-closed
+    Advanced disclosure by #1819 while the invalidating enclosure
+    selector was promoted into the always-visible form.
 
 ## Future work — the post-W6 follow-ups issue
 

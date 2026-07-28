@@ -122,6 +122,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     error: '', dirty: false, touched: false
   };
   var outputStepOverride = '';
+  // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
+  // profile-not-confirmed hard stop deep-links to
+  // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href
+  // is "/sound/#confirm-safety-limits"). Both halves of that link — the id
+  // rendered here and the href in the registry — are pinned by
+  // tests/test_sound_profile_confirm_deeplink.py so neither can move alone.
+  var CONFIRM_SAFETY_ANCHOR_ID = 'confirm-safety-limits';
   var activeSpeakerSetupOpen = false;
   var driverAdvancedOpen = false;
   var outputTemplateDraftAxes = {layout: '', speakerMode: ''};
@@ -3019,12 +3026,98 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>' +
     '</section>';
   }
+  // Issue #1820 defect 3. The ONE control that clears a needs-confirmation
+  // safety profile is "Confirm safety limits" — and until an unconfirmed
+  // profile is confirmed, EVERY crossover measurement is refused at program
+  // admission. #1819 demoted that control from a top-level primary button into
+  // a default-closed "Advanced" disclosure while promoting the enclosure
+  // selector — one of the fields whose edit rotates the profile fingerprint and
+  // so clears the confirmation — into the always-visible form. The invalidating
+  // input became more visible than its only remedy. This resolves the state
+  // once so the hoisted callout below and the Advanced button can never
+  // disagree about whether confirmation is possible.
+  function driverSafetyConfirmState(topology) {
+    var draft = driverResearch.designDraft || {};
+    var evaluation = draft.driver_safety_profile_evaluation || {};
+    var profile = draft.driver_safety_profile || {};
+    var permitted =
+      (draft.permissions || {}).may_confirm_visible_driver_safety_profile === true;
+    var status = String(evaluation.status || profile.status || '');
+    // Unsaved safety-relevant edits mean the SAVED profile's evaluation no
+    // longer describes what is on screen: still "needs confirmation", because
+    // the confirm POST saves and confirms in one step.
+    var confirmed = evaluation.confirmed_and_current === true &&
+      !driverResearch.safetyDirty;
+    var needsConfirmation = permitted && !!topology && !!status &&
+      status !== 'missing' && !confirmed;
+    return {
+      needsConfirmation: needsConfirmation,
+      // 'incomplete' means declared values are still missing, and
+      // build_driver_safety_profile REFUSES a confirm in that state — offering
+      // the button there would be an error waiting to happen, so the callout
+      // names the missing-values action instead.
+      canConfirm: needsConfirmation && status !== 'incomplete',
+      status: status
+    };
+  }
+  function driverSafetyConfirmHint(state) {
+    if (driverResearch.safetyDirty) {
+      return 'Confirming saves your current edits and confirms the safety ' +
+        'limits for the outputs in use.';
+    }
+    if (state.status === 'incomplete') {
+      return 'Some safety limits are still missing. Add them under Advanced, ' +
+        'then confirm.';
+    }
+    if (state.status === 'stale') {
+      return 'The outputs changed since these limits were confirmed. Review ' +
+        'the visible values, then confirm them again.';
+    }
+    return 'JTS will not play a measurement signal until you confirm these ' +
+      'limits. Changing a driver detail clears the confirmation, so confirm ' +
+      'again after any edit.';
+  }
+  function renderDriverSafetyConfirmCallout(topology) {
+    var state = driverSafetyConfirmState(topology);
+    if (!state.needsConfirmation) return '';
+    var saveDisabled = driverResearch.saving || outputTopology.dirty || !topology;
+    return '<div class="driver-research__section driver-research__confirm" id="' +
+        CONFIRM_SAFETY_ANCHOR_ID + '">' +
+      '<div><h3 class="setting-row__title">Confirm the safety limits</h3>' +
+        '<p class="setting-row__hint">' +
+          escapeHtml(driverSafetyConfirmHint(state)) + '</p></div>' +
+      (state.canConfirm ?
+        '<div class="driver-research__actions">' +
+          '<button type="button" class="btn btn--primary" data-act="confirm-driver-safety"' +
+            (saveDisabled ? ' disabled' : '') + '>' +
+            escapeHtml(driverResearch.saving ? 'Saving' : 'Confirm safety limits') +
+          '</button>' +
+        '</div>' : '') +
+    '</div>';
+  }
+  // Deep link from the measurement wizard's profile-not-confirmed hard stop.
+  // A bare fragment is not enough: the confirm control lives inside a
+  // collapsible step card that is only open when it is the current step, so
+  // this opens the owning step, re-renders, and then scrolls the control into
+  // view. No-ops when there is nothing to confirm, so a stale bookmark cannot
+  // yank an unrelated page into the component step.
+  function applyConfirmSafetyDeepLink() {
+    if (window.location.hash !== '#' + CONFIRM_SAFETY_ANCHOR_ID) return;
+    if (!driverSafetyConfirmState(currentOutputTopology()).needsConfirmation) return;
+    outputStepOverride = 'research';
+    render();
+    var node = document.getElementById(CONFIRM_SAFETY_ANCHOR_ID);
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({block: 'center'});
+    }
+  }
   function renderDriverResearchCard(topology) {
     var saveDisabled = driverResearch.saving || outputTopology.dirty ||
       !currentOutputTopology();
     return '<div class="output-card output-card--driver-research">' +
       '<div class="output-card__head"><div><p class="output-card__title">Component setup</p>' +
         '<p class="setting-row__hint">Start with what is physically installed. JTS uses these choices as authoritative context, not facts for AI to guess.</p></div></div>' +
+      renderDriverSafetyConfirmCallout(topology) +
       '<div class="driver-research__section">' +
         '<h3 class="setting-row__title">Your components</h3>' +
         renderComponentSettings(topology) +
@@ -6567,7 +6660,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         view = 'off';
       }
       render();
-      refreshOutputTopology({silent: true});
+      // The design draft the deep link needs arrives with this refresh, so the
+      // fragment is applied after it settles, not at DOMContentLoaded.
+      refreshOutputTopology({silent: true}).then(applyConfirmSafetyDeepLink);
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }
@@ -6576,7 +6671,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // domain). Paint the local active-speaker shell, then load its hardware state.
   function loadFollowerActive() {
     render();
-    refreshOutputTopology({silent: true});
+    refreshOutputTopology({silent: true}).then(applyConfirmSafetyDeepLink);
   }
   window.addEventListener('pagehide', function() {
     if (activeSpeaker.action === 'Starting combined test' ||
