@@ -33,11 +33,14 @@ The ``/sound/`` half of defect 3 (the buried confirm control) is pinned in
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
+    REASON_PROGRAM_PROFILE_INCOMPLETE,
+    REASON_PROGRAM_PROFILE_MISSING,
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
     REASON_PROGRAM_UNPLAYABLE,
     REASON_REGISTRY,
@@ -81,25 +84,51 @@ def _refused(*refusals: ProgramAdmissionRefusal) -> ProgramPlaybackRefused:
 # --------------------------------------------------------------------------- #
 
 
+def _assert_household_copy(code: str, field: str, text: str) -> None:
+    """One rendered string must be prose a household can read, never a slug."""
+
+    where = f"{code}.{field}"
+    assert text != code, f"{where} is the bare code"
+    assert code not in text, f"{where} leaks its own code into its copy"
+    # A slug is lower_snake_case; household copy is prose. Any bare snake_case
+    # token is a leak of an internal identifier.
+    leaked = re.findall(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", text)
+    assert not leaked, f"{where} carries internal identifiers: {leaked}"
+    assert text[0].isupper(), f"{where} does not start a sentence"
+
+
 def test_every_reason_renders_household_copy_never_a_bare_code():
     """``crossover_v2_flow``'s §5.10 header states the contract in prose —
     "never a bare code reaches the household; the envelope renders each through
     its template copy" — and nothing asserted it. Pin it for the WHOLE registry,
-    not just the code this issue was filed about: every entry must carry
-    renderable copy that is a sentence, and must never be (or contain) its own
-    snake_case identifier."""
+    not just the code this issue was filed about.
+
+    EVERY rendered field is checked independently, not ``message or banner``:
+    that short-circuit meant a spec carrying both (the silent-auto-retry codes)
+    never had its ``banner`` — the string those codes actually SHOW — examined
+    at all, and a mutation that turned a banner into a slug survived this test.
+    Same hole for ``next_action.label``, the copy-carrying field this issue
+    added."""
 
     assert REASON_REGISTRY, "the registry must not be empty"
     for code, spec in REASON_REGISTRY.items():
-        rendered = spec.message or spec.banner
-        assert rendered, f"{code} renders no household copy at all"
-        assert rendered != code
-        assert code not in rendered, f"{code} leaks its own code into its copy"
-        # A slug is lower_snake_case; household copy is prose. Any bare
-        # snake_case token in the copy is a leak of an internal identifier.
-        leaked = re.findall(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", rendered)
-        assert not leaked, f"{code} copy carries internal identifiers: {leaked}"
-        assert rendered[0].isupper(), f"{code} copy does not start a sentence"
+        assert spec.message or spec.banner, f"{code} renders no household copy"
+        for field in ("message", "banner"):
+            text = getattr(spec, field)
+            if text:  # a decision screen has no banner; a retry has no message
+                _assert_household_copy(code, field, text)
+        if spec.next_action is None:
+            continue
+        action = spec.next_action
+        # The action is a rendered control: its label is household copy, its id
+        # is internal, and its destination must be a same-origin management
+        # path (never an absolute URL the household could be walked off to).
+        assert set(action) >= {"id", "label", "href"}, f"{code} action is incomplete"
+        _assert_household_copy(code, "next_action.label", str(action["label"]))
+        assert str(action["id"]), f"{code} action has no id"
+        href = str(action["href"])
+        assert href.startswith("/"), f"{code} action href is not a local path: {href}"
+        assert "//" not in href, f"{code} action href is not same-origin: {href}"
 
 
 def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
@@ -228,6 +257,56 @@ def test_profile_not_confirmed_action_deep_links_the_confirm_control():
     }
 
 
+# --------------------------------------------------------------------------- #
+# the two states where "confirm" is the WRONG action (review round, S2/S3)
+# --------------------------------------------------------------------------- #
+
+
+def test_missing_profile_never_tells_the_household_to_confirm():
+    """Reproduced by the reviewer on a never-saved / unreadable / pre-crossover
+    draft: ``/sound/`` renders NO confirm control when the evaluation is
+    ``missing`` (correctly — there is nothing to confirm), so copy telling the
+    household to "confirm the safety limits" names a button that is not on the
+    page. This state keeps the pre-gate's original, correct action."""
+
+    assert v2host.profile_refusal_code("missing") == REASON_PROGRAM_PROFILE_MISSING
+    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_MISSING]
+    copy = spec.message.lower()
+    assert "confirm the safety limits" not in copy
+    assert "finish the driver details" in copy
+    assert spec.template == TEMPLATE_HARD_STOP and spec.retry_budget == 0
+    # No fragment: there is no callout to land on in this state.
+    assert spec.next_action is not None
+    assert spec.next_action["href"] == "/sound/"
+
+
+def test_incomplete_profile_asks_for_the_values_not_a_confirm_the_server_refuses():
+    """``build_driver_safety_profile`` raises while derived issues exist, so a
+    "Confirm" button here 400s. The refusal copy names the same action
+    ``/sound/``'s own callout already names for this state."""
+
+    assert (
+        v2host.profile_refusal_code("incomplete") == REASON_PROGRAM_PROFILE_INCOMPLETE
+    )
+    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_INCOMPLETE]
+    copy = spec.message.lower()
+    assert "still missing" in copy
+    assert "advanced" in copy
+    assert spec.next_action is not None
+    assert spec.next_action["label"] == "Add the missing limits"
+    assert "confirm" not in spec.next_action["label"].lower()
+
+
+@pytest.mark.parametrize("status", ["unconfirmed", "stale", "malformed", ""])
+def test_every_other_evaluation_status_is_cleared_by_confirming(status):
+    """One confirm action saves the visible values and rebuilds the profile, so
+    a rotated fingerprint, an output change, and a corrupt artifact all end the
+    same way. An unknown status falls here too — fail toward the state that has
+    a working control rather than one that has none."""
+
+    assert v2host.profile_refusal_code(status) == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
+
+
 def test_hard_stop_screen_renders_the_reasons_own_action():
     """The override reaches the rendered screen, and the generic destination is
     still what every other hard-stop reason gets."""
@@ -281,10 +360,18 @@ def session_open(monkeypatch):
     ensure (global disk state) and the evidence-store bundle I/O. The safety
     profile, its evaluation, the topology, and the ceiling/volume derivations
     are all real, so the gate under test is the production one.
+
+    ``calls`` records the two side effects that must NOT happen on a refused
+    pre-flight — the evidence-store bundle open (the first durable write after
+    the gate) and ``correction_adapter.open_capture`` (the relay registration
+    that mints the phone link). The relay seam is wired to raise if it is ever
+    reached, so "no link minted" is pinned by construction, not by absence of
+    an assertion.
     """
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import commission_wiring, design_draft
     from jasper.active_speaker.tone_plan import load_active_speaker_preset
+    from jasper.capture_relay import correction_adapter
     from tests.active_speaker_fixtures import mono_output_topology
 
     topology = mono_output_topology(card_id="DAC8")
@@ -296,9 +383,21 @@ def session_open(monkeypatch):
         commission_wiring, "resolve_capture_preset", lambda topo: preset
     )
     monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
-    monkeypatch.setattr(
-        v2host, "open_v2_evidence_store", lambda topo: (object(), "sess-fake")
-    )
+
+    calls: dict[str, list[Any]] = {"evidence_store": [], "open_capture": []}
+
+    def _evidence_store(topo):
+        calls["evidence_store"].append(topo)
+        return object(), "sess-fake"
+
+    def _open_capture(*args, **kwargs):
+        calls["open_capture"].append(args)
+        raise AssertionError(
+            "a refused pre-flight must never reach relay registration"
+        )
+
+    monkeypatch.setattr(v2host, "open_v2_evidence_store", _evidence_store)
+    monkeypatch.setattr(correction_adapter, "open_capture", _open_capture)
 
     def _install(profile) -> None:
         monkeypatch.setattr(
@@ -323,7 +422,9 @@ def session_open(monkeypatch):
             for target in active_driver_targets(topology)
         ]},
     }
-    return topology, status, _install
+    return SimpleNamespace(
+        topology=topology, status=status, install=_install, calls=calls,
+    )
 
 
 def test_unconfirmed_profile_refuses_at_session_open_with_the_named_reason(
@@ -334,58 +435,162 @@ def test_unconfirmed_profile_refuses_at_session_open_with_the_named_reason(
     failure screen would have said four screens later."""
     import logging
 
-    topology, status, install = session_open
-    profile = _profile(topology, confirm=False)
-    assert evaluate_driver_safety_profile(topology=topology, profile=profile).status == (
-        "unconfirmed"
-    )
-    install(profile)
+    env = session_open
+    profile = _profile(env.topology, confirm=False)
+    assert evaluate_driver_safety_profile(
+        topology=env.topology, profile=profile
+    ).status == "unconfirmed"
+    env.install(profile)
 
     with caplog.at_level(logging.WARNING):
         with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
             v2host.prepare_v2_session(
-                {}, status=status, run_async=None, camilla_factory=None
+                {}, status=env.status, run_async=None, camilla_factory=None
             )
 
     assert str(excinfo.value) == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     )
     assert "confirm the safety limits" in str(excinfo.value).lower()
+    assert excinfo.value.code == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
     assert "event=correction.crossover_v2_profile_not_confirmed" in caplog.text
     assert "gate=session_open" in caplog.text
     assert "profile_status=unconfirmed" in caplog.text
+    # Nothing downstream of the gate ran: no evidence bundle opened, and the
+    # relay registration that mints the phone link was never reached (its seam
+    # raises loudly if it is — see the fixture).
+    assert env.calls["evidence_store"] == []
+    assert env.calls["open_capture"] == []
 
 
 def test_a_stale_profile_is_caught_by_the_same_session_open_gate(session_open):
     """The gate evaluates against the LIVE topology, so an output change (which
     the old presence-only check sailed past) refuses here too."""
 
-    topology, status, install = session_open
-    profile = _profile(topology, confirm=True)
+    env = session_open
+    profile = _profile(env.topology, confirm=True)
     stale = dict(profile)
     stale["topology_id"] = "some-other-topology"
-    install(stale)
+    env.install(stale)
 
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
-            {}, status=status, run_async=None, camilla_factory=None
+            {}, status=env.status, run_async=None, camilla_factory=None
         )
     assert str(excinfo.value) == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     )
+    assert env.calls["open_capture"] == []
+
+
+@pytest.mark.parametrize(
+    "profile, expected",
+    [
+        (None, REASON_PROGRAM_PROFILE_MISSING),
+        ("not-a-mapping", REASON_PROGRAM_PROFILE_MISSING),
+    ],
+)
+def test_a_missing_profile_refuses_with_the_finish_setup_reason(
+    session_open, profile, expected,
+):
+    """The reviewer's reproduction: a never-saved / unreadable / pre-crossover
+    draft. The old copy told the household to confirm a control ``/sound/`` does
+    not render in this state."""
+
+    env = session_open
+    env.install(profile)
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.prepare_v2_session(
+            {}, status=env.status, run_async=None, camilla_factory=None
+        )
+    assert excinfo.value.code == expected
+    assert str(excinfo.value) == REASON_REGISTRY[expected].message
+    assert "confirm the safety limits" not in str(excinfo.value).lower()
+    assert env.calls["open_capture"] == []
+
+
+def test_the_refusal_carries_its_own_resolution_action_for_the_400_body():
+    """S1: a pre-flight refusal never reaches the envelope (no persisted
+    failure), so the action rides the 400 body instead — same registry entry the
+    hard-stop screen reads."""
+
+    refused = v2host.CrossoverV2Refused(
+        "copy", code=REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+    )
+    assert v2host.refusal_next_action(refused) == (
+        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].next_action
+    )
+    # Mutating the response body must not reach back into the registry.
+    action = v2host.refusal_next_action(refused)
+    assert action is not None
+    action["href"] = "/tampered/"
+    assert REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].next_action[
+        "href"
+    ] == "/sound/#confirm-safety-limits"
+
+    # An uncoded refusal (the many whose only honest answer is prose) offers no
+    # button rather than a guessed one.
+    assert v2host.refusal_next_action(v2host.CrossoverV2Refused("no code")) is None
+    assert v2host.refusal_next_action(ValueError("not ours")) is None
 
 
 def test_a_confirmed_profile_still_mints_a_session(session_open):
-    """The other half of the gate: confirming is a real exit, not a new wall."""
+    """The other half of the gate: confirming is a real exit, not a new wall.
 
-    topology, status, install = session_open
-    profile = _profile(topology, confirm=True)
+    Also the cannot-over-block half of the "no link minted" pin: the evidence
+    store IS opened here, so its emptiness on every refused path above is a
+    real observation about the gate rather than a stub that never runs."""
+
+    env = session_open
+    profile = _profile(env.topology, confirm=True)
     assert evaluate_driver_safety_profile(
-        topology=topology, profile=profile
+        topology=env.topology, profile=profile
     ).confirmed_and_current is True
-    install(profile)
+    env.install(profile)
 
     prepared = v2host.prepare_v2_session(
-        {}, status=status, run_async=None, camilla_factory=None
+        {}, status=env.status, run_async=None, camilla_factory=None
     )
     assert prepared.label == v2host.V2_RELAY_KIND_SESSION
+    assert env.calls["evidence_store"] != []
+
+
+def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit():
+    """N3: the applied-session combination.
+
+    With ``applied=True`` the envelope promotes any non-verify_fail code to the
+    verify-fail screen (so an applied household is never told "start over" with
+    no Undo). That screen's default "Try again" re-verifies, and a re-verify
+    runs the same session-open pre-flight — so on THIS code it deterministically
+    400s. That is honest as far as it goes (the speaker really is un-measurable
+    until the limits are confirmed) and it is no longer a dead end, because the
+    400 now carries the confirm action as a button. Undo stays available
+    throughout.
+
+    Pinned as the CURRENT behaviour, not endorsed as the final shape: a
+    terminal-for-this-session refusal rendering as a retryable verify-fail is a
+    two-stage-flow question, noted for that work order rather than redesigned
+    here."""
+
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "applied": True,
+            "failure": {"code": REASON_PROGRAM_PROFILE_NOT_CONFIRMED},
+        },
+    })
+    assert env["screen"] == "verify_fail"
+    # The household still reads the honest reason and still has Undo.
+    assert env["verdict_text"] == (
+        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
+    )
+    labels = [action["label"] for action in env["alternate_actions"]]
+    assert any("Undo" in label for label in labels)
+    # The retry the screen offers posts the verify route, which is exactly the
+    # route the pre-flight guards — so the 400-body action is what keeps this
+    # combination from being a loop.
+    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/verify"

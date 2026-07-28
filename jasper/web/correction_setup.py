@@ -6507,15 +6507,33 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # W6 finding: a refused session start was previously
                     # invisible in journalctl — the 400 reached the browser
                     # but nothing landed in the journal to debug it from.
+                    #
+                    # Issue #1820/#1821 review: a session-open refusal never
+                    # reaches the envelope, because the envelope renders from a
+                    # PERSISTED failure and the pre-flight deliberately refuses
+                    # before any state is written. So the reason's own action
+                    # rides the 400 body instead — the wizard renders it as a
+                    # button beside the message, and the household is one click
+                    # from the fix rather than one navigation plus one click.
+                    # Same registry entry the hard-stop screen would have read.
+                    from jasper.web.correction_crossover_v2 import (
+                        refusal_next_action,
+                    )
+
+                    refusal_body: dict[str, Any] = {"ok": False, "error": str(e)}
+                    action = refusal_next_action(e)
+                    if action is not None:
+                        refusal_body["next_action"] = action
                     log_event(
                         logger,
                         "correction.crossover_v2_refused",
                         level=logging.WARNING,
                         route=path,
                         reason=str(e),
+                        code=str(getattr(e, "code", "") or ""),
                     )
                     self._send_json(
-                        {"ok": False, "error": str(e)},
+                        refusal_body,
                         status=HTTPStatus.BAD_REQUEST,
                     )
                 except (OSError, RuntimeError, TypeError) as e:

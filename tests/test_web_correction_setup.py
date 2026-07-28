@@ -15,6 +15,7 @@ so a static render needs no hardware.
 from __future__ import annotations
 
 import io
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -527,6 +528,69 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     message = records[0].getMessage()
     assert "route=/crossover/v2/session" in message
     assert "phone-mic relay capture is not configured" in message
+
+
+def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
+    monkeypatch, caplog,
+):
+    """Issues #1820/#1821 review, S1. The session-open pre-flight is now the
+    PRIMARY path for a profile-not-confirmed refusal — and a pre-flight refusal
+    can never reach the envelope's hard-stop screen, because that screen renders
+    from a PERSISTED failure and the pre-flight deliberately refuses before any
+    state is written. So the reason's own ``next_action`` has to ride the 400
+    body, or the household reads the exact remedy as flat text and has to go
+    find the control themselves.
+
+    An UNCODED refusal must still answer with a bare message: most refusals'
+    only honest answer is prose, and inventing a button for them would be worse
+    than none.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+        REASON_REGISTRY,
+    )
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    caplog.set_level(logging.WARNING, logger=correction_setup.logger.name)
+
+    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
+
+    def _refuse_coded(*_a, **_k):
+        raise v2host_mod.CrossoverV2Refused(
+            spec.message, code=REASON_PROGRAM_PROFILE_NOT_CONFIRMED
+        )
+
+    monkeypatch.setattr(
+        correction_setup, "_handle_crossover_v2_relay", _refuse_coded
+    )
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+    assert body["error"] == spec.message
+    # Same registry entry the hard-stop screen would have rendered.
+    assert body["next_action"] == dict(spec.next_action)
+    assert body["next_action"]["href"] == "/sound/#confirm-safety-limits"
+    # And the code is on the journal line beside the reason.
+    assert any(
+        f"code={REASON_PROGRAM_PROFILE_NOT_CONFIRMED}" in r.getMessage()
+        for r in caplog.records
+    )
+
+    def _refuse_uncoded(*_a, **_k):
+        raise v2host_mod.CrossoverV2Refused(
+            "the woofer and tweeter measurement targets are not both active"
+        )
+
+    monkeypatch.setattr(
+        correction_setup, "_handle_crossover_v2_relay", _refuse_uncoded
+    )
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+    plain = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+    assert "next_action" not in plain
 
 
 def test_stale_relay_capacity_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):

@@ -880,6 +880,27 @@ REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
 # Terminal (hard-stop, budget 0) for the same reason it is deterministic — a
 # second identical measurement reproduces it exactly.
 REASON_PROGRAM_PROFILE_NOT_CONFIRMED = "program_profile_not_confirmed"
+# Its two siblings, added in the same issue's review round. "Confirm the safety
+# limits" is only the honest action when there ARE visible limits to confirm and
+# a control that confirms them. Two profile states fail both halves, and the
+# session-open pre-flight can tell them apart because it holds the full
+# ``DriverSafetyProfileEvaluation``:
+#
+#   * ``missing``    — no profile exists at all (never-saved / unreadable /
+#                      pre-crossover draft). ``/sound/`` deliberately renders NO
+#                      confirm control in this state, so telling the household
+#                      to confirm names a button that is not on the page.
+#   * ``incomplete`` — declared values are still missing.
+#                      ``build_driver_safety_profile`` REFUSES a confirm while
+#                      derived issues exist, so "Confirm" would 400 even if the
+#                      household found the control.
+#
+# These have no ``ProgramAdmissionRefusal`` counterpart — the play-seam
+# vocabulary carries one ``PROFILE_NOT_CONFIRMED`` slug for all three — so they
+# are reachable only from the pre-flight, which is the point: the gate that has
+# the evidence is the gate that names the action.
+REASON_PROGRAM_PROFILE_MISSING = "program_profile_missing"
+REASON_PROGRAM_PROFILE_INCOMPLETE = "program_profile_incomplete"
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught
 # (W6.1 gate: the seams raise open-endedly — CamillaUnavailable is a bare
 # Exception, analyze/emit raise ValueError/RuntimeError, the held measurement
@@ -1137,6 +1158,39 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             # (deploy/assets/sound-profile/js/main.js), and its boot path opens
             # the owning step for this fragment. Both halves are pinned by
             # tests/test_sound_profile_confirm_deeplink.py.
+            "href": "/sound/#confirm-safety-limits",
+        },
+    ),
+    REASON_PROGRAM_PROFILE_MISSING: ReasonSpec(
+        REASON_PROGRAM_PROFILE_MISSING, TEMPLATE_HARD_STOP, 0, "",
+        # NOT "confirm the safety limits": there is nothing to confirm and no
+        # control to confirm it with. This is the state the pre-gate's original
+        # copy was right about, kept for exactly this branch.
+        "This speaker's driver details are not finished, so JTS has no safety "
+        "limits to measure within. Finish the driver details in speaker setup, "
+        "then measure again.",
+        next_action={
+            "id": "speaker_setup",
+            "label": "Finish speaker setup",
+            # No fragment: ``/sound/`` renders no confirm callout in this state,
+            # so a deep link would land on nothing. The page opens on its own
+            # first unfinished step, which IS the action.
+            "href": "/sound/",
+        },
+    ),
+    REASON_PROGRAM_PROFILE_INCOMPLETE: ReasonSpec(
+        REASON_PROGRAM_PROFILE_INCOMPLETE, TEMPLATE_HARD_STOP, 0, "",
+        # Matches what ``/sound/``'s own callout says in this state — the two
+        # surfaces name one action, and it is not "Confirm", which the server
+        # would refuse while values are missing.
+        "Some of this speaker's safety limits are still missing, so JTS did "
+        "not play the measurement signal. Add them under Advanced in speaker "
+        "setup, then confirm the limits and measure again.",
+        next_action={
+            "id": "add_safety_limits",
+            "label": "Add the missing limits",
+            # The callout DOES render for this state (button-less, naming the
+            # add-the-values action), so the fragment lands on the explanation.
             "href": "/sound/#confirm-safety-limits",
         },
     ),
@@ -7589,6 +7643,8 @@ __all__ = [
     "REASON_VOLUME_UNRESOLVED",
     "REASON_PROGRAM_UNPLAYABLE",
     "REASON_PROGRAM_PROFILE_NOT_CONFIRMED",
+    "REASON_PROGRAM_PROFILE_MISSING",
+    "REASON_PROGRAM_PROFILE_INCOMPLETE",
     "REASON_INTERNAL_ERROR",
     "REASON_VERIFY_OUT_OF_TOLERANCE",
     "REASON_VERIFY_INCONCLUSIVE",

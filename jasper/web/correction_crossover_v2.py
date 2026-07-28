@@ -115,7 +115,40 @@ _volume_plan: Any = None
 
 
 class CrossoverV2Refused(ValueError):
-    """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder)."""
+    """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder).
+
+    ``code`` is an optional :data:`~jasper.active_speaker.crossover_v2_flow.REASON_REGISTRY`
+    code. A refusal raised BEFORE any durable state is written — which the
+    session-open pre-flight is, by design (issue #1821: no link minted, no
+    session burned) — never reaches the envelope, because the envelope renders
+    from a PERSISTED ``failure``. So a pre-flight refusal that carried only a
+    sentence left the household reading the fix rather than one click from it:
+    the reason's ``next_action`` existed and nothing could render it. Stamping
+    the code here lets :func:`refusal_next_action` hand the dispatcher the same
+    action the hard-stop screen would have shown, from the same registry entry.
+    """
+
+    def __init__(self, *args: Any, code: str = "") -> None:
+        super().__init__(*args)
+        self.code = code
+
+
+def refusal_next_action(exc: BaseException) -> dict[str, Any] | None:
+    """The action a refusal's own reason declares, for a 400 response body.
+
+    ``None`` when the refusal carries no code or its code declares no action —
+    the ordinary case for the many refusals whose only honest answer is prose.
+    Copy and destination come from the SAME registry entry the envelope's
+    hard-stop screen reads, so the pre-flight 400 and the post-persist screen
+    can never offer different buttons for the same refusal.
+    """
+    from jasper.active_speaker.crossover_v2_flow import REASON_REGISTRY
+
+    code = str(getattr(exc, "code", "") or "")
+    spec = REASON_REGISTRY.get(code) if code else None
+    if spec is None or not spec.next_action:
+        return None
+    return dict(spec.next_action)
 
 
 class CrossoverV2LocalSeamError(RuntimeError):
@@ -190,6 +223,40 @@ def classify_program_failure(
         else REASON_PROGRAM_UNPLAYABLE
     )
     return code, refusals
+
+
+def profile_refusal_code(evaluation_status: str) -> str:
+    """Map a :class:`~jasper.active_speaker.driver_safety.DriverSafetyProfileEvaluation`
+    status to the reason code whose copy names the action that ACTUALLY clears it.
+
+    The pre-flight holds evidence the play seam does not — the play seam's
+    admission vocabulary carries one ``PROFILE_NOT_CONFIRMED`` slug for every
+    un-playable profile state — so this is where the three genuinely different
+    household actions separate:
+
+    * ``missing``    → finish the driver details. ``/sound/`` renders no confirm
+      control at all in this state, so "confirm the safety limits" would name a
+      button that is not on the page.
+    * ``incomplete`` → add the missing values first.
+      ``build_driver_safety_profile`` refuses a confirm while derived issues
+      exist, so "confirm" would 400 even if the household found the control.
+    * everything else (``unconfirmed``, ``stale``, ``malformed``) → confirm.
+      All three are cleared by the one confirm action: it saves the visible
+      values and rebuilds the profile, so a fingerprint rotation, an output
+      change, and a corrupt artifact all end the same way.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_PROGRAM_PROFILE_INCOMPLETE,
+        REASON_PROGRAM_PROFILE_MISSING,
+        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+    )
+
+    status = str(evaluation_status or "")
+    if status == "missing":
+        return REASON_PROGRAM_PROFILE_MISSING
+    if status == "incomplete":
+        return REASON_PROGRAM_PROFILE_INCOMPLETE
+    return REASON_PROGRAM_PROFILE_NOT_CONFIRMED
 
 
 # --------------------------------------------------------------------------- #
@@ -3165,7 +3232,6 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.crossover_v2_flow import (
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_REGISTRY,
         derive_session_volume_db,
     )
@@ -3212,17 +3278,17 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     if not safety_evaluation.confirmed_and_current or not isinstance(
         safety_profile, Mapping
     ):
+        code = profile_refusal_code(safety_evaluation.status)
         log_event(
             logger,
             "correction.crossover_v2_profile_not_confirmed",
             level=logging.WARNING,
             gate="session_open",
             profile_status=safety_evaluation.status,
+            code=code,
             reasons=",".join(safety_evaluation.reasons),
         )
-        raise CrossoverV2Refused(
-            REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
-        )
+        raise CrossoverV2Refused(REASON_REGISTRY[code].message, code=code)
     targets_raw = status.get("targets")
     drivers = (
         targets_raw.get("drivers") if isinstance(targets_raw, Mapping) else None

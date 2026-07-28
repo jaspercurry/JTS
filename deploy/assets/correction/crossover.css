@@ -220,6 +220,15 @@
   margin: 0;
 }
 
+/* Issue #1820/#1821: the resolution control a session-open refusal carries in
+   its 400 body. Inline beside the message, because it belongs to that one
+   sentence — it is not a step action and must not read as one. */
+.capture-status__action {
+  display: inline-block;
+  margin-left: 0.6rem;
+  vertical-align: baseline;
+}
+
 /* QR hand-off (deploy/assets/shared/js/qr.js renderRelayQr) — mirrors
  * correction.css's block (the room flow's page_css) for the same shared
  * markup: a quiet card shown prominently by default on desktop/tablet,

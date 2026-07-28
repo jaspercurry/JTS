@@ -70,9 +70,31 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-function setStatus(message, tone = '') {
-  els.status.textContent = message || '';
+// `action` (optional, issue #1820/#1821) renders the refusal's own resolution
+// control beside the message. It exists because a SESSION-OPEN refusal never
+// reaches the envelope: the envelope renders from a persisted `failure`, and the
+// pre-flight refuses before any state is written, on purpose. Without this the
+// household read "confirm the safety limits in speaker setup" as flat text and
+// had to go find the control themselves — one navigation plus one click, for a
+// refusal whose exact remedy the server already named. The server sends it in
+// the 400 body (`next_action`), from the same registry entry the hard-stop
+// screen would have read. `render()` never touches this element, so the control
+// survives the refresh that follows a failed action.
+function setStatus(message, tone = '', action = null) {
   els.status.dataset.tone = tone;
+  const href = action && action.href ? String(action.href) : '';
+  if (!href) {
+    els.status.textContent = message || '';
+    return;
+  }
+  els.status.replaceChildren(
+    document.createTextNode(message || ''),
+    el('a', {
+      class: 'btn btn--primary capture-status__action',
+      href,
+      text: action.label || 'Continue',
+    }),
+  );
 }
 
 function renderSteps(steps) {
@@ -614,10 +636,15 @@ async function runAction(action, button) {
     const candidateChanged = error && error.status === 409 && issues.some(
       (issue) => issue && issue.code === 'baseline_candidate_fingerprint_mismatch'
     );
+    // The refusal's own resolution control, when the server named one (a
+    // session-open pre-flight refusal — the one class of failure that can never
+    // reach the envelope's decision screen; see setStatus).
+    const refusalAction = error && error.body && error.body.next_action
+      ? error.body.next_action : null;
     if (candidateChanged) {
       setStatus('The crossover candidate changed. Refreshing the review…', 'bad');
     } else {
-      setStatus(failureMessage, 'bad');
+      setStatus(failureMessage, 'bad', refusalAction);
     }
     // A failed mutation may still have advanced durable authority: candidate
     // apply can restore exactly or retain the graph pending finalization. Keep
@@ -628,12 +655,16 @@ async function runAction(action, button) {
       if (candidateChanged) {
         setStatus('Active speaker review refreshed. Review the current candidate.', '');
       } else {
-        setStatus(failureMessage, 'bad');
+        setStatus(failureMessage, 'bad', refusalAction);
       }
     } catch (refreshError) {
       const refreshMessage = refreshError && refreshError.message
         ? refreshError.message : String(refreshError);
-      setStatus(`${failureMessage} Latest state could not be refreshed: ${refreshMessage}`, 'bad');
+      setStatus(
+        `${failureMessage} Latest state could not be refreshed: ${refreshMessage}`,
+        'bad',
+        refusalAction,
+      );
     }
   } finally {
     busy = false;

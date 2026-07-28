@@ -1210,7 +1210,9 @@ source, no drift.
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
 | `locate_failed` | any | 1 | couldn't hear the speaker |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
-| `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current. Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
+| `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current (evaluation `unconfirmed` / `stale` / `malformed` — all three are cleared by the one confirm action, which saves the visible values and rebuilds the profile). Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
+| `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** confirm control here, so "confirm the safety limits" would name a button that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
+| `program_profile_incomplete` | session open | 0 (hard stop) | evaluation `incomplete` — declared values are still missing, and `build_driver_safety_profile` **refuses** a confirm while derived issues exist, so a "Confirm" button here would 400. Copy names the same action `/sound/`'s own callout names in this state (add them under Advanced, then confirm) |
 | `internal_error` | any host fault | 0 | catch-all cleanup arm caught a seam raise |
 | `relay_timeout` | any | new session | link/session died — Start over mints a fresh one |
 | `user_stopped` | any | new session | the household tapped Stop on the phone — honest copy, not a manufactured "timed out" (gotcha #18) |
@@ -1943,6 +1945,28 @@ no retries-as-bodge). Treat these as regression fences.
     `/sound/`'s confirm control being demoted into a default-closed
     Advanced disclosure by #1819 while the invalidating enclosure
     selector was promoted into the always-visible form.
+
+    **A pre-flight refusal can never reach the envelope.** The envelope
+    renders from a PERSISTED `failure`, and this gate refuses before any
+    state is written — that is the whole point. So the hard-stop screen's
+    `next_action` (the confirm button) was unreachable on the very path
+    that became primary, and the household read the remedy as flat text.
+    A coded `CrossoverV2Refused` now carries its reason code, the
+    dispatcher puts that reason's `next_action` in the 400 body, and the
+    wizard's `setStatus` renders it as a control beside the message —
+    same registry entry the screen would have read, so the two surfaces
+    cannot offer different buttons. An **uncoded** refusal still answers
+    with a bare sentence; most refusals' only honest answer is prose, and
+    inventing a button for them would be worse than none.
+
+    **"Confirm" is not always the right verb.** Two profile states have
+    no working confirm control at all — `missing` (`/sound/` renders none)
+    and `incomplete` (`build_driver_safety_profile` refuses a confirm
+    while values are missing) — so the pre-flight resolves the evaluation
+    status to one of three reason codes via `profile_refusal_code`. The
+    play seam cannot do this: its admission vocabulary carries a single
+    `PROFILE_NOT_CONFIRMED` slug for all three. The gate that holds the
+    evidence is the gate that names the action.
 
 ## Future work — the post-W6 follow-ups issue
 
