@@ -1014,6 +1014,13 @@ reference. Currently:
   architecture, the bench verb set + canonical analysis JSON, the overlay
   safety envelope, the layer-attribution vocabulary and perceptual
   lexicon, the recorded Seat-2 widening plan, and the PR-B ladder.
+- [`tuning-bench-execution-plan.md`](docs/tuning-bench-execution-plan.md)
+  — **Execution work order (2026-07-27)** for the tuning-bench design: the
+  prescriptive PR-B1..B4 ladder a cheaper implementer session executes —
+  verb contracts, the canonical analysis JSON, the overlay lifecycle seam
+  map, the mux-lease/voice-pause requirements, and the evidence-verified
+  trap list. The design doc holds the why; this doc holds the what,
+  exactly.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
