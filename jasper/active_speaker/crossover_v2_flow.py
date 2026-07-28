@@ -1398,10 +1398,17 @@ MEASURE_PREDICTED_RIPPLE_CEILING_DB = 15.0
 # at ≥0.6926 confidence) while ``glitch_detected`` stayed False — the
 # repeat-pair drift check (``_estimate_drift``) is structurally blind to a
 # uniform whole-capture shift (its own residual guard demeans per role, so
-# it only catches a WITHIN-driver desync), and ``_stimulus_locate_ok`` passes
+# it only catches a WITHIN-driver desync), and ``_stimulus_locate_ok`` passed
 # on the max() confidence across every located stimulus, so one good segment
-# masks three bad sweeps. Both thresholds carry wide margin on both sides of
-# the two clusters above. PROVISIONAL pending W6 bench validation.
+# masked three bad sweeps (that max() is per-ROLE since #1838's D8, which
+# narrows but does not close the hole — a role's own pilots can still be the
+# segment that clears it, which is why this per-sweep floor exists). Both
+# thresholds carry wide margin on both sides of the two clusters above.
+# PROVISIONAL pending W6 bench validation.
+#
+# The two are read by DIFFERENT gates since #1838's D3: the residual ceiling
+# by ``_sweep_schedule_ok`` (a glitch — silent auto-retry), the confidence
+# floor by ``_sweep_locate_confidence_ok`` (too quiet — no retry).
 SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
@@ -1725,8 +1732,9 @@ def _sweep_schedule_diag_fields(
     analysis: ProgramAnalysis, sample_rate_hz: int,
 ) -> tuple[float | None, float | None]:
     """``(sweep_residual_ms_worst, sweep_locate_confidence_min)`` — diagnostic
-    only, over the SAME ``KIND_SWEEP`` domain ``_sweep_schedule_ok`` gates on,
-    but never itself gates a verdict. ``sweep_residual_ms_worst`` is the
+    only, over the SAME ``KIND_SWEEP`` domain ``_sweep_schedule_ok`` and
+    ``_sweep_locate_confidence_ok`` gate on (one figure each, since #1838's
+    D3 split them), but never itself gates a verdict. ``sweep_residual_ms_worst`` is the
     SIGNED residual (not its magnitude) of whichever sweep has the largest
     absolute residual, so a reviewer sees which direction the schedule broke,
     not just how far. ``(None, None)`` when there are no sweeps to judge —
