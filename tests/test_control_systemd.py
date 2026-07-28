@@ -182,6 +182,15 @@ def test_readwritepaths_pins_control_write_contracts():
         "peering renders /etc/avahi/services/jasper-peer.service from inside "
         f"jasper-control under ProtectSystem=full. Got {val!r}"
     )
+    assert "/var/lib/camilladsp/configs/.dsp_apply.lock" in paths, (
+        "ReadWritePaths must include only the canonical DSP writer-lock file; "
+        "live pair-balance patches serialize with every graph mutation and "
+        f"must not fall back to a disruptive full reconcile. Got {val!r}"
+    )
+    assert "/var/lib/camilladsp/configs" not in paths, (
+        "jasper-control patches CamillaDSP over its control API and must not "
+        "gain write access to the generated-config directory."
+    )
 
 
 def test_unit_caps_tasks_without_memorymax_kill_boundary():

@@ -126,6 +126,10 @@ NoNewPrivileges=true
 #     wake_model.env, debug.env), speaker_volume.json, and the T5.2
 #     supervisor's reboot rate-limit at
 #     /var/lib/jasper/system_supervisor_reboot.json.
+#   - the canonical CamillaDSP writer-lock file: live pair-balance updates
+#     patch the already-running endpoint graph, but still take the same lock as
+#     every full graph mutation.  Grant the one pre-created lock file, never
+#     the surrounding config directory.
 #   - /var/lib/jasper-intsecrets: Spotify token refreshes from the transport /
 #     volume path and fresh HA status reads from /state.
 #   - /etc/avahi/services/jasper-peer.service when wake-response peering
@@ -134,7 +138,7 @@ NoNewPrivileges=true
 # writable; /etc is read-only under that same hardening. Pin both write
 # contracts explicitly so future hardening and current peering advert
 # rendering cannot silently regress.
-ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /etc/avahi/services
+ReadWritePaths=/var/lib/jasper /var/lib/jasper-intsecrets /etc/avahi/services /var/lib/camilladsp/configs/.dsp_apply.lock
 # WS1 phase-1 hardening (hardened root — docs/HANDOFF-privilege-separation.md).
 # ProtectKernelLogs is intentionally OMITTED: jasper-control spawns
 # jasper-doctor, whose watchdog-reset fingerprint check reads dmesg (/dev/kmsg).

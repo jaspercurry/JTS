@@ -197,7 +197,12 @@ def _stream_client_signal(
         if is_connected and on_stream and not is_muted:
             audible += 1
         if self_name and row.get("name") == self_name:
-            own_client_connected = is_connected
+            # Snapserver persists old client identities.  After a reinstall or
+            # client-id change its registry can therefore contain both the live
+            # local client and an older disconnected row with the same hostname.
+            # Local presence is existential: one matching connected row proves
+            # it.  Never let a later stale row overwrite that proof.
+            own_client_connected = bool(own_client_connected or is_connected)
         clients.append({
             "name": row.get("name") or "",
             "connected": is_connected,
