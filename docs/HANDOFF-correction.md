@@ -1152,7 +1152,9 @@
   labelled "improvement", since it is not re-measured), warnings, and
   per-filter rationale. The honest *measured* before/after only appears
   once a verify sweep lands (`verify_before_after`, computed on the Pi
-  over the same 50–350 Hz band as `verify_metrics`; the browser fills
+  over the same band as `verify_metrics` — 50 Hz up to **the session's
+  own correction ceiling**, so a `safe` session reads 50–250 Hz and a
+  `balanced` one 50–350 Hz; the browser fills
   the before→after gap green/amber and headlines the measured delta).
   The read-only
   calibration-agent intake tool surfaces the same report so a future
@@ -2169,8 +2171,12 @@ with the ordinary household stack running before enabling mixed-phase or FDW
 generation in the user-facing flow.
 
 **Defaults that keep us safely on the safe side:**
-- Match range: 20-350 Hz (project-safe modal/transition-region
-  boundary; not a direct Toole magic number)
+- Match range: 20-350 Hz for the default `balanced` strategy
+  (project-safe modal/transition-region boundary; not a direct Toole
+  magic number). Since 2026-07-28 the ceiling has exactly one owner —
+  `jasper.audio_measurement.room_boundary` — which every strategy,
+  the acceptance ladder, confidence, repeatability, and the shared
+  deviation metric read; `safe` is 25-250 Hz and `assertive` 20-500 Hz.
 - ≤5 PEQ filters
 - Cuts only by default (Floyd Toole's "first do no harm")
 - Max boost +3 dB (toggle in advanced drawer)
@@ -2606,9 +2612,14 @@ about to add one mid-phase, stop and re-read.
   the modal range competently. Manual editing is a power-user feature
   that lives behind the `/camilla/` pass-through anyway. Defer.
 - **PWA / service worker.** Not relevant; not building a PWA.
-- **Auto-detect Schroeder transition from RT60.** Not in V1. Hard-
-  coded 350 Hz boundary aligns with Toole defaults and most living
-  rooms. Add a power-user toggle in V2.1 if needed.
+- **Auto-detect Schroeder transition from RT60.** Not in V1. The
+  350 Hz boundary aligns with Toole defaults and most living rooms.
+  *Update (2026-07-28): now scheduled rather than deferred — RC1 of
+  [`room-correction-regime-plan.md`](room-correction-regime-plan.md)
+  collapsed the boundary to one owner
+  (`jasper.audio_measurement.room_boundary`), and RC2/RC3 make it a
+  per-room transition clamped to [250, 500] Hz with 350 as the
+  disclosed fallback. It is no longer hard-coded in ten places.*
 - **"Contribute your iPhone profile" community calibration database.**
   Not in V1 or V2. Out of scope for a personal-hobby project.
 - **Anything above 350 Hz by default.** Per user feedback (2026-05-09):

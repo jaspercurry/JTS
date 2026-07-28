@@ -5,7 +5,9 @@
 """Greedy peak-fit parametric-EQ designer for the modal range.
 
 Defaults match Jasper's known-good REW workflow:
-  - Match range:        20–350 Hz (modal-range only — Toole-aligned)
+  - Match range:        20 Hz – the room-correction ceiling (modal-range
+                        only — Toole-aligned). The ceiling is owned by
+                        jasper.audio_measurement.room_boundary, 350 Hz today.
   - Max filters:        5
   - Mode:               cuts only (Floyd Toole's "first do no harm")
   - Max cut:            -10 dB (anything deeper means the room needs
@@ -36,6 +38,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 from jasper.camilla_config_contract import total_positive_boost_db
 
 
@@ -137,7 +140,7 @@ def design_peq(
     freqs: np.ndarray,
     *,
     f_low: float = 20.0,
-    f_high: float = 350.0,
+    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
     max_filters: int = 5,
     max_cut_db: float | np.ndarray = -10.0,
     max_boost_db: float = 3.0,

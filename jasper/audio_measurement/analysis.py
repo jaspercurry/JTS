@@ -21,6 +21,8 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
+
 
 def smooth_fractional_octave(
     freqs: np.ndarray,
@@ -144,7 +146,7 @@ def deviation_metrics(
     freqs: np.ndarray,
     *,
     f_low: float = 50.0,
-    f_high: float = 350.0,
+    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
 ) -> dict[str, float]:
     """Absolute deviation-from-target stats over a single band.
 
@@ -164,9 +166,17 @@ def deviation_metrics(
     not the room. Including 20-50 Hz in the deviation summary
     produced absurd numbers (e.g. "max 56 dB deviation") that were
     iPhone-mic artifacts, not room reality, and scared users who'd
-    otherwise have a perfectly fine correction. f_high stays at
-    350 Hz — the same Schroeder-ish boundary the PEQ designer
-    uses, above which we don't try to correct.
+    otherwise have a perfectly fine correction.
+
+    f_high defaults to the room-correction ceiling
+    (:data:`jasper.audio_measurement.room_boundary.ROOM_BOUNDARY_DEFAULT_HZ`,
+    350 Hz today), above which we don't try to correct. That default is
+    routed through the boundary SSOT rather than re-declared: this metric is
+    shared by acceptance, the verify before/after delta, and the envelope, so
+    a hard-coded copy here would silently cap all three at 350 Hz after the
+    ceiling goes per-room (issue #1787, plan RC1). The 50 Hz low edge is NOT
+    the seam — it is the mic-physics floor described above — so it stays a
+    literal owned here.
     """
     band = (freqs >= f_low) & (freqs <= f_high)
     if not band.any():
@@ -188,7 +198,7 @@ def before_after_fill_segments(
     target_db: np.ndarray,
     *,
     f_low: float = 50.0,
-    f_high: float = 350.0,
+    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
 ) -> list[dict[str, Any]]:
     """Tag each contiguous in-band segment as improved or regressed.
 
@@ -274,7 +284,7 @@ def before_after_delta(
     target_db: np.ndarray,
     *,
     f_low: float = 50.0,
-    f_high: float = 350.0,
+    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
 ) -> dict[str, Any]:
     """Honest MEASURED before/after readout over one consistent band.
 

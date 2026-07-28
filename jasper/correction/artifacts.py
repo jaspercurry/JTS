@@ -539,13 +539,16 @@ class SessionArtifacts:
             freqs_hz=freqs,
             measured_db=np.asarray(s.measured_curve.magnitude_db, dtype=float),
             target_db=target_db,
-            correction_band_hz=(s.cfg.peq_f_low, s.cfg.peq_f_high),
+            correction_band_hz=s.correction_band_hz,
         )
         payload = {
             "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
             "artifact_schema_version": 1,
             "session_id": s.session_id,
-            "correction_band_hz": [s.cfg.peq_f_low, s.cfg.peq_f_high],
+            # The DISCLOSED band. Reads the session's actual strategy so a
+            # `safe` session's bundle states [25, 250], not the `balanced`
+            # [20, 350] its frozen config used to claim (issue #1797).
+            "correction_band_hz": list(s.correction_band_hz),
             "freqs_hz": round_list(freqs),
             "positions": [
                 {

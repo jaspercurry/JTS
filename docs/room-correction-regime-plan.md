@@ -304,7 +304,8 @@ Standard per-PR gate: implementation → independent Opus adversarial
 review to 0 blockers / 0 should-fixes → CI green → merge. Serial local
 lanes (`-p no:randomly`).
 
-- **RC1 — seam SSOT + evidence reader (lands #1787).** One
+- **RC1 — seam SSOT + evidence reader (lands #1787).
+  ✅ LANDED 2026-07-28.** One
   boundary-SSOT module; all ten literal sites routed through it with
   behavior identical (boundary still 350) — **with one named
   exception**: the `SessionConfig.peq_f_high` shadow-copy defect is
@@ -318,8 +319,39 @@ lanes (`-p no:randomly`).
   candidate evidence payload is extended (validity floor + gated spec
   curve become candidate-borne, era-tolerant) and the `correction/`
   read accessor resolves the applied candidate through the existing
-  `expected_candidate_fingerprint` gate; contract tests pin the SSOT
+  fingerprint gate; contract tests pin the SSOT
   drift guard and the clamp-bounds/spec-edge co-ownership (D3).
+
+  *As-built notes (2026-07-28).* Shipped as
+  [`jasper/audio_measurement/room_boundary.py`](../jasper/audio_measurement/room_boundary.py),
+  [`jasper/correction/applied_speaker_evidence.py`](../jasper/correction/applied_speaker_evidence.py),
+  and [`tests/test_correction_boundary_ssot.py`](../tests/test_correction_boundary_ssot.py)
+  + `tests/test_correction_applied_speaker_evidence.py`. Four
+  deltas from the text above, all deliberate:
+  (i) the SSOT is homed in **`audio_measurement`, not `correction`** —
+  it is the lowest layer all three consumers can import without
+  inverting the documented `active_speaker -> audio_measurement`
+  package order, which `analysis.py` would otherwise have violated;
+  (ii) the candidate extension needed **no change to
+  `measured_crossover_candidate.py`** — the floor and gated curve
+  ride *inside* `exclusion_evidence`, a free-form mapping already
+  fingerprinted only when non-empty, so era tolerance came for free
+  and no `optional`-set or tamper-check line had to move;
+  (iii) this plan named `expected_candidate_fingerprint` as the gate,
+  but that identifier is the **baseline** candidate's fingerprint, a
+  different vocabulary from `MeasuredCrossoverCandidate.fingerprint`,
+  and no existing helper rehydrates the applied measured candidate.
+  The seam therefore reuses the identity the apply path already
+  records — `source.measured_candidate_fingerprint` — which is the
+  same staleness fact, read from the same place, without inventing a
+  new rule;
+  (iv) `SessionConfig.peq_f_low`/`peq_f_high` were **removed** rather
+  than re-pointed, so the shadow copy cannot return. One further
+  defect of the same class surfaced and was fixed in passing:
+  `status.session_config_payload` also reported
+  `cfg.correction_strategy` (always the default) rather than the
+  household's actual pick, which would have contradicted the
+  now-correct band on the same payload.
 - **RC2 — T60 estimator + per-room f_t.** Offline Schroeder-integral
   T60 recomputed from persisted raw captures
   (`impulse_response_from_capture`); a bundle whose raw audio was

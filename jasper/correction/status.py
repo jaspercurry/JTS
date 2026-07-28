@@ -317,15 +317,25 @@ def _acoustic_summary(session: Any) -> dict[str, Any] | None:
 
 def session_config_payload(session: Any) -> dict[str, Any]:
     cfg = session.cfg
+    # peq_f_low / peq_f_high keep their wire names but are read from the
+    # session's ACTUAL correction band, not from cfg — `SessionConfig` no
+    # longer carries a band, precisely so this surface cannot report the
+    # `balanced` band for a `safe` session (issue #1797).
+    peq_f_low, peq_f_high = session.correction_band_hz
     return {
         "f1_hz": cfg.f1_hz,
         "f2_hz": cfg.f2_hz,
         "duration_s": cfg.duration_s,
         "sample_rate": cfg.sample_rate,
         "amplitude_dbfs": cfg.amplitude_dbfs,
-        "peq_f_low": cfg.peq_f_low,
-        "peq_f_high": cfg.peq_f_high,
-        "correction_strategy": cfg.correction_strategy,
+        "peq_f_low": peq_f_low,
+        "peq_f_high": peq_f_high,
+        # Same reason, same bug class: `cfg.correction_strategy` is only the
+        # DEFAULT. `/correction`'s start handler passes the household's pick as
+        # `strategy_choice`, which never writes back to cfg — so reading cfg
+        # here reported "balanced" for a `safe` session, and would now
+        # contradict the band reported two lines up.
+        "correction_strategy": session.strategy_choice,
     }
 
 

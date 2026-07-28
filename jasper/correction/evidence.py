@@ -18,10 +18,15 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
+
 from . import acoustic_quality, bundles
 
 SCHEMA_VERSION = 2
-REPEATABILITY_BAND_HZ = (50.0, 350.0)
+# Upper edge routed through the room-correction boundary SSOT
+# (jasper.audio_measurement.room_boundary); the 50 Hz low edge is the
+# mic-physics floor (see analysis.deviation_metrics) and stays owned here.
+REPEATABILITY_BAND_HZ = (50.0, ROOM_BOUNDARY_DEFAULT_HZ)
 REPEATABILITY_HIGH_RMS_DB = 1.5
 REPEATABILITY_HIGH_P95_DB = 3.0
 REPEATABILITY_MEDIUM_RMS_DB = 2.5

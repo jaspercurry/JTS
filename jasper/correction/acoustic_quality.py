@@ -33,9 +33,21 @@ from jasper.audio_measurement import (
 )
 from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.quality_model import ROOM as _ROOM_QUALITY
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 SCHEMA_VERSION = 1
 DBFS_FLOOR = -120.0
+# TRAP — these edges look like the room-correction boundary and are
+# deliberately NOT routed through jasper.audio_measurement.room_boundary.
+# This is capture-quality vocabulary, not a correction band: its first four
+# rows are shared verbatim with the gated instrument's
+# snr_policy.CROSSOVER_SNR_BANDS_HZ (pinned by
+# tests/test_audio_measurement_snr_policy.py). Routing the 350 Hz edge here
+# would drag the gated instrument's capture-quality bands onto a per-room
+# boundary once RC3 lands, making banded SNR non-comparable across sessions
+# and across instruments — the whole reason these numbers exist. They stay
+# static. See docs/room-correction-regime-plan.md, "The ten sites, not seven —
+# and the one that must NOT move."
 SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
     ("sub_bass", 20.0, 80.0),
     ("bass", 80.0, 160.0),
@@ -177,7 +189,13 @@ def repeatability_from_arrays(
             "level": "unavailable",
             "reason": "repeat and original curves use different shapes",
         }
-    upper_band_hz = min(350.0, peq_f_high)
+    # The repeatability band never reaches above the room-correction ceiling
+    # (routed through the boundary SSOT, not re-declared: a literal 350 here
+    # would silently cap repeatability at 350 Hz even after the ceiling moves
+    # — one of the two sites that would have defeated a raised ceiling
+    # quietly, per docs/room-correction-regime-plan.md RC1), nor above the
+    # band this session actually corrected.
+    upper_band_hz = min(ROOM_BOUNDARY_DEFAULT_HZ, peq_f_high)
     mask = (freqs_hz >= 50.0) & (freqs_hz <= upper_band_hz)
     if int(mask.sum()) < 3:
         return {

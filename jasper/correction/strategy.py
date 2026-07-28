@@ -19,6 +19,12 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.room_boundary import (
+    ROOM_BOUNDARY_DEFAULT_HZ,
+    ROOM_BOUNDARY_MAX_HZ,
+    ROOM_BOUNDARY_MIN_HZ,
+)
+
 from . import peq, spatial, target
 
 # The crossover-region no-boost half-width, in octaves (revision plan §3.3). A
@@ -132,6 +138,18 @@ TARGET_PROFILES: dict[str, TargetProfile] = {
 }
 
 
+# Every strategy's upper band edge is expressed against the room-correction
+# boundary SSOT (jasper.audio_measurement.room_boundary), never as its own
+# literal: the three strategies differ by CHARACTER — how much of the boundary's
+# admissible range each is willing to use — and that character is what survives
+# the boundary going per-room in RC3.
+#
+#   safe       -> the most conservative ceiling the clamp permits
+#   balanced   -> the boundary itself (the default strategy IS the boundary)
+#   assertive  -> the widest ceiling the clamp permits
+#
+# Today those resolve to 250 / 350 / 500 Hz, exactly the values these three
+# strategies have always shipped. See docs/room-correction-regime-plan.md D1.
 CORRECTION_STRATEGIES: dict[str, CorrectionStrategy] = {
     "safe": CorrectionStrategy(
         strategy_id="safe",
@@ -141,7 +159,7 @@ CORRECTION_STRATEGIES: dict[str, CorrectionStrategy] = {
             "and lower-confidence measurements."
         ),
         f_low_hz=25.0,
-        f_high_hz=250.0,
+        f_high_hz=ROOM_BOUNDARY_MIN_HZ,
         max_filters=4,
         max_cut_db=-6.0,
         max_boost_db=0.0,
@@ -160,7 +178,7 @@ CORRECTION_STRATEGIES: dict[str, CorrectionStrategy] = {
             "PEQ policy while making the policy explicit."
         ),
         f_low_hz=20.0,
-        f_high_hz=350.0,
+        f_high_hz=ROOM_BOUNDARY_DEFAULT_HZ,
         max_filters=5,
         max_cut_db=-10.0,
         max_boost_db=3.0,
@@ -179,7 +197,7 @@ CORRECTION_STRATEGIES: dict[str, CorrectionStrategy] = {
             "Use only with calibrated, repeatable measurements."
         ),
         f_low_hz=20.0,
-        f_high_hz=500.0,
+        f_high_hz=ROOM_BOUNDARY_MAX_HZ,
         max_filters=8,
         max_cut_db=-12.0,
         max_boost_db=2.0,

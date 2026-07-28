@@ -16,13 +16,26 @@ from typing import Any, Literal
 
 import numpy as np
 
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
+
 from . import spatial
 
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 
-DEFAULT_BAND_HZ = (20.0, 350.0)
+# Fallback band for callers that do not pass the session's actual correction
+# band. The upper edge is the room-correction boundary SSOT
+# (jasper.audio_measurement.room_boundary), never a local literal — a copy here
+# would keep scoring confidence over 20-350 Hz after the ceiling moves. The
+# 20 Hz low edge is the PEQ design floor and stays owned here.
+DEFAULT_BAND_HZ = (20.0, ROOM_BOUNDARY_DEFAULT_HZ)
 
+# Static reporting vocabulary for the per-position spatial-variance table —
+# NOT the correction band, and deliberately not routed through the boundary
+# SSOT (its edges are 300/500 Hz and never tracked the 350 Hz ceiling). These
+# labels must stay comparable across sessions, so they stay fixed even after
+# the room ceiling goes per-room; same reasoning as acoustic_quality's SNR
+# table. Exempted by name in tests/test_correction_boundary_ssot.py.
 POSITION_ANALYSIS_BANDS: tuple[dict[str, Any], ...] = (
     {
         "band_id": "sub_bass",

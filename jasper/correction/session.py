@@ -202,8 +202,20 @@ class SessionConfig:
     sample_rate: int = 48000
     amplitude_dbfs: float = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
-    peq_f_low: float = 20.0
-    peq_f_high: float = 350.0
+    # NOTE: there are deliberately no `peq_f_low` / `peq_f_high` fields here.
+    # Until 2026-07-28 this dataclass carried a frozen shadow copy of the
+    # `balanced` strategy's band that was never overridden (`SessionConfig()`
+    # is the only constructor call in the tree). Filter design read the
+    # SELECTED strategy, but acceptance, the verify before/after delta,
+    # repeatability, confidence banding, and the DISCLOSED `correction_band_hz`
+    # all read the shadow copy — so a household-selectable `safe` session
+    # corrected 25-250 Hz while grading ACCEPT/REVERT over 50-350, scoring
+    # confidence over 20-350, and telling the household `[20, 350]`
+    # (issue #1797: corrected-narrow-stated-wide). The band now has one
+    # reader — `MeasurementSession.correction_band_hz` — which resolves the
+    # session's actual strategy, so the two can no longer disagree. Do not
+    # re-add a band field here; add strategy character to
+    # `strategy.CORRECTION_STRATEGIES` instead.
     correction_strategy: str = strategy.DEFAULT_CORRECTION_STRATEGY_ID
 
 
@@ -471,6 +483,29 @@ class MeasurementSession:
         # threads, so deferring until first async use keeps the
         # session safe to instantiate anywhere.
         self._lock_obj: asyncio.Lock | None = None
+
+    @property
+    def correction_band_hz(self) -> tuple[float, float]:
+        """The band THIS session actually corrects, as ``(f_low, f_high)``.
+
+        The single reader of the session's band. Everything that grades,
+        scores, or discloses the correction must go through here so it cannot
+        disagree with what `design_correction` actually fitted: acceptance, the
+        verify before/after delta, repeatability, confidence banding, and the
+        disclosed `correction_band_hz` all resolve the SAME strategy the
+        designer used. Before this property existed each of those read a frozen
+        `SessionConfig` copy of the `balanced` band, so a `safe` session
+        corrected 25-250 Hz while grading and disclosing 20/50-350 Hz
+        (issue #1797).
+
+        Resolved fresh from `strategy.CORRECTION_STRATEGIES` rather than cached
+        at construction: the strategy table is the SSOT for strategy character,
+        and its upper edges are themselves routed through the room-correction
+        boundary SSOT (jasper.audio_measurement.room_boundary), so a per-room
+        ceiling reaches every one of those consumers with no further edit.
+        """
+        strat = strategy.resolve_correction_strategy(self.strategy_choice)
+        return (strat.f_low_hz, strat.f_high_hz)
 
     @property
     def _lock(self) -> asyncio.Lock:
@@ -1021,7 +1056,7 @@ class MeasurementSession:
             first,
             repeat,
             freqs_hz,
-            peq_f_high=self.cfg.peq_f_high,
+            peq_f_high=self.correction_band_hz[1],
         )
 
     def _smooth_capture(
@@ -1153,12 +1188,12 @@ class MeasurementSession:
         The "before" is the pre-correction spatial-averaged measured
         curve (`self.measured_curve`); the "after" is the just-captured
         verify curve. Both deviations are taken over the SAME band as
-        `verify_metrics` (`[50, self.cfg.peq_f_high]` — see the comment
-        at the verify_metrics call for why 50 Hz, not the 20 Hz PEQ
-        band), which is the guard against the band-mismatch trap: we
+        `verify_metrics` (`[50, self.correction_band_hz[1]]` — see the
+        comment at the verify_metrics call for why 50 Hz, not the strategy's
+        own low edge), which is the guard against the band-mismatch trap: we
         deliberately do NOT reuse the design report's predicted "before"
-        (computed over the 20–350/20–500 strategy band) as the measured
-        baseline.
+        (computed over the full strategy band, whose low edge is 20 or 25 Hz)
+        as the measured baseline.
 
         Every capture resamples onto the same log grid, so the design
         measured curve and the verify curve share `verify_freqs`. We
@@ -1180,7 +1215,7 @@ class MeasurementSession:
             before_on_grid,
             verify_mag_db,
             target_db,
-            f_high=self.cfg.peq_f_high,
+            f_high=self.correction_band_hz[1],
         )
 
     def _evaluate_acceptance(
@@ -1247,7 +1282,7 @@ class MeasurementSession:
                 before_db=before_on_grid,
                 verify_db=verify_mag_db,
                 target_db=target_db,
-                f_high=self.cfg.peq_f_high,
+                f_high=self.correction_band_hz[1],
                 basis=basis,
                 verify_index=self._verify_count,
                 prior_clear_regression=self._prior_clear_regression,
@@ -1280,7 +1315,7 @@ class MeasurementSession:
             repeatability_report=self.repeatability_report,
             position_magnitudes=self.position_magnitudes,
             freqs_hz=self.position_freqs,
-            correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
+            correction_band_hz=self.correction_band_hz,
         )
 
     # ------------------------------------------------------------------
@@ -2143,8 +2178,8 @@ class MeasurementSession:
         )
 
         target_db = self._design_target(log_freqs)
-        # Use deviation_metrics' DEFAULT band (50-350 Hz) rather than
-        # the PEQ design band (20-350 Hz). Below ~50 Hz the iPhone
+        # Use deviation_metrics' 50 Hz low edge rather than the PEQ design
+        # band's (20 or 25 Hz, per strategy). Below ~50 Hz the iPhone
         # mic's built-in 24 dB/octave HPF dominates the captured
         # signal — including those frequencies in the deviation
         # summary produces alarming numbers ("max 56 dB!") that are
@@ -2154,7 +2189,7 @@ class MeasurementSession:
         # deviation-from-target readout.
         metrics = analysis.deviation_metrics(
             log_mag, target_db, log_freqs,
-            f_high=self.cfg.peq_f_high,
+            f_high=self.correction_band_hz[1],
         )
 
         self.verify_curve = CurveJSON(

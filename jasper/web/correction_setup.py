@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
+from jasper.audio_measurement import room_boundary
 
 from ..log_event import log_event
 from . import correction_tuning
@@ -5923,7 +5924,11 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         or getattr(sess, "measured_curve", None),
         target=getattr(sess, "target_curve", None),
         max_total_boost_db=float(bounds.get("max_total_boost_db", 0.0)),
-        f_high_hz=float(bounds.get("f_high_hz", 350.0)),
+        # Fallback routed through the room-correction boundary SSOT rather
+        # than re-declared, so an advisor proposal simulated without explicit
+        # bounds is judged against the same ceiling the designer used
+        # (issue #1787).
+        f_high_hz=float(bounds.get("f_high_hz", room_boundary.ROOM_BOUNDARY_DEFAULT_HZ)),
     )
     if not sim.accepted:
         return {

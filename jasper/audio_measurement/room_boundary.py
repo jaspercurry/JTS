@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""The room-correction band ceiling, and its seam with the gated speaker spec.
+
+**This module is the single source of truth for the room layer's upper band
+edge.** Before it existed the "350 Hz cap" was ten independent float literals
+spread across the PEQ designer, the strategy table, the session config, the
+acceptance ladder, the confidence report, the advisor gate, the repeatability
+evidence, the acoustic-quality re-clamp, and the shared deviation metric —
+with no shared constant, no cross-import, and no test pinning the relationship
+to the speaker layer's spec edge (issue #1787). Moving the boundary meant
+finding and editing all ten by hand, and two of them
+(:func:`jasper.correction.acoustic_quality.repeatability_from_arrays`'s
+``min(350, peq_f_high)`` re-clamp and
+:func:`jasper.audio_measurement.analysis.deviation_metrics`) would have
+silently capped a raised ceiling rather than failing loudly.
+
+Why this module lives in ``audio_measurement`` and not ``correction``:
+``audio_measurement`` is the lowest architectural layer of the three that
+consume the boundary (every existing import between the packages runs
+``active_speaker -> audio_measurement`` and ``correction -> audio_measurement``,
+never the reverse — see :mod:`jasper.audio_measurement.calibration`'s own note
+on the same constraint). Homing the SSOT here is the only placement all three
+consumers can import without inverting that order.
+:mod:`jasper.audio_measurement.snr_policy` is the precedent: a shared band
+vocabulary owned one layer below its consumers.
+
+The two edges, and the relation between them
+--------------------------------------------
+Two independently-derived frequencies meet in the 250–350 Hz region, and the
+whole point of this module is that they are held side by side with their
+relation written down once:
+
+* :data:`GATED_SPEC_LOWER_EDGE_HZ` — the **speaker** layer's spec floor. Below
+  it the gated (anechoic-ish, quasi-free-field) measurement of this specific
+  commissioned speaker has no graded authority, because the gate window that
+  rejects room reflections also destroys low-frequency resolution.
+  :data:`jasper.active_speaker.flat_spec.SPEC_BANDS` routes its first band's
+  lower edge here rather than re-declaring it.
+* :data:`ROOM_BOUNDARY_DEFAULT_HZ` — the **room** layer's ceiling: the highest
+  frequency at which room correction places filters. Above it the response is
+  dominated by the speaker's own direct sound and by
+  position-dependent interference that spatial averaging cannot resolve, so
+  correcting there fights the speaker instead of the room.
+
+The relation, stated once: **the room ceiling may never be clamped below the
+gated spec's lower edge.** Below that edge the gated layer has no measured
+authority to hand off *to*, so a room ceiling underneath it would leave a band
+that neither layer owns. That is why :data:`ROOM_BOUNDARY_MIN_HZ` is *defined
+as* :data:`GATED_SPEC_LOWER_EDGE_HZ` rather than coincidentally equal to it —
+moving the spec edge drags the clamp floor with it, and the contract test in
+``tests/test_correction_boundary_ssot.py`` fails if the two ever drift apart.
+Between the spec edge and the room ceiling the two layers deliberately overlap:
+the gated layer owns absolute tonal balance there, the room layer cuts modal
+peaks (see ``docs/room-correction-regime-plan.md`` D3).
+
+The spec edge itself stays revisable — ``flat_spec`` records 250-vs-300 as
+S0-contingent — but it can only move *through* this module.
+
+What is NOT owned here
+----------------------
+* **Lower band edges.** The room band's *low* edge (20 Hz for design, 50 Hz for
+  the deviation/repeatability readouts) is a microphone-physics and
+  design-floor concern, not a layer seam: 50 Hz exists because the iPhone
+  built-in mic's own high-pass filter dominates below it. Those stay where they
+  are used.
+* **The SNR band tables** (:data:`jasper.correction.acoustic_quality.SNR_BANDS_HZ`
+  and :data:`jasper.audio_measurement.snr_policy.CROSSOVER_SNR_BANDS_HZ`).
+  Their 350 Hz edge looks like this boundary and is deliberately NOT routed
+  here — see the trap note on those tables. They are capture-quality
+  vocabulary, shared with the gated instrument, and must stay static and
+  comparable across sessions and instruments even after the room boundary
+  becomes per-room.
+
+Roadmap: RC1 (this module) only makes the boundary a single value. RC2 adds a
+Schroeder-frequency estimator and RC3 lets :func:`room_boundary_hz` resolve a
+per-room transition; every consumer already routed here picks that up with no
+further edit. See ``docs/room-correction-regime-plan.md``.
+"""
+from __future__ import annotations
+
+import math
+
+# The gated speaker spec's lower edge, in Hz. Owned here so the room layer's
+# clamp floor and the speaker layer's spec floor cannot drift apart;
+# jasper.active_speaker.flat_spec consumes this rather than re-declaring 250.
+GATED_SPEC_LOWER_EDGE_HZ: float = 250.0
+
+# The room-correction ceiling, in Hz, when no per-room estimate is available.
+# 350 Hz is the shipped Toole-aligned modal/transition boundary and stays the
+# fallback whenever the RC2 estimator is missing or uncertain.
+ROOM_BOUNDARY_DEFAULT_HZ: float = 350.0
+
+# Clamp bounds for a per-room ceiling estimate (RC2/RC3). The floor is the
+# gated spec's lower edge BY DEFINITION (see the module docstring's "relation,
+# stated once"); the ceiling is the widest room-correction band the project
+# admits, and is also the `assertive` strategy's band.
+ROOM_BOUNDARY_MIN_HZ: float = GATED_SPEC_LOWER_EDGE_HZ
+ROOM_BOUNDARY_MAX_HZ: float = 500.0
+
+
+def room_boundary_hz(estimate_hz: float | None = None) -> float:
+    """Resolve the room-correction ceiling in Hz.
+
+    With no argument — the RC1 state of the world, and the state whenever the
+    per-room estimator has nothing to say — this returns
+    :data:`ROOM_BOUNDARY_DEFAULT_HZ`. Given a per-room estimate (RC2's
+    Schroeder frequency) it returns that estimate clamped to
+    ``[ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]``.
+
+    A non-finite or non-positive estimate is treated as *no estimate* and falls
+    back to the default rather than clamping to a bound: "unknown" must not
+    silently become "250 Hz" (or "500 Hz"), which would look like a confident
+    per-room answer. Callers that need to disclose which case they got should
+    compare the result against the default themselves.
+    """
+    if estimate_hz is None:
+        return ROOM_BOUNDARY_DEFAULT_HZ
+    value = float(estimate_hz)
+    if not math.isfinite(value) or value <= 0.0:
+        return ROOM_BOUNDARY_DEFAULT_HZ
+    return min(max(value, ROOM_BOUNDARY_MIN_HZ), ROOM_BOUNDARY_MAX_HZ)

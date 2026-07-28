@@ -431,10 +431,10 @@ async def test_verify_pass_after_apply(tmp_path: Path):
     # Honest MEASURED before/after must be populated once verify lands.
     ba = sess.verify_before_after
     assert ba is not None
-    # The verify handler passes f_high=peq_f_high (350) and default
-    # f_low=50, so the before/after band must match verify_metrics'
+    # The verify handler passes the session's own correction ceiling and the
+    # default f_low=50, so the before/after band must match verify_metrics'
     # band — this is the guard against the band-mismatch trap.
-    assert ba["band_hz"] == [50.0, sess.cfg.peq_f_high]
+    assert ba["band_hz"] == [50.0, sess.correction_band_hz[1]]
     # `after` is the SAME measured deviation verify_metrics already
     # reported (same curve, same band) — the two must agree.
     assert ba["after"]["rms_db"] == pytest.approx(
@@ -452,7 +452,7 @@ async def test_verify_pass_after_apply(tmp_path: Path):
     pre_f = np.asarray(sess.measured_curve.freqs_hz, dtype=float)
     tgt = sess._design_target(pre_f)
     expected_before = analysis.deviation_metrics(
-        pre, tgt, pre_f, f_high=sess.cfg.peq_f_high,
+        pre, tgt, pre_f, f_high=sess.correction_band_hz[1],
     )
     assert ba["before"]["rms_db"] == pytest.approx(
         expected_before["rms_db"], abs=1e-9,
