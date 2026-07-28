@@ -2369,7 +2369,9 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
         "verify": {"outcome": "pass"},
     })
     by_verify = v2host.crossover_v2_status_block()["post_apply_grade"]
-    assert by_verify["state"] == v2host.GRADE_GRADED
+    # Verified at the mark only — express's whole grade, and distinguishable
+    # from a walked post-apply group WITHOUT consulting `tier`.
+    assert by_verify["state"] == v2host.GRADE_MARK_VERIFIED
     assert by_verify["graded"] is True
 
     v2host.save_v2_state({
@@ -3423,7 +3425,8 @@ def test_candidate_summary_surfaces_linearization_outcome_and_octaves():
 
     candidate = MeasuredCrossoverCandidate(
         program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9, "predicted_ripple_db": 1.1},
+        analysis={"alignment_confidence": 0.9, "predicted_ripple_db": 1.1,
+                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
         source_preset=_preset(),
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
         linearization={
@@ -3466,7 +3469,8 @@ def test_candidate_summary_linearization_fields_default_empty():
 
     candidate = MeasuredCrossoverCandidate(
         program_id="prog-abc",
-        analysis={"alignment_confidence": 0.9},
+        analysis={"alignment_confidence": 0.9,
+                  "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
         source_preset=_preset(),
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
     )
@@ -4456,7 +4460,9 @@ def _run6_measured_candidate(preset):
         program_id=(
             "9579a1bb9e2a3d1d8988670628bdbf6f348de3400e76baa63139abbed5ae0207"
         ),
-        analysis={"epsilon_ppm": 29.924, "predicted_ripple_db": 29.6952},
+        analysis={"epsilon_ppm": 29.924, "predicted_ripple_db": 29.6952,
+              "alignment_confidence": 0.82,
+              "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
         source_preset=preset,
         role_attenuations_db={"tweeter": -13.0327, "woofer": 0.0},
         alignment=MeasuredCrossoverAlignment(
@@ -4688,7 +4694,9 @@ def _prior_measured_candidate(preset):
 
     return MeasuredCrossoverCandidate(
         program_id="prog-prior-1",
-        analysis={"epsilon_ppm": 5.0, "predicted_ripple_db": 1.2},
+        analysis={"epsilon_ppm": 5.0, "predicted_ripple_db": 1.2,
+              "alignment_confidence": 0.82,
+              "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4}},
         source_preset=preset,
         role_attenuations_db={"tweeter": -2.0, "woofer": 0.0},
         alignment=MeasuredCrossoverAlignment(

@@ -111,10 +111,12 @@ _MAX_ATTENUATION_DB = -60.0
 #           captures agreed with the fit frame to 1.30 dB worst case
 #   ~0.5 dB that estimator's known linear-bin systematic
 #
-# ~5.3 dB of honest disagreement in the worst case; 6.0 is the first whole dB
-# above it. The defect this exists to catch was twice that. Tightening it is a
-# measurement question, not a taste one: it needs a corpus of households whose
-# datasheet AND pad values are both known-good.
+# ~5.8 dB of honest disagreement in the worst case; 6.0 is the first whole dB
+# above it. The defect this exists to catch was more than twice that.
+# Tightening it is a measurement question, not a taste one: it needs a corpus
+# of households whose datasheet AND pad values are both known-good — and note
+# how little headroom 6.0 leaves over 5.8, which is the real argument for
+# gathering that corpus rather than nudging the number.
 MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB = 6.0
 
 # Canonical per-parameter provenance vocabulary (SC-3). ``RECOMMENDED_START``
@@ -1259,15 +1261,24 @@ def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
       (the evidence-store path) names an isolated and a summed evidence
       artifact. Each present artifact counts as one.
     * :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`
-      (the v2 phone path) proves per-driver work with one measured level per
-      role in ``role_attenuations_db``, and summed work by the positions at
-      which the SUMMED behaviour was measured: its own MEASURE capture (which
-      is where the cross-driver alignment and the predicted sum come from) plus
-      the pre-apply cloud's walked positions when it ran one
-      (``exclusion_evidence.n_positions``). A trims-only candidate — the
-      ineligible-mic-tier / fit-failed fallback, a real production shape — is
-      NOT vacuous and still counts; what no longer counts is a candidate object
-      holding nothing.
+      (the v2 phone path) is counted from what its analysis RECORDED, never
+      from fields its ``__post_init__`` guarantees. Per-driver: the roles whose
+      level the trim solve actually produced (``analysis.trim_band_average_db``
+      — ``None`` on a legacy candidate), or the roles the fit corrected, taking
+      whichever is larger. Summed: the pre-apply cloud's walked positions
+      (``exclusion_evidence.n_positions``), plus one for the MEASURE capture
+      itself IF that capture carries a real cross-branch alignment
+      (``alignment_confidence``) — the alignment is measured across both
+      branches at once, which is summed-domain evidence. A trims-only candidate
+      — the ineligible-mic-tier / fit-failed fallback, a real production shape —
+      is NOT vacuous and still counts via those two.
+
+    **Counting only what varies is the whole point** (PR-L4 review S1). A first
+    cut counted ``len(role_attenuations_db)`` and "is ``analysis`` non-empty",
+    both of which ``MeasuredCrossoverCandidate.__post_init__`` already enforces
+    — so the counts were ≥1 by construction and the flags meant exactly what
+    ``is not None`` had meant, which is the vacuity this item exists to remove.
+    An "evidence count" that cannot be zero is not evidence.
 
     A count, not a boolean, because the caller publishes it: a reader seeing
     ``complete: true`` is entitled to see the number behind it.
@@ -1276,6 +1287,13 @@ def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
         return {"driver": 0, "summed": 0}
     role_trims = getattr(candidate, "role_attenuations_db", None)
     if isinstance(role_trims, Mapping):
+        analysis = getattr(candidate, "analysis", None)
+        analysis = analysis if isinstance(analysis, Mapping) else {}
+        solved_levels = analysis.get("trim_band_average_db")
+        driver = len(solved_levels) if isinstance(solved_levels, Mapping) else 0
+        linearization = getattr(candidate, "linearization", None)
+        if isinstance(linearization, Mapping):
+            driver = max(driver, len(linearization))
         exclusion = getattr(candidate, "exclusion_evidence", None)
         positions = 0
         if isinstance(exclusion, Mapping):
@@ -1283,12 +1301,9 @@ def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
                 positions = max(0, int(exclusion.get("n_positions") or 0))
             except (TypeError, ValueError):
                 positions = 0
-        analysis = getattr(candidate, "analysis", None)
-        measure_positions = 1 if isinstance(analysis, Mapping) and analysis else 0
-        return {
-            "driver": len(role_trims),
-            "summed": max(measure_positions, positions),
-        }
+        if analysis.get("alignment_confidence") is not None:
+            positions += 1
+        return {"driver": driver, "summed": positions}
     return {
         "driver": 1 if getattr(candidate, "isolated_evidence_artifact", None) else 0,
         "summed": 1 if getattr(candidate, "summed_evidence_artifact", None) else 0,
@@ -1333,10 +1348,16 @@ def _estimator_cross_check(
         return []
     try:
         point_trims, _meta = _measured_level_trims(preset, measurements)
-    except (AttributeError, KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
         # The point-at-Fc reader is fail-closed by design and this is a
         # disclosure path; an unreadable measurements blob means "no second
-        # opinion available", never a failed profile build.
+        # opinion available", never a failed profile build. Logged at WARNING
+        # like its sibling below, so a cross-check that silently stopped
+        # running is visible rather than indistinguishable from agreement.
+        log_event(
+            logger, "baseline_profile.level_estimator_cross_check_unavailable",
+            level=logging.WARNING, error=f"{type(exc).__name__}: {exc}",
+        )
         return []
     notes: list[str] = []
     for role in sorted(set(point_trims) & set(candidate_trims_db)):

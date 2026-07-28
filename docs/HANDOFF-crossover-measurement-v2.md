@@ -770,10 +770,36 @@ gate-validity clamp → `flat_spec.evaluate_flat_spec` →
 `PHASE_CLOUD_VERIFY` only (`cloud_measure` is the uncorrected pre-apply
 baseline — rendering it would report a corrected speaker as bad forever).
 Logged once per closed group as `event=correction.crossover_v2_cloud_spec`.
-Still report-only: nothing in `_verify_verdict`'s accepted/code logic reads
-it, and the tolerances are now the spec table's own per-band values
-(`flat_spec.SPEC_BANDS`) instead of one provisional constant. Contract test:
+The tolerances are the spec table's own per-band values
+(`flat_spec.SPEC_BANDS`) rather than one provisional constant. Contract test:
 [`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py).
+
+**No longer report-only** (linearization-integrity PR-L4). It still does not
+gate `_verify_verdict`'s accepted/code logic — that stays a tracking judgement
+— but the spec verdict now has three consumers that act on it:
+
+* `CrossoverV2Conductor._assert_accountable` grades the RAW and LINEARIZED
+  predicted sums through the same `evaluate_flat_spec` and refuses the
+  auto-apply when the correction does not materially better its own model
+  (`correction_not_an_improvement`);
+* `crossover_envelope_v2` reads an explicitly failing `PHASE_CLOUD_VERIFY`
+  verdict into the done screen's PRIMARY copy and swaps the "Verified." badge
+  for one that names which instrument passed — previously the verdict reached
+  only a line inside the collapsed disclosure;
+* `crossover_v2_status_block` folds it into the new `post_apply_grade` key
+  (see below).
+
+**`/state.crossover_v2.post_apply_grade`** (PR-L4 item 4) answers "was the
+correction now on the speaker ever checked after it landed?" — `state` is one
+of `not_applied` / `graded` (a walked post-apply position group) /
+`mark_verified` (VERIFY passed at the mark; express's whole grade) /
+`inconclusive` / `failed` / `unverified`, with `graded` as the single boolean a
+caller can key on. Read it, do not re-derive it: `jasper-doctor`'s
+`check_crossover_v2_applied_is_graded` is its second consumer and warns on an
+applied profile that was never graded — the silence
+`check_crossover_v2_cloud_pipeline` structurally cannot see, because that check
+gates on a FAILING `PHASE_CLOUD_VERIFY` verdict and a missing one renders as no
+phase at all.
 
 *The carve-out disclosure* (flat-linearization plan PR-6b, owner decision 1 of
 2026-07-25). The gauge says how flat the speaker measured and how many
@@ -1079,7 +1105,7 @@ source, no drift.
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
 | `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18) |
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
-| `driver_levels_disagree` | confirm seam | 0 (hard stop) | linearization-integrity PR-L4 item 1: after the committed trim the two drivers' REALIZED passband levels sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Refused BEFORE the apply thread starts, so the speaker is untouched |
+| `driver_levels_disagree` | confirm seam | 0 (hard stop) | linearization-integrity PR-L4 item 1: after the committed trim the two drivers' realized levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Refused BEFORE the apply thread starts, so the speaker is untouched |
 | `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply |
 
 **Auto-apply is no longer unconditional at the confirm seam.** PR-6b's

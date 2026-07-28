@@ -62,6 +62,18 @@ from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
 
+# What a REAL MEASURE analysis records and PR-L4 item 5 counts as evidence: the
+# trim solve's own per-role output, and the cross-branch alignment confidence
+# (measured across both branches at once, hence summed-domain evidence). Stub
+# analyses in this file carried neither, which is fine while a candidate's mere
+# existence satisfied the completeness flags and is not once the flags count
+# what the analysis actually recorded.
+_MEASURE_EVIDENCE = {
+    "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4},
+    "alignment_confidence": 0.82,
+}
+
+
 def _topology(
     *,
     tweeter_output: int = 1,
@@ -1182,6 +1194,9 @@ def test_completeness_flags_are_never_true_without_a_named_evidence_lane(
             **kwargs,
         )["verification"]
 
+    preset, _preset_issues, _gates = compile_preset_from_crossover_preview(
+        topology, dict(preview)
+    )
     lanes = {
         "measured_candidate": "measured_candidate_evidence",
         "measurements": None,  # counted by the two summary counts below
@@ -1189,12 +1204,27 @@ def test_completeness_flags_are_never_true_without_a_named_evidence_lane(
     candidates = [
         _verification(measurements={}),
         _verification(measurements=_measurements(topology, tmp_path)),
+        # The measured-candidate lane, which the first version of this test
+        # never exercised — so its `source == "measured_candidate"` branch was
+        # dead and the invariant was, itself, vacuous about vacuousness
+        # (PR-L4 review S1).
+        _verification(
+            measurements={},
+            tuning_owner="automatic",
+            measured_candidate=MeasuredCrossoverCandidate(
+                program_id="prog-v2-invariant",
+                analysis={"drift_ppm": 3.0, **_MEASURE_EVIDENCE},
+                source_preset=preset,
+                role_attenuations_db={"woofer": 0.0, "tweeter": -12.4},
+            ),
+        ),
     ]
     # A blocked payload publishes `verification: {}` — no flags, so no claim.
     # That is the honest shape and there is nothing here to check; the invariant
     # is about blocks that DO claim something.
     graded = [v for v in candidates if v]
     assert graded, "at least one shape must reach a verification block"
+    seen_measured_candidate: set[str] = set()
     for verification in graded:
         for flag, source_key, lane_count in (
             ("driver_target_proof_complete", "driver_target_proof_source", "driver"),
@@ -1208,6 +1238,12 @@ def test_completeness_flags_are_never_true_without_a_named_evidence_lane(
             assert source in lanes or source == "applied_profile_revalidation"
             if source == "measured_candidate":
                 assert verification["measured_candidate_evidence"][lane_count] > 0
+                seen_measured_candidate.add(source_key)
+
+    # ...and the measured-candidate branch above is REACHED, on both flags.
+    assert seen_measured_candidate == {
+        "driver_target_proof_source", "summed_validation_source",
+    }
 
 
 def test_baseline_profile_never_emits_positive_driver_gain(
@@ -3046,7 +3082,7 @@ def test_the_two_level_estimators_are_cross_checked_and_disclosed(
     # ...and the crossover sweep's candidate says 25 dB. 13 dB apart.
     candidate = MeasuredCrossoverCandidate(
         program_id="prog-v2-estimators",
-        analysis={"drift_ppm": 3.0},
+        analysis={"drift_ppm": 3.0, **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": -25.0},
     )
@@ -4321,7 +4357,7 @@ def _v2_candidate(
 ) -> MeasuredCrossoverCandidate:
     return MeasuredCrossoverCandidate(
         program_id="prog-v2-1",
-        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"]},
+        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"], **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": tweeter_gain_db},
         alignment=MeasuredCrossoverAlignment(
@@ -4380,7 +4416,7 @@ def test_build_baseline_profile_candidate_threads_linearization_outcome(
     assert preset is not None, issues
     candidate = MeasuredCrossoverCandidate(
         program_id="prog-v2-1",
-        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"]},
+        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"], **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
         linearization_outcome="ineligible_mic_tier",
@@ -4470,7 +4506,7 @@ def test_v2_candidate_trims_only_matches_legacy_trims_only_shape(
     assert preset is not None, issues
     trims_only = MeasuredCrossoverCandidate(
         program_id="prog-v2-2",
-        analysis={"drift_ppm": 1.0},
+        analysis={"drift_ppm": 1.0, **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
     )
@@ -4708,7 +4744,7 @@ async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
 
     changed_measured = MeasuredCrossoverCandidate(
         program_id="prog-v2-2",
-        analysis={"drift_ppm": 4.0, "sweeps": ["w", "t", "w", "t"]},
+        analysis={"drift_ppm": 4.0, "sweeps": ["w", "t", "w", "t"], **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
         alignment=MeasuredCrossoverAlignment(
@@ -4820,7 +4856,7 @@ async def test_apply_then_recompose_reemits_identical_linearization_filters(
     )
     candidate = MeasuredCrossoverCandidate(
         program_id="prog-lin-1",
-        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"]},
+        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"], **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
         linearization=_linearization_payload(),
@@ -4878,7 +4914,7 @@ async def test_apply_baseline_profile_emits_baseline_linearization_event_with_co
     )
     candidate = MeasuredCrossoverCandidate(
         program_id="prog-lin-2",
-        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"]},
+        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"], **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
         linearization=_linearization_payload(),
@@ -5151,7 +5187,7 @@ async def _linearization_restore_fixture(monkeypatch, tmp_path: Path):
 
     linearized_candidate = MeasuredCrossoverCandidate(
         program_id="prog-lin-a",
-        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"]},
+        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"], **_MEASURE_EVIDENCE},
         source_preset=preset,
         role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
         linearization=_linearization_payload(),

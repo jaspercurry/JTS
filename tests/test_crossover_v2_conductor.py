@@ -187,10 +187,22 @@ def _in_room_summed_db() -> np.ndarray:
     return -2.0 * octaves - 3.0 * np.exp(-0.5 * (octaves / 0.8) ** 2)
 
 
-def _driver_response(role: str, window_ms: float) -> DriverResponse:
-    magnitude_db = (
-        _in_room_summed_db() if role == "summed" else np.zeros(64)
-    )
+# The measured pre-apply pooled spec residual each room scale in
+# ``test_prediction_gate_verdict_does_not_depend_on_the_room`` produces. Quoted
+# so that test can prove the room ACTUALLY moved between its cases — a
+# room-independence claim is worthless if the fixture room never varied. Under
+# the pre-B1 gate these three scales spanned refuse / pass / pass; they must now
+# all reach the same verdict.
+_ROOM_SCALE_EXPECTED_RMS_DB = {0.4: 1.011, 1.0: 2.691, 2.5: 8.566}
+
+
+def _driver_response(
+    role: str, window_ms: float, *, summed_db: np.ndarray | None = None,
+) -> DriverResponse:
+    if summed_db is not None:
+        magnitude_db = np.asarray(summed_db, dtype=float)
+    else:
+        magnitude_db = _in_room_summed_db() if role == "summed" else np.zeros(64)
     return DriverResponse(
         role=role, freqs_hz=_SUMMED_FREQS_HZ, magnitude_db=magnitude_db,
         complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
@@ -313,13 +325,13 @@ def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> Pi
 
 def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
-    pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0,
+    pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
 ) -> ProgramAnalysis:
     return ProgramAnalysis(
         phase="verify",
         program_id=program.program_id,
         locations=(_loc("sweep_verify", "summed_sweep", confidence=locate_confidence),),
-        summed_response=_driver_response("summed", gate_ms),
+        summed_response=_driver_response("summed", gate_ms, summed_db=summed_db),
         summed_ripple_db=1.1,
         # W6.7 ruling 1: the conductor gates on the notch-excluded max, not the
         # raw ``max_db`` — this fake keeps them equal (a fake with no notch to
@@ -4258,11 +4270,39 @@ def _solve_fixture_raw_trim() -> dict[str, float]:
 _FIXTURE_RAW_TRIM_DB = _solve_fixture_raw_trim()
 
 
+def _fixture_raw_predicted_sum(
+    *, woofer_db=None, tweeter_db=None, trim_db=None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The RAW pre-fit two-branch sum of the eligible fixture's own branches.
+
+    PR-L4 review B1: item 2's gate grades this against the LINEARIZED
+    prediction through the same evaluator, so the baseline has to be the
+    fixture's real uncorrected sum. It used to be a hardcoded flat zero curve,
+    which claimed the uncorrected speaker was already perfect and made every
+    correction score as a regression — the same "a fixture field nobody derived
+    from the fixture" shape as the hand-written raw trim above.
+    """
+    if woofer_db is None or tweeter_db is None:
+        default_woofer_db, default_tweeter_db = _fixture_branch_db()
+        woofer_db = default_woofer_db if woofer_db is None else woofer_db
+        tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
+    if trim_db is None:
+        trim_db = dict(_FIXTURE_RAW_TRIM_DB)
+    summed = predicted_branch_sum(
+        (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
+        (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
+        float(trim_db.get("woofer", 0.0)), float(trim_db.get("tweeter", 0.0)), 1,
+    )
+    return (
+        _LINEARIZABLE_FREQS_HZ,
+        20.0 * np.log10(np.maximum(np.abs(summed), 1e-12)),
+    )
+
+
 def _eligible_measure_analysis(
     program, *, mic_tier="reference", woofer_repeats=2, tweeter_repeats=2,
     woofer_db=None, tweeter_db=None, trim_db=None,
 ) -> ProgramAnalysis:
-    freqs = _LINEARIZABLE_FREQS_HZ
     default_woofer_db, default_tweeter_db = _fixture_branch_db()
     if woofer_db is None:
         woofer_db = default_woofer_db
@@ -4291,7 +4331,16 @@ def _eligible_measure_analysis(
             predicted_ripple_db=0.8, confidence=0.8,
         ),
         linearity_ok=True,
-        predicted_sum=(freqs, np.zeros_like(freqs)),
+        # The RAW pre-fit two-branch sum of THIS fixture's own branches at THIS
+        # fixture's own trim — not a flat zero curve (PR-L4 review B1). Item 2's
+        # gate grades this against the LINEARIZED prediction through the same
+        # evaluator, so a hardcoded-flat baseline claimed the uncorrected
+        # speaker was already perfect and made every correction look like a
+        # regression. Same incoherence class as the hand-written trim above:
+        # a fixture field that was never derived from the fixture.
+        predicted_sum=_fixture_raw_predicted_sum(
+            woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
+        ),
         glitch_detected=False,
     )
 
@@ -4479,7 +4528,18 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
         lambda *a, **kw: calls.append(kw) or (kw["seed_trim_db"] - 4.0, 0.0, kw["seed_trim_db"]),
     )
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    # A defect inside the tweeter's OWN swept band (this conductor sweeps the
+    # tweeter from Fc up), so the fit has real work to do and the candidate
+    # clears item 2's gate. The shared fixture's bump sits at 1500 Hz — below
+    # Fc, i.e. outside this geometry's tweeter band — so the fit barely moves
+    # and the session is (correctly) refused for not improving its own model,
+    # which would test the gate rather than the ripple skip this is about.
+    _one_sided_tweeter_db = 8.0 * np.exp(
+        -0.5 * ((np.log2(_LINEARIZABLE_FREQS_HZ / 2500.0) / 0.3) ** 2)
+    )
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, tweeter_db=_one_sided_tweeter_db,
+    )
     c = _one_sided_conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
@@ -4956,10 +5016,23 @@ def test_predicted_spec_report_is_unknown_never_a_pass_on_bad_input():
     assert spec_report_for_predicted_sum(("not", "arrays")) is None
 
 
+def _gate_residuals(conductor) -> tuple[float, float]:
+    """``(before_rms_db, after_rms_db)`` — item 2's two terms, recomputed from
+    the conductor's own predictions through the SAME evaluator the gate used."""
+    before = spec_report_for_predicted_sum(
+        _fixture_raw_predicted_sum()
+    )
+    after = spec_report_for_predicted_sum(conductor.measure_predicted_sum)
+    return (
+        spec_convergence_residual(before).rms_db,
+        spec_convergence_residual(after).rms_db,
+    )
+
+
 def test_prediction_gate_allows_a_materially_better_correction():
     """The happy path, with the arithmetic shown rather than assumed: the
-    fixture's measured pre-apply cloud and its predicted post-apply model are
-    far enough apart that the gate passes, and the session applies."""
+    fixture's RAW two-branch model and its LINEARIZED one are far enough apart
+    that the gate passes, and the session applies."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _cloud_conductor(fakes)
@@ -4968,41 +5041,89 @@ def test_prediction_gate_allows_a_materially_better_correction():
     assert verdict["auto_apply"] is True
     assert c.candidate is not None
 
+    before_rms_db, after_rms_db = _gate_residuals(c)
+    assert (before_rms_db - after_rms_db) >= PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+
+
+@pytest.mark.parametrize("pre_apply_scale", [0.4, 1.0, 2.5])
+def test_prediction_gate_verdict_does_not_depend_on_the_room(pre_apply_scale):
+    """PR-L4 review B1, the regression that motivated the frame change.
+
+    The first cut compared the model's residual against the MEASURED in-room
+    cloud's, which made the verdict a function of the ROOM: holding the
+    correction constant and varying only the pre-apply measurement flipped a
+    passing session into ``correction_not_an_improvement``, and every BETTER
+    room refused harder. Both of the gate's terms are now the same instrument
+    at the same position, so scaling the room's own measured response — the
+    only thing this parametrization changes — must not move the verdict at
+    all."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    scaled = _in_room_summed_db() * pre_apply_scale
+    fakes.verify = lambda program: _verify_analysis(program, summed_db=scaled)
+    c = _cloud_conductor(fakes)
+
+    verdict = _walk_measure_cloud_to_close(c)
+    assert verdict["auto_apply"] is True
+    assert c.candidate is not None
+    # ...and the room really did move, so this is not a no-op fixture.
     measured_rms_db = c.group_cloud_result(PHASE_CLOUD_MEASURE)["flatness"]["rms_db"]
-    predicted = spec_report_for_predicted_sum(c.measure_predicted_sum)
-    predicted_rms_db = spec_convergence_residual(predicted).rms_db
-    assert (
-        measured_rms_db - predicted_rms_db
-    ) >= PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+    assert measured_rms_db == pytest.approx(
+        _ROOM_SCALE_EXPECTED_RMS_DB[pre_apply_scale], abs=0.05
+    )
 
 
 def test_prediction_gate_refuses_a_correction_that_does_not_improve(caplog):
     """PR-L4 item 2, and the deliberate amendment to PR-6b's unconditional
-    auto-apply: when the predicted post-apply spec still fails AND is not
-    materially better than what was measured before, the session refuses at the
-    confirm seam and the speaker is never touched.
+    auto-apply: a prediction that still fails the spec and does not materially
+    better its own pre-fit model refuses at the confirm seam, and the speaker is
+    never touched.
 
-    Driven by raising the threshold rather than by degrading the fixture, so
-    the assertion is about the GATE's arithmetic and not about how convincingly
-    a synthetic capture can be made to look bad."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
-
+    Driven through the REAL threshold by a realistic bad correction — a driver
+    pair whose fit cannot help, so the linearized model lands essentially on top
+    of the raw one (PR-L4 review: the previous version monkeypatched the
+    threshold to 100 dB, which proved the arithmetic ran and nothing about
+    whether the shipped number does anything)."""
     caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    freqs = _LINEARIZABLE_FREQS_HZ
+    # A broad, deep suckout the cut-only fit is structurally unable to correct:
+    # everything around it would have to come DOWN by ~9 dB, which the envelope
+    # will not spend. The linearized model therefore stays as un-flat as the raw
+    # one, which is exactly the case the gate exists to catch.
+    woofer_db = -9.0 * np.exp(-0.5 * ((np.log2(freqs / 700.0) / 0.5) ** 2))
+    tweeter_db = np.zeros_like(freqs)
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, woofer_db=woofer_db, tweeter_db=tweeter_db,
+    )
     c = _cloud_conductor(fakes)
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow_mod, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 100.0)
-        with pytest.raises(CaptureBeginRefused) as excinfo:
-            _walk_measure_cloud_to_close(c)
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        _walk_measure_cloud_to_close(c)
 
     assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    assert "event=correction.crossover_v2_prediction_refused" in caplog.text
+    assert "reason=correction_not_an_improvement" in caplog.text
     # The speaker is untouched: nothing stashed, nothing published, and no
     # payload carrying auto_apply ever came back.
     assert c.candidate is None
     assert fakes.published_candidates == []
+
+
+def test_prediction_gate_tolerance_is_the_models_own_tracking_error():
+    """The third tolerance's derivation, pinned like its two siblings (PR-L4
+    review: it was the only one without a test).
+
+    Since B1 made both terms the same instrument, the comparison carries no
+    measurement noise — so the threshold is a product-policy floor, and the
+    floor is the gap between what the model predicts and what the hardware
+    realizes. ``_fit_linearization`` records that as ~0.5 dB for the complex
+    correction model on JTS3. An improvement smaller than the model's own
+    tracking error is not one we can honestly claim."""
+    complex_model_tracking_error_db = 0.5
+    assert PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == complex_model_tracking_error_db
+    # And well under the zero-phase model it replaced (~2.0 dB), which is the
+    # regime where "improvement" would have been indistinguishable from noise.
+    assert PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB < 2.0
 
 
 def test_prediction_gate_is_silent_when_the_prediction_meets_the_spec(monkeypatch):
@@ -5040,21 +5161,48 @@ def test_prediction_gate_treats_an_ungradeable_prediction_as_unknown(monkeypatch
     assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
 
 
-def test_prediction_gate_needs_a_measured_pre_apply_number(monkeypatch):
-    """A session with no pre-apply cloud has nothing to compare against, so the
-    gate abstains rather than inventing a baseline of zero — which would refuse
-    every such session outright."""
+def test_prediction_gate_abstains_when_no_fit_ran(caplog, monkeypatch):
+    """The trims-only lane has no before/after to compare.
+
+    When linearization is ineligible (or SF2 caught a fit failure), the
+    LINEARIZED prediction IS ``analysis.predicted_sum`` — the same object — so
+    the two terms are identical and the improvement is exactly 0. Refusing on
+    that would kill every trims-only candidate on the strength of arithmetic
+    rather than evidence, so the gate abstains and says which path it took."""
     from jasper.active_speaker import crossover_v2_flow as flow_mod
 
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     monkeypatch.setattr(flow_mod, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 100.0)
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program)
-    # The pre-cloud 3-entry shape: MEASURE publishes directly, no cloud group.
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, mic_tier="consumer",  # ineligible ⇒ no fit ⇒ no linearized sum
+    )
+    c = _cloud_conductor(fakes)
+    verdict = _walk_measure_cloud_to_close(c)
     assert verdict["auto_apply"] is True
-    assert c._measured_pre_apply_rms_db() is None
+    assert c.candidate.linearization == {}
+    assert "reason=no_linearization" in caplog.text
+
+
+def test_prediction_gate_logs_a_ledger_line_on_every_path(caplog):
+    """PR-L4 review S4: the gate speaks whether or not it refuses, mirroring
+    item 1's own ledger. A gate that is silent on success makes "it passed" and
+    "it never ran" indistinguishable in the journal — the first question a
+    field diagnosis of a dark speaker would ask."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+
+    assert "event=correction.crossover_v2_prediction_gate" in caplog.text
+    assert "reason=improved" in caplog.text
+    # Both terms and the delta are on the line, so the verdict is re-derivable
+    # from the journal alone.
+    for ledger_field in (
+        "before_rms_db=", "after_rms_db=", "improvement_db=", "required_db=",
+    ):
+        assert ledger_field in caplog.text
 
 
 def test_an_accountability_refusal_names_itself_to_the_host():
@@ -5373,7 +5521,7 @@ def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monke
 def test_measure_predicted_sum_unchanged_when_linearization_ineligible():
     """The ineligible/raw path stays byte-identical to before this fix:
     ``c.measure_predicted_sum`` is exactly ``analysis.predicted_sum`` -- the
-    fixture's own raw all-zero placeholder -- never overridden."""
+    fixture's own RAW two-branch sum -- never overridden."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program, mic_tier="consumer")
     c = _conductor(fakes)
@@ -5383,8 +5531,9 @@ def test_measure_predicted_sum_unchanged_when_linearization_ineligible():
     assert c.candidate.linearization == {}
 
     freqs_used, db_used = c.measure_predicted_sum
-    np.testing.assert_array_equal(freqs_used, _LINEARIZABLE_FREQS_HZ)
-    np.testing.assert_array_equal(db_used, np.zeros_like(_LINEARIZABLE_FREQS_HZ))
+    expected_freqs, expected_db = _fixture_raw_predicted_sum()
+    np.testing.assert_array_equal(freqs_used, expected_freqs)
+    np.testing.assert_array_equal(db_used, expected_db)
 
 
 def test_measure_predicted_sum_unchanged_when_fit_engine_raises(monkeypatch):
@@ -5407,8 +5556,9 @@ def test_measure_predicted_sum_unchanged_when_fit_engine_raises(monkeypatch):
     assert c.candidate.linearization == {}
 
     freqs_used, db_used = c.measure_predicted_sum
-    np.testing.assert_array_equal(freqs_used, _LINEARIZABLE_FREQS_HZ)
-    np.testing.assert_array_equal(db_used, np.zeros_like(_LINEARIZABLE_FREQS_HZ))
+    expected_freqs, expected_db = _fixture_raw_predicted_sum()
+    np.testing.assert_array_equal(freqs_used, expected_freqs)
+    np.testing.assert_array_equal(db_used, expected_db)
 
 
 def test_verify_rearm_measure_predicted_sum_era_round_trip():

@@ -1058,8 +1058,17 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
 
 
 # The vocabulary of ``crossover_v2.post_apply_grade.state`` (PR-L4 item 4).
+# Readers should `.get` against these rather than exhaustively match: a durable
+# state written by a later build can carry a name this one has never seen, and
+# an unknown state must degrade to "not graded" rather than to a crash.
 GRADE_NOT_APPLIED = "not_applied"
 GRADE_GRADED = "graded"
+# Express's passing grade. Distinct from GRADE_GRADED so a `/state` reader can
+# tell the two claims apart WITHOUT cross-referencing `tier` (PR-L4 review):
+# express verifies at the mark only — it never walks a post-apply position
+# group — so "graded" and "confirmed at one spot" are materially different
+# promises and were rendering as the same word.
+GRADE_MARK_VERIFIED = "mark_verified"
 GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
 GRADE_UNVERIFIED = "unverified"
@@ -1104,8 +1113,14 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     cloud_verdict = (
         post_apply.get("overall_passed") if isinstance(post_apply, Mapping) else None
     )
-    if outcome == "pass" or isinstance(cloud_verdict, bool):
+    if isinstance(cloud_verdict, bool):
+        # A walked post-apply position group — the widest claim available.
         state = GRADE_GRADED
+    elif outcome == "pass":
+        # Verified at the mark only. On express that is the whole grade by
+        # design; on full it means VERIFY passed but the post-apply group has
+        # not closed yet.
+        state = GRADE_MARK_VERIFIED
     elif outcome == "inconclusive":
         state = GRADE_INCONCLUSIVE
     elif outcome == "fail":
@@ -1114,7 +1129,7 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         state = GRADE_UNVERIFIED
     return {
         "state": state,
-        "graded": state == GRADE_GRADED,
+        "graded": state in {GRADE_GRADED, GRADE_MARK_VERIFIED},
         "verify_outcome": outcome or None,
         "post_apply_spec_passed": cloud_verdict if isinstance(cloud_verdict, bool) else None,
     }

@@ -1205,10 +1205,23 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # the post-apply group by design). A failing grade already has its own
         # screen; this is the case where no check finished at all.
         elif not _mapping(v2.get("post_apply_grade")).get("graded", True):
+            # Two different silences, two different sentences. "Never finished"
+            # is false for an INCONCLUSIVE check — that one ran to completion
+            # and could not decide, which is a different thing to tell someone
+            # and points at a different fix (a quieter room, not a retry of a
+            # step that died).
+            grade_state = str(
+                _mapping(v2.get("post_apply_grade")).get("state") or ""
+            )
             done_verdict = (
-                "Your speaker is tuned, but the check that confirms it never "
-                "finished, so this result is unverified. Re-verify to confirm "
-                "it, or undo to restore the previous sound."
+                "Your speaker is tuned, but the check that confirms it could "
+                "not tell either way — the room reflection cut the window "
+                "short. Re-verify to try again, or undo to restore the "
+                "previous sound."
+                if grade_state == "inconclusive"
+                else "Your speaker is tuned, but the check that confirms it "
+                "never finished, so this result is unverified. Re-verify to "
+                "confirm it, or undo to restore the previous sound."
             )
         alternate_actions = [
             {
