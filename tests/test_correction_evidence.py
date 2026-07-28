@@ -71,6 +71,46 @@ def test_acoustic_quality_report_promotes_snr_to_summary():
     assert report["summary"]["min_estimated_snr_db"] == 38.0
 
 
+def test_acoustic_quality_report_marks_the_band_snr_scale():
+    """#1838: bundles written before and after the band-power fix carry
+    `band_snr` / `min_band_snr_db` / `band_noise_dbfs` on scales ~12 dB
+    apart, with identical keys and units — indistinguishable on disk.
+
+    Three consumers read those numbers across bundles (the doctor, the
+    bundle-collection summary, and the calibration agent's advisor packet),
+    so a marker has to travel with them or a model will diff across the
+    discontinuity and report a ~12 dB regression that is entirely the
+    estimator. Absence of the marker means the OLD scale; the value is
+    deliberately a string, not a version bump, because the artifact's SHAPE
+    did not change.
+    """
+    report = acoustic_quality.build_acoustic_quality_report(
+        session_id="abc",
+        capture_quality=[{
+            "capture_kind": "measurement",
+            "position_index": 0,
+            "artifact_path": "captures/p0.wav",
+            "rms_dbfs": -32.0,
+            "peak_dbfs": -12.0,
+            "noise_floor_dbfs": -70.0,
+            "estimated_snr_db": 38.0,
+            "band_snr": [
+                {"band_id": "sub_bass", "estimated_snr_db": 30.0},
+            ],
+            "issues": [],
+        }],
+    )
+
+    assert acoustic_quality.BAND_SNR_SCALE == "band_power_v2"
+    # Present at the root, where a whole-report reader looks...
+    assert report["summary"]["band_snr_scale"] == acoustic_quality.BAND_SNR_SCALE
+    # ...and beside the per-capture numbers themselves, since a consumer can
+    # read one capture's `snr` block in isolation.
+    snr_block = report["captures"][0]["snr"]
+    assert snr_block["band_snr_scale"] == acoustic_quality.BAND_SNR_SCALE
+    assert snr_block["min_band_snr_db"] == 30.0
+
+
 def test_evidence_repeatability_scores_matching_bundles(tmp_path: Path):
     first = _write_repeat_bundle(tmp_path, "first", [0, 1, 2, 1, 0])
     second = _write_repeat_bundle(tmp_path, "second", [0, 1.2, 2.1, 0.9, 0])

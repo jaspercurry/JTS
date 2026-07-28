@@ -796,12 +796,30 @@ reference spectrum: a well-known "resonance" artifact of that kind of
 regularization, not a measurement. Independent FFT analysis of the same raw
 quiet windows put the room's true `sub_bass` ambient at about −75 dBFS,
 stable across all three sessions; the deconvolved noise term the estimator
-reported was about −25 dBFS — **the reported per-band SNR was overstated by
-roughly 40-50 dB.** Every "insufficient" verdict W2.1's escalation, W2.2's
+reported was about −25 dBFS — **the NOISE term was overstated by roughly
+40-50 dB, so the reported per-band SNR was UNDERSTATED by that much.**
+(Corrected 2026-07-28, #1838: this sentence used to say the SNR was
+overstated, which inverts it — the paragraph's own numbers, 13-16 dB
+reported against 63-66 dB true, are the understatement. Two later
+restatements inherited the error; all three are fixed.) Every "insufficient" verdict W2.1's escalation, W2.2's
 clip correction, and W2.3's completion-time correction were built to react
 to — across the runs 1-20 correction/refusal cascade this section
 documents — was chasing that phantom, not real room noise: true `sub_bass`
 SNR was roughly 63-66 dB, comfortably "ok".
+
+> **#1838 note.** The independent-FFT figure above (≈ −75 dBFS) is the
+> correct one, and the shipped `band_levels_dbfs` could not have reproduced
+> it: until #1838 that function returned a per-BIN mean rather than band
+> power, reading 18-39 dB low and clamping wide bands flat at
+> `DBFS_FLOOR`. The 63-66 dB SNR figure was computed with that broken raw
+> term and must be re-derived. Note also that the two defects point in
+> OPPOSITE directions. The phantom artifact inflated the deconvolved NOISE
+> term in uncovered bands, so it **understated** SNR by 40-50 dB (a quiet
+> room read "insufficient"). #1838's band-power defect deflated every raw
+> ambient level by 18-39 dB, so wherever that level is the noise term it
+> **overstated** SNR — and where it is read absolutely, it made the room
+> look far quieter than it was. Do not conflate them, and do not "fix" one
+> twice.
 
 Fix: `jasper.audio_measurement.snr_policy.excitation_covered_bands` flags
 any canonical band not ENTIRELY inside the reference sweep's `[f1, f2]`
@@ -812,20 +830,27 @@ regression). `apply_noise_band_fallback` substitutes the raw
 actually did, already computed for the small robust-minus-baseline
 non-stationarity delta but previously unused for gating — for exactly those
 uncovered bands, UNLESS that raw reading is itself floor-clamped at
-`snr_policy.DBFS_FLOOR` (no real precision left to trust either; the real
-hardware `treble` shape, entirely above a woofer's `f2=4000 Hz`, where the
-phone mic's own noise floor at 4-12 kHz reads as pure digital silence — that
-band keeps its pre-fix deconvolved value rather than reporting a clamped
-number as a real measurement). Covered bands (bass/upper_bass/transition/mid
+`snr_policy.DBFS_FLOOR` (no real precision left to trust either — that band
+keeps its deconvolved value rather than reporting a clamped number as a real
+measurement). This paragraph used to explain the observed hardware `treble`
+clamp as the phone mic's own 4-12 kHz noise floor "reading as pure digital
+silence"; **that explanation was wrong (#1838)** — the #1838 forensics
+measured that room's true `treble` at −90.99 dBFS, which the pre-fix
+estimator reported 46 dB lower and therefore clamped. With the estimator
+fixed the band returns a real level and takes the `raw_ambient_fallback`
+branch. Covered bands (bass/upper_bass/transition/mid
 in the real captures, and every band on the DEFAULT 20 Hz-20 kHz
-single-driver sweep) keep their reported level unchanged — the fix only adds
-the additive diagnostic `basis` key (`"deconvolved"` vs
-`"raw_ambient_fallback"`) each band entry now carries.
-This is scoped to the noise TERM only: the signal-side magnitude
+single-driver sweep) keep their reported level unchanged **by that fix** —
+it only adds the additive diagnostic `basis` key (`"deconvolved"` vs
+`"raw_ambient_fallback"`) each band entry now carries; #1838 separately
+re-scaled the raw estimator, which moves every raw-path level.
+The phantom fix is scoped to the noise TERM only: the signal-side magnitude
 computation, the verdict vocabulary, and every consumer of the SNR block
 (`band_snr_verdicts`, `worst_band_verdict`, the W2.1-W2.3 completion-
 correction machinery above) are unchanged — their inputs simply became
-truthful. Ground-truth fixtures (compact per-band numeric tables, not WAV
+truthful. (#1838's re-scaling is NOT so scoped: `band_levels_dbfs` is also
+the signal-side estimator for room correction's `capture_band_snr` and for
+`driver_acoustics`' raw capture path.) Ground-truth fixtures (compact per-band numeric tables, not WAV
 blobs) and the synthetic protective-power cases (a genuinely noisy quiet
 window must still read "insufficient") are pinned in
 `tests/test_audio_measurement_snr_policy.py` and
@@ -2050,7 +2075,10 @@ behind the runs-1-20 SNR shortfall W2.1-W2.4 above were built to react to
 validation: sub_bass moved from 13-16 dB "insufficient" to 62-66 dB "ok"
 on all three; every other band's reported level is bit-for-bit unchanged)
 and pinned by ground-truth fixtures plus synthetic protective-power cases;
-not yet hardware-validated on a live re-measure.) Same-day follow-up
+not yet hardware-validated on a live re-measure. Those absolute dB figures
+are pre-#1838 and no longer reproduce — see the #1838 note in "Level
+control and SNR" above; the mechanism is unaffected, the numbers need
+re-deriving.) Same-day follow-up
 (2026-07-17): the durable-record eligibility fix — JTS3 run 22 accepted a
 full woofer near-field repeat set (60.9 dB SNR, `overlap_levels` usable)
 yet the wizard still rendered the completed-insufficient terminal above.

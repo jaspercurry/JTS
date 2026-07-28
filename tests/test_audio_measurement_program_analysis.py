@@ -64,6 +64,7 @@ from jasper.audio_measurement.program_analysis import (
     IR_POST_MS,
     IR_PRE_MS,
     GAIN_BOUND_CAPTURE_FLOOR,
+    GAIN_BOUND_DEGENERATE_AMBIENT,
     GAIN_BOUNDS,
     GAIN_BOUND_FLAT_TARGET,
     GAIN_BOUND_NO_AMBIENT_EVIDENCE,
@@ -78,6 +79,7 @@ from jasper.audio_measurement.program_analysis import (
     RIPPLE_TRIM_MIN_DB,
     RIPPLE_TRIM_SANITY_MARGIN_DB,
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
+    SWEEP_PEAK_TO_RMS_DB,
     AlignmentEstimate,
     MeasurementGeometry,
     MeasurementPriors,
@@ -1496,33 +1498,65 @@ def test_ambient_rows_in_band_skips_rows_it_cannot_read():
     assert rows == [(160.0, 350.0, -60.0)]
 
 
-def test_measure_level_solve_holds_the_capture_quality_floor():
-    """A near-silent ambient report would let the SNR math alone propose an
-    inaudible sweep; `DRIVER.peak_too_low_dbfs` is the backstop."""
-    plan = _solve(_ambient())  # every band at -100 dBFS
+def test_measure_level_solve_refuses_a_degenerate_ambient_report(caplog):
+    """D2 (#1838): the capture floor winning is a REFUSAL, not a level.
+
+    A near-silent ambient report lets the SNR math propose an inaudible
+    sweep. `DRIVER.peak_too_low_dbfs` catches that — and until #1838 the
+    solve then SHIPPED the floor, which is exactly what killed session
+    cap_-Us10xORVNlFa_dgi-sP7g: both roles solved to a -45 dBFS capture
+    target, 34 dB below flat, and the guards that should have caught it
+    (pilot SNR, sweep locate) were computed from the same collapsed ambient
+    report and could not bound it by construction. Every arm resolving below
+    a level too faint to measure means the ambient evidence is not solvable,
+    so the honest answer is today's proven flat target plus a named reason.
+    """
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.program_analysis"):
+        plan = _solve(_ambient())  # every band at -100 dBFS
     for role in ("woofer", "tweeter"):
         solve = plan.role_solves[role]
-        assert solve.bound_by == GAIN_BOUND_CAPTURE_FLOOR
-        # k == 0 in this fixture, so the gain IS the capture target.
-        assert solve.gain_db == pytest.approx(DRIVER_PEAK_TOO_LOW_DBFS)
-        assert solve.gain_db < solve.flat_target_gain_db
+        assert solve.bound_by == GAIN_BOUND_DEGENERATE_AMBIENT
+        # The refusal keeps today's level — never quieter, never the floor.
+        assert solve.gain_db == pytest.approx(solve.flat_target_gain_db)
+        assert solve.reduction_db == pytest.approx(0.0)
+        assert solve.gain_db > DRIVER_PEAK_TOO_LOW_DBFS
+        # `capture_floor` survives in the vocabulary — solves persisted
+        # before #1838 carry it — but the solver never emits it again.
+        assert solve.bound_by != GAIN_BOUND_CAPTURE_FLOOR
+    assert GAIN_BOUND_CAPTURE_FLOOR in GAIN_BOUNDS
+    # And it is not silent: one structured WARNING per refused role, carrying
+    # the arms it refused so the refusal is diagnosable from the journal.
+    refusals = [
+        r for r in caplog.records
+        if "event=program_analysis.measure_level_solve_refused" in r.getMessage()
+    ]
+    assert len(refusals) == 2
+    assert all("reason=degenerate_ambient" in r.getMessage() for r in refusals)
+    assert all("required_capture_dbfs=" in r.getMessage() for r in refusals)
 
 
-def test_measure_level_solve_reports_the_room_demand_even_when_a_floor_wins():
+def test_measure_level_solve_reports_the_room_demand_even_when_it_is_refused():
     """`required_capture_dbfs` is the ROOM-SNR demand specifically, not the
     capture peak finally aimed at. Pinned because the two diverge exactly when
-    a floor wins, and a reader of the disclosure event must not mistake one
-    for the other — `bound_by` is what says which number bound the level."""
-    # Near-silent room ⇒ the capture floor wins, and the room demand it
-    # overrode stays visible and stays BELOW the level actually scheduled.
+    another arm wins, and a reader of the disclosure event must not mistake
+    one for the other — `bound_by` is what says which number bound the level.
+
+    Since #1838 the demand is a quadruple, not a triple: ambient + required
+    SNR + the stimulus crest factor that converts a band-RMS demand into the
+    capture-PEAK units `k_db` and the flat target are expressed in.
+    """
+    # Near-silent room ⇒ the solve is refused, and the room demand it
+    # rejected stays visible on the disclosure.
     plan = _solve(_ambient())
     for solve in plan.role_solves.values():
-        assert solve.bound_by == GAIN_BOUND_CAPTURE_FLOOR
+        assert solve.bound_by == GAIN_BOUND_DEGENERATE_AMBIENT
+        assert solve.crest_factor_db is not None
         assert solve.required_capture_dbfs == pytest.approx(
-            solve.ambient_dbfs + solve.required_snr_db
+            solve.ambient_dbfs + solve.required_snr_db + solve.crest_factor_db
         )
-        assert solve.required_capture_dbfs < solve.gain_db  # k == 0 here
-        assert solve.gain_db == pytest.approx(DRIVER_PEAK_TOO_LOW_DBFS)
+        # The refused demand really was below the capture floor — that is
+        # what made it degenerate.
+        assert solve.required_capture_dbfs < DRIVER_PEAK_TOO_LOW_DBFS
 
 
 def test_measure_level_solve_respects_the_pilot_snr_floor():
@@ -1553,6 +1587,10 @@ def test_measure_level_solve_respects_the_pilot_snr_floor():
         )
         assert solve.gain_db == pytest.approx(
             worst_ambient + 30.0 + PILOT_MIN_SNR_DB + MEASURE_SNR_SOLVE_MARGIN_DB
+            # D6 (#1838): the pilot floor is peak-expressed too. A pilot is a
+            # swept sine over the role's WHOLE band, so its occupancy term is
+            # 1 and only the peak-to-RMS constant carries.
+            + SWEEP_PEAK_TO_RMS_DB
         )
         # …and still quieter than today, never louder.
         assert solve.gain_db < solve.flat_target_gain_db
@@ -1607,10 +1645,17 @@ def test_measure_level_solve_is_per_driver_on_the_jts3_shape():
     relative to ``|X|**2``, so the drive cancels mathematically exactly. That
     11.5 dB is a sensitivity delta, not a drive delta, and cannot be this
     change's acceptance target.
+
+    The ambient rows are the MEASURED jts3 room (#1838's forensics: Parseval
+    ground truth recomputed from the retained CHECK WAV of session
+    cap_-Us10xORVNlFa_dgi-sP7g, 2026-07-28 evening) rather than the
+    illustrative levels this fixture carried before. Same LF-dominated shape,
+    real numbers — and the room that broke the solve is the right room to
+    anchor the corrected one against.
     """
     ambient = _ambient(
-        sub_bass=-48.0, bass=-52.0, upper_bass=-58.0,
-        transition=-62.0, mid=-74.0, treble=-80.0,
+        sub_bass=-57.86, bass=-69.35, upper_bass=-68.13,
+        transition=-71.24, mid=-81.51, treble=-90.99,
     )
     plan = _solve(ambient, k_db={"woofer": -6.0, "tweeter": 12.0}, fc_hz=2000.0)
     woofer, tweeter = plan.role_solves["woofer"], plan.role_solves["tweeter"]
@@ -1628,6 +1673,96 @@ def test_measure_level_solve_is_per_driver_on_the_jts3_shape():
     # And the two roles' gains genuinely differ (a shared reduction would
     # have preserved the pre-existing skew instead of solving it away).
     assert plan.gain_db["woofer"] != pytest.approx(plan.gain_db["tweeter"])
+
+
+def test_sweep_band_crest_factor_matches_the_rendered_sweep():
+    """D6 (#1838): the crest law is measured against the real stimulus, not
+    asserted.
+
+    `sweep_band_crest_factor_db` claims a swept sine's peak sits
+    ``3.01 + 10*log10(ln(f2/f1)/ln(hi/lo))`` dB above its RMS inside
+    ``[lo, hi]``. This renders both production MEASURE sweeps through
+    `program.segment_stimulus`'s own generator and measures that distance
+    directly, Parseval-style.
+
+    The measurement deliberately uses a RECTANGULAR window rather than
+    `snr_policy.band_levels_dbfs`. That estimator's Hann window is correct for
+    the stationary ambient it reads, but a sweep is non-stationary: the window
+    attenuates whichever frequencies happen to occur near the ends of the
+    capture, which on a 4 s woofer sweep misreports the band split by tens of
+    dB. Reading the crest through it would measure the window, not the sweep.
+    """
+    from jasper.audio_measurement.sweep import synchronized_swept_sine
+
+    def measured_crest_db(x, sample_rate, lo, hi):
+        n = x.size
+        power = np.abs(np.fft.rfft(x)) ** 2 * 2.0
+        power[0] /= 2.0
+        if n % 2 == 0:
+            power[-1] /= 2.0
+        freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
+        mask = (freqs >= lo) & (freqs < hi)
+        band_dbfs = 10.0 * math.log10(float(np.sum(power[mask])) / (n * n))
+        peak_dbfs = 20.0 * math.log10(float(np.max(np.abs(x))))
+        return peak_dbfs - band_dbfs
+
+    sample_rate = 48000
+    for (f1, f2), duration_s in (((150.0, 2000.0), 4.0), ((1500.0, 23000.0), 3.0)):
+        stimulus, _ = synchronized_swept_sine(
+            f1=f1, f2=f2, duration_approx_s=duration_s,
+            sample_rate=sample_rate, amplitude_dbfs=0.0,
+        )
+        stimulus = np.asarray(stimulus, dtype=np.float64)
+        # The whole sweep band: pure peak-to-RMS, no occupancy term.
+        assert measured_crest_db(stimulus, sample_rate, f1, f2) == pytest.approx(
+            SWEEP_PEAK_TO_RMS_DB, abs=0.1
+        )
+        for _band_id, lo, hi in _SOLVE_BANDS:
+            lo_clipped, hi_clipped = max(lo, f1), min(hi, f2)
+            if hi_clipped <= lo_clipped:
+                continue
+            predicted = program_analysis.sweep_band_crest_factor_db(
+                (f1, f2), (lo, hi)
+            )
+            measured = measured_crest_db(
+                stimulus, sample_rate, lo_clipped, hi_clipped
+            )
+            # 0.7 dB covers the one 10 Hz-wide clipped sliver in the set,
+            # where FFT bin granularity (not the law) is the limit; every
+            # other row agrees to within 0.05 dB.
+            assert measured == pytest.approx(predicted, abs=0.7), (f1, f2, lo, hi)
+
+
+def test_measure_level_solve_lands_in_a_sane_regime_on_the_field_session():
+    """The #1838 acceptance arithmetic, pinned: the corrected solve on the
+    REAL inputs of session cap_-Us10xORVNlFa_dgi-sP7g (JTS3, 2026-07-28
+    evening, build 790c10864) lands between this morning's flat levels and
+    the levels the broken solve actually shipped.
+
+    What the session shipped: `band_levels_dbfs` reported that room 25-46 dB
+    quieter than it was, both roles hit the capture floor, and MEASURE played
+    33-34 dB below flat — inaudible to its own pilots and its own sweep
+    locator. This asserts the same room, read correctly, produces a REAL but
+    modest backoff instead, and that both roles stay well clear of the floor.
+    """
+    ambient = _ambient(  # Parseval ground truth from the retained CHECK WAV
+        sub_bass=-57.86, bass=-69.35, upper_bass=-68.13,
+        transition=-71.24, mid=-81.51, treble=-90.99,
+    )
+    plan = _solve(ambient, k_db={"woofer": -6.0, "tweeter": 12.0}, fc_hz=2000.0)
+    shipped_reduction_db = {"woofer": 33.0, "tweeter": 34.5}
+    for role, solve in plan.role_solves.items():
+        # A solved level, from real evidence — not a refusal, not the floor.
+        assert solve.bound_by == GAIN_BOUND_ROOM_SNR
+        assert 0.0 < solve.reduction_db < shipped_reduction_db[role]
+        # The capture this asks for is comfortably above "too low to trust",
+        # which is the property the shipped solve lost.
+        assert solve.required_capture_dbfs > DRIVER_PEAK_TOO_LOW_DBFS + 10.0
+    # The woofer's band is the noisy one, so it barely moves; the tweeter's
+    # is ~12 dB quieter and carries the 41 dB alignment demand, so it moves
+    # further. Both directions are the mechanism, not a tuned constant.
+    assert plan.role_solves["woofer"].reduction_db < 12.0
+    assert plan.role_solves["tweeter"].reduction_db > 15.0
 
 
 def test_measure_level_solve_leaves_the_snr_floor_gate_untouched():
@@ -1795,11 +1930,19 @@ def test_pilot_min_snr_db_matches_its_own_derivation():
 def test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail():
     """When the quiet (lo) pilot's own in-band SNR is too low to trust the
     ambient-subtracted estimate, the verdict must NOT be a linearity
-    FAILURE — ``linearity_ok`` stays True — while ``snr_valid``/
-    ``pilot_snr_ok`` flags the low-confidence evidence so the conductor can
-    route to the honest room/positioning reason (``REASON_SNR_FLOOR``),
-    never blaming the phone's AGC
-    (``crossover_v2_flow._consume_check``)."""
+    FAILURE — while ``snr_valid``/``pilot_snr_ok`` flags the low-confidence
+    evidence so the conductor can route to the honest room/positioning
+    reason (``REASON_SNR_FLOOR``), never blaming the phone's AGC
+    (``crossover_v2_flow._consume_check``).
+
+    D7 (#1838): not a FAILURE, and not a PASS either — ``linearity_ok`` is
+    ``None``. It was forced ``True`` until then, which is how session
+    cap_-Us10xORVNlFa_dgi-sP7g published ``linearity_ok=true`` beside a
+    captured delta of -60.9 dB against a programmed 10.0 dB. The aggregate
+    follows the same rule: one unknown role makes the capture's verdict
+    unknown, because "the role we could read was fine" is a different claim
+    from "the pilots were linear".
+    """
     # Strong in-woofer-band rumble, loud enough to bury the QUIET (-10 dB)
     # woofer pilot's own in-band power near the ambient floor. The tweeter's
     # disjoint band is unaffected — only the woofer's evidence is untrusted.
@@ -1808,10 +1951,38 @@ def test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail():
     woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
     tweeter_pilot = next(p for p in res.pilots if p.role == "tweeter")
     assert woofer_pilot.snr_valid is False
-    assert woofer_pilot.linearity_ok is True  # forced — never a false FAILURE
+    assert woofer_pilot.linearity_ok is None  # unknown — never a false FAILURE
     assert tweeter_pilot.snr_valid is True
+    assert tweeter_pilot.linearity_ok is True
     assert res.pilot_snr_ok is False
-    assert res.linearity_ok is True
+    assert res.linearity_ok is None
+
+
+def test_pilot_linearity_aggregate_is_tri_state():
+    """D7 (#1838): FAILURE wins, then UNKNOWN, then PASS.
+
+    Pinned directly because the reduction used to be ``all(...)``, and
+    Python folds ``None`` to False there — so the moment an unreadable pilot
+    started reporting ``None`` instead of ``True``, a plain ``all()`` would
+    have turned every unknown into a linearity FAILURE and produced exactly
+    the mic accusation the low-SNR routing exists to prevent.
+    """
+    def _pilot(role, linearity_ok):
+        return PilotObservation(
+            role=role, level_lo_dbfs=-30.0, level_hi_dbfs=-20.0,
+            programmed_delta_db=10.0, captured_delta_db=10.0,
+            linearity_ok=linearity_ok, channel_map_ok=True,
+        )
+
+    aggregate = program_analysis._aggregate_linearity_ok
+    assert aggregate([]) is None
+    assert aggregate([_pilot("w", True), _pilot("t", True)]) is True
+    assert aggregate([_pilot("w", True), _pilot("t", None)]) is None
+    assert aggregate([_pilot("w", None), _pilot("t", None)]) is None
+    # A real failure still outranks an unknown — an unreadable sibling role
+    # must not launder a driver that genuinely failed.
+    assert aggregate([_pilot("w", False), _pilot("t", None)]) is False
+    assert aggregate([_pilot("w", False), _pilot("t", True)]) is False
 
 
 # --------------------------------------------------------------------------- #

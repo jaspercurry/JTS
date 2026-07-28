@@ -1028,6 +1028,11 @@ class MeasurementSession:
             "rms_dbfs": round(_dbfs(rms), 2),
             "peak_dbfs": round(_dbfs(peak), 2),
             "band_noise_dbfs": _band_levels_dbfs(samples64, sample_rate),
+            # #1838: which estimator produced `band_noise_dbfs`. This dict is
+            # persisted into the bundle and re-read later, so it carries the
+            # marker itself rather than relying on the enclosing report's.
+            # Absent = the pre-#1838 per-bin scale; do not diff across it.
+            "band_snr_scale": acoustic_quality.BAND_SNR_SCALE,
             "method": "pre_sweep_silence_wav",
         }
 

@@ -293,9 +293,17 @@ def test_pilots_drowned_in_room_noise_fail_snr_not_linearity(phase):
     failure and the household was told its phone's microphone had misbehaved.
 
     With the guard live the verdict is ``pilot_snr_ok=False``, and
-    ``linearity_ok`` is FORCED True — an untrustworthy estimate must never
-    register as a linearity failure. Both halves are asserted: the second is
-    what makes the conductor's routing honest rather than merely reordered.
+    ``linearity_ok`` is UNKNOWN (``None``) — an untrustworthy estimate must
+    never register as a linearity failure. Both halves are asserted: the
+    second is what makes the conductor's routing honest rather than merely
+    reordered.
+
+    ``None``, not ``True``, since D7 of issue #1838: forcing True kept the
+    verdict out of the FAILURE branch but made an unreadable capture read as
+    a PASS to anything that did not also check ``pilot_snr_ok`` — which is
+    how a session published ``linearity_ok=true`` beside a -60.9 dB captured
+    delta against a programmed 10.0 dB. Both consumers of this flag branch on
+    ``is False``, so the FAILURE-suppression property is unchanged.
     """
     prog = _measure_program() if phase == "measure" else _verify_pilot_program()
     cap = _synthesize(prog)
@@ -316,7 +324,8 @@ def test_pilots_drowned_in_room_noise_fail_snr_not_linearity(phase):
     )
     assert res.pilot_snr_ok is False
     assert res.pilots[0].snr_db < PILOT_MIN_SNR_DB
-    assert res.linearity_ok is True
+    assert res.linearity_ok is None
+    assert res.linearity_ok is not False  # never the mic accusation
 
 
 @pytest.mark.parametrize("phase", ["measure", "verify"])

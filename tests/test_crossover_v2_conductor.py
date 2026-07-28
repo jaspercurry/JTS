@@ -849,13 +849,21 @@ def test_sweep_schedule_fires_on_large_residual_even_with_good_confidence():
     assert _run_phase(c, 2, 3)["accepted"] is True
 
 
-def test_sweep_schedule_fires_on_low_confidence_even_with_small_residual():
-    """The CONFIDENCE half of the gate — mirrors the 2026-07-22 xrun
-    evidence's 0.07-0.12 per-segment confidence, here with a negligible
-    residual so only the confidence floor is exercised. 0.12 clears
-    LOCATE_MIN_CONFIDENCE (0.1, the pre-existing ``_stimulus_locate_ok``
-    check earlier in the ladder) but is still under
-    SWEEP_LOCATE_CONFIDENCE_FLOOR (0.3), so G2 alone is what fires here."""
+def test_weakly_located_sweep_reads_too_quiet_not_glitched():
+    """D3 (#1838): the CONFIDENCE half of G2 is a LEVEL verdict, not a glitch.
+
+    Mirrors the 2026-07-22 xrun evidence's 0.07-0.12 per-segment confidence
+    with a negligible residual, so only the confidence floor is exercised.
+    0.12 clears LOCATE_MIN_CONFIDENCE (0.1) but is under
+    SWEEP_LOCATE_CONFIDENCE_FLOOR (0.3).
+
+    Until #1838 this returned `drift_baselines_disagree` + a silent auto
+    retry — the household was told its capture had glitched, and the flow
+    re-ran the same level. A sweep the locator can barely find was not
+    spliced; it was too quiet to hear, and re-running it at the same level
+    cannot succeed. `locate_failed` says so ("couldn't hear the speaker
+    clearly — check the volume and the microphone") and does not auto-retry.
+    """
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
@@ -868,8 +876,64 @@ def test_sweep_schedule_fires_on_low_confidence_even_with_small_residual():
         ),
     )
     verdict = _run_phase(c, 2, 2)
-    assert verdict["code"] == "drift_baselines_disagree"
-    assert verdict["template"] == "silent_auto_retry"
+    assert verdict["code"] == "locate_failed"
+    # Positive assertion: the household is asked to fix the level and retry,
+    # not silently re-run at the same one. (`!= "silent_auto_retry"` would
+    # also pass if the template were renamed or dropped.)
+    assert verdict["template"] == "fix_and_retry"
+    assert not verdict.get("auto_retry")
+
+
+def test_buried_measure_capture_reads_too_quiet_not_glitched():
+    """D3 (#1838), the whole field shape at once: session
+    cap_-Us10xORVNlFa_dgi-sP7g's MEASURE played 33 dB below flat, so its
+    pilots sank under their SNR floor, its sweeps located at 0.03, the
+    mis-located sweeps produced a 1018-sample residual, and the residual
+    tripped `glitch_detected` on noise.
+
+    Every one of those is downstream of one cause: nobody could hear the
+    capture. With the glitch branch second in the ladder the household was
+    told "capture glitched", the flow silently re-armed the same unwinnable
+    level, and the session burned 120 s of dead air into a CaptureTimeout.
+    The verdict has to name the level.
+
+    The pilots are given real confidence on purpose: they WERE located that
+    evening (the SNR guard read 11.22 dB against a 12.38 dB floor, which it
+    could only do on a located pair), and they are what let the capture past
+    the first `_stimulus_locate_ok` gate.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        pilot_snr_ok=False,
+        glitch=True,
+        sweep_locations=(
+            _loc("pilot_woofer_lo", kind="pilot", confidence=0.5),
+            _loc("pilot_woofer_hi", kind="pilot", confidence=0.6),
+            _loc("sweep_w", confidence=0.0298, residual_samples=1018.0),
+            _loc("sweep_t", confidence=0.0298, residual_samples=1018.0),
+            _loc("sweep_w_rep", confidence=0.0298, residual_samples=1018.0),
+        ),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["code"] == "pilot_level_collapse"
+    assert not verdict.get("auto_retry")
+
+    # And with the pilots healthy, the same buried sweeps still read as a
+    # level problem — the weak-locate gate, not the glitch branch.
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        glitch=True,
+        sweep_locations=(
+            _loc("pilot_woofer_lo", kind="pilot", confidence=0.5),
+            _loc("sweep_w", confidence=0.15, residual_samples=1018.0),
+            _loc("sweep_t", confidence=0.15, residual_samples=1018.0),
+            _loc("sweep_w_rep", confidence=0.15, residual_samples=1018.0),
+        ),
+    )
+    assert _run_phase(c, 2, 3)["code"] == "locate_failed"
 
 
 def test_sweep_schedule_clean_capture_passes():
@@ -924,6 +988,52 @@ def test_sweep_schedule_ignores_pilot_segments():
     )
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
+
+
+def test_stimulus_locate_floor_is_per_role_not_per_capture():
+    """D8 (#1838): one clearly-located driver must not clear the gate for a
+    driver nobody heard.
+
+    `_stimulus_locate_ok` was `max(confidences) >= LOCATE_MIN_CONFIDENCE`
+    across every stimulus segment in the capture — on a two-driver program
+    that is effectively no floor at all: a confidently-located woofer let a
+    silent tweeter through to be analysed as if it had been measured.
+
+    Per ROLE, not per SEGMENT: a two-level pilot pair's quiet side locates
+    more coarsely by design, so the rule is "every role had at least one
+    stimulus we could find", not "every segment was easy to find".
+    """
+    from jasper.active_speaker.crossover_v2_flow import _stimulus_locate_ok
+
+    def _analysis(locations):
+        return types.SimpleNamespace(locations=locations)
+
+    def _role_loc(segment_id, role, confidence, kind="sweep"):
+        return SegmentLocation(
+            segment_id=segment_id, kind=kind, role=role,
+            scheduled_start=0, located_start=0, residual_samples=0.0,
+            confidence=confidence, peak_dbfs=-12.0, clipped=False,
+        )
+
+    # The hole this closes: woofer loud and clear, tweeter inaudible.
+    assert not _stimulus_locate_ok(_analysis((
+        _role_loc("sweep_w", "woofer", 0.9),
+        _role_loc("sweep_t", "tweeter", 0.02),
+    )))
+    # Both heard: passes.
+    assert _stimulus_locate_ok(_analysis((
+        _role_loc("sweep_w", "woofer", 0.9),
+        _role_loc("sweep_t", "tweeter", 0.4),
+    )))
+    # A role's weak quiet pilot does NOT sink a role that also has a
+    # confidently-located segment.
+    assert _stimulus_locate_ok(_analysis((
+        _role_loc("pilot_woofer_lo", "woofer", 0.05, kind="pilot"),
+        _role_loc("sweep_w", "woofer", 0.9),
+        _role_loc("sweep_t", "tweeter", 0.4),
+    )))
+    # Nothing located at all is still a failure.
+    assert not _stimulus_locate_ok(_analysis(()))
 
 
 def test_locate_failed_and_budget_exhaustion():

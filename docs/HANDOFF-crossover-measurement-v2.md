@@ -259,9 +259,14 @@ changed. MEASURE refuses a candidate whose `predicted_ripple_db` exceeds
 predicted 27.3 dB where every clean capture that day predicted 4.4–9.0 —
 reuses `low_alignment_confidence`, same household action). MEASURE
 rejects-and-auto-retries as a glitch when any sweep locates off schedule
-(`_sweep_schedule_ok`: |residual| > 5 ms or locate confidence < 0.3; the
-xrun signature was −25…−28 ms at 0.07–0.12 confidence vs ≤1.5 ms at ≥0.69
-on every clean capture — reuses `drift_baselines_disagree`). VERIFY refuses
+(`_sweep_schedule_ok`: |residual| > 5 ms; the xrun signature was −25…−28 ms
+vs ≤1.5 ms on every clean capture — reuses `drift_baselines_disagree`).
+**The locate-confidence half of that gate split off in #1838** into
+`_sweep_locate_confidence_ok` (< 0.3; the xrun signature was 0.07–0.12 vs
+≥0.69 on every clean capture): a sweep the locator can barely find is a
+capture too quiet to hear, not a splice, so it answers `locate_failed`
+("check the volume and the microphone") and does NOT auto-retry a level
+that cannot win. VERIFY refuses
 with the new `verify_level_shift` reason (verify-fail template, budget 2)
 when a later attempt's summed-pilot transfer steps more than 0.35 dB from
 the session's first verify attempt (the phone chain stepped 0.75–0.82 dB
@@ -1238,13 +1243,13 @@ source, no drift.
 |---|---|---|---|
 | `agc_behavioral_fail` | CHECK / MEASURE / VERIFY | 1 | the captured two-pilot level delta did not match the programmed one, at an SNR where it should have. The phone's input chain riding gain OR the speaker's own output compressing — the copy names the observation, not a cause it never measures (#1810) |
 | `noisy_room_linearity` | CHECK | 1 | linearity failed *and* the ambient SNR floor failed — room, not phone |
-| `pilot_level_collapse` | MEASURE / cloud / VERIFY | 1 | the quiet pilot never cleared the room's in-band floor, so no level comparison from the pair is evidence — room too loud, or the playback level collapsed (e.g. a correction that dropped the pilot band). Checked BEFORE the linearity branch on all three phases, so a collapsed pair can never surface as the phone's fault (#1810) |
+| `pilot_level_collapse` | MEASURE / cloud / VERIFY | 1 | the quiet pilot never cleared the room's in-band floor, so no level comparison from the pair is evidence — room too loud, or the playback level collapsed (e.g. a correction that dropped the pilot band). Checked BEFORE the linearity branch on all three phases, so a collapsed pair can never surface as the phone's fault (#1810) — and on MEASURE, before the **glitch** branch too (#1838): low SNR causes the glitch signal, so asking the glitch first reported "capture glitched" for a capture nobody could hear |
 | `snr_floor` | CHECK | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16). CHECK-only — the other phases use `pilot_level_collapse` |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
 | `clipped` | MEASURE / VERIFY | 1 | auto quieter retry (gain −3 dB) |
-| `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped (#1765) |
+| `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped (#1765). Since #1838 a merely weakly-located sweep is NOT in this class — it answers `locate_failed` ahead of this branch |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
-| `locate_failed` | any | 1 | couldn't hear the speaker |
+| `locate_failed` | any | 1 | couldn't hear the speaker. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag) |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
 | `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current (evaluation `unconfirmed` / `stale` / `malformed` — all three are cleared by the one confirm action, which saves the visible values and rebuilds the profile). Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** confirm control here, so "confirm the safety limits" would name a button that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
@@ -1713,10 +1718,15 @@ no retries-as-bodge). Treat these as regression fences.
     pilot's own in-band SNR doesn't clear `PILOT_MIN_SNR_DB` (≈12.4 dB,
     derived from the tolerance + a bounded ambient-nonstationarity model
     — see the constant's comment), the estimate isn't trustworthy either
-    way: `linearity_ok` is forced True (never a false FAILURE) and
+    way: `linearity_ok` is `None` — UNKNOWN (#1838; it was forced *True*
+    until then, which kept it out of the FAILURE branch but read as a PASS
+    to anything that did not also check `pilot_snr_ok`, and is how a session
+    published `linearity_ok=true` beside a −60.9 dB captured delta against a
+    programmed 10.0 dB) — and
     `PilotObservation.snr_valid` / `ProgramAnalysis.pilot_snr_ok` flag it
     so `crossover_v2_flow._consume_check` routes to `snr_floor`, never
-    `agc_behavioral_fail`.
+    `agc_behavioral_fail`. The aggregate over roles is tri-state
+    (`_aggregate_linearity_ok`): FAILURE wins, then UNKNOWN, then PASS.
 17. **A pilot level used ABSOLUTELY needs a peak reference, not the
     ambient-subtracted linearity estimate** (2026-07-20, same PR as #16,
     caught in review). `_solve_gain_plan` computes `k = level - gain_db` —
@@ -1900,31 +1910,56 @@ no retries-as-bodge). Treat these as regression fences.
     the shipped split-SNR policy (`DRIVER.alignment_snr_ok_db` inside the
     crossover overlap window, where MEASURE's delay/polarity estimate
     lives; `DRIVER.snr_ok_db` outside it) plus
-    `MEASURE_SNR_SOLVE_MARGIN_DB`. Three things bound it: the old flat
+    `MEASURE_SNR_SOLVE_MARGIN_DB`, plus — since #1838 — the stimulus's own
+    crest factor (`sweep_band_crest_factor_db`), which converts that
+    band-RMS demand into the capture-PEAK units `k_db` and the flat target
+    are expressed in. Three things bound it: the old flat
     target is now the CEILING (this can only make MEASURE quieter or
     leave it alone), the leading pilot pair's own `PILOT_MIN_SNR_DB` guard
-    is a floor, and `DRIVER.peak_too_low_dbfs` is the backstop against a
-    near-silent ambient report proposing an inaudible sweep. Per-role
+    is a floor, and `DRIVER.peak_too_low_dbfs` is the degeneracy tripwire —
+    if it is the winning arm, the ambient evidence is not solvable at all,
+    so the solve is REFUSED and the role falls back to the flat target with
+    `bound_by=degenerate_ambient` and a WARNING (#1838 D2; before that it
+    shipped the floor, which is what the field session did). Per-role
     gains diverge; per-REPEAT gains do not (the drift estimator needs
     bit-identical repeats — `build_measure_program` applies one gain per
     role to every occurrence). `GainPlan.role_solves` carries the
     derivation into `check.json` and into
     `event=correction.crossover_v2_measure_level_solve`, including the
-    disclosed `no_ambient_evidence` fallback. **Not hardware-validated**
-    — the room-noise floor a real phone mic reports is what decides how
-    much this actually backs off.
+    disclosed `no_ambient_evidence` and `degenerate_ambient` fallbacks.
+    **Not hardware-validated** — the room-noise floor a real phone mic
+    reports is what decides how much this actually backs off.
 
-    **What to expect per driver.** The reduction is mostly the *tweeter's*.
-    The ambient table (`snr_policy.CROSSOVER_SNR_BANDS_HZ`) has wide rows and
-    overlap is overlap, so a woofer swept from 150 Hz clips the 80–160 Hz
-    `bass` row by 10 Hz and inherits that row's full, LF-heavy level —
-    expect woofers to report `bound_by=flat_target` (unchanged from today)
-    far more often than tweeters. The table also stops at 12 kHz, so a
-    tweeter's top ~2/3 octave contributes no demand; room noise there is
-    below every lower band in any real room, so the omitted rows cannot be
-    the ones that would have won. Both coarsenesses err LOUD — toward
-    today's behavior — which is why neither is worth a finer table before
-    bench data asks for one.
+    **What to expect per driver — REVISED by #1838.** The prediction that
+    stood here ("the reduction is mostly the *tweeter's*; expect woofers to
+    report `bound_by=flat_target` far more often") was computed against a
+    `band_levels_dbfs` that read every band 18–39 dB too quiet and clamped
+    the upper ones flat at `DBFS_FLOOR`. It should not be trusted. With the
+    estimator Parseval-correct and the crest term carried, the solve
+    re-run on the measured JTS3 room of session `cap_-Us10xORVNlFa_dgi-sP7g`
+    (`sub_bass −57.86`, `bass −69.35`, `upper_bass −68.13`,
+    `transition −71.24`, `mid −81.51`, `treble −90.99` dBFS) gives
+    `bound_by=room_snr` on BOTH roles: woofer −8.3 dB, tweeter −20.5 dB
+    against their flat targets. The mechanism is intact (the tweeter's band
+    is ~12 dB quieter *and* carries the 41 dB alignment demand, so it moves
+    further) but the woofer is no longer expected to pin at `flat_target`.
+    Treat any per-role `bound_by` distribution as unpredicted until bench
+    data lands. **Ambient numbers logged before #1838 are on a different
+    scale and additionally window-length-dependent — re-derive them, never
+    diff them against a new log line.**
+
+    The ambient table's two coarsenesses are unchanged, and both still err
+    LOUD — toward today's behavior. Its rows are wide and overlap is
+    overlap, so a woofer swept from 150 Hz clips the 80–160 Hz `bass` row by
+    10 Hz and inherits that row's full, LF-heavy level; the crest term now
+    compounds that (it is computed over the covered 10 Hz, correctly, while
+    the ambient level is still the whole row's), which is why `bass` is the
+    binding row in the JTS3 numbers above. The table also stops at 12 kHz,
+    so a tweeter's top ~2/3 octave contributes no demand; room noise there
+    is below every lower band in any real room, so the omitted rows cannot
+    be the ones that would have won. Neither is worth a finer table — nor
+    is restricting the ambient level to the covered slice, which would err
+    QUIET — before bench data asks for one.
 
     **The acceptance session is flying without one instrument.**
     `DriverResponse.snr` — the per-driver band-SNR block that would most

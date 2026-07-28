@@ -951,12 +951,16 @@ def test_narrow_excitation_sweep_still_flags_a_genuinely_noisy_quiet_window(
     EVERY covered band's deconvolved ambient reading — the overall
     "insufficient" was over-determined and said nothing per-band. Empirical
     note for future editors: the covered bands' deconvolved readings pick up
-    quiet-window energy at roughly (injected - 3 dB) while the sub_bass raw
-    fallback registers the same energy band-mean-diluted (~25 dB down), so
-    sub_bass can never be the WORST band in this synthetic shape — the
-    per-band assertions below are the teeth, scoping exactly which bands a
-    quiet 70 Hz tone degrades (bass) and which stay clean
-    (upper_bass/transition/mid)."""
+    quiet-window energy at roughly (injected - 3 dB), and since #1838 the
+    sub_bass raw fallback recovers the injected level itself (see the
+    assertion below) instead of reading ~25 dB low. On THIS fixture the two
+    domains therefore land within a few dB of each other — which is a
+    coincidence of a stationary injected tone, not a general claim that the
+    raw and deconvolved domains are commensurate; they are still different
+    units joined at one seam. sub_bass still is not the
+    WORST band in this synthetic shape — the per-band assertions below are
+    the teeth, scoping exactly which bands a quiet 70 Hz tone degrades
+    (bass) and which stay clean (upper_bass/transition/mid)."""
 
     reference, sweep_meta = sweep_mod.synchronized_swept_sine(
         f1=60.0, f2=4000.0, duration_approx_s=1.0, sample_rate=SR,
@@ -984,15 +988,19 @@ def test_narrow_excitation_sweep_still_flags_a_genuinely_noisy_quiet_window(
     assert by_id["upper_bass"]["verdict"] == "ok"
     assert by_id["transition"]["verdict"] == "ok"
     assert by_id["mid"]["verdict"] == "ok"
-    # sub_bass: the raw fallback reports the tone's true band power (~-55
-    # dBFS; the quiet-room sibling test reads ~-111) — measured reality,
-    # not a laundered floor. Its own SNR drops well below the quiet room's
-    # >=40 dB showing.
+    # sub_bass: the raw fallback reports the tone's true band power — and
+    # since #1838 that is ground truth to a tenth of a dB. The 70 Hz tone is
+    # injected at exactly -30.0 dBFS RMS and lands wholly inside sub_bass, so
+    # the band level IS the injected level. This is the end-to-end pin on the
+    # band-power fix: before it, the same tone read ~-55 dBFS here (band-mean
+    # dilution of ~25 dB), and a quiet room read ~-111 — a floor-adjacent
+    # number carrying no information. Its own SNR still drops well below the
+    # quiet-room sibling's >=40 dB showing.
     ambient_sub_bass = [
         b for b in result.ambient["bands"] if b["band_id"] == "sub_bass"
     ][0]
     assert ambient_sub_bass["basis"] == "raw_ambient_fallback"
-    assert -60.0 < ambient_sub_bass["level_dbfs"] < -50.0
+    assert ambient_sub_bass["level_dbfs"] == pytest.approx(-30.0, abs=0.5)
     assert by_id["sub_bass"]["estimated_snr_db"] < 40.0
 
 
