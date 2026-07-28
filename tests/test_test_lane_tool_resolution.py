@@ -23,6 +23,7 @@ the resolved interpreter on stderr without polluting stdout.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -33,9 +34,11 @@ import pytest
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO / "scripts"
 
-# Externals the lanes invoke before (and during) tool resolution. `git` for the
-# `cd`, `dirname` for the `source`, `cat` for the FATAL heredoc.
-_SANDBOX_TOOLS = ("git", "dirname", "cat")
+# Externals the lanes invoke before (and during) tool resolution: `git` for the
+# `cd`, `dirname` for the sibling-resolver `source`. The FATAL block itself
+# needs nothing -- it is printed with the `printf` builtin precisely so a
+# mangled $PATH cannot swallow it (see test_fatal_block_survives_an_empty_path).
+_SANDBOX_TOOLS = ("git", "dirname")
 
 _LANES = ("test-fast", "test-merge")
 
@@ -74,10 +77,21 @@ def lane_sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return repo, env
 
 
-def _run(repo: Path, env: dict[str, str], lane: str) -> subprocess.CompletedProcess:
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def _run(
+    repo: Path,
+    env: dict[str, str],
+    lane: str,
+    *,
+    cwd: Path | None = None,
+    argv0: str | None = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [_BASH, f"scripts/{lane}"],
-        cwd=repo,
+        [_BASH, argv0 or f"scripts/{lane}"],
+        cwd=cwd or repo,
         env=env,
         capture_output=True,
         text=True,
@@ -129,6 +143,13 @@ def test_lane_announces_the_resolved_interpreter_on_stderr(
 
     ``true`` stands in for pytest: it accepts and ignores the lanes' flags and
     exits 0, so the announcement is observed without running a suite.
+
+    The assertion is on POSITION, not membership. A membership check is
+    vacuous for ``test-merge``: were the announcement misdirected to stdout,
+    the lane's ``exec`` would fail on a path that has the announcement text
+    glued to the front of it, and bash's own error echoes that path back on
+    stderr -- so ``"==> pytest: ..." in result.stderr`` still holds while
+    nothing is announced. Pinning it as the first stderr line kills that.
     """
     repo, env = lane_sandbox
     stand_in = shutil.which("true") or "/usr/bin/true"
@@ -136,9 +157,172 @@ def test_lane_announces_the_resolved_interpreter_on_stderr(
         repo, {**env, "PYTEST": stand_in, "RUFF": stand_in}, lane
     )
 
-    assert f"==> pytest: {stand_in}" in result.stderr
-    assert "override" in result.stderr
+    assert result.stderr.splitlines()[:1] == [
+        f"==> pytest: {stand_in} ($PYTEST override)"
+    ], result.stderr
     assert stand_in not in result.stdout
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_lane_works_when_invoked_by_a_relative_path_from_a_subdirectory(
+    lane: str, lane_sandbox: tuple[Path, dict[str, str]]
+) -> None:
+    """The lanes are cwd-independent, and that must survive the `source`.
+
+    ``${BASH_SOURCE[0]}`` is caller-relative, so resolving the sibling resolver
+    *after* the ``cd`` to the repo root re-anchors ``../scripts`` against the
+    new cwd: ``cd tests && bash ../scripts/test-merge`` died with
+    ``../scripts/_test_lane.sh: No such file or directory`` -- and, because the
+    helper never loaded, with none of the FATAL wording that exists to make a
+    non-run unmissable. The lane dir is therefore captured before the ``cd``.
+    """
+    repo, env = lane_sandbox
+    (repo / "tests").mkdir()
+    stand_in = shutil.which("true") or "/usr/bin/true"
+    result = _run(
+        repo,
+        {**env, "PYTEST": stand_in, "RUFF": stand_in},
+        lane,
+        cwd=repo / "tests",
+        argv0=f"../scripts/{lane}",
+    )
+
+    assert "_test_lane.sh: No such file or directory" not in result.stderr
+    assert result.stderr.splitlines()[:1] == [
+        f"==> pytest: {stand_in} ($PYTEST override)"
+    ], result.stderr
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_fatal_names_the_rejected_override_and_no_unsearched_path(
+    lane: str, lane_sandbox: tuple[Path, dict[str, str]]
+) -> None:
+    """An override short-circuits the search; the message must say so.
+
+    With ``$PYTEST`` set, ``./.venv`` and ``$PATH`` are never consulted --
+    listing them describes a search that did not happen, and it buries the one
+    fact that fixes the problem: the value that was rejected.
+    """
+    repo, env = lane_sandbox
+    typo = str(repo / "no" / "such" / "pytest")
+    result = _run(repo, {**env, "PYTEST": typo}, lane)
+
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert f"$PYTEST={typo}" in combined
+    assert "./.venv/bin/pytest" not in combined
+    assert "on $PATH" not in combined
+
+
+def test_fatal_block_survives_an_empty_path(tmp_path: Path) -> None:
+    """A mangled $PATH is the likeliest cause -- the message must outlive it.
+
+    The block was a ``cat`` heredoc, so it failed with ``cat: command not
+    found`` in exactly the case it is written for. ``printf`` is a bash
+    builtin and needs no $PATH at all. Sourced directly here (rather than
+    through a lane) because a lane's own ``cd`` needs ``git``.
+    """
+    shutil.copy2(_SCRIPTS / "_test_lane.sh", tmp_path / "_test_lane.sh")
+    result = subprocess.run(
+        [_BASH, "-c", "source ./_test_lane.sh; resolve_lane_tool test-fast pytest PYTEST"],
+        cwd=tmp_path,
+        env={"PATH": ""},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "command not found" not in result.stderr
+    assert "FATAL" in result.stderr
+    assert "NO TESTS WERE RUN" in result.stderr
+
+
+def test_fatal_headline_survives_tail_truncation(
+    lane_sandbox: tuple[Path, dict[str, str]],
+) -> None:
+    """Operators pipe lanes through `| tail -N`; the last line must still warn.
+
+    Under `tail -3` the opening sentence is gone, so the block bookends itself
+    with the headline rather than trailing off into remediation prose.
+    """
+    repo, env = lane_sandbox
+    last_line = _run(repo, env, "test-merge").stderr.rstrip("\n").splitlines()[-1]
+
+    assert "NO TESTS WERE RUN" in last_line
+    assert "pytest" in last_line
+    assert "issue #1836" in last_line
+
+
+def test_fast_lane_routes_an_edit_to_its_own_resolver_to_these_guards(
+    tmp_path: Path,
+) -> None:
+    """The lanes' own files must select the lanes' own tests.
+
+    ``scripts/test-*`` does not glob the leading-underscore resolver, and
+    nothing referenced this test file at all -- so the one change most likely
+    to break tool resolution ran every guard except these.
+
+    Driven through the lane with a recording stand-in for pytest rather than
+    asserting on the script's text: a string check would still pass if the
+    mapping were moved into an unreachable ``case`` arm or pointed at a path
+    that does not exist, both of which route nothing.
+
+    Everything is committed first so the resolver is the *only* changed file.
+    Leaving the guards untracked would make the assertion vacuous -- they would
+    route themselves through the ``tests/test_*.py`` arm no matter what this
+    branch does.
+    """
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    for name in ("test-fast", "_test_lane.sh"):
+        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
+    for guard in ("test_test_lane_tool_resolution.py", "test_dependency_groups.py"):
+        (repo / "tests" / guard).write_text("", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "tests@example.invalid")
+    _git(repo, "config", "user.name", "JTS Tests")
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    (repo / "scripts" / "_test_lane.sh").write_text(
+        (_SCRIPTS / "_test_lane.sh").read_text() + "\n# edited\n", encoding="utf-8"
+    )
+
+    calls = repo / "pytest-calls.jsonl"
+    recorder = repo / "recording-pytest"
+    recorder.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "raise SystemExit(5 if '--last-failed' in sys.argv else 0)\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+    stand_in = shutil.which("true") or "/usr/bin/true"
+
+    subprocess.run(
+        [_BASH, "scripts/test-fast"],
+        cwd=repo,
+        env={
+            **os.environ,
+            "PYTEST": str(recorder),
+            "PYTEST_CALLS": str(calls),
+            "RUFF": stand_in,
+            "TEST_BASE": "missing-base",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    selected = {
+        arg
+        for line in calls.read_text(encoding="utf-8").splitlines()
+        for arg in json.loads(line)
+    }
+    assert "tests/test_test_lane_tool_resolution.py" in selected, selected
 
 
 @pytest.mark.parametrize("lane", _LANES)

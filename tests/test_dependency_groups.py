@@ -447,10 +447,18 @@ def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
     A bare `uv sync` (or `pip install -e '.[dev]'`) installs only the dev tools,
     so pytest dies with dozens of ModuleNotFoundError on a clean checkout. uv
     0.11 has no `[tool.uv] default-extras` knob to fix that from config, so the
-    docs and help spell the extras out explicitly. Pin BOTH surfaces — the
-    CONTRIBUTING.md quick start and the conftest wrong-Python rebuild hint — so
-    the front door can't silently re-break (the 2026-06 OSS due-diligence
-    finding, which regressed once because only one surface was fixed).
+    docs and help spell the extras out explicitly. Pin ALL THREE surfaces — the
+    CONTRIBUTING.md quick start, the conftest wrong-Python rebuild hint, and the
+    test lanes' unresolvable-interpreter FATAL block — so the front door can't
+    silently re-break (the 2026-06 OSS due-diligence finding, which regressed
+    once because only one surface was fixed).
+
+    `--all-groups` is called out by name because it is the plausible-looking
+    wrong answer, and a *destructive* one: it syncs dependency GROUPS, so it
+    uninstalls the `full`/`streambox` extras that carry the packages the suite
+    imports. Following it leaves pytest resolvable — silencing the #1836 guard
+    — on top of a suite that now dies at collection. That is the same
+    false-green one layer down, so the ban is asserted, not just the command.
     """
 
     # Token-based, not an exact-substring match, so a future reformat of the
@@ -461,12 +469,19 @@ def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
     surfaces = {
         "CONTRIBUTING.md": (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8"),
         "tests/conftest.py": (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8"),
+        "scripts/_test_lane.sh": (
+            ROOT / "scripts" / "_test_lane.sh"
+        ).read_text(encoding="utf-8"),
     }
     for name, text in surfaces.items():
         assert "uv sync" in text, f"{name} should document `uv sync`"
         assert "--extra full" in text, f"{name} `uv sync` must include `--extra full`"
         assert "--extra streambox" in text, (
             f"{name} `uv sync` must include `--extra streambox`"
+        )
+        assert "--all-groups" not in text, (
+            f"{name} must not tell anyone to run `uv sync --all-groups`; it syncs "
+            "dependency groups and uninstalls the extras the suite imports"
         )
 
     # The conftest pip fallback must also pull the extras (`.[full,dev]`, not `.[dev]`).
