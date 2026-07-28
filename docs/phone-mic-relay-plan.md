@@ -297,7 +297,9 @@ audio. Full sequence:
    build/protocol identity in every control event. The Pi validates that identity
    before any setup or armed callback may play audio. A spec that states no
    protocol is incompatible, not legacy — there is exactly one capture protocol
-   (protocols 1 and 2 never reached a public page and were deleted).
+   (1 and 2 were deleted on 2026-07-27: the flow has never shipped outside the
+   lab and no lab Pi emits them, though page build 20260712.3 did serve
+   protocol 2, which is why that deletion rolled out Pi-first).
 4. **Phone** posts `{setup_validate:true, setup:{...}, setup_identity:{...}}`;
    the Pi validates/applies it and replies `host_event.phase="setup_validated"`.
    The phone then streams compact level batches, and the Pi raises software gain
@@ -537,12 +539,14 @@ live data once a session-spanning session is running.
 **Deploy sequencing is the only remaining gate — no code flag.** Every piece
 is merged in code: Pi session machinery (#1550), Worker indexed blobs
 (#1550), page plan loop + version advertisement (#1560), and the host flip.
-The coordinator sequences the actual rollout: Worker → page publish → **the Pi
-build deploys LAST**. A spec whose protocol an OLDER deployed page does not
-advertise fails the page-identity check (`validate_capture_page`) loudly
-before any tone plays — a safe, visible failure, but the wrong order:
-deploying the Pi before the page publish would make every driver-sweep capture
-request error until the page catches up.
+The coordinator sequences the actual rollout. For that ADD (protocol 3 joining
+the page's supported list) the order was Worker → page publish → **the Pi build
+LAST**: a spec whose protocol an OLDER deployed page does not advertise fails
+the page-identity check (`validate_capture_page`) loudly before any tone plays
+— a safe, visible failure, but the wrong order, since deploying the Pi before
+the page publish would error every driver-sweep capture until the page caught
+up. The 2026-07-27 protocol-1/2 REMOVAL runs the opposite way (Pi first, page
+second) — see §14.
 
 **Hardware blocker found and fixed (run 21, jts3 @ 62af5b206): the v3 order
 was never validated against the wizard's own envelope-derivation guard.**
@@ -909,17 +913,26 @@ keeps its normal logging and cue policy.
 ## 14. Build and release order
 
 The numbered implementation history below is not the deployment order. The
-public page, the relay Worker, and the Pi are released independently, so
-**the Pi always goes last** — accepting a newer contract is backwards
-compatible, emitting it is not.
+public page, the relay Worker, and the Pi are released independently, and
+**the side that NARROWS what it accepts goes last**. For a protocol addition
+that is the Pi (accepting a newer contract is backwards compatible, emitting it
+is not); for a protocol removal it is the page.
 
-- **Page before Pi** for a `capture_protocol_version` change: publish a page
-  whose `version.json` advertises the new protocol, verify
+- **Adding a `capture_protocol_version` → page before Pi:** publish a page
+  whose `version.json` advertises the new protocol alongside any protocol a
+  deployed Pi still emits, verify
   `https://capture.jasper.tech/version.json`, and only then deploy Pis that
-  emit the new `CaptureSpec.capture_protocol_version`. The supported list holds
-  exactly one entry, so the two releases must land close together — the exact
-  commands and that window's failure mode live in
-  [`capture-page/README.md`](../capture-page/README.md).
+  emit the new `CaptureSpec.capture_protocol_version`.
+- **Removing one → Pi before page:** deploy the Pis that stop emitting it
+  first, then drop it from `supported_capture_protocol_versions` and publish.
+  A page that has dropped protocol N strands every Pi still emitting N —
+  instantly, since `version.json` is served `no-store`.
+
+  The 2026-07-27 deletion of protocols 1 and 2 was a REMOVAL (the published
+  build `20260712.3` served protocol 2) and shipped Pi-first.
+
+The exact commands for both directions live in
+[`capture-page/README.md`](../capture-page/README.md).
 - **Worker before Pi** for a relay capacity change (the capture-plan attempt
   ceiling): deploy the Worker, verify
   `https://relay.jasper.tech/capabilities`, and only then deploy Pis that emit
@@ -994,7 +1007,10 @@ Last updated: 2026-07-27 — capture protocols 1 and 2 are DELETED. There is
 exactly one capture protocol; every builder emits it, `version.json` advertises
 exactly it, a spec that omits it is incompatible rather than legacy, every
 phone event and every spec link is authenticated, and session-spanning
-behaviour is selected by `capture_plan` presence alone. Prior 2026-07-16 —
+behaviour is selected by `capture_plan` presence alone. Because published build
+`20260712.3` really did serve protocol 2, this is a protocol REMOVAL: it ships
+**Pi-first, page-second** (§14), and persisted placement proofs stamped
+`capture_protocol_version: 2` stay valid. Prior 2026-07-16 —
 §9's level-ramp AGC gate now verifies chain
 linearity empirically for an unattested (undefined `autoGainControl`) phone
 instead of refusing it client-side; see "Level-ramp AGC is verified, not just
@@ -1050,8 +1066,10 @@ microphone/calibration setup; successful leveling restores listening volume
 immediately, and sweeps assert the retained target only inside their guarded
 playback windows. Crossover retains its compact setup binding and bounded
 browser-storage lifetime. The page/Pi compatibility version is checked before
-tone and published at `capture.jasper.tech/version.json` with a page-before-Pi
-release contract; the crossover page is a serialized single-next-action flow;
+tone and published at `capture.jasper.tech/version.json`, with a release
+contract whose order depends on direction — page-before-Pi to ADD a protocol,
+Pi-before-page to REMOVE one; the crossover page is a serialized
+single-next-action flow;
 blank legacy `JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` values now
 migrate to the public relay defaults on install/update; explicit
 `disabled`/`off`/`0`/`none` remains the persistent on-Pi fallback opt-out. Prior

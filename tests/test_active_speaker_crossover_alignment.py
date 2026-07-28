@@ -656,7 +656,7 @@ def _state(*, calibrated, in_phase_null=None, reverse_null=None, group="mono"):
                 acknowledgement_binding="binding-summed-abcdefghijkl",
                 relay_session_id="relay-summed",
                 capture_page={
-                    "capture_protocol_version": 3,
+                    "capture_protocol_version": 2,
                     "capture_page_build": "20260712.2",
                 },
                 speaker_group_id=group,

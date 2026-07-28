@@ -736,8 +736,11 @@
   protocol number says nothing about it (there is exactly one capture
   protocol, so every spec carries the same value; the in-repo page declares
   `[3]`). A spec whose protocol the DEPLOYED page does not advertise fails the
-  page-identity check (`validate_capture_page`) before any tone plays, so the
-  rollout order stays Worker → page publish → the Pi build last. See
+  page-identity check (`validate_capture_page`) before any tone plays. Rollout
+  order depends on DIRECTION: ADDING a protocol is Worker → page publish → Pi
+  last (which is how protocol 3 landed); REMOVING one — as the 2026-07-27
+  protocol-1/2 deletion did — is **Pi first, page second**, because a page that
+  has dropped a protocol instantly strands every Pi still emitting it. See
   [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
   capture plans" section for the wire choreography.
   **Infra-phase failures are refunded from the acceptance budget (#1513):**
@@ -831,10 +834,13 @@
   serial is still entered and validated once; there is no automatic
   calibration-file match), was `capture_page_build=20260712.3`, and the public
   `https://capture.jasper.tech/version.json` reported `20260712.3` on
-  2026-07-12. **That build is superseded and can no longer serve a session:**
-  it advertised protocols 1 and 2, both of which were deleted on 2026-07-27
-  (see the capture-page README's release order). The current in-repo build is
-  `20260727.2`, advertising `[3]`. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
+  2026-07-12. **That build advertised protocols 1 and 2, both deleted on
+  2026-07-27** — a Pi on the current build cannot use it, and placement proofs
+  captured against it are stamped `capture_protocol_version: 2` (still
+  honoured; see `capture_geometry`'s allowlist). Because it was a real
+  published build, retiring those protocols was a REMOVAL and shipped
+  Pi-first — see the capture-page README's release order. The current in-repo
+  build is `20260727.2`, advertising `[3]`. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
   renders host `sweep_cancelled` as expected Stop control flow, and keeps a
   safely bounded level walk alive across a transient relay status-poll failure;
   the page entry and relay-client import both use the matching `20260715-3`

@@ -433,9 +433,9 @@ class PhoneEventVerifier:
     def verify(self, relay_event: Any) -> dict[str, Any] | None:
         if relay_event is None:
             return None
-        # Every event is authenticated. (Protocol 1 used to pass the relay's
-        # slot through unverified; that protocol never shipped and is deleted,
-        # so there is no unauthenticated path left to fall into.)
+        # Every event is authenticated. Protocol 1 used to pass the relay's
+        # slot through unverified; it is deleted, and no lab Pi emits it, so
+        # there is no unauthenticated path left to fall into.
         verified, sequence = verify_authenticated_phone_event(
             self._session.content_key,
             self._session.session_id,
@@ -459,7 +459,7 @@ class PhoneEventVerifier:
 
         The relay `event` slot persists between polls, so a plan runner needs
         the sequence to tell "the same event, still sitting there" from "the
-        phone posted a new event" (protocol-v3 begin dedup vs replay)."""
+        phone posted a new event" (begin dedup vs replay)."""
         return self._sequence
 
 

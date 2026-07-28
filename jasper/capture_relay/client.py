@@ -286,10 +286,10 @@ class RelayClient:
         """Return (ciphertext blob, integrity) where integrity is the phone's
         plaintext length + SHA-256 (relayed via headers).
 
-        ``capture_index`` selects one blob of a session-spanning capture plan
-        (protocol v3): the Worker keys each admitted attempt's blob by index.
-        The default ``0`` keeps the request byte-identical to the single-blob
-        v2 contract (the Worker treats an absent index as 0)."""
+        ``capture_index`` selects one blob of a session-spanning capture plan:
+        the Worker keys each admitted attempt's blob by index. The default
+        ``0`` keeps the request byte-identical to the single-blob contract
+        (the Worker treats an absent index as 0)."""
         if (
             isinstance(capture_index, bool)
             or not isinstance(capture_index, int)

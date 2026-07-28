@@ -97,11 +97,11 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 3,
         # ONE protocol. The supported list is not a negotiation surface any
-        # more — protocols 1 and 2 never reached a public page and were
-        # deleted, so a page advertising anything else is simply stale. The
-        # list survives as the wire shape the Pi's handshake reads, and stays
-        # a superset-of-one until a future protocol is rolled out
-        # page-before-Pi.
+        # more — protocols 1 and 2 were deleted (the flow has never shipped
+        # outside the lab and no lab Pi emits them), so a page advertising
+        # anything else is stale. NOTE this is a REMOVAL: the currently
+        # deployed page still advertises [1, 2, 3], so this page build must
+        # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
         "capture_page_build": "20260727.2",
     }
@@ -117,6 +117,14 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
     assert 'from "./constraints.js?v=20260711-4"' in main_js
     assert 'from "./relay-client.js?v=20260717-1"' in main_js
+    # Both modules changed in the protocol-deletion PR, and both carry a
+    # SECURITY tightening (mandatory spec MAC; a version-less spec is refused
+    # rather than read as legacy protocol 1). An unstamped or stale-stamped
+    # import means a warm-cache phone keeps the permissive module — the
+    # tightening silently would not take effect. capture-protocol.js had no
+    # stamp at all before this PR.
+    assert 'from "./capture-protocol.js?v=20260727-1"' in main_js
+    assert 'from "./transport-integrity.js?v=20260727-1"' in main_js
     assert 'from "./level-events.js?v=20260716-1"' in main_js
     assert 'from "./ambient-stats.js?v=20260717-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
@@ -766,6 +774,15 @@ def test_capture_page_plan_routes_begin_capture_to_the_plan_loop():
 
     assert "const isPlanSpec = Boolean(spec.capture_plan);" in main_js
     assert "capture_protocol_version === 3" not in main_js
+    # Phone-event signing is unconditional. The old
+    # `requiredCaptureProtocol(spec) >= 2` let a protocol-1 spec — including a
+    # version-less one — disable the authenticated envelope entirely.
+    assert "client.setTransportIntegrity(verified.integrity, { required: true });" in main_js
+    assert "requiredCaptureProtocol(spec) >= 2" not in main_js
+    # The helper is no longer imported at all — nothing left branches on the
+    # protocol number. (Checked on the import list, not the whole file, so the
+    # explanatory comment above the call site does not satisfy it.)
+    assert "  requiredCaptureProtocol," not in main_js
     assert "begin_capture: () => (isPlanSpec ? onPlanStart(ctx) : onStart(ctx))," in main_js
     # The single-capture path keeps its exact behavior — the "retry" action
     # (which a plan spec never emits) is untouched, still onStart.

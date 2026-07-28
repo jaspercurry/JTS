@@ -47,12 +47,18 @@ SCHEMA_VERSION = 1
 # changes (for example, setup binding or a level stream) require a matching
 # public page before the Pi is allowed to play a tone.
 #
-# There is exactly ONE capture protocol. Versions 1 and 2 existed only during
-# development — the capture flow never shipped to a public page, so no deployed
-# artifact speaks them and nothing has to be kept compatible with them. They
-# were deleted rather than carried (owner ruling, 2026-07-27): every builder
-# emits this value, the page advertises exactly this value, and a mismatch is a
-# loud incompatibility, never a negotiated downgrade.
+# There is exactly ONE capture protocol. Versions 1 and 2 were deleted rather
+# than carried (owner ruling, 2026-07-27). What made that safe, precisely: the
+# capture flow has never shipped outside the lab, the live page advertises
+# [1, 2, 3] so a Pi emitting 3 is already compatible with it, and no lab Pi
+# needs 1 or 2 for the handshake. It is NOT that the deleted protocols were
+# never published — page build 20260712.3 did serve protocol 2, which is why
+# the deletion had to roll out Pi-first (see capture-page/README.md's
+# release order) and why persisted placement proofs may still carry a 2
+# (see active_speaker.capture_geometry).
+#
+# Every builder emits this value, the page advertises exactly this value, and a
+# mismatch is a loud incompatibility, never a negotiated downgrade.
 #
 # The version still earns its keep as the page/Pi handshake: it is checked
 # against the public page's `supported_capture_protocol_versions` before the Pi
@@ -875,11 +881,14 @@ class CaptureSpec:
                 if isinstance(capture_plan_raw, Mapping)
                 else None
             ),
-            capture_protocol_version=_as_int(
-                data,
-                "capture_protocol_version",
-                default=CAPTURE_PROTOCOL_VERSION,
-            ),
+            # REQUIRED on the wire, with no default — a spec that states no
+            # protocol is incompatible, not legacy, and defaulting it here
+            # would silently accept inbound bytes the capture page refuses
+            # (capture-page/js/capture-protocol.js applies the same rule).
+            # The dataclass field still defaults, so BUILDERS stay ergonomic;
+            # the strictness belongs on the parse boundary, not the
+            # constructor.
+            capture_protocol_version=_as_int(data, "capture_protocol_version"),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
         # Guard against a screen entry that was not a Mapping (dropped above).

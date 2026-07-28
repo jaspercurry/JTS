@@ -1018,33 +1018,73 @@ def _reference_axis_proof(
     }
 
 
-def test_placement_proof_allowlist_tracks_the_one_capture_protocol():
-    """The allowlist duplicates `CAPTURE_PROTOCOL_VERSION` as a literal because
+def test_placement_proof_allowlist_contains_the_current_capture_protocol():
+    """The allowlist duplicates its members as literals because
     capture_relay.spec imports capture_geometry (not the other way round), so
     the module cannot import the constant back without inverting that
-    dependency. Pin the equality here instead."""
+    dependency. Pin CONTAINMENT here — not equality: the allowlist is
+    deliberately WIDER than the emitted protocol, because it reads persisted
+    proofs (see the next test)."""
     from jasper.active_speaker.capture_geometry import (
         PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS,
     )
     from jasper.capture_relay.spec import CAPTURE_PROTOCOL_VERSION
 
-    assert PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS == (
-        CAPTURE_PROTOCOL_VERSION,
+    assert (
+        CAPTURE_PROTOCOL_VERSION in PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS
+    )
+
+
+def test_placement_proof_still_accepts_a_page_protocol_2_persisted_proof():
+    """Regression: dropping 2 from the allowlist when the Pi stopped EMITTING
+    protocol 2 would retroactively invalidate real persisted evidence.
+
+    `normalized_placement_proof` stamps the PAGE's `capture_protocol_version`,
+    and the published capture page build 20260712.3 advertised protocol 2. Any
+    proof captured against it carries 2 forever. Invalidating those breaks
+    repeat admission, crossover readiness, and replay for already-commissioned
+    speakers."""
+    import inspect
+
+    from jasper.active_speaker.capture_geometry import (
+        normalized_placement_proof,
+        placement_proof_shape_valid,
+    )
+
+    # The writer copies the PAGE's advertised protocol into the proof — this is
+    # why a page-side value ends up frozen in Pi-side evidence.
+    assert (
+        '"capture_protocol_version": page.get("capture_protocol_version")'
+        in inspect.getsource(normalized_placement_proof)
+    )
+
+    # A proof exactly as the published 20260712.3 page caused it to be written.
+    proof = {
+        **_reference_axis_proof(),
+        "capture_protocol_version": 2,
+        "capture_page_build": "20260712.3",
+    }
+    assert placement_proof_shape_valid(
+        proof,
+        policy_id="driver_reference_axis_v1",
+        role="woofer",
+        speaker_group_id="mono",
+        target_fingerprint="c" * 64,
     )
 
 
 @pytest.mark.parametrize(
-    ("protocol", "valid"), [(1, False), (2, False), (3, True), (4, False)]
+    ("protocol", "valid"), [(1, False), (2, True), (3, True), (4, False)]
 )
 def test_placement_proof_capture_protocol_is_an_explicit_allowlist(
     protocol, valid
 ):
     """PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS is a deliberate
-    allowlist, not a ``>=`` floor. Protocols 1 and 2 are deleted, so a proof
-    stamped with either is evidence from a build that no longer exists and is
-    refused; a future protocol 4 must be a deliberate addition here, never a
-    silent pass-through (see the constant's comment in
-    jasper.active_speaker.capture_geometry)."""
+    allowlist, not a ``>= 2`` floor: protocol 1 has no acknowledgement
+    machinery for a proof to stand on, 2 and 3 authenticate the same
+    acknowledgement through the same choreography, and a future protocol 4
+    must be a deliberate addition here, never a silent pass-through (see the
+    constant's comment in jasper.active_speaker.capture_geometry)."""
     from jasper.active_speaker.capture_geometry import (
         placement_proof_shape_valid,
     )

@@ -56,9 +56,11 @@ this doc is the current operational truth.
   — `--branch=main` is load-bearing: without it wrangler deploys a
   preview alias and the production domain keeps serving the stale page
   (the W6.10 Chrome-deadlock bug class); the custom domain lags the
-  deploy by ~5 min. See the capture-page README's release ordering —
-  the page's `supported_capture_protocol_versions` must advertise a
-  protocol before the Pi emits it, and it holds exactly one entry.
+  deploy by ~5 min. See the capture-page README's release ordering, which
+  depends on direction: the page must advertise a protocol BEFORE any Pi
+  emits it (add → page first), and must keep advertising it UNTIL no Pi
+  emits it (remove → Pi first). The list holds exactly one entry today, so
+  the two sides have to move close together.
 - **Relay Worker:** the Cloudflare Worker under
   [`relay/`](../relay/README.md), served at `relay.jasper.tech`. It is a
   **third independent release**, and like the page it ships **before**

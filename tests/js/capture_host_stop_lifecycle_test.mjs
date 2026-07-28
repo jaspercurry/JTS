@@ -98,6 +98,11 @@ const posted = [];
 await onStart({
   spec: {
     kind: "crossover_sweep",
+    // Real protocol-3 shape. This fixture used to omit the field entirely,
+    // which only parsed because of the deleted "no version means protocol 1"
+    // rule; both the page and CaptureSpec.from_dict now refuse a version-less
+    // spec, so a fixture without one no longer represents anything shippable.
+    capture_protocol_version: 3,
     sample_rate_hz: 48000,
     channels: 1,
     constraints: {

@@ -49,22 +49,28 @@ PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
 
 # Capture protocol versions carrying the acknowledgement machinery a placement
-# proof depends on. There is exactly one capture protocol (see
-# jasper.capture_relay.spec.CAPTURE_PROTOCOL_VERSION); the versions that lacked
-# acknowledgements never shipped and were deleted.
+# proof depends on. Protocol 1 has none, so it is excluded; 2 and 3 authenticate
+# the SAME acknowledgement through the SAME
+# validate_capture_acknowledgement/on_armed choreography.
 #
-# Kept as an explicit allowlist rather than collapsed to an equality check:
-# proofs are PERSISTED evidence, so this reads a version stamped by whatever
-# build wrote the proof, not by the running one. A future protocol bump must be
-# a deliberate addition here once its acknowledgement choreography is confirmed
+# **2 stays even though the Pi no longer EMITS it.** This reads a version
+# stamped into PERSISTED evidence by whatever page wrote the proof --
+# `normalized_placement_proof` records the PAGE's `capture_protocol_version`,
+# and the published build 20260712.3 advertised 2. Dropping 2 here would
+# retroactively invalidate every proof captured against that page (repeat
+# admission, crossover readiness, replay), so a persisted proof IS a deployed
+# artifact even though protocol 2 is no longer emitted.
+#
+# Explicit allowlist, never a `>=` floor: a future protocol must be a
+# deliberate addition here once its acknowledgement choreography is confirmed
 # equivalent -- never a silent pass-through.
 #
-# The literal is duplicated rather than imported on purpose: capture_relay.spec
+# The literals are duplicated rather than imported on purpose: capture_relay.spec
 # imports THIS module (lazily, for placement copy), so importing it back at
-# module scope would invert that dependency. Equality with
+# module scope would invert that dependency. Containment of
 # capture_relay.spec.CAPTURE_PROTOCOL_VERSION is pinned by
 # tests/test_active_speaker_commissioning_capture.py.
-PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (3,)
+PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
 # Capture geometry is speaker policy, never browser input. The relay verifies
 # one of these policy ids before playback and persists it in placement_proof;

@@ -171,9 +171,9 @@ export async function verifyAndParseCaptureSpec(
     throw new Error("capture spec is invalid");
   }
   const integrity = await createTransportIntegrity(contentKeyB64, sessionId);
-  // The spec MAC is mandatory. (Protocol-1 links carried none and were let
-  // through unverified; that protocol never shipped and is deleted, so a
-  // MAC-less spec is now simply unauthenticated and refused.)
+  // The spec MAC is mandatory. Protocol-1 links carried none and were let
+  // through unverified; protocol 1 is deleted and no lab Pi emits it, so a
+  // MAC-less spec is now simply unauthenticated and refused.
   if (!specMac) {
     throw new Error("capture spec integrity proof is missing");
   }

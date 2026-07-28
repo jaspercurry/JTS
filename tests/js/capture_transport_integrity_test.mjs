@@ -50,7 +50,7 @@ async function testCrossLanguageAuthenticatedEventVector() {
 
 async function testEveryCaptureSpecRequiresALinkMac() {
   // The spec MAC is mandatory for EVERY spec. Protocol-1 links carried none
-  // and were parsed unverified; that protocol never shipped and is deleted,
+  // and were parsed unverified; protocol 1 is deleted and no lab Pi emits it,
   // so a MAC-less spec is simply unauthenticated — including one that omits
   // the protocol entirely, which used to be read as legacy protocol 1.
   for (const specText of [

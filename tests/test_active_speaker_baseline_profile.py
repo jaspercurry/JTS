@@ -2749,7 +2749,7 @@ def _acoustic_measurements(
         now="2026-06-19T12:00:30Z",
     )
     page = {
-        "capture_protocol_version": 3,
+        "capture_protocol_version": 2,
         "capture_page_build": "20260711.1",
     }
 

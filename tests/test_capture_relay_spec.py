@@ -206,6 +206,25 @@ def test_capture_protocol_version_is_explicit_and_strict():
         CaptureSpec.from_dict(payload)
 
 
+def test_from_dict_refuses_a_spec_that_states_no_protocol():
+    """A version-less spec is INCOMPATIBLE, not legacy — the same rule the
+    capture page applies (capture-page/js/capture-protocol.js returns null,
+    which fails the handshake).
+
+    Defaulting on the parse boundary would let inbound bytes the page refuses
+    through the Pi silently; that asymmetry is exactly how the deleted
+    "no version means protocol 1" rule used to work. The dataclass field keeps
+    its default so builders stay ergonomic — strictness belongs here."""
+    payload = build_room_sweep_spec().to_dict()
+    del payload["capture_protocol_version"]
+    with pytest.raises(CaptureSpecError, match="capture_protocol_version is required"):
+        CaptureSpec.from_dict(payload)
+    # Explicit null is the same refusal, not a fall-through to the default.
+    payload["capture_protocol_version"] = None
+    with pytest.raises(CaptureSpecError, match="capture_protocol_version is required"):
+        CaptureSpec.from_dict(payload)
+
+
 def test_return_url_round_trips_for_phone_done_cta():
     s = build_room_sweep_spec().with_return_url("http://jts5.local/correction/")
     payload = s.to_dict()
@@ -1204,3 +1223,24 @@ def test_compat_matrix_current_page_serves_plan_free_and_plan_specs_alike():
     }
     validate_capture_page(current_page, plan_free)  # no raise
     validate_capture_page(current_page, _plan_spec())  # no raise
+
+
+def test_compat_matrix_current_spec_is_served_by_the_deployed_page():
+    """THE claim this release's deploy order rests on: a Pi carrying the
+    protocol deletion still works against the page that is deployed RIGHT NOW,
+    which advertises [1, 2, 3].
+
+    That is why this change ships Pi-first, page-second — the reverse order
+    would break every un-upgraded Pi the moment the [3] page went live. If
+    this test ever fails, the deploy sequencing documented in
+    capture-page/README.md and phone-mic-relay-plan.md is wrong."""
+    from jasper.capture_relay.session import validate_capture_page
+
+    deployed_page_today = {
+        "schema_version": 1,
+        "capture_protocol_version": 3,
+        "supported_capture_protocol_versions": [1, 2, 3],
+        "capture_page_build": "20260727.1",
+    }
+    validate_capture_page(deployed_page_today, build_room_sweep_spec())  # no raise
+    validate_capture_page(deployed_page_today, _plan_spec())  # no raise

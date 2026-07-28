@@ -33,10 +33,9 @@ import { runLevelRampProtocol } from "./level-events.js?v=20260716-1";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
-  requiredCaptureProtocol,
   validateCapturePageIdentity,
-} from "./capture-protocol.js";
-import { verifyAndParseCaptureSpec } from "./transport-integrity.js?v=20260711-3";
+} from "./capture-protocol.js?v=20260727-1";
+import { verifyAndParseCaptureSpec } from "./transport-integrity.js?v=20260727-1";
 import {
   loadBoundSetup,
   refreshBoundSetup,
@@ -1491,11 +1490,11 @@ async function waitForSweepComplete(client, spec, isAborted) {
 }
 
 // ============================================================================
-// Session-spanning capture plans (capture protocol v3, SPEC W2.3) — the
+// Session-spanning capture plans (SPEC W2.3) — the
 // ping-pong killer. One relay session now covers a driver's whole repeat
 // SET: after each accepted capture the phone shows "Measurement N of target
 // ✓" with a single "Next measurement" tap, instead of the household
-// returning to the wizard between every repeat. v2 specs (no capture_plan)
+// returning to the wizard between every repeat. Plan-free specs
 // keep today's flow through onStart() above, which stays WIRE-COMPATIBLE
 // with every deployed Pi: its armed event changed inert-additively (the
 // noise_floor object is now built explicitly with the same two fields, and
@@ -3243,9 +3242,12 @@ async function boot() {
     spec = verified.spec;
     assertCaptureProtocolCompatible(spec, pageIdentity);
     client.setCapturePageIdentity(pageIdentity);
-    client.setTransportIntegrity(verified.integrity, {
-      required: Number(requiredCaptureProtocol(spec)) >= 2,
-    });
+    // Signing is unconditional: with one protocol there is no version that
+    // exempts a phone event from its authenticated envelope. This used to be
+    // gated on the spec's protocol being at least two, which a protocol-1
+    // spec — including a version-less one, via the deleted legacy mapping —
+    // could turn off entirely.
+    client.setTransportIntegrity(verified.integrity, { required: true });
   } catch (err) {
     setStatus(relayBootFailureMessage(err), "error");
     return;

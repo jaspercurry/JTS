@@ -86,29 +86,42 @@ npx wrangler pages deploy dist --project-name jts-capture-page --branch=main
 alias** and the production domain keeps serving the stale page (the W6.10
 Chrome-deadlock bug class). The custom domain lags the deploy by ~5 min.
 
-### Release order (page before Pi)
+### Release order (direction matters)
 
-The Pages site and Pi packages are independent releases. A capture-protocol
-change must use this order so an upgraded Pi never reaches a stale public page.
+The Pages site and Pi packages are independent releases, and the correct order
+depends on **which way the supported list is moving**. Get this backwards and
+the handshake refuses every capture, fleet-wide, the moment the page publishes
+— `version.json` is fetched `no-store`, so the cut is instant.
+
+- **ADDING a protocol → page first, Pi second.** The page must already
+  advertise a protocol before any Pi emits it. Adding is backwards-compatible:
+  the page keeps serving the old protocol while the fleet catches up.
+- **REMOVING a protocol → Pi first, page second.** Every Pi must have stopped
+  emitting a protocol before the page stops advertising it. Removing is *not*
+  backwards-compatible: a page that has dropped protocol N strands every Pi
+  still emitting N.
+
+Both directions put the *narrowing* side last. A change that adds one and
+removes another is two releases, not one.
+
 (The relay Worker is a third independent release with its own ordering rule for
 relay **capacity** changes — see [`relay/README.md`](../relay/README.md)
-"Release order". Both rules put the Pi last; neither replaces the other.)
+"Release order". That rule puts the Pi last, which matches the ADD direction
+only; it does not override the REMOVE direction here.)
 
 **There is exactly one capture protocol**, and a spec must state it
 explicitly — a spec with no `capture_protocol_version` is incompatible, not
-legacy. (Protocols 1 and 2 existed only during development and were deleted:
-no public page ever served them, so there was no fleet to stay compatible
-with. That also retired the old "add the new protocol, ship, then remove the
-old one" dance — with nothing deployed to strand, the supported list never had
-to hold two entries.)
+legacy. Protocols 1 and 2 were deleted on 2026-07-27; the published build
+`20260712.3` did serve protocol 2, so that deletion was a REMOVAL and shipped
+Pi-first.
 
-The page-before-Pi order still binds, because the page is the artifact the Pi
-checks against:
+#### Adding a protocol (page first)
 
-1. Set `version.json`'s `capture_protocol_version` and
-   `supported_capture_protocol_versions` to the new protocol, and bump
-   `capture_page_build` (plus `index.html`'s `main.js?v=` stamp — the page's
-   only cache-invalidation mechanism).
+1. Add the new protocol to `version.json`'s
+   `supported_capture_protocol_versions` **without removing one that any
+   deployed Pi still emits**, and bump `capture_page_build` (plus
+   `index.html`'s `main.js?v=` stamp, and the `?v=` on any changed module
+   import — those stamps are the page's only cache-invalidation mechanism).
 2. Build and test the page: `bash capture-page/build.sh` and
    `python3 -m pytest -q tests/test_capture_page_js.py`.
 3. Publish `capture-page/dist` to the production Pages project.
@@ -119,12 +132,15 @@ checks against:
 5. Only then deploy the Pi code that emits the new
    `CaptureSpec.capture_protocol_version`.
 
-Between steps 3 and 5 a not-yet-upgraded Pi emits the OLD protocol against a
-page that no longer supports it, so the handshake refuses it — loudly, before
-any tone. Keep that window short, and treat step 5 as the same release day. If
-a future protocol ever has to span a long-lived fleet, that is the moment to
-reintroduce a two-entry supported list — deliberately, not by leaving one
-lying around.
+#### Removing a protocol (Pi first)
+
+1. Deploy the Pi code that stops emitting the retiring protocol. Verify no Pi
+   still emits it — a stale bench Pi counts.
+2. Only then drop it from `version.json`'s
+   `supported_capture_protocol_versions`, bump `capture_page_build`, and
+   publish. There is no safe window here: the moment the page publishes, any Pi
+   still emitting the removed protocol fails the handshake loudly on every
+   capture until it is redeployed.
 
 Every phone control event carries the loaded page identity. The Pi validates it
 before setup or `armed` can invoke tone playback and logs
