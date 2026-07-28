@@ -4345,6 +4345,116 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     assert c.candidate.role_attenuations_db["tweeter"] == pytest.approx(resolved_trim_t)
 
 
+def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Conductor:
+    """A conductor whose TWEETER sweep starts AT Fc — JTS3's real geometry.
+
+    ``overlap_band_hz`` then clamps the shared band to ``[Fc, 2*Fc]``, the
+    one-sided shape PR-L3 is about. Built inline rather than through
+    ``_conductor`` because the role bands are the whole point of the fixture.
+    """
+    return CrossoverV2Conductor(
+        session_id=SESSION,
+        source_preset=_preset(),
+        roles_bands=[
+            RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+            RoleBand("tweeter", 1, FrequencyBand(FC_HZ, 20000.0)),
+        ],
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=fakes.seams(),
+        driver_spacing_m=0.15,
+    )
+
+
+def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeypatch):
+    """PR-L3 review S1: the LINEARIZED ripple fine-tune carries the same
+    one-sided-band hazard `program_analysis._build_candidate` guards, reached
+    through the same ``overlap_band_hz`` clamp — and THIS is the call site
+    whose result becomes ``role_attenuations_db``, the gain the emitted graph
+    runs. With the tweeter swept from Fc the band is ``[Fc, 2*Fc]``, where the
+    woofer is deep in its skirt and the summed ripple cannot express the
+    handoff level. The scan must not run at all; the anchored give-back
+    stands, and the skip is disclosed."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    calls = []
+    monkeypatch.setattr(
+        flow_mod, "solve_ripple_optimal_trim",
+        lambda *a, **kw: calls.append(kw) or (kw["seed_trim_db"] - 4.0, 0.0, kw["seed_trim_db"]),
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _one_sided_conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    assert calls == []  # the scan never ran
+    assert "event=correction.crossover_v2_linearization_ripple_trim_skipped" in caplog.text
+    assert "reason=ripple_band_one_sided" in caplog.text
+    # The applied trim is the anchored give-back, untouched by any scan.
+    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    giveback = {
+        role: c.candidate.linearization[role]["correction_giveback_db"]
+        for role in ("woofer", "tweeter")
+    }
+    unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
+    shift = max(0.0, max(unnormalized.values()))
+    for role in ("woofer", "tweeter"):
+        assert c.candidate.role_attenuations_db[role] == pytest.approx(
+            unnormalized[role] - shift
+        )
+    # ...and the guard never fired, because the trim never left the anchor.
+    assert (
+        "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
+    )
+
+
+def test_straddling_band_still_runs_the_linearized_ripple_polish(caplog):
+    """The control for the test above: the DEFAULT fixture's tweeter is swept
+    from 300 Hz, so its overlap band straddles Fc and the polish still runs —
+    the guard keys on the band, not on 'linearization is happening'."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert _run_phase(c, 2, 2)["accepted"] is True
+    assert (
+        "event=correction.crossover_v2_linearization_ripple_trim_skipped"
+        not in caplog.text
+    )
+
+
+def test_linearization_giveback_ledger_carries_both_level_frames(caplog):
+    """PR-L3 review S5: the give-back line is where the TRIM frame and the FIT
+    frame meet for one capture, so it carries both — ``raw_trim_db`` should
+    track the negated difference of the two ``target_level_db`` values, and a
+    large disagreement is the signature of the level-frame defect that shipped
+    the 10 dB-dark tweeter. Mirrors the ``branch_level_match`` ledger pinned in
+    tests/test_audio_measurement_program_analysis.py."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert _run_phase(c, 2, 2)["accepted"] is True
+
+    assert "event=correction.crossover_v2_linearization_giveback" in caplog.text
+    line = next(
+        text for text in caplog.text.splitlines()
+        if "event=correction.crossover_v2_linearization_giveback" in text
+    )
+    assert "target_level_db=" in line
+    for role in ("woofer", "tweeter"):
+        expected = round(
+            float(c.candidate.linearization[role]["target_level_db"]), 3
+        )
+        assert f"'{role}': {expected}" in line
+
+
 def test_analysis_json_round_trips_trim_band_average_db():
     """#1667 evidence round-trip: `_analysis_json`'s frozen fingerprint
     carries `trim_band_average_db` alongside the applied `trim_db`, rounded

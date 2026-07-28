@@ -56,7 +56,6 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -64,12 +63,14 @@ import pytest
 import jasper.audio_measurement.spatial_combine as spatial_combine
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from tests._flat_lin_corpus import (
+    CDHORN_ROOT,
     LOOPBACK_TWEETER_PASSBAND_HZ,
     LOOPBACK_WOOFER_PASSBAND_HZ,
     S0_GROUND_PLANE,
     S0_MAIN,
     S0_PROTOCOL_SEARCH_US,
     S0_SUMMED_PASSBAND_HZ,
+    requires_cdhorn,
     requires_s0,
     s0_position_irs,
 )
@@ -3480,30 +3481,15 @@ def test_decimation_preserves_the_linear_grid_contract_and_band_energy():
 # E. Real-data smoke — 2026-07-24/25 JTS3 corpus
 # --------------------------------------------------------------------------- #
 
-# The corpus is gitignored and laptop-durable: it lives under the checkout
-# it was captured beside, and is simply absent in CI (where these three
-# tests skip). Resolution is repo-root-relative by default so it works in a
-# normal clone with no setup; a *worktree* checkout has no captures/ of its
-# own and points at the main checkout's copy with
-#   JTS_FLAT_LIN_CORPUS=/path/to/JTS/captures/.../cdhorn-live-session
-# No absolute path is committed — one machine's home directory is not a
-# contract, and a stale one silently skips instead of failing.
-_CORPUS_ENV = os.environ.get("JTS_FLAT_LIN_CORPUS", "").strip()
-CORPUS = (
-    Path(_CORPUS_ENV)
-    if _CORPUS_ENV
-    else Path(__file__).resolve().parents[1]
-    / "captures"
-    / "flat-linearization-20260725"
-    / "cdhorn-live-session"
-)
-requires_corpus = pytest.mark.skipif(
-    not CORPUS.is_dir(),
-    reason=(
-        f"laptop-durable capture corpus absent: {CORPUS} "
-        "(set JTS_FLAT_LIN_CORPUS to point at it)"
-    ),
-)
+# The corpus is gitignored and laptop-durable: it lives under the checkout it
+# was captured beside, and is simply absent in CI (where these tests skip).
+# Its root and skip gate moved into tests/_flat_lin_corpus.py on 2026-07-27
+# when PR-L3's level-match regression became the corpus's second reader —
+# where the corpus IS and when to skip must be one answer for both. The
+# loader below stays here: the two readers want different phases under
+# different program parameters, and that is not shared reading.
+CORPUS = CDHORN_ROOT
+requires_corpus = requires_cdhorn
 
 
 @pytest.fixture(scope="module")

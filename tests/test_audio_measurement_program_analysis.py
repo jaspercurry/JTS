@@ -74,6 +74,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
     _aligned_branch_tf,
+    _band_average_db,
     _band_exclusive_pieces,
     _build_candidate,
     _complex_tf,
@@ -89,10 +90,17 @@ from jasper.audio_measurement.program_analysis import (
     _sweep_occurrence_index,
     analysis_diagnostic_summary,
     analyze_program_capture,
+    branch_level_bands_hz,
     overlap_band_hz,
     predicted_branch_sum,
     solve_branch_trims,
     solve_ripple_optimal_trim,
+)
+from tests._flat_lin_corpus import (
+    CDHORN_CALIBRATION,
+    CDHORN_ROOT,
+    requires_cdhorn,
+    sweep_anchored_global_offset,
 )
 
 SR = 48_000
@@ -2079,18 +2087,24 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# #1667 — ripple-optimal trim solve
+# PR-L3 — the level-match frame, and #1667's ripple-optimal trim solve
 # --------------------------------------------------------------------------- #
 #
-# solve_branch_trims band-energy-averages |W| and |T| over the overlap band,
-# which is systematically biased whenever the two driver sweeps only overlap
-# on one side of Fc: the tweeter sweep starting AT Fc clamps the evaluation
-# band to [Fc, 2*Fc] (overlap_band_hz), entirely inside the woofer's own
-# filter rolloff skirt, so the woofer's own attenuation drags the level-
-# match target — and so the tweeter's solved trim — down with it. The fix
-# (solve_ripple_optimal_trim) re-solves for the trim that minimizes the
-# summed response's ripple instead, seeded by (and sanity-bounded against)
-# the same band-average value.
+# solve_branch_trims band-energy-averages |W| and |T|, which is a LEVEL match
+# only when each branch is weighted symmetrically about Fc. It used to read
+# both branches over the SHARED both-branches-excited overlap band, whose
+# lower edge overlap_band_hz clamps UP to the tweeter's sweep floor — and a
+# tweeter swept from Fc upward (the real JTS3 geometry) leaves [Fc, 2*Fc],
+# entirely inside the woofer's own rolloff skirt. That measured skirt depth,
+# not sensitivity, and shipped a ~10 dB-dark tweeter.
+#
+# #1667 tried to absorb it by changing the OBJECTIVE (solve_ripple_optimal_trim,
+# a summed-ripple re-solve seeded by the band-average). PR-L3's offline replay
+# of the archived JTS3 captures showed that recovered only 2.1-4.1 dB of a
+# 10.9-13.1 dB error, because on the same one-sided band the summed ripple is
+# the tweeter's own ripple and barely responds to the tweeter's gain. The frame
+# is now fixed at the source — each branch is read on its OWN side of Fc — and
+# the ripple polish runs only where its band straddles Fc.
 
 
 def _lr_pair_irs(fc_hz: float, order: float, *, delay: int = 300, n: int = 8192):
@@ -2115,44 +2129,208 @@ def _lr_pair_irs(fc_hz: float, order: float, *, delay: int = 300, n: int = 8192)
     return woofer_ir, tweeter_ir
 
 
-def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_asymmetric_overlap_bias():
-    """#1667 core regression: a textbook Linkwitz-Riley 4th-order pair sums
-    to EXACTLY flat magnitude at unity gain on both branches by
-    construction (that is the defining property of an LR crossover) — the
-    analytically known optimum is ``trim_t = 0.0`` dB. With the tweeter's
-    sweep starting AT Fc (the real-world asymmetric-overlap mechanism), the
-    evaluation band clamps to ``[Fc, 2*Fc]``, entirely inside the woofer's
-    own LR4 rolloff skirt — band-average level-matching over that skirt
-    drags the tweeter's trim far into over-attenuation.
+def _lr4_branch_magnitudes(fc_hz: float, freqs: np.ndarray, tweeter_gain_db: float = 0.0):
+    """A textbook LR4 complementary pair on ``freqs``, tweeter optionally hotter.
 
-    The LR4 bowl near 0.0 dB is WIDE relative to
-    ``RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`` (verified below, not assumed —
-    ripple stays under ~0.26 dB across roughly [-0.6, +0.6] dB of trim
-    around the true optimum), so flat-minimum regularization (architect
-    follow-up) legitimately pulls the DEFAULT-regularized result away from
-    the exact 0.0 dB optimum, toward the (far more negative) band-average
-    seed — by design, trading a negligible amount of extra ripple for
-    session-to-session stability. This test therefore asserts on RIPPLE
-    (within epsilon of the sharp optimum), not on the regularized TRIM
-    value, and separately pins the SHARP (epsilon effectively disabled)
-    optimum at the exact analytic 0.0 dB truth so the underlying objective
-    itself stays verified precisely."""
-    fc_hz = 2000.0
-    freqs = np.geomspace(200.0, 8000.0, 2000)
+    An LR crossover's defining property: the two branches sum to EXACTLY flat
+    magnitude at unity gain on both. So the analytically known level-match
+    answer is ``trim_t = -tweeter_gain_db`` — the ground truth every test in
+    this section measures its estimator against.
+    """
     ratio4 = (freqs / fc_hz) ** 4
-    W = 1.0 / (1.0 + ratio4)  # LR4 lowpass magnitude
-    T = ratio4 / (1.0 + ratio4)  # LR4 highpass magnitude (exact complement)
+    return (
+        1.0 / (1.0 + ratio4),
+        (ratio4 / (1.0 + ratio4)) * 10.0 ** (tweeter_gain_db / 20.0),
+    )
+
+
+# The closed-form bias of band-averaging BOTH branches over the one-sided
+# [Fc, 2*Fc] band on an ideal LR4 pair whose drivers have EQUAL sensitivity —
+# the answer must be 0.0 dB and is not. Derived (not fitted) by
+# test_one_sided_overlap_band_biases_the_level_match below; quoted in
+# solve_branch_trims' docstring and in the PR-L3 write-up, so it lives here as
+# a named constant rather than a magic number in one assertion.
+ONE_SIDED_BAND_BIAS_DB = 10.59
+# The residual bias of the SHIPPED estimator (each branch on its own side, at
+# the full Fc±1-octave ratio) on that same ideal pair. Non-zero because a
+# linear-frequency bin grid weights the wider upper half more; it shrinks as
+# the ratio narrows and is ~20x smaller than what it replaced.
+MIRRORED_HALVES_BIAS_DB = 0.54
+
+
+def test_one_sided_overlap_band_biases_the_level_match():
+    """PR-L3 root cause, in closed form. Two EQUAL-sensitivity drivers behind
+    an ideal LR4 pair have a true level-match answer of exactly 0.0 dB. Read
+    over the one-sided ``[Fc, 2*Fc]`` band that ``overlap_band_hz`` produces
+    when the tweeter's sweep starts AT Fc, a band-power average reports the
+    tweeter ~10.6 dB hot — it is measuring the woofer's crossover skirt, not
+    its sensitivity. That number is the frame defect that put the archived
+    JTS3 tweeter trims 10.9-13.1 dB below the same analysis's own fit frame.
+
+    Widening back to the nominal symmetric ``[Fc/2, 2*Fc]`` band is NOT the
+    fix: it is still biased (a linear-frequency bin grid over a log-asymmetric
+    interval), and on real hardware it would average the tweeter over bins it
+    was never excited in. Reading each branch on its own side is."""
+    fc_hz = 2000.0
+    freqs = np.linspace(1.0, 24000.0, 262_144)
+    W, T = _lr4_branch_magnitudes(fc_hz, freqs)
 
     lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=4.0 * fc_hz,
     )
     assert (lo, hi) == pytest.approx((2000.0, 4000.0))  # asymmetric: clamps to [Fc, 2*Fc]
 
-    trim_w, trim_t_band_average, _lw, _lt = solve_branch_trims(
-        freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
+    def gap_db(w_band, t_band) -> float:
+        w_db = 20.0 * np.log10(np.maximum(np.abs(W), 1e-12))
+        t_db = 20.0 * np.log10(np.maximum(np.abs(T), 1e-12))
+        return _band_average_db(freqs, t_db, *t_band) - _band_average_db(
+            freqs, w_db, *w_band
+        )
+
+    # The defect: one shared, one-sided band.
+    assert gap_db((lo, hi), (lo, hi)) == pytest.approx(ONE_SIDED_BAND_BIAS_DB, abs=0.02)
+    # Not fixed by widening to the nominal band either.
+    nominal = (fc_hz / 2.0, fc_hz * 2.0)
+    assert gap_db(nominal, nominal) == pytest.approx(3.03, abs=0.02)
+    # The shipped estimator: each branch on its own side of Fc.
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(
+        freqs, W, T, fc_hz,
+        woofer_span_hz=(fc_hz / 4.0, fc_hz * 2.0),
+        tweeter_span_hz=(fc_hz / 2.0, fc_hz * 4.0),
     )
     assert trim_w == pytest.approx(0.0)  # woofer is the quieter (unattenuated) branch
-    assert trim_t_band_average < -5.0  # badly biased: the true optimum is 0.0 dB
+    assert trim_t == pytest.approx(-MIRRORED_HALVES_BIAS_DB, abs=0.02)
+    assert abs(trim_t) < ONE_SIDED_BAND_BIAS_DB / 10.0
+
+
+@pytest.mark.parametrize("tweeter_gain_db", [0.0, 6.0, 10.8, 25.2])
+def test_solve_branch_trims_recovers_a_known_sensitivity_gap(tweeter_gain_db):
+    """The estimator's contract: on an ideal LR4 pair, the solved tweeter trim
+    is the negated sensitivity gap, to within the fixed
+    ``MIRRORED_HALVES_BIAS_DB`` residual — and that residual is INDEPENDENT of
+    the gap, which is what makes it a frame property rather than a fudge.
+    10.8 dB is JTS3's real padded gap (25.2 dB datasheet, -14.4 dB L-pad);
+    25.2 dB is the bare gap the broken frame used to land on."""
+    fc_hz = 2000.0
+    freqs = np.linspace(1.0, 24000.0, 262_144)
+    W, T = _lr4_branch_magnitudes(fc_hz, freqs, tweeter_gain_db=tweeter_gain_db)
+    _trim_w, trim_t, _lw, _lt = solve_branch_trims(
+        freqs, W, T, fc_hz,
+        woofer_span_hz=(fc_hz / 4.0, fc_hz * 2.0),
+        tweeter_span_hz=(fc_hz / 2.0, fc_hz * 4.0),
+    )
+    assert trim_t == pytest.approx(
+        -(tweeter_gain_db + MIRRORED_HALVES_BIAS_DB), abs=0.02
+    )
+
+
+def test_branch_level_bands_hz_are_mirrored_about_fc_and_clamped():
+    """The band pair is log-symmetric about Fc by construction, capped at the
+    nominal octave, and narrowed by whichever branch's own span binds first."""
+    fc = 2000.0
+    wide_w, wide_t = (150.0, 4000.0), (2000.0, 20000.0)
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+        fc, woofer_span_hz=wide_w, tweeter_span_hz=wide_t,
+    )
+    assert (w_lo, w_hi, t_lo, t_hi) == pytest.approx((1000.0, 2000.0, 2000.0, 4000.0))
+    # Whichever OUTER edge binds first sets the shared ratio, keeping the two
+    # halves mirror-symmetric even when only one branch is the constraint.
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+        fc, woofer_span_hz=(1500.0, 4000.0), tweeter_span_hz=wide_t,
+    )
+    assert (w_lo, w_hi, t_lo, t_hi) == pytest.approx((1500.0, 2000.0, 2000.0, 2666.6667))
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+        fc, woofer_span_hz=wide_w, tweeter_span_hz=(2000.0, 2500.0),
+    )
+    assert (w_lo, w_hi, t_lo, t_hi) == pytest.approx((1600.0, 2000.0, 2000.0, 2500.0))
+    assert w_hi == t_lo == fc  # the two halves always meet exactly at Fc
+    # Defaults are the nominal Fc +/- one octave.
+    assert branch_level_bands_hz(fc) == ((1000.0, 2000.0), (2000.0, 4000.0))
+
+
+def test_branch_level_bands_hz_refuse_a_branch_that_does_not_reach_fc():
+    """The INNER edges are load-bearing too (PR-L3 review S2). The halves meet
+    AT Fc, so the woofer's span must reach up to Fc and the tweeter's down to
+    it. Nothing ties a declared driver band to the chosen Fc, so a tweeter
+    swept from 2.5 kHz under a 2 kHz Fc is representable — and would put
+    500 Hz of never-excited deconvolution noise inside the tweeter's own half,
+    the exact failure this estimator exists to avoid. There is no level match
+    in that capture, so it raises into the ``internal_error`` seam rather than
+    shipping a guessed trim."""
+    fc = 2000.0
+    with pytest.raises(ValueError, match="tweeter span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(150.0, 4000.0), tweeter_span_hz=(2500.0, 20000.0),
+        )
+    with pytest.raises(ValueError, match="woofer span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(150.0, 1800.0), tweeter_span_hz=(2000.0, 20000.0),
+        )
+    # A degenerate span that starts (woofer) or ends (tweeter) AT Fc leaves
+    # that branch no half at all, and is refused by the same two checks —
+    # which is why the ratio below them needs no third guard: once both spans
+    # straddle Fc it exceeds 1 by construction.
+    with pytest.raises(ValueError, match="woofer span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(fc, 4000.0), tweeter_span_hz=(2000.0, 20000.0),
+        )
+    with pytest.raises(ValueError, match="tweeter span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(150.0, fc), tweeter_span_hz=(fc, fc),
+        )
+    # Touching Fc exactly from the correct side IS enough — the halves only
+    # need to meet there.
+    assert branch_level_bands_hz(
+        fc, woofer_span_hz=(1000.0, fc), tweeter_span_hz=(fc, 4000.0),
+    ) == ((1000.0, fc), (fc, 4000.0))
+
+
+def test_build_candidate_refuses_a_tweeter_swept_above_fc():
+    """The refusal reaches the candidate builder, not just the band helper:
+    a declared tweeter sweep that starts ABOVE Fc raises out of
+    ``_build_candidate`` (PR-L3 review S2), which the web layer's existing
+    catch-all classifies as ``internal_error``."""
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    with pytest.raises(ValueError, match="does not reach Fc"):
+        _build_candidate(
+            woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+            _candidate_alignment(), None,
+            tweeter_sweep_lo_hz=2500.0, woofer_sweep_hi_hz=4.0 * fc_hz,
+            woofer_sweep_lo_hz=150.0, tweeter_sweep_hi_hz=20000.0,
+        )
+
+
+def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_a_biased_seed():
+    """#1667 core regression, re-seated on the geometry where the ripple
+    polish still runs (PR-L3): a band that straddles Fc. A textbook LR4 pair
+    sums to EXACTLY flat magnitude at unity gain on both branches, so the
+    analytically known optimum is ``trim_t = 0.0`` dB, and the objective must
+    find it from a deliberately over-attenuating seed.
+
+    The seed is supplied explicitly rather than taken from
+    ``solve_branch_trims``, which no longer produces a badly biased one — the
+    -8 dB below is the shape of the bias the old shared-band call used to
+    hand it, kept so the objective itself stays verified against it.
+
+    The LR4 bowl near 0.0 dB is WIDE relative to
+    ``RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB``, so flat-minimum regularization
+    (architect follow-up) legitimately pulls the DEFAULT-regularized result
+    back toward the seed — by design, trading a negligible amount of extra
+    ripple for session-to-session stability. This test therefore asserts on
+    RIPPLE (within epsilon of the sharp optimum), not on the regularized TRIM
+    value, and separately pins the SHARP (epsilon effectively disabled)
+    optimum at the exact analytic 0.0 dB truth."""
+    fc_hz = 2000.0
+    freqs = np.geomspace(200.0, 8000.0, 2000)
+    W, T = _lr4_branch_magnitudes(fc_hz, freqs)
+
+    lo, hi = overlap_band_hz(
+        fc_hz, tweeter_sweep_lo_hz=fc_hz / 2.0, woofer_sweep_hi_hz=4.0 * fc_hz,
+    )
+    assert (lo, hi) == pytest.approx((1000.0, 4000.0))  # straddles Fc
+    biased_seed = -8.0
 
     # Sharp optimum: epsilon effectively disabled, recovers the
     # analytically known 0.0 dB truth to within one scan step
@@ -2160,10 +2338,10 @@ def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_asymmetric_overlap_bia
     # regularization behavior.
     trim_t_sharp, ripple_sharp, seed = solve_ripple_optimal_trim(
         freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
-        seed_trim_db=trim_t_band_average, trim_w_db=trim_w, sign=1,
+        seed_trim_db=biased_seed, trim_w_db=0.0, sign=1,
         flat_minimum_epsilon_db=1e-9,
     )
-    assert seed == trim_t_band_average
+    assert seed == biased_seed
     assert trim_t_sharp == pytest.approx(0.0, abs=0.15)
     assert ripple_sharp < 0.1  # near-perfect LR4 cancellation at the sharp optimum
 
@@ -2171,11 +2349,11 @@ def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_asymmetric_overlap_bia
     # seed, away from 0.0 -- asserted on ripple, not the trim value.
     trim_t_reg, ripple_reg, _seed = solve_ripple_optimal_trim(
         freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
-        seed_trim_db=trim_t_band_average, trim_w_db=trim_w, sign=1,
+        seed_trim_db=biased_seed, trim_w_db=0.0, sign=1,
     )
     assert ripple_reg <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
     assert trim_t_reg < trim_t_sharp  # pulled toward the very-negative seed
-    assert trim_t_reg > trim_t_band_average  # but nowhere near all the way back
+    assert trim_t_reg > biased_seed  # but nowhere near all the way back
 
 
 def test_solve_ripple_optimal_trim_ties_break_toward_seed():
@@ -2296,60 +2474,145 @@ def test_solve_ripple_optimal_trim_never_exceeds_physical_attenuation_bounds():
     assert RIPPLE_TRIM_MIN_DB <= trim_t2 <= RIPPLE_TRIM_MAX_DB
 
 
+def _candidate_alignment() -> AlignmentEstimate:
+    return AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+    )
+
+
+# Sweep bounds whose overlap band STRADDLES Fc (tweeter swept from Fc/2), the
+# geometry where the ripple polish still runs, vs. the real JTS3 ONE-SIDED
+# geometry (tweeter swept from Fc). Both give the level match the same
+# per-branch spans — that is the point: the level match no longer depends on
+# where the tweeter sweep starts, because it never reads the tweeter below Fc.
+def _straddling_sweeps(fc_hz: float) -> dict[str, float]:
+    return dict(
+        tweeter_sweep_lo_hz=fc_hz / 2.0, woofer_sweep_hi_hz=4.0 * fc_hz,
+        woofer_sweep_lo_hz=150.0, tweeter_sweep_hi_hz=20000.0,
+    )
+
+
+def _one_sided_sweeps(fc_hz: float) -> dict[str, float]:
+    return dict(
+        tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=4.0 * fc_hz,
+        woofer_sweep_lo_hz=150.0, tweeter_sweep_hi_hz=20000.0,
+    )
+
+
 def test_build_candidate_applies_ripple_optimal_trim_with_band_average_evidence():
     """#1667 wiring (raw/program_analysis population): `_build_candidate`'s
     applied ``trim_db`` is the ripple-optimal solve, and
     ``trim_band_average_db`` preserves the band-average seed as evidence —
     both populated, and they differ whenever the ripple-optimal search
     genuinely moves the trim. The woofer/reference branch is never touched
-    by the search, so its trim is identical in both mappings. Uses a gentler
-    (order=1.5, not a true LR4) asymmetric-overlap fixture so the bias stays
-    inside the sanity guard's margin — the guard-fires case is covered by
-    ``test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning``
-    below."""
+    by the search, so its trim is identical in both mappings.
+
+    Straddling sweeps (PR-L3): the polish only runs where its band can see
+    both branches — the one-sided case is
+    ``test_build_candidate_skips_the_ripple_polish_on_a_one_sided_band``."""
     fc_hz = 2000.0
-    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=1.5)
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
     n_fft = _n_fft_for(woofer_ir, tweeter_ir)
-    alignment = AlignmentEstimate(
-        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
-        confidence=0.9, status=ALIGNMENT_OK,
-    )
     candidate, _pred = _build_candidate(
-        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
-        tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=4.0 * fc_hz,
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        _candidate_alignment(), None, **_straddling_sweeps(fc_hz),
     )
     assert candidate.trim_band_average_db is not None
     assert candidate.trim_db["woofer"] == candidate.trim_band_average_db["woofer"]
     assert candidate.trim_db["tweeter"] != candidate.trim_band_average_db["tweeter"]
-    # Moves toward LESS attenuation (the band-average bias always
-    # over-attenuates for this asymmetric-overlap shape) and stays inside
-    # the sanity guard (otherwise it would have fallen back and the two
-    # would be equal — see the guard test below).
+    # The seed is now within ~0.6 dB of this fixture's analytic 0.0 dB truth,
+    # so the polish only ever nudges — and stays inside the sanity guard
+    # (otherwise it would have fallen back and the two would be equal).
+    assert candidate.trim_band_average_db["tweeter"] == pytest.approx(
+        -MIRRORED_HALVES_BIAS_DB, abs=0.1
+    )
     assert candidate.trim_db["tweeter"] > candidate.trim_band_average_db["tweeter"]
     assert abs(
         candidate.trim_db["tweeter"] - candidate.trim_band_average_db["tweeter"]
     ) <= RIPPLE_TRIM_SANITY_MARGIN_DB
 
 
-def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(caplog):
-    """A textbook LR4 pair's band-average bias (issue #1667's own described
-    shape), run through the real deconvolution/windowing pipeline, is severe
-    enough to move the ripple-optimal solve implausibly far (>6 dB) from the
-    band-average seed — the sanity guard must distrust it, fall back to
-    band-average, and log a WARNING (never a silent wild trim)."""
+def test_build_candidate_skips_the_ripple_polish_on_a_one_sided_band(caplog):
+    """PR-L3: on the real JTS3 geometry (tweeter swept from Fc) the shared
+    ripple band clamps to ``[Fc, 2*Fc]``, where the woofer is 20+ dB down its
+    skirt — the summed ripple is the tweeter's own and cannot express the
+    handoff LEVEL. Replayed on the archived 2026-07-25 run-5 MEASURE capture
+    the objective moved an unbiased -12.368 dB seed 7.9 dB back down; a
+    selector that cannot see the woofer must not set the woofer's handoff
+    level, so it is skipped (disclosed), not guarded.
+
+    The level match itself is unaffected by the one-sidedness — it reads each
+    branch on its own side — so this candidate's trim equals the straddling
+    fixture's seed."""
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    candidate, _pred = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        _candidate_alignment(), None, **_one_sided_sweeps(fc_hz),
+    )
+    assert candidate.trim_db == candidate.trim_band_average_db
+    assert candidate.trim_db["tweeter"] == pytest.approx(
+        -MIRRORED_HALVES_BIAS_DB, abs=0.1
+    )
+    assert "event=program_analysis.ripple_trim_skipped" in caplog.text
+    assert "reason=ripple_band_one_sided" in caplog.text
+    assert "event=program_analysis.ripple_trim_rejected" not in caplog.text
+
+
+def test_build_candidate_logs_the_level_match_frame_ledger(caplog):
+    """PR-L3 disclosure: every MEASURE analysis emits the level match's own
+    inputs — both branch levels and the two bands they were read over — so a
+    future frame defect is visible in the journal instead of only in a
+    re-derivation months later. Read beside the per-role ``target_level_db``
+    that ``correction.crossover_v2_linearization_giveback`` carries for the
+    same capture."""
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    _candidate, _pred = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        _candidate_alignment(), None, **_one_sided_sweeps(fc_hz),
+    )
+    assert "event=program_analysis.branch_level_match" in caplog.text
+    assert 'woofer_band_hz="(1000.0, 2000.0)"' in caplog.text
+    assert 'tweeter_band_hz="(2000.0, 4000.0)"' in caplog.text
+    assert "level_w_db=" in caplog.text
+    assert "level_t_db=" in caplog.text
+
+
+def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(
+    caplog, monkeypatch,
+):
+    """The guard's contract: a ripple-optimal result implausibly far (>6 dB)
+    from the seed is distrusted, falls back to the band-average, and logs a
+    WARNING — never a silent wild trim.
+
+    Driven by stubbing the solver rather than by a fixture. Before PR-L3 a
+    plain LR4 pair fired this guard on every run, because the SEED was the
+    broken thing; with an unbiased seed no physically plausible branch pair
+    moves the objective that far (verified across echo/comb fixtures during
+    PR-L3), so the honest way to keep the guard covered is to exercise the
+    guard, not to contrive physics that no longer happens."""
     caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.program_analysis")
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
     n_fft = _n_fft_for(woofer_ir, tweeter_ir)
-    alignment = AlignmentEstimate(
-        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
-        confidence=0.9, status=ALIGNMENT_OK,
+    monkeypatch.setattr(
+        program_analysis,
+        "solve_ripple_optimal_trim",
+        lambda *a, **kw: (
+            kw["seed_trim_db"] - RIPPLE_TRIM_SANITY_MARGIN_DB - 1.0, 0.0,
+            kw["seed_trim_db"],
+        ),
     )
     candidate, _pred = _build_candidate(
-        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
-        tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=4.0 * fc_hz,
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        _candidate_alignment(), None, **_straddling_sweeps(fc_hz),
     )
     # Rejected: the applied trim falls back to the band-average seed exactly.
     assert candidate.trim_db == candidate.trim_band_average_db
@@ -2379,3 +2642,153 @@ def test_rate_mismatch_is_rejected():
     cap = np.zeros(10_000)
     with pytest.raises(ValueError):
         analyze_program_capture(prog, cap, 44_100)
+
+
+# --------------------------------------------------------------------------- #
+# PR-L3 — real-hardware corpus: the frame the fix was diagnosed on
+# --------------------------------------------------------------------------- #
+#
+# The 2026-07-24/25 JTS3 cdhorn MEASURE captures are gitignored and
+# laptop-durable, so this skips cleanly in CI. Root, skip gate and the
+# era-exact sweep anchor come from tests/_flat_lin_corpus.py, shared with
+# tests/test_spatial_combine.py (this module became the corpus's second reader
+# on 2026-07-27). The era-exact program parameters below are that module's —
+# it is the authority on what these captures were played under.
+
+# What the SHIPPED (pre-PR-L3) pipeline persisted for run 5, read off the
+# session's own archived candidate JSON (``run5_candidate.json``): a tweeter
+# band-average trim of -26.5088 dB against a fit frame (``target_level_db``
+# tweeter -6.9678, woofer -20.4118) only 13.4440 dB apart. The 13.06 dB
+# disagreement between those two frames is the defect; the offline replay
+# reproduced both to 4 decimal places before anything was changed.
+L3_RUN5_BROKEN_TRIM_DB = -26.5088
+L3_RUN5_FIT_FRAME_GAP_DB = 13.4440
+
+
+@requires_cdhorn
+def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypatch):
+    """PR-L3 hardware regression, from the offline replay's own numbers.
+
+    On the archived 2026-07-25 JTS3 run-5 MEASURE capture the level match now
+    lands within ~1.1 dB of the SAME analysis's per-driver ``target_level_db``
+    frame — the frame the 2026-07-27 forensics independently validated to
+    0.17 dB against the spatial cloud. Before the fix the two disagreed by
+    13.06 dB, and the trim that shipped (-26.5 dB) left the measured summed
+    response 25.5 dB non-flat across 200 Hz - 16 kHz. Both frames are computed
+    from the same complex branch TFs, so this comparison is invariant to the
+    session's drive-gain plan (a wrong assumed gain scales a branch by a
+    constant and cancels in the difference).
+
+    Also pins the premise of the diagnosis: ``_aligned_branch_tf`` (the trim
+    path) and ``_driver_response`` (the fit path) return byte-identical
+    transfer functions — the "reference mismatch between the two paths"
+    hypothesis was REFUTED, and no future change should quietly introduce
+    one."""
+    import glob
+    import wave
+
+    from jasper.active_speaker.linearization_envelope import compose_envelope
+    from jasper.active_speaker.linearization_fit import fit_driver_linearization
+    from jasper.audio_measurement.calibration import parse_calibration_text
+
+    def load(path: str) -> np.ndarray:
+        with wave.open(path) as handle:
+            raw = handle.readframes(handle.getnframes())
+            channels = handle.getnchannels()
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
+        return samples[::2] if channels == 2 else samples
+
+    fc_hz = 2000.0
+    calibration = parse_calibration_text(CDHORN_CALIBRATION.read_text())
+    program = build_measure_program(
+        {"woofer": -6.0005, "tweeter": -15.0105},
+        [
+            RoleBand("woofer", 0, FrequencyBand(150.0, 4000.0)),
+            RoleBand("tweeter", 1, FrequencyBand(2000.0, 20000.0)),
+        ],
+        leading_pilot_gains_db=(-16.0006, -6.0005),
+        leading_pilot_role="woofer",
+        courtesy_prelude=True,
+    )
+    capture = load(sorted(glob.glob(f"{CDHORN_ROOT}/*run5_measure.wav"))[-1])
+    offset = sweep_anchored_global_offset(capture, program.segment("sweep_w"))
+    real_global_offset = program_analysis._global_offset
+    monkeypatch.setattr(
+        program_analysis,
+        "_global_offset",
+        lambda prog, cap, rate: (offset, *real_global_offset(prog, cap, rate)[1:]),
+    )
+    analysis = analyze_program_capture(
+        program, capture, SR,
+        calibration=calibration,
+        geometry=MeasurementGeometry(driver_spacing_m=0.254, mic_distance_m=1.0),
+        priors=MeasurementPriors(crossover_fc_hz=fc_hz),
+    )
+    candidate = analysis.candidate
+    assert candidate is not None
+    responses = {r.role: r for r in analysis.driver_responses}
+
+    # The two paths' transfer functions are the same numbers.
+    epsilon = analysis.drift.epsilon_ppm / 1e6
+    irs = {}
+    for role, seg_id in (("woofer", "sweep_w"), ("tweeter", "sweep_t")):
+        segment = program.segment(seg_id)
+        irs[role] = _deconvolve_window(
+            capture, segment, offset + segment.start_sample, SR, epsilon=epsilon,
+        )[0]
+    n_fft = _n_fft_for(irs["woofer"], irs["tweeter"])
+    for role, ir in irs.items():
+        _f, tf, _gate = _aligned_branch_tf(ir, SR, n_fft, calibration=calibration)
+        # BYTE-identical, not merely close, and complex — the refuted claim was
+        # a "reference mismatch between the two paths", which a phase-only
+        # divergence would also be. `array_equal` on the complex arrays is the
+        # assertion that actually says what was checked.
+        assert np.array_equal(tf, responses[role].complex_tf)
+
+    # The fit frame, from the shipped fit path on those same responses.
+    fit_levels = {}
+    for role, band, driver_class in (
+        ("woofer", (150.0, 4000.0), "unknown"),
+        ("tweeter", (2000.0, 20000.0), "compression_horn"),
+    ):
+        response = responses[role]
+        seed = compose_envelope(
+            role, response, excited_band_hz=band,
+            mic_tier="reference", driver_class=driver_class, sigma_db=None,
+        )
+        envelope = compose_envelope(
+            role, response, excited_band_hz=band,
+            mic_tier="reference", driver_class=driver_class,
+            sigma_db=np.full_like(seed.freqs_hz, 0.01),
+        )
+        fit_levels[role] = fit_driver_linearization(response, envelope).target_level_db
+    fit_gap_db = fit_levels["tweeter"] - fit_levels["woofer"]
+    assert fit_gap_db == pytest.approx(L3_RUN5_FIT_FRAME_GAP_DB, abs=0.01)
+
+    trim_gap_db = -candidate.trim_band_average_db["tweeter"]
+    assert trim_gap_db - fit_gap_db == pytest.approx(-1.08, abs=0.25)
+    # ...and nowhere near the frame that shipped.
+    assert candidate.trim_band_average_db["tweeter"] > L3_RUN5_BROKEN_TRIM_DB + 10.0
+
+    # The applied trim leaves the MEASURED summed response near as flat as
+    # this raw (uncorrected) pair can be: within 1 dB of the best achievable
+    # over 200 Hz - 16 kHz, where the shipped trim was >10 dB worse than best.
+    freqs = np.asarray(responses["woofer"].freqs_hz, dtype=float)
+    W = np.asarray(responses["woofer"].complex_tf)
+    T = np.asarray(responses["tweeter"].complex_tf)
+    centers = [200.0 * 2 ** (n / 3) for n in range(19)]  # 200 Hz .. 16 kHz
+
+    def summed_spread_db(trim_t_db: float) -> float:
+        summed = predicted_branch_sum(
+            W, T, 0.0, trim_t_db, analysis.alignment.polarity_sign
+        )
+        summed_db = 20.0 * np.log10(np.maximum(np.abs(summed), 1e-12))
+        levels = [
+            _band_average_db(freqs, summed_db, c / 2 ** (1 / 6), c * 2 ** (1 / 6))
+            for c in centers
+        ]
+        return max(levels) - min(levels)
+
+    best = min(summed_spread_db(t) for t in np.arange(-40.0, 0.01, 0.5))
+    assert summed_spread_db(candidate.trim_db["tweeter"]) <= best + 1.0
+    assert summed_spread_db(L3_RUN5_BROKEN_TRIM_DB) > best + 10.0

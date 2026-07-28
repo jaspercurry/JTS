@@ -83,6 +83,24 @@ but is overridden by the broken measured value.
 - The replay harness lives with the session artifacts; the log line and
   the fix land in the repo.
 
+**Located and fixed (2026-07-27): band clamp asymmetry.** Session
+`d5b171fa81a5` did not retain its MEASURE capture, so the replay ran on
+the 2026-07-24/25 cdhorn session (runs 3–7, same defect shape) and
+reproduced its archived `trim_band_average_db`, `trim_db`, and both
+`target_level_db` values to 4 decimal places before anything changed.
+The other two candidates are REFUTED: `_aligned_branch_tf` and
+`_driver_response` return byte-identical transfer functions, and the
+CHECK gain-plan skew is fully divided out by the deconvolution (which
+also makes the trim-vs-fit frame comparison invariant to the drive gain).
+`overlap_band_hz` clamps the shared band's lower edge UP to the tweeter's
+sweep floor — Fc on this speaker — leaving `[Fc, 2Fc]`, entirely inside
+the woofer's crossover skirt: **+10.59 dB of closed-form bias on an ideal
+LR4 pair with two equal-sensitivity drivers**, 10.9 dB (07-27) / 13.1 dB
+(07-25) against the fit frame on real captures. `solve_branch_trims` now
+reads each branch on its own side of Fc, and the #1667 ripple polish runs
+only where its band straddles Fc. Ledger, harness, and the both-session
+reconciliation: `captures/iloud-comparison-20260727/trim-replay/`.
+
 ## PR-L4 — accountability: the missing assertions
 
 From the verification-accountability audit, plus one found during

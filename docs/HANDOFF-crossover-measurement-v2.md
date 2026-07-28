@@ -505,31 +505,70 @@ session-scoped only (mirrors `linearization`'s own reduced applied-profile
 copy, which strips the honesty-ladder fields via
 `linearization_filters_by_role` — see that function's docstring); it does
 not thread into the durable applied-profile artifact.
-**Ripple-optimal trim solve (#1667 Phase 3).** The applied trim is no
-longer bare band-average level matching — `solve_branch_trims`'s average
-over the overlap band is systematically biased whenever the two driver
-sweeps only overlap on one side of Fc (a tweeter sweep starting AT Fc
-clamps the evaluation band to `[Fc, 2·Fc]`, entirely inside the woofer's
-own rolloff skirt, so the woofer's own filter attenuation drags the
-level-match target — and the tweeter's solved trim — down with it).
-`solve_ripple_optimal_trim`
+**The level-match frame (PR-L3, 2026-07-27).** `solve_branch_trims`
 ([`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py))
-re-solves the tweeter trim for minimum summed-response ripple instead,
-scanned in a bounded window (±10 dB, `RIPPLE_TRIM_SEARCH_WINDOW_DB`)
-around the band-average seed and clamped to the physically valid
-attenuation range; a result more than `RIPPLE_TRIM_SANITY_MARGIN_DB`
-(6 dB) from the seed is distrusted and discarded in favor of band-average,
-with a WARNING (never a silent wild trim). Selection is flat-minimum-
-regularized (architect follow-up): among every scanned candidate within
-`RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB` (0.25 dB) of the scan's global
-minimum ripple, the one closest to the band-average seed wins — a shallow
-ripple bowl's exact minimizer is sensitive to measurement noise and would
-otherwise wander session to session, which is a worse product property
-than a fraction-of-a-dB of extra ripple. Wired into BOTH the raw
-candidate (`CrossoverCandidate.trim_db`, with the band-average seed
-preserved as `trim_band_average_db` evidence) and the Layer 1a linearized
-re-solve above, so consumer/phone-tier captures — ineligible for
-linearization — get the fix too. The linearized-path trim is correct
+reads **each branch on its own side of Fc** — `[Fc/ρ, Fc]` for the woofer,
+`[Fc, Fc·ρ]` for the tweeter, log-symmetric by construction
+(`branch_level_bands_hz`), with `ρ ≤ 1 octave` narrowed by whichever
+branch's own validity span binds first. It is never handed the SHARED
+both-branches-excited overlap band.
+
+Why: band-power-averaging is a level match only when each branch is
+weighted symmetrically about Fc. The shared band's lower edge is clamped UP
+to the tweeter's sweep floor (`overlap_band_hz`), and a tweeter swept from
+Fc upward — JTS3's real geometry — leaves `[Fc, 2·Fc]`, entirely on the side
+where the woofer is inside its crossover skirt. That measures skirt depth,
+not sensitivity: **+10.59 dB on an ideal LR4 pair with two equal-sensitivity
+drivers** (closed form, pinned by
+`test_one_sided_overlap_band_biases_the_level_match`). On the archived JTS3
+MEASURE captures it put the tweeter trim 10.9 dB (2026-07-27 session
+`d5b171fa81a5`) and 13.1 dB (2026-07-25 run 5) below the same analysis's own
+per-driver `target_level_db` frame — the ideal-pair figure accounts for the
+observed error to within **0.27–2.47 dB** across the two sessions, the
+remainder being each real driver's own rolloff on top of the filter's. That
+trim is what the linearized give-back anchors on — the origin of the
+~10 dB-dark tweeter. Widening back
+to the nominal `[Fc/2, 2·Fc]` is not a fix either (+3.03 dB residual on the
+same ideal pair, and it averages the tweeter over bins it was never excited
+in). Every MEASURE analysis now discloses the frame:
+`event=program_analysis.branch_level_match` carries `level_w_db`,
+`level_t_db`, and both bands, to be read beside the per-role
+`target_level_db` that `correction.crossover_v2_linearization_giveback`
+carries for the same capture.
+
+**Ripple-optimal trim polish (#1667 Phase 3, scoped by PR-L3).**
+`solve_ripple_optimal_trim` re-solves the tweeter trim for minimum
+summed-response ripple, scanned in a bounded window (±10 dB,
+`RIPPLE_TRIM_SEARCH_WINDOW_DB`) around the band-average seed and clamped to
+the physically valid attenuation range; a result more than
+`RIPPLE_TRIM_SANITY_MARGIN_DB` (6 dB) from the seed is distrusted and
+discarded in favor of band-average, with a WARNING (never a silent wild
+trim). Selection is flat-minimum-regularized (architect follow-up): among
+every scanned candidate within `RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`
+(0.25 dB) of the scan's global minimum ripple, the one closest to the
+band-average seed wins — a shallow ripple bowl's exact minimizer is
+sensitive to measurement noise and would otherwise wander session to
+session, which is a worse product property than a fraction-of-a-dB of extra
+ripple.
+
+The polish runs **only where its own band straddles Fc** — at BOTH call
+sites: the raw candidate's
+(`event=program_analysis.ripple_trim_skipped`) and the Layer 1a linearized
+re-solve's (`event=correction.crossover_v2_linearization_ripple_trim_skipped`),
+the one whose result becomes `role_attenuations_db`. Both carry
+`reason=ripple_band_one_sided`. #1667 was written against a
+biased seed and its whole corpus was one-sided geometry, where the summed
+ripple is the tweeter's own and barely responds to the tweeter's gain: it
+recovered only 2.1–4.1 dB of the 10.9–13.1 dB frame error, and once PR-L3
+fixed the seed the same objective pulled the other way (replayed on the
+2026-07-25 run-5 capture it moved an unbiased −12.368 dB seed 7.9 dB back
+down, stopped only by the sanity guard). A selector that cannot see the
+woofer does not set the woofer's handoff level. Both the scan and its
+straddle guard are wired into BOTH paths — the raw candidate
+(`CrossoverCandidate.trim_db`, with the band-average seed preserved as
+`trim_band_average_db` evidence) and the Layer 1a linearized re-solve above
+— so consumer/phone-tier captures, ineligible for linearization, get the
+same treatment. The linearized-path trim is correct
 only with the linearization filters emitted (#1668 PR-D); the two land
 together. Design rationale:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)

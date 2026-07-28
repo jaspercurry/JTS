@@ -31,14 +31,18 @@ other segment sits — so an unrelated composer edit silently re-reads
 historical evidence. See that function for the measurement that motivated
 the change and what it moved.
 
-The same hazard SURVIVES, deliberately, in ``tests/test_spatial_combine``'s
+The same shape SURVIVES, deliberately, in ``tests/test_spatial_combine``'s
 bespoke cdhorn loader, whose ``find_offset`` still registers against a
-freshly composed program. It is benign there — that corpus's captures are
-read against a program whose composition those tests pin themselves — and it
-is not shared with this module on purpose (one caller, its own session
-parameters). Named here so the next reader recognises the shape instead of
-"fixing" it blind, and so that a future composer edit that DOES disturb it
-has somewhere to be traced from.
+freshly composed program. It is benign there, and MEASURED to be so
+(PR-L3 review, 2026-07-27): on that corpus it lands within **2 samples**
+(0.04 ms) of the sweep anchor, because the sweeps carry nearly all of the
+program's energy and so dominate the whole-program correlation. What the
+sweep anchor protects against is a different, larger error — see
+:func:`sweep_anchored_global_offset` — and that one is not reachable from
+that loader, which never asks for a program-global offset. Named here so
+the next reader recognises the shape instead of "fixing" it blind, and so
+that a future composer edit that DOES disturb it has somewhere to be traced
+from.
 """
 from __future__ import annotations
 
@@ -63,10 +67,13 @@ from jasper.audio_measurement.spatial_combine import PositionCapture
 # committed — one machine's home directory is not a contract, and a stale one
 # skips silently instead of failing.
 #
-# The 2026-07-24/25 cdhorn corpus (``JTS_FLAT_LIN_CORPUS``) is deliberately
-# *not* here: only test_spatial_combine.py reads it, its loader carries that
-# session's own bespoke program parameters, and a helper shared by one caller
-# is indirection rather than sharing.
+# The 2026-07-24/25 cdhorn corpus (``JTS_FLAT_LIN_CORPUS``) gained its second
+# reader on 2026-07-27 (PR-L3's level-match frame regression, in
+# test_audio_measurement_program_analysis.py, alongside test_spatial_combine's
+# detector acceptance). Its ROOT and SKIPIF live here now — the two consumers
+# must agree on where the corpus is and when to skip — while each keeps its
+# own loader, because they read different phases with different program
+# parameters. That split is the point: shared identity, per-consumer reading.
 # --------------------------------------------------------------------------- #
 
 _S0_ENV = os.environ.get("JTS_FLAT_LIN_S0", "").strip()
@@ -80,6 +87,25 @@ S0_MAIN = S0_ROOT / "s0-session-main"
 S0_DESK_EDGE = S0_ROOT / "s0-session-deskedge"
 S0_LOOPBACK = S0_ROOT / "s0-analysis" / "loopback"
 S0_CALIBRATION = S0_ROOT / "umik2-cal" / "umik2-b7343c0c625b.txt"
+
+_CDHORN_ENV = os.environ.get("JTS_FLAT_LIN_CORPUS", "").strip()
+CDHORN_ROOT = (
+    Path(_CDHORN_ENV)
+    if _CDHORN_ENV
+    else Path(__file__).resolve().parents[1]
+    / "captures"
+    / "flat-linearization-20260725"
+    / "cdhorn-live-session"
+)
+CDHORN_CALIBRATION = CDHORN_ROOT.parent / "umik2-cal" / "umik2-b7343c0c625b.txt"
+
+requires_cdhorn = pytest.mark.skipif(
+    not CDHORN_ROOT.is_dir(),
+    reason=(
+        f"laptop-durable capture corpus absent: {CDHORN_ROOT} "
+        "(set JTS_FLAT_LIN_CORPUS to point at it)"
+    ),
+)
 
 requires_s0 = pytest.mark.skipif(
     not (S0_GROUND_PLANE.is_dir() and S0_MAIN.is_dir() and S0_LOOPBACK.is_dir()),
@@ -237,6 +263,37 @@ def _sweep_anchor(captured: np.ndarray, segment: Any) -> int:
 
     stimulus = np.asarray(segment_stimulus(segment), dtype=np.float64)
     return _offset_of(captured, stimulus)
+
+
+def sweep_anchored_global_offset(captured: np.ndarray, segment: Any) -> int:
+    """A PROGRAM-GLOBAL offset for an archived capture, derived from one
+    sweep's own registration — what a whole-program analysis needs when the
+    composer has moved on.
+
+    A single-segment reader wants :func:`_sweep_anchor` (the sweep's absolute
+    position). A reader that hands the capture to
+    ``program_analysis.analyze_program_capture`` needs the offset that
+    function's own ``_global_offset`` would have produced, because every
+    segment is then located as ``global_offset + segment.start_sample``.
+
+    Those two are not the same hazard, and the difference is large. Production
+    ``_global_offset`` locates the program's FIRST STIMULUS SEGMENT and
+    subtracts its schedule position — and 2026-07-27's courtesy-tone move
+    (#1771, ``_insert_courtesy_prelude``) relocated the prelude from the head
+    of the program to just ahead of the first sweep, which moves the PILOT
+    PAIR (the first stimulus) by the prelude's whole length while leaving the
+    sweeps exactly where they were. Registering a cross-era MEASURE capture
+    that way lands **172 781 samples (3.6 s)** off on this corpus, and the
+    analysis degrades to ``residual_desync``. This is a REPLAY hazard only:
+    live analysis composes and plays the same program, so its first stimulus
+    is where it says it is.
+
+    Anchoring on a sweep and subtracting that sweep's (unchanged) schedule
+    position recovers the offset the capture was recorded under, and every
+    segment downstream still shares one anchor — so branch-to-branch relative
+    timing is untouched.
+    """
+    return _sweep_anchor(captured, segment) - segment.start_sample
 
 
 def s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
