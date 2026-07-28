@@ -244,32 +244,48 @@ def _target_fingerprint(
     })
 
 
+def physical_driver_target(
+    topology: OutputTopology,
+    group: Any,
+    channel: Any,
+) -> dict[str, Any]:
+    """Describe and fingerprint one physical driver channel.
+
+    Eligibility remains the owning workflow's decision: measurement calls this
+    only for active groups, while driver research may also describe a passive
+    full-range component. Keeping construction here gives both workflows one
+    target-identity contract without widening measurement eligibility.
+    """
+
+    target = {
+        "target_id": _target_id(group.id, channel.role),
+        "speaker_group_id": group.id,
+        "speaker_group_label": group.label,
+        "speaker_group_kind": group.kind,
+        "speaker_group_mode": group.mode,
+        "role": channel.role,
+        "output_index": channel.physical_output_index,
+        "output_label": (
+            channel.human_output_label
+            or (
+                f"DAC output {channel.physical_output_index + 1}"
+                if channel.physical_output_index is not None
+                else None
+            )
+        ),
+        "identity_verified": bool(channel.identity_verified),
+    }
+    target["target_fingerprint"] = _target_fingerprint(topology, target)
+    return target
+
+
 def active_driver_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return the driver targets that need measurement evidence."""
 
     targets: list[dict[str, Any]] = []
     for group in _active_groups(topology):
         for channel in group.channels:
-            target = {
-                "target_id": _target_id(group.id, channel.role),
-                "speaker_group_id": group.id,
-                "speaker_group_label": group.label,
-                "speaker_group_kind": group.kind,
-                "speaker_group_mode": group.mode,
-                "role": channel.role,
-                "output_index": channel.physical_output_index,
-                "output_label": (
-                    channel.human_output_label
-                    or (
-                        f"DAC output {channel.physical_output_index + 1}"
-                        if channel.physical_output_index is not None
-                        else None
-                    )
-                ),
-                "identity_verified": bool(channel.identity_verified),
-            }
-            target["target_fingerprint"] = _target_fingerprint(topology, target)
-            targets.append(target)
+            targets.append(physical_driver_target(topology, group, channel))
     return targets
 
 

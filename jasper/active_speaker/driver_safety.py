@@ -29,7 +29,7 @@ from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     driver_protection_profile,
 )
-from .measurement import active_driver_targets
+from .measurement import active_driver_targets, physical_driver_target
 
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
 DRIVER_RESEARCH_REQUEST_KIND = "jts_active_crossover_driver_research_request"
@@ -134,6 +134,32 @@ def _canonical_json(value: Any) -> str:
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
+    """Return physical components that the component/research flow describes.
+
+    Active two/three-way targets reuse the measurement contract verbatim. A
+    passive full-range layout has no independently measurable crossover target,
+    but it still has a physical component the user can identify and research.
+    Keep that research-only case here rather than broadening
+    ``measurement.active_driver_targets()``, whose callers require active
+    commissioning semantics.
+    """
+
+    active_targets = active_driver_targets(topology)
+    if active_targets:
+        return active_targets
+
+    targets: list[dict[str, Any]] = []
+    for group in topology.speaker_groups:
+        if group.mode != "full_range_passive":
+            continue
+        for channel in group.channels:
+            if channel.role != "full_range":
+                continue
+            targets.append(physical_driver_target(topology, group, channel))
+    return targets
 
 
 def _is_sha256(value: Any) -> bool:
@@ -702,8 +728,9 @@ def build_driver_research_request(
     validate_manual_target_bindings(topology, manual_settings)
     manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _manual_by_target(manual_settings)
+    current_targets = driver_research_targets(topology)
     role_counts: dict[str, int] = {}
-    for target in active_driver_targets(topology):
+    for target in current_targets:
         role = str(target.get("role") or "")
         role_counts[role] = role_counts.get(role, 0) + 1
     driver_styles = {
@@ -713,7 +740,7 @@ def build_driver_research_request(
         if channel.driver_style
     }
     targets: list[dict[str, Any]] = []
-    for target in active_driver_targets(topology):
+    for target in current_targets:
         role = str(target.get("role") or "")
         target_id = str(target["target_id"])
         target_models = operator_inputs.get("target_models")
@@ -740,13 +767,10 @@ def build_driver_research_request(
             if visible
             else {}
         )
-        notes = _text(
-            visible.get("notes"),
-            f"manual_settings.{role}.notes",
-            max_chars=2048,
-        )
-        if notes:
-            declared_context["operator_notes"] = notes
+        # ``manual_settings.drivers[].notes`` predates the single visible Build
+        # notes field and may contain either operator prose or an imported
+        # research summary. Preserve it in the design/safety record, but never
+        # send invisible legacy text as authoritative prompt context.
         request_target = {
             "target_id": target_id,
             "target_fingerprint": str(target["target_fingerprint"]),
@@ -828,7 +852,7 @@ def validate_driver_research_request(
         "driver_research_request.targets",
         maximum=16,
     )
-    current_targets = active_driver_targets(topology)
+    current_targets = driver_research_targets(topology)
     role_counts: dict[str, int] = {}
     for target in current_targets:
         role = str(target.get("role") or "")
@@ -1039,12 +1063,13 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     request_json = json.dumps(request, indent=2, sort_keys=True)
     return "\n".join(
         (
-            "You are researching safe starting constraints for a JTS active speaker.",
+            "You are researching speaker components and safe starting constraints for a JTS speaker.",
             "Research manufacturer datasheets first, then reputable independent measurements.",
             "Do not invent missing facts. Put every unresolved fact in unknowns and use null where appropriate.",
             "Every field assertion needs confidence, a short basis, and source URLs. Research is advisory; the operator will review every value before confirmation.",
             "A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
-            "For cabinet data, identify sealed/vented/passive-radiator/open-baffle/other, radiator count, effective radiating diameter, and baffle width when supported by evidence.",
+            "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Treat operator_declared_context as authoritative; if an installation choice is undeclared, leave it unknown.",
+            "For cabinet geometry, research radiator count, effective radiating diameter, and baffle width only when supported by evidence, while preserving any operator-declared enclosure choice.",
             "Identify the driver's technology class (compression_horn, soft_dome, metal_dome, beryllium_diamond_dome, ribbon_amt, or unknown), its radiating diameter for a cone or dome driver, and its nominal horn coverage angle for a compression-horn driver, only when supported by evidence.",
             "Return JSON only. Echo request_fingerprint and every target_id/target_fingerprint exactly.",
             "",
@@ -1059,7 +1084,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '  "drivers": [{',
             '    "target_id": "echo from request",',
             '    "target_fingerprint": "echo from request",',
-            '    "role": "woofer|mid|tweeter",',
+            '    "role": "full_range|woofer|mid|tweeter",',
             '    "model": "exact model",',
             '    "manufacturer": "string|null",',
             '    "nominal_impedance_ohm": 8,',
@@ -1114,7 +1139,7 @@ def validate_manual_target_bindings(
 
     if not isinstance(manual_settings, Mapping):
         return
-    targets = active_driver_targets(topology)
+    targets = driver_research_targets(topology)
     by_id = {str(target["target_id"]): target for target in targets}
     by_role: dict[str, list[str]] = {}
     for physical_target in targets:

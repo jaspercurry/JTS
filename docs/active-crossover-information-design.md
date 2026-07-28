@@ -376,12 +376,41 @@ prefill the visible fields. Prefill is advice. The visible working crossover is
 the source of truth, and the backend validates the resulting graph before it
 can emit sound.
 
+The default `/sound/` sequence is component-first: show one compact card per
+physical driver, collect make/model plus the physical choice the AI cannot make,
+then offer one optional whole-speaker **Build notes** field and the populated
+research prompt. Low-frequency drivers expose enclosure/loading, tweeters expose
+their topology-owned exact driver/loading type, and every driver can declare an
+in-line resistor pad. Per-driver free-text configuration fields are deliberately
+absent: shared enclosure, amplifier, mounting, passive-radiator, and other
+context belongs in Build notes. After the response is
+loaded, show a concise proposed-crossover summary and keep the remaining
+specification, safety, evidence, and manual-crossover fields in one collapsed
+**Advanced** editor. Inside Advanced, all groups are ordinary labeled sections;
+there are no nested disclosures for evidence or alignment. The basic and
+Advanced surfaces edit the existing
+topology/operator/manual-settings owners; they must not create a parallel
+component model. A passive one-driver layout gets a research-only physical
+target from `driver_research_targets`; this deliberately does not broaden
+`active_driver_targets`, so measurement and commissioning eligibility remain
+active-only.
+
 The existing `/sound/` research helper is the only research entry point. Its
 legacy version-1 JSON remains accepted only as advisory prefill. A version-2
 result must echo the exact server-authored request fingerprint plus every
 physical target id, target fingerprint, role, and make/model; a mismatch or
 stale request is refused. Both versions are untrusted proposals, not playback
-permission. Before an
+permission. Operator-declared physical installation choices are authoritative:
+the prompt tells research not to infer them, and the browser import boundary
+must not replace enclosure kind, the topology-owned tweeter type, an explicit
+product-technology `driver_class`, or the operator's resistor pad. Older
+per-driver `notes` remain compatible with the saved design/safety schema but are
+excluded from prompt context because the simplified UI cannot inspect or edit
+them; visible whole-speaker Build notes are the sole free-text build context.
+Loading a v2 request/result fingerprint that contains the retired hidden-note
+context demotes that obsolete binding while retaining the normalized manual
+values and safety profile.
+Before an
 automatic isolated-driver measurement can run, every physical driver target
 must have a separately versioned, explicitly confirmed safety profile bound to
 the current topology target. That profile distinguishes:
@@ -1347,7 +1376,9 @@ high-pass floor — 2000 Hz for a compression driver versus the 5000 Hz
 conservative default for an undeclared/unrecognised style. `driver_style` is
 topology-owned, not part of the research/manual-settings schema: it lives on
 `SpeakerChannel` next to `physical_output_index`, set on the layout step's DAC
-output card (tweeter roles only) and saved through the existing
+output card for initial topology creation and then exposed on the tweeter's
+component card before **Build notes** and **Copy prompt**. The component selector auto-saves
+through the existing
 `/output-topology` writer, the same one that owns every other topology field.
 `build_driver_safety_profile` reads it straight off the topology channel, so
 it folds into the safety profile's confirmation fingerprint automatically —
@@ -1781,7 +1812,8 @@ As of 2026-07-15, JTS has much of the substrate but not the full product:
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
-  manual crossover editor's collapsed "Alignment (advanced)" section now
+  manual crossover editor's always-visible **Alignment** section inside the
+  single Advanced disclosure
   authors per-region polarity and relative delay, validated through the same
   design-draft/preview/staging chain as every other manual field. Since
   Slice 0 the preview/preset/corrections chain persists polarity and relative
@@ -1946,7 +1978,13 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-17 (added the closed-loop level solver — Wave 2 reconstruction, measured-candidate input,
+Last verified: 2026-07-28 (component-first research flow, one whole-speaker
+Build notes field, explicit
+operator-owned loading choices, passive full-range research identity,
+single-source physical target construction, proposed-summary invalidation,
+and flat collapsed responsive Advanced editor checked against implementation,
+regressions, full suite, independent review, and deployed JTS3 desktop/phone
+surfaces; prior 2026-07-17 added the closed-loop level solver — Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,

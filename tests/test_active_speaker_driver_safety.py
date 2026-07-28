@@ -26,6 +26,7 @@ from jasper.active_speaker.driver_safety import (
     build_driver_research_prompt,
     build_driver_research_request,
     build_driver_safety_profile,
+    driver_research_targets,
     evaluate_driver_safety_profile,
     validate_driver_research_request,
 )
@@ -287,11 +288,15 @@ def _refingerprint_profile(profile: dict) -> None:
 
 def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     topology = mono_output_topology(card_id=None)
+    manual_settings = _manual_settings()
+    manual_settings["drivers"][0]["notes"] = (
+        "Legacy per-driver note that is no longer editable"
+    )
 
     request = build_driver_research_request(
         topology,
         _operator_inputs(),
-        _manual_settings(),
+        manual_settings,
     )
     prompt = build_driver_research_prompt(request)
 
@@ -311,9 +316,68 @@ def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
         "effective_radiating_diameter_mm": 132.0,
         "baffle_width_mm": 210.0,
     }
+    assert "operator_notes" not in request["targets"][0]["operator_declared_context"]
+    assert request["build_notes"] == "Sealed bench cabinet"
+    assert "Legacy per-driver note that is no longer editable" not in prompt
+    assert "Sealed bench cabinet" in prompt
     assert "hard excitation band distinct" in prompt
+    assert "Never infer physical installation choices" in prompt
+    assert "Treat operator_declared_context as authoritative" in prompt
+    assert "preserving any operator-declared enclosure choice" in prompt
     assert "Echo request_fingerprint" in prompt
     assert request["request_fingerprint"] in prompt
+
+
+def test_passive_full_range_component_has_research_only_physical_target() -> None:
+    topology = mono_output_topology(
+        mode="full_range_passive",
+        with_subwoofer=True,
+        card_id=None,
+    )
+    operator_inputs = {
+        "full_range": "Example FR8",
+        "target_models": {"mono:full_range": "Example FR8"},
+    }
+    manual_settings = {
+        "drivers": [
+            {
+                "target_id": "mono:full_range",
+                "role": "full_range",
+                "model": "Example FR8",
+                "cabinet": {"enclosure_kind": "sealed"},
+            }
+        ],
+        "crossover_candidates": [],
+    }
+
+    # Measurement remains active-only; research gets its own passive component
+    # target rather than broadening the commissioning contract.
+    assert active_driver_targets(topology) == []
+    targets = driver_research_targets(topology)
+    assert [target["target_id"] for target in targets] == ["mono:full_range"]
+    assert all(target["role"] != "subwoofer" for target in targets)
+    assert targets[0]["speaker_group_mode"] == "full_range_passive"
+    assert len(targets[0]["target_fingerprint"]) == 64
+
+    request = build_driver_research_request(
+        topology,
+        operator_inputs,
+        manual_settings,
+    )
+    prompt = build_driver_research_prompt(request)
+    assert [target["target_id"] for target in request["targets"]] == [
+        "mono:full_range"
+    ]
+    assert request["targets"][0]["manufacturer_and_model"] == "Example FR8"
+    assert "Example FR8" in prompt
+
+    draft = build_design_draft(
+        topology,
+        operator_inputs=operator_inputs,
+        manual_settings=manual_settings,
+    )
+    assert draft["summary"]["manual_driver_count"] == 1
+    assert draft["summary"]["missing_driver_info_target_ids"] == []
 
 
 def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:

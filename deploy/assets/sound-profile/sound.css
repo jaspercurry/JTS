@@ -286,7 +286,12 @@
     background: var(--foreground-005); box-shadow: inset 0 0 0 1px var(--border);
   }
   .setting-row--stack { align-items: stretch; flex-direction: column; gap: 12px; }
-  .setting-row__title { font-weight: 600; color: var(--foreground); }
+  .setting-row__title {
+    margin: 0;
+    font: inherit;
+    font-weight: 600;
+    color: var(--foreground);
+  }
   .setting-row__hint { font-size: 12px; color: var(--muted-foreground); margin-top: 2px; }
   .advanced > summary {
     cursor: pointer; padding: 10px 16px; color: var(--primary);
@@ -404,6 +409,12 @@
     accent-color: var(--sage-700);
   }
   .output-setup { margin-top: 10px; }
+  .active-speaker-setup .output-setup {
+    /* Keep the step list full-width whether every disclosure is closed or one
+       body's form controls contribute a larger intrinsic width. This restores
+       the stacked-row stretch that the active-speaker row override narrows. */
+    align-items: stretch;
+  }
   .output-setup__head {
     display: flex; align-items: flex-start; justify-content: space-between;
     gap: 12px;
@@ -541,7 +552,7 @@
     display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
   }
   .driver-research__fields {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 8px;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
   }
   .driver-research__field {
     display: flex; flex-direction: column; gap: 5px;
@@ -584,18 +595,16 @@
     display: grid; gap: 8px;
   }
   .driver-settings__row {
-    display: grid; grid-template-columns: minmax(12rem, 1.4fr) repeat(3, minmax(7rem, 0.7fr));
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px; align-items: end;
     padding: 8px 0;
     border-top: 1px solid var(--border);
   }
   .driver-settings__row:first-child { border-top: 0; }
-  .driver-settings__row--crossover {
-    grid-template-columns: minmax(10rem, 1fr) repeat(3, minmax(7rem, 0.75fr));
-  }
-  /* The polarity/delay <details> is a 5th child in the row's 4-column grid;
-     span it full-width instead of squeezing into one track. */
-  .driver-settings__row--crossover .driver-research__advanced {
+  .driver-settings__row--crossover { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .driver-settings__row--crossover .driver-settings__pair,
+  .driver-settings__row--crossover [data-ka-note],
+  .driver-settings__row--crossover .driver-research__alignment {
     grid-column: 1 / -1;
   }
   .driver-settings__pair {
@@ -608,21 +617,15 @@
     font-size: 11px; font-weight: 700; color: var(--muted-foreground);
     text-transform: uppercase;
   }
-  .driver-research__ai {
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
-  }
-  .driver-research__ai summary {
-    cursor: pointer;
-    font-size: 12px; font-weight: 800; color: var(--foreground);
-  }
   .driver-research__grid--ai {
-    padding-top: 8px;
+    gap: 12px;
   }
   .driver-research__panel {
     display: flex; flex-direction: column; gap: 8px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--secondary) 36%, transparent);
+    box-shadow: inset 0 0 0 1px var(--border);
   }
   .driver-research__actions {
     display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px;
@@ -642,6 +645,106 @@
   }
   .driver-research__notes li + li { margin-top: 4px; }
   .driver-research__error { color: var(--status-danger); }
+  .component-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+    gap: 10px;
+  }
+  .component-card {
+    min-width: 0;
+    display: grid;
+    gap: 12px;
+    align-content: start;
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--secondary) 36%, transparent);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .component-card__head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .component-card__fields {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .component-card__pad {
+    min-width: 0;
+    display: grid;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .driver-research__proposal {
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--primary) 5%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 18%, transparent);
+  }
+  .driver-research__advanced-editor {
+    min-width: 0;
+    border-radius: var(--radius-sm);
+    background: var(--background);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .driver-research__advanced-editor > summary {
+    min-width: 0;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 12px;
+    list-style-position: inside;
+  }
+  .driver-research__advanced-editor > summary span {
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--foreground);
+  }
+  .driver-research__advanced-editor > summary small {
+    padding-left: 20px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--muted-foreground);
+  }
+  .driver-research__advanced-body,
+  .driver-research__advanced-section,
+  .driver-research__advanced-drivers,
+  .driver-research__advanced-driver,
+  .driver-research__advanced-group,
+  .driver-research__alignment,
+  .driver-research__evidence {
+    min-width: 0;
+    display: grid;
+    gap: 10px;
+  }
+  .driver-research__advanced-body {
+    padding: 0 12px 12px;
+  }
+  .driver-research__advanced-section,
+  .driver-research__advanced-driver {
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .driver-research__advanced-group {
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--background) 88%, white);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .driver-research__alignment,
+  .driver-research__evidence {
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .driver-research__advanced-editor .driver-research__field input,
+  .driver-research__advanced-editor .driver-research__field select,
+  .driver-research__advanced-editor .driver-research__field textarea {
+    background: color-mix(in oklch, var(--background) 82%, white);
+  }
   .output-hardware-details {
     margin-top: 8px;
   }
@@ -812,6 +915,10 @@
     }
     .driver-settings__row,
     .driver-settings__row--crossover {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .component-card__fields,
+    .driver-research__fields {
       grid-template-columns: minmax(0, 1fr);
     }
     .output-setup__head,

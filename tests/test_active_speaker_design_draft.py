@@ -332,6 +332,78 @@ def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
     assert payload["issues"][0]["code"] == "design_draft_unsupported_schema"
 
 
+def test_load_demotes_legacy_hidden_note_request_and_preserves_manual_values(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active_speaker_design_draft.json"
+    manual_settings = {
+        "drivers": [
+            {
+                "target_id": "mono:woofer",
+                "role": "woofer",
+                "model": "Example Woofer",
+                "notes": "Legacy installed-configuration value",
+            }
+        ],
+        "crossover_candidates": [],
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": 1,
+                "kind": DESIGN_DRAFT_KIND,
+                "status": "ready_for_review",
+                "revision": 4,
+                "operator_inputs": {},
+                "manual_settings": manual_settings,
+                "driver_research_request": {
+                    "targets": [
+                        {
+                            "target_id": "mono:woofer",
+                            "operator_declared_context": {
+                                "operator_notes": (
+                                    "Legacy installed-configuration value"
+                                )
+                            },
+                        }
+                    ]
+                },
+                "driver_research": {
+                    "artifact_schema_version": 2,
+                    "kind": DRIVER_RESEARCH_KIND,
+                    "request_fingerprint": "a" * 64,
+                    "drivers": [],
+                    "crossover_candidates": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_design_draft(path)
+
+    assert loaded["revision"] == 4
+    assert loaded["driver_research_request"] is None
+    assert loaded["driver_research"] is None
+    assert loaded["manual_settings"] == manual_settings
+
+    saved = save_design_draft(
+        _topology(),
+        driver_research_request=loaded["driver_research_request"],
+        driver_research=loaded["driver_research"],
+        manual_settings=loaded["manual_settings"],
+        operator_inputs=loaded["operator_inputs"],
+        expected_revision=loaded["revision"],
+        path=path,
+        created_at="2026-07-28T12:00:00Z",
+    )
+    assert saved["revision"] == 5
+    assert saved["driver_research_request"] is None
+    assert saved["manual_settings"]["drivers"][0]["notes"] == (
+        "Legacy installed-configuration value"
+    )
+
+
 def test_design_draft_revision_is_monotonic_and_refuses_stale_write(
     tmp_path: Path,
 ) -> None:

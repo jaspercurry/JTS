@@ -798,8 +798,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "expected_candidate_fingerprint: expectedCandidateFingerprint" in js
     assert "fetch('./active-speaker/baseline-profile/apply'" not in js
     assert "data-act=\"refresh-active-speaker\"" not in js
-    assert "data-act=\"save-driver-design\"" in js
-    assert "data-act=\"prepare-crossover-preview\"" in js
+    assert "act: 'save-driver-design'" in js
+    assert "act === 'prepare-crossover-preview'" in js
     assert "Save values" in js
     assert "Preview crossover" in js
     assert "function driverResearchCanPreparePreview()" in js
@@ -814,7 +814,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Preview crossover before confirming outputs." in js
     assert "Save driver names and crossover points before confirming outputs." in js
     assert "Working setup updated. No filters are active and no sound was played." in js
-    assert "Updates the working setup, then builds a no-audio crossover preview." in js
+    assert "The working values below are ready to save and turn into a no-audio preview." in js
     assert "data-act=\"arm-active-speaker\"" not in js
     assert "data-act=\"stage-active-config\"" not in js
     assert "data-act=\"check-active-path-safety\"" not in js
@@ -1038,7 +1038,7 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
     assert "This driver can’t be tested yet — finish the earlier setup steps first." in helper_js
 
     # The new consumer copy is present and stable.
-    assert "Updates the working setup, then builds a no-audio crossover preview." in js
+    assert "The working values below are ready to save and turn into a no-audio preview." in js
     assert (
         "Save the checked crossover as your active speaker profile. "
         "JTS validates and applies it in one step; no sound plays."
@@ -3926,6 +3926,9 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
     # absent) and renders the local driver/crossover UI without fetching /state.
     assert {"followerModeRendersLocalDriverUi": True} in out["results"]
     assert {"resetPartialCleanupSurfacesWarning": True} in out["results"]
+    assert {
+        "driverResearchImportPreservesOperatorInstalledConfiguration": True
+    } in out["results"]
 
 
 def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
@@ -3942,7 +3945,55 @@ def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
     out = json.loads(proc.stdout.strip().splitlines()[-1])
 
     assert {"activeCrossoverFirstStepRendered": True} in out["results"]
+    assert {
+        "componentFirstResearchFlowIsOrderedAndAdvancedIsFlat": True
+    } in out["results"]
+    assert {
+        "passiveMainWithSubUsesResearchableMainTargetOnly": True
+    } in out["results"]
+    assert {"partialSavePreservesUnchosenEnclosure": True} in out["results"]
+    assert {
+        "directCrossoverEditRefreshesProposalAndFooter": True
+    } in out["results"]
+    assert {
+        "tweeterTypeChangeInvalidatesCopiedResearchBinding": True
+    } in out["results"]
     assert {"activeSpeakerSetupTogglePersistsAcrossRender": True} in out["results"]
+
+
+def test_sound_component_flow_uses_bounded_responsive_grids():
+    css = _SOUND_CSS.read_text()
+
+    # The old fixed four-column row squeezed whole details panels into a single
+    # track on desktop. Components and Advanced use their own min-width-safe
+    # grids, capped at two columns and explicitly stacked on phones. Advanced
+    # uses the page's neutral beige instead of repeating the green input surface.
+    # The outer
+    # setup must also keep its step list stretched: otherwise closing every
+    # disclosure makes the auto-width grid shrink-wrap its summary text.
+    assert (
+        "grid-template-columns: minmax(12rem, 1.4fr) "
+        "repeat(3, minmax(7rem, 0.7fr))"
+    ) not in css
+    assert ".component-card__fields" in css
+    assert ".driver-research__advanced-editor" in css
+    advanced_rule = css.split(
+        ".driver-research__advanced-editor {", 1
+    )[1].split("}", 1)[0]
+    assert "background: var(--background);" in advanced_rule
+    assert ".driver-research__alignment," in css
+    assert ".driver-research__evidence {" in css
+    assert ".active-speaker-setup .output-setup {" in css
+    output_setup_rule = css.split(
+        ".active-speaker-setup .output-setup {", 1
+    )[1].split("}", 1)[0]
+    assert "align-items: stretch;" in output_setup_rule
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in css
+    phone_start = css.index("@media (max-width: 420px)")
+    phone_css = css[phone_start:]
+    assert ".component-card__fields," in phone_css
+    assert ".driver-research__fields {" in phone_css
+    assert "grid-template-columns: minmax(0, 1fr);" in phone_css
 
 
 def test_sound_css_marks_live_sources_with_red_dots():
