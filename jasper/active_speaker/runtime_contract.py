@@ -27,7 +27,9 @@ import hashlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Literal, Mapping
+from typing import (
+    TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Literal, Mapping, Sequence,
+)
 
 import yaml
 
@@ -51,6 +53,7 @@ from ._common import issue as _issue
 from .camilla_yaml import (
     BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
+    MAX_LINEARIZATION_BOOST_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
 )
@@ -1092,7 +1095,15 @@ _LINEARIZATION_BOOST_EPS_DB: float = 1e-3
 
 
 def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
-    """How much positive linearization gain THIS graph has already paid for.
+    """How much branch-chain peak THIS graph has already paid for.
+
+    Since #1808 the quantity proved against this allowance is the branch
+    chain's evaluated PEAK (``crossover ⊗ linearization ⊗ trim``), not the sum
+    of the chain's positive filter gains — see
+    :func:`_consume_linearization_chain`. The allowance itself, below, is
+    unchanged: it is still what the emitter set aside, and the emitter now
+    sets aside the peak plus ``branch_chain.HEADROOM_MARGIN_DB``, so a graph
+    correct by construction proves with exactly that margin of slack.
 
     The magnitude of the program-domain ``active_baseline_headroom`` gain —
     the pre-split common attenuation the emitter folds baseline headroom,
@@ -1157,6 +1168,67 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     return max(0.0, absorbed_db - BASELINE_HEADROOM_DB - room_boost_db)
 
 
+def _linearization_biquad(payload: dict[str, Any], name: str) -> dict[str, Any]:
+    """One emitted linearization Biquad reduced to the plain
+    ``{biquad_type, freq, q, gain}`` record
+    :func:`jasper.active_speaker.branch_chain.chain_response` evaluates.
+
+    Read straight off the graph text — this module never trusts a candidate's
+    claim about what it emitted.
+    """
+    params = _filter_params(payload, name)
+    return {
+        "biquad_type": str(params.get("type") or ""),
+        "freq": _strict_finite_number(params.get("freq")) or 0.0,
+        "q": _strict_finite_number(params.get("q")) or 0.0,
+        "gain": _strict_finite_number(params.get("gain")) or 0.0,
+    }
+
+
+def _linearization_chain_peak_db(
+    payload: dict[str, Any],
+    *,
+    filters: Sequence[Mapping[str, Any]],
+    crossovers: Sequence[tuple[str, str]],
+    gain_name: str,
+) -> float:
+    """The realized peak of this branch's emitted chain, dB — re-derived from
+    the graph, never from the candidate that produced it (#1808).
+
+    ``crossover ⊗ linearization ⊗ trim``, the same three terms and the same
+    :func:`jasper.active_speaker.branch_chain.branch_chain_peak_db` the
+    emitter charges ``active_baseline_headroom`` with, so a graph that is
+    correct by construction cannot fail its own proof on a modelling
+    difference. Every input comes from the payload: the Linkwitz-Riley
+    corner/order out of the named BiquadCombos this walk already validated,
+    the biquad params out of the named linearization filters, and the trim out
+    of the branch's baseline Gain.
+
+    A trim that is absent or unreadable is treated as 0 dB (no credited
+    attenuation), which over-states the peak — the safe direction for a proof.
+    """
+    from .branch_chain import CrossoverSection, branch_chain_peak_db
+
+    sections: list[CrossoverSection] = []
+    for direction, name in crossovers:
+        params = _filter_params(payload, name)
+        freq = _strict_finite_number(params.get("freq"))
+        order = params.get("order")
+        if freq is None or isinstance(order, bool) or not isinstance(order, int):
+            continue
+        sections.append(
+            CrossoverSection(
+                fc_hz=float(freq), order=int(order), highpass=direction == "highpass",
+            )
+        )
+    trim_db = _strict_finite_number(_filter_params(payload, gain_name).get("gain"))
+    return branch_chain_peak_db(
+        filters,
+        sections=tuple(sections),
+        trim_db=min(0.0, float(trim_db)) if trim_db is not None else 0.0,
+    )
+
+
 def _linearization_filter_safe(
     payload: dict[str, Any],
     *,
@@ -1172,12 +1244,22 @@ def _linearization_filter_safe(
     allows Highshelf OR Lowshelf (#1668 CD-horn backbone); the peak slot
     allows Peaking; the taper slot allows Highshelf.
 
-    ``max_gain_db`` replaced a hardcoded ``gain <= 0.0`` in PR-L5. It is not a
-    loosening of the rail, it is the rail expressed as the physical quantity
-    it always stood for: cuts are unconditionally safe (any negative gain
-    passes, as before), and a boost passes only up to the attenuation the
-    graph itself provably applies ahead of the split. On a graph with no such
-    attenuation the allowance is 0.0 and this is bit-for-bit the old check."""
+    ``max_gain_db`` is the per-filter REALIZATION cap
+    (``camilla_yaml.MAX_LINEARIZATION_BOOST_DB``), the same bound the fit
+    engine re-proves on every emitted filter: past it an RBJ biquad's
+    Q-dependent transition stops being a faithful realization of the shape
+    that was asked for. Cuts are unconditionally safe (any negative gain
+    passes, as they always did).
+
+    It is NOT the clipping rail. That is the whole chain's business — a boost
+    is safe when the branch it sits in cannot drive the program above the
+    attenuation the graph provably applies ahead of the split — and it is
+    proved once per branch in :func:`_consume_linearization_chain`, over the
+    evaluated ``crossover ⊗ linearization ⊗ trim`` peak (#1808). Per-filter
+    this check used to carry the allowance too, which would refuse an
+    ordinary legitimate graph under the peak rule: a +6 dB boost sitting
+    inside its own crossover's stopband costs nothing and would be rejected
+    against a charge of zero."""
 
     if _filter_type(payload, name) != "Biquad":
         return False
@@ -1193,6 +1275,8 @@ def _consume_linearization_chain(
     cursor: int,
     payload: dict[str, Any],
     role: str,
+    *,
+    crossovers: Sequence[tuple[str, str]] = (),
 ) -> tuple[int, bool]:
     """Advance ``cursor`` past a well-formed, provably-safe Layer-1a
     linearization run (#1668) for ``role``: an optional named leading shelf
@@ -1223,32 +1307,45 @@ def _consume_linearization_chain(
     an error: zero filters are consumed, and the ordinary tail check the caller
     runs next decides whether what remains (unshifted) is a legal chain.
 
-    **Boost accounting (PR-L5).** Cuts are unconditionally safe. A boost is
-    safe only if the graph attenuates the program by at least as much ahead of
-    the split, so this walk sums the chain's POSITIVE gains and proves the
-    total against :func:`_linearization_boost_allowance_db` — the same
-    per-branch total (not per-filter maximum) the emitter absorbs in
-    ``camilla_yaml.linearization_headroom_db``, because overlapping boosts in
-    one chain add. On a graph with no program-domain headroom the allowance is
-    0.0 and this is the original cut-only proof exactly.
+    **Boost accounting (PR-L5, re-derived at the realized peak by #1808).**
+    Cuts are unconditionally safe. A boost is safe only if the graph
+    attenuates the program by at least as much ahead of the split, so this
+    walk EVALUATES the branch chain it just proved the shape of — the
+    crossover BiquadCombos, the linearization biquads, and the branch's own
+    baseline Gain — and proves its peak against
+    :func:`_linearization_boost_allowance_db`.
+
+    Until 2026-07-28 the walk summed the chain's positive gains instead. That
+    sum is an upper bound on the peak, so it never permitted an unsafe graph;
+    what it did was force the emitter to CHARGE the same loose bound, and the
+    2026-07-28 JTS3 profile paid 22.458 dB of program attenuation for a branch
+    whose realized peak was +4.00 dB (#1808). Emitter and prover have to agree
+    about one number, so both moved to the exact one — the same
+    ``branch_chain.branch_chain_peak_db``, over the same three terms.
+
+    That is not a weakening: the peak IS the quantity "how much does this
+    branch put above unity", and the sum was a proxy for it. It does newly
+    permit a boost that its own crossover fully removes (a filter deep in a
+    branch's stopband now costs nothing and proves nothing), which is
+    physically correct — such a filter cannot clip — and is separately
+    prevented from being GENERATED by the fit-band bound (#1809). Per-filter,
+    the realization cap still binds. On a graph with no program-domain
+    headroom the allowance is 0.0, and a cut-only chain's peak is <= 0, so
+    that graph proves exactly what it proved before.
     """
 
     index = cursor
     allowance_db = _linearization_boost_allowance_db(payload)
-    boost_total_db = 0.0
-
-    def _gain_db(name: str) -> float:
-        value = _strict_finite_number(_filter_params(payload, name).get("gain"))
-        return float(value) if value is not None else 0.0
+    emitted: list[dict[str, Any]] = []
 
     shelf_name = _linearization_shelf_name(role)
     if index < len(chain) and chain[index] == shelf_name:
         if not _linearization_filter_safe(
             payload, name=shelf_name, biquad_types=("Highshelf", "Lowshelf"),
-            max_gain_db=allowance_db,
+            max_gain_db=MAX_LINEARIZATION_BOOST_DB,
         ):
             return index, False
-        boost_total_db += max(0.0, _gain_db(shelf_name))
+        emitted.append(_linearization_biquad(payload, shelf_name))
         index += 1
     peak_number = 1
     while index < len(chain):
@@ -1257,22 +1354,34 @@ def _consume_linearization_chain(
             break
         if not _linearization_filter_safe(
             payload, name=peak_name, biquad_types=("Peaking",),
-            max_gain_db=allowance_db,
+            max_gain_db=MAX_LINEARIZATION_BOOST_DB,
         ):
             return index, False
-        boost_total_db += max(0.0, _gain_db(peak_name))
+        emitted.append(_linearization_biquad(payload, peak_name))
         index += 1
         peak_number += 1
     taper_name = _linearization_taper_name(role)
     if index < len(chain) and chain[index] == taper_name:
         if not _linearization_filter_safe(
             payload, name=taper_name, biquad_types=("Highshelf",),
-            max_gain_db=allowance_db,
+            max_gain_db=MAX_LINEARIZATION_BOOST_DB,
         ):
             return index, False
-        boost_total_db += max(0.0, _gain_db(taper_name))
+        emitted.append(_linearization_biquad(payload, taper_name))
         index += 1
-    if boost_total_db > allowance_db + _LINEARIZATION_BOOST_EPS_DB:
+    # A chain with no positive gain cannot exceed unity through a
+    # Linkwitz-Riley section and a non-positive trim, so the ordinary cut-only
+    # graph is proved without evaluating anything — and without this module
+    # importing numpy, which it otherwise does not (see branch_chain).
+    if not any(float(entry["gain"]) > 0.0 for entry in emitted):
+        return index, True
+    peak_db = _linearization_chain_peak_db(
+        payload,
+        filters=emitted,
+        crossovers=crossovers,
+        gain_name=_baseline_gain_name(role),
+    )
+    if peak_db > allowance_db + _LINEARIZATION_BOOST_EPS_DB:
         return index, False
     return index, True
 
@@ -1357,7 +1466,7 @@ def _baseline_output_chain(
     # linearization SHOULD be here" evidence needs threading through this
     # module's callers the way bass_extension's boolean does).
     cursor, linearization_ok = _consume_linearization_chain(
-        chain, cursor, payload, assignment.role,
+        chain, cursor, payload, assignment.role, crossovers=tuple(crossovers),
     )
     if not linearization_ok:
         return None

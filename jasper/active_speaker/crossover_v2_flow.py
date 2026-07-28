@@ -78,7 +78,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, Callable, Mapping, Sequence
 
@@ -97,6 +97,14 @@ from jasper.active_speaker.delta_probe import (
     DeltaProbeMap,
     classify_delta_probe,
     spatial_cost_from_group_spreads,
+)
+from jasper.active_speaker.branch_chain import (
+    HEADROOM_MARGIN_DB,
+    CrossoverSection,
+    branch_chain_peak_db,
+    headroom_charge_db,
+    radiating_band_hz,
+    sections_by_role,
 )
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
@@ -5827,6 +5835,34 @@ class CrossoverV2Conductor:
         self._last_linearization_outcome = "ineligible_repeats"
         return False
 
+    def _branch_crossover_sections(self, role: str) -> tuple[CrossoverSection, ...]:
+        """The Linkwitz-Riley sections ``role``'s emitted branch runs through.
+
+        Derived by :func:`~jasper.active_speaker.branch_chain.sections_by_role`
+        from the SAME ``preset.crossover_regions`` the emitter walks, so the
+        band this conductor bounds the fit's lift to, the cost it stamps on the
+        candidate, and the attenuation ``camilla_yaml`` charges against are one
+        description rather than three that agree by inspection.
+
+        A role with no region gets no sections — deliberately NOT a
+        conservative-looking guess at this session's own Fc. The emitter builds
+        its crossover filters from these same regions, so such a role runs
+        full range in the emitted graph: it radiates everywhere and attenuates
+        nothing, and inventing a section here would make this conductor's
+        stamped disclosure smaller than the emitter's charge. It is still a
+        defect upstream on a 2-way conductor, so it is named in the journal.
+        """
+        sections = sections_by_role(
+            getattr(self._preset, "crossover_regions", ()) or ()
+        ).get(role, ())
+        if not sections:
+            log_event(
+                logger, "correction.crossover_v2_linearization_no_crossover",
+                level=logging.WARNING, session_id=self.session_id, role=role,
+                fc_hz=round(float(self._fc_hz), 3),
+            )
+        return sections
+
     def _fit_linearization(
         self,
         analysis: ProgramAnalysis,
@@ -5897,6 +5933,57 @@ class CrossoverV2Conductor:
         # error. PR-L4 asserted afterwards that the realized branch levels
         # agree; this makes them agree by construction, which is the
         # difference between catching that bug and not having it.
+
+        # --- each branch's own crossover, and the band it radiates in ------
+        #
+        # (#1809.) The fit's LIFT stage is bounded to it: a driver measured
+        # THROUGH its crossover carries that crossover's rolloff in its curve,
+        # and a fit flattening it against a flat target reads the rolloff as a
+        # driver deficit. With PR-L5's boost vocabulary that read became
+        # emittable —
+        # the 2026-07-28 JTS3 woofer carried +11.6155 dB (Q 8) at 2747 Hz and
+        # +5.9619 dB at 2196 Hz, both inside its own 2 kHz LR4 stopband, where
+        # the lowpass then removed 13.3 and 7.8 dB of them. This is the same
+        # own-side-of-Fc principle PR-L3 established for trim averaging
+        # (`program_analysis.branch_level_bands_hz`), applied to the fit
+        # region and expressed in the crossover's own attenuation so it also
+        # bounds the knee, where a branch is 6 dB down BY DESIGN and a fit
+        # reaching it boosts that back (the same profile's tweeter, +5.6163 dB
+        # at 2020 Hz).
+        #
+        # It bounds LIFT and nothing else. Cuts still run to the fit band's
+        # own edge — leakage past the handoff still reaches the summed
+        # response and removing it spends no headroom — and the fit still reads its
+        # target level, its core level for the shared frame, and its
+        # give-back over the envelope's own region. Those are level questions
+        # and this is a shape fix; narrowing their band too would move the
+        # frame and the trim anchor as a side effect (measured on the
+        # conductor fixture: the woofer's core median rises 1.66 dB once its
+        # own crossover skirt stops dragging it down, which walks the frame
+        # disagreement straight into PR-L5's 3.0 dB refusal). That band
+        # question is real and belongs with the trim's own bands, not here.
+        sections = {
+            role: self._branch_crossover_sections(role)
+            for role in (woofer_role, tweeter_role)
+        }
+        radiating_bands = {
+            role: radiating_band_hz(sections[role])
+            for role in (woofer_role, tweeter_role)
+        }
+        log_event(
+            logger, "correction.crossover_v2_linearization_fit_band",
+            session_id=self.session_id,
+            fc_hz=round(float(self._fc_hz), 3),
+            radiating_band_hz={
+                role: (round(lo, 1), round(hi, 1) if math.isfinite(hi) else None)
+                for role, (lo, hi) in radiating_bands.items()
+            },
+            crossover_order={
+                role: tuple(s.order for s in sections[role])
+                for role in (woofer_role, tweeter_role)
+            },
+        )
+
         envelopes: dict[str, Any] = {}
         for role in (woofer_role, tweeter_role):
             resp = responses[role]
@@ -6001,6 +6088,7 @@ class CrossoverV2Conductor:
             fit = fit_driver_linearization(
                 resp, envelopes[role],
                 vocabulary=vocabulary, level_frame=level_frame,
+                radiating_band_hz=radiating_bands[role],
             )
             fits[role] = fit
             # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
@@ -6207,10 +6295,10 @@ class CrossoverV2Conductor:
                 role: round(float(fits[role].level_frame_offset_db), 3)
                 for role in (woofer_role, tweeter_role)
             },
-            headroom_cost_db={
-                role: round(float(fits[role].headroom_cost_db), 3)
-                for role in (woofer_role, tweeter_role)
-            },
+            # (`headroom_cost_db` moved to its own
+            # `correction.crossover_v2_linearization_headroom` event since
+            # #1808: the charge is the branch CHAIN's realized peak, so it is
+            # not known until the trim is committed, which happens below.)
         )
 
         # The guard measures the SCAN's drift from the anchor — the anchor
@@ -6354,7 +6442,68 @@ class CrossoverV2Conductor:
             freqs, 20.0 * np.log10(np.maximum(np.abs(predicted_lin), 1e-12)),
         )
 
-        linearization = {role: fit.to_dict() for role, fit in fits.items()}
+        # The headroom charge, stamped now that the trim is committed (#1808).
+        #
+        # A correction's cost is a property of the CHAIN it is emitted into —
+        # the crossover that follows it and the trim that follows that — so
+        # the topology-agnostic fit core cannot compute it and deliberately
+        # does not try (`LinearizationFit.headroom_cost_db`). This is the same
+        # `branch_headroom_db` the emitter charges `active_baseline_headroom`
+        # with, over the same three terms, so the number the household is told
+        # and the number the speaker gives up are one number rather than two
+        # that agree by inspection.
+        #
+        # `role_attenuations_db` and not `anchored`/`resolved`: whichever pair
+        # the level-match adjudication above committed is the trim the graph
+        # will run, and the charge follows the emitted graph.
+        #
+        # `normalize_shift_db` is NET-NEUTRAL under this rule, which is why it
+        # is left exactly as it was. Subtracting a common S from every branch's
+        # trim lowers every branch's chain peak by S, so it lowers this charge
+        # by S too, and the pre-split attenuation the emitter applies falls by
+        # the same S the branches gained: identical output, no lost loudness.
+        # (Under the retired sum-of-positives rule the charge could not see the
+        # trim at all, so the 2.478 dB shift on the 2026-07-28 JTS3 profile was
+        # pure loss.) The one case where it is not neutral is a branch whose
+        # whole chain already sits below unity — the charge floors at 0 and
+        # cannot fall further — which is honest ledger, still disclosed by the
+        # `normalize_shift_db` field of the giveback event above.
+        charge_db: dict[str, float] = {}
+        peak_db: dict[str, float] = {}
+        linearization: dict[str, Any] = {}
+        for role, fit in fits.items():
+            emitted = [f.to_dict() for f in fit.filters]
+            trim_db = float(role_attenuations_db.get(role, 0.0))
+            peak_db[role] = branch_chain_peak_db(
+                emitted, sections=sections[role], trim_db=trim_db,
+            )
+            charge_db[role] = headroom_charge_db(peak_db[role])
+            linearization[role] = replace(
+                fit, headroom_cost_db=charge_db[role],
+            ).to_dict()
+        log_event(
+            logger, "correction.crossover_v2_linearization_headroom",
+            session_id=self.session_id,
+            # What the branch actually puts above unity at its loudest bin...
+            chain_peak_db={r: round(v, 3) for r, v in peak_db.items()},
+            # ...what that costs the speaker's maximum level (peak + margin,
+            # 0.0 for a chain that never exceeds unity)...
+            headroom_cost_db={r: round(v, 3) for r, v in charge_db.items()},
+            # ...and what the retired sum-of-positives rule would have charged,
+            # kept so the reclaimed loudness is visible in the journal rather
+            # than only in a design doc.
+            sum_of_positives_db={
+                role: round(
+                    math.fsum(f.gain for f in fit.filters if f.gain > 0.0), 3,
+                )
+                for role, fit in fits.items()
+            },
+            trim_db={
+                role: round(float(role_attenuations_db.get(role, 0.0)), 3)
+                for role in fits
+            },
+            margin_db=HEADROOM_MARGIN_DB,
+        )
         return role_attenuations_db, linearization
 
     def _realized_level_match(

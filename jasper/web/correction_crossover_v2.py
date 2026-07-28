@@ -1246,7 +1246,8 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # The WORST branch's charge, matching the emitter's own worst-branch
         # rule (``camilla_yaml.linearization_headroom_db``): the driver chains
         # run in parallel after the split, so the graph gives up the largest
-        # branch's boost, not the sum across branches. 0.0 for every cut-only
+        # branch's charge, not the sum across branches. (Each branch's charge
+        # is its emitted chain's realized peak since #1808.) 0.0 for every cut-only
         # correction, which is every correction before PR-L5 — present and
         # zero rather than absent, so a surface never has to guess whether the
         # field is missing or the cost is nothing.
