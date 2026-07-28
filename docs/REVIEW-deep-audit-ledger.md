@@ -4,12 +4,13 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `main` (`1e7fef4a`): 2026-07-12.
+Last reconciled against `origin/main` (`d1715135f`), including this branch:
+2026-07-27.
 
 ## Status counts
 
-- **open**: 352
-- **fixed**: 312
+- **open**: 331
+- **fixed**: 333
 - **in-progress**: 0
 - **mooted**: 12
 - **deferred**: 1
@@ -50,7 +51,7 @@ Last reconciled against `main` (`1e7fef4a`): 2026-07-12.
 | DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **fixed** | shared reset-failed helper + start OSError containment; recovery probes now fail closed — #1299 |
 | DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **fixed** | obsolete object-identity INFO probes removed; concise lifecycle timing retained — #1302 |
 | DA-0025 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2107 | should-fix | W5 | **fixed** | bounded strict unit-state probe fails closed before corpus-mode mutation — #1304 |
-| DA-0026 | `jasper/wake_events.py` :: _STAGE_TO_COLUMN | should-fix | W5 | **open** | — |
+| DA-0026 | `jasper/wake_events.py` :: _STAGE_TO_COLUMN | should-fix | W5 | **fixed** | provider-neutral response drain + shared tool-dispatch observer populate response/tool stages and first tool name; hardware-free funnel coverage |
 | DA-0028 | `jasper/web/bluetooth_setup.py` :: _start_pair_stream / _drive | should-fix | W5 | **fixed** | unexpected pair-driver failures now emit one structured error with traceback — #1301 |
 | DA-0031 | `jasper/web/rooms_setup.py` :: _self_addresses / _lan_target / _post_groupi | should-fix | W5 | **fixed** | package-shared rooms control helpers now expose a tested public boundary — #1309 |
 | DA-0032 | `jasper/web/sound_setup.py` :: :177 | should-fix | W5 | **fixed** | all 92 structured sound events use canonical rendering with fidelity guards — #1310 |
@@ -128,26 +129,26 @@ Last reconciled against `main` (`1e7fef4a`): 2026-07-12.
 | DA-0187 | `jasper/control/server.py` :: _sync_aec_module / _sync_dial_module / _sync | should-fix | W3 | **fixed** | mutable control mirrors removed; state remains at subsystem owners — #1366 |
 | DA-0188 | `jasper/control/shairport_supervisor.py` :: run / start_supervisor / snapshot | should-fix | W3 | **fixed** | three supervisors share bounded runtime mechanics while retaining local policy — #1368 |
 | DA-0189 | `jasper/control/volume_ops.py` :: SPOTIFY_OAUTH_CALLBACK_BASE / _spotify_redir | should-fix | W3 | **fixed** | Spotify OAuth module now owns callback base and default redirect construction — #1367 |
-| DA-0190 | `jasper/correction/acceptance.py` :: _env_float / _env_int | should-fix | W3 | **open** | — |
-| DA-0191 | `jasper/correction/evidence.py` :: _position_summary | should-fix | W3 | **open** | — |
-| DA-0192 | `jasper/correction/runtime_integrity.py` :: MEM_AVAILABLE_WARN_MB | should-fix | W3 | **open** | — |
-| DA-0193 | `jasper/correction/session.py` :: SessionConfig.peq_max_filters/peq_max_cut_db | should-fix | W3 | **open** | — |
-| DA-0194 | `jasper/correction/session.py` :: on_capture_uploaded / on_repeat_capture_uplo | should-fix | W3 | **open** | — |
-| DA-0195 | `jasper/correction/session.py` :: prepare_and_play_sweep / prepare_and_play_re | should-fix | W3 | **open** | — |
-| DA-0196 | `jasper/cues/factory.py` :: build_cue_tts_backend :38 | should-fix | W3 | **open** | — |
-| DA-0197 | `jasper/fanin/coupling_auto.py` :: usb_gadget_stack_present | should-fix | W3 | **open** | — |
+| DA-0190 | `jasper/correction/acceptance.py` :: _env_float / _env_int | should-fix | W3 | **fixed** | bounded env parsing consolidated in import-light `jasper.env_load` — this PR |
+| DA-0191 | `jasper/correction/evidence.py` :: _position_summary | should-fix | W3 | **fixed** | evidence count derived from production `positions` payload + realistic golden fixture — this PR |
+| DA-0192 | `jasper/correction/runtime_integrity.py` :: MEM_AVAILABLE_WARN_MB | should-fix | W3 | **fixed** | doctor + correction share RAM-tier-aware `memory_policy` thresholds — this PR |
+| DA-0193 | `jasper/correction/session.py` :: SessionConfig.peq_max_filters/peq_max_cut_db | should-fix | W3 | **fixed** | dead contradictory PEQ fields removed; strategy registry remains authoritative — this PR |
+| DA-0194 | `jasper/correction/session.py` :: on_capture_uploaded / on_repeat_capture_uplo | should-fix | W3 | **fixed** | shared position-advance/design tail preserves state + error contracts — this PR |
+| DA-0195 | `jasper/correction/session.py` :: prepare_and_play_sweep / prepare_and_play_re | should-fix | W3 | **fixed** | shared prepared-sweep lifecycle; verify now reports duration consistently — this PR |
+| DA-0196 | `jasper/cues/factory.py` :: build_cue_tts_backend :38 | should-fix | W3 | **fixed** | cue rendering + loudness seeding share provider-to-generator dispatch — this PR |
+| DA-0197 | `jasper/fanin/coupling_auto.py` :: usb_gadget_stack_present | should-fix | W3 | **fixed** | USB-role consumers use shared `current_usb_data_role` / `gadget_unavailable_detail` capability contract — #1494 |
 | DA-0198 | `jasper/fanin/coupling_reconcile.py` :: _arm_ring | should-fix | W3 | **open** | — |
 | DA-0199 | `jasper/fanin/coupling_reconcile.py` :: _transport_pipe_shape_ok | should-fix | W3 | **mooted** | transport-pipe path and shape validator deleted; legacy value now fails safe to loopback — #1266 |
-| DA-0200 | `jasper/home_assistant.py` :: read_ha_env_file | should-fix | W3 | **open** | — |
-| DA-0201 | `jasper/multiroom/active_leader_config.py` :: _camilla | should-fix | W3 | **open** | — |
-| DA-0202 | `jasper/multiroom/runtime_balance.py` :: PAIR_BALANCE_FILTER | should-fix | W3 | **open** | — |
-| DA-0203 | `jasper/music_sources.py` :: SOURCE_TO_ACTIVE_KEY | should-fix | W3 | **open** | — |
-| DA-0204 | `jasper/output_topology.py` :: save_output_topology | should-fix | W3 | **open** | — |
-| DA-0205 | `jasper/peering/config.py` :: _read_env_file | should-fix | W3 | **open** | — |
-| DA-0206 | `jasper/sound/camilla_yaml.py` :: RING_FLAT_CONFIG_NAME | should-fix | W3 | **open** | — |
-| DA-0207 | `jasper/sound/profile.py` :: _atomic_write_text | should-fix | W3 | **open** | — |
-| DA-0208 | `jasper/speaker_name.py` :: write_state | should-fix | W3 | **open** | — |
-| DA-0209 | `jasper/transit/providers/nyc_bus.py` :: NYC_BBOX | should-fix | W3 | **open** | — |
+| DA-0200 | `jasper/home_assistant.py` :: read_ha_env_file | should-fix | W3 | **fixed** | Home Assistant state uses canonical status-bearing env reader — this PR |
+| DA-0201 | `jasper/multiroom/active_leader_config.py` :: _camilla | should-fix | W3 | **fixed** | import-light `primary_controller()` owns camilla#1 construction — this PR |
+| DA-0202 | `jasper/multiroom/runtime_balance.py` :: PAIR_BALANCE_FILTER | should-fix | W3 | **fixed** | emitter + runtime patcher share filter identity from Camilla contract — this PR |
+| DA-0203 | `jasper/music_sources.py` :: SOURCE_TO_ACTIVE_KEY | should-fix | W3 | **fixed** | renderer/routing/volume/tool consumers use registry-derived active keys — this PR |
+| DA-0204 | `jasper/output_topology.py` :: save_output_topology | should-fix | W3 | **fixed** | canonical atomic writer supports observable best-effort group publication — this PR |
+| DA-0205 | `jasper/peering/config.py` :: _read_env_file | should-fix | W3 | **fixed** | peering/multiroom/web/model-download readers share canonical env parsing — this PR |
+| DA-0206 | `jasper/sound/camilla_yaml.py` :: RING_FLAT_CONFIG_NAME | should-fix | W3 | **fixed** | runtime ring-flat path derives its filename from emitter-owned constant — this PR |
+| DA-0207 | `jasper/sound/profile.py` :: _atomic_write_text | should-fix | W3 | **fixed** | profile/library writes use canonical atomic writer at mode 0640 — this PR |
+| DA-0208 | `jasper/speaker_name.py` :: write_state | should-fix | W3 | **fixed** | unique canonical tempfiles remove concurrent identity-write race — this PR |
+| DA-0209 | `jasper/transit/providers/nyc_bus.py` :: NYC_BBOX | should-fix | W3 | **fixed** | one pure-data NYC coverage box shared by bus + subway providers — this PR |
 | DA-0210 | `jasper/volume_coordinator.py` :: _bluez_alsa_active_transport_path :2186-2207 | should-fix | W3 | **open** | — |
 | DA-0211 | `jasper/volume_coordinator.py` :: _dispatch :607-677; apply_active_source_tran | should-fix | W3 | **fixed** | repeated source-push-failure transactions consolidated behind one fail-closed helper — #1369 |
 | DA-0212 | `jasper/wake_corpus/bridge_session.py` :: set_bridge_outputs_for_session:1245 | should-fix | W3 | **fixed** | shared recorder env write/restart/rollback transaction centralized — #1370 |
@@ -155,8 +156,8 @@ Last reconciled against `main` (`1e7fef4a`): 2026-07-12.
 | DA-0214 | `jasper/web/correction_setup.py` :: _dispatch_balance :3230-3244 / _dispatch_syn | should-fix | W3 | **fixed** | balance/sync starts share one lock-scoped active-session blocker — #1371 |
 | DA-0215 | `jasper/web/correction_setup.py` :: _reset_accepts_target_config_path / _auto_re | should-fix | W3 | **fixed** | reset/auto-revert capability checks consolidated into one helper — #1372 |
 | DA-0216 | `jasper/web/google_setup.py` :: _redirect | should-fix | W3 | **fixed** | Google/Spotify legacy query-message redirects share one compatibility helper — #1373 |
-| DA-0217 | `jasper/web/sources_setup.py` :: _send_json | should-fix | W3 | **open** | — |
-| DA-0218 | `jasper/web/wake_setup.py` :: _read_json_body | should-fix | W3 | **open** | — |
+| DA-0217 | `jasper/web/sources_setup.py` :: _send_json | should-fix | W3 | **fixed** | wrapper delegates canonical `send_json_response` — #1375 |
+| DA-0218 | `jasper/web/wake_setup.py` :: _read_json_body | should-fix | W3 | **fixed** | wrapper delegates bounded canonical `read_json_object` — #1382 |
 | DA-0219 | `rust/jasper-fanin/src/impulse_tap.rs` :: module (whole file) vs rust/jasper-usbsink-a | should-fix | W3 | **mooted** | solo USB capture and second impulse-tap module deleted; fan-in is the sole remaining copy — #1209 |
 | DA-0220 | `rust/jasper-fanin/src/xrun_log.rs` :: escape_json (:232) | should-fix | W3 | **fixed** | control bytes now use one canonical JSON escaping path — #1379 |
 | DA-0221 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::begin_probe / HostClock::restart_ | should-fix | W3 | **open** | — |
