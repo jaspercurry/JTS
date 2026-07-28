@@ -18,11 +18,11 @@ import logging
 import math
 import os
 import re
-import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
+from .atomic_io import atomic_write_text
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -2014,44 +2014,15 @@ def save_output_topology(
     """Persist a topology atomically. This still does not authorize playback."""
 
     target = topology_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(topology.to_dict(), indent=2, sort_keys=True) + "\n"
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            dir=target.parent,
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_name = handle.name
-            handle.write(data)
-        # Publish under the state directory's group (jasper) before the rename,
-        # mirroring atomic_io's group_from_parent. /var/lib/jasper is group
-        # jasper but NOT setgid, so a root-run write (the
-        # jasper-output-topology-reset recovery CLI runs as root) would
-        # otherwise land root:root 0640 — unreadable by the non-root
-        # jasper-group management daemons that read this file, leaving
-        # jasper-control/-web silently falling back to a detected draft.
-        # Best-effort: a chgrp failure must never lose the topology write.
-        try:
-            os.chown(tmp_name, -1, target.parent.stat().st_gid)
-        except OSError as exc:
-            logger.warning(
-                "event=output_topology.group_publish_failed path=%s error=%s",
-                tmp_name,
-                exc,
-            )
-        os.chmod(tmp_name, 0o640)
-        os.replace(tmp_name, target)
-    except Exception:  # noqa: BLE001
-        if tmp_name:
-            try:
-                Path(tmp_name).unlink(missing_ok=True)
-            except OSError:
-                logger.warning(
-                    "event=output_topology.temp_cleanup_failed path=%s",
-                    tmp_name,
-                )
-        raise
+    # /var/lib/jasper is group jasper but NOT setgid, so a root-run recovery
+    # write must publish under the directory's group for the non-root management
+    # daemons. Group assignment remains best-effort: losing that metadata is
+    # observable, but must not lose the topology write itself.
+    atomic_write_text(
+        target,
+        data,
+        mode=0o640,
+        group_from_parent=True,
+        best_effort_group=True,
+    )

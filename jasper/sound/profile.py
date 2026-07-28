@@ -22,13 +22,13 @@ import logging
 import math
 import os
 import re
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     GAINLESS_BIQUAD_TYPES,
     SHELF_Q,
@@ -1022,17 +1022,7 @@ def save_profile(profile: SoundProfile, path: str | Path | None = None) -> None:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as f:
-        f.write(text)
-        tmp_name = f.name
-    # WS1 Phase 3b-2: 0640 group jasper (NamedTemporaryFile creates 0600) so the
-    # now-non-root jasper-control can read the (non-secret) sound profile/library
-    # for /state. chmod before the atomic rename so a reader never sees 0600.
-    os.chmod(tmp_name, 0o640)
-    os.replace(tmp_name, path)
+    # WS1 Phase 3b-2: publish 0640 so non-root jasper-control can read the
+    # non-secret sound profile/library for /state. The canonical helper applies
+    # that mode before the atomic rename, so a reader never sees 0600.
+    atomic_write_text(path, text, mode=0o640)

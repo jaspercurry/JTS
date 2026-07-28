@@ -49,8 +49,6 @@ _ALLOWLIST = {
     "jasper/audio_quality.py",
     "jasper/correction/replay_artifacts.py",
     "jasper/output_hardware.py",
-    "jasper/output_topology.py",
-    "jasper/sound/profile.py",
 }
 
 

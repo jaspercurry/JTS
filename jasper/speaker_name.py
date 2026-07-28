@@ -16,9 +16,8 @@ import re
 import shlex
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
-from .atomic_io import read_regular_bytes_nofollow
+from .atomic_io import atomic_write_text, read_regular_bytes_nofollow
 
 DEFAULT_SPEAKER_NAME = "JTS"
 ENV_VAR = "JASPER_SPEAKER_NAME"
@@ -233,21 +232,11 @@ def write_state(
     else:
         cleaned_room = validate_room(room)  # type: ignore[arg-type]
 
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(f"{ENV_VAR}={quote_env_value(cleaned)}\n")
-            f.write(f"{ENV_VAR_ROOM}={quote_env_value(cleaned_room)}\n")
-        os.replace(tmp, target)
-        os.chmod(target, mode)
-    finally:
-        try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
+    text = (
+        f"{ENV_VAR}={quote_env_value(cleaned)}\n"
+        f"{ENV_VAR_ROOM}={quote_env_value(cleaned_room)}\n"
+    )
+    atomic_write_text(path, text, mode=mode)
     return cleaned
 
 

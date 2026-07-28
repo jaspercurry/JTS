@@ -879,7 +879,7 @@ def test_save_output_topology_cleans_temp_file_on_replace_failure(
     def fail_replace(src, dst):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("jasper.output_topology.os.replace", fail_replace)
+    monkeypatch.setattr("jasper.atomic_io.os.replace", fail_replace)
 
     with pytest.raises(OSError):
         save_output_topology(topology, path)
@@ -913,18 +913,20 @@ def test_save_output_topology_publishes_parent_group(
         chown_calls.append((uid, gid))
         return real_chown(target, uid, gid, *args, **kwargs)
 
-    monkeypatch.setattr("jasper.output_topology.os.chown", record_chown)
+    monkeypatch.setattr("jasper.atomic_io.os.chown", record_chown)
 
     save_output_topology(topology, path)
 
     parent_gid = path.parent.stat().st_gid
     assert chown_calls == [(-1, parent_gid)]
+    assert path.stat().st_mode & 0o777 == 0o640
     assert json.loads(path.read_text(encoding="utf-8"))["kind"] == OUTPUT_TOPOLOGY_KIND
 
 
 def test_save_output_topology_survives_group_publish_failure(
     tmp_path: Path,
     monkeypatch,
+    caplog,
 ) -> None:
     # A chgrp failure (caller not a member of the dir's group) must never lose
     # the topology write — best-effort, the file is still persisted.
@@ -942,11 +944,12 @@ def test_save_output_topology_survives_group_publish_failure(
     def fail_chown(*args, **kwargs):
         raise PermissionError("simulated chgrp denial")
 
-    monkeypatch.setattr("jasper.output_topology.os.chown", fail_chown)
+    monkeypatch.setattr("jasper.atomic_io.os.chown", fail_chown)
 
     save_output_topology(topology, path)
 
     assert load_output_topology(path).speaker_groups[0].id == "mono"
+    assert "event=atomic_io.group_publish_failed" in caplog.text
 
 
 def test_load_output_topology_fails_soft_to_detected_draft(tmp_path: Path) -> None:

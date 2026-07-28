@@ -41,6 +41,7 @@ so it stays import-cheap for the daemons that pull it in at startup.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import stat
 import tempfile
@@ -51,6 +52,8 @@ from io import TextIOWrapper
 from typing import Callable
 
 import fcntl
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "advisory_file_lock",
@@ -139,6 +142,7 @@ def atomic_write_text(
     *,
     mode: int = 0o644,
     group_from_parent: bool = False,
+    best_effort_group: bool = False,
     preserve_target_stat: bool = False,
     durable: bool = False,
 ) -> None:
@@ -152,6 +156,10 @@ def atomic_write_text(
     When ``group_from_parent`` is true, the tempfile's group is set to the
     parent directory's group before chmod+rename; this keeps root-run writers
     from publishing group-readable files under the wrong group.
+    ``best_effort_group=True`` keeps publication available when that group
+    lookup or assignment fails: the failure is logged and the write continues
+    with the tempfile's existing group. The default remains strict so callers
+    cannot silently weaken a group-readable contract.
 
     ``preserve_target_stat=True`` is the REPLACE-IN-PLACE case: when the target
     already exists, its uid, gid, and mode are copied onto the tempfile before
@@ -177,7 +185,18 @@ def atomic_write_text(
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
-    parent_gid = os.stat(parent).st_gid if group_from_parent else None
+    parent_gid = None
+    if group_from_parent:
+        try:
+            parent_gid = os.stat(parent).st_gid
+        except OSError as exc:
+            if not best_effort_group:
+                raise
+            logger.warning(
+                "event=atomic_io.group_publish_failed path=%s error=%s",
+                fspath,
+                exc,
+            )
     target_stat = None
     if preserve_target_stat:
         try:
@@ -196,7 +215,16 @@ def atomic_write_text(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
         if parent_gid is not None:
-            os.chown(tmp, -1, parent_gid)
+            try:
+                os.chown(tmp, -1, parent_gid)
+            except OSError as exc:
+                if not best_effort_group:
+                    raise
+                logger.warning(
+                    "event=atomic_io.group_publish_failed path=%s error=%s",
+                    tmp,
+                    exc,
+                )
         if target_stat is not None:
             try:
                 os.chown(tmp, target_stat.st_uid, target_stat.st_gid)
@@ -235,8 +263,17 @@ def atomic_write_text(
     except Exception:  # noqa: BLE001
         try:
             os.unlink(tmp)
-        except OSError:
+        except FileNotFoundError:
+            # A durable write may fail while syncing the parent directory
+            # after ``os.replace`` has already published the target. In that
+            # case the tempfile no longer exists; cleanup is complete.
             pass
+        except OSError as cleanup_exc:
+            logger.warning(
+                "event=atomic_io.temp_cleanup_failed path=%s error=%s",
+                tmp,
+                cleanup_exc,
+            )
         raise
 
 

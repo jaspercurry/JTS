@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from jasper.sound.profile import (
     SIMPLE_EQ_FIELDS,
     ParametricBand,
@@ -207,6 +209,21 @@ def test_save_and_load_profile_round_trip(tmp_path):
     import os
     import stat
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
+
+
+def test_save_profile_cleans_temp_file_on_publish_failure(tmp_path, monkeypatch):
+    path = tmp_path / "sound_profile.json"
+
+    def fail_replace(_source, _target):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("jasper.atomic_io.os.replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        save_profile(SoundProfile(curve_id="harman"), path)
+
+    assert not path.exists()
+    assert list(tmp_path.glob(".sound_profile.json.*.tmp")) == []
 
 
 def test_profile_library_includes_stock_profiles():
