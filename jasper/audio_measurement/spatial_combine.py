@@ -1434,6 +1434,28 @@ def _decimate_to_analysis_grid(
     return coarse_grid, coarse_stacked
 
 
+def decimate_curve_to_analysis_grid(
+    grid: np.ndarray, magnitude_db: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """The 1-D public face of :func:`_decimate_to_analysis_grid`.
+
+    Same rule, same owner, one caller shape apart: the combiner decimates a
+    STACK of positions, and a caller holding a single curve (the v2 conductor's
+    predicted branch sum, on its way to be spec-graded) needs the identical
+    block-average so its curve is smoothed and evaluated at the same grid
+    density as the measured one it will be compared against. Exported for the
+    same reason :func:`merged_true_intervals` is: the alternative is a near-copy
+    of a rule whose whole value is having one owner.
+
+    Identity (same objects) when the grid is already within
+    :data:`MAX_ANALYSIS_BINS`.
+    """
+    coarse_grid, coarse_stacked = _decimate_to_analysis_grid(
+        grid, np.asarray(magnitude_db, dtype=float).reshape(1, -1)
+    )
+    return coarse_grid, coarse_stacked[0]
+
+
 def merged_true_intervals(
     freqs_hz: np.ndarray, mask: np.ndarray
 ) -> tuple[tuple[float, float], ...]:

@@ -57,14 +57,19 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     PILOT_LEVEL_DELTA_DB,
+    PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+    REASON_DRIVER_LEVELS_DISAGREE,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REVERIFY_NO_REWALK_HEADLINE,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
+    TEMPLATE_HARD_STOP,
     TIER_EXPRESS,
     TIER_FULL,
+    TRANSIENT_AUTO_RETRY_CODES,
     VERIFY_ANCHOR_HOLD_MESSAGE,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
     _SIGMA_TOLERABLE_DB,
@@ -91,6 +96,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     express_cloud_measure_positions,
     open_measurement_volume,
     resolve_plan_shape,
+    spec_report_for_predicted_sum,
     session_wall_clock_ceiling_s,
     tier_display_info,
 )
@@ -109,6 +115,11 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     SegmentLocation,
     predicted_branch_sum,
+    solve_branch_trims,
+)
+from jasper.active_speaker.flat_spec import (
+    evaluate_flat_spec,
+    spec_convergence_residual,
 )
 from jasper.capture_relay.session import (
     CaptureBeginDeferred,
@@ -147,17 +158,48 @@ def _loc(segment_id: str, kind: str = "sweep", *, confidence: float = 0.9,
     )
 
 
+_SUMMED_FREQS_HZ = np.linspace(100.0, 20000.0, 64)
+
+
+def _in_room_summed_db() -> np.ndarray:
+    """A modest, physically plausible in-room summed magnitude.
+
+    **Why this is not ``np.zeros``** (PR-L4). The cloud positions play this
+    curve, so it becomes the group's spatially-combined "how flat is the
+    speaker" measurement — and a perfectly flat 8-position in-room spatial
+    power mean does not exist. A zero curve made the measured pre-apply spec
+    residual exactly 0.00 dB, which is not a demanding fixture but an
+    impossible one, and PR-L4 item 2's gate (predicted post-apply vs measured
+    pre-apply) reads exactly that number. Any assertion about "did the
+    correction improve on what we measured" is meaningless against a
+    measurement that claims perfection.
+
+    A broadband tilt plus one wide dip, landing at ~2.7 dB of pooled spec
+    residual — the regime the 2026-07-27 JTS3 session actually measured
+    (3.15-3.76 dB pooled across its ten positions). Note what the PRE-APPLY
+    cloud is measuring: an UNCORRECTED speaker in a room, which is supposed to
+    look like this. Deliberately smooth — the honesty screen and the null gate
+    are exercised by their own fixtures, and a combed curve here would couple
+    these wiring tests to those detectors.
+    """
+    octaves = np.log2(_SUMMED_FREQS_HZ / 1000.0)
+    return -2.0 * octaves - 3.0 * np.exp(-0.5 * (octaves / 0.8) ** 2)
+
+
 def _driver_response(role: str, window_ms: float) -> DriverResponse:
-    freqs = np.linspace(100.0, 20000.0, 64)
+    magnitude_db = (
+        _in_room_summed_db() if role == "summed" else np.zeros(64)
+    )
     return DriverResponse(
-        role=role, freqs_hz=freqs, magnitude_db=np.zeros(64),
-        complex_tf=np.ones(64, dtype=complex),
+        role=role, freqs_hz=_SUMMED_FREQS_HZ, magnitude_db=magnitude_db,
+        complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
         gating={"applied": True, "window_ms": window_ms},
         snr=None, validity_floor_hz=None,
     )
 
 
 _LINEARIZABLE_FREQS_HZ = np.linspace(100.0, 20000.0, 2048)
+_FIXTURE_FC_HZ = 1600.0
 
 
 def _linearizable_response(
@@ -1485,6 +1527,15 @@ def _comb_summed_response(seed: int, *, r: float = 0.37, delay_samples: int = 15
     rng = np.random.default_rng(seed)
     tf = 1.0 + r * np.exp(-2j * np.pi * freqs * (delay_samples / _COMB_RATE))
     tf = tf + rng.normal(0.0, 1e-6, tf.shape)
+    # The comb rides a ROOM, not a flat 0 dB reference (PR-L4) — a real
+    # position measures the speaker's own in-room shape with the interference
+    # comb on top of it, and the pre-apply cloud's spec residual is read off
+    # exactly that product. See `_in_room_summed_db` for why a flat base is not
+    # a demanding fixture but an impossible one. Zero-phase magnitude shaping,
+    # so the two-path ladder the echo detector reads is untouched.
+    tf = tf * 10.0 ** (
+        np.interp(freqs, _SUMMED_FREQS_HZ, _in_room_summed_db()) / 20.0
+    )
     return DriverResponse(
         role="summed", freqs_hz=freqs,
         magnitude_db=20.0 * np.log10(np.maximum(np.abs(tf), 1e-12)),
@@ -4150,32 +4201,74 @@ def test_sigma_tolerable_db_matches_linearization_envelopes_own_table():
 # --- conductor integration reorder ------------------------------------------
 
 
+def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
+    """The eligible fixture's two branch magnitude curves.
+
+    Split out from ``_eligible_measure_analysis`` so ``_FIXTURE_RAW_TRIM_DB``
+    below can be SOLVED from the same curves the fixture hands the conductor
+    (see that constant for why a hand-written trim stopped being acceptable).
+    """
+    freqs = _LINEARIZABLE_FREQS_HZ
+    # A mild, monotonic -1.5 dB/octave tilt around Fc (capped at +/-6 dB
+    # at the band extremes) -- NOT a perfectly flat 0 dB reference.
+    # #1667's ripple-optimal trim solve needs the woofer branch to carry
+    # SOME of its own frequency-dependent shape: against a perfectly
+    # flat woofer, attenuating the tweeter toward silence is always
+    # "more flat" (there is nothing on the woofer side to trade off
+    # against), so the search has no genuine interior minimum and walks
+    # to its own scan-window edge -- which the sanity guard then
+    # (correctly) distrusts and rejects. A mild tilt is enough for a
+    # real interior optimum to exist while leaving the tweeter-bump
+    # linearity checks below unaffected (the fit and its own filters are
+    # sibling-independent; verified offline).
+    woofer_db = np.clip(-1.5 * np.log2(np.maximum(freqs, 1.0) / 1600.0), -6.0, 6.0)
+    # A +6 dB bump inside the [800, 3200] Hz overlap band (Fc=1600) —
+    # validated offline (PR-C sanity pass) to survive envelope/fit and
+    # move the re-solved trim measurably vs the raw candidate.
+    tweeter_db = 6.0 * np.exp(-0.5 * ((np.log2(freqs / 1500.0) / 0.25) ** 2))
+    return woofer_db, tweeter_db
+
+
+def _solve_fixture_raw_trim() -> dict[str, float]:
+    """The raw trim these two branches actually call for.
+
+    **Why this is solved and not written down** (PR-L4). The fixture carried a
+    hand-written ``{"woofer": 0.0, "tweeter": -2.211}`` chosen to exercise the
+    ripple scan, but its two branches are near-equal-sensitivity synthetics
+    that call for about -0.7 dB. Nothing noticed, because until PR-L4 nothing
+    in the chain ever compared the two branches' realized levels — which is
+    precisely the hole PR-L4 item 1 exists to close, reproduced inside the test
+    fixture that was meant to model the thing. A production MEASURE analysis
+    derives ``candidate.trim_db`` from its own branches via
+    ``solve_branch_trims``, so this fixture now does the same and cannot drift
+    from its own physics again.
+    """
+    freqs = _LINEARIZABLE_FREQS_HZ
+    woofer_db, tweeter_db = _fixture_branch_db()
+    _trim_w, trim_t, _lw, _lt = solve_branch_trims(
+        freqs,
+        (10.0 ** (woofer_db / 20.0)).astype(complex),
+        (10.0 ** (tweeter_db / 20.0)).astype(complex),
+        _FIXTURE_FC_HZ,
+    )
+    return {"woofer": 0.0, "tweeter": round(float(trim_t), 3)}
+
+
+_FIXTURE_RAW_TRIM_DB = _solve_fixture_raw_trim()
+
+
 def _eligible_measure_analysis(
     program, *, mic_tier="reference", woofer_repeats=2, tweeter_repeats=2,
     woofer_db=None, tweeter_db=None, trim_db=None,
 ) -> ProgramAnalysis:
     freqs = _LINEARIZABLE_FREQS_HZ
+    default_woofer_db, default_tweeter_db = _fixture_branch_db()
     if woofer_db is None:
-        # A mild, monotonic -1.5 dB/octave tilt around Fc (capped at +/-6 dB
-        # at the band extremes) -- NOT a perfectly flat 0 dB reference.
-        # #1667's ripple-optimal trim solve needs the woofer branch to carry
-        # SOME of its own frequency-dependent shape: against a perfectly
-        # flat woofer, attenuating the tweeter toward silence is always
-        # "more flat" (there is nothing on the woofer side to trade off
-        # against), so the search has no genuine interior minimum and walks
-        # to its own scan-window edge -- which the sanity guard then
-        # (correctly) distrusts and rejects. A mild tilt is enough for a
-        # real interior optimum to exist while leaving the tweeter-bump
-        # linearity checks below unaffected (the fit and its own filters are
-        # sibling-independent; verified offline).
-        woofer_db = np.clip(-1.5 * np.log2(np.maximum(freqs, 1.0) / 1600.0), -6.0, 6.0)
+        woofer_db = default_woofer_db
     if tweeter_db is None:
-        # A +6 dB bump inside the [800, 3200] Hz overlap band (Fc=1600) —
-        # validated offline (PR-C sanity pass) to survive envelope/fit and
-        # move the re-solved trim measurably vs the raw candidate.
-        tweeter_db = 6.0 * np.exp(-0.5 * ((np.log2(freqs / 1500.0) / 0.25) ** 2))
+        tweeter_db = default_tweeter_db
     if trim_db is None:
-        trim_db = {"woofer": 0.0, "tweeter": -2.211}
+        trim_db = dict(_FIXTURE_RAW_TRIM_DB)
     return ProgramAnalysis(
         phase="measure",
         program_id=program.program_id,
@@ -4212,7 +4305,7 @@ def test_non_reference_tier_falls_back_byte_identical_to_trims_only():
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.role_attenuations_db == dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.linearization == {}
 
 
@@ -4227,7 +4320,7 @@ def test_reference_tier_but_under_repeated_falls_back_byte_identical():
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.role_attenuations_db == dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.linearization == {}
 
 
@@ -4258,11 +4351,11 @@ def test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_optimal
     assert verdict["accepted"] is True
 
     candidate = c.candidate
-    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
     assert candidate.role_attenuations_db != raw_trim
     # The bump correction quiets the tweeter's overlap-band level, so the
     # RESOLVED tweeter trim needs LESS attenuation than the raw solve did
-    # (moves toward 0, i.e. strictly greater than the raw -2.211).
+    # (moves toward 0, i.e. strictly greater than the raw fixture trim).
     assert candidate.role_attenuations_db["tweeter"] > raw_trim["tweeter"]
 
     assert set(candidate.linearization) == {"woofer", "tweeter"}
@@ -4321,7 +4414,7 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     assert call["sign"] == 1  # _alignment()'s default polarity="normal"
     # Anchored seed = raw trim + that branch's own measured give-back, with the
     # shared non-positive normalization shift applied to both roles.
-    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
     giveback = {
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
@@ -4395,7 +4488,7 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     assert "event=correction.crossover_v2_linearization_ripple_trim_skipped" in caplog.text
     assert "reason=ripple_band_one_sided" in caplog.text
     # The applied trim is the anchored give-back, untouched by any scan.
-    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
     giveback = {
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
@@ -4583,39 +4676,55 @@ def test_declared_driver_class_reaches_the_compose_envelope_seam():
     assert c.candidate.linearization["woofer"]["driver_class"] == "unknown"
 
 
-def test_large_raw_shift_is_accepted_by_seed_anchored_guard(caplog):
-    """#1668 CD-horn re-anchor, guard pair (a): the wild-trim guard is anchored
-    to the ripple-optimal tweeter trim's OWN band-average seed, NOT the raw
-    candidate trim. So a large correction band-average shift vs the raw trim
-    (exactly what a legitimate CD-horn give-back produces) is ACCEPTED as long
-    as the ripple-optimal scan stayed near its seed. The old raw-anchored guard
-    rejected every such give-back — this is the bug the re-anchor fixes."""
+def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check(
+    caplog,
+):
+    """The two layers, on one fixture — guard pair (a) plus PR-L4 item 1.
+
+    #1668 CD-horn re-anchor: the wild-trim guard is anchored to the
+    ripple-optimal tweeter trim's OWN seed, NOT the raw candidate trim, so a
+    large shift vs the raw trim (what a legitimate CD-horn give-back produces)
+    does not trip it. That is still true and still asserted here.
+
+    What PR-L4 adds is the half the guard never had: a raw trim 20 dB away from
+    what these branches justify carries straight through the anchor into the
+    committed pair, and *drift from the anchor cannot see that* — the anchor is
+    the thing that is wrong. The realized-level assertion does see it, and
+    refuses the candidate rather than shipping a 20 dB-mislevelled speaker.
+    This is the 2026-07-27 failure shape in miniature.
+    """
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
-    # A raw trim deliberately far from what the responses justify. Under the old
-    # raw-anchored guard this forced a rejection; under the seed anchor it is
-    # irrelevant to the guard (a near-seed ripple-optimal scan is trusted).
     far_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
     fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=far_raw_trim)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        _run_phase(c, 2, 2)
+    assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
     assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # the constant exists and is positive
-    # Accepted the FITTED (resolved) trim, NOT the raw fallback -> not wild.
-    assert c.candidate.role_attenuations_db != far_raw_trim
+    # The GUARD did not fire — a near-seed scan is trusted, exactly as #1668
+    # intended. The refusal above came from the level check, one layer later.
     assert "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
-    assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+    assert "event=correction.crossover_v2_level_match_refused" in caplog.text
+    # Nothing was published or stashed: the speaker is untouched.
+    assert c.candidate is None
+    assert fakes.published_candidates == []
 
 
 def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkeypatch):
     """#1668 anchored give-back, guard pair (b): when the ripple-optimal tweeter
     scan drifts implausibly far from the ANCHOR, the guard fires and the
     conductor falls back to the ANCHORED pair — NOT the raw trim (raw trim +
-    emitted filters is the known VERIFY-mismatch class). The rejection event
-    carries anchored_trim_db/fallback_trim_db. Crafting a scan that walks that
-    far against a synthetic fixture is awkward, so the ripple-optimal solve is
-    monkeypatched to return a far-from-anchor trim."""
+    emitted filters is the known VERIFY-mismatch class). Crafting a scan that
+    walks that far against a synthetic fixture is awkward, so the ripple-optimal
+    solve is monkeypatched to return a far-from-anchor trim.
+
+    PR-L4 item 9: the fallback is no longer chosen by drift alone. The event now
+    carries both candidate pairs' realized level errors and which one was
+    committed, and the anchor wins HERE because it levels better — which is what
+    the guard was always assuming and never checking.
+    """
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
 
@@ -4628,9 +4737,8 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
 
     monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
 
-    far_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=far_raw_trim)
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
@@ -4640,12 +4748,55 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
     assert set(committed) == {"woofer", "tweeter"}
     assert committed["woofer"] == pytest.approx(captured["trim_w_db"])
     assert committed["tweeter"] == pytest.approx(captured["seed_trim_db"])
-    assert committed != far_raw_trim
+    assert committed != dict(_FIXTURE_RAW_TRIM_DB)
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
     assert "anchored_trim_db=" in caplog.text
     assert "fallback_trim_db=" in caplog.text
+    # PR-L4 item 9: the rejection names WHY this pair won, in levels.
+    assert "committed=anchored" in caplog.text
+    assert "anchored_level_error_db=" in caplog.text
+    assert "resolved_level_error_db=" in caplog.text
     # linearization itself still gets reported — only the trim falls back.
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+
+
+def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
+    """PR-L4 item 9's teeth: when the guard fires, the pair that LEVELS better
+    is committed — even when that is the scan the guard just called wild.
+
+    The 2026-07-27 evidence for why drift alone is the wrong verdict: the scan
+    had walked 5.500 dB (missing the 6.0 dB guard by half a dB) and its walk was
+    TOWARD a correct level, while the anchor it would have fallen back to was
+    5.5 dB darker. Had the drift been a hair larger, the guard would have made
+    the speaker worse. Here the forced scan is both wild AND better-levelled, so
+    the guard fires and commits it anyway.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+
+    # A raw trim 12 dB too dark: the anchor inherits all of it, so the anchored
+    # pair is badly mislevelled and ANY scan toward 0 levels better.
+    dark_raw_trim = {"woofer": 0.0, "tweeter": -12.0}
+    monkeypatch.setattr(
+        flow_mod, "solve_ripple_optimal_trim",
+        lambda *a, **k: (k["seed_trim_db"] + 11.0, 0.0, k["seed_trim_db"]),
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=dark_raw_trim)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    # The guard FIRED (drift 11 dB > the 6 dB margin) and still committed the
+    # scan, because the scan levels better than the anchor it would have fallen
+    # back to. Pre-PR-L4 this fell back to the darker pair unconditionally.
+    assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
+    assert "committed=resolved" in caplog.text
+    committed = c.candidate.role_attenuations_db
+    assert committed["tweeter"] > dark_raw_trim["tweeter"]
+    # And the committed pair clears the level assertion, so the session lives.
+    assert c.candidate is not None
 
 
 def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
@@ -4660,7 +4811,7 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
 
-    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
     giveback = {
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
@@ -4730,47 +4881,190 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     )
 
 
-def test_wild_trim_boundary_exact_passes_just_above_falls_back(monkeypatch):
+def test_wild_trim_boundary_exact_passes_just_above_falls_back(caplog, monkeypatch):
     """The sanity margin is an exclusive upper bound (matches this file's other
     boundary comparators): a seed drift EXACTLY at the margin is trusted, one
-    hair over falls back. Seed-anchored (#1668), so the ripple-optimal solve is
-    monkeypatched to return a controlled distance from its own seed."""
+    hair over trips the guard. Seed-anchored (#1668), so the ripple-optimal
+    solve is monkeypatched to return a controlled distance from its own seed.
+
+    Pinned on the guard's OWN event rather than on the committed trim: since
+    PR-L4 the trim a session ends up carrying is the joint outcome of this
+    boundary AND the realized-level comparison (item 9) AND the publish-time
+    assertion (item 1) — three decisions, and reading the trim alone could not
+    tell which one moved. A drift of exactly 6.0 dB IS trusted here, and the
+    resulting 6 dB-mislevelled pair is then refused downstream: the guard's
+    bound and the accountability gate are different questions, deliberately.
+    """
     from jasper.active_speaker import crossover_v2_flow as flow_mod
 
-    # Exactly at the margin from the seed -> still trusted (resolved used).
+    def _run_at(drift_db: float):
+        caplog.clear()
+        monkeypatch.setattr(
+            flow_mod, "solve_ripple_optimal_trim",
+            lambda *a, **k: (k["seed_trim_db"] - drift_db, 0.0, k["seed_trim_db"]),
+        )
+        fakes = FakeSeams()
+        fakes.measure = lambda program: _eligible_measure_analysis(program)
+        c = _conductor(fakes)
+        _run_phase(c, 1, 1)
+        try:
+            _run_phase(c, 2, 2)
+        except CaptureBeginRefused:
+            pass  # the level gate's verdict; this test is about the guard's
+        return "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
+
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    assert _run_at(LINEARIZATION_TRIM_SANITY_MARGIN_DB) is False
+    assert _run_at(LINEARIZATION_TRIM_SANITY_MARGIN_DB + 0.5) is True
+
+
+# --------------------------------------------------------------------------- #
+# PR-L4 item 2 — spec-grade the prediction before auto-apply
+# --------------------------------------------------------------------------- #
+
+
+def test_predicted_spec_report_is_graded_on_the_shared_analysis_grid():
+    """``spec_report_for_predicted_sum`` decimates before it smooths.
+
+    Not cosmetic. ``smooth_fractional_octave`` is an O(bins x window) Python
+    loop — ~11 s on a laptop at a raw 512k-point prediction grid, worse on a
+    Pi 5 — and this runs at the confirm seam with a household waiting on the
+    apply. It block-averages onto ``MAX_ANALYSIS_BINS`` first, the bound the
+    combiner already adopted for the same reason, which is also what puts the
+    predicted curve at the same grid density as the measured one it is compared
+    against."""
+    from jasper.audio_measurement.spatial_combine import MAX_ANALYSIS_BINS
+
+    freqs = np.fft.rfftfreq(1 << 16, 1.0 / 48000.0)
+    assert freqs.size > MAX_ANALYSIS_BINS  # the fixture must exercise the bound
+    report = spec_report_for_predicted_sum((freqs, np.zeros(freqs.size)))
+
+    assert report is not None
+    graded_bins = sum(band.n_bins for band in report.bands)
+    assert 0 < graded_bins <= MAX_ANALYSIS_BINS
+    # A flat curve is flat at any grid density.
+    assert report.overall_passed is True
+
+
+def test_predicted_spec_report_is_unknown_never_a_pass_on_bad_input():
+    """``None`` in, ``None`` out — and a malformed pair degrades the same way
+    rather than raising into the confirm seam. The caller must read that as
+    "no evidence", which the gate test below pins."""
+    assert spec_report_for_predicted_sum(None) is None
+    assert spec_report_for_predicted_sum((np.array([]), np.array([]))) is None
+    assert spec_report_for_predicted_sum(("not", "arrays")) is None
+
+
+def test_prediction_gate_allows_a_materially_better_correction():
+    """The happy path, with the arithmetic shown rather than assumed: the
+    fixture's measured pre-apply cloud and its predicted post-apply model are
+    far enough apart that the gate passes, and the session applies."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    verdict = _walk_measure_cloud_to_close(c)
+
+    assert verdict["auto_apply"] is True
+    assert c.candidate is not None
+
+    measured_rms_db = c.group_cloud_result(PHASE_CLOUD_MEASURE)["flatness"]["rms_db"]
+    predicted = spec_report_for_predicted_sum(c.measure_predicted_sum)
+    predicted_rms_db = spec_convergence_residual(predicted).rms_db
+    assert (
+        measured_rms_db - predicted_rms_db
+    ) >= PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+
+
+def test_prediction_gate_refuses_a_correction_that_does_not_improve(caplog):
+    """PR-L4 item 2, and the deliberate amendment to PR-6b's unconditional
+    auto-apply: when the predicted post-apply spec still fails AND is not
+    materially better than what was measured before, the session refuses at the
+    confirm seam and the speaker is never touched.
+
+    Driven by raising the threshold rather than by degrading the fixture, so
+    the assertion is about the GATE's arithmetic and not about how convincingly
+    a synthetic capture can be made to look bad."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow_mod, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 100.0)
+        with pytest.raises(CaptureBeginRefused) as excinfo:
+            _walk_measure_cloud_to_close(c)
+
+    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    assert "event=correction.crossover_v2_prediction_refused" in caplog.text
+    # The speaker is untouched: nothing stashed, nothing published, and no
+    # payload carrying auto_apply ever came back.
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+
+
+def test_prediction_gate_is_silent_when_the_prediction_meets_the_spec(monkeypatch):
+    """A prediction that passes the spec needs no improvement argument — and
+    must not be gated on one, or the flattest speakers would be refused
+    hardest. Pinned with an absurd threshold so only the early return can
+    explain the pass."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    monkeypatch.setattr(flow_mod, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 100.0)
     monkeypatch.setattr(
-        flow_mod, "solve_ripple_optimal_trim",
-        lambda *a, **k: (
-            k["seed_trim_db"] - LINEARIZATION_TRIM_SANITY_MARGIN_DB, 0.0, k["seed_trim_db"],
+        flow_mod, "spec_report_for_predicted_sum",
+        lambda predicted_sum: evaluate_flat_spec(
+            _SUMMED_FREQS_HZ, np.zeros(_SUMMED_FREQS_HZ.size),
         ),
     )
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+
+
+def test_prediction_gate_treats_an_ungradeable_prediction_as_unknown(monkeypatch):
+    """An absent report is the gate having no evidence to refuse on — never a
+    pass being granted, and never a refusal manufactured out of a missing
+    number. Same unknown-vs-zero discipline as every other honesty instrument
+    in this flow."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    monkeypatch.setattr(flow_mod, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 100.0)
+    monkeypatch.setattr(flow_mod, "spec_report_for_predicted_sum", lambda _s: None)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+
+
+def test_prediction_gate_needs_a_measured_pre_apply_number(monkeypatch):
+    """A session with no pre-apply cloud has nothing to compare against, so the
+    gate abstains rather than inventing a baseline of zero — which would refuse
+    every such session outright."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    monkeypatch.setattr(flow_mod, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 100.0)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    # The pre-cloud 3-entry shape: MEASURE publishes directly, no cloud group.
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    at_margin_tweeter = c.candidate.role_attenuations_db["tweeter"]
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["auto_apply"] is True
+    assert c._measured_pre_apply_rms_db() is None
 
-    # A hair past the margin -> falls back to the band-average seed.
-    monkeypatch.setattr(
-        flow_mod, "solve_ripple_optimal_trim",
-        lambda *a, **k: (
-            k["seed_trim_db"] - LINEARIZATION_TRIM_SANITY_MARGIN_DB - 0.5, 0.0,
-            k["seed_trim_db"],
-        ),
-    )
-    fakes2 = FakeSeams()
-    fakes2.measure = lambda program: _eligible_measure_analysis(program)
-    c2 = _conductor(fakes2)
-    _run_phase(c2, 1, 1)
-    _run_phase(c2, 2, 2)
-    past_margin_tweeter = c2.candidate.role_attenuations_db["tweeter"]
 
-    # At margin: the (near-)resolved value is used, so the tweeter trim sits a
-    # full margin below its seed. Past margin: it falls back to the seed itself,
-    # so the tweeter trim is materially HIGHER (closer to 0) than the at-margin
-    # case — the two outcomes are distinguishable.
-    assert past_margin_tweeter > at_margin_tweeter
+def test_reason_registry_covers_both_accountability_refusals():
+    """Every refusal this flow can raise has household copy and a screen — a
+    bare code must never reach a phone (§5.10)."""
+    for code in (REASON_DRIVER_LEVELS_DISAGREE, REASON_CORRECTION_NOT_AN_IMPROVEMENT):
+        spec = REASON_REGISTRY[code]
+        assert spec.template == TEMPLATE_HARD_STOP
+        assert spec.retry_budget == 0
+        assert spec.message and spec.message.endswith(".")
+        assert code not in TRANSIENT_AUTO_RETRY_CODES
 
 
 # --------------------------------------------------------------------------- #
@@ -4802,7 +5096,7 @@ def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch)
     verdict = _run_phase(c, 2, 2)
 
     assert verdict["accepted"] is True
-    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.role_attenuations_db == dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.linearization == {}
     assert c.candidate.linearization_outcome == "fit_failed"
     assert "event=correction.crossover_v2_linearization_fit_failed" in caplog.text
@@ -4830,7 +5124,7 @@ def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, mon
     verdict = _run_phase(c, 2, 2)
 
     assert verdict["accepted"] is True
-    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.role_attenuations_db == dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.linearization == {}
     assert "reason=RuntimeError" in caplog.text
     assert "linearization=fit_failed" in caplog.text
@@ -4985,7 +5279,7 @@ def test_measure_predicted_sum_uses_linearized_branches_when_fitted(monkeypatch)
     # Sanity: this fixture really fitted (not the wild-trim fallback) --
     # otherwise this test would trivially pass by exercising the untouched
     # raw path.
-    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
     assert c.candidate.role_attenuations_db != raw_trim
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
 
