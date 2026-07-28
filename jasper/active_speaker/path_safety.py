@@ -16,14 +16,13 @@ path, then writes evidence for the startup-load gate.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_json
 from jasper.output_topology import OutputTopology, channel_identity_report
 
 from ._common import issue as _issue
@@ -168,15 +167,6 @@ def requirements_payload() -> dict[str, Any]:
     }
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    atomic_write_text(
-        path,
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-        group_from_parent=True,
-    )
-
-
 def write_path_safety_evidence(
     evidence: dict[str, Any],
     *,
@@ -185,7 +175,12 @@ def write_path_safety_evidence(
     """Persist a path-safety evidence artifact atomically."""
 
     target = path_safety_evidence_path(path)
-    _atomic_write_json(target, evidence)
+    atomic_write_json(
+        target,
+        evidence,
+        mode=0o640,
+        group_from_parent=True,
+    )
     return target
 
 

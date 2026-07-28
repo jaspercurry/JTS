@@ -58,7 +58,6 @@ import argparse
 import html
 import logging
 import os
-import re
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -73,6 +72,7 @@ from ..transit import geocode as geocode_mod
 from ..transit.base import scrub_secrets
 from ..log_event import log_event
 from ._common import (
+    api_key_token_is_valid,
     begin_request,
     canonical_banner,
     canonical_header,
@@ -90,6 +90,7 @@ from ._common import (
     safe_back_href,
     SECRET_ENV_MODE,
     mask_secret,
+    value_for_env as _value_for,
     write_env_file,
 )
 
@@ -110,8 +111,6 @@ LON_ENV = location_state.TRANSIT_LON_ENV
 DISPLAY_NAME_ENV = location_state.TRANSIT_DISPLAY_NAME_ENV
 TRAVEL_DEFAULT_MODE_ENV = google_routes.TRAVEL_DEFAULT_MODE_ENV
 GOOGLE_ROUTES_API_KEY_ENV = google_routes.GOOGLE_ROUTES_API_KEY_ENV
-
-_KEY_VALID_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
 
 # Max distance (mi) to a nearest stop before we consider the provider
 # uncovered. NYC bbox includes some areas (e.g., Sandy Hook NJ tip)
@@ -211,17 +210,6 @@ def _seed_weather_from_transit_if_missing(
     return seeded
 
 
-def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:
-    """State value, falling back to the process env (operator may have
-    set the var in /etc/jasper/jasper.env), then to default. Mirrors
-    voice_setup._value_for so the wizard always shows the value the
-    daemon would actually use."""
-    val = state.get(env_var, "").strip()
-    if val:
-        return val
-    return os.environ.get(env_var, "") or default
-
-
 def _coords(state: dict[str, str]) -> tuple[float, float] | None:
     """Parsed (lat, lon) or None if not geocoded yet."""
     try:
@@ -281,25 +269,12 @@ def _validate_google_routes_key(key: str) -> str | None:
         return None
     if any(ch.isspace() for ch in key):
         return "Google Routes API key contains whitespace; copy it again."
-    if not _KEY_VALID_RE.fullmatch(key):
+    if not api_key_token_is_valid(key):
         return (
             "Google Routes API key contains characters that don't look like "
             "an API key; copy it again."
         )
     return None
-
-
-def _mask_key(value: str) -> str:
-    """Render a BusTime key as `prefix…suffix` for display. Empty input
-    returns empty string. Mirrors `_common.mask_secret` but inlined
-    here so the bus card can show a value sourced from os.environ
-    (which `_common` doesn't know about)."""
-    value = value.strip()
-    if not value:
-        return ""
-    if len(value) <= 8:
-        return "…" * len(value)
-    return f"{value[:4]}…{value[-4:]}"
 
 
 def _badge_html(configured: bool) -> str:
@@ -860,7 +835,7 @@ def _bus_card_html(
     # secrets. Sourced from `_value_for` so it works whether the key
     # lives in state or in env. Empty string → render nothing.
     saved_key = _value_for(state, "JASPER_MTA_BUSTIME_KEY")
-    masked = _mask_key(saved_key)
+    masked = mask_secret(saved_key.strip())
     key_source_label = {
         "state": "/var/lib/jasper/transit.env",
         "env": "/etc/jasper/jasper.env (external)",

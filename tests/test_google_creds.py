@@ -71,6 +71,24 @@ def test_registry_round_trip(tmp_path):
     assert r2.get("brittany").token_path.endswith("brittany.json")
 
 
+def test_registry_save_cleans_tempfile_if_publish_fails(tmp_path, monkeypatch):
+    path = str(tmp_path / "accounts.json")
+    registry = GoogleRegistry(
+        accounts=[GoogleAccount(name="jasper")],
+        default_name="jasper",
+        path=path,
+    )
+
+    def fail_replace(_source, _target):
+        raise OSError("publish failed")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="publish failed"):
+        registry.save()
+
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_registry_default_falls_back_to_first_account_when_unset():
     r = GoogleRegistry()
     r.add_or_update(GoogleAccount(name="jasper"))

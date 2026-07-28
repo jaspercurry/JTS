@@ -123,6 +123,24 @@ def test_pairing_mode_off_closes_pairable_and_discoverable(monkeypatch):
     assert fake_bus.disconnected is True
 
 
+def test_pairing_mode_off_attempts_every_close_after_property_failure(monkeypatch):
+    calls, fake_bus = _patch_message_bus(
+        monkeypatch,
+        fail_on=("Discoverable", False),
+    )
+
+    with pytest.raises(RuntimeError, match="Discoverable failed"):
+        asyncio.run(adapter.set_discoverable(False))
+
+    assert calls == [
+        ("Discoverable", False),
+        ("Pairable", False),
+        ("DiscoverableTimeout", 0),
+        ("PairableTimeout", 0),
+    ]
+    assert fake_bus.disconnected is True
+
+
 def test_no_code_agent_startup_floor_uses_adapter_close_api():
     calls: list[bool] = []
 

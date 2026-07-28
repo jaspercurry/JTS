@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 
 BLUEALSA_PROBE_FAILURE_TTL_SEC = 60.0
+_ACTIVE_TRANSPORT_PATH_RE = re.compile(
+    rb"(/org/bluealsa/hci\d+/dev_[A-F0-9_]+/a2dpsnk/source)"
+)
 
 _suppressed_until = 0.0
 _last_failure = ""
@@ -90,3 +94,13 @@ async def list_pcms(logger: logging.Logger) -> bytes | None:
         return None
     note_probe_success()
     return stdout
+
+
+async def active_transport_path(logger: logging.Logger) -> str | None:
+    """Return the first active A2DP-sink transport reported by BlueALSA."""
+
+    stdout = await list_pcms(logger)
+    if stdout is None:
+        return None
+    match = _ACTIVE_TRANSPORT_PATH_RE.search(stdout)
+    return match.group(1).decode("ascii") if match else None

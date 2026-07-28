@@ -26,11 +26,11 @@ import json
 import logging
 import math
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.atomic_io import atomic_write_json
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.control.restart_broker import manage_units
 from jasper.dsp_apply import (
@@ -133,25 +133,17 @@ def startup_load_state_path(path: str | Path | None = None) -> Path:
     )
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        tmp_name = handle.name
-        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.chmod(tmp_name, 0o640)
-    os.replace(tmp_name, path)
+def _base_load_state(
+    path: Path,
+    *,
+    kind: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the shared persisted state shape for guarded graph loads."""
 
-
-def _base_state(path: Path) -> dict[str, Any]:
-    return {
+    state: dict[str, Any] = {
         "artifact_schema_version": SCHEMA_VERSION,
-        "kind": STARTUP_LOAD_STATE_KIND,
+        "kind": kind,
         "status": "idle",
         "state_path": str(path),
         "updated_at": _utc_now(),
@@ -161,8 +153,14 @@ def _base_state(path: Path) -> dict[str, Any]:
         "previous_config_path": None,
         "rollback_available": False,
         "last_action": "status",
-        "issues": [],
     }
+    state.update(extra or {})
+    state["issues"] = []
+    return state
+
+
+def _base_state(path: Path) -> dict[str, Any]:
+    return _base_load_state(path, kind=STARTUP_LOAD_STATE_KIND)
 
 
 def load_startup_load_state(
@@ -202,7 +200,12 @@ def _record_state(
     payload = dict(payload)
     payload["state_path"] = str(path)
     payload["updated_at"] = payload.get("updated_at") or _utc_now()
-    _atomic_write_json(path, payload)
+    atomic_write_json(
+        path,
+        payload,
+        mode=0o640,
+        group_from_parent=True,
+    )
 
 
 def _trigger_audio_hardware_reconcile(*, source: str) -> bool:
@@ -1126,22 +1129,14 @@ def commission_load_state_path(path: str | Path | None = None) -> Path:
 
 
 def _commission_base_state(path: Path) -> dict[str, Any]:
-    return {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "kind": COMMISSION_LOAD_STATE_KIND,
-        "status": "idle",
-        "state_path": str(path),
-        "updated_at": _utc_now(),
-        "loaded": False,
-        "candidate_config_path": None,
-        "active_config_path": None,
-        "previous_config_path": None,
-        "rollback_available": False,
-        "last_action": "status",
-        "target": {},
-        "runtime_status": {},
-        "issues": [],
-    }
+    return _base_load_state(
+        path,
+        kind=COMMISSION_LOAD_STATE_KIND,
+        extra={
+            "target": {},
+            "runtime_status": {},
+        },
+    )
 
 
 def load_commission_load_state(
@@ -1181,7 +1176,12 @@ def _record_commission_state(
     payload = dict(payload)
     payload["state_path"] = str(path)
     payload["updated_at"] = payload.get("updated_at") or _utc_now()
-    _atomic_write_json(path, payload)
+    atomic_write_json(
+        path,
+        payload,
+        mode=0o640,
+        group_from_parent=True,
+    )
 
 
 def _commission_state_payload(

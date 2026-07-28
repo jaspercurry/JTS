@@ -13,6 +13,7 @@ import pytest
 from jasper.tools import ToolRegistry, dispatch_tool
 from jasper.voice_daemon import WakeLoop
 from jasper.wake_events import WakeEventStore
+from tests._async_wait import wait_signalled
 
 
 @pytest.mark.asyncio
@@ -100,7 +101,11 @@ async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
         first_task = asyncio.create_task(
             dispatch_tool(registry, "slow_first", {}),
         )
-        await first_running.wait()
+        await wait_signalled(
+            first_running,
+            "first tool entering its body",
+            producer=first_task,
+        )
         assert await dispatch_tool(registry, "fast_second", {}) == {
             "second": True,
         }

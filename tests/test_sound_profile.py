@@ -11,6 +11,7 @@ import pytest
 from jasper.sound.profile import (
     SIMPLE_EQ_FIELDS,
     ParametricBand,
+    ProfileLibraryEntry,
     SimpleEq,
     SoundProfile,
     build_sound_filters,
@@ -24,6 +25,7 @@ from jasper.sound.profile import (
     response_preview,
     save_named_profile,
     save_profile,
+    save_profile_library,
     simple_bands_payload,
 )
 
@@ -276,6 +278,39 @@ def test_named_profile_library_lifecycle(tmp_path):
 
     delete_named_profile(created.id, path=path)
     assert load_profile_library(path) == ()
+
+
+def test_named_profile_description_survives_save_update_and_rename(tmp_path):
+    path = tmp_path / "sound_profiles.json"
+    profile_id = "custom_0123456789ab"
+    save_profile_library(
+        [
+            ProfileLibraryEntry(
+                id=profile_id,
+                name="Evening",
+                profile=SoundProfile(curve_id="harman"),
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+                description="Warm but clear.",
+            ),
+        ],
+        path,
+    )
+
+    loaded = load_profile_library(path)[0]
+    assert loaded.description == "Warm but clear."
+
+    updated = save_named_profile(
+        SoundProfile(curve_id="bk"),
+        name=None,
+        path=path,
+        profile_id=profile_id,
+    )
+    assert updated.description == "Warm but clear."
+
+    renamed = rename_named_profile(profile_id, name="Late Night", path=path)
+    assert renamed.description == "Warm but clear."
+    assert load_profile_library(path)[0].description == "Warm but clear."
 
 
 def test_missing_profile_has_no_applied_timestamp(tmp_path):

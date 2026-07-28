@@ -559,16 +559,18 @@ async function refreshSessions() {
       const activeMark = s.is_active
         ? '<span class="pill tiny green">loaded</span> ' : '';
       const date = new Date(s.mtime * 1000).toLocaleString();
+      const sessionId = escapeHtml(String(s.session_id || ''));
+      const clipCount = escapeHtml(String(s.clip_count || 0));
       row.innerHTML = `
         <div class="session-meta">
-          <div>${activeMark}<strong>${s.member}</strong>
+          <div>${activeMark}<strong>${escapeHtml(String(s.member || ''))}</strong>
             ${chipPill} ${rawPill} ${dtlnPill} ${aec3SweepPill} ${usbPill} ${usbDtlnPill} ${xvfRaw0DtlnPill}
-            <span class="id">${s.session_id}</span></div>
-          <div class="breakdown">${s.clip_count} clip(s) · ${condText} · legs: ${legsText || 'none'} · ${date}</div>
+            <span class="id">${sessionId}</span></div>
+          <div class="breakdown">${clipCount} clip(s) · ${escapeHtml(condText)} · legs: ${legsText || 'none'} · ${escapeHtml(date)}</div>
         </div>
         <div class="session-actions">
-          <button data-load="${s.session_id}" ${s.is_active ? 'disabled' : ''}>Load</button>
-          <button class="danger" data-delete="${s.session_id}" data-summary="${s.clip_count} clip(s)">Delete</button>
+          <button data-load="${sessionId}" ${s.is_active ? 'disabled' : ''}>Load</button>
+          <button class="danger" data-delete="${sessionId}" data-summary="${clipCount} clip(s)">Delete</button>
         </div>
       `;
       row.querySelector('[data-load]').onclick = (ev) => loadSession(

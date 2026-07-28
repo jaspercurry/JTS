@@ -59,6 +59,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from .atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -150,18 +152,18 @@ class GoogleRegistry:
             "default": self.default_name,
             "accounts": [asdict(a) for a in self.accounts],
         }
-        tmp = self.path + ".tmp"
         # 0o640 group read — accounts.json holds the linked members' Gmail
         # addresses (PII-adjacent). WS1 Phase 4a: the file lives in the
-        # setgid `jasper-secrets` dir, so a tempfile created here inherits
+        # setgid `jasper-secrets` dir, so the atomic tempfile inherits
         # group `jasper-secrets`; 0o640 lets jasper-voice read a token
         # jasper-web's OAuth flow wrote (and vice versa) while keeping it off
         # the broad `jasper` group and away from every other daemon. No world
         # read. Token files use the same mode (save_token below).
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f, indent=2)
-        os.replace(tmp, self.path)
+        atomic_write_text(
+            self.path,
+            json.dumps(payload, indent=2),
+            mode=0o640,
+        )
 
     def get(self, name: str) -> GoogleAccount | None:
         for a in self.accounts:

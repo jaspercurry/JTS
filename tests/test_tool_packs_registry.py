@@ -741,6 +741,35 @@ def test_register_packs_marks_failed_pack_with_error():
     assert "simulated import/factory failure" in (outcomes["broken"].error or "")
 
 
+def test_register_packs_isolates_raising_gate_and_continues():
+    def _gate_boom(_d):
+        raise RuntimeError("simulated gate failure")
+
+    packs = (
+        ToolPack("good_a", lambda _d: make_time_tools()),
+        ToolPack("broken_gate", lambda _d: (), gate=_gate_boom),
+        ToolPack("good_b", lambda _d: make_weather_tools(None)),
+    )
+    reg = ToolRegistry()
+
+    outcomes = {
+        outcome.name: outcome
+        for outcome in register_packs(
+            reg,
+            full_tool_deps(),
+            disabled=frozenset(),
+            disabled_packs=frozenset(),
+            packs=packs,
+        )
+    }
+
+    assert outcomes["good_a"].status == "registered"
+    assert outcomes["broken_gate"].status == "failed"
+    assert "simulated gate failure" in (outcomes["broken_gate"].error or "")
+    assert outcomes["good_b"].status == "registered"
+    assert set(reg.tools) == {"get_current_time", "get_weather"}
+
+
 def test_outcome_tool_count_reflects_user_disabled_removals():
     """A user-disabled tool is removed from the registry, so its pack's
     tool_count drops accordingly and the pack still reports "registered"

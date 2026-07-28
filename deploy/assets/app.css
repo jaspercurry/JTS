@@ -204,7 +204,6 @@ svg { display: block; }
 
 /* Icon helper — pages put `class="ico"` on an inline <svg><use/></svg>. */
 .ico { width: 16px; height: 16px; flex: 0 0 auto; }
-.ico--lg { width: 18px; height: 18px; }
 
 /* Segmented control (tabs, mode pickers, on/off triads). Generic name;
    matches the landing page's source-selector look via the same tokens. */

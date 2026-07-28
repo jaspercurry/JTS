@@ -240,7 +240,7 @@ def test_chat_static_modules_follow_frontend_contract() -> None:
     views = (asset_root / "js" / "views.js").read_text(encoding="utf-8")
     components = (asset_root / "js" / "components.js").read_text(encoding="utf-8")
 
-    assert 'meta[name="jts-csrf"]' in main
+    assert "csrfToken" not in main
     assert "function dataPath()" in main
     assert "getJSON(requestedPath)" in main
     assert 'from "/assets/shared/js/dialog.js"' in main

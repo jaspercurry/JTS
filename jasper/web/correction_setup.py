@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from jasper.capture_relay.correction_adapter import RelayCapture
     from jasper.capture_relay.session import PiCaptureSession
 from ._common import (
+    JsonBodyError,
     begin_request,
     bonded_follower_active,
     bonded_follower_leader_web_url,
@@ -76,8 +77,10 @@ from ._common import (
     guard_mutating_request,
     guard_read_request,
     json_island,
+    read_json_object,
     reject_csrf,
     send_html_response,
+    send_json_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,7 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # process.
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_CROSSOVER_WAV_BODY_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
+MAX_SYNC_WAV_BODY_BYTES = 2 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
 _RETURN_HOST_RE = re.compile(
@@ -1428,23 +1432,11 @@ def _read_json_body(
 ) -> dict[str, Any]:
     """Parse JSON body. Empty body → {}."""
     try:
-        length = int(handler.headers.get("Content-Length") or "0")
-    except ValueError as e:
-        raise BadRequest("invalid Content-Length") from e
-    if length <= 0:
-        return {}
-    if length > max_bytes:
-        raise BadRequest(f"JSON body too large ({length} bytes)")
-    raw = handler.rfile.read(length)
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except UnicodeDecodeError as e:
-        raise BadRequest("JSON body must be UTF-8") from e
-    except json.JSONDecodeError as e:
-        raise BadRequest(f"invalid JSON: {e.msg}") from e
-    if not isinstance(data, dict):
-        raise BadRequest("JSON body must be an object")
-    return data
+        return read_json_object(handler, max_bytes=max_bytes)
+    except JsonBodyError as exc:
+        if exc.code == "invalid_content_length":
+            raise BadRequest("invalid Content-Length") from exc
+        raise BadRequest(str(exc)) from exc
 
 
 def _camilla() -> "Any":
@@ -6320,13 +6312,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def _send_json(
             self, payload: dict[str, Any], *, status: int = 200,
         ) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            send_json_response(self, payload, status=status)
 
         def _serve_json_route(
             self, label: str, handler_fn: Callable[[BaseHTTPRequestHandler], dict[str, Any]],
@@ -6462,7 +6448,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         _run_async, _schedule)
                 elif path == "/sync/analyze":
                     try:
-                        body = _read_wav_body(self, max_bytes=2 * 1024 * 1024)
+                        body = _read_wav_body(
+                            self,
+                            max_bytes=MAX_SYNC_WAV_BODY_BYTES,
+                        )
                     except BadRequest as e:
                         self._send_json(
                             {"ok": False, "error": str(e)},

@@ -36,7 +36,6 @@ WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 # DA-0217 migration allowlist. Each staged response-helper chunk shrinks this;
 # the final stage deletes it and requires zero local JSON header assemblers.
 _LEGACY_JSON_RESPONSE_ASSEMBLERS = {
-    "correction_setup.py",
     "sound_setup.py",
 }
 

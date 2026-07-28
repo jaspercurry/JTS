@@ -49,7 +49,6 @@ import json
 import logging
 import math
 import os
-import re
 import urllib.parse
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -97,6 +96,7 @@ from jasper.usage import (
 from jasper.log_event import log_event
 
 from ._common import (
+    api_key_token_is_valid,
     pair_banner_html,
     begin_request,
     canonical_banner,
@@ -116,6 +116,7 @@ from ._common import (
     write_env_file,
     write_json_file,
     SECRET_ENV_MODE,
+    value_for_env as _value_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,9 +143,6 @@ VOICE_PAGE_CSS_HREF = "/assets/voice/voice.css"
 # crlf) without rejecting any real-world key. The provider's API will
 # reject anything actually malformed when the daemon connects, and
 # the cue manager will play `cant_connect`.
-_KEY_VALID_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
-
-
 # ----------------------------------------------------------------------
 # State helpers — pure functions, no IO except inside read_*/write_*.
 # ----------------------------------------------------------------------
@@ -200,18 +198,6 @@ def _write_split(cfg: dict[str, Any], new: dict[str, str]) -> None:
         write_env_file(cfg["keys_path"], secrets, mode=SECRET_ENV_MODE)
     else:
         delete_env_file(cfg["keys_path"])
-
-
-def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:
-    """Pull a single env var out of state, falling back to the
-    process's own environment (in case an operator set it in
-    /etc/jasper/jasper.env directly), then to `default`. The wizard
-    ALWAYS shows the value the daemon will actually use, regardless
-    of which file it came from."""
-    val = state.get(env_var, "").strip()
-    if val:
-        return val
-    return os.environ.get(env_var, "") or default
 
 
 def _provider_is_configured(
@@ -1135,7 +1121,7 @@ def _validate_key(key: str) -> str | None:
         return None
     if any(ch.isspace() for ch in key):
         return "Pasted key contains whitespace; copy it again without leading/trailing spaces."
-    if not _KEY_VALID_RE.fullmatch(key):
+    if not api_key_token_is_valid(key):
         return "Pasted key contains characters that don't look like an API key — copy it again."
     return None
 

@@ -33,7 +33,13 @@ DISCOVERABLE_AUTO_OFF_SEC = 300
 
 
 async def _close_pairing_window(props, *, best_effort: bool = False) -> None:
-    """Close both BlueZ knobs that admit new pairings."""
+    """Close every BlueZ knob that admits new pairings.
+
+    A failure on one property must not leave the remaining admission knobs
+    open.  Direct callers still receive the first error after all close
+    attempts; rollback callers log each error and remain best-effort.
+    """
+    first_error: Exception | None = None
     for key, signature, value in (
         ("Discoverable", "b", False),
         ("Pairable", "b", False),
@@ -47,15 +53,21 @@ async def _close_pairing_window(props, *, best_effort: bool = False) -> None:
                 Variant(signature, value),
             )
         except Exception as exc:  # noqa: BLE001
-            if not best_effort:
-                raise
+            if first_error is None:
+                first_error = exc
             log_event(
                 logger,
-                "bluetooth_pairing_window.rollback_failed",
+                (
+                    "bluetooth_pairing_window.rollback_failed"
+                    if best_effort
+                    else "bluetooth_pairing_window.close_failed"
+                ),
                 property=key,
                 err=exc,
                 level=logging.WARNING,
             )
+    if first_error is not None and not best_effort:
+        raise first_error
 
 
 async def _adapter(bus: MessageBus, adapter: str = DEFAULT_ADAPTER):

@@ -29,7 +29,7 @@ from jasper.active_speaker.playback import (
     tone_backend_status,
 )
 from jasper.active_speaker.safe_playback import (
-    _atomic_write_json,
+    _write_state,
     arm_safe_playback_session,
     floor_audio_confirmed_for_target,
     record_floor_audio_operator_result,
@@ -40,7 +40,7 @@ from jasper.active_speaker.safe_playback import (
 
 def test_safe_playback_state_writer_publishes_private_mode(tmp_path: Path) -> None:
     path = tmp_path / "safe-playback.json"
-    _atomic_write_json(path, {"status": "idle"})
+    _write_state(path, {"status": "idle"})
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
     assert json.loads(path.read_text()) == {"status": "idle"}
@@ -52,11 +52,11 @@ def test_safe_playback_state_writer_inherits_parent_group(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
         safe_playback,
-        "atomic_write_text",
-        lambda path, text, **kwargs: calls.append((path, text, kwargs)),
+        "atomic_write_json",
+        lambda path, payload, **kwargs: calls.append((path, payload, kwargs)),
     )
 
-    safe_playback._atomic_write_json(Path("state.json"), {"status": "idle"})
+    safe_playback._write_state(Path("state.json"), {"status": "idle"})
 
     assert calls[0][2] == {"mode": 0o640, "group_from_parent": True}
 

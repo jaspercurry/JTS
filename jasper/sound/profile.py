@@ -470,6 +470,7 @@ class ProfileLibraryEntry:
         return {
             "id": self.id,
             "name": self.name,
+            "description": self.description,
             "profile": self.profile.to_dict(),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -639,6 +640,7 @@ def save_named_profile(
                     profile=stamped,
                     created_at=entry.created_at,
                     updated_at=now,
+                    description=entry.description,
                 )
                 entries[index] = updated
                 save_profile_library(entries, path)
@@ -684,6 +686,7 @@ def rename_named_profile(
                 ),
                 created_at=entry.created_at,
                 updated_at=now,
+                description=entry.description,
             )
             entries[index] = renamed
             save_profile_library(entries, path)

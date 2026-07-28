@@ -89,6 +89,25 @@ def test_uses_fft_not_naive_correlate():
     assert "np.correlate(" not in src
 
 
+def test_capture_is_truncated_before_float64_normalization(monkeypatch):
+    normalized_sizes: list[int] = []
+    real_normalize = alignment._normalize
+
+    def recording_normalize(value):
+        normalized_sizes.append(np.asarray(value).size)
+        return real_normalize(value)
+
+    monkeypatch.setattr(alignment, "_normalize", recording_normalize)
+    alignment.cross_correlation_alignment(
+        np.ones(10_000, dtype=np.int16),
+        np.ones(100, dtype=np.int16),
+        sample_rate=1_000,
+        max_capture_s=1.0,
+    )
+
+    assert normalized_sizes == [1_000, 100]
+
+
 def test_threshold_env_knob(monkeypatch):
     # The gate is a deploy-time knob so on-device tuning needs no code change.
     monkeypatch.setenv("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", "0.65")

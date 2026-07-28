@@ -46,10 +46,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from functools import partial
 from typing import Optional
 
-from . import bluealsa_probe
 from . import librespot_state
+from .bluealsa_probe import active_transport_path
 from .volume_coordinator import (
     AIRPLAY_DB_MAX,
     AIRPLAY_DB_MIN,
@@ -58,6 +59,7 @@ from .volume_coordinator import (
 )
 
 logger = logging.getLogger(__name__)
+_bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 
 class VolumeObserver:
@@ -294,18 +296,3 @@ async def _busctl_get_property_value(
     if proc.returncode != 0:
         return None
     return stdout.decode("utf-8", "replace").strip()
-
-
-_BLUEZ_TRANSPORT_PATH_RE = re.compile(
-    rb"(/org/bluealsa/hci\d+/dev_[A-F0-9_]+/a2dpsnk/source)"
-)
-
-
-async def _bluez_alsa_active_transport_path() -> Optional[str]:
-    """Find an active A2DP-sink transport via bluealsa-cli. Returns
-    None when no BT transport is open."""
-    stdout = await bluealsa_probe.list_pcms(logger)
-    if stdout is None:
-        return None
-    m = _BLUEZ_TRANSPORT_PATH_RE.search(stdout)
-    return m.group(1).decode("ascii") if m else None

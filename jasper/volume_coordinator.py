@@ -44,10 +44,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from .assistant_volume import (
@@ -58,8 +58,8 @@ from .assistant_volume import (
 from .assistant_loudness import tts_envelope_lufs_for_level
 from .log_event import log_event
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
-from . import bluealsa_probe
 from . import volume_diagnostics
+from .bluealsa_probe import active_transport_path
 from .volume_persistence import (
     VolumePersistence,
     percent_to_db,
@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from .renderer import RendererClient
 
 logger = logging.getLogger(__name__)
+_bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 
 # Source-unit mappings. Pure functions: clamp to [0, 100] first, then
@@ -2471,27 +2472,3 @@ async def _busctl_set_property(
         )
         return False
     return True
-
-
-_BLUEZ_TRANSPORT_PATH_RE = re.compile(
-    rb"(/org/bluealsa/hci\d+/dev_[A-F0-9_]+/a2dpsnk/source)"
-)
-
-
-async def _bluez_alsa_active_transport_path() -> str | None:
-    """Find an active A2DP-sink MediaTransport1 path via bluealsa-cli.
-
-    bluealsa-cli list-pcms outputs lines like
-        /org/bluealsa/hci0/dev_XX_../a2dpsnk/source PCM ...
-    We grab the first matching path. Returns None if no transport
-    is active (BT phone disconnected, or connected but not playing).
-
-    Probes go through `bluealsa_probe.list_pcms`, which adds a shared
-    process-local backoff so a D-Bus permission denial here does not
-    hammer the system bus on every BT volume set.
-    """
-    stdout = await bluealsa_probe.list_pcms(logger)
-    if stdout is None:
-        return None
-    m = _BLUEZ_TRANSPORT_PATH_RE.search(stdout)
-    return m.group(1).decode("ascii") if m else None

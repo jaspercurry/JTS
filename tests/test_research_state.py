@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 
 from jasper.control import state_aggregate
 from jasper.research import DONE, FAILED, RUNNING, ResearchJob, ResearchJobStore
+from jasper.research import state as research_state
 from jasper.research.state import snapshot
 
 
@@ -167,6 +169,30 @@ def test_research_state_uses_voice_runtime_provider_without_secret_read(
         "confirmation_window_active": True,
     }
     assert db_path.exists() is False
+
+
+def test_runtime_provider_uses_catalog_lookup(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_provider_by_id(provider_id: str):
+        seen.append(provider_id)
+        return SimpleNamespace(label="Canonical Provider")
+
+    monkeypatch.setattr(research_state, "provider_by_id", fake_provider_by_id)
+
+    provider = research_state._runtime_provider({
+        "configured": True,
+        "provider": "custom",
+        "model": "model-1",
+    })
+
+    assert seen == ["custom"]
+    assert provider == {
+        "id": "custom",
+        "label": "Canonical Provider",
+        "configured": True,
+        "model": "model-1",
+    }
 
 
 def test_state_aggregate_research_helper_is_privacy_safe(

@@ -310,10 +310,6 @@ function toolRow(tool) {
   );
 }
 
-export function toolCard(tool) {
-  return toolRow(tool);
-}
-
 export function packDetail(pack, tools = []) {
   if (!pack) {
     return (

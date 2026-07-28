@@ -22,7 +22,7 @@ import stat
 import pytest
 
 from jasper import atomic_io as atomic_io_module
-from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_json, atomic_write_text
 
 
 def test_write_read_round_trip(tmp_path):
@@ -35,6 +35,22 @@ def test_mode_is_applied(tmp_path):
     path = tmp_path / "secret.env"
     atomic_write_text(path, "JASPER_X=1\n", mode=0o600)
     assert (os.stat(path).st_mode & 0o777) == 0o600
+
+
+def test_atomic_write_json_uses_canonical_encoding_and_policy(tmp_path):
+    path = tmp_path / "state.json"
+
+    atomic_write_json(
+        path,
+        {"z": 1, "a": {"ready": True}},
+        mode=0o640,
+        group_from_parent=True,
+    )
+
+    assert path.read_text(encoding="utf-8") == (
+        '{\n  "a": {\n    "ready": true\n  },\n  "z": 1\n}\n'
+    )
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
 def test_durable_write_fsyncs_file_and_parent(tmp_path, monkeypatch):

@@ -88,6 +88,7 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_WEB_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 _IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_API_KEY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
 
 # ---------------------------------------------------------------------------
 # Cookie + header constants.
@@ -431,6 +432,18 @@ def read_env_file(path: str) -> dict[str, str]:
     if state.status == "unreadable":
         logger.warning("could not read %s: %s", path, state.error)
     return state.values
+
+
+def value_for_env(
+    state: dict[str, str],
+    env_var: str,
+    default: str = "",
+) -> str:
+    """Resolve wizard state using the same precedence as its daemon."""
+    value = state.get(env_var, "").strip()
+    if value:
+        return value
+    return os.environ.get(env_var, "") or default
 
 
 # 0o640 group-readable mode for wizard-written secret/config env files (vs
@@ -1203,6 +1216,12 @@ def mask_secret(value: str) -> str:
     if len(value) <= 8:
         return "…" * len(value)
     return f"{value[:4]}…{value[-4:]}"
+
+
+def api_key_token_is_valid(value: str) -> bool:
+    """Whether an API key uses the wizards' conservative token alphabet."""
+
+    return bool(_API_KEY_TOKEN_RE.fullmatch(value))
 
 
 # ---------------------------------------------------------------------------

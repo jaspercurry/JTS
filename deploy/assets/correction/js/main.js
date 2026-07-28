@@ -872,11 +872,10 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       '<strong>Browser audio path: ' +
       (level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
       '</strong>' +
-      (issues.length
-        ? '<ul>' + issues.map(function (issue) {
-            return '<li>' + escapeText(issue) + '</li>';
-          }).join('') + '</ul>'
-        : '<p class="hint">Input metadata looks ready for measurement. Capture quality is still checked after each sweep.</p>');
+      reportIssueList(
+        issues,
+        'Input metadata looks ready for measurement. Capture quality is still checked after each sweep.'
+      );
   }
 
   function renderBrowserAudioReport(report) {
@@ -3311,12 +3310,12 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       if (runTransportLocked && thisTabStartedCurrentRun) {
         checkCalibrationHonesty(s.mic_calibration);
       }
-      applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
+      var autolevelState = s.autolevel ? s.autolevel.status : 'idle';
+      applyButtonPolicy(s.state, autolevelState);
       // Edge-trigger the envelope-driven wizard chrome on a real transition
       // (state change, or autolevel sub-state change that flips the "level"
       // screen). Static screens are refreshed exactly here — never on every
       // /status tick — honouring the P3b-1 poll discipline.
-      var autolevelState = s.autolevel ? s.autolevel.status : 'idle';
       if (options.skipEnvelopeRefresh) {
         pendingHomeownerFailure = null;
         lastObservedStatusState = s.state;

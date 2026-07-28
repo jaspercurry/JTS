@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..env_load import merged_env_files
-from .catalog import PROVIDERS
+from .catalog import PROVIDERS, provider_by_id
 from .scheduler import DEFAULT_DB_PATH, DONE, FAILED, RUNNING, ResearchJobStore
 
 DB_PATH_ENV = "JASPER_RESEARCH_DB"
@@ -97,7 +97,7 @@ def _runtime_provider(runtime: dict[str, Any] | None) -> dict[str, Any] | None:
             "configured": True,
             "model": _text_or_none(runtime.get("model")),
         }
-    entry = next((candidate for candidate in PROVIDERS if candidate.id == provider_id), None)
+    entry = provider_by_id(provider_id)
     return {
         "id": provider_id,
         "label": entry.label if entry is not None else provider_id,
