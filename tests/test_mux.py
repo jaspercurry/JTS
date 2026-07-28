@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -56,6 +57,17 @@ class _FakeVolumeCoordinator:
         self.volume_context_publishes = 0
         self.next_result = "ok"
         self.finalize_result = True
+        self.on_handoff_lease_exit = None
+
+    @asynccontextmanager
+    async def source_handoff_operation(self):
+        self.events.append("handoff_lease_enter")
+        try:
+            yield
+        finally:
+            if self.on_handoff_lease_exit is not None:
+                self.on_handoff_lease_exit()
+            self.events.append("handoff_lease_exit")
 
     async def prepare_source_handoff(self, prev, current, *, reason):
         self.prepared.append((prev, current, reason))
@@ -1565,9 +1577,11 @@ async def test_select_source_prepares_volume_before_fanin_gate(
     await mux.select_source(Source.AIRPLAY)
 
     assert coord.events == [
+        "handoff_lease_enter",
         "prepare:airplay",
         "select:airplay",
         "finalize:airplay",
+        "handoff_lease_exit",
         "publish_volume_context",
     ]
 
@@ -1601,8 +1615,10 @@ async def test_fanin_select_abort_republishes_final_volume_context(
     await mux.select_source(Source.AIRPLAY)
 
     assert coord.events == [
+        "handoff_lease_enter",
         "prepare:airplay",
         "abort:airplay",
+        "handoff_lease_exit",
         "publish_volume_context",
     ]
 
@@ -1618,11 +1634,119 @@ async def test_finalize_failure_republishes_final_volume_context(
     await mux.select_source(Source.AIRPLAY)
 
     assert coord.events == [
+        "handoff_lease_enter",
         "prepare:airplay",
         "finalize:airplay",
+        "handoff_lease_exit",
         "publish_volume_context",
     ]
     assert mux._last_handoff["result"] == "finalize_failed"
+
+
+@pytest.mark.asyncio
+async def test_manual_handoff_publishes_source_before_volume_lease_release(
+    mux, patched_probes,
+):
+    """An observer unblocked by the lease must see the lane's new owner."""
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+    coord = mux._volume_coordinator
+    state_at_release = []
+    coord.on_handoff_lease_exit = lambda: state_at_release.append(
+        (mux._manual_source, mux._winner),
+    )
+
+    await mux.select_source(Source.AIRPLAY)
+
+    assert state_at_release == [(Source.AIRPLAY, Source.AIRPLAY)]
+
+
+@pytest.mark.asyncio
+async def test_auto_handoff_publishes_winner_before_volume_lease_release(
+    mux, patched_probes,
+):
+    """Automatic reconciliation shares the same handoff ordering contract."""
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, spotify=True)
+    coord = mux._volume_coordinator
+    winner_at_release = []
+    coord.on_handoff_lease_exit = lambda: winner_at_release.append(mux._winner)
+
+    await mux._tick()
+
+    assert winner_at_release == [Source.SPOTIFY]
+
+
+@pytest.mark.asyncio
+async def test_auto_select_clears_manual_pin_before_volume_lease_release(
+    mux, patched_probes,
+):
+    """Return-to-auto cannot expose the former manual owner after gate move."""
+    mux._manual_source = Source.SPOTIFY
+    mux._winner = Source.SPOTIFY
+    _stub_probes(patched_probes, spotify=False, airplay=True)
+    coord = mux._volume_coordinator
+    state_at_release = []
+    coord.on_handoff_lease_exit = lambda: state_at_release.append(
+        (mux._manual_source, mux._winner),
+    )
+
+    await mux.auto_select()
+
+    assert state_at_release == [(None, Source.AIRPLAY)]
+
+
+@pytest.mark.asyncio
+async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
+    tmp_path, patched_probes,
+):
+    """Context snapshotting runs after the coordinator's handoff lease exits."""
+    from jasper.volume_coordinator import VolumeCoordinator
+    from jasper.volume_persistence import VolumePersistence, percent_to_db
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(50)
+    camilla = SimpleNamespace(
+        get_volume_and_mute=AsyncMock(
+            return_value=(percent_to_db(50), False),
+        ),
+        get_volume_db=AsyncMock(return_value=percent_to_db(50)),
+        set_volume_db=AsyncMock(return_value=True),
+        set_main_mute=AsyncMock(return_value=True),
+    )
+    backend = SimpleNamespace(
+        selected_source=AsyncMock(return_value=None),
+        active_renderers=AsyncMock(return_value={}),
+    )
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    coordinator = VolumeCoordinator(
+        camilla=camilla,
+        persistence=persistence,
+        backend=backend,
+        spotify_router=None,
+        volume_context_publisher=publish,
+        handoff_settle_sec=0.0,
+        push_settle_sec=0.0,
+    )
+    coordinator.load_persisted_level()
+    real_mux = Mux(
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        volume_coordinator=coordinator,
+        mode_state_path=str(tmp_path / "mux_mode.json"),
+    )
+    real_mux._fanin_select = AsyncMock(return_value={})
+    _stub_probes(patched_probes, airplay=True)
+
+    status = await asyncio.wait_for(
+        real_mux.select_source(Source.AIRPLAY),
+        timeout=1.0,
+    )
+
+    assert status["selected_source"] == "airplay"
+    assert len(published) == 1
 
 
 @pytest.mark.asyncio
@@ -1728,9 +1852,11 @@ async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
     await mux._tick()
 
     assert coord.events == [
+        "handoff_lease_enter",
         "prepare:airplay",
         "select:airplay",
         "finalize:airplay",
+        "handoff_lease_exit",
         "publish_volume_context",
     ]
     mux._pause.assert_awaited_with(Source.SPOTIFY)
@@ -1762,9 +1888,11 @@ async def test_airplay_session_drop_happens_after_successful_fanin_handoff(
     await mux._tick()
 
     assert coord.events == [
+        "handoff_lease_enter",
         "prepare:usbsink",
         "select:usbsink",
         "finalize:usbsink",
+        "handoff_lease_exit",
         "publish_volume_context",
         "drop:airplay",
     ]

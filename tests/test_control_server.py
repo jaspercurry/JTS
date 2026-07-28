@@ -41,6 +41,7 @@ from jasper.control.server import (
     _make_handler,
     _percent_to_db,
 )
+from jasper.volume_coordinator import VolumeState
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +66,7 @@ class FakeCoordinator:
     def __init__(self, level: int = 60) -> None:
         self._level = int(level)
         self._pre_mute_level: int | None = None
+        self.observation_initials: list[bool] = []
         self.calls: list[tuple[str, int | None]] = []
         self.fail_next = False
 
@@ -77,6 +79,11 @@ class FakeCoordinator:
         self._maybe_fail()
         self.calls.append(("get", None))
         return self._level
+
+    def get_volume_state(self) -> VolumeState:
+        self._maybe_fail()
+        self.calls.append(("get", None))
+        return VolumeState(self._level, self._pre_mute_level)
 
     def load_persisted_level(self) -> int:
         return self._level
@@ -105,7 +112,6 @@ class FakeCoordinator:
         saved = self._pre_mute_level if self._pre_mute_level is not None else self._level
         if self._level > 0 and self._pre_mute_level is None:
             self._pre_mute_level = self._level
-        self._level = 0
         self.calls.append(("mute", saved))
         return saved or 0
 
@@ -117,7 +123,33 @@ class FakeCoordinator:
         self.calls.append(("unmute", target))
         return target
 
-    async def observe_source_volume(self, source, percent: int) -> bool:
+    async def set_muted(
+        self,
+        want_muted: bool,
+        *,
+        fallback_level: int = 50,
+    ) -> VolumeState:
+        if want_muted:
+            if not self.is_muted():
+                await self.mute()
+        elif self.is_muted():
+            await self.unmute(fallback_level)
+        return self.get_volume_state()
+
+    async def toggle_mute(self, *, fallback_level: int = 50) -> VolumeState:
+        if self.is_muted():
+            await self.unmute(fallback_level)
+        else:
+            await self.mute()
+        return self.get_volume_state()
+
+    async def observe_source_volume(
+        self,
+        source,
+        percent: int,
+        *,
+        initial: bool = False,
+    ) -> bool:
         self._maybe_fail()
         # The real coordinator gates this on whether `source` is the
         # currently active one and on echo windows; the fake just
@@ -127,6 +159,7 @@ class FakeCoordinator:
         # body has a sensible value.
         target = max(0, min(100, int(percent)))
         self._level = target
+        self.observation_initials.append(initial)
         self.calls.append(("observe", target))
         return True
 
@@ -273,6 +306,7 @@ def server_with_coordinator(monkeypatch):
 
     import jasper.control.server as srv_mod
     monkeypatch.setattr(srv_mod, "_with_coordinator", fake_with_coordinator)
+    monkeypatch.setattr(srv_mod, "_read_volume_state", fake.get_volume_state)
 
     class _NoAirPlayProcess:
         returncode = 1
@@ -2626,11 +2660,27 @@ def test_healthz(server_with_coordinator):
     assert body == {"ok": True}
 
 
-def test_get_volume(server_with_coordinator):
+def test_get_volume_uses_persistence_only_read_path(
+    server_with_coordinator,
+    monkeypatch,
+):
     base, fake = server_with_coordinator
+
+    async def coordinator_construction_is_forbidden(*args, **kwargs):
+        raise AssertionError("GET /volume must not construct volume actuators")
+
+    import jasper.control.server as srv_mod
+    monkeypatch.setattr(
+        srv_mod,
+        "_with_coordinator",
+        coordinator_construction_is_forbidden,
+    )
+
     status, body = _get(f"{base}/volume")
     assert status == 200
     assert body["percent"] == 60
+    assert body["muted"] is False
+    assert body["restore_percent"] is None
     # `db` is computed from percent for back-compat
     assert body["db"] == round(_percent_to_db(60), 3)
     assert ("get", None) in fake.calls
@@ -2759,6 +2809,36 @@ def test_volume_set_with_usbsink_source_routes_to_observe(server_with_coordinato
         f"unexpected set call in {fake.calls}"
 
 
+def test_volume_set_routes_initial_observation_metadata(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/set",
+        {
+            "percent": 42,
+            "source": "usbsink",
+            "observation_initial": True,
+        },
+    )
+    assert status == 200
+    assert body["observation_applied"] is True
+    assert fake.observation_initials == [True]
+
+
+def test_volume_set_rejects_non_boolean_initial_metadata(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/set",
+        {
+            "percent": 42,
+            "source": "usbsink",
+            "observation_initial": "true",
+        },
+    )
+    assert status == 400
+    assert body["error"] == "observation_initial must be a boolean"
+    assert all(call[0] != "observe" for call in fake.calls)
+
+
 def test_volume_set_with_unknown_source_falls_back_to_set(server_with_coordinator):
     """Unknown source names go through the authoritative set path so a
     future client that posts a fresh source name doesn't silently
@@ -2792,11 +2872,24 @@ def test_volume_mute_toggles_off_then_on(server_with_coordinator):
     status, body = _post(f"{base}/volume/mute", {})
     assert status == 200
     assert body["percent"] == 0
+    assert body["muted"] is True
+    assert body["restore_percent"] == 60
     assert ("mute", 60) in fake.calls
+
+    # A fresh read uses the same canonical projection as the mutating response.
+    # This is the remote-mute regression: it previously exposed the remembered
+    # 60% level and made the landing-page slider jump back up while still muted.
+    status, body = _get(f"{base}/volume")
+    assert status == 200
+    assert body["percent"] == 0
+    assert body["muted"] is True
+    assert body["restore_percent"] == 60
 
     status, body = _post(f"{base}/volume/mute", {})
     assert status == 200
     assert body["percent"] == 60
+    assert body["muted"] is False
+    assert body["restore_percent"] is None
     assert ("unmute", 60) in fake.calls
 
 
@@ -3287,7 +3380,9 @@ def test_state_returns_snapshot_with_fail_soft_sections(
         },
     )
     state_path = tmp_path / "speaker_volume.json"
-    state_path.write_text('{"listening_level": 73}')
+    state_path.write_text(
+        '{"listening_level": 73, "main_volume_db": -13.5}',
+    )
     dsp_apply = tmp_path / "dsp_apply_state.json"
     dsp_apply.write_text(json.dumps({
         "source": "sound",
@@ -3526,6 +3621,28 @@ def test_state_voice_wake_legs_flows_from_session_status(
     assert body["voice"]["wake_legs"] == ["on", "off", "dtln"]
 
 
+def test_state_audio_projects_temporary_mute_as_zero(
+    server_with_coordinator,
+    monkeypatch,
+    tmp_path,
+):
+    """The dashboard aggregate consumes the same effective projection as /volume."""
+    base, _ = server_with_coordinator
+    state_path = tmp_path / "speaker_volume.json"
+    state_path.write_text(json.dumps({
+        "listening_level": 60,
+        "pre_mute_level": 60,
+        "mute_token": "remote-mute",
+        "main_volume_db": -10.0,
+    }))
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["audio"]["listening_level_percent"] == 0
+
+
 def test_state_voice_tool_packs_flows_from_session_status(
     server_with_coordinator, monkeypatch,
 ):
@@ -3581,7 +3698,9 @@ def test_state_audio_metrics_sanitize_non_finite_values(
 
     base, _ = server_with_coordinator
     state_path = tmp_path / "speaker_volume.json"
-    state_path.write_text('{"listening_level": 73}')
+    state_path.write_text(
+        '{"listening_level": 73, "main_volume_db": -13.5}',
+    )
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
     monkeypatch.setenv(
         "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"),
@@ -5067,7 +5186,10 @@ def follower_server(monkeypatch, server_with_coordinator):
 
     def fake_urlopen(req, timeout=None):
         seen.append((req, timeout))
-        return _FakeUpstream(b'{"db": -15.0, "percent": 70}')
+        return _FakeUpstream(
+            b'{"db": -15.0, "percent": 70, "muted": false, '
+            b'"restore_percent": null}'
+        )
 
     monkeypatch.setattr(srv_mod, "_pair_urlopen", fake_urlopen)
     base, fake = server_with_coordinator
@@ -5079,7 +5201,13 @@ def test_follower_get_volume_forwards_to_leader(follower_server):
     status, body = _get(f"{base}/volume")
     assert status == 200
     # The leader's payload is relayed, tagged with the pair leader.
-    assert body == {"db": -15.0, "percent": 70, "pair_leader": "jts.local"}
+    assert body == {
+        "db": -15.0,
+        "percent": 70,
+        "muted": False,
+        "restore_percent": None,
+        "pair_leader": "jts.local",
+    }
     assert fake.calls == []  # the LOCAL coordinator was never touched
     req, timeout = seen[0]
     assert req.full_url.startswith("http://jts.local:")

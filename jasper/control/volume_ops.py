@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from .uds import _voice_socket_command
 from ..spotify_oauth import (
@@ -26,6 +26,9 @@ from ..volume_curve import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from ..volume_coordinator import VolumeState
 
 # Back-compat names for legacy clients/tests. The effective floor can be
 # calibrated in /sound/; these constants are the shipped default.
@@ -70,6 +73,25 @@ def _spotify_redirect_uri() -> str:
     hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
     default_redirect_uri = default_spotify_redirect_uri(hostname)
     return os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
+
+
+def read_volume_state() -> "VolumeState":
+    """Read the canonical volume projection without constructing actuators.
+
+    GET /volume is polled by the visible landing page. Its read path therefore
+    stays persistence-only: no Camilla socket, renderer probe, Spotify account
+    registry, or OAuth client construction.
+    """
+    from ..volume_coordinator import VolumeState
+    from ..volume_persistence import VolumePersistence
+
+    persistence = VolumePersistence(
+        os.environ.get(
+            "JASPER_VOLUME_STATE_PATH",
+            "/var/lib/jasper/speaker_volume.json",
+        ),
+    )
+    return VolumeState.from_record(persistence.load())
 
 
 def _spotify_account_cache_fingerprint(registry) -> tuple:

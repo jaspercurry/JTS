@@ -28,10 +28,41 @@ iPhone slider at 30% sounded like 24% — a confusing disconnect.
 
 ## The model
 
-There is **one canonical `listening_level` (0-100)** persisted in
-`/var/lib/jasper/speaker_volume.json`. It's what every input writes
-and what every read reports. The coordinator's job is to keep it in
-sync with whatever attenuator is actually doing the work.
+There is **one canonical volume state** persisted in
+`/var/lib/jasper/speaker_volume.json` and interpreted by
+`jasper.volume_coordinator.VolumeState`:
+
+- `listening_level` (0-100) is the user's remembered level and the level
+  restored after a temporary mute.
+- `pre_mute_level` being present is the temporary mute latch.
+- `mute_token` identifies that exact temporary-mute transition so the
+  long-lived source observer can distinguish a stale pre-push reading from a
+  later user change.
+- `effective_percent` is derived exactly once: 0 while the latch is present,
+  otherwise `listening_level`.
+
+Every input writes through `VolumeCoordinator`, and every user-facing read uses
+that same `VolumeState` projection. No HTTP handler, voice tool, accessory, or
+web client infers mute independently. This distinction is load-bearing:
+temporarily muting at 60% must render and actuate as 0% while retaining 60% as
+the unmute target. Explicitly setting volume to 0% has no restore target but
+still derives the same effective silence and final-output mute.
+
+Cross-daemon mutation is serialized by the persistence-owned operation lock:
+the voice observer, jasper-control requests, and voice tools cannot interleave
+two half-applied source changes. The lock spans the physical renderer/Camilla
+actuation. Mux also holds it from carrier preparation through fan-in selection,
+carrier finalization, and publication of the new selected source; a queued
+old-source observation therefore cannot become authoritative after the lane
+has moved. The 1 Hz Camilla reconciler does a cheap unlocked preflight, but any
+candidate write joins this same operation lock and re-reads source, canonical
+intent, and Camilla at the write boundary. Independent persistence field
+updates use a separate short read-modify-write lock and reload the record while
+holding it, so a stale `VolumePersistence` instance cannot erase a newer mute
+latch or token. Read surfaces never take the long operation lock.
+
+The coordinator's job is to keep this canonical state in sync with whatever
+attenuator is actually doing the work.
 
 ### Outbound dispatch
 
@@ -119,7 +150,7 @@ Spotify-at-100% class of bug is visible without SSH. The block includes:
   music `source` used for volume policy.
 - `volume_mode` and `carrier` (`camilla`, `source`, or
   `camilla_guard`).
-- `listening_level_percent`, current `main_volume_db`, and persisted
+- effective `listening_level_percent`, current `main_volume_db`, and persisted
   `main_volume_db`.
 - `push_guard_active`, `guard_db`, `guard_reason`, `guard_context`, and
   `previous_db` when a push-mode source is protected by a Camilla
@@ -193,6 +224,26 @@ That is the Wispr Flow/macOS mute-unmute path: host "0%" asserts content
 mute; host unmute restores Camilla to the observed level immediately during a
 normal fan-in voice session. Only the legacy Camilla-ducker lock defers the dB
 write; the mute flag always reflects the user's current intent.
+
+A JTS temporary mute (remote, dial, or voice) preserves the remembered
+`listening_level` and atomically records `pre_mute_level` plus a fresh
+`mute_token`; source dispatch still receives the derived effective 0%.
+Spotify/Bluetooth writes can be slow, so a nonzero observation is ignored until
+the long-lived observer has seen renderer 0% for that same token. That 0% is
+confirmation of the mute, not a new canonical 0% edit, and cannot erase the
+restore level. After the token-specific zero barrier, a later nonzero
+source-side change is unambiguous fresh user intent and clears the temporary
+mute through the normal observer path. Observer deduplication includes that
+opaque token revision as well as the renderer value, so two rapid mutes that
+both expose 0% are still distinct. A policy-declined observation is not cached
+as truth and is retried on the next bounded poll.
+
+USB carries one additional fact on its source-observation request:
+`observation_initial=true` while it is retrying the unchanged mixer snapshot
+discovered at bridge startup. That snapshot may synchronize an ordinary
+unmuted session, but it yields to a temporary mute already asserted by another
+surface. Once the host value actually changes, the bridge sends a normal
+observation and that fresh user action may clear the mute.
 
 **Exception: AirPlay observations are unconditionally skipped.** The
 sender's slider sits *upstream* of camilla in the audio chain —
@@ -268,6 +319,30 @@ convert at the HTTP boundary.
 Both daemons converge through the persistence file. voice_daemon's
 coordinator runs the inbound observers; control_daemon's
 coordinator does not (it doesn't need them — it's a write surface).
+Mutating control requests construct the coordinator and its actuators;
+`GET /volume` is deliberately persistence-only, so the visible page's 2 Hz
+refresh never rebuilds Spotify clients or renderer-control machinery.
+
+All successful `/volume` responses share one additive payload contract:
+
+```json
+{
+  "db": -50.0,
+  "percent": 0,
+  "muted": true,
+  "restore_percent": 60
+}
+```
+
+`percent` and `db` are the effective values every existing client should
+render. `muted` is the effective silence assertion (temporary mute or explicit
+0%); `restore_percent` is non-null only for a temporary mute. Legacy dial and
+USB clients remain compatible because they can continue reading only
+`percent`. The landing page polls `GET /volume` every 500 ms while visible,
+with at most one request in flight, and does no volume fetch from a hidden tab;
+with no page open there is no web polling. The USB gadget's separate 4 Hz ALSA
+mixer observer remains always-on because it is the hardware-input bridge, not
+a web-view refresh loop.
 
 ### Cross-daemon Camilla ownership signal
 
@@ -388,7 +463,14 @@ handoff safety invariant: **a fan-in lane must not become audible until
 the correct volume carrier is safe for the current `listening_level`.**
 The mux calls `prepare_source_handoff(prev, current, reason=...)`
 before `SELECT <label>` for selectable music sources and
-`finalize_source_handoff(...)` after the fan-in gate moves.
+`finalize_source_handoff(...)` after the fan-in gate moves. That complete
+sequence plus mux winner/manual-source publication holds the persistence-owned
+volume operation lease. Source observers acquire the same lease and re-check
+mux ownership there, so no window exists where the new lane is audible while
+the prior lane still appears authoritative to volume policy. The best-effort
+assistant volume-context snapshot is published once after that lease releases:
+it is observability/mix convergence, not part of the gate's hearing-safety
+ordering, and its snapshot method takes the coordinator's local mutation lock.
 
 The two cases:
 
@@ -469,6 +551,11 @@ self-healing property no matter how the drift was introduced.
    be intentional. Deep loud drift is **not** skipped. If Camilla is
    much louder than the canonical level, the reconciler pulls it back
    even when the drift is larger than 10 dB.
+5. The unlocked 1 Hz preflight is only a hint that repair may be needed.
+   Before writing, the reconciler acquires the shared volume operation lease
+   and re-reads the active source, effective canonical level, and live Camilla
+   state. A newer control-daemon command therefore wins instead of being
+   overwritten by a stale observer snapshot.
 
 **Trade-off:** if an operator configures `JASPER_DUCK_DB` shallower
 than 10 dB (e.g., -5 dB), the reconciler may briefly un-duck cues
@@ -688,4 +775,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-24 (post-DSP turn-start context is atomic in `PREPARE_ASSISTANT`, and outputd fails closed to silence when that context is missing or rejected; prior 2026-07-23 pass covered the shared `AssistantLoudness` `MixStage` engine, post-DSP producer gate, and never-mutate-downstream-to-0 wire contract; prior 2026-07-16 pass covered pre-DSP mix-stage ownership, stamped standalone volume updates, quiet-room envelope tracking, and equal-level downstream republish against the PR #1542 implementation)
+Last verified: 2026-07-28 (canonical `VolumeState` projection owns remembered-level + mute interpretation across `/volume`, `/state`, voice reads, source observers, and carrier handoffs; cross-daemon operations—including mux gate/winner publication and candidate reconciler writes—and persistence merges are serialized; push-mode mute transitions use a durable token/revision/zero-observation barrier; USB startup snapshots yield to existing mute intent; the landing-page poll is persistence-only, visible-only, 500 ms, and single-flight; prior 2026-07-24 pass covered atomic post-DSP turn-start context and fail-closed outputd behavior)

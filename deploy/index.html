@@ -943,9 +943,14 @@
       var safetyMuted = false;
       var desiredPct = null;
       var ignorePollUntil = 0;
+      var pollInFlight = false;
       var lastSentAt = 0;
       var THROTTLE_MS = 150;
-      var POLL_MS = 1500;
+      // External controls (Mac USB slider, paired remote, voice) converge
+      // through the same /volume snapshot. Poll at 2 Hz while this page is
+      // visible so those changes feel immediate without adding a persistent
+      // connection or doing any network work from a hidden tab.
+      var POLL_MS = 500;
       var SAFETY_POLL_MS = 5000;
       var SETTLE_MS = 1500;
       // Last level the server CONFIRMED — the truth the UI falls back to
@@ -1134,6 +1139,8 @@
       async function poll() {
         if (localVolumeDirty()) return;
         if (document.visibilityState === 'hidden') return;
+        if (pollInFlight) return;
+        pollInFlight = true;
         try {
           var resp = await fetch('/volume');
           if (resp.ok) {
@@ -1145,7 +1152,10 @@
             }
             return;
           }
-        } catch (_) {}
+        } catch (_) {
+        } finally {
+          pollInFlight = false;
+        }
         // Volume truth unavailable (e.g. a bonded follower whose pair
         // leader is down — the forward 502s). After three misses show
         // an honest dash instead of a stale number; the next good poll

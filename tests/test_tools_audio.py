@@ -13,6 +13,7 @@ from jasper.tools.audio import (
     _percent_to_db,
     make_audio_tools,
 )
+from jasper.volume_coordinator import VolumeState
 
 
 class FakeCoordinator:
@@ -34,6 +35,9 @@ class FakeCoordinator:
     def is_muted(self) -> bool:
         return self._pre_mute is not None
 
+    def get_volume_state(self) -> VolumeState:
+        return VolumeState(self._level, self._pre_mute)
+
     async def set_listening_level(self, percent: int) -> int:
         target = max(0, min(100, int(percent)))
         self._level = target
@@ -52,7 +56,6 @@ class FakeCoordinator:
         if self._pre_mute is None and self._level > 0:
             self._pre_mute = self._level
         saved = self._pre_mute or 0
-        self._level = 0
         self.calls.append(("mute", None))
         return saved
 
@@ -127,7 +130,8 @@ def test_mute_then_unmute_restores_prior_level():
     coord = FakeCoordinator(level=60)
     tools = _tools(coord)
     asyncio.run(tools["mute"]())
-    assert coord.get_listening_level() == 0
+    assert coord.get_volume_state().effective_percent == 0
+    assert coord.get_listening_level() == 60
     result = asyncio.run(tools["unmute"]())
     assert result["percent"] == 60
     assert coord.get_listening_level() == 60

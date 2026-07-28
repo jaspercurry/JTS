@@ -269,9 +269,15 @@ class AsyncControlClient:
         return await self.post("/volume/adjust", {"delta_percent": delta_percent})
 
     async def set_volume(
-        self, percent: int, *, source: str | None = None
+        self,
+        percent: int,
+        *,
+        source: str | None = None,
+        observation_initial: bool | None = None,
     ) -> ControlResponse:
         body: dict = {"percent": percent}
         if source is not None:
             body["source"] = source
+        if observation_initial is not None:
+            body["observation_initial"] = observation_initial
         return await self.post("/volume/set", body)

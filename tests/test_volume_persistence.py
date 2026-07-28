@@ -14,8 +14,12 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from jasper.volume_persistence import (
     VOLUME_MAX_DB,
@@ -162,6 +166,101 @@ def test_save_now_always_writes(tmp_path):
     rec = p.load()
     assert rec is not None
     assert rec.main_volume_db == -21.0
+
+
+# ---------- cross-daemon operation lease ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_operation_lock_timeout_propagates(tmp_path, monkeypatch):
+    class TimeoutLock:
+        def __enter__(self):
+            raise TimeoutError("busy")
+
+        def __exit__(self, exc_type, exc, traceback):
+            raise AssertionError("a lock that never acquired cannot release")
+
+    monkeypatch.setattr(
+        "jasper.volume_persistence.advisory_file_lock",
+        lambda *args, **kwargs: TimeoutLock(),
+    )
+    persistence = VolumePersistence(_path(tmp_path))
+
+    with pytest.raises(TimeoutError, match="busy"):
+        async with persistence.operation_lock():
+            pass
+
+
+@pytest.mark.asyncio
+async def test_operation_lock_cancel_preserved_when_acquire_times_out(
+    tmp_path, monkeypatch,
+):
+    started = threading.Event()
+    finish = threading.Event()
+
+    class DelayedTimeoutLock:
+        def __enter__(self):
+            started.set()
+            assert finish.wait(timeout=1.0)
+            raise TimeoutError("busy")
+
+        def __exit__(self, exc_type, exc, traceback):
+            raise AssertionError("a lock that never acquired cannot release")
+
+    monkeypatch.setattr(
+        "jasper.volume_persistence.advisory_file_lock",
+        lambda *args, **kwargs: DelayedTimeoutLock(),
+    )
+    persistence = VolumePersistence(_path(tmp_path))
+
+    async def wait_for_lock():
+        async with persistence.operation_lock():
+            pass
+
+    waiter = asyncio.create_task(wait_for_lock())
+    assert await asyncio.to_thread(started.wait, 1.0)
+    waiter.cancel()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+
+@pytest.mark.asyncio
+async def test_operation_lock_cancel_releases_late_acquisition(
+    tmp_path, monkeypatch,
+):
+    started = threading.Event()
+    finish = threading.Event()
+    released = threading.Event()
+
+    class DelayedLock:
+        def __enter__(self):
+            started.set()
+            assert finish.wait(timeout=1.0)
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            released.set()
+
+    monkeypatch.setattr(
+        "jasper.volume_persistence.advisory_file_lock",
+        lambda *args, **kwargs: DelayedLock(),
+    )
+    persistence = VolumePersistence(_path(tmp_path))
+
+    async def wait_for_lock():
+        async with persistence.operation_lock():
+            pass
+
+    waiter = asyncio.create_task(wait_for_lock())
+    assert await asyncio.to_thread(started.wait, 1.0)
+    waiter.cancel()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert released.is_set()
 
 
 # ---------- regression ----------------------------------------------------
@@ -389,10 +488,26 @@ def test_pre_mute_level_round_trip(tmp_path):
     jasper-control building one per HTTP call) see prior mute state."""
     p = VolumePersistence(_path(tmp_path))
     p.save_listening_level(70)
-    p.save_pre_mute_level(70)
+    p.save_mute_state(70, "mute-round-trip")
     rec = p.load()
     assert rec is not None
     assert rec.pre_mute_level == 70
+    assert rec.mute_token == "mute-round-trip"
+
+
+def test_mute_state_partial_update_bootstraps_from_existing_file(tmp_path):
+    """A fresh process preserves the record while adding its mute latch."""
+    path = _path(tmp_path)
+    VolumePersistence(path).save_listening_level(70)
+    fresh_writer = VolumePersistence(path)
+
+    fresh_writer.save_mute_state(70, "cross-process-mute")
+
+    rec = VolumePersistence(path).load()
+    assert rec is not None
+    assert rec.listening_level == 70
+    assert rec.pre_mute_level == 70
+    assert rec.mute_token == "cross-process-mute"
 
 
 def test_pre_mute_level_clear(tmp_path):
@@ -400,11 +515,12 @@ def test_pre_mute_level_clear(tmp_path):
     read sees pre_mute=None (the unmuted state)."""
     p = VolumePersistence(_path(tmp_path))
     p.save_listening_level(70)
-    p.save_pre_mute_level(70)
-    p.save_pre_mute_level(None)
+    p.save_mute_state(70, "mute-to-clear")
+    p.save_mute_state(None, None)
     rec = p.load()
     assert rec is not None
     assert rec.pre_mute_level is None
+    assert rec.mute_token is None
 
 
 def test_pre_mute_level_clamps(tmp_path):
@@ -436,14 +552,67 @@ def test_pre_mute_preserved_across_partial_updates(tmp_path):
     pre_mute (the field is independent state set by mute())."""
     p = VolumePersistence(_path(tmp_path))
     p.save_listening_level(70)
-    p.save_pre_mute_level(70)
+    p.save_mute_state(70, "mute-preserved")
     # Independent listening_level update (e.g., observer-driven write
     # while still muted) must preserve pre_mute.
     p.save_listening_level(0)
     rec = p.load()
     assert rec is not None
     assert rec.pre_mute_level == 70
+    assert rec.mute_token == "mute-preserved"
     assert rec.listening_level == 0
+
+
+def test_stale_writer_cannot_erase_newer_mute_transition(tmp_path):
+    """Every partial write merges from disk under the cross-process lock."""
+    path = _path(tmp_path)
+    stale_writer = VolumePersistence(path)
+    newer_writer = VolumePersistence(path)
+    stale_writer.save_listening_level(60)
+    assert stale_writer.load() is not None
+
+    newer_writer.save_mute_state(60, "newer-mute")
+    stale_writer.save_listening_level(60)
+
+    rec = VolumePersistence(path).load()
+    assert rec is not None
+    assert rec.pre_mute_level == 60
+    assert rec.mute_token == "newer-mute"
+
+
+def test_stale_main_volume_writer_preserves_newer_mute_transition(tmp_path):
+    path = _path(tmp_path)
+    stale_writer = VolumePersistence(path)
+    newer_writer = VolumePersistence(path)
+    stale_writer.save_listening_level(60)
+    assert stale_writer.load() is not None
+
+    newer_writer.save_mute_state(60, "newer-mute")
+    stale_writer.save_now(percent_to_db(25))
+
+    rec = VolumePersistence(path).load()
+    assert rec is not None
+    assert rec.main_volume_db == pytest.approx(percent_to_db(25), abs=0.01)
+    assert rec.pre_mute_level == 60
+    assert rec.mute_token == "newer-mute"
+
+
+def test_mute_token_without_latch_is_ignored(tmp_path):
+    """A malformed orphan token cannot manufacture temporary mute state."""
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 2,
+        "main_volume_db": -20.0,
+        "listening_level": 60,
+        "mute_token": "orphan",
+        "updated_at": "2026-05-10T10:00:00Z",
+    }))
+
+    rec = VolumePersistence(str(path)).load()
+
+    assert rec is not None
+    assert rec.pre_mute_level is None
+    assert rec.mute_token is None
 
 
 def test_save_pre_mute_works_on_fresh_persistence(tmp_path):

@@ -481,7 +481,7 @@ async def test_tick_mute_overrides_to_zero(monkeypatch):
 
     posted = []
 
-    async def _fake_post(pct: int) -> bool:
+    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
         posted.append(pct)
         return True
 
@@ -505,7 +505,7 @@ async def test_tick_deduplicates_identical_polls(monkeypatch):
     monkeypatch.setattr(bridge, "_read_int_value", lambda numid: IDX_MAX)
     posted = []
 
-    async def _fake_post(pct: int) -> bool:
+    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
         posted.append(pct)
         return True
 
@@ -533,7 +533,7 @@ async def test_tick_retries_observation_declined_before_source_activation(
     posted = []
     outcomes = iter([False, True])
 
-    async def _fake_post(pct: int) -> bool:
+    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
         posted.append(pct)
         return next(outcomes)
 
@@ -547,6 +547,37 @@ async def test_tick_retries_observation_declined_before_source_activation(
 
     assert posted == [64, 64]
     assert bridge._last_published_pct == 64
+
+
+@pytest.mark.asyncio
+async def test_tick_marks_only_unchanged_startup_snapshot_as_initial(monkeypatch):
+    """A bridge restart labels discovery state, but a later host move is intent."""
+    bridge = VolumeBridge()
+    bridge._vol_numid = 1
+    bridge._switch_numid = None
+    _set_range(bridge)
+
+    raw = {"value": 40}
+    monkeypatch.setattr(
+        bridge,
+        "_read_int_value",
+        lambda numid: raw["value"],
+    )
+    posted: list[tuple[int, bool]] = []
+
+    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
+        posted.append((pct, initial))
+        return False
+
+    monkeypatch.setattr(bridge, "_post", _fake_post)
+
+    await bridge._tick()
+    bridge._retry_not_before = 0.0
+    await bridge._tick()
+    raw["value"] = 25
+    await bridge._tick()
+
+    assert posted == [(64, True), (64, True), (25, False)]
 
 
 @pytest.mark.asyncio
@@ -570,9 +601,16 @@ async def test_post_requires_application_acknowledgement(payload, expected):
             return payload
 
     class _Control:
-        async def set_volume(self, pct, *, source):
+        async def set_volume(
+            self,
+            pct,
+            *,
+            source,
+            observation_initial=None,
+        ):
             assert pct == 64
             assert source == "usbsink"
+            assert observation_initial is False
             return _Response()
 
     bridge = VolumeBridge()
@@ -594,7 +632,7 @@ async def test_tick_skips_when_raw_read_fails(monkeypatch):
     monkeypatch.setattr(bridge, "_read_int_value", lambda numid: None)
     posted = []
 
-    async def _fake_post(pct: int) -> bool:
+    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
         posted.append(pct)
         return True
 

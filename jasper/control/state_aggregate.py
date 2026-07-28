@@ -730,19 +730,19 @@ async def _get_state(
     listening_level: int | None = None
     persisted_main_volume_db: float | None = None
     try:
+        from ..volume_coordinator import VolumeState
+        from ..volume_persistence import VolumePersistence
+
         path = os.environ.get(
             "JASPER_VOLUME_STATE_PATH",
             "/var/lib/jasper/speaker_volume.json",
         )
-        with open(path) as f:
-            blob = json.load(f)
-        raw_level = blob.get("listening_level")
-        if isinstance(raw_level, (int, float)) and 0 <= raw_level <= 100:
-            listening_level = int(raw_level)
-        raw_db = blob.get("main_volume_db")
-        if isinstance(raw_db, (int, float)) and math.isfinite(float(raw_db)):
-            persisted_main_volume_db = round(float(raw_db), 2)
-    except (OSError, ValueError, json.JSONDecodeError):
+        record = VolumePersistence(path).load()
+        if record is not None:
+            listening_level = VolumeState.from_record(record).effective_percent
+            if math.isfinite(record.main_volume_db):
+                persisted_main_volume_db = round(record.main_volume_db, 2)
+    except (OSError, ValueError):
         pass
 
     sound_profile: dict[str, Any] | None

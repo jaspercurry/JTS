@@ -85,7 +85,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from jasper.log_event import log_event
 
@@ -693,13 +693,12 @@ class Mux:
                     )
                 prev_winner = self._winner or Source.IDLE
                 selected = await self._transition_to_source_locked(
-                    prev_winner, target, reason=transition_reason,
+                    prev_winner,
+                    target,
+                    reason=transition_reason,
+                    commit_selection=lambda: self._commit_auto_winner(target),
                 )
-                if selected:
-                    self._winner = target
-                    self._pending_auto_target = None
-                    self._winner_age_ticks = 0
-                else:
+                if not selected:
                     self._pending_auto_target = target
                     if self._winner is None:
                         await self._fanin_none_best_effort(
@@ -890,14 +889,12 @@ class Mux:
             previous = self._winner or self._manual_source or Source.IDLE
             self._pending_auto_target = None
             selected = await self._transition_to_source_locked(
-                previous, source, reason="manual",
+                previous,
+                source,
+                reason="manual",
+                commit_selection=lambda: self._commit_manual_selection(source),
             )
             if selected:
-                self._manual_source = source
-                self._pending_auto_target = None
-                self._winner = source
-                self._winner_age_ticks = 0
-                mux_mode_persistence.write_mode(self._mode_state_path, source)
                 if self._usbsink_preempted:
                     await self._usbsink_set_preempt(
                         False, reason="manual_select",
@@ -934,18 +931,18 @@ class Mux:
                     return gate_error
                 previous = self._winner or self._manual_source or Source.IDLE
                 selected = await self._transition_to_source_locked(
-                    previous, new_winner, reason="auto_select",
+                    previous,
+                    new_winner,
+                    reason="auto_select",
+                    commit_selection=lambda: self._commit_auto_selection(
+                        new_winner,
+                    ),
                 )
                 if selected:
                     if new_winner == Source.USBSINK and self._usbsink_preempted:
                         await self._usbsink_set_preempt(
                             False, reason="auto_select",
                         )
-                    self._winner = new_winner
-                    self._manual_source = None
-                    self._pending_auto_target = None
-                    self._winner_age_ticks = 0
-                    mux_mode_persistence.write_mode(self._mode_state_path, None)
                 else:
                     self._pending_auto_target = new_winner
                     if self._winner is None:
@@ -1340,16 +1337,48 @@ class Mux:
         self._volume_coordinator = coordinator
         return coordinator
 
-    async def _transition_to_source(
-        self, prev_source: Source, source: Source, *, reason: str,
-    ) -> bool:
-        async with self._transition_lock:
-            return await self._transition_to_source_locked(
-                prev_source, source, reason=reason,
-            )
-
     async def _transition_to_source_locked(
-        self, prev_source: Source, source: Source, *, reason: str,
+        self,
+        prev_source: Source,
+        source: Source,
+        *,
+        reason: str,
+        commit_selection: Callable[[], None],
+    ) -> bool:
+        """Move the lane and publish its mux owner as one volume operation.
+
+        ``_transition_lock`` is held by the caller. The volume coordinator's
+        cross-daemon lease additionally excludes source-volume observations
+        until ``commit_selection`` has made STATUS authoritative for the lane
+        fan-in now exposes.
+        """
+        coordinator = self._ensure_volume_coordinator()
+        async with coordinator.source_handoff_operation():
+            selected = await self._transition_volume_and_gate_locked(
+                coordinator,
+                prev_source,
+                source,
+                reason=reason,
+            )
+            if selected:
+                # No await between publication and lease release: a queued
+                # observer must see the new owner when it acquires the lease.
+                commit_selection()
+        # Snapshotting volume context takes the coordinator's local mutation
+        # lock. Publish only after the handoff lease has released; the safety
+        # ordering above requires carrier/gate/owner publication, not
+        # observability IPC, to be atomic with source-volume writers.
+        with contextlib.suppress(Exception):
+            await coordinator.publish_volume_context()
+        return selected
+
+    async def _transition_volume_and_gate_locked(
+        self,
+        coordinator: Any,
+        prev_source: Source,
+        source: Source,
+        *,
+        reason: str,
     ) -> bool:
         started = time.monotonic()
         handoff_id = self._next_handoff_id()
@@ -1363,13 +1392,10 @@ class Mux:
                 "reason": reason,
             },
         )
-        coordinator = self._ensure_volume_coordinator()
         handoff = await coordinator.prepare_source_handoff(
             prev_source, source, reason=reason,
         )
         if not getattr(handoff, "ok", False):
-            with contextlib.suppress(Exception):
-                await coordinator.publish_volume_context()
             self._record_handoff(
                 handoff, started, handoff_id=handoff_id, result=handoff.result,
             )
@@ -1392,8 +1418,6 @@ class Mux:
         except Exception as e:  # noqa: BLE001
             with contextlib.suppress(Exception):
                 await coordinator.abort_source_handoff(handoff)
-            with contextlib.suppress(Exception):
-                await coordinator.publish_volume_context()
             self._record_handoff(
                 handoff, started,
                 handoff_id=handoff_id,
@@ -1429,11 +1453,6 @@ class Mux:
                 },
                 level=logging.WARNING,
             )
-        # Prepare/finalize can mutate Camilla even when the handoff does not
-        # complete. Always converge the pre-DSP TTS context to the carrier that
-        # actually remains after success, rollback, or degraded failure.
-        with contextlib.suppress(Exception):
-            await coordinator.publish_volume_context()
         result = handoff.result if finalized else "finalize_failed"
         self._record_handoff(
             handoff, started, handoff_id=handoff_id, result=result,
@@ -1461,6 +1480,24 @@ class Mux:
             },
         )
         return True
+
+    def _commit_auto_winner(self, source: Source) -> None:
+        """Publish a reconciler-selected winner while the volume lease is held."""
+        self._winner = source
+        self._pending_auto_target = None
+        self._winner_age_ticks = 0
+
+    def _commit_manual_selection(self, source: Source) -> None:
+        """Publish and persist a manual selection inside the handoff lease."""
+        self._commit_auto_winner(source)
+        self._manual_source = source
+        mux_mode_persistence.write_mode(self._mode_state_path, source)
+
+    def _commit_auto_selection(self, source: Source) -> None:
+        """Publish return-to-auto state inside the handoff lease."""
+        self._commit_auto_winner(source)
+        self._manual_source = None
+        mux_mode_persistence.write_mode(self._mode_state_path, None)
 
     def _next_handoff_id(self) -> int:
         self._handoff_seq += 1

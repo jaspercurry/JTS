@@ -132,8 +132,16 @@ async def test_async_client_adjust_and_set_volume(server):
     c = client.AsyncControlClient(server)
     r1 = await c.adjust_volume(5)
     assert r1.json()["echo"] == {"delta_percent": 5}
-    r2 = await c.set_volume(30, source="usbsink")
-    assert r2.json()["echo"] == {"percent": 30, "source": "usbsink"}
+    r2 = await c.set_volume(
+        30,
+        source="usbsink",
+        observation_initial=True,
+    )
+    assert r2.json()["echo"] == {
+        "percent": 30,
+        "source": "usbsink",
+        "observation_initial": True,
+    }
 
 
 @pytest.mark.asyncio

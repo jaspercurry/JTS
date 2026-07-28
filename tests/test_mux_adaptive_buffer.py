@@ -13,6 +13,7 @@ ladder logic, hardware-free.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -45,6 +46,10 @@ class _FakeHandoff:
 
 
 class _FakeVolumeCoordinator:
+    @asynccontextmanager
+    async def source_handoff_operation(self):
+        yield
+
     async def prepare_source_handoff(self, prev, current, *, reason):
         return _FakeHandoff(prev, current)
 
