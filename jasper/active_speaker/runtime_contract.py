@@ -2985,6 +2985,56 @@ def _normalized_graph_fingerprint(text: str) -> str | None:
         return None
 
 
+def _camilla_live_semantic_fingerprint(text: str) -> str | None:
+    """Fingerprint a file graph and CamillaDSP ``active_raw`` equivalently.
+
+    CamillaDSP re-serializes a loaded file with absent optional fields expanded
+    to ``null`` and integral numeric scalars rendered as floats.  Those are
+    representation changes, not graph changes.  The persisted intent boundary
+    above deliberately keeps its exact fingerprint; this narrower live-readback
+    boundary removes only mapping-valued ``null`` defaults and canonicalizes
+    integral floats before comparing the selected file with ``active_raw``.
+    """
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                str(key): normalize(item)
+                for key, item in value.items()
+                if item is not None
+            }
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if (
+            isinstance(value, float)
+            and math.isfinite(value)
+            and value.is_integer()
+        ):
+            return int(value)
+        return value
+
+    try:
+        parsed = yaml.safe_load(text)
+        if not isinstance(parsed, dict) or not parsed:
+            return None
+        normalized = normalize(parsed)
+        encoded = json.dumps(
+            normalized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+    except (
+        RecursionError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        yaml.YAMLError,
+    ):
+        return None
+
+
 def _evaluated_profile_summary(
     *,
     topology: OutputTopology,
@@ -3398,7 +3448,7 @@ async def classify_active_bass_extension_graph(
 ) -> GraphSafety:
     """Canonical live-active boundary with readback inside the sandwich."""
 
-    for _attempt in range(2):
+    for attempt in range(2):
         try:
             applied1 = _read_optional_bytes(applied_baseline_path)
             intent1 = _read_optional_bytes(intent_path)
@@ -3449,11 +3499,17 @@ async def classify_active_bass_extension_graph(
             selected_text = selected1.decode("utf-8")
         except UnicodeError:
             continue
+        active_fingerprint = _camilla_live_semantic_fingerprint(active_text)
         if (
-            _normalized_graph_fingerprint(active_text) is None
-            or _normalized_graph_fingerprint(active_text)
-            != _normalized_graph_fingerprint(selected_text)
+            active_fingerprint is None
+            or active_fingerprint
+            != _camilla_live_semantic_fingerprint(selected_text)
         ):
+            # SetConfigFilePath updates CamillaDSP's selected path before its
+            # active_raw surface converges.  Give the one existing retry a
+            # bounded scheduling gap; the second sandwich remains strict.
+            if attempt == 0:
+                await asyncio.sleep(0.1)
             continue
         return _classify_bass_extension_snapshot(
             topology,

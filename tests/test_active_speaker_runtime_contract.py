@@ -965,6 +965,76 @@ async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
     assert graph.allowed is True
 
 
+async def test_live_boundary_accepts_camilla_active_raw_default_expansion(
+    tmp_path: Path,
+) -> None:
+    """CamillaDSP expands absent optional fields to null and integral gains to
+    floats in active_raw; those representation changes are graph-equivalent."""
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    active_payload = yaml.safe_load(text)
+    active_payload["description"] = None
+    active_payload["devices"]["adjust_period"] = None
+    active_payload["pipeline"][0]["bypassed"] = None
+    first_mapping = next(iter(active_payload["mixers"].values()))["mapping"][0]
+    first_mapping["mute"] = None
+    first_mapping["sources"][0]["gain"] = float(
+        first_mapping["sources"][0]["gain"]
+    )
+    active_text = yaml.safe_dump(active_payload, sort_keys=False)
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=lambda: asyncio.sleep(0, result=active_text),
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert graph.allowed is True
+
+
+async def test_live_boundary_retries_async_camilla_reload_once(
+    tmp_path: Path,
+) -> None:
+    """The selected path can advance one read before active_raw converges."""
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    stale = yaml.safe_load(text)
+    stale["devices"]["samplerate"] += 1
+    reads = 0
+
+    async def active_readback() -> str:
+        nonlocal reads
+        reads += 1
+        return yaml.safe_dump(stale) if reads == 1 else text
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert reads == 2
+    assert graph.allowed is True
+
+
 @pytest.mark.parametrize(
     "authority_key",
     [
