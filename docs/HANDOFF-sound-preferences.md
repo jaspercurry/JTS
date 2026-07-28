@@ -440,6 +440,24 @@ provenance, and unknowns. All editable values and research evidence are rendered
 as labeled sections directly inside Advanced; it contains no second-level
 disclosures.
 
+**Confirming the safety limits is not an Advanced action.** The
+`Confirm safety limits` control also lives inside Advanced, and until the
+driver-safety profile is confirmed and current, every crossover measurement is
+refused — while the enclosure selector that clears the confirmation (any
+driver-detail edit rotates the profile fingerprint, by design) sits in the
+always-visible component card. So whenever
+`driver_safety_profile_evaluation.confirmed_and_current` is not `true` and the
+draft advertises `permissions.may_confirm_visible_driver_safety_profile`, the
+component card hoists a **Confirm the safety limits** callout to top level,
+above the component list, carrying the same `confirm-driver-safety` action
+(issue #1820). Its DOM id, `confirm-safety-limits`, is the deep-link target the
+measurement wizard's `program_profile_not_confirmed` hard stop points at
+(`/sound/#confirm-safety-limits`); the page opens the owning setup step and
+scrolls the control into view rather than relying on fragment behaviour. A
+profile whose status is `incomplete` gets the callout without a button —
+`build_driver_safety_profile` refuses a confirm while values are missing, so
+the copy names the add-the-values action instead.
+
 The research prompt treats operator-declared physical installation choices as
 authoritative. The browser import boundary also refuses to replace enclosure
 kind, the topology-owned tweeter type, an explicit product-technology

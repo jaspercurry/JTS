@@ -2852,6 +2852,12 @@ async def play_driver_capture_sweep(
                     },
                 }
             except ActiveCommissioningAdmissionError as exc:
+                # ``str(exc)`` is rendered verbatim in ``/sound/``'s issue list,
+                # so every raise site owns household copy (issue #1820 — the
+                # generation-refused branch used to join raw refusal enum values
+                # into this message). Machine-readable slugs, when the raise
+                # site has them, ride the payload instead — same shape as the
+                # PlaybackAdmissionRefused arm above.
                 playback = {
                     "status": "refused",
                     "backend": DRIVER_CAPTURE_SWEEP_BACKEND,
@@ -2860,6 +2866,7 @@ async def play_driver_capture_sweep(
                     "issues": [_issue(
                         "active_driver_capture_admission_refused", str(exc)
                     )],
+                    "refusal_codes": list(exc.refusal_codes),
                 }
             finally:
                 if fanin_gate is not None:

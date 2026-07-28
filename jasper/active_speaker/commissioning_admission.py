@@ -39,7 +39,6 @@ from jasper.audio_measurement.evidence_identity import (
     json_fingerprint,
 )
 from jasper.audio_measurement.excitation_admission import (
-    ExcitationRefusalReason,
     ProtectionEvidence,
     admit_excitation,
 )
@@ -112,7 +111,20 @@ logger = logging.getLogger(__name__)
 
 
 class ActiveCommissioningAdmissionError(RuntimeError):
-    """Active could not prove or persist one automatic capture attempt."""
+    """Active could not prove or persist one automatic capture attempt.
+
+    ``refusal_codes`` carries the underlying closed-vocabulary refusal slugs
+    when the failure was an admission decision rather than a structural fault
+    (issue #1820). They are forensics for the caller's payload and the journal;
+    the exception MESSAGE is household copy, because ``web_commissioning``
+    surfaces ``str(exc)`` in a ``/sound/`` issue list.
+    """
+
+    def __init__(
+        self, *args: Any, refusal_codes: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(*args)
+        self.refusal_codes = refusal_codes
 
 
 class ActiveCommissioningPlaybackDrift(ActiveCommissioningAdmissionError):
@@ -952,10 +964,21 @@ async def play_admitted_driver_capture(
         protection_evidence=initial_evidence,
     )
     if not decision.allowed:
-        detail = (
-            "driver excitation generation refused: "
-            f"{','.join(reason.value for reason in decision.refusal_reasons)}"
-        )
+        # Issue #1820, isolated-driver path. This branch used to raise with a
+        # detail string built by joining the raw refusal enum values, and
+        # ``web_commissioning``'s ``except ActiveCommissioningAdmissionError``
+        # arm puts ``str(exc)`` straight into an issue message that ``/sound/``
+        # renders — so "driver excitation generation refused:
+        # safety_profile_identity_mismatch" was one refusal away from the
+        # household's screen. The raw codes are FORENSICS and now go to the
+        # journal (and ride the exception as ``refusal_codes`` for the caller's
+        # payload, exactly like the sibling ``PlaybackAdmissionRefused`` arm
+        # already does); the exception message is the one sentence the operator
+        # can act on. Same family of causes as that sibling — an identity or a
+        # protection proof went stale between preparing and admitting — so it
+        # names the same action.
+        refusal_codes = tuple(reason.value for reason in decision.refusal_reasons)
+        failed_checks: tuple[str, ...] = ()
         if not initial_evidence.current:
             failed_checks = _record_stale_protection_report(
                 authority.directory,
@@ -964,14 +987,20 @@ async def play_admitted_driver_capture(
                 target_fingerprint=prepared.requested_plan.target_fingerprint,
                 report=initial_report,
             )
-            if decision.refusal_reasons == (
-                ExcitationRefusalReason.PROTECTION_EVIDENCE_STALE,
-            ):
-                detail = (
-                    f"{detail} (protection checks failing: "
-                    f"{', '.join(failed_checks)})"
-                )
-        raise ActiveCommissioningAdmissionError(detail)
+        log_event(
+            logger,
+            "active_speaker.commissioning_admission",
+            level=logging.WARNING,
+            result="generation_refused",
+            admission_id=admission_id,
+            target_id=prepared.target_id,
+            refusal_codes=",".join(refusal_codes),
+            failed_protection_checks=",".join(failed_checks),
+        )
+        raise ActiveCommissioningAdmissionError(
+            "the live speaker graph changed; start this capture again",
+            refusal_codes=refusal_codes,
+        )
     generation = persist_generation_admission(
         authority,
         admission_id=admission_id,

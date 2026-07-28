@@ -659,6 +659,21 @@ def _relay_failure_message(exc: BaseException) -> str:
     sees; ``event=capture_relay.adapter_failed`` above logs with
     ``exc_info=True`` regardless of the mapped message.
 
+    The PROGRAM family -- ``ProgramPlaybackError`` (incl.
+    ``ProgramPlaybackRefused``), ``ProgramAdmissionError``,
+    ``CrossoverV2FlowError`` -- is the leak issue #1820 filed. It had no branch
+    here at all, so ``ProgramPlaybackRefused``'s ``str(exc)``, built at its
+    raise site by joining raw enum values
+    (``"program re-admission refused: program_profile_not_confirmed"``),
+    reached the wizard's relay status line verbatim -- violating
+    ``crossover_v2_flow``'s own written contract that a bare reason code never
+    reaches the household. It routes through
+    ``jasper.web.correction_crossover_v2.classify_program_failure``, the SAME
+    classifier the v2 session runner's cleanup arm uses to pick the phone's
+    failure screen, so the operator wizard and the phone name the same refusal
+    with the same sentence. The raw string still reaches the journal via the
+    ``exc_info=True`` log above.
+
     Every other exception falls back to ``str(exc)`` unchanged (prior
     behavior) -- not evidenced as a wizard-facing problem, so left alone
     per "scope fixes to the observed-broken path."
@@ -669,7 +684,10 @@ def _relay_failure_message(exc: BaseException) -> str:
     )
     from jasper.capture_relay.session import CapturePageIncompatible
     from jasper.correction.level_match import LevelMatchRefused
-    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError
+    from jasper.web.correction_crossover_v2 import (
+        CrossoverV2LocalSeamError,
+        classify_program_failure,
+    )
 
     if isinstance(exc, LevelMatchRefused):
         return exc.user_message
@@ -687,6 +705,9 @@ def _relay_failure_message(exc: BaseException) -> str:
         )
     if isinstance(exc, CrossoverV2LocalSeamError):
         return REASON_REGISTRY[REASON_INTERNAL_ERROR].message
+    classified = classify_program_failure(exc)
+    if classified is not None:
+        return REASON_REGISTRY[classified[0]].message
     return str(exc)
 
 
@@ -6486,15 +6507,33 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # W6 finding: a refused session start was previously
                     # invisible in journalctl — the 400 reached the browser
                     # but nothing landed in the journal to debug it from.
+                    #
+                    # Issue #1820/#1821 review: a session-open refusal never
+                    # reaches the envelope, because the envelope renders from a
+                    # PERSISTED failure and the pre-flight deliberately refuses
+                    # before any state is written. So the reason's own action
+                    # rides the 400 body instead — the wizard renders it as a
+                    # button beside the message, and the household is one click
+                    # from the fix rather than one navigation plus one click.
+                    # Same registry entry the hard-stop screen would have read.
+                    from jasper.web.correction_crossover_v2 import (
+                        refusal_next_action,
+                    )
+
+                    refusal_body: dict[str, Any] = {"ok": False, "error": str(e)}
+                    action = refusal_next_action(e)
+                    if action is not None:
+                        refusal_body["next_action"] = action
                     log_event(
                         logger,
                         "correction.crossover_v2_refused",
                         level=logging.WARNING,
                         route=path,
                         reason=str(e),
+                        code=str(getattr(e, "code", "") or ""),
                     )
                     self._send_json(
-                        {"ok": False, "error": str(e)},
+                        refusal_body,
                         status=HTTPStatus.BAD_REQUEST,
                     )
                 except (OSError, RuntimeError, TypeError) as e:

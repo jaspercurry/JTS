@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, design_draft
+from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
@@ -124,6 +125,18 @@ def _stub_non_topology_inputs(monkeypatch):
     # under test; the ensure step itself is covered in
     # tests/test_correction_crossover_v2_endpoints.py.
     monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
+    # Same rule as the other stubs: this module tests the topology/playback-
+    # device seam, not the driver-safety contract. The session-open confirmation
+    # gate (issue #1821) is covered against the REAL evaluator in
+    # tests/test_crossover_v2_profile_not_confirmed.py; here the stub profile is
+    # a bare ``{}``, so without this the gate would refuse every case.
+    monkeypatch.setattr(
+        driver_safety_mod,
+        "evaluate_driver_safety_profile",
+        lambda profile, topology: driver_safety_mod.DriverSafetyProfileEvaluation(
+            "confirmed", True, "f" * 64, (),
+        ),
+    )
     monkeypatch.setattr(
         excitation_safety_plan_mod,
         "resolve_driver_excitation_ceilings",

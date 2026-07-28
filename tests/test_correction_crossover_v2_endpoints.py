@@ -3715,9 +3715,14 @@ def test_playback_refusal_persists_failure_abandons_volume_and_tells_phone():
 
     # Volume was drained (the §5.5 walked-away guarantee), not left active.
     assert volume.events == ["open", "abandon"]
-    # A DISTINCT failure persisted — not relay_timeout.
+    # A DISTINCT failure persisted — not relay_timeout — and its underlying
+    # refusal slug rode out with it (issue #1820: the old collapse erased which
+    # of program_unplayable's several causes actually fired).
     state = v2host.load_v2_state()
-    assert state["failure"] == {"code": "program_unplayable"}
+    assert state["failure"] == {
+        "code": "program_unplayable",
+        "refusals": ["program_channel_peak_over_cap"],
+    }
     # The relay session was purged (no leak to worker TTL).
     assert session.session_id not in backend.sessions
     # The phone got a terminal capture_result carrying the §5.10 hard-stop so it
@@ -3989,7 +3994,7 @@ def _real_hooks_scaffold(monkeypatch):
     return hooks, plan, cam, log
 
 
-def _assert_full_cleanup(plan, cam, log, backend, session, *, code):
+def _assert_full_cleanup(plan, cam, log, backend, session, *, code, refusals=None):
     # abandon ran: measurement volume drained, household volume restored.
     assert plan.measurement_volume_db is None
     assert cam.vol == -15.0
@@ -4004,9 +4009,14 @@ def _assert_full_cleanup(plan, cam, log, backend, session, *, code):
     assert events[-1]["accepted"] is False
     assert events[-1]["code"] == code
     assert events[-1]["index"] == 1 and events[-1]["attempt"] == 1
-    # and the same failure persisted for the wizard envelope.
+    # and the same failure persisted for the wizard envelope. A program-family
+    # failure also carries its underlying admission-refusal slugs (issue #1820
+    # forensics); everything else persists the code alone.
     state = v2host.load_v2_state()
-    assert state["failure"] == {"code": code}
+    expected = {"code": code}
+    if refusals:
+        expected["refusals"] = list(refusals)
+    assert state["failure"] == expected
 
 
 def test_camilla_unavailable_from_play_seam_full_cleanup(monkeypatch):
@@ -4081,7 +4091,10 @@ def test_playback_refusal_keeps_its_distinct_code_through_the_catch_all(monkeypa
     )
     with pytest.raises(ProgramPlaybackError):
         _run(runner, client, session)
-    _assert_full_cleanup(plan, cam, log, backend, session, code="program_unplayable")
+    _assert_full_cleanup(
+        plan, cam, log, backend, session, code="program_unplayable",
+        refusals=["program_channel_peak_over_cap"],
+    )
 
 
 # --- W6.1 gate should-fix: gate-lease abort under the held window ----------------

@@ -967,11 +967,20 @@ def _failure_envelope(
         # copy + the phone's stopped/failed status stay visible together. The
         # renderer only shows the QR for an IN-FLIGHT relay, so a purged
         # session never re-advertises a live link here.
+        # Issue #1820: a hard-stop reason that knows the exact control which
+        # clears it (``program_profile_not_confirmed`` → the confirm-safety-
+        # limits button) declares that control on its own ReasonSpec, and it
+        # wins over this screen's generic "Back to speaker setup" destination.
+        # The registry stays the single copy source for BOTH halves — the
+        # sentence and the button it points at — so the verdict text and the
+        # action can never disagree about what the household should do next.
         return _envelope(
             screen="hard_stop", active_step=active_step,
             verdict=spec.message,
             nudges=[{"code": code, "severity": "warn", "text": spec.message}],
-            next_action={"id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/"},
+            next_action=dict(spec.next_action) if spec.next_action else {
+                "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/",
+            },
             status=status,
         )
     if template == TEMPLATE_SESSION_RESTART:
