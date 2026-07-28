@@ -1131,11 +1131,12 @@ __TABS__
       </label>
       <label for="calibration-sign">File values are
         <select id="calibration-sign">
-          <option value="correction">dB correction to add</option>
-          <option value="response">mic response to invert</option>
+          <option value="response" selected>The microphone’s response (usual)</option>
+          <option value="correction">A correction to add (rare)</option>
         </select>
       </label>
       <button id="upload-calibration" type="button" class="btn btn--ghost">Upload calibration</button>
+      <p class="hint" style="margin:0">Calibration files from miniDSP, Dayton Audio, Cross-Spectrum and the rest of the REW ecosystem describe what the microphone <em>hears</em>, and JTS inverts them. Choose “a correction to add” only if the file’s own documentation says its numbers are already the correction.</p>
     </div>
     <p id="calibration-status" class="mic-status">No calibration loaded. This is okay for a quick check; use a calibrated microphone before relying on the final result.</p>
     <p id="calibration-preview" class="cal-preview hidden"></p>
@@ -3239,7 +3240,10 @@ def _handle_calibration_fetch(
 def _handle_calibration_upload(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    from jasper.audio_measurement.calibration import store_calibration
+    from jasper.audio_measurement.calibration import (
+        DEFAULT_SIGN_CONVENTION,
+        store_calibration,
+    )
 
     body = _read_json_body(
         handler,
@@ -3250,9 +3254,13 @@ def _handle_calibration_upload(
     model = str(body.get("model") or "other").strip() or "other"
     label = str(body.get("label") or "Other calibrated mic").strip()
     orientation = str(body.get("orientation") or "unknown").strip() or "unknown"
+    # The page's own control defaults to "response" because that is what a
+    # measurement-mic calibration file states (see the upload card's help
+    # copy and jasper.audio_measurement.calibration.SUPPORTED_MODELS); a
+    # caller that omits the field gets the same answer, not the opposite one.
     sign_convention = (
-        str(body.get("sign_convention") or "correction").strip()
-        or "correction"
+        str(body.get("sign_convention") or DEFAULT_SIGN_CONVENTION).strip()
+        or DEFAULT_SIGN_CONVENTION
     )
     record = store_calibration(
         text=text,
@@ -3322,7 +3330,10 @@ def _relay_calibration_from_setup(
         _save_household_mic(record, serial=serial)
         return record
     if mode == "upload":
-        from jasper.audio_measurement.calibration import store_calibration
+        from jasper.audio_measurement.calibration import (
+            DEFAULT_SIGN_CONVENTION,
+            store_calibration,
+        )
 
         filename = str(calibration.get("filename") or "uploaded-calibration.txt")
         record = store_calibration(
@@ -3332,12 +3343,18 @@ def _relay_calibration_from_setup(
             label=str(calibration.get("label") or filename).strip()
             or "Uploaded calibration",
             source=f"uploaded:{filename}",
+            # The phone page declares neither of these. `orientation` has an
+            # honest "I was not told" value and keeps it. The sign convention
+            # has none — every value is a factual claim about the file — so
+            # the phone flow states the ecosystem convention outright rather
+            # than reading a key the page has never sent (it posts exactly
+            # {mode, filename, content}: capture-page/js/main.js, pinned by
+            # test_capture_page_upload_never_declares_a_sign_convention). A
+            # household with a genuine correction-convention file uses the
+            # local /correction/ upload card, which does expose the control.
             orientation=str(calibration.get("orientation") or "unknown").strip()
             or "unknown",
-            sign_convention=(
-                str(calibration.get("sign_convention") or "correction").strip()
-                or "correction"
-            ),
+            sign_convention=DEFAULT_SIGN_CONVENTION,
             root=_calibration_root(),
         )
         _save_household_mic(record)

@@ -99,6 +99,7 @@ from jasper.audio_measurement.program_analysis import (
 from tests._flat_lin_corpus import (
     CDHORN_CALIBRATION,
     CDHORN_ROOT,
+    CORPUS_CALIBRATION_SIGN_CONVENTION,
     requires_cdhorn,
     sweep_anchored_global_offset,
 )
@@ -2699,7 +2700,16 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
         return samples[::2] if channels == 2 else samples
 
     fc_hz = 2000.0
-    calibration = parse_calibration_text(CDHORN_CALIBRATION.read_text())
+    # Era-exact, like every other corpus reader: the pins above came from the
+    # analysis as PERFORMED, which read this UMIK-2 file on the parser's
+    # "correction" default. The file is really a RESPONSE curve (the product
+    # negates it since 2026-07-27); flipping the corpus to match is #1774, one
+    # edit at the constant. Stated rather than inherited so it reads as a
+    # decision — see tests/_flat_lin_corpus.py for the full cost.
+    calibration = parse_calibration_text(
+        CDHORN_CALIBRATION.read_text(),
+        sign_convention=CORPUS_CALIBRATION_SIGN_CONVENTION,
+    )
     program = build_measure_program(
         {"woofer": -6.0005, "tweeter": -15.0105},
         [

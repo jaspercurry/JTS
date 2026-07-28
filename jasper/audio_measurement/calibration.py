@@ -15,6 +15,13 @@ Every input path normalizes into ``correction_db``: an additive dB
 offset applied to the measured response before target normalization.
 Provider-specific quirks stay here so the DSP pipeline only sees one
 shape.
+
+The quirk that matters most is the SIGN. A measurement mic's calibration
+file states the microphone's own *response*, so the correction is its
+negation — see ``SUPPORTED_MODELS`` for the per-vendor declaration and the
+evidence behind it. Records written before 2026-07-27 stored vendor files
+under the opposite claim; ``migrate_stored_sign_conventions`` repairs them
+in place on deploy.
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ import hashlib
 import html
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
@@ -33,6 +41,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
+from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -53,32 +62,81 @@ DEFAULT_CALIBRATION_DIR = Path("/var/lib/jasper/correction/calibration_mics")
 # between the two packages runs active_speaker -> audio_measurement, never
 # the reverse), so the tier vocabulary is duplicated as plain string
 # literals rather than imported upward.
+#
+# `sign_convention` is what the VENDOR's file states, and therefore how
+# `fetch_vendor_calibration` must parse it. It is per-entry rather than a
+# single hardcode in the fetcher because that hardcode was the 2026-07-27
+# bug: one literal `"correction"` covered every provider, so every
+# vendor-fetched record stored the mic's response as if it were already a
+# correction and the measurement pipeline ADDED what it should have
+# SUBTRACTED — an error of exactly twice the file's value. Measured on the
+# live JTS3 UMIK-2 file: mean +1.71 dB, max +1.84 dB of over-cut across
+# 2.8-8 kHz, reversing to a mean -1.14 dB (max 2.56 dB) under-cut over
+# 11-16 kHz, and |4.85| dB worst case across the full 20 Hz-20 kHz span.
+# Declaring the convention beside the provider is what makes the next mic's
+# convention a deliberate registry decision instead of an inherited default.
+#
+# Every entry today is "response", on two evidence classes:
+#
+#   * miniDSP (direct physical proof, owner-measured 2026-07-27): for one
+#     UMIK-2 the 0-degree and 90-degree files differ by ~9.4 dB at 20 kHz,
+#     the 90-degree file being the MORE negative. A microphone is less
+#     sensitive off-axis at HF, so those numbers can only be the mic's
+#     response; a 90-degree *correction* would have to be strongly positive
+#     at HF to add the lost treble back. Recorded in
+#     captures/iloud-comparison-20260727/LINEARIZATION-AGENT-PROMPT.md.
+#   * Dayton (documented ecosystem contract, no Dayton file inspected by
+#     this project): both vendors publish these files for REW, whose own
+#     help states a cal file "should contain the actual gain (and optionally
+#     phase) response of the meter or microphone at the frequencies given,
+#     these will then be subtracted from subsequent measurements"
+#     (roomeqwizard.com/help/help_en-GB/html/meter.html). REW has one mic-cal
+#     semantics with no per-vendor sign switch, and Dayton's product pages
+#     direct owners to REW with exactly this file.
+#
+# If a real Dayton file ever contradicts that, the registry edit fixes every
+# FUTURE fetch — but it does not fix the past by itself: the migration below
+# runs one way (correction -> response) and the vendor cache serves stored
+# records ahead of any re-fetch. Reversing a declaration therefore costs a
+# registry edit plus a NEW opposite-direction migration.
 SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
     "dayton_imm6": {
         "provider": "dayton_audio",
         "vendor_model": "iMM-6",
         "label": "Dayton Audio iMM-6 / iMM-6C",
         "tier": "consumer",
+        "sign_convention": "response",
     },
     "dayton_umm6": {
         "provider": "dayton_audio",
         "vendor_model": "UMM-6",
         "label": "Dayton Audio UMM-6",
         "tier": "consumer",
+        "sign_convention": "response",
     },
     "minidsp_umik1": {
         "provider": "minidsp",
         "vendor_model": "umik-1",
         "label": "miniDSP UMIK-1",
         "tier": "reference",
+        "sign_convention": "response",
     },
     "minidsp_umik2": {
         "provider": "minidsp",
         "vendor_model": "umik-2",
         "label": "miniDSP UMIK-2",
         "tier": "reference",
+        "sign_convention": "response",
     },
 }
+
+# What a measurement-mic calibration file states when nothing says otherwise:
+# the microphone's own response, which JTS negates into `correction_db`. Used
+# for a registry entry that forgot to declare one (a missing declaration must
+# not resurrect the old wrong default — `test_supported_models_declare_a_sign_convention`
+# keeps the registry explicit) and for the phone-relay upload, whose page has
+# no sign control (see `_relay_calibration_from_setup`).
+DEFAULT_SIGN_CONVENTION = "response"
 
 
 def mic_tier_for_model(model_key: str | None) -> str:
@@ -882,7 +940,12 @@ def fetch_vendor_calibration(
             source=source,
             serial=serial,
             orientation=orientation,
-            sign_convention="correction",
+            # The vendor owns this quirk, so the registry entry states it —
+            # see SUPPORTED_MODELS. Vendor files are RESPONSE curves; the
+            # correction is the negation.
+            sign_convention=str(
+                spec.get("sign_convention") or DEFAULT_SIGN_CONVENTION
+            ),
             root=root,
         )
     except CalibrationNotFoundError:
@@ -917,3 +980,202 @@ def fetch_vendor_calibration(
         point_count=record.point_count,
     )
     return record
+
+
+def _models_expecting_response() -> set[tuple[str, str]]:
+    """``(provider, model)`` pairs the registry declares to be response
+    curves — the set whose already-stored records the migration below owns.
+
+    Keyed on the pair, not the provider alone, because a record stores both
+    and a provider can hold models that disagree: if one Dayton model were
+    ever found to ship true correction files, a provider-level key would
+    silently drag it along with its siblings.
+    """
+    return {
+        (str(spec["provider"]), model_key)
+        for model_key, spec in SUPPORTED_MODELS.items()
+        if str(spec.get("sign_convention") or DEFAULT_SIGN_CONVENTION) == "response"
+    }
+
+
+def configured_calibration_root() -> Path:
+    """The calibration store this speaker actually uses.
+
+    ``DEFAULT_CALIBRATION_DIR`` is only the default: the ``/correction/``
+    wizard resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``
+    (``_calibration_root`` in ``jasper/web/correction_setup.py``), so a
+    speaker with that override set keeps its records somewhere else. A
+    migration that ignored it would read an empty directory and report
+    ``scanned=0`` — success-shaped, and wrong.
+    """
+    return Path(
+        os.environ.get(
+            "JASPER_CORRECTION_CALIBRATION_DIR", str(DEFAULT_CALIBRATION_DIR),
+        )
+    )
+
+
+def migrate_stored_sign_conventions(
+    *, root: Path | None = None,
+) -> dict[str, int]:
+    """Repair vendor-fetched records stored under the wrong sign convention.
+
+    Until 2026-07-27 ``fetch_vendor_calibration`` stored every vendor file as
+    ``sign_convention="correction"``, so ``correction_db`` held the mic's
+    response un-negated and the measurement pipeline added what it should
+    have subtracted. New fetches are fixed at the source (see
+    ``SUPPORTED_MODELS``); this repairs what is already on disk. Run from
+    ``install.sh`` on every deploy — idempotent, so re-running is free.
+
+    Semantics, in the order they matter:
+
+    * **Keyed on the stored convention field, never on the numbers.** Only a
+      record that still claims ``"correction"`` is touched. A record already
+      stating ``"response"`` — one written by a fixed build, or by an earlier
+      run of this migration — is left exactly as it is, so a curve can never
+      be double-negated back to the bug.
+    * **Vendor records only, keyed on ``(provider, model)``.** A
+      ``manual_upload`` record carries the household's OWN declaration from
+      the ``/correction/`` upload control; that is a statement about a file
+      JTS never saw and is not ours to overrule. Only registry entries that
+      declare the response convention are in scope, matched on the pair the
+      record stores so a future per-model split inside one provider cannot
+      be mis-scoped.
+    * **Re-derive from the retained raw file when it is provably the
+      original.** ``store_calibration`` keeps the vendor text beside the
+      metadata, so the honest repair is to re-parse it under the right
+      convention. The raw file is trusted only when its SHA-256 still matches
+      the record's ``file_sha256``.
+    * **Otherwise negate in place.** The stored curve is the file's values
+      verbatim (that is exactly what the bug did), so negation is the same
+      number the re-derivation would produce. Re-fetching is NOT an option:
+      the raw serial is deliberately never persisted (only ``serial_hash``),
+      so the vendor lookup cannot be replayed from a stored record.
+
+    Phase is not touched: ``parse_calibration_text`` passes phase through
+    unchanged under both conventions, so a negated curve keeps its phase.
+
+    This runs in ONE direction only (``correction`` -> ``response``). Should a
+    vendor's registry declaration ever be corrected the other way, the edit
+    alone changes nothing on disk and the vendor cache
+    (``find_stored_calibration``, consulted before every fetch) keeps serving
+    the stored record: that reversal needs its own opposite-direction
+    migration, not a re-run of this one.
+
+    ``root`` defaults to ``configured_calibration_root()`` — the override the
+    wizard honours, not the compiled-in default — so the migration reads the
+    same store the household's records actually live in.
+
+    Returns per-outcome counts for the caller to log. Never raises for one
+    bad record — a corrupt or unreadable file is counted and skipped, because
+    a household's other mic records must still be repaired.
+    """
+    root = configured_calibration_root() if root is None else root
+    vendor_models = _models_expecting_response()
+    counts = {
+        "scanned": 0,
+        "migrated_rederived": 0,
+        "migrated_negated": 0,
+        "already_response": 0,
+        "skipped_not_vendor": 0,
+        "unreadable": 0,
+        "write_failed": 0,
+    }
+    for path in sorted(root.glob("*/*/*.json")):
+        counts["scanned"] += 1
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            counts["unreadable"] += 1
+            continue
+        if not isinstance(data, dict):
+            counts["unreadable"] += 1
+            continue
+        provider = str(data.get("provider") or "")
+        model = str(data.get("model") or "")
+        if (provider, model) not in vendor_models:
+            counts["skipped_not_vendor"] += 1
+            continue
+        # Absent reads as "correction": that is what every reader of a
+        # legacy record already resolves it to (CalibrationRecord.from_dict).
+        stored = str(data.get("sign_convention") or "correction")
+        if stored != "correction":
+            counts["already_response"] += 1
+            continue
+
+        raw_text: str | None = None
+        try:
+            candidate = path.with_suffix(".txt").read_text()
+        except OSError:
+            candidate = None
+        if candidate is not None and _sha256_text(candidate) == str(
+            data.get("file_sha256") or ""
+        ):
+            raw_text = candidate
+
+        try:
+            if raw_text is not None:
+                curve = parse_calibration_text(
+                    raw_text, sign_convention="response",
+                )
+                method = "rederived"
+            else:
+                stored_curve = CalibrationCurve.from_dict(data.get("curve"))
+                curve = CalibrationCurve(
+                    freqs_hz=list(stored_curve.freqs_hz),
+                    correction_db=[-db for db in stored_curve.correction_db],
+                    phase_deg=(
+                        list(stored_curve.phase_deg)
+                        if stored_curve.phase_deg is not None
+                        else None
+                    ),
+                )
+                method = "negated"
+        except (ValueError, TypeError):
+            counts["unreadable"] += 1
+            continue
+
+        data["curve"] = curve.to_dict()
+        data["sign_convention"] = "response"
+        data["point_count"] = len(curve.freqs_hz)
+        try:
+            # Atomic, and stat-preserving: a crash mid-migration must leave
+            # the OLD record rather than a truncated one (a torn record reads
+            # as corrupt on every later load, silently costing the household
+            # its remembered microphone — nothing reconstructs a record from
+            # the raw .txt beside it). `preserve_target_stat` keeps the
+            # existing owner/mode, so this root-run repair cannot re-own a
+            # file a de-rooted jasper-correction-web would need to write.
+            atomic_write_text(
+                path,
+                json.dumps(data, indent=2),
+                preserve_target_stat=True,
+            )
+        except OSError:
+            counts["write_failed"] += 1
+            continue
+        counts[f"migrated_{method}"] += 1
+        # WARNING, not INFO: this is a one-time migration MUTATING household
+        # measurement state, and the deploy transcript is where an operator
+        # would look for what a deploy changed. Bounded by the number of mic
+        # records a household owns (one or two), so this cannot spam.
+        log_event(
+            logger,
+            "correction_calibration_sign_migrated",
+            level=logging.WARNING,
+            provider=provider,
+            model=model,
+            calibration_id=str(data.get("calibration_id") or ""),
+            method=method,
+            point_count=len(curve.freqs_hz),
+        )
+
+    migrated = counts["migrated_rederived"] + counts["migrated_negated"]
+    if migrated or counts["unreadable"] or counts["write_failed"]:
+        log_event(
+            logger,
+            "correction_calibration_sign_migration",
+            level=logging.WARNING,
+            **counts,
+        )
+    return counts

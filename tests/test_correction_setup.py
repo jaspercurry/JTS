@@ -3224,6 +3224,79 @@ def test_e2e_calibration_upload_parses_and_stores(tmp_path, monkeypatch):
         server.server_close()
 
 
+def test_e2e_calibration_upload_defaults_to_the_response_convention(
+    tmp_path, monkeypatch,
+):
+    """An upload that declares no convention is read as the mic's RESPONSE.
+
+    That is what a measurement-mic calibration file states (the page's own
+    control and help copy say so), so an omitted field must resolve to the
+    same answer the household would have picked, not the opposite one.
+    """
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+    server, base = _start_server()
+    try:
+        payload = json.dumps({
+            "filename": "lab.txt",
+            "content": "20 -1\n100 0\n1000 1\n",
+            "model": "other",
+            "label": "Lab mic",
+        }).encode()
+        resp = request_with_csrf(
+            base,
+            "/calibration/upload",
+            payload,
+            content_type="application/json",
+        )
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+        assert data["calibration"]["sign_convention"] == "response"
+        # The mic reads 1 dB LOW at 20 Hz and 1 dB HIGH at 1 kHz, so the
+        # correction adds 1 dB and cuts 1 dB respectively.
+        assert data["preview"]["correction_db"] == [1.0, 0.0, -1.0]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_calibration_upload_card_defaults_to_the_response_convention():
+    """The page's own control agrees with the endpoint default."""
+    sign_select = (
+        correction_setup._PAGE_BODY
+        .split('id="calibration-sign"', 1)[1]
+        .split("</select>", 1)[0]
+    )
+    assert '<option value="response" selected>' in sign_select
+    assert "selected" not in sign_select.split('value="correction"', 1)[1]
+
+
+def test_relay_upload_states_the_response_convention_not_a_phone_key(
+    tmp_path, monkeypatch,
+):
+    """The phone page has no sign control and posts no sign key, so the Pi
+    states the convention itself rather than defaulting one it was never
+    given. A stray key from some future page is NOT silently honoured — the
+    page-side half of that contract is pinned by
+    tests/test_capture_page_js.py's
+    test_capture_page_upload_never_declares_a_sign_convention.
+    """
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+
+    record = correction_setup._relay_calibration_from_setup({
+        "calibration": {
+            "mode": "upload",
+            "filename": "lab.txt",
+            "content": "20 -1\n100 0\n1000 1\n",
+            "label": "Lab mic",
+            "sign_convention": "correction",
+        },
+    })
+
+    assert record is not None
+    assert record.sign_convention == "response"
+    assert record.curve.correction_db == [1.0, 0.0, -1.0]
+
+
 def test_e2e_calibration_upload_bad_file_returns_400(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
     server, base = _start_server()

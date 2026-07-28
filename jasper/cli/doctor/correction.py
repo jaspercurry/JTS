@@ -10,6 +10,7 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -151,6 +152,52 @@ def check_correction_state_dirs() -> CheckResult:
             "missing: " + ", ".join(missing) + " — redeploy to create them",
         )
     return CheckResult("correction state dirs", "ok", str(root))
+
+@doctor_check(order=27.5, group="correction")
+def check_correction_uploaded_calibration_sign() -> CheckResult:
+    """Advisory: uploaded mic calibrations still claiming the "correction"
+    convention.
+
+    A measurement mic's calibration file states the microphone's RESPONSE, and
+    JTS negates it. Vendor-fetched records are repaired automatically on
+    deploy (``migrate_stored_sign_conventions``), but an UPLOADED record
+    carries the household's own declaration about a file JTS never saw —
+    never ours to flip silently. Uploads made before 2026-07-27 took a
+    wrong-way default from the ``/correction/`` card, so the household is the
+    only one who can say which those are. This is the surface that tells them
+    to look; it never fails the doctor.
+    """
+    from jasper.audio_measurement import calibration
+
+    root = calibration.configured_calibration_root()
+    flagged: list[str] = []
+    unreadable = 0
+    for path in sorted(root.glob("*/*/*.json")):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        if not isinstance(data, dict):
+            unreadable += 1
+            continue
+        if str(data.get("provider") or "") != "manual_upload":
+            continue
+        if str(data.get("sign_convention") or "correction") == "correction":
+            flagged.append(str(data.get("label") or data.get("calibration_id") or "?"))
+    if not flagged:
+        detail = "no uploaded calibrations need review"
+        if unreadable:
+            detail += f" ({unreadable} unreadable record(s))"
+        return CheckResult("uploaded calibration sign", "ok", detail)
+    return CheckResult(
+        "uploaded calibration sign", "warn",
+        f"{len(flagged)} uploaded calibration(s) stored as a correction to add: "
+        + ", ".join(flagged[:3])
+        + (" …" if len(flagged) > 3 else "")
+        + " — review at /correction/; files from the REW ecosystem "
+        "(miniDSP, Dayton, Cross-Spectrum) are response curves",
+    )
 
 def _parse_camilla_statefile_config_path(path: Path) -> str | None:
     try:

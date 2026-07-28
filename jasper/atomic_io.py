@@ -27,6 +27,10 @@ Two properties are load-bearing and easy to get subtly wrong by hand:
     tempfile is chowned to the parent directory's group before chmod+rename, so a
     root-run atomic replace does not publish ``root:root 0640`` into a
     group-readable state directory.
+  - **Optional target-stat preservation.** A repair or migration that rewrites a
+    file it does not own must not re-own it. ``preserve_target_stat=True`` copies
+    the EXISTING file's uid/gid/mode onto the tempfile before the rename — the
+    stricter form of the bullet above, which sets the group only.
 
 This module RAISES on failure (``OSError``) and cleans up the tempfile on any
 exception. Callers that want fail-soft behaviour (log-and-continue, as several
@@ -135,6 +139,7 @@ def atomic_write_text(
     *,
     mode: int = 0o644,
     group_from_parent: bool = False,
+    preserve_target_stat: bool = False,
     durable: bool = False,
 ) -> None:
     """Atomically write ``text`` to ``path`` as UTF-8, then ``chmod`` to ``mode``.
@@ -147,6 +152,18 @@ def atomic_write_text(
     When ``group_from_parent`` is true, the tempfile's group is set to the
     parent directory's group before chmod+rename; this keeps root-run writers
     from publishing group-readable files under the wrong group.
+
+    ``preserve_target_stat=True`` is the REPLACE-IN-PLACE case: when the target
+    already exists, its uid, gid, and mode are copied onto the tempfile before
+    the rename, so an atomic replace does not re-own or re-permission a file
+    somebody else created. Use it for repairs/migrations that rewrite a file
+    the writing process does not own — a root-run migration over a daemon's
+    own state files is the motivating case (``group_from_parent`` cannot cover
+    it: that sets the GID only, leaving the UID as root). The existing file's
+    stat WINS over ``mode`` and ``group_from_parent``; when the target does not
+    exist yet, both fall back to their normal meaning. The chown is
+    best-effort — a non-root caller cannot chown to another uid, and in that
+    case it already owns the file.
 
     ``durable=True`` flushes and fsyncs the tempfile before publication, then
     fsyncs the parent directory where the platform supports directory fsync.
@@ -161,6 +178,15 @@ def atomic_write_text(
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
     parent_gid = os.stat(parent).st_gid if group_from_parent else None
+    target_stat = None
+    if preserve_target_stat:
+        try:
+            target_stat = os.stat(fspath)
+        except FileNotFoundError:
+            target_stat = None
+    if target_stat is not None:
+        mode = stat.S_IMODE(target_stat.st_mode)
+        parent_gid = None  # the target's own gid is more specific
     # Tempfile in the SAME directory => os.replace is an atomic same-FS rename.
     # Prefix with "." + basename so a directory listing groups it with the
     # target and a stray temp (e.g. on a crash mid-write) is recognisable.
@@ -171,6 +197,14 @@ def atomic_write_text(
             f.write(text)
         if parent_gid is not None:
             os.chown(tmp, -1, parent_gid)
+        if target_stat is not None:
+            try:
+                os.chown(tmp, target_stat.st_uid, target_stat.st_gid)
+            except PermissionError:
+                # Not root: this caller cannot chown to another uid, and a
+                # non-root caller replacing a file it can write is normally
+                # already the owner. Mode below still applies.
+                pass
         os.chmod(tmp, mode)  # before the rename: no wider-permission window
         if durable:
             # Sync after ownership/mode changes so the durability promise

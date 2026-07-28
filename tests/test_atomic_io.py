@@ -16,9 +16,11 @@ policy).
 from __future__ import annotations
 
 import os
+import stat
 
 import pytest
 
+from jasper import atomic_io as atomic_io_module
 from jasper.atomic_io import advisory_file_lock, atomic_write_text
 
 
@@ -259,6 +261,71 @@ def test_bare_filename_uses_cwd(tmp_path, monkeypatch):
     atomic_write_text("bare.txt", "x")
     assert (tmp_path / "bare.txt").read_text(encoding="utf-8") == "x"
     assert [p.name for p in tmp_path.iterdir()] == ["bare.txt"]
+
+
+def test_preserve_target_stat_keeps_the_existing_mode(tmp_path):
+    """The replace-in-place case: a repair that rewrites somebody else's file
+    must not re-permission it. The existing file's mode WINS over ``mode=``.
+    """
+    p = tmp_path / "owned.json"
+    p.write_text("old", encoding="utf-8")
+    p.chmod(0o600)
+
+    atomic_write_text(p, "new", mode=0o644, preserve_target_stat=True)
+
+    assert p.read_text(encoding="utf-8") == "new"
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_preserve_target_stat_falls_back_to_mode_when_absent(tmp_path):
+    """No target yet => nothing to preserve, so ``mode=`` keeps its normal
+    meaning and the flag is a no-op rather than an error."""
+    p = tmp_path / "fresh.json"
+
+    atomic_write_text(p, "x", mode=0o640, preserve_target_stat=True)
+
+    assert p.read_text(encoding="utf-8") == "x"
+    assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+
+def test_preserve_target_stat_copies_owner_when_it_can(tmp_path, monkeypatch):
+    """uid/gid are copied from the target before the rename — the property a
+    root-run migration over a daemon-owned file depends on. Real chown needs
+    root, so this pins the CALL (uid and gid, on the tempfile, pre-rename)."""
+    p = tmp_path / "owned.json"
+    p.write_text("old", encoding="utf-8")
+    target = p.stat()
+
+    chowns: list[tuple[int, int]] = []
+    real_chown = os.chown
+
+    def spy(path, uid, gid):
+        chowns.append((uid, gid))
+        return real_chown(path, uid, gid)
+
+    monkeypatch.setattr(atomic_io_module.os, "chown", spy)
+    atomic_write_text(p, "new", preserve_target_stat=True)
+
+    assert chowns == [(target.st_uid, target.st_gid)]
+    assert p.read_text(encoding="utf-8") == "new"
+
+
+def test_preserve_target_stat_survives_a_chown_permission_error(tmp_path, monkeypatch):
+    """A non-root caller cannot chown to another uid — but it is normally
+    already the owner, so the write must still land rather than fail."""
+    p = tmp_path / "owned.json"
+    p.write_text("old", encoding="utf-8")
+    p.chmod(0o600)
+
+    def deny(path, uid, gid):
+        raise PermissionError("not root")
+
+    monkeypatch.setattr(atomic_io_module.os, "chown", deny)
+    atomic_write_text(p, "new", preserve_target_stat=True)
+
+    assert p.read_text(encoding="utf-8") == "new"
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
 
 
 def test_locked_transform_replaces_and_can_drop_keys(tmp_path):

@@ -107,6 +107,34 @@ requires_cdhorn = pytest.mark.skipif(
     ),
 )
 
+# DELIBERATELY "correction", which is NOT what that file is.
+#
+# Governs BOTH corpora: S0_CALIBRATION and CDHORN_CALIBRATION resolve to the
+# same umik2-b7343c0c625b.txt, which is byte-identical to the raw miniDSP
+# 0-degree file, i.e. the MIC'S RESPONSE, and the product negates it
+# (jasper.audio_measurement.calibration.SUPPORTED_MODELS, fixed 2026-07-27).
+# The 2026-07-24/25 analyses were performed on the parser's "correction"
+# default, so every pinned number downstream of this module is that analysis
+# -- including PR-L3's L3_RUN5_* pins in
+# tests/test_audio_measurement_program_analysis.py.
+# Correcting the sign fails 19 tests across five files (measured 2026-07-27,
+# both roots reachable) and is not all numeric drift: the S0 desk-edge rung 4
+# flips position_dependent -> position_invariant, silently retiring the corpus
+# instance test_the_report_roll_up_is_the_conservative_one is built on, and
+# the cloud-pipeline carve-out grows an extra identified_null row (a SHAPE
+# change, test_crossover_v2_cloud_pipeline.py:1151). That
+# re-baseline is a deliberate change of its own, taken with the whole
+# linearization ladder's analysis fixes in view rather than as a side effect
+# of the input fix -- tracked as jaspercurry/JTS#1774, which carries the full
+# cost list. Named here, once, so flipping it later is one edit and so no call
+# site inherits a convention silently.
+#
+# Note for anyone comparing outputs: the laptop-side S0 kit
+# (captures/flat-linearization-20260725/s0-kit/analyze_s0.py) WAS fixed and now
+# analyzes these same sessions under the OPPOSITE convention. A kit-vs-corpus
+# discrepancy in the tweeter band is that difference, not a bug in either.
+CORPUS_CALIBRATION_SIGN_CONVENTION = "correction"
+
 requires_s0 = pytest.mark.skipif(
     not (S0_GROUND_PLANE.is_dir() and S0_MAIN.is_dir() and S0_LOOPBACK.is_dir()),
     reason=(
@@ -349,7 +377,10 @@ def s0_position_captures(
     from jasper.audio_measurement import program_analysis as pa
     from jasper.audio_measurement.calibration import parse_calibration_text
 
-    calibration = parse_calibration_text(S0_CALIBRATION.read_text())
+    calibration = parse_calibration_text(
+        S0_CALIBRATION.read_text(),
+        sign_convention=CORPUS_CALIBRATION_SIGN_CONVENTION,
+    )
     _program, segment, sample_rate, fc_hz = _session_program(session_dir)
     groups = _session_groups(session_dir)
 
@@ -427,7 +458,10 @@ def s0_position_driver_response(
     from jasper.audio_measurement import program_analysis as pa
     from jasper.audio_measurement.calibration import parse_calibration_text
 
-    calibration = parse_calibration_text(S0_CALIBRATION.read_text())
+    calibration = parse_calibration_text(
+        S0_CALIBRATION.read_text(),
+        sign_convention=CORPUS_CALIBRATION_SIGN_CONVENTION,
+    )
     _program, segment, sample_rate, fc_hz = _session_program(session_dir)
     occurrences = []
     for _index, wav in sorted(_session_groups(session_dir)[position_id]):

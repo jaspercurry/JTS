@@ -59,6 +59,9 @@ _STEP_TO_PLAN_MARKER = {
     "reconcile_usb_data_role": "USB data role",
     "tune_wifi_for_airplay": "Disable WiFi power-save on the active wlan0",
     "install_jasper": "Copy Python source",
+    "migrate_calibration_sign_convention": (
+        "Repair stored measurement-mic calibrations fetched under the wrong"
+    ),
     "ensure_output_hardware_state": "Write output hardware state before Camilla statefile seed",
     "render_outputd_cutover_config": "Render outputd flat startup config with active DAC latency floor",
     "build_install_jasper_fanin": "jasper-fanin Rust daemon",

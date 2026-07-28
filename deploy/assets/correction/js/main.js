@@ -703,7 +703,11 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
         model: micModelSelect.value || 'other',
         label: micModelSelect.options[micModelSelect.selectedIndex].text,
         orientation: micOrientationSelect.value || 'unknown',
-        sign_convention: calibrationSignSelect.value || 'correction'
+        // A mic calibration file states the mic's response; the correction is
+        // its negation. The select always has a value, so the fallback is
+        // unreachable — it matches the select's own default and the Pi's so
+        // that all three read the same if it ever stops being unreachable.
+        sign_convention: calibrationSignSelect.value || 'response'
       });
       showCalibrationLoaded(payload);
     } catch (e) {
