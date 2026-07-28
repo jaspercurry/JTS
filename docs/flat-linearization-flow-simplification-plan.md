@@ -281,6 +281,14 @@ transient state channel only ("Playing the measurement tone…",
   the stage that asked for it, per the 2026-07-28 plain-language ruling).
   The countdown vocabulary stays in the plan grammar and on the page for a
   future same-spot transition that earns it.
+> **Partially superseded (2026-07-28) by
+> [`docs/two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md)
+> (issue #1806).** This section's *ordering premise* — that the user
+> confirms **after apply completes** — does not survive apply moving out
+> of the relay session into the review interlude. The confirm-then-tone
+> tap itself is SHIPPED and survives: it becomes the tap that opens
+> stage 2. Read the two-stage work order for the current contract.
+
 - **VERIFY becomes hold-then-tap — the step-11 fix.** Today
   `AUTO_ADVANCE_ON_APPLY` fires the verify sweep with *no tap at all*
   once the apply completes, racing the user's walk back to the mark (the
@@ -482,6 +490,13 @@ screen with Retake still available. No trust gate moves — the fit still
 runs only after the full cloud (PR-6b semantics), apply still runs
 under the same gates; one extra user tap now sits in front of it, which
 also gives a natural pause before the walk-back to the mark.
+
+> **Partially superseded (2026-07-28) by
+> [`docs/two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md)
+> (issue #1806).** "Apply still runs under the same gates" is reversed:
+> auto-apply at group close is removed, and the confirm screen ends the
+> measure session instead of advancing past it. The retake window and
+> the "continue" screen survive — they become stage 1's ending.
 
 ---
 
