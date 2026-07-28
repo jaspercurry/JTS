@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from tests._async_wait import wait_signalled
+
 from jasper import bluealsa_probe
 from jasper import volume_coordinator as vc_mod
 from jasper.volume_coordinator import (
@@ -662,7 +664,11 @@ async def test_push_observer_rejects_stale_nonzero_while_mute_push_pending(
     await control_coord.set_listening_level(60)
 
     mute_task = asyncio.create_task(control_coord.mute())
-    await control_coord.mute_push_started.wait()
+    await wait_signalled(
+        control_coord.mute_push_started,
+        "mute push began",
+        producer=mute_task,
+    )
 
     # mute() has persisted its latch and asserted Camilla main_mute, but the
     # slow source surface still exposes its old 60%. A second process waits for
@@ -2156,7 +2162,11 @@ async def test_reconcile_revalidates_after_cross_daemon_volume_change(tmp_path):
 
     observer._read_camilla_volume_and_mute = stale_first_read
     reconcile = asyncio.create_task(observer.maybe_reconcile_camilla())
-    await read_started.wait()
+    await wait_signalled(
+        read_started,
+        "reconcile began its first Camilla read",
+        producer=reconcile,
+    )
 
     await control.set_listening_level(20)
     control_write_count = len(cam.set_calls)
