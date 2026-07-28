@@ -171,6 +171,11 @@ def _synthesize(
 
 @pytest.mark.parametrize("polarity_amp,expected_polarity", [(0.7, "normal"), (-0.7, "inverted")])
 def test_measure_round_trip_recovers_drift_delay_polarity_trims(polarity_amp, expected_polarity):
+    # The 2 dB gain-plan asymmetry is incidental regression cover: it makes the
+    # trim assertion below fail if the deconvolution ever stops dividing the
+    # drive out. Equalizing it would not break this test but WOULD delete that
+    # cover — the explicit net is
+    # test_measure_analysis_is_invariant_to_the_programmed_drive_gain.
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),
         sweep_durations={"woofer": 0.8, "tweeter": 0.6},
@@ -3143,6 +3148,151 @@ def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(
     assert "event=program_analysis.ripple_trim_rejected" in caplog.text
     assert f"margin_db={RIPPLE_TRIM_SANITY_MARGIN_DB}" in caplog.text
     assert RIPPLE_TRIM_SEARCH_WINDOW_DB > RIPPLE_TRIM_SANITY_MARGIN_DB  # the guard has real teeth
+
+
+# --------------------------------------------------------------------------- #
+# drive-gain invariance — the frame every MEASURE consumer works in
+# --------------------------------------------------------------------------- #
+#
+# ``_deconvolve_window`` builds its deconvolution reference with
+# ``segment_stimulus(segment)``, which regenerates the sweep at
+# ``amplitude_dbfs=segment.gain_db`` — so the reference carries that segment's
+# own PROGRAMMED digital gain. The inversion in
+# ``deconv.regularized_deconvolution_full`` is
+#
+#     H = Y·conj(X) / (|X|² + ε·max|X|²)
+#
+# which is EXACTLY invariant under X → aX, Y → aY: numerator and denominator
+# both scale by a². Every MEASURE output is therefore a per-unit-drive transfer
+# function, which is what lets CHECK's gain plan drive the woofer and tweeter
+# at different digital levels without biasing the measurement.
+#
+# That invariance is load-bearing and, until this test, asserted only in prose
+# — canonically in docs/HANDOFF-crossover-measurement-v2.md gotcha 22, which
+# traced it while solving MEASURE's level per driver (#1825): the reading that
+# looked like a drive delta was a sensitivity delta, precisely because the
+# drive divides out. (docs/linearization-integrity-plan.md:95-96 states the
+# same thing for the trim-vs-fit frame comparison.) Its consumers —
+# ``linearization_fit.driver_core_level_db`` (reads ``DriverResponse``'s own
+# magnitude curve) and ``solve_shared_level_frame`` (reconciles those core
+# levels against the candidate trims) — all assume it silently. Build the
+# reference at unit amplitude instead, or normalize the stimulus before
+# inversion, and every one of them inherits an inter-driver level error of
+# exactly the woofer/tweeter gain difference: the same failure SHAPE as the
+# ~10 dB-dark tweeter in ``solve_branch_trims``' own history, and just as
+# invisible. Verified sensitive — stubbing a unit-amplitude reference moves
+# both quantities below by the full 10 dB skew.
+
+# The skew: enough to be unmistakable, and the size of a real gain-plan spread.
+DRIVE_GAIN_SKEW_DB = -10.0
+# Float rounding through the deconvolution FFTs — largest OUT of band, where
+# |H| is near the 1e-12 magnitude floor and the dB scale is ill-conditioned,
+# not in the passbands the level frame actually reads. Measured worst case on
+# this fixture is 1.1e-3 dB (in-band: 2.7e-5), so this leaves ~9x headroom
+# above the noise while sitting three orders of magnitude below the skew a
+# regression would introduce. Compared full-band on purpose: it is the
+# stronger claim and it still clears with margin, so there is no arbitrary
+# band choice to defend.
+DRIVE_GAIN_INVARIANCE_TOL_DB = 0.01
+
+
+def _measure_analysis_at_gains(gain_plan, *, woofer_ir, tweeter_ir):
+    """Analyze one noise-free MEASURE capture rendered at ``gain_plan``.
+
+    Noise-free on purpose: drive-gain invariance is exact algebra, not a
+    statistical claim. Additive noise at a FIXED level does not scale with the
+    drive, so a quieter driver would genuinely measure worse — a real SNR
+    property of the capture, but one that would only put a noise floor under
+    the thing this pins.
+    """
+    prog = build_measure_program(
+        gain_plan, _roles(), sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    cap = _synthesize(prog, woofer_ir=woofer_ir, tweeter_ir=tweeter_ir, noise=0.0)
+    res = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+        geometry=MeasurementGeometry(),  # d=0 ⇒ no parallax
+    )
+    return prog, cap, res
+
+
+def _segment_layout(program):
+    return [(s.segment_id, s.start_sample, s.n_samples, s.channel) for s in program.segments]
+
+
+def _sweep_t_peak_dbfs(result):
+    (loc,) = [x for x in result.locations if x.segment_id == "sweep_t"]
+    return loc.peak_dbfs
+
+
+def test_measure_analysis_is_invariant_to_the_programmed_drive_gain():
+    """The same drivers measured twice, the tweeter driven 10 dB quieter the
+    second time, must produce the same transfer functions and the same trims.
+
+    Both captures come from the SAME synthetic plants, so every difference
+    between the two analyses is attributable to the gain plan alone. What the
+    assertions cover is exactly what the shared level frame reads: the
+    candidate's ``trim_band_average_db`` seed and the applied ``trim_db``, plus
+    each ``DriverResponse.magnitude_db`` curve that ``driver_core_level_db``
+    takes its core-passband median from.
+    """
+    woofer_ir = _band_impulse(200, 150.0, 6000.0, 1.0)
+    tweeter_ir = _band_impulse(225, 300.0, 20000.0, 0.7)
+    even_gains = {"woofer": -11.0, "tweeter": -11.0}
+    skewed_gains = {"woofer": -11.0, "tweeter": -11.0 + DRIVE_GAIN_SKEW_DB}
+
+    prog_even, cap_even, even = _measure_analysis_at_gains(
+        even_gains, woofer_ir=woofer_ir, tweeter_ir=tweeter_ir,
+    )
+    prog_skew, cap_skew, skew = _measure_analysis_at_gains(
+        skewed_gains, woofer_ir=woofer_ir, tweeter_ir=tweeter_ir,
+    )
+
+    # Premise, made explicit: gain_db scales a stimulus segment's PCM and
+    # changes nothing else — the sweep metadata (and so the whole schedule,
+    # and so every deconvolution anchor) is identical between the two runs.
+    assert _segment_layout(prog_skew) == _segment_layout(prog_even)
+    assert prog_skew.total_samples == prog_even.total_samples
+    # ...and the drive really did change, by the full skew, so nothing below
+    # is passing vacuously.
+    assert not np.allclose(cap_even, cap_skew)
+    assert _sweep_t_peak_dbfs(skew) == pytest.approx(
+        _sweep_t_peak_dbfs(even) + DRIVE_GAIN_SKEW_DB, abs=0.01
+    )
+
+    # The two level-frame inputs the candidate carries.
+    for label, even_map, skew_map in (
+        ("trim_band_average_db",
+         even.candidate.trim_band_average_db, skew.candidate.trim_band_average_db),
+        ("trim_db", even.candidate.trim_db, skew.candidate.trim_db),
+    ):
+        assert even_map is not None and skew_map is not None
+        assert set(even_map) == set(skew_map) == {"woofer", "tweeter"}
+        for role in sorted(even_map):
+            assert skew_map[role] == pytest.approx(
+                even_map[role], abs=DRIVE_GAIN_INVARIANCE_TOL_DB
+            ), (
+                f"{label}[{role}] moved with the drive gain: "
+                f"{even_map[role]:.4f} → {skew_map[role]:.4f} dB"
+            )
+
+    # ...and the per-driver curves the fit reads its core level off.
+    assert [r.role for r in skew.driver_responses] == [r.role for r in even.driver_responses]
+    for r_even, r_skew in zip(even.driver_responses, skew.driver_responses, strict=True):
+        assert np.array_equal(r_even.freqs_hz, r_skew.freqs_hz)
+        worst_db = float(np.max(np.abs(
+            np.asarray(r_skew.magnitude_db) - np.asarray(r_even.magnitude_db)
+        )))
+        assert worst_db <= DRIVE_GAIN_INVARIANCE_TOL_DB, (
+            f"{r_even.role} magnitude_db moved {worst_db:.4f} dB with the "
+            "drive gain — the deconvolution reference is no longer carrying "
+            "the segment's programmed gain"
+        )
+
+    # The tolerance has teeth: a normalized reference shifts both quantities
+    # by the FULL skew, three orders of magnitude past it.
+    assert DRIVE_GAIN_INVARIANCE_TOL_DB < abs(DRIVE_GAIN_SKEW_DB) / 100.0
 
 
 # --------------------------------------------------------------------------- #
