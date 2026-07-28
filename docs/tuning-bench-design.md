@@ -1,14 +1,13 @@
 # The agent tuning bench — design and work order
 
-> **Status: design work order (2026-07-27), pending review.** Deliverable of
-> the bench-productization design session the owner mandated after the
-> 2026-07-27 iLoud comparison session. Review gate: owner approval, then the
-> flow-coordinator session holding the U-/L-ladders — the same gate PR-0
-> (#1766) and PR-L0 (#1772) passed. **No implementation ships from this
-> doc**; the PR ladder in §9 executes it after the gate. Durable evidence
-> this design reasons from (laptop-side, gitignored):
-> `captures/iloud-comparison-20260727/` — `REPORT.md`,
-> `FORENSICS-SYNTHESIS.md`, `kit/`, `applied-config/`.
+> **Status: historical.** Snapshot from 2026-07-27 when the tuning bench was
+> framed as a prescriptive verb/schema/lexicon ladder. Preserved for
+> primary-source archaeology — specific contracts below are not current
+> planning authority. Read this for the investigation and original rationale;
+> current direction lives in
+> [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md).
+> Durable evidence this design reasoned from is laptop-side and gitignored:
+> `captures/iloud-comparison-20260727/`.
 
 ## 0. The mandate
 

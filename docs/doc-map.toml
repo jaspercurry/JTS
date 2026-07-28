@@ -9,10 +9,10 @@
 # Intentionally present top-level docs that are not canonical subsystem
 # scan targets. They still satisfy the no-orphan-doc invariant, but a
 # code change should not route future maintainers to them as current
-# operational truth. Empty right now: executed session artifacts move
-# to docs/historical/, which sits outside both the orphan sweep and
-# this routing map (see the moOde-removal and 2026-06-10
-# hw-validation runbooks there).
+# operational truth. Most executed session artifacts move to
+# docs/historical/, which sits outside both the orphan sweep and this
+# routing map; this list retains the few top-level snapshots that still
+# have active links or near-term reference value.
 session_artifacts = [
   "docs/AEC-DIAG-01-baseline.md",
   # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
@@ -28,6 +28,10 @@ session_artifacts = [
   # what was exercised and the UX findings; the synthesized plan those findings
   # fed lives in docs/crossover-measurement-productization-design.md.
   "docs/crossover-room-e2e-validation-log.md",
+  # Superseded 2026-07-27 tuning-workbench design/execution snapshots. Current
+  # planning authority lives in docs/llm-native-tuning-workbench-plan.md.
+  "docs/tuning-bench-design.md",
+  "docs/tuning-bench-execution-plan.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
@@ -782,8 +786,7 @@ docs = [
   "docs/flat-linearization-productization-plan.md",
   "docs/flat-linearization-flow-simplification-plan.md",
   "docs/linearization-integrity-plan.md",
-  "docs/tuning-bench-design.md",
-  "docs/tuning-bench-execution-plan.md",
+  "docs/llm-native-tuning-workbench-plan.md",
   "docs/gating-v2-plan.md",
   "docs/room-correction-regime-plan.md",
   "docs/calibration-agent/README.md",

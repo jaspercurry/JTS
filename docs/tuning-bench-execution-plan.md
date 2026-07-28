@@ -1,16 +1,12 @@
 # Tuning bench — execution plan (the Codex work order)
 
-**Status: execution work order (2026-07-27).** The prescriptive,
-phase-by-phase plan that implements
-[`tuning-bench-design.md`](tuning-bench-design.md) (PR-B0, merged
-#1775). Written for a **cheaper implementer session (Codex or
-equivalent) that executes without re-deriving anything**: every
-contract, seam, filename, and trap below was verified against the repo
-at the time of writing by two dedicated research passes plus the
-2026-07-27 session evidence. The design doc holds the *why*; this doc
-holds the *what, exactly*. Where they disagree, this doc wins (it is
-newer and evidence-corrected — e.g. the design's §6 file path for the
-apply machinery was wrong; see B2).
+> **Status: historical.** Snapshot from 2026-07-27 when the tuning bench was
+> specified as a prescriptive PR-B1..B4 implementation ladder. Preserved for
+> primary-source archaeology and implementation traps verified at that
+> snapshot date but expected to drift; do not execute it as the current plan.
+> The owner replaced its hardcoded lexicon, universal analysis schema, and
+> narrow overlay model with the LLM-native workbench direction in
+> [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md).
 
 **Process contract (every PR in this ladder):**
 
