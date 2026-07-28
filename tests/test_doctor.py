@@ -6207,6 +6207,82 @@ def test_check_crossover_v2_cloud_pipeline_ok_when_pre_apply_fails_but_post_appl
     assert "cloud_verify: spec=pass" in r.detail
 
 
+def _v2_applied_state(**overrides):
+    state = {"applied": True, "session_id": "sess-graded"}
+    state.update(overrides)
+    return state
+
+
+def test_applied_profile_with_no_post_apply_grade_warns(monkeypatch):
+    """PR-L4 item 6: the silence its sibling check structurally cannot see.
+
+    ``check_crossover_v2_cloud_pipeline`` warns on a FAILING post-apply grade
+    and is deliberately gated that way; a MISSING grade renders as no phase at
+    all, so it printed a clean tick over a speaker running an unverified
+    correction — the 2026-07-27 shape."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(v2host, "load_v2_state", _v2_applied_state)
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+    assert r.status == "warn"
+    assert "never graded" in r.detail
+
+
+def test_applied_profile_graded_by_verify_alone_is_ok(monkeypatch):
+    """Express tier omits the post-apply position group entirely, so a passing
+    VERIFY outcome is the whole grade and must satisfy the check on its own."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: _v2_applied_state(verify={"outcome": "pass"}),
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+    assert r.status == "ok"
+    assert "applied and graded" in r.detail
+
+
+def test_applied_profile_with_inconclusive_verify_warns(monkeypatch):
+    """Checked, and the check could not decide — a distinct silence from
+    "never checked", and reported as such."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: _v2_applied_state(verify={"outcome": "inconclusive"}),
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+    assert r.status == "warn"
+    assert "inconclusive" in r.detail
+    assert "never graded" not in r.detail
+
+
+def test_unapplied_session_is_not_asked_for_a_grade(monkeypatch):
+    """Nothing on the speaker, nothing to grade — never a manufactured warn."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(v2host, "load_v2_state", lambda: {"applied": False})
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+    assert r.status == "ok"
+    assert "no applied measured crossover" in r.detail
+
+
 def test_check_crossover_v2_cloud_pipeline_ok_when_every_group_passes(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host
 

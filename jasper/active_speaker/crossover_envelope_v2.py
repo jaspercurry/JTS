@@ -488,6 +488,21 @@ def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
 
 
+def _spec_verdict(entry: Mapping[str, Any]) -> bool | None:
+    """One compact cloud entry's flat-spec verdict — ``True`` / ``False`` /
+    ``None`` for "no verdict exists".
+
+    The single reader of that key for copy purposes (PR-L4 item 7), so the
+    done screen's headline, its badge, and any future surface cannot drift on
+    what counts as a failing verdict. ``None`` is load-bearing and is never
+    coerced: ``_compact_cloud_status`` leaves ``overall_passed`` ``None`` for a
+    pipeline that never became available, and Express never produces a
+    post-apply entry at all. Absence of a verdict is not a failing one.
+    """
+    passed = entry.get("overall_passed")
+    return passed if isinstance(passed, bool) else None
+
+
 def _flatness_unavailable_line(status: Mapping[str, Any]) -> list[str]:
     """The honest cloud-absent rendering (plan PR-5) for the FULL tier's
     CLOUD-VERIFY block — three distinguishable states, told apart rather
@@ -1159,6 +1174,30 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             if is_express
             else "Your speaker is tuned. If it sounds worse than before, you can undo."
         )
+        # PR-L4 item 7: the spec verdict gets a VOTE, on the primary copy.
+        #
+        # Both the headline above and the "Verified." badge below read the
+        # TRACKING comparator (`verify.outcome`) — which asks whether the
+        # speaker matched its own prediction, not whether it is flat. The one
+        # instrument that compares the result to FLAT is the post-apply cloud's
+        # spec verdict, and until now it reached exactly one surface: a line
+        # inside the collapsed "Expert details" disclosure. On 2026-07-27 that
+        # meant a household read "Your speaker is tuned" over a profile whose
+        # own honest gauge had failed all three bands. The disclosure lines stay
+        # (they carry the numbers); this puts the VERDICT where it cannot be
+        # collapsed away.
+        #
+        # Only an explicit False speaks. `None` (never measured, or a group that
+        # could not be graded) leaves the copy alone — express omits the
+        # post-apply cloud entirely by design, and manufacturing a caveat out of
+        # a missing measurement would be its own dishonesty.
+        spec_passed = _spec_verdict(_cloud_verify_block(status))
+        if spec_passed is False:
+            done_verdict = (
+                "Your speaker is tuned, but the result still measures further "
+                "from flat than the target in at least one band. If it sounds "
+                "worse than before, you can undo."
+            )
         alternate_actions = [
             {
                 "id": "room",
@@ -1183,8 +1222,22 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "body": {},
             },
             alternate_actions=alternate_actions,
+            # PR-L4 item 7: the badge may not claim more than the evidence.
+            # "Verified." still means the tracking comparator passed, but a
+            # speaker whose spec verdict FAILED gets the honest badge instead —
+            # one claim per instrument, neither pretending to be the other.
             nudges=(
-                [{"code": "crossover_v2_verified", "severity": "ok", "text": "Verified."}]
+                [{
+                    "code": "crossover_v2_out_of_spec",
+                    "severity": "warn",
+                    "text": "Verified against the prediction, but not flat to target.",
+                }]
+                if spec_passed is False and verify.get("outcome") == "pass"
+                else [{
+                    "code": "crossover_v2_verified",
+                    "severity": "ok",
+                    "text": "Verified.",
+                }]
                 if verify.get("outcome") == "pass" else []
             ),
             status=status,
