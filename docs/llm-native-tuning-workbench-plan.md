@@ -317,7 +317,10 @@ it either way. The workbench convention instead:
 
 - every workbench tool ships a hardware-free pytest that exercises it
   through the real `ToolRegistry` + `dispatch_tool()` path with mocked
-  collaborators, plus manifest coverage;
+  collaborators, plus manifest coverage ("hardware-free" is the repo's CI
+  term — the test runs without a Pi, mic, or speaker attached; the
+  workbench itself is hardware-facing, and every rung still ends in named
+  on-hardware evidence);
 - PR-W1 adds a workbench-scoped static guard test with the same
   AST-scanning shape as the voice guard, asserting every tool in
   `jasper/tuning_workbench/` has such a test;
@@ -416,6 +419,32 @@ by itself is never durable provenance.
 If a capability produces genuinely new evidence, its owning subsystem defines
 that payload. The workbench owns only session indexing and workbench-specific
 provenance placed in the existing manifest metadata.
+
+#### Evidence is chart-ready by construction
+
+The workbench ships no plotting code — models render their own
+visualizations, and that native ability keeps improving. What the host
+guarantees is that the data is worth charting the moment it is opened:
+
+- every derived response artifact stores named series on a declared grid —
+  a `frequency_hz` array plus value arrays with explicit units and labels
+  (dB SPL vs. dBFS vs. relative dB stated, never implied);
+- comparisons come back aligned: the compare capability resamples the
+  referenced responses onto one shared log grid
+  (`jasper.audio_measurement`'s existing `resample_log` shape is the
+  precedent) and returns the aligned series together with summary deltas
+  (band levels, before/after differences), so a model charts or tabulates
+  without re-implementing alignment;
+- artifacts are ordinary JSON of chartable size, reachable over the §5.0
+  transport, so "plot these two curves and the delta" is one artifact
+  fetch away for the user's session.
+
+What a household member would want to see — response overlays, a
+before/after delta, change across positions or over time, reflection
+arrival structure, comb/interference patterns — is exactly what a model
+wants to reason over. Design each artifact's series so both audiences are
+served by the same payload, and resist adding rendered charts to the host:
+the moment the data is clean, presentation belongs to the model.
 
 #### Fingerprint fields name their domain
 
@@ -743,7 +772,9 @@ The agent receives:
 1. a short protocol describing safety, user approval, and evidence honesty;
 2. the current context packet;
 3. capability schemas;
-4. artifact references it can open on demand.
+4. artifact references it can open on demand;
+5. an orientation note with suggested — never required — first moves
+   (§7.1).
 
 Prompt guidance should remain thin:
 
@@ -757,6 +788,24 @@ Prompt guidance should remain thin:
 
 Those are experimental-discipline rules. They do not tell the model what
 "muddy" means or which layer must be blamed.
+
+### 7.1 Orientation for a fresh agent — suggestions, not script
+
+A fresh session pointed at a speaker it has never seen needs a fast way to
+get oriented. PR-W4's protocol document therefore includes a short "first
+session" section: reference context in the §3.3 sense — ordinary prose a
+model may weigh or ignore, never a schema, gate, or decision tree.
+
+Its shape is conditional recommendations with reasons. For example: when
+no evidence exists yet, a listening-position sweep is usually the cheapest
+first discriminator — one capture reveals the room's reflection arrival
+times, the low-frequency modal region, and gross tonal character; gated or
+near-field follow-ups earn their setup cost once an observation needs to
+be separated into speaker versus room. The section explains *why* each
+starting move earns its place so a stronger model can overrule it with
+reason, and it never binds an adjective to a band or fixes the order of an
+investigation. If review finds it drifting toward the superseded
+diagnostic tree, cut it back.
 
 ## 8. Example user journey
 
@@ -900,6 +949,9 @@ Ship:
 - explicit geometry, stimulus, mic calibration, config fingerprint,
   validity, units, and sensitivity on every new measurement, per the §4.1
   and §5.3 definitions;
+- chart-ready named series on declared grids for every derived response
+  artifact, and aligned-grid output with summary deltas from the compare
+  capability (§5.3);
 - lazy artifact inspection from the context packet.
 
 Start with the capture transport the product already proves — the
@@ -1028,7 +1080,7 @@ Ship:
 
 - `docs/HANDOFF-tuning-workbench.md`, the short canonical operating
   protocol (current-truth-first, under 400 lines, per the documentation
-  paradigm);
+  paradigm), including the §7.1 first-session orientation section;
 - a thin agent launcher skill (`.claude/commands/tuning-workbench.md`)
   that loads the protocol and current context over the §5.0 transport;
 - worked examples that demonstrate model-chosen—not hardcoded—diagnostics;
