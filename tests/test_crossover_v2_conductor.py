@@ -1969,6 +1969,73 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
     assert evidence["phase"] == PHASE_CLOUD_MEASURE
     assert [band["center_hz"] for band in evidence["band_spread"]]
 
+    # (d) the ROOM layer's half of the same payload (issue #1787, plan RC1).
+    # The validity floor and the gated spec curve previously existed only in
+    # the retention-prunable session bundle, so once a bundle aged out the room
+    # layer could not tell where this speaker's gated measurement stops being
+    # trustworthy nor what its gated response is. Both are copied verbatim from
+    # this group's own pipeline result — the same source cloud_measure.json
+    # reads — so the two copies cannot disagree.
+    assert evidence["validity_floor_hz"] == pipeline["validity_floor_hz"]
+    assert evidence["gated_spec_curve"]["freqs_hz"] == pipeline["curve"]["freqs_hz"]
+    assert (
+        evidence["gated_spec_curve"]["magnitude_db"]
+        == pipeline["curve"]["magnitude_db"]
+    )
+    assert evidence["gated_spec_curve"]["freqs_hz"], "the curve must be non-empty"
+
+    _assert_room_layer_can_read_the_evidence(c.candidate, pipeline)
+
+
+def _assert_room_layer_can_read_the_evidence(candidate, pipeline, tmp_root=None):
+    """End-to-end: a REAL produced candidate resolves through the room seam.
+
+    The seam's own unit tests drive synthetic payloads; this is the one place
+    that proves the producer in ``crossover_v2_flow`` and the reader in
+    ``jasper.correction.applied_speaker_evidence`` agree on key names and
+    shapes across a live conductor run (issue #1787, plan RC1 / D2).
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from jasper.correction.applied_speaker_evidence import (
+        AppliedSpeakerEvidence,
+        resolve_applied_speaker_evidence,
+    )
+
+    with tempfile.TemporaryDirectory() as raw_root:
+        root = Path(tmp_root or raw_root)
+        artifact = (
+            root / "bundle" / "evidence" / "v1" / "artifacts"
+            / "crossover_v2" / "session" / "candidate.json"
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
+
+        applied = {
+            # Non-empty linearization marks this as an ACOUSTIC commission —
+            # the seam's discriminator against electrical-only profiles, and
+            # true here since this candidate came from a real cloud fit.
+            "linearization": dict(candidate.linearization),
+            "source": {"measured_candidate_fingerprint": candidate.fingerprint},
+        }
+        target = (
+            "jasper.active_speaker.baseline_profile."
+            "load_applied_baseline_profile_state"
+        )
+        with patch(target, return_value=applied):
+            result = resolve_applied_speaker_evidence(
+                state_path=root / "state.json", sessions_dir=root
+            )
+
+    assert isinstance(result, AppliedSpeakerEvidence), result
+    assert result.candidate_fingerprint == candidate.fingerprint
+    assert result.validity_floor_hz == pipeline["validity_floor_hz"]
+    assert list(result.gated_spec_freqs_hz) == pipeline["curve"]["freqs_hz"]
+    assert result.has_gated_curve is True
+
 
 def test_severing_the_cloud_wiring_changes_the_fit(monkeypatch):
     """The "delete the input, the test must fail" half of the acceptance.

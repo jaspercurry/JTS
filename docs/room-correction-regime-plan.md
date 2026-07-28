@@ -54,7 +54,12 @@ delta).
   ships `safe` 25–250 / `balanced` 20–350 (default) / `assertive`
   20–500 (`cuts_only=False`, `max_total_boost_db=3.0`, not offered on
   the household surface per `HOUSEHOLD_CORRECTION_STRATEGY_IDS`).
-- **Ten** 350-literal sites, not #1787's seven: the issue's seven plus
+- **Ten** 350-literal sites, not #1787's seven — *and RC1's
+  implementation found an eleventh: `correction/envelope.py`'s
+  `_band_word`, which owns 250/500 thresholds on the household-facing
+  headline sentence ("in the bass and lower mids"). It is routed too;
+  the count below is the pre-implementation survey.* The issue's seven
+  plus
   `acoustic_quality.SNR_BANDS_HZ`, `acoustic_quality`'s
   `min(350.0, peq_f_high)` re-clamp (would silently cap any raised
   ceiling), and the shared metric
@@ -304,7 +309,8 @@ Standard per-PR gate: implementation → independent Opus adversarial
 review to 0 blockers / 0 should-fixes → CI green → merge. Serial local
 lanes (`-p no:randomly`).
 
-- **RC1 — seam SSOT + evidence reader (lands #1787).** One
+- **RC1 — seam SSOT + evidence reader (lands #1787).
+  ✅ LANDED 2026-07-28.** One
   boundary-SSOT module; all ten literal sites routed through it with
   behavior identical (boundary still 350) — **with one named
   exception**: the `SessionConfig.peq_f_high` shadow-copy defect is
@@ -318,8 +324,62 @@ lanes (`-p no:randomly`).
   candidate evidence payload is extended (validity floor + gated spec
   curve become candidate-borne, era-tolerant) and the `correction/`
   read accessor resolves the applied candidate through the existing
-  `expected_candidate_fingerprint` gate; contract tests pin the SSOT
+  fingerprint gate; contract tests pin the SSOT
   drift guard and the clamp-bounds/spec-edge co-ownership (D3).
+
+  *As-built notes (2026-07-28).* Shipped as
+  [`jasper/audio_measurement/room_boundary.py`](../jasper/audio_measurement/room_boundary.py),
+  [`jasper/correction/applied_speaker_evidence.py`](../jasper/correction/applied_speaker_evidence.py),
+  and [`tests/test_correction_boundary_ssot.py`](../tests/test_correction_boundary_ssot.py)
+  + `tests/test_correction_applied_speaker_evidence.py`. Four
+  deltas from the text above, all deliberate:
+  (i) the SSOT is homed in **`audio_measurement`, not `correction`**.
+  The reason is *not* a strict layer order — `correction` and
+  `active_speaker` import each other in both directions
+  (`active_speaker.linearization_fit` -> `correction.peq`;
+  `correction.runtime_safety` -> `active_speaker.runtime_contract`),
+  so neither is below the other. The property that actually earns the
+  home is narrower and verified: `audio_measurement` is **imported by
+  both and imports neither**, so it is the one package every consumer
+  — including `audio_measurement.analysis`, itself a routed site — can
+  read the boundary from with no new cross-package edge. A contract
+  test pins that invariant;
+  (ii) the candidate extension needed **no change to
+  `measured_crossover_candidate.py`** — the floor and gated curve
+  ride *inside* `exclusion_evidence`, a free-form mapping already
+  fingerprinted only when non-empty, so era tolerance came for free
+  and no `optional`-set or tamper-check line had to move;
+  (iii) this plan named `expected_candidate_fingerprint` as the gate,
+  but that identifier is the **baseline** candidate's fingerprint, a
+  different vocabulary from `MeasuredCrossoverCandidate.fingerprint`,
+  and no existing helper rehydrates the applied measured candidate.
+  The seam therefore reuses the identity the apply path already
+  records — `source.measured_candidate_fingerprint` — which is the
+  same staleness fact, read from the same place, without inventing a
+  new rule;
+  (iv) `SessionConfig.peq_f_low`/`peq_f_high` were **removed** rather
+  than re-pointed, so the shadow copy cannot return. One further
+  defect of the same class surfaced and was fixed in passing:
+  `status.session_config_payload` also reported
+  `cfg.correction_strategy` (always the default) rather than the
+  household's actual pick, which would have contradicted the
+  now-correct band on the same payload.
+
+  *Carried into RC3 as an OPEN decision.* `safe` composes as
+  `ROOM_BOUNDARY_MIN_HZ`, which is provably identical to D1's
+  `min(250, f_t)` for every admissible f_t (the clamp floor is 250),
+  so it needs no revisit. **`assertive` does not have that
+  guarantee.** RC1 expresses it as `ROOM_BOUNDARY_MAX_HZ` to preserve
+  its shipped 500 Hz, but D1 never adjudicated assertive under a
+  per-room ceiling, and the two concepts differ: MAX bounds how far
+  the *estimator* may be trusted, while assertive's band is a
+  power-user policy choice. At f_t = 280 a static 500 would leave
+  assertive correcting ~220 Hz of what D1 assigns to Tier B's
+  residual-only regime. RC3 must decide assertive explicitly rather
+  than inherit the equality. Also note the strategy table binds the
+  SSOT's *static* module-level values at import time, so RC3's f_t
+  requires editing that composition in `strategy.py` — RC1 confined
+  the change to one place, it did not remove it.
 - **RC2 — T60 estimator + per-room f_t.** Offline Schroeder-integral
   T60 recomputed from persisted raw captures
   (`impulse_response_from_capture`); a bundle whose raw audio was
@@ -408,4 +468,4 @@ calibrated-mic-gated, and survive recompose round-trips; LF boosts
 land only on spatially-persistent modal evidence with their level cost
 disclosed; and no code path corrects the raw in-room curve above f_t.
 
-Last verified: 2026-07-27
+Last verified: 2026-07-28

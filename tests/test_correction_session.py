@@ -1814,7 +1814,7 @@ async def test_multi_position_verify_judges_against_position1_not_average(
         ),
         verify_db=verify,
         target_db=target,
-        f_high=sess.cfg.peq_f_high,
+        f_high=sess.correction_band_hz[1],
         basis="spatial_average",
     )
     assert avg_result.verdict is Verdict.ACCEPT

@@ -67,6 +67,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
 from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
 # The adopted spec table -- docs/flat-linearization-plan.md, "The spec --
@@ -76,8 +77,14 @@ from jasper.audio_measurement.spatial_combine import merged_true_intervals
 # the 2 kHz / 8 kHz seams). S0-CONTINGENT (see module docstring): revise
 # only with S0/S3 data attached, per the plan's own "the spec serves the
 # measurement, not the reverse" rule.
+#
+# The LOWER EDGE is not a literal here: it is the seam with the room-correction
+# layer, owned by jasper.audio_measurement.room_boundary so the spec's floor
+# and the room ceiling's clamp floor cannot drift apart (issue #1787, plan D3).
+# Revising 250 -> 300 stays an S0-contingent decision; it just happens in that
+# one module now. The tolerances and the upper edges remain this module's own.
 SPEC_BANDS: tuple[tuple[float, float, float], ...] = (
-    (250.0, 2000.0, 1.5),
+    (GATED_SPEC_LOWER_EDGE_HZ, 2000.0, 1.5),
     (2000.0, 8000.0, 2.0),
     (8000.0, 16000.0, 2.5),
 )
@@ -86,8 +93,9 @@ SPEC_BANDS: tuple[tuple[float, float, float], ...] = (
 # bands (SPEC_BANDS[0] union SPEC_BANDS[1] = 250 Hz-8 kHz) "so a top-octave
 # deficit cannot re-center the target" (plan wording, verbatim). Uses the
 # same inclusive-lower/exclusive-upper edge rule as SPEC_BANDS, so it spans
-# exactly those two bands with no gap or overlap at the 2 kHz seam.
-REFERENCE_BAND_HZ: tuple[float, float] = (250.0, 8000.0)
+# exactly those two bands with no gap or overlap at the 2 kHz seam. Its lower
+# edge is SPEC_BANDS[0]'s by construction, so it reads the same owner.
+REFERENCE_BAND_HZ: tuple[float, float] = (GATED_SPEC_LOWER_EDGE_HZ, 8000.0)
 
 # Above this frequency the plan's table reads "best-effort, disclosed,
 # never specced" -- never evaluated against a tolerance, never counted

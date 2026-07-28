@@ -92,6 +92,7 @@ from jasper.audio_measurement.analysis import (
     deviation_metrics,
     smooth_fractional_octave,
 )
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 from jasper.env_load import bounded_env_float, bounded_env_int
 
 
@@ -376,7 +377,7 @@ def evaluate_acceptance(
     verify_db: np.ndarray,
     target_db: np.ndarray,
     f_low: float = 50.0,
-    f_high: float = 350.0,
+    f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
     thresholds: AcceptanceThresholds | None = None,
     basis: str = "position_1",
     verify_index: int = 1,

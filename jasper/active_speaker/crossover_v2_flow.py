@@ -6118,9 +6118,35 @@ class CrossoverV2Conductor:
         ``position_stability_limit``'s docstring turns on the distinction
         between the two spreads, and a reader auditing the choice needs to see
         the number that was NOT used.
+
+        ``validity_floor_hz`` and ``gated_spec_curve`` (room-correction regime
+        plan RC1, issue #1787) ride here for a different consumer: the room
+        layer. Both previously existed ONLY in the retention-prunable session
+        bundle and the clearable v2 flow state, so once a bundle aged out the
+        room layer could not tell where this speaker's gated measurement stops
+        being trustworthy, nor what the speaker's own gated response is —
+        which is exactly what Tier B residual correction must subtract to
+        avoid re-flattening voicing the speaker layer already set. Carrying
+        them on the candidate makes them travel with the correction they
+        justify, and (because a non-empty ``exclusion_evidence`` is
+        fingerprinted — see :meth:`MeasuredCrossoverCandidate._core`) makes
+        them tamper-evident for free. Both are copied verbatim from this
+        group's own pipeline result, the same source ``cloud_measure.json``
+        reads, so the two copies cannot disagree.
+
+        Cost, stated plainly: ``gated_spec_curve`` duplicates the already-
+        decimated cloud curve (<=512 points, two float arrays), which adds
+        roughly **15-20 KB of JSON per candidate**. That is a deliberate
+        trade — the curve is small, bounded, and written once per commission,
+        whereas the alternative (re-reading it from the session bundle) is
+        exactly the retention-prunable dependency this extension exists to
+        remove. If the curve ever grows unbounded, decimate at this boundary
+        rather than dropping the field.
         """
         result = self._group_cloud_result.get(PHASE_CLOUD_MEASURE) or {}
         registry = result.get("null_registry")
+        floor = result.get("validity_floor_hz")
+        curve = result.get("curve")
         return {
             "phase": PHASE_CLOUD_MEASURE,
             "excluded_bands_hz": [list(band) for band in cloud.excluded_bands_hz],
@@ -6137,6 +6163,22 @@ class CrossoverV2Conductor:
                 for band in cloud.band_spread
             ],
             "null_registry": dict(registry) if isinstance(registry, Mapping) else {},
+            # None is a real, load-bearing value here: "the floor is
+            # unverified", never "the floor is 0 Hz" (see
+            # cloud_validity_floor_hz). The reader must treat it as absent.
+            "validity_floor_hz": (
+                float(floor)
+                if isinstance(floor, (int, float)) and math.isfinite(float(floor))
+                else None
+            ),
+            "gated_spec_curve": (
+                {
+                    "freqs_hz": [float(v) for v in curve.get("freqs_hz", ())],
+                    "magnitude_db": [float(v) for v in curve.get("magnitude_db", ())],
+                }
+                if isinstance(curve, Mapping)
+                else {}
+            ),
         }
 
     def _linearization_eligible(self, analysis: ProgramAnalysis) -> bool:

@@ -166,7 +166,7 @@ def test_repeatability_thresholds_are_inclusive(
         first,
         repeat,
         freqs_hz,
-        peq_f_high=sess.cfg.peq_f_high,
+        peq_f_high=sess.correction_band_hz[1],
     )
 
     assert report == {
@@ -242,7 +242,7 @@ def test_repeatability_p95_thresholds_are_independent(
         first,
         repeat,
         freqs_hz,
-        peq_f_high=sess.cfg.peq_f_high,
+        peq_f_high=sess.correction_band_hz[1],
     )
 
     assert report["level"] == expected_level
@@ -255,20 +255,27 @@ def test_repeatability_p95_thresholds_are_independent(
     assert sess._repeatability_from_arrays(first, repeat, freqs_hz) == report
 
 
-def test_repeatability_uses_configured_upper_band(tmp_path: Path):
-    sess = make_measurement_session(tmp_path)
-    sess.cfg.peq_f_high = 200.0
-    freqs_hz = np.array([50.0, 100.0, 200.0, 250.0])
+def test_repeatability_uses_the_sessions_own_strategy_band(tmp_path: Path):
+    """A narrower strategy narrows repeatability's band too (issue #1797).
+
+    This used to poke a synthetic 200 Hz into `sess.cfg.peq_f_high`, a frozen
+    shadow copy of the `balanced` band that no production caller ever wrote.
+    The real narrow-band case is a `safe` session, whose 250 Hz ceiling must
+    now reach repeatability instead of being graded at `balanced`'s 350.
+    """
+    sess = make_measurement_session(tmp_path, strategy_choice="safe")
+    assert sess.correction_band_hz == (25.0, 250.0)
+    freqs_hz = np.array([50.0, 100.0, 200.0, 250.0, 300.0])
 
     report = acoustic_quality.repeatability_from_arrays(
         np.zeros(freqs_hz.shape),
         np.ones(freqs_hz.shape),
         freqs_hz,
-        peq_f_high=sess.cfg.peq_f_high,
+        peq_f_high=sess.correction_band_hz[1],
     )
 
     assert report["available"] is True
-    assert report["band_hz"] == [50.0, 200.0]
+    assert report["band_hz"] == [50.0, 250.0]
     assert report["metrics"] == {
         "rms_db": 1.0,
         "p95_abs_db": 1.0,
