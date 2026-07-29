@@ -13,7 +13,8 @@ Last reconciled against `origin/main` (`c125993474`), including this branch:
 - **fixed**: 387
 - **in-progress**: 0
 - **mooted**: 13
-- **deferred**: 1
+- **deferred**: 0
+- **partially-implemented**: 1 (DA-0002, re-verified 2026-07-29)
 
 ## Ledger
 
@@ -541,7 +542,7 @@ Last reconciled against `origin/main` (`c125993474`), including this branch:
 | DA-0675 | `tests/test_wake_corpus_setup.py` :: :1-4307 (whole file) | nit | W4 | **open** | — |
 | DA-0676 | `tests/test_web_rooms_setup.py` :: test_post_swap_rollback_failure_is_surfaced | nit | W4 | **open** | — |
 | DA-0677 | `tests/voice_eval/regression/test_barge_in_openai.py` :: truncate_lines / _AUDIO_END_MS_RE | nit | W4 | **open** | — |
-| DA-0002 | `jasper/capture_relay/alignment.py` :: assert_alignment_confident | blocker | W0 | **deferred** | owner-decision: per-flow seam, require=False first — #1214 (body) |
+| DA-0002 | `jasper/capture_relay/alignment.py` :: assert_alignment_confident | blocker | W0 | **partially-implemented** | the *property* is enforced on crossover (own locate floors, #1583/#1838) and `/sync` (own `MIN_CONFIDENCE`, pre-audit); `room_sweep` unguarded; `bass_nearfield` has no production flow. This *function* still has no reachable production caller — #1384's lone call site is gated behind an `ambient_duration_s` no live path supplies. Nothing reads `validity.require_alignment`. Docs corrected #1214 + this PR; per-flow map + rollout in the tracking issue — see "Open owner decisions" §1 |
 | DA-0001 | `deploy/assets/rooms/js/main.js` :: makeBondCard().sync() — appendChildren call  | blocker | W0 | **fixed** | ReferenceError fixed + regression test — #1214 |
 | DA-0076 | `AGENTS.md` :: "Cue regeneration" paragraph, Voice provider | should-fix | W2 | **fixed** | doc corrected — #1216 |
 | DA-0077 | `AGENTS.md` :: Transit "Adding transit" checklist item 7 (~ | should-fix | W2 | **fixed** | migration ownership and CITY_PACKS extension guidance corrected and contract-tested — #1333 |
@@ -948,7 +949,15 @@ Apply this filter to `clusters.json`; only the first two classes earn a PR now.
 
 ## Open owner decisions
 
-1. **Relay alignment-gate wiring** (DA blocker, deferred): recommended seam is per-flow inside each relay `run_and_consume` (after `run_and_store`, before `on_capture_uploaded`); land `require=False` with `event=capture_relay.alignment` logging, flip `require=True` per-flow only after the 0.40 threshold is validated on jts3/jts5. Do NOT gate the shared `on_capture_uploaded` (same-origin uploads use it).
+1. **Relay alignment-gate wiring** (DA-0002, blocker — now **partially implemented**; re-verified against `main` 2026-07-29). The original recommendation still stands for the *unguarded* flows: per-flow seam, `require=False` + `event=capture_relay.alignment` logging first, flip `require=True` only after the 0.40 threshold is validated on jts3/jts5. Do NOT gate the shared `on_capture_uploaded` (same-origin uploads use it). What has changed since the audit:
+   - **`crossover_sweep` is enforced** — by the flow's own MEASURE locate floors `_sweep_locate_confidence_ok` (0.3) / `_stimulus_locate_ok` (0.1) in `active_speaker/crossover_v2_flow.py`, scored over `audio_measurement/program_analysis.py`'s own `cross_correlation_alignment` call (#1583, split by #1838's D3). Not via `assert_alignment_confident`, and not at the 0.40 default.
+   - **`sync_marker` was already enforced by a parallel implementation** the audit did not find — `multiroom/sync_measure.py`'s `MIN_CONFIDENCE = 0.35` clears `ok`, which blocks `/sync` apply with a 409. Predates the audit entirely.
+   - **#1384 did NOT put the gate on a household path**, contrary to how it reads. `assert_alignment_confident` has exactly one call site in the tree (`active_speaker/driver_acoustics.py`), reached only when `ambient_duration_s` is supplied. Both suppliers are dead ends today: the commissioning capture producer's `RawCaptureTransport` has no production implementation (only `_SyntheticRawCaptureTransport` in tests) and its `capture_next` / `capture_post_apply` service entry points have no production caller; `legacy_replay.replay_legacy_current_winner` has no production caller either. The seam is built and unit-tested; it is not live.
+   - **Neither *enforcing* flow used the recommended `run_and_consume` seam** — both gate *downstream, inside analysis*, where the stimulus is already in hand. That is evidence the recommended seam may be the wrong one; re-adjudicate before wiring `room_sweep`.
+   - **One quantity, three implementations** (`capture_relay.alignment`, `program_analysis._locate` + flow floors, `sync_measure`) with three different thresholds (0.40 / 0.3 / 0.1 / 0.35). Consolidating is an SSOT decision worth making deliberately, not a side effect of wiring the next flow.
+   - **Still unguarded:** `room_sweep` (correction locates by `argmax|h(t)|` in `audio_measurement/deconv.py` — no confidence metric exists to gate on, so this is a new-instrument job, not a wiring job). `bass_nearfield` declares `require_alignment=True` but has **no production caller at all**, so there is nothing to wire.
+   - **The spec field is decorative.** Nothing anywhere reads `validity.require_alignment` at runtime; it is constructed, serialized to the phone, and type-validated only. Every enforcement that exists is hardcoded in its flow. Either drive the gates off the field or stop declaring it.
+   - Related: #1869 (crossover alignment-confidence blind at ±carrier lobes — same quantity, different defect), #1839 (`_locate_discontinuity` fabricates steps from unlocatable sweeps — wants this same floor as a precondition), and the attribution plan's WO-1 per-capture persistence (`docs/attribution-stage-plan.md`), which wants exactly this kind of computed-then-discarded scalar persisted per capture.
 2. **`os.environ`-bypassed Config fields**: `google/spotify_web_bind_host/port`, `camilla2_statefile` — remove or route through typed `Config`.
 3. **`jasper/bluetooth/` HANDOFF**: doc-map temporarily routes it to the nearest operational doc; it needs its own canonical doc.
 4. **Two unverified README invariants** now have guard tests in W5: outputd sole-DAC-writer; peering exactly-one-winner. If either invariant is not actually enforced in code, the test must fail loud (no tautology).

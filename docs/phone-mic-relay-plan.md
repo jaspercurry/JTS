@@ -790,10 +790,40 @@ mode for a tool whose entire job is a trustworthy result.
 - **Alignment confidence.** Cross-correlation alignment confidence is designed as
   a first-class check: a weak/ambiguous correlation peak should fail loud the same
   way a bad hash does. (Intact-but-misaligned is exactly the failure the byte hash
-  cannot catch.) The gate itself (`capture_relay/alignment.py`,
-  `assert_alignment_confident`) is implemented and unit-tested but **not yet wired**
-  into the capture path — no production flow calls it today (alignment-threshold
-  tuning is deferred; see the footer). See §11.
+  cannot catch.) Coverage today is **per-flow and uneven** — the shared gate
+  (`capture_relay/alignment.py`, `assert_alignment_confident`) is *not* the
+  common seam, and **no analysis path reads `validity.require_alignment` at
+  all**; every enforcement that exists is hardcoded in its own flow. State as of
+  2026-07-29 (`DA-0002`; per-flow map + rollout plan in the tracking issue):
+  - `crossover_sweep` — **enforced**, but by the flow's own locate floors, not by
+    this module's gate: `_sweep_locate_confidence_ok` (0.3) and
+    `_stimulus_locate_ok` (0.1) in
+    [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py),
+    scored over the `cross_correlation_alignment` call that
+    [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py)
+    makes in its own `_locate`. Neither raises `AlignmentError`, and both use
+    their own floors rather than the 0.40 default.
+  - `sync_marker` — **enforced by a second, independent implementation**, also
+    not this gate: [`multiroom/sync_measure.py`](../jasper/multiroom/sync_measure.py)'s
+    `MIN_CONFIDENCE = 0.35` marks `low_confidence`, which clears `ok`, which
+    keeps `/sync` out of `analyzed` and makes apply a 409.
+  - `room_sweep` — **not enforced.** The correction pipeline locates the direct
+    arrival by `argmax|h(t)|` ([`deconv.py`](../jasper/audio_measurement/deconv.py))
+    with no confidence metric to gate on.
+  - `bass_nearfield` — declares it, but has **no production caller at all**
+    (parked near-field workstream); there is no analysis path to gate.
+
+  `assert_alignment_confident` itself has **exactly one call site in the tree**
+  ([`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py), added
+  by #1384) and that site is **not reachable from any live household flow
+  today**: it runs only when `ambient_duration_s` is supplied, and the two
+  suppliers are the commissioning capture producer — whose `RawCaptureTransport`
+  has no production implementation, only a synthetic one in tests, and whose
+  `capture_next` / `capture_post_apply` service entry points have no production
+  caller — and `legacy_replay`, which also has no production caller. #1384 built
+  the seam; it did not put the gate on a household path.
+
+  (Alignment-threshold tuning is deferred; see the footer.) See §11.
 - **Clock drift (per-kind guidance).** The phone's mic clock and the Pi's playback
   clock are independent crystals that drift (~tens of ppm → ~1 ms over a 10 s
   window). Negligible for magnitude **frequency response** and for **level /
@@ -843,9 +873,13 @@ mode for a tool whose entire job is a trustworthy result.
   `capture_spec` for the active flow. Register, render the tap-link / QR, poll,
   pull, decrypt, **verify integrity** (plaintext length + SHA-256), then hand the
   WAV to the **existing** analysis (`correction_setup.py`'s pipeline) — same 48 kHz
-  / mono / 32 MB contract as today. The cross-correlation **alignment-confidence**
-  gate (`capture_relay/alignment.py`, §9) is built and unit-tested but **not yet
-  wired** into this pull path — the deployed verify step is integrity only.
+  / mono / 32 MB contract as today. The shared pull path's verify step is
+  **integrity only**: `run_capture` decrypts and checks length + SHA-256, and
+  never scores alignment. **Alignment confidence** is checked per flow,
+  downstream of the pull, and only by some flows — crossover and `/sync` each
+  enforce a floor of their own; `room_sweep` does not. None of them route
+  through this module's `assert_alignment_confident`, which no live flow
+  reaches. Per-flow detail in §9.
 - If `stimulus.played_by == "pi"`: start playback when the phone posts
   `{armed:true}`; rely on cross-correlation for alignment (no tight sync).
 
@@ -856,9 +890,9 @@ mode for a tool whose entire job is a trustworthy result.
 Every leg surfaces a clear UI state today: link/session expired, relay
 unreachable, upload failed, the Pi never sees `armed` within a timeout,
 decrypt/integrity fail → explicit message + retry on the phone or
-speaker page, plus `event=capture_relay.*` logs. (The alignment-confidence gate
-that would add a weak-correlation failure to that list is built but not yet
-wired — §9/§11.) Audible cues remain a required
+speaker page, plus `event=capture_relay.*` logs. (A weak-correlation failure
+joins that list only on the flows that gate for it — crossover and `/sync`
+today, not `room_sweep` — §9/§11.) Audible cues remain a required
 follow-up for failures where the household must act (`CueDef.play(...)` from the
 cue registry; see [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md)),
 but the current jasper-web relay adapter has no cue bridge. The relay is a shared
@@ -984,7 +1018,11 @@ spec is uploaded.
 - Adding `kind="balance_burst"` requires edits to **only the Pi and the page —
   zero relay changes.**
 - A **weak/ambiguous cross-correlation alignment fails loud** (not a silently-wrong
-  measurement).
+  measurement). **Partially met (2026-07-29):** met on `crossover_sweep` and
+  `/sync`, each via its own floor; **not** met on `room_sweep`, and
+  `bass_nearfield` has no production flow to meet it on. No flow drives this off
+  the spec's own `validity.require_alignment`, and none reaches
+  `assert_alignment_confident` — see §9 and the `DA-0002` tracking issue.
 - EC/AGC/NS left on (or capture not clean) → **refuse / labeled-degrade per kind**,
   never a silently-flattened measurement.
 - **Killing the relay mid-flow** → clear UI error, **not** a silent hang; existing
@@ -1003,7 +1041,20 @@ spec is uploaded.
 
 ---
 
-Last updated: 2026-07-27 — capture protocols 1 and 2 are DELETED. There is
+Last updated: 2026-07-29 — §9/§11/§12/§15's alignment-confidence claims
+re-verified against `main` and corrected. The prior "no production flow calls
+it today" was *narrowly* true — `assert_alignment_confident` still has no
+reachable production caller, since #1384's lone call site needs an
+`ambient_duration_s` that only a transport-less commissioning path and a
+caller-less legacy replay supply — but it was wrong as a statement about the
+*property*: `/sync` has gated on its own alignment confidence since before the
+audit, and crossover v2 has gated on its own locate floors since #1583/#1838.
+Coverage is per-flow and uneven (crossover ✓, `/sync` ✓, `room_sweep` ✗,
+`bass_nearfield` has no production flow), it is spread across three
+independent implementations of one quantity, and no flow reads the spec's own
+`validity.require_alignment`. No code changed — `DA-0002` in the deep-audit
+ledger tracks the remaining work. Prior
+2026-07-27 — capture protocols 1 and 2 are DELETED. There is
 exactly one capture protocol; every builder emits it, `version.json` advertises
 exactly it, a spec that omits it is incompatible rather than legacy, every
 phone event and every spec link is authenticated, and session-spanning
