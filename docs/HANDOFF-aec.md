@@ -306,7 +306,7 @@ The HPF stack, layered defense:
 |---|---|---|---|---|
 | Chip mic ingress | 4th-order Butterworth | 125 Hz | XVF3800 `AEC_HPFONOFF`, set in `jasper-aec-init` | `JASPER_AEC_CHIP_HPF_HZ` env, values 0/70/125/150/180 |
 | AEC3 internal capture | 2nd-order Butterworth | 100 Hz | `AudioProcessing` upstream of `EchoCanceller3`, enabled in `jasper_aec3/src/aec3_binding.cpp` | always on (compile-time) |
-| Bridge ref pipeline | 2nd-order Butterworth | **125 Hz** | `_ref_thread` in `jasper/cli/aec_bridge.py`, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 125 Hz |
+| Bridge ref pipeline | 2nd-order Butterworth | **125 Hz** | `_ReferenceFrameConverter` in `jasper/cli/aec_bridge.py`, shared by the outputd UDP and ALSA fallback transports, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 125 Hz |
 
 **Why HPFs on both legs are not redundant**: AEC3 applies its
 internal HPF to the **capture** (mic) signal only. The reference
@@ -417,7 +417,7 @@ until outputd grew the XVF USB-IN reference fanout; the current
 | **Chip output mux** | **OP_L=`(8,0)`, OP_R=`(8,0)`** | `jasper-aec-init` | The bridge reads channel 1. Seeed's firmware default for channel 1 is OP_R=`(0,0)` (silence), so fallback init must keep OP_R on a non-silent route. 2026-05-31 failure mode: restoring OP_R to the firmware default made `jasper-aec-bridge` report `mic=0` even though ALSA capture and UDP output were healthy. |
 | **Chip SHF** | **BYPASSED (`SHF_BYPASS=1`)** | `jasper-aec-init` | The software fallback uses host-side AEC3 and intentionally keeps the chip AEC out of the near-end path. **SHF_BYPASS=1 disables the ENTIRE SHF stage (AEC + BF + NS + AGC) on channels 0/1**, not just AEC — see Caveat above. The chip-side HPF stays. The recommended chip-AEC profile is separate and uses `SHF_BYPASS=0` with a live XVF USB-IN reference from outputd. |
 | **Chip HPF** | **125 Hz, 4th-order Butter (`AEC_HPFONOFF=2`)** | `jasper-aec-init` | XMOS shipping default for smart-speaker presets. Applied at mic ingress before the SHF block (so survives SHF_BYPASS). Cuts LF rumble at the source. Configurable via `JASPER_AEC_CHIP_HPF_HZ` (off/70/125/150/180). |
-| **Ref-side HPF** | **125 Hz, 2nd-order Butter** | `_ref_thread` in `jasper/cli/aec_bridge.py` | Matches chip mic-side HPF cutoff so AEC3 sees symmetric bands. Configurable via `JASPER_AEC_REF_HPF_HZ`. |
+| **Ref-side HPF** | **125 Hz, 2nd-order Butter** | `_ReferenceFrameConverter` in `jasper/cli/aec_bridge.py` | Matches chip mic-side HPF cutoff so AEC3 sees symmetric bands. Configurable via `JASPER_AEC_REF_HPF_HZ`; both reference transports use the same stateful conversion. |
 | **`JASPER_AEC_REF_GAIN_DB`** | **0** | `/etc/jasper/jasper.env` + `.env.example` | The single most impactful knob in the 2026-05-16 tuning. The fallback raw-ish mic input (ch 1 with SHF_BYPASS=1) arrives at ~-22 dBFS RMS due to chip MIC_GAIN preamp + speaker-room-mic acoustic path. Digital ref is at -10 to -25 dBFS depending on music dynamics. AEC3's design point is ref ~= mic; +0 dB matches this. **Any positive REF_GAIN drives ref into hard clipping** — see "REF_GAIN trap" below. |
 | **`JASPER_AEC_MIC_GAIN_DB`** | **+6 dB** | `/etc/jasper/jasper.env` | Boosts AEC3 output to openWakeWord's training distribution (~-18 dBFS RMS). Static gain, doesn't reshape envelopes. Soft-clipped via tanh on the way out. With `AGC1_ENABLED=1` this stacks on top of AGC1's dynamic gain — drop to 0 if too hot. |
 | **`JASPER_AEC_AGC2`** | **0** (off) | `/etc/jasper/jasper.env` | Was investigated as a level-stabilizer; turns out our binding only sets `gain_controller2.enabled = true`, while the `adaptive_digital` sub-config defaults off in libwebrtc-audio-processing-1 v1.3-3. Net result: AGC2=on is a no-op for level control on this Trixie build. Use AGC1 instead (below). Kept env-tunable for backwards compatibility; recommended off. |
@@ -1785,7 +1785,8 @@ Captured here so future sessions don't repeat the mistakes.
    matched HPFs on both legs improve the matched-filter delay
    estimator's adaptation in noisy environments. Our bridge applies
    AEC3's internal capture HPF automatically; the ref-side HPF in
-   `_ref_thread` brings the ref to the same band.
+   `_ReferenceFrameConverter` brings the ref to the same band for both
+   the production outputd UDP transport and the ALSA fallback.
 
 6. **`pcm.jasper_capture` (dsnoop) must be wrapped in `plug:`**
    when consumed by clients that lock a different rate than the
@@ -2591,7 +2592,7 @@ near unity; ours sits well outside its design point.
 
 - **AGC2 ON looks like it makes attenuation worse by 3 dB on the metric, but that's measurement bias.** AGC2 sits *after* AEC and amplifies the residual back up to a target level. The actual residual echo isn't worse; the *amplified output* is louder, which makes the dB ratio look smaller. AGC2's value is in giving openWakeWord a normalized input, not in adding raw cancellation. The right judge of AGC2 is wake-word detection rate, not RMS attenuation.
 - **AGC2 OFF lets AEC3 reach much deeper cancellation when its filter is well-converged.** The −38 to −44 dB windows are real deep-cancel moments. With AGC2 ON, those moments still happen at the AEC3 layer but get masked in the metric.
-- **REF_GAIN above +25 dB hard-clips the digital reference at peaks** (np.clip is hard-clip; pink noise peak factor ≈ 3× RMS). The +30 dB config injects distortion AEC3 has to work around — fewer deep-cancel windows than +25 dB, suggesting the clipping is mildly hurting convergence. If we want to push beyond +25 dB cleanly we need to swap the hard-clip in `_ref_thread` for a soft-limiter (~15 lines of NumPy).
+- **REF_GAIN above +25 dB hard-clips the digital reference at peaks** (np.clip is hard-clip; pink noise peak factor ≈ 3× RMS). The +30 dB config injects distortion AEC3 has to work around — fewer deep-cancel windows than +25 dB, suggesting the clipping is mildly hurting convergence. If we want to push beyond +25 dB cleanly we need to swap the hard-clip in `_ReferenceFrameConverter` for a soft-limiter (~15 lines of NumPy).
 
 **Chosen production config: `JASPER_AEC_AGC2=0`, `JASPER_AEC_REF_GAIN_DB=25`.** Best peak attenuation, hits the loop-gain target zone closely without excessive clipping, simplest signal path for openWakeWord. If real-world wake-word testing later shows level instability at high SPL, flipping `JASPER_AEC_AGC2=1` is one env edit + bridge restart.
 
@@ -2834,8 +2835,11 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-07-27 (targeted recheck of the mandatory v1 / optional
-verified-v2 runtime selection and delivery boundary against
+Last verified: 2026-07-29 (targeted recheck that the production outputd UDP
+reference and `jasper_ref` ALSA fallback retain separate transport lifecycles
+while sharing `_ReferenceFrameConverter`'s framing, stateful DSP, clipping,
+and nonblocking queue contract; prior 2026-07-27 pass rechecked the mandatory
+v1 / optional verified-v2 runtime selection and delivery boundary against
 `jasper/cli/aec_bridge.py`, `jasper/enhanced_aec.py`, the lazy
 `jasper_aec3` package initializer, and focused lifecycle tests; broader
 audio-topology verification remains from 2026-07-23, when the bridge's

@@ -4,15 +4,15 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`c125993474`), including this branch:
-2026-07-27.
+Last reconciled against `origin/main` (`7d6acbc45a`), including this branch:
+2026-07-29.
 
 ## Status counts
 
-- **open**: 277 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 276 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 387
+- **fixed**: 388
 - **in-progress**: 0
 - **mooted**: 13
 - **deferred**: 0
@@ -121,7 +121,7 @@ Last reconciled against `origin/main` (`c125993474`), including this branch:
 | DA-0177 | `jasper/active_speaker/web_measurement.py` :: capture_preset (line 255) | should-fix | W3 | **fixed** | capture-preset resolution centralized with fail-closed fallback and explicit internal path ownership — #1358 |
 | DA-0178 | `jasper/audio_runtime_plan.py` :: _resolve_profile_floor_int / _resolve_output | should-fix | W3 | **open** | — |
 | DA-0179 | `jasper/audio_validation.py` :: write_artifact:663 / write_latest_pointer:69 | should-fix | W3 | **fixed** | both diagnostic publishers use one domain serializer and canonical atomic writer — #1360 |
-| DA-0180 | `jasper/cli/aec_bridge.py` :: _ref_thread (1095-1214) / _outputd_ref_udp_t | should-fix | W3 | **open** | — |
+| DA-0180 | `jasper/cli/aec_bridge.py` :: `_ref_thread` / `_outputd_ref_udp_thread` | should-fix | W3 | **fixed** | both transports share one stateful reference converter and queue/drop seam |
 | DA-0181 | `jasper/cli/aec_tune.py` :: main (--mic-device default) | should-fix | W3 | **fixed** | registry-derived XVF capture identity and WAV-layout validation — #1412 |
 | DA-0182 | `jasper/cli/doctor/audio.py` :: _read_status_socket:978 | should-fix | W3 | **fixed** | STATUS socket lifecycle centralized with total deadline, response cap, and caller-owned policy — #1361 |
 | DA-0183 | `jasper/cli/wake_score.py` :: walk_corpus/parse_quadrant vs recording_back | should-fix | W3 | **fixed** | shared condition mapping restores ambient traversal and scoring — #1362 |
