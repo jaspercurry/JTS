@@ -220,4 +220,83 @@ render({
     { got: text });
 }
 
+// --- 5. headroom_cost: the era-stamped level disclosure (two-stage D3.2) ---
+// PR-T1 put `headroom_cost` on the candidate payload as a {db, basis}
+// compound; nothing rendered it. The review screen is where D4's claim that
+// this disclosure "lives on the browser-visible candidate summary" becomes
+// true. Cases 1-4 above already prove the ABSENT case renders unchanged.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    headroom_cost: { db: 5.2, basis: "realized_peak" },
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text === (
+      "alignment confidence 0.71; candidate cand-proof; " +
+      "costs 5.2 dB of maximum volume."
+    ),
+    "a current-era headroom cost renders as a plain level charge",
+    { got: text },
+  );
+}
+
+// The era trap, and the reason this is a compound rather than a float: the
+// charge's derivation changed under #1808 and the stamp is NOT re-derived on
+// load, so a pre-amendment candidate discloses ~22.5 dB where the same
+// correction now costs ~5. Rendering that bare would put an order-of-magnitude
+// wrong level cost on the one screen whose purpose is honesty.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    headroom_cost: { db: 22.5, basis: "unknown" },
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text.includes("22.5 dB") && text.includes("no longer uses"),
+    "a pre-amendment headroom cost NEVER renders bare — the number is stated " +
+    "with the era that stamped it, and points at a re-measure",
+    { got: text },
+  );
+}
+
+// `db: null` is "we do not know", and zero is a real, common answer here
+// (every cut-only correction charges nothing) — so an absent number must not
+// render as a free correction.
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    headroom_cost: { db: null, basis: "unknown" },
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text === "alignment confidence 0.71; candidate cand-proof.",
+    "an unknown headroom cost renders NO level line at all — never '0 dB', " +
+    "which is a real measurement this payload does not have",
+    { got: text },
+  );
+}
+
+render({
+  ...baseEnvelope,
+  candidate_review: baseCandidateReview({
+    headroom_cost: { db: 0, basis: "realized_peak" },
+  }),
+});
+{
+  const text = technicalDetailsText();
+  check(
+    text.includes("costs 0.0 dB of maximum volume"),
+    "a genuine zero DOES render — a cut-only correction costing nothing is a " +
+    "measured answer, not a missing one",
+    { got: text },
+  );
+}
+
 console.log(JSON.stringify({ ok: true, passed }));

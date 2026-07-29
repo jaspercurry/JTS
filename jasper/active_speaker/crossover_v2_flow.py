@@ -178,6 +178,19 @@ PHASE_VERIFY = "verify"
 # capture belongs to. Do not conflate the two vocabularies.
 PHASE_CLOUD_MEASURE = "cloud_measure"
 PHASE_CLOUD_VERIFY = "cloud_verify"
+# The two-stage commission flow's untimed INTERLUDE (work order D3, issue
+# #1806): a measure-only session has closed, a candidate exists, and NOTHING
+# has been applied — the household is being shown what was measured, what is
+# proposed, what is predicted, and the spec verdict, and is choosing. Like
+# PHASE_APPLYING and PHASE_DONE this is a control-page phase with no capture
+# index, and like them it is deliberately NOT in ``CAPTURE_PHASES``: no
+# excitation plays and no evidence is bound while it renders.
+#
+# It exists because ``_phase_from_state``'s walk resolved a measure-only
+# session to PHASE_DONE — the RESULT screen, "Your speaker is tuned" — over a
+# speaker that had been measured and not tuned at all (work order current-state
+# premise 6, a verified collision rather than a theoretical one).
+PHASE_REVIEW = "review"
 PHASE_DONE = "done"
 
 # Capture-plan index → phase. APPLYING is a control-page phase (no capture)

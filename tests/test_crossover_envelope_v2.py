@@ -26,11 +26,13 @@ import pytest
 
 from jasper.active_speaker.crossover_envelope_v2 import (
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
+    _PHASE_STEP,
     build_crossover_envelope_v2,
 )
 from jasper.active_speaker.crossover_v2_flow import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
+    PHASE_REVIEW,
     REASON_REGISTRY,
     REASON_AGC_BEHAVIORAL_FAIL,
     REASON_APPLY_FAILED,
@@ -65,7 +67,7 @@ def _step_statuses(env: dict) -> dict[str, str]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 9
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -80,7 +82,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = build_crossover_envelope(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 9
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
     assert env["flow"] == "v2"
 
 
@@ -771,16 +773,20 @@ def test_an_absent_headroom_cost_is_unknown_not_a_free_correction():
 
 
 def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
-    """The payload's schema-version bump (D4's own pin).
+    """The payload's schema-version bump (D4's own pin, carried forward).
 
-    ``candidate_review`` gained a key, so the version a consumer reads to know
-    which shape it is holding moves with it. Additive — no key was removed or
-    re-typed — which is why the crossover wizard, whose module does not gate on
-    this version, keeps rendering an older page against a newer envelope."""
+    ``candidate_review`` gained a key at 9, so the version a consumer reads to
+    know which shape it is holding moved with it. It moved again at 10 for
+    PR-T2's own additions (the ``review`` screen and the ``prediction`` key) —
+    this assertion pins the CURRENT version, and
+    ``test_the_review_screen_moved_the_schema_version`` states T2's reason.
+    Both bumps are additive — no key was ever removed or re-typed — which is
+    why the crossover wizard, whose module does not gate on this version, keeps
+    rendering an older page against a newer envelope."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 9
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
     assert "headroom_cost" in env["candidate_review"]
 
 
@@ -1314,7 +1320,7 @@ def test_applied_false_with_verify_phase_does_not_force_verify_fail():
 ])
 def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
-    assert env["schema_version"] == 9
+    assert env["schema_version"] == 10
     assert env["screen"]
     assert env["verdict_text"]
 
@@ -1340,3 +1346,354 @@ def test_envelope_carries_relay_block_awaiting_and_after_failure():
     assert failed["screen"] == "hard_stop"
     assert failed["relay"] == relay
     assert "safe limits" in failed["verdict_text"]
+
+
+# --- the REVIEW interlude (two-stage commission D3 + D6, issue #1806) ---------
+#
+# The apply decision point the 2026-07-28 owner ruling restored. A dedicated
+# human review screen existed and was removed on purpose (2026-07-20, "no human
+# mid-flow Apply gate"); auto-applying a fit that failed its own spec by
+# +6.04 dB — in-session, three seconds before VERIFY — left a box
+# applied-and-ungraded with no household-visible decision anywhere, and this is
+# the screen that closes that.
+
+
+def _prediction(
+    *, curve=True, overall_passed=True, bands=None, reference_db=80.0,
+) -> dict:
+    """One ``_prediction_status`` projection, in the shape the wire sends.
+
+    Mirrors ``jasper.web.correction_crossover_v2._prediction_status``'s output
+    key-for-key rather than inventing a convenient shape — the four
+    absence/presence combinations exercised below are its OWN enumerated
+    states, and a fixture that smoothed them over would pin nothing.
+    """
+    return {
+        "curve": {"freqs_hz": [100.0, 1000.0], "magnitude_db": [80.0, 74.0]}
+        if curve else None,
+        "spec_bands": bands if bands is not None else [
+            {
+                "f_lo_hz": 250.0, "f_hi_hz": 500.0, "passed": True,
+                "max_deviation_db": 1.2, "tolerance_db": 3.0,
+            },
+        ],
+        "overall_passed": overall_passed,
+        "reference_db": reference_db,
+    }
+
+
+_FAILING_BANDS = [
+    {
+        "f_lo_hz": 100.0, "f_hi_hz": 250.0, "passed": True,
+        "max_deviation_db": 1.0, "tolerance_db": 3.0,
+    },
+    # The worst miss: |-9.04| - 3.0 = 6.04 dB past tolerance — the 2026-07-28
+    # session's own number, which is what makes this the case the work order
+    # was written from rather than a synthetic one.
+    {
+        "f_lo_hz": 250.0, "f_hi_hz": 500.0, "passed": False,
+        "max_deviation_db": -9.04, "tolerance_db": 3.0,
+    },
+    {
+        "f_lo_hz": 500.0, "f_hi_hz": 2000.0, "passed": False,
+        "max_deviation_db": 4.5, "tolerance_db": 3.0,
+    },
+]
+
+
+def _review_status(**overrides) -> dict:
+    v2 = {
+        "phase": "review",
+        "candidate": _candidate_summary(),
+        "prediction": _prediction(),
+        "stage2_preflight": {"ok": True, "message": "", "next_action": None},
+    }
+    v2.update(overrides)
+    return _status(**v2)
+
+
+def test_review_screen_offers_the_three_way_decision_and_never_undo():
+    """D3.5 + **D6**: apply-and-verify / measure again / leave it as it is.
+
+    D6 is the load-bearing half here. ``_failure_envelope``'s applied-override
+    is keyed on the raw ``applied`` state fact, correctly false through all of
+    stage 1 — but the override's mere existence makes offering Undo a one-line
+    accident, and Undo on this screen would invite a household to "restore" a
+    speaker that was never changed. Nothing was replaced, so nothing may be
+    offered as a restore: no action id, no label, and no endpoint on this
+    screen may reach the restore path.
+    """
+    env = build_crossover_envelope_v2(_review_status())
+    assert env["screen"] == "review"
+    assert env["next_action"]["id"] == "review_apply"
+    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/apply"
+    assert [a["id"] for a in env["alternate_actions"]] == [
+        "review_remeasure", "review_decline",
+    ]
+    every_action = [env["next_action"], *env["alternate_actions"]]
+    assert not any("restore" in str(a.get("endpoint") or "") for a in every_action)
+    assert not any("undo" in str(a.get("id") or "").lower() for a in every_action)
+    assert not any("undo" in str(a.get("label") or "").lower() for a in every_action)
+
+
+def test_review_apply_posts_the_reviewed_candidates_own_fingerprint():
+    """The screen does not need a new apply path — it needs a button that posts
+    to the one that is there (work-order premise 4). ``handle_v2_apply``'s FIRST
+    gate is ``expected_candidate_fingerprint``; it refuses outright without one,
+    and refuses a stale one against the durable candidate."""
+    env = build_crossover_envelope_v2(_review_status())
+    assert env["next_action"]["body"] == {"expected_candidate_fingerprint": "fp-123"}
+
+
+def test_review_shows_the_measured_evidence_and_the_predicted_curve():
+    """D3.1/D3.3: the measured cloud and the prediction ride ONE envelope so the
+    chart can draw them in one deviation frame. The prediction is sent on THIS
+    screen only — that is what lets the JS stay data-driven instead of growing
+    the ``env.screen`` switch PR-T2 is not allowed to add."""
+    env = build_crossover_envelope_v2(_review_status())
+    assert env["prediction"]["curve"]["freqs_hz"] == [100.0, 1000.0]
+    assert env["prediction"]["reference_db"] == 80.0
+    assert env["candidate_review"]["trims"]  # "what we propose"
+    # Every other screen carries no prediction, so no shipped chart changes.
+    #
+    # DERIVED from the phase→step map, not hand-listed (review N-3). The
+    # suppression is what keeps `cloud.js`'s `specSourceFor` on the pre-apply
+    # cloud for the review screen ONLY; a phase added to the vocabulary without
+    # a line here would silently start swapping that spec source on a screen
+    # nobody checked. Deriving the set means a new phase joins this assertion
+    # the moment it exists.
+    others = set(_PHASE_STEP) - {PHASE_REVIEW}
+    assert others, "the phase vocabulary must have screens other than review"
+    for phase in sorted(others):
+        other = build_crossover_envelope_v2(_status(
+            phase=phase, candidate=_candidate_summary(), prediction=_prediction(),
+        ))
+        assert other["prediction"] is None, phase
+
+
+def test_review_names_the_band_and_the_margin_when_the_prediction_fails():
+    """**D3.4, the honest verdict.** "When the prediction fails the spec, the
+    screen says so in the household's language and names the band and the
+    margin."
+
+    The margin is the OVERSHOOT past that band's own tolerance, not the raw
+    deviation — a deviation on its own says nothing about whether it was
+    allowed. The worst-missing band wins the sentence.
+
+    And it is still APPLYABLE: "improved-but-failing is presented, never
+    applied silently". A graded miss keeps the decision with the household,
+    which is the entire reason this screen exists.
+    """
+    env = build_crossover_envelope_v2(_review_status(
+        prediction=_prediction(overall_passed=False, bands=_FAILING_BANDS),
+    ))
+    verdict = env["verdict_text"]
+    assert "6.0 dB" in verdict          # 9.04 - 3.0, the worst band's overshoot
+    assert "250 and 500 Hz" in verdict  # ...and the band it happened in
+    assert env["next_action"]["enabled"] is True
+    assert "crossover_v2_prediction_out_of_spec" in [n["code"] for n in env["nudges"]]
+
+
+def test_review_never_states_the_prediction_as_a_measurement():
+    """The work order's own trap: "the prediction is a model, and the screen
+    says so". The measured evidence on this screen is the pre-apply cloud; the
+    predicted response is model-vs-model, from the same instrument on both
+    sides, so the room cancels and nothing here may be phrased as a finding
+    about the room."""
+    env = build_crossover_envelope_v2(_review_status(
+        prediction=_prediction(overall_passed=False, bands=_FAILING_BANDS),
+    ))
+    verdict = env["verdict_text"]
+    assert "worked out from the measurement, not measured" in verdict
+    # The one thing measured on this screen is what the microphone heard.
+    assert "JTS measured your speaker" in verdict
+
+
+def test_an_ungradeable_prediction_disables_apply_rather_than_guessing():
+    """D4: ``None`` is load-bearing. "An ungradeable prediction renders as 'we
+    could not predict this' and DISABLES the Apply control, rather than
+    presenting an unevidenced proposal."
+
+    Both ungradeable shapes — a curve with no stored report (state 2) and no
+    prediction block at all (state 3) — land here. ``None`` means unknown, and
+    a consumer must never read it as permission.
+    """
+    for prediction in (_prediction(overall_passed=None, bands=[]), None):
+        env = build_crossover_envelope_v2(_review_status(prediction=prediction))
+        assert env["screen"] == "review"
+        assert env["next_action"]["enabled"] is False, prediction
+        assert "could not" in env["verdict_text"]
+        # Never a fabricated verdict in either direction.
+        assert "meets the target" not in env["verdict_text"]
+
+
+def test_a_graded_miss_is_not_an_ungradeable_prediction():
+    """``False`` and ``None`` are opposite answers and must not collapse.
+
+    ``False`` is a real graded verdict that the prediction misses the spec —
+    presented, and applyable. ``None`` is "we could not tell" — refused. A
+    renderer that treated them alike would either hide a real miss behind a
+    dead end or offer an unevidenced proposal as if it had been checked.
+    """
+    missed = build_crossover_envelope_v2(_review_status(
+        prediction=_prediction(overall_passed=False, bands=_FAILING_BANDS),
+    ))
+    unknown = build_crossover_envelope_v2(_review_status(
+        prediction=_prediction(overall_passed=None, bands=[]),
+    ))
+    assert missed["next_action"]["enabled"] is True
+    assert unknown["next_action"]["enabled"] is False
+    assert missed["verdict_text"] != unknown["verdict_text"]
+
+
+def test_the_refusal_lane_states_its_verdict_and_stages_no_decision():
+    """``_prediction_status``'s **4th** state: report present, curve absent.
+
+    The improvement gate refused, so the verdict was stashed before the gate ran
+    while ``predicted_sum`` was never assigned — ``overall_passed`` is a REAL
+    ``False`` here, not the ``None`` that means unknown, and there is no
+    candidate behind it. So the verdict is still stated (it genuinely evaluated
+    that prediction) and NO decision is staged: an Apply control over a
+    candidate that does not exist would refuse at the endpoint's first gate.
+    """
+    env = build_crossover_envelope_v2(_review_status(
+        candidate=None,
+        prediction=_prediction(
+            curve=False, overall_passed=False, bands=_FAILING_BANDS,
+        ),
+    ))
+    assert env["next_action"] is None
+    assert env["prediction"]["curve"] is None
+    assert "6.0 dB" in env["verdict_text"]
+    assert "no correction to propose" in env["verdict_text"]
+    assert [a["id"] for a in env["alternate_actions"]] == [
+        "review_remeasure", "review_decline",
+    ]
+
+
+def test_a_box_that_cannot_open_stage_2_gets_the_named_refusal_and_no_apply():
+    """**D3's stage-2 openability preflight**, the hole premise 5 was hiding.
+
+    "Without this, the failure mode is precisely the applied-and-ungraded end
+    state this work order exists to eliminate: a household applies, stage 2
+    refuses at open, and the box sits corrected with no verdict."
+
+    The refusal renders AS ITSELF — the predicate's own sentence, which already
+    names what to finish first — and its declared resolution control is offered
+    beside it, from the same registry entry the hard-stop screen reads (#1820's
+    precedent). Never a generic "cannot apply".
+    """
+    env = build_crossover_envelope_v2(_review_status(stage2_preflight={
+        "ok": False,
+        "message": "This speaker's safety limits are not confirmed.",
+        "next_action": {
+            "id": "confirm_safety_limits",
+            "label": "Confirm safety limits",
+            "href": "/sound/#confirm-safety-limits",
+        },
+    }))
+    assert env["next_action"]["enabled"] is False
+    refusal = [n for n in env["nudges"]
+               if n["code"] == "crossover_v2_stage2_preflight_refused"]
+    assert refusal and "safety limits are not confirmed" in refusal[0]["text"]
+    assert env["alternate_actions"][0]["id"] == "confirm_safety_limits"
+
+
+def test_a_refusal_button_never_renders_without_its_explaining_sentence():
+    """Review N-2: the two halves of one refusal are gated as one thing.
+
+    The sentence used to also require a gradeable prediction while the button
+    did not, so an ungradeable prediction beside an action-carrying refusal
+    rendered a bare "Confirm safety limits" control with nothing on screen
+    saying why it was there.
+
+    Aligned toward SHOWING both rather than hiding one: the household has two
+    independent blockers, and the stage-2 refusal is still true after they
+    re-measure. Suppressing it would let them walk the whole measurement again
+    only to meet a refusal that was knowable now — the exact cost #1828 moved
+    this predicate earlier to avoid.
+    """
+    env = build_crossover_envelope_v2(_review_status(
+        prediction=_prediction(overall_passed=None, bands=[]),  # ungradeable
+        stage2_preflight={
+            "ok": False,
+            "message": "This speaker's safety limits are not confirmed.",
+            "next_action": {
+                "id": "confirm_safety_limits",
+                "label": "Confirm safety limits",
+                "href": "/sound/#confirm-safety-limits",
+            },
+        },
+    ))
+    assert env["next_action"]["enabled"] is False
+    # The button is there...
+    assert env["alternate_actions"][0]["id"] == "confirm_safety_limits"
+    # ...and so is the sentence that explains it.
+    assert [n for n in env["nudges"]
+            if n["code"] == "crossover_v2_stage2_preflight_refused"]
+    # Both blockers reach the household: the verdict copy names the one the
+    # nudge does not.
+    assert "could not check" in env["verdict_text"]
+
+
+def test_no_refusal_button_survives_when_there_is_no_apply_decision():
+    """The other side of the same gate: with no candidate there is no Apply
+    control, so neither the refusal sentence nor its button has anything to
+    explain — both stay off rather than annotating a decision that is not on
+    offer."""
+    env = build_crossover_envelope_v2(_review_status(
+        candidate=None,
+        stage2_preflight={
+            "ok": False,
+            "message": "This speaker's safety limits are not confirmed.",
+            "next_action": {
+                "id": "confirm_safety_limits",
+                "label": "Confirm safety limits",
+                "href": "/sound/#confirm-safety-limits",
+            },
+        },
+    ))
+    assert env["next_action"] is None
+    assert [a["id"] for a in env["alternate_actions"]] == [
+        "review_remeasure", "review_decline",
+    ]
+    assert not [n for n in env["nudges"]
+                if n["code"] == "crossover_v2_stage2_preflight_refused"]
+
+
+def test_an_unresolved_preflight_is_not_permission():
+    """Absence is not a pass. An unset key means the predicate never ran, and
+    "we never checked" must render exactly like "we checked and it refused" —
+    the end state being prevented (applied, then stage 2 refuses at open) is
+    identical either way. Only an explicit ``ok: True`` enables Apply."""
+    for preflight in ({}, None, {"ok": "yes"}, {"message": "..."}):
+        env = build_crossover_envelope_v2(_review_status(stage2_preflight=preflight))
+        assert env["next_action"]["enabled"] is False, preflight
+        assert env["nudges"], preflight
+
+
+def test_review_puts_the_measured_flatness_where_it_informs_the_decision():
+    """D3.1: the pre-apply cloud IS the measured evidence on this screen, so its
+    flatness/carve-out disclosure belongs here — the same lines the RESULT
+    screen folds away, on the screen where they inform a choice rather than
+    explain a fait accompli."""
+    env = build_crossover_envelope_v2(_review_status(
+        tier="express",
+        cloud={PHASE_CLOUD_MEASURE: {
+            "flatness": {
+                "evaluable": True, "max_db": 6.2, "max_hz": 310.0,
+                "tolerance_db": 3.0, "max_band_hz": [250.0, 500.0],
+            },
+        }},
+    ))
+    assert any("flatness" in line for line in env["expert_details"])
+
+
+def test_the_review_screen_moved_the_schema_version():
+    """PR-T2's own bump: the screen vocabulary gained ``review`` and the
+    envelope gained ``prediction``. Additive — no key removed or re-typed —
+    so an unredeployed page ignores the new key rather than refusing the
+    envelope, the same property the 8 → 9 bump had."""
+    env = build_crossover_envelope_v2(_review_status())
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
+    assert "prediction" in env

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 from contextlib import contextmanager
@@ -2130,6 +2131,299 @@ def test_a_corrupt_session_phases_list_never_reads_as_done():
         "applied": True,
     })
     assert v2host.crossover_v2_status_block()["phase"] == PHASE_VERIFY
+
+
+# --- the stage-1 PHASE_DONE collision (two-stage commission PR-T2) ------------
+
+
+def test_a_measure_only_session_resolves_to_review_never_done():
+    """**The work order's premise 6, and PR-T2's first pin.**
+
+    ``_phase_from_state`` walks the recorded ``session_phases`` and returns
+    PHASE_DONE once each is accepted. Its one special case — VERIFY unaccepted
+    with MEASURE accepted and not applied ⇒ PHASE_APPLYING — cannot fire when
+    VERIFY is not in the recorded phases at all. So a stage-1 session (CHECK,
+    MEASURE, CLOUD_MEASURE, no VERIFY) fell straight through to PHASE_DONE:
+    the RESULT screen, whose copy is "Your speaker is tuned", over a speaker
+    that had been measured and never touched. A direct collision, not a
+    theoretical one — and the acceptance criterion is explicit that "a stage-1
+    session never renders 'your speaker is tuned'".
+    """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "applied": False,
+    })
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_REVIEW
+
+
+def test_an_applied_measure_only_session_still_resolves_to_done():
+    """``applied`` wins over the review branch.
+
+    Once something is genuinely on the speaker the decision has been made, and
+    PHASE_DONE's own "applied implies graded" ladder already owns the honest
+    copy for an applied-but-unverified result. Re-offering "apply this?" over a
+    speaker that already has it would be the mirror of the bug above.
+    """
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "applied": True,
+    })
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_DONE
+
+
+def test_a_session_that_verified_still_resolves_to_done():
+    """The review branch keys on a session that never intended to VERIFY, so
+    every shape that DID keeps its shipped terminal — a full pre-cloud session
+    and a verify-only re-arm alike. Without this the fix would silently move
+    the RESULT screen for the flows that already work."""
+    for phases in (
+        [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        [PHASE_VERIFY],
+        [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_VERIFY,
+         PHASE_CLOUD_VERIFY],
+    ):
+        v2host.save_v2_state({
+            "session_id": "cap_x",
+            "accepted_phases": list(phases),
+            "session_phases": list(phases),
+            "applied": True,
+        })
+        assert v2host.crossover_v2_status_block()["phase"] == PHASE_DONE, phases
+
+
+def test_a_corrupt_state_cannot_reach_the_review_screen_either():
+    """The corrupt-state fallback the walk already documents must keep working
+    — and must not become a NEW way to reach the review screen.
+
+    A garbled ``session_phases`` filters to the empty tuple and walks
+    PRE_CLOUD_CAPTURE_PHASES, which DOES contain VERIFY, so it can never
+    satisfy the measure-only test on the strength of an unreadable state file.
+    It resolves through the loop to its first unaccepted phase, exactly as
+    before this change.
+    """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": ["nonsense", "also-not-a-phase"],
+        "applied": False,
+    })
+    phase = v2host.crossover_v2_status_block()["phase"]
+    assert phase != PHASE_REVIEW
+    # MEASURE is accepted and VERIFY is not, so the shipped special case owns
+    # this state — the honest "the apply is in flight" answer, not a terminal.
+    assert phase == PHASE_APPLYING
+
+
+# --- the stage-2 openability preflight (D3, render-time half) ----------------
+
+
+def _preflight_status(phase, **v2):
+    return {
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {"phase": phase, **v2},
+    }
+
+
+def test_the_preflight_runs_only_on_the_review_screen():
+    """It is the review screen's own honesty layer, and it is not free: one
+    call is several JSON loads, a profile fingerprint, and a preset compile,
+    and ``ensure_crossover_preview_ready()`` can WRITE a regenerated preview.
+    No other screen may pay that, so the phase gate is a contract, not an
+    optimisation — pinned by refusing to let a non-review phase call the
+    predicate at all."""
+    calls = []
+
+    def _boom(status):
+        calls.append(status)
+        raise AssertionError("the preflight must not run off the review screen")
+
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = _boom
+    try:
+        for phase in (PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
+                      PHASE_VERIFY, "applying", "done"):
+            status = _preflight_status(phase)
+            v2host.attach_stage2_preflight(status)
+            assert v2host.STAGE2_PREFLIGHT_KEY not in status["crossover_v2"]
+        assert calls == []
+    finally:
+        v2host.resolve_conductor_context = original
+
+
+def test_a_refused_preflight_carries_the_predicates_own_sentence(caplog):
+    """The refusal messages already name what to finish first, so they are
+    passed through verbatim rather than re-phrased here — and the refusal gets
+    a named log line, because a household-visible dead end nobody can grep for
+    is not a disclosure (AGENTS.md's no-silent-failure rule)."""
+    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+
+    def _refuse(status):
+        raise v2host.CrossoverV2Refused(
+            "protected speaker setup is not ready; finish it before measuring",
+        )
+
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = _refuse
+    try:
+        status = _preflight_status(PHASE_REVIEW)
+        with caplog.at_level(logging.WARNING):
+            v2host.attach_stage2_preflight(status)
+    finally:
+        v2host.resolve_conductor_context = original
+
+    preflight = status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]
+    assert preflight["ok"] is False
+    assert preflight["message"] == (
+        "protected speaker setup is not ready; finish it before measuring"
+    )
+    assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
+
+
+def test_a_coded_refusal_carries_its_registrys_own_resolution_control():
+    """#1820's precedent: a refusal that knows the exact control which clears
+    it declares that control, from the SAME registry entry the hard-stop screen
+    reads — so the review screen's message and its button can never disagree
+    about what the household should do next."""
+    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+
+    def _refuse(status):
+        raise v2host.CrossoverV2Refused(
+            "safety limits are not confirmed",
+            code="program_profile_not_confirmed",
+        )
+
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = _refuse
+    try:
+        status = _preflight_status(PHASE_REVIEW)
+        v2host.attach_stage2_preflight(status)
+    finally:
+        v2host.resolve_conductor_context = original
+
+    action = status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]["next_action"]
+    assert action and action["id"] == "confirm_safety_limits"
+
+
+def test_an_unexpected_preflight_failure_fails_closed(caplog):
+    """"We could not check" and "we checked and it is fine" must never render
+    as the same screen. An unexpected exception is not permission — it disables
+    Apply on its own honest sentence, because the end state being prevented
+    (applied, then stage 2 refuses at open, box corrected and ungraded) is
+    identical whether the predicate refused or simply could not run."""
+    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+
+    def _explode(status):
+        raise OSError("the topology file is unreadable")
+
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = _explode
+    try:
+        status = _preflight_status(PHASE_REVIEW)
+        with caplog.at_level(logging.WARNING):
+            v2host.attach_stage2_preflight(status)
+    finally:
+        v2host.resolve_conductor_context = original
+
+    preflight = status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]
+    assert preflight["ok"] is False
+    assert "could not check" in preflight["message"]
+    assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
+
+
+def test_every_shipped_index_phase_map_contains_verify():
+    """Why the review screen — and its preflight — cost nothing until PR-T3.
+
+    ``_phase_from_state``'s review branch keys on VERIFY being ABSENT from the
+    walked phases, and every shipped session records a VERIFY. There are only
+    two ``index_phase_map`` constructions in the tree: this builder, which sets
+    ``mapping[n + 2] = PHASE_VERIFY`` unconditionally, and
+    ``prepare_v2_verify``'s ``{1: PHASE_VERIFY}``. So ``PHASE_REVIEW`` is
+    unreachable in production today and ``attach_stage2_preflight``
+    early-returns on every envelope GET a shipped box can produce — zero reads,
+    zero writes, zero log lines.
+
+    Pinned because it is the load-bearing half of that cost claim, and because
+    it is exactly what PR-T3 changes: the first measure-only plan makes this
+    assertion fail, which is the right moment to re-read the preflight's cost
+    paragraph rather than discover it on hardware.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        TIER_EXPRESS,
+        TIER_FULL,
+        build_v2_cloud_index_phase_map,
+    )
+
+    for tier in (TIER_FULL, TIER_EXPRESS):
+        mapping = build_v2_cloud_index_phase_map(tier=tier)
+        assert PHASE_VERIFY in mapping.values(), tier
+    # ...including every corner of the FULL tier's validated (N, M) box, so
+    # the claim does not rest on the default position counts alone.
+    for n, m in ((6, 5), (12, 5), (6, 12), (12, 12), (9, 6)):
+        mapping = build_v2_cloud_index_phase_map(
+            cloud_measure_positions=n, cloud_verify_positions=m,
+        )
+        assert PHASE_VERIFY in mapping.values(), (n, m)
+
+
+def test_the_envelope_route_actually_runs_the_preflight():
+    """The wiring, pinned at its one call site.
+
+    The preflight fails CLOSED, so dropping this call does not break loudly —
+    it silently disables Apply on every review screen forever, which looks like
+    a product bug rather than a missing line. ``handle_envelope`` is the only
+    path that serves this envelope to the wizard, so the call belongs there and
+    a source read is enough to prove it has not been lost in a refactor (same
+    shape as ``test_both_session_preparers_rearm_the_walked_away_volume_ceiling``
+    above, and for the same reason).
+    """
+    import inspect
+
+    from jasper.web import correction_crossover_flow
+
+    source = inspect.getsource(correction_crossover_flow.handle_envelope)
+    assert "attach_stage2_preflight(status)" in source
+    # ...and BEFORE the envelope is built, or it would stamp a status nobody
+    # reads.
+    assert source.index("attach_stage2_preflight(status)") < source.index(
+        "build_crossover_envelope_logged(status)"
+    )
+
+
+def test_a_resolvable_context_is_the_only_thing_that_enables_apply():
+    """The positive case, end to end through the envelope: a preflight that
+    resolves is what turns the Apply control on, and nothing else does."""
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = lambda status: object()
+    try:
+        status = _preflight_status(
+            PHASE_REVIEW,
+            candidate={"fingerprint": "fp-1", "trims_db": {"woofer": -2.0}},
+            prediction={
+                "curve": {"freqs_hz": [100.0], "magnitude_db": [80.0]},
+                "spec_bands": [], "overall_passed": True, "reference_db": 80.0,
+            },
+        )
+        v2host.attach_stage2_preflight(status)
+        assert status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]["ok"] is True
+        env = build_crossover_envelope_v2(status)
+        assert env["screen"] == "review"
+        assert env["next_action"]["enabled"] is True
+    finally:
+        v2host.resolve_conductor_context = original
 
 
 def test_both_session_preparers_rearm_the_walked_away_volume_ceiling():

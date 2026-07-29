@@ -22,10 +22,23 @@ wiring — the pytest lane already runs in CI via ``scripts/test-merge``.
 ``_HARNESSES`` is discovered by glob, not a hardcoded list: a future
 ``crossover_*_test.mjs`` file is picked up automatically, closing the exact
 gap that left this family unexecuted in the first place.
+
+**This bridge IS the CI coverage — verified, not assumed** (two-stage PR-T2
+review, 2026-07-29). The workflow's ``js`` job still runs seven explicit
+``node`` invocations and none of them is a crossover harness; what executes
+this family is the pytest matrix (py3.11/3.12/3.13), each leg running
+``scripts/test-merge``, which ignores only ``tests/voice_eval``. ``node`` is on
+``ubuntu-latest`` by default — the ``js`` job calls it with no
+``actions/setup-node`` step and passes — so :data:`_NODE` resolves there and
+these run rather than skip. Adding the family to the ``js`` job as well would
+duplicate that on a second, hand-maintained list: exactly the drift the glob
+above exists to prevent. The one hole that WAS real is closed below — a missing
+``node`` in CI now fails instead of skipping quietly.
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -44,6 +57,21 @@ assert _HARNESSES, f"no crossover_*_test.mjs harnesses found under {_JS_DIR}"
 @pytest.mark.parametrize("harness", _HARNESSES)
 def test_crossover_wizard_harness(harness: str):
     if _NODE is None:
+        # A developer without node gets a skip; CI does not. This lane is the
+        # ONLY place these harnesses execute (the workflow's `js` job runs an
+        # explicit list that has never included this family — see the module
+        # docstring), so "node disappeared from the runner" would silently turn
+        # the whole family from covered into uncovered, reported as a green
+        # build. Fail loudly there instead: an unexecuted test cannot catch the
+        # regression it was written for, and a SKIPPED one at least has to be
+        # visible to count as a decision.
+        if os.environ.get("CI"):
+            pytest.fail(
+                "node is not on PATH in CI — the crossover wizard's JS "
+                "harnesses are the only automated execution of "
+                "deploy/assets/correction/js/crossover/*, and skipping them "
+                "here silently drops that coverage"
+            )
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_JS_DIR / harness)],

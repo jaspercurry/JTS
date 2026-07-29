@@ -23,6 +23,7 @@ const els = {
   cloudPending: document.getElementById('crossover-cloud-pending'),
   legendMeasure: document.getElementById('crossover-chart-legend-measure'),
   legendVerify: document.getElementById('crossover-chart-legend-verify'),
+  legendPredicted: document.getElementById('crossover-chart-legend-predicted'),
   legendCorridor: document.getElementById('crossover-chart-legend-corridor'),
   legendExcluded: document.getElementById('crossover-chart-legend-excluded'),
   action: document.getElementById('crossover-action'),
@@ -224,6 +225,28 @@ function renderCandidateReview(review) {
     details.push(`predicted ripple ${review.ripple_db.toFixed(1)} dB`);
   }
   if (review.fingerprint) details.push(`candidate ${review.fingerprint}`);
+  // "This correction costs N dB of maximum level" (PR-L5), reaching a screen
+  // for the first time (two-stage commission D3.2). Read from the `{db, basis}`
+  // COMPOUND and nothing else: the same disclosure also exists as sibling
+  // `headroom_cost_db` + `headroom_cost_basis` scalars on
+  // /state.crossover_v2.candidate, and the never-render-bare property is a
+  // property of THIS payload, not of that one.
+  //
+  // The basis is inseparable from the number. The charge's derivation changed
+  // under #1808 and the stamp is deliberately not re-derived on load, so a
+  // candidate persisted before that amendment discloses ~22.5 dB where the
+  // same correction now costs ~5 — an order of magnitude, on the one screen
+  // whose purpose is honesty. An `unknown` basis therefore gets a sentence
+  // saying so rather than a figure presented as current.
+  const headroom = review.headroom_cost;
+  if (headroom && typeof headroom.db === 'number') {
+    details.push(
+      headroom.basis === 'realized_peak'
+        ? `costs ${headroom.db.toFixed(1)} dB of maximum volume`
+        : `costs ${headroom.db.toFixed(1)} dB of maximum volume, measured a ` +
+          'way JTS no longer uses — re-measure for a current figure',
+    );
+  }
   // Gauge fix (2026-07-24): the linearization run/skip outcome — the
   // failure mode this kills is linearization silently not running while
   // every other screen looks the same.

@@ -54,7 +54,7 @@ import time
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
@@ -858,6 +858,7 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
         PHASE_APPLYING,
         PHASE_DONE,
         PHASE_MEASURE,
+        PHASE_REVIEW,
         PHASE_VERIFY,
         PRE_CLOUD_CAPTURE_PHASES,
     )
@@ -889,6 +890,34 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
             if phase == PHASE_VERIFY and PHASE_MEASURE in accepted and not applied:
                 return PHASE_APPLYING
             return phase
+    # Every phase this session ran is accepted. WHICH terminal state that is
+    # depends on whether the session ever intended to verify (two-stage
+    # commission D3/PR-T2, work order premise 6 — a verified collision).
+    #
+    # A MEASURE-ONLY session — stage 1 of the two-stage flow: CHECK, MEASURE,
+    # CLOUD_MEASURE, no VERIFY — used to fall straight through to PHASE_DONE,
+    # the RESULT screen, whose copy is "Your speaker is tuned." Nothing had
+    # been applied; the household had measured a speaker and was told it was
+    # tuned. The special case one line up cannot catch it (it keys on
+    # PHASE_VERIFY being in the walked phases, which is exactly what a
+    # measure-only session lacks), so the honest terminal for that shape is
+    # the review interlude: a candidate to look at and a decision to make.
+    #
+    # Keyed on the WALKED tuple, not on ``known``, so the corrupt-state
+    # fallback documented above keeps working unchanged: a garbled
+    # ``session_phases`` filters to the empty tuple, walks
+    # PRE_CLOUD_CAPTURE_PHASES — which DOES contain PHASE_VERIFY — and so can
+    # never reach the review branch on the strength of an unreadable state
+    # file. It resolves through the loop above to its first unaccepted phase,
+    # exactly as before.
+    #
+    # ``applied`` still wins: once something is genuinely on the speaker the
+    # decision has been made, and PHASE_DONE's own "applied implies graded"
+    # ladder (``_post_apply_grade``) already owns the honest copy for an
+    # applied-but-unverified result. Re-offering "apply this?" over a speaker
+    # that already has it would be the mirror of the bug being fixed.
+    if not applied and PHASE_VERIFY not in phases:
+        return PHASE_REVIEW
     return PHASE_DONE
 
 
@@ -3894,6 +3923,141 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         driver_class_by_role=driver_class_by_role,
         tweeter_measurement_band_hz=tweeter_measurement_band_hz,
     )
+
+
+# The key :func:`attach_stage2_preflight` writes onto ``status["crossover_v2"]``
+# and :func:`~jasper.active_speaker.crossover_envelope_v2._stage2_preflight`
+# reads. Spelled once, here, because the writer and the reader live in
+# different packages and a literal in each is how they drift.
+STAGE2_PREFLIGHT_KEY = "stage2_preflight"
+
+
+def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
+    """Run the stage-2 openability predicate for the REVIEW screen (D3).
+
+    Two-stage commission work order D3, PR-T2's half: *"The review screen runs
+    ``resolve_conductor_context``'s predicate — the same fail-closed resolution
+    ``prepare_v2_verify`` will run — twice: once at review render, and again
+    server-side immediately before the apply commits."* This is the render-time
+    half. **The pre-POST half belongs to PR-T3** and is deliberately absent
+    here: ``handle_v2_apply`` is also today's auto-apply path, so refusing there
+    before T3 removes auto-apply would newly refuse a shipped automatic path on
+    a screen-only rung (the ladder's own placement note).
+
+    Without it, the failure mode is exactly the applied-and-ungraded end state
+    the whole work order exists to eliminate — premise 5: a box can be applied
+    and still be unable to open stage 2, because ``prepare_v2_verify``'s very
+    next line is ``resolve_conductor_context(status)`` and that carries seven
+    refusal sites of its own plus ``ensure_crossover_preview_ready()``'s. The
+    household applies, stage 2 refuses at open, and the speaker sits corrected
+    with no verdict.
+
+    **The SAME predicate, not a cheaper lookalike.** A second, narrower copy of
+    the rule here would be free to disagree with the one stage 2 actually runs,
+    and agreement is the only thing this control's honesty rests on. Most of
+    the seven gates ARE reachable more cheaply off the status mapping
+    (``active``, ``setup``, ``targets.drivers``, and
+    ``driver_safety_profile_evaluation`` — which ``status_payload`` already
+    computes), but re-deriving them here would rebuild the predicate minus its
+    2-way-preset, excitation-ceiling, playback-device, and preview-readiness
+    gates, which is precisely how a screen ends up promising an apply that
+    stage 2 then refuses.
+
+    **Today this costs exactly nothing, and the reason is structural.**
+    ``PHASE_REVIEW`` is **unreachable in production until PR-T3 lands the first
+    measure-only plan.** There are only two ``index_phase_map`` constructions in
+    the tree: :func:`~jasper.active_speaker.crossover_v2_flow
+    .build_v2_cloud_index_phase_map`, which sets ``mapping[n + 2] =
+    PHASE_VERIFY`` unconditionally for every tier and shape, and
+    ``prepare_v2_verify``'s ``{1: PHASE_VERIFY}``. So every shipped session's
+    recorded ``session_phases`` contains VERIFY, and ``_phase_from_state``'s
+    review branch keys on its ABSENCE. The corrupt-state fallback cannot reach
+    it either — it walks ``PRE_CLOUD_CAPTURE_PHASES``, which also contains
+    VERIFY. This function therefore early-returns on every envelope GET a
+    shipped box can produce: zero reads, zero writes, zero log lines. Pinned by
+    ``test_every_shipped_index_phase_map_contains_verify``.
+
+    **What it will cost once T3 makes the screen reachable, measured rather
+    than waved at.** One call is roughly six JSON reads (the topology and
+    design draft are each read more than once through different loaders), a
+    canonical-JSON SHA-256 profile fingerprint, and a preset compile. It is not
+    free of side effects: ``ensure_crossover_preview_ready()`` can write BOTH
+    ``active_speaker_crossover_preview.json`` and the topology file, and emits
+    ``correction.crossover_v2_preview_ensured`` on every call, ready or not.
+    The writes are self-limiting rather than per-call, though — that function
+    regenerates only a preview that is absent, stale, or blocked, and leaves an
+    already-ready one byte-untouched. No subprocess, no network, no
+    audio-device probing.
+
+    Two things will bound it then, both structural rather than a cache. It runs
+    ONLY on the review phase, so no other screen pays anything. And the review
+    interlude is not a polled screen: the wizard polls only while a relay is in
+    flight (``main.js``'s ``schedulePoll(relayIsActive(env.relay) ? POLL_MS :
+    null)``), and stage 1's session has ENDED by the time this renders — so the
+    calls are bounded to the few seconds a just-closed relay spends winding
+    down, then stop, and a household sitting on the decision costs nothing.
+    **That second bound is a property of T3's session-end, so T3 owns
+    re-checking it** when it makes stage 1 real: a review screen that somehow
+    rendered beside a permanently in-flight relay would turn the writes above
+    into a 1.5 s loop, and that is the one shape this design would not survive.
+
+    **Fail-closed in both directions.** A refusal disables Apply and hands the
+    screen the refusal's own sentence; an UNEXPECTED exception does the same
+    rather than defaulting to permission, because "we could not check" and "we
+    checked and it is fine" must never render as the same screen. Absence of
+    the key is likewise not permission — see the envelope's own reader.
+
+    Mutates ``status`` in place (the established shape on this path:
+    ``handle_status`` sets ``payload["relay"]`` the same way) so the envelope
+    builder stays the pure ``status → envelope`` function it is. It has to be
+    computed HERE, in the web layer, because ``resolve_conductor_context`` is a
+    ``jasper.web`` function and ``jasper.active_speaker`` never imports from
+    ``jasper.web`` — the envelope module reaching for it directly would be the
+    first such import in the package.
+    """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+
+    v2 = status.get("crossover_v2")
+    if not isinstance(v2, MutableMapping) or v2.get("phase") != PHASE_REVIEW:
+        return
+    try:
+        resolve_conductor_context(status)
+    except CrossoverV2Refused as exc:
+        message = str(exc)
+        v2[STAGE2_PREFLIGHT_KEY] = {
+            "ok": False,
+            "message": message,
+            "next_action": refusal_next_action(exc),
+        }
+        # A user-visible dead end gets a named line nobody has to guess at
+        # (AGENTS.md's no-silent-failure rule) — the household sees a disabled
+        # Apply, and this is where an operator reads why.
+        log_event(
+            logger,
+            "correction.crossover_v2_stage2_preflight_refused",
+            level=logging.WARNING,
+            code=str(getattr(exc, "code", "") or ""),
+            detail=message,
+        )
+        return
+    except (OSError, RuntimeError, TypeError, ValueError):
+        v2[STAGE2_PREFLIGHT_KEY] = {
+            "ok": False,
+            "message": (
+                "JTS could not check whether it can run the confirming "
+                "measurement after applying this. Measure again to try afresh."
+            ),
+            "next_action": None,
+        }
+        log_event(
+            logger,
+            "correction.crossover_v2_stage2_preflight_refused",
+            level=logging.WARNING,
+            code="preflight_unavailable",
+            detail="the stage-2 openability predicate raised",
+        )
+        return
+    v2[STAGE2_PREFLIGHT_KEY] = {"ok": True, "message": "", "next_action": None}
 
 
 # --------------------------------------------------------------------------- #
