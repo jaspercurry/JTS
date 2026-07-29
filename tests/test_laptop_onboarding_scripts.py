@@ -21,6 +21,7 @@ ONBOARD = ROOT / "scripts" / "onboard.sh"
 LIB = ROOT / "scripts" / "_lib.sh"
 USE = ROOT / "scripts" / "use"
 ENV_LOCAL = ROOT / ".env.local"
+ISOLATED_SCRIPTS = (DEPLOY, ONBOARD, LIB, USE)
 
 
 FAKE_SSH = r"""#!/usr/bin/env bash
@@ -80,21 +81,30 @@ printf '\n' >> "$FAKE_LOG"
 
 
 @contextmanager
-def repo_env_local(contents: str | None):
-    """Temporarily control the checkout's gitignored .env.local."""
-    existed = ENV_LOCAL.exists()
-    old = ENV_LOCAL.read_bytes() if existed else b""
-    try:
-        if contents is None:
-            ENV_LOCAL.unlink(missing_ok=True)
-        else:
-            ENV_LOCAL.write_text(contents, encoding="utf-8")
-        yield
-    finally:
-        if existed:
-            ENV_LOCAL.write_bytes(old)
-        else:
-            ENV_LOCAL.unlink(missing_ok=True)
+def isolated_checkout(env_local: str | None):
+    """Copy the scripts under test into a disposable checkout root."""
+    with tempfile.TemporaryDirectory(prefix="jts-laptop-scripts-") as tmp:
+        checkout = Path(tmp)
+        scripts = checkout / "scripts"
+        scripts.mkdir()
+        for source in ISOLATED_SCRIPTS:
+            shutil.copy2(source, scripts / source.name)
+
+        git_dir_text = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "--git-dir"],
+            text=True,
+        ).strip()
+        git_dir = Path(git_dir_text)
+        if not git_dir.is_absolute():
+            git_dir = ROOT / git_dir
+        (checkout / ".git").write_text(
+            f"gitdir: {git_dir.resolve()}\n",
+            encoding="utf-8",
+        )
+
+        if env_local is not None:
+            (checkout / ".env.local").write_text(env_local, encoding="utf-8")
+        yield checkout
 
 
 class FakeRemote:
@@ -164,14 +174,15 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         **env_overrides: str,
     ) -> subprocess.CompletedProcess[str]:
         env = fake.env(**env_overrides)
-        with repo_env_local(env_local):
+        with isolated_checkout(env_local) as checkout:
+            deploy = checkout / "scripts" / "deploy-to-pi.sh"
             if use_pty:
                 return run_with_pty(
-                    ["bash", str(DEPLOY)], cwd=ROOT, env=env
+                    ["bash", str(deploy)], cwd=checkout, env=env
                 )
             return subprocess.run(
-                ["bash", str(DEPLOY)],
-                cwd=ROOT,
+                ["bash", str(deploy)],
+                cwd=checkout,
                 env=env,
                 capture_output=True,
                 text=True,
@@ -183,10 +194,10 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             subprocess.run(["bash", "-n", str(script)], check=True)
 
     def test_onboard_help_leads_with_adopt_beginner_path(self):
-        with repo_env_local(None):
+        with isolated_checkout(None) as checkout:
             result = subprocess.run(
-                ["bash", str(ONBOARD), "--help"],
-                cwd=ROOT,
+                ["bash", str(checkout / "scripts" / "onboard.sh"), "--help"],
+                cwd=checkout,
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -303,6 +314,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
 
     def test_env_local_multispeaker_targeting_is_honored(self):
         fake = FakeRemote(self)
+        repo_state_before = (
+            ENV_LOCAL.read_bytes() if ENV_LOCAL.exists() else None
+        )
         env_local = textwrap.dedent(
             """\
             PI_HOST=jts3.local
@@ -317,25 +331,30 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("pi@jts3.local", calls)
         self.assertIn("JASPER_HOSTNAME=jts3.local", calls)
         self.assertNotIn("pi@jts.local", calls)
+        repo_state_after = (
+            ENV_LOCAL.read_bytes() if ENV_LOCAL.exists() else None
+        )
+        self.assertEqual(repo_state_after, repo_state_before)
 
     def test_lib_keeps_jasper_hostname_as_legacy_pi_host_fallback(self):
         env = os.environ.copy()
         env.pop("PI_HOST", None)
         env.pop("PI_USER", None)
         env["JASPER_HOSTNAME"] = "legacy-speaker.local"
-        script = textwrap.dedent(
-            f"""\
-            set -euo pipefail
-            . {LIB}
-            printf '%s\\n' "$PI_HOST"
-            printf '%s\\n' "$PI_USER"
-            """
-        )
 
-        with repo_env_local(None):
+        with isolated_checkout(None) as checkout:
+            lib = checkout / "scripts" / "_lib.sh"
+            script = textwrap.dedent(
+                f"""\
+                set -euo pipefail
+                . {lib}
+                printf '%s\\n' "$PI_HOST"
+                printf '%s\\n' "$PI_USER"
+                """
+            )
             result = subprocess.run(
                 ["bash", "-c", script],
-                cwd=ROOT,
+                cwd=checkout,
                 env=env,
                 capture_output=True,
                 text=True,
@@ -346,17 +365,17 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), ["legacy-speaker.local", "pi"])
 
     def test_write_laptop_state_persists_ip_and_speaker_separately(self):
-        with tempfile.TemporaryDirectory(prefix="jts-state-") as tmp:
+        with isolated_checkout(None) as checkout:
+            lib = checkout / "scripts" / "_lib.sh"
             script = textwrap.dedent(
                 f"""\
                 set -euo pipefail
-                . {LIB}
-                REPO_ROOT={tmp!r}
+                . {lib}
                 write_laptop_state 192.168.1.42 pi "" jts3.local
                 """
             )
-            subprocess.run(["bash", "-c", script], cwd=ROOT, check=True)
-            env_text = (Path(tmp) / ".env.local").read_text(encoding="utf-8")
+            subprocess.run(["bash", "-c", script], cwd=checkout, check=True)
+            env_text = (checkout / ".env.local").read_text(encoding="utf-8")
 
         self.assertIn("PI_HOST=192.168.1.42\n", env_text)
         self.assertIn("PI_USER=pi\n", env_text)

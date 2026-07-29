@@ -203,7 +203,7 @@ Last reconciled against `origin/main` (`7d6acbc45a`), including this branch:
 | DA-0259 | `rust/jasper-outputd/src/state.rs` :: StateServer::handle_connection | should-fix | W4 | **fixed** | state command capped at 256 bytes/2 s total with full wire, bounded-error, and no-spam coverage — #1424 |
 | DA-0260 | `rust/jasper-resampler/src/lib.rs` :: AudioRing::push_interleaved :335-349 | should-fix | W4 | **fixed** | bounded overflow drops oldest frames, retains newest stereo order, and reports the exact drop count — #1420 |
 | DA-0261 | `tests/test_doctor.py` :: (whole file) | should-fix | W4 | **open** | — |
-| DA-0262 | `tests/test_laptop_onboarding_scripts.py` :: repo_env_local | should-fix | W4 | **open** | — |
+| DA-0262 | `tests/test_laptop_onboarding_scripts.py` :: repo_env_local | should-fix | W4 | **fixed** | per-invocation disposable checkout isolates `.env.local` from developer state and parallel workers |
 | DA-0263 | `tests/test_multiroom_reconcile.py` :: test_main_fresh_solo_first_reconcile_never_t | should-fix | W4 | **fixed** | fresh-solo test now inspects recorded events and proves no AEC-reconcile kick or voice restart — #1421 |
 | DA-0264 | `tests/test_multiroom_runtime_balance.py` :: apply_local_trim | should-fix | W4 | **fixed** | disabled/invalid grouping plus Camilla and outputd live-trim failure contracts covered — #1422 |
 | DA-0265 | `tests/test_tools_spotify.py` :: spotify_queue | should-fix | W4 | **fixed** | Spotify queue success dispatch and bounded failure behavior directly covered — #1426 |
