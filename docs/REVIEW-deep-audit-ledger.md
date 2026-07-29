@@ -9,11 +9,13 @@ Last reconciled against `origin/main` (`c125993474`), including this branch:
 
 ## Status counts
 
-- **open**: 276
+- **open**: 277 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+  `deferred` to `open (partially mitigated)` — the risk is partly covered by
+  per-flow gates, but no DA-0002 work has landed)
 - **fixed**: 387
 - **in-progress**: 0
 - **mooted**: 13
-- **deferred**: 1
+- **deferred**: 0
 
 ## Ledger
 
@@ -541,7 +543,7 @@ Last reconciled against `origin/main` (`c125993474`), including this branch:
 | DA-0675 | `tests/test_wake_corpus_setup.py` :: :1-4307 (whole file) | nit | W4 | **open** | — |
 | DA-0676 | `tests/test_web_rooms_setup.py` :: test_post_swap_rollback_failure_is_surfaced | nit | W4 | **open** | — |
 | DA-0677 | `tests/voice_eval/regression/test_barge_in_openai.py` :: truncate_lines / _AUDIO_END_MS_RE | nit | W4 | **open** | — |
-| DA-0002 | `jasper/capture_relay/alignment.py` :: assert_alignment_confident | blocker | W0 | **deferred** | owner-decision: per-flow seam, require=False first — #1214 (body) |
+| DA-0002 | `jasper/capture_relay/alignment.py` :: assert_alignment_confident | blocker | W0 | **open (partially mitigated)** | the *question* is gated on crossover (three floors — `ALIGNMENT_CONFIDENCE_TRUST_FLOOR` 0.6 decides build/auto-apply, plus locate floors 0.3/0.1; #1589/#1661/#1838) and `/sync` (own peak-parity `MIN_CONFIDENCE` 0.35, pre-audit); `room_sweep` ungated; `bass_nearfield` has no production flow. This *function* still has no reachable production caller — #1384's lone call site sits behind an `ambient_duration_s` no live path supplies. Nothing reads `validity.require_alignment`. No DA-0002 work has landed; docs corrected #1214 + #1881; per-flow map + observe-first rollout tracked in #1882 — see "Open owner decisions" §1 |
 | DA-0001 | `deploy/assets/rooms/js/main.js` :: makeBondCard().sync() — appendChildren call  | blocker | W0 | **fixed** | ReferenceError fixed + regression test — #1214 |
 | DA-0076 | `AGENTS.md` :: "Cue regeneration" paragraph, Voice provider | should-fix | W2 | **fixed** | doc corrected — #1216 |
 | DA-0077 | `AGENTS.md` :: Transit "Adding transit" checklist item 7 (~ | should-fix | W2 | **fixed** | migration ownership and CITY_PACKS extension guidance corrected and contract-tested — #1333 |
@@ -948,7 +950,18 @@ Apply this filter to `clusters.json`; only the first two classes earn a PR now.
 
 ## Open owner decisions
 
-1. **Relay alignment-gate wiring** (DA blocker, deferred): recommended seam is per-flow inside each relay `run_and_consume` (after `run_and_store`, before `on_capture_uploaded`); land `require=False` with `event=capture_relay.alignment` logging, flip `require=True` per-flow only after the 0.40 threshold is validated on jts3/jts5. Do NOT gate the shared `on_capture_uploaded` (same-origin uploads use it).
+1. **Relay alignment-gate wiring** (DA-0002, blocker — **open (partially mitigated)**; re-verified against `main` 2026-07-29; remaining work tracked in #1882). The original recommendation still stands for the *ungated* flows: per-flow seam, `require=False` + `event=capture_relay.alignment` logging first, flip `require=True` only after the 0.40 threshold is validated on jts3/jts5. Do NOT gate the shared `on_capture_uploaded` (same-origin uploads use it). What has changed since the audit:
+   - **`crossover_sweep` is gated by THREE floors of its own**, all in `active_speaker/crossover_v2_flow.py`, none via `assert_alignment_confident`:
+     - `ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6` (`:1362`, enforced `:4580-4584` → `REASON_LOW_ALIGNMENT_CONFIDENCE`) — the **strictest** floor in the family and the one that decides whether a correction is built/auto-applied at all. Its quantity is `AlignmentEstimate.confidence` from `program_analysis._gcc_phat` (`:2033`), a *third* implementation whose own docstring says it mirrors `cross_correlation_alignment`'s primary-over-secondary margin.
+     - `_sweep_locate_confidence_ok` (`SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3`, `:1413`, enforced `:4539`) — landed as a measurement-honesty gate in #1661, split off `_sweep_schedule_ok` by #1838's D3.
+     - `_stimulus_locate_ok` (`LOCATE_MIN_CONFIDENCE = 0.1`, `:1344`) — landed with the v2 conductor in #1589. Both locate floors score over the `cross_correlation_alignment` call `audio_measurement/program_analysis.py` makes in its own `_locate` (scoring added #1583).
+   - **`sync_marker` was already gated by a parallel implementation** the audit did not find — `multiroom/sync_measure.py`'s `MIN_CONFIDENCE = 0.35` (defined `:29`, enforced `:295`) clears `ok`, which blocks `/sync` apply with a 409. Predates the audit entirely. Note this is a **different formula**: a peak-parity ratio `min(L,R)/(max(L,R)+baseline)` (`:293`), not the locate-ambiguity margin.
+   - **#1384 did NOT put the gate on a household path**, contrary to how it reads — and the dead surface is larger than the gate call. The **entire `ambient_duration_s` branch** of `active_speaker/driver_acoustics.py` (`:435-620`) is production-dead, so #1384's stated deliverables (signal-located repeat capture *and* band-SNR admission) never reached production. `assert_alignment_confident` has exactly one call site in the tree, inside that branch. All **three** `ambient_duration_s` suppliers are dead, each differently: (a) the commissioning capture producer — `RawCaptureTransport` is a `TypeAlias` for an async callable that no production code ever supplies (service `capture_next` / `capture_post_apply` have no production caller; non-test construction passes `None`); (b) `legacy_replay.replay_legacy_current_winner` — no production caller; (c) the web chain `correction_crossover_backend.record_driver_capture` → `web_measurement.record_driver_capture` → `commissioning_capture.record_driver_acoustic_capture` — dead because #1688 deleted the legacy crossover flow that called it, leaving `/crossover/` with no driver-capture upload route. **(c) is the fragile one: re-adding a driver-capture POST route arms the gate immediately.**
+   - **Neither *gating* flow used the recommended `run_and_consume` seam** — both gate *downstream, inside analysis*, where the stimulus is already in hand. That is evidence the recommended seam may be the wrong one; re-adjudicate before wiring `room_sweep`.
+   - **One question — "how confidently was the stimulus located?" — three metric implementations, five disagreeing thresholds.** Implementations: `capture_relay.alignment` (dead), `program_analysis` (`_locate`'s margin *and* `_gcc_phat`'s GCC-PHAT margin), `sync_measure` (peak-parity ratio). Thresholds: 0.40 (module default, env-overridable via `JASPER_CAPTURE_ALIGNMENT_THRESHOLD`, and dead), 0.6, 0.35, 0.3, 0.1. Consolidating is an SSOT decision worth making deliberately, not a side effect of wiring the next flow. (`jasper/cli/aec_tune.py`'s `MIN_APPLY_CONFIDENCE = 0.001` is a sixth in the broad family but a different domain — noted, not counted.)
+   - **Still ungated:** `room_sweep`. No *peak-ambiguity* confidence exists — `audio_measurement/deconv.py` locates by `argmax|h(t)|` and never compares a competitor peak. But `correction/acoustic_quality.py`'s `direct_to_pre_arrival_db` (`:177-211`, computed on every correction capture at `:330-333`, carried on `direct_arrival` and persisted through session → artifacts → replay_artifacts) is an existing arrival-quality proxy that is **computed, persisted, and gated on nothing**. So part of this is *wiring*, not a pure new-instrument job. `bass_nearfield` declares `require_alignment=True` but has **no production caller at all**, so there is nothing to wire.
+   - **The spec field is decorative.** Nothing anywhere reads `validity.require_alignment` at runtime; it is constructed, serialized to the phone, and type-validated only. Every gate that exists is hardcoded in its flow. Either drive the gates off the field or stop declaring it.
+   - Related: #1869 (alignment confidence blind at ±carrier lobes — the **same** `AlignmentEstimate.confidence` the 0.6 trust floor reads), #1839 (`_locate_discontinuity` fabricates steps from unlocatable sweeps — wants the 0.3 floor as a precondition), and the attribution plan's WO-1 per-capture persistence (`docs/attribution-stage-plan.md`). `direct_to_pre_arrival_db` is a second instance of exactly the computed-then-never-consumed pattern WO-1 exists to fix.
 2. **`os.environ`-bypassed Config fields**: `google/spotify_web_bind_host/port`, `camilla2_statefile` — remove or route through typed `Config`.
 3. **`jasper/bluetooth/` HANDOFF**: doc-map temporarily routes it to the nearest operational doc; it needs its own canonical doc.
 4. **Two unverified README invariants** now have guard tests in W5: outputd sole-DAC-writer; peering exactly-one-winner. If either invariant is not actually enforced in code, the test must fail loud (no tautology).
