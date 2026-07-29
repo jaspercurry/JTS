@@ -58,10 +58,17 @@ const encryptWav = async () => ({ blob: new Uint8Array(), plaintextLen: 0, sha25
 const float32ToWavBlob = () => ({ async arrayBuffer() { return new Uint8Array().buffer; } });
 const withinUploadCap = () => true;
 const inferCalibrationModel = () => null;
-const renderScreen = (_screenEl, spec, options = {}) => {
+const renderScreen = (screenEl, spec, options = {}) => {
   globalThis.__lastRenderedSpec = spec;
   globalThis.__lastRenderHandlers = options.handlers || {};
-  return { buttons: [], levelMeters: [] };
+  const start = globalThis.document.createElement("button");
+  start.textContent = "Server start";
+  start.addEventListener("click", options.handlers.begin_capture);
+  screenEl.replaceChildren(start);
+  return {
+    buttons: [{ action: "begin_capture", el: start }],
+    levelMeters: [],
+  };
 };
 const runLevelRampProtocol = async () => ({ state: "locked", terminal: true });
 // setup-store.js stubs (the real module is browser-storage backed). The
@@ -517,6 +524,75 @@ async function testGuidedRoomSetupConvergesOnTheSamePiOwnedScreen() {
   ok();
 }
 
+async function testRoomReadyRejectsADoubleStartWhileCaptureIsPending() {
+  installDom();
+  const { renderRoomReady } = await loadModule();
+  const screenEl = makeNode("main");
+  let calls = 0;
+  let releaseCapture;
+  const capturePending = new Promise((resolve) => {
+    releaseCapture = resolve;
+  });
+  const startCapture = async () => {
+    calls += 1;
+    await capturePending;
+  };
+
+  renderRoomReady(
+    screenEl,
+    { spec: { kind: "room_sweep", ui: { screen: [] } }, screenEl },
+    { startCapture },
+  );
+  const start = buttonLabeled(screenEl, "Server start");
+  const first = start._listeners.click[0]();
+  const second = start._listeners.click[0]();
+
+  assert.equal(calls, 1);
+  assert.equal(start.disabled, true);
+  releaseCapture();
+  await Promise.all([first, second]);
+  assert.equal(start.disabled, false);
+  ok();
+}
+
+async function testRoomReadyCannotNavigateBackIntoASecondStart() {
+  installDom();
+  const { renderRoomReady } = await loadModule();
+  const screenEl = makeNode("main");
+  let calls = 0;
+  let releaseCapture;
+  const capturePending = new Promise((resolve) => {
+    releaseCapture = resolve;
+  });
+  const startCapture = async () => {
+    calls += 1;
+    await capturePending;
+  };
+
+  renderRoomReady(
+    screenEl,
+    { spec: { kind: "room_sweep", ui: { screen: [] } }, screenEl },
+    { showBack: true, startCapture },
+  );
+  const start = buttonLabeled(screenEl, "Server start");
+  const back = buttonLabeled(screenEl, "Back");
+  const first = start._listeners.click[0]();
+
+  assert.equal(start.disabled, true);
+  assert.equal(back.disabled, true);
+  // Invoke the handler directly as an adversarial event dispatch: the guard,
+  // not only the browser's disabled-button behavior, keeps the old screen.
+  back._listeners.click[0]();
+  await start._listeners.click[0]();
+  assert.equal(calls, 1);
+  assert.equal(buttonLabeled(screenEl, "Server start"), start);
+
+  releaseCapture();
+  await first;
+  assert.equal(back.disabled, false);
+  ok();
+}
+
 const tests = [
   testResolvableSerialHintIsAccepted,
   testResolvableUploadHintIsAccepted,
@@ -533,6 +609,8 @@ const tests = [
   testSilentHintNeverOverridesAlreadyChosenCalibration,
   testRoomReadyDelegatesTheExactPiSpecToTheDataRenderer,
   testGuidedRoomSetupConvergesOnTheSamePiOwnedScreen,
+  testRoomReadyRejectsADoubleStartWhileCaptureIsPending,
+  testRoomReadyCannotNavigateBackIntoASecondStart,
 ];
 
 let failure = null;

@@ -89,9 +89,10 @@ Chrome-deadlock bug class). The custom domain lags the deploy by ~5 min.
 ### Release order (direction matters)
 
 The Pages site and Pi packages are independent releases, and the correct order
-depends on **which way the supported list is moving**. Get this backwards and
-the handshake refuses every capture, fleet-wide, the moment the page publishes
-— `version.json` is fetched `no-store`, so the cut is instant.
+depends on the compatibility class. For a protocol-list change, it depends on
+**which way the supported list is moving**. Get this backwards and the handshake
+refuses every capture, fleet-wide, the moment the page publishes —
+`version.json` is fetched `no-store`, so the cut is instant.
 
 - **ADDING a protocol → page first, Pi second.** The page must already
   advertise a protocol before any Pi emits it. Adding is backwards-compatible:
@@ -103,6 +104,26 @@ the handshake refuses every capture, fleet-wide, the moment the page publishes
 
 Both directions put the *narrowing* side last. A change that adds one and
 removes another is two releases, not one.
+
+#### Reinterpreting an existing spec field (Pi first)
+
+The protocol handshake cannot detect a semantic change where a new page starts
+using data that an old page ignored. Treat that as a separate compatibility
+class:
+
+- **Forward rollout → Pi first, page second.** First deploy the Pi producer that
+  emits every newly consumed value, then publish the page that relies on it.
+- **Rollback → page first, Pi second.** Restore the old tolerant page before
+  rolling back the Pi producer.
+
+DA-0005 is the fixture for this rule: build `20260729.1` starts rendering Room
+position/trust-repeat copy from the existing `ui.screen`. An old page safely
+ignores the newer Pi copy and retains its embedded presentation, but the new
+page against an old Pi would render the older generic v3 screen. Therefore
+deploy the Pi commit first, verify its capture spec, and only then publish
+`20260729.1`. Roll back in the inverse order. This ordering is contract-tested
+in `tests/test_capture_page_js.py`; it deliberately avoids reintroducing a
+second browser-owned copy.
 
 (The relay Worker is a third independent release with its own ordering rule for
 relay **capacity** changes — see [`relay/README.md`](../relay/README.md)

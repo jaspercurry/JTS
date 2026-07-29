@@ -1100,20 +1100,28 @@ function renderLevelReady(screenEl, ctx) {
   setStatus("Ready. Tap Start level check.", "info");
 }
 
-function renderRoomReady(screenEl, ctx, { showBack = false } = {}) {
+function renderRoomReady(
+  screenEl,
+  ctx,
+  { showBack = false, startCapture = onStart } = {},
+) {
   let starting = false;
   const start = async () => {
     if (starting) return;
     starting = true;
-    const beginButtons = (ctx.captureRefs.buttons || [])
-      .filter((entry) => entry.action === "begin_capture")
+    // Stop remains live once onStart installs activeAbort. Every other control
+    // is navigation or another start/retry affordance and must freeze together;
+    // otherwise Back can render a fresh Start while this capture is awaiting
+    // its mic/relay work.
+    const frozenControls = (ctx.captureRefs.buttons || [])
+      .filter((entry) => entry.action !== "stop")
       .map((entry) => entry.el);
-    for (const entry of beginButtons) entry.disabled = true;
+    for (const entry of frozenControls) entry.disabled = true;
     try {
-      await onStart(ctx);
+      await startCapture(ctx);
     } finally {
       starting = false;
-      for (const entry of beginButtons) entry.disabled = false;
+      for (const entry of frozenControls) entry.disabled = false;
     }
   };
   // The setup wizard owns microphone/calibration selection. Once setup is
@@ -1123,7 +1131,9 @@ function renderRoomReady(screenEl, ctx, { showBack = false } = {}) {
     handlers: { begin_capture: start, retry: start, stop: stopCapture },
   });
   if (showBack) {
-    const back = button("Back", () => renderPositionCount(screenEl, ctx), true);
+    const back = button("Back", () => {
+      if (!starting) renderPositionCount(screenEl, ctx);
+    }, true);
     screenEl.appendChild(el("div", { class: "cap-actions" }, [back]));
     ctx.captureRefs.buttons.push({ action: null, el: back });
   }

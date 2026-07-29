@@ -454,12 +454,17 @@ allowlist). Room's guided and capture-only paths both converge on that renderer;
 position and trust-repeat copy have no second implementation in
 `capture-page/js/main.js`.
 
-The browser-specific setup shell — requesting microphone permission, choosing an
-input/calibration, and selecting a Room position count — remains page-owned
-because those are local browser interactions, not measurement-spec components.
-Adding a new setup interaction therefore needs a page publish. The ownership
-line is deliberate: setup mechanics on the page, measurement-ready copy in the
-Pi spec, with no sentence implemented in both places.
+The browser-specific setup shell — requesting microphone permission and choosing
+an input/calibration — remains page-owned because those are local browser
+interactions, not measurement-spec components. It also retains a position-count
+picker only for a standalone guided `room_sweep` compatibility spec. The shipped
+Room journey does **not** use that picker: its preceding level-ramp setup carries
+the speaker-owned count, and every later Room link is a capture-only spec with
+the Pi-owned position/total described in the current-status block above. Adding
+a new browser setup interaction therefore needs a page publish. The ownership
+line is deliberate: compatibility setup mechanics on the page,
+measurement-ready copy in the Pi spec, with no sentence implemented in both
+places.
 
 - **Ships from the Pi (no web deploy):** measurement-ready copy, layout,
   ordering, instructions, theme, button labels, which measurement controls show,

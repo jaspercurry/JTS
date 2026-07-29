@@ -134,6 +134,19 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
+def test_capture_page_existing_field_rollout_order_is_pinned():
+    """A protocol handshake cannot see a semantic change where a new page
+    consumes a field old pages ignored. DA-0005 is exactly that shape:
+    20260729.1 consumes Room ui.screen copy. The Pi producer must land first,
+    and rollback must restore the tolerant page first."""
+    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+
+    assert "Reinterpreting an existing spec field (Pi first)" in readme
+    assert "**Forward rollout → Pi first, page second.**" in readme
+    assert "**Rollback → page first, Pi second.**" in readme
+    assert "build `20260729.1` starts rendering Room" in readme
+
+
 def test_capture_page_beep_copy_matches_the_composed_beep_count():
     """#1824 N3: the prelude line says "Listen for three beeps", which mirrors
     the composer's COURTESY_TONE_BEEP_COUNT. Spelled out rather than sent over
