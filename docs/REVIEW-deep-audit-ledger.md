@@ -4,15 +4,15 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`52775d25d`), including this branch:
+Last reconciled against `origin/main` (`a4d6648b9`), including this branch:
 2026-07-29.
 
 ## Status counts
 
-- **open**: 273 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 272 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 391
+- **fixed**: 392
 - **in-progress**: 0
 - **mooted**: 13
 - **deferred**: 0
@@ -176,7 +176,7 @@ Last reconciled against `origin/main` (`52775d25d`), including this branch:
 | DA-0232 | `scripts/switch-gemini-model.sh` :: :35-36 | should-fix | W3 | **fixed** | Gemini aliases resolve from the installed catalog and update the effective selector owner — #1389 |
 | DA-0233 | `tests/test_active_speaker_bringup.py` :: _topology | should-fix | W3 | **fixed** | canonical active-speaker topology fixture — #1394 |
 | DA-0234 | `tests/test_active_speaker_startup_load.py` :: _topology:59 | should-fix | W3 | **fixed** | canonical active-speaker topology fixture — #1394 |
-| DA-0235 | `tests/test_build_wake_negative_feature_bank.py` :: FakeExtractor / _write_wav / _write_bundle | should-fix | W3 | **open** | — |
+| DA-0235 | `tests/test_build_wake_negative_feature_bank.py` :: FakeExtractor / _write_wav / _write_bundle | should-fix | W3 | **fixed** | positive, negative, and shared feature-bank tests use one extractor/WAV/bundle fixture owner — this branch |
 | DA-0236 | `tests/test_correction_session.py` :: _make_session | should-fix | W3 | **fixed** | isolated shared session fixture with lazy config ownership — #1393 |
 | DA-0237 | `tests/test_install_core_audio_graph_loop.py` :: EXPECTED_DSTS | should-fix | W3 | **fixed** | asserted destinations cover the full shared install table with set equality — #1203 |
 | DA-0238 | `tests/test_voice_daemon_defects.py` :: :19-34 (httpx/sounddevice/rapidfuzz sys.modu | should-fix | W3 | **fixed** | removed import-time dependency poisoning + AST ratchet — #1398 |

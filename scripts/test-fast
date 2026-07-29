@@ -82,6 +82,11 @@ while IFS= read -r changed; do
     tests/test_*.py)
       add_test_if_present "${changed}"
       ;;
+    tests/wake_feature_bank_fixtures.py)
+      add_test_if_present "tests/test_build_wake_feature_bank.py"
+      add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
+      add_test_if_present "tests/test_wake_training_feature_bank.py"
+      ;;
     tests/voice_eval/*)
       ;;
     jasper/*/*.py)

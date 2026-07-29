@@ -257,41 +257,33 @@ def test_fatal_headline_survives_tail_truncation(
     assert "issue #1836" in last_line
 
 
-def test_fast_lane_routes_an_edit_to_its_own_resolver_to_these_guards(
+def _fast_lane_selected_tests(
     tmp_path: Path,
-) -> None:
-    """The lanes' own files must select the lanes' own tests.
-
-    ``scripts/test-*`` does not glob the leading-underscore resolver, and
-    nothing referenced this test file at all -- so the one change most likely
-    to break tool resolution ran every guard except these.
-
-    Driven through the lane with a recording stand-in for pytest rather than
-    asserting on the script's text: a string check would still pass if the
-    mapping were moved into an unreachable ``case`` arm or pointed at a path
-    that does not exist, both of which route nothing.
-
-    Everything is committed first so the resolver is the *only* changed file.
-    Leaving the guards untracked would make the assertion vacuous -- they would
-    route themselves through the ``tests/test_*.py`` arm no matter what this
-    branch does.
-    """
+    *,
+    changed_path: str,
+    routed_tests: tuple[str, ...],
+) -> set[str]:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
     (repo / "tests").mkdir()
     for name in ("test-fast", "_test_lane.sh"):
         shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
     shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
-    for guard in ("test_test_lane_tool_resolution.py", "test_dependency_groups.py"):
-        (repo / "tests" / guard).write_text("", encoding="utf-8")
+    for relative in (changed_path, *routed_tests):
+        path = repo / relative
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "tests@example.invalid")
     _git(repo, "config", "user.name", "JTS Tests")
     _git(repo, "config", "commit.gpgsign", "false")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "base")
-    (repo / "scripts" / "_test_lane.sh").write_text(
-        (_SCRIPTS / "_test_lane.sh").read_text() + "\n# edited\n", encoding="utf-8"
+    changed = repo / changed_path
+    changed.write_text(
+        changed.read_text(encoding="utf-8") + "\n# edited\n",
+        encoding="utf-8",
     )
 
     calls = repo / "pytest-calls.jsonl"
@@ -322,12 +314,54 @@ def test_fast_lane_routes_an_edit_to_its_own_resolver_to_these_guards(
         text=True,
     )
 
-    selected = {
+    return {
         arg
         for line in calls.read_text(encoding="utf-8").splitlines()
         for arg in json.loads(line)
     }
-    assert "tests/test_test_lane_tool_resolution.py" in selected, selected
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "routed_tests"),
+    [
+        (
+            "scripts/_test_lane.sh",
+            (
+                "tests/test_test_lane_tool_resolution.py",
+                "tests/test_dependency_groups.py",
+            ),
+        ),
+        (
+            "tests/wake_feature_bank_fixtures.py",
+            (
+                "tests/test_build_wake_feature_bank.py",
+                "tests/test_build_wake_negative_feature_bank.py",
+                "tests/test_wake_training_feature_bank.py",
+            ),
+        ),
+    ],
+    ids=("lane-resolver", "wake-feature-bank-fixtures"),
+)
+def test_fast_lane_routes_internal_support_files_to_their_guards(
+    tmp_path: Path,
+    changed_path: str,
+    routed_tests: tuple[str, ...],
+) -> None:
+    """Support-file-only edits must select their dependent test contracts.
+
+    Driven through the lane with a recording stand-in for pytest rather than
+    asserting on the script's text: a string check would still pass if the
+    mapping were unreachable or pointed at paths that do not exist.
+    Everything is committed first so ``changed_path`` is the only edit.
+    """
+
+    selected = _fast_lane_selected_tests(
+        tmp_path,
+        changed_path=changed_path,
+        routed_tests=routed_tests,
+    )
+
+    assert set(routed_tests) <= selected, selected
 
 
 def test_fast_lane_propagates_routing_policy_failure_before_later_work(

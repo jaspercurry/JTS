@@ -5,32 +5,15 @@
 """Tests for jasper.wake_training.feature_bank shared utilities."""
 from __future__ import annotations
 
-import wave
 from pathlib import Path
 
 import numpy as np
 
 from jasper.wake_training import feature_bank
-
-
-class FakeExtractor:
-    name = "fake"
-
-    def embed_clips(self, clips: np.ndarray, *, batch_size: int, ncpu: int) -> np.ndarray:
-        del batch_size, ncpu
-        out = np.zeros((clips.shape[0], 16, 96), dtype=np.float32)
-        for idx, clip in enumerate(clips):
-            out[idx, :, :] = float(clip[-1])
-        return out
-
-
-def _write_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 16000) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(sample_rate)
-        w.writeframes(samples.astype(np.int16).tobytes())
+from tests.wake_feature_bank_fixtures import (
+    FakeExtractor,
+    write_wav as _write_wav,
+)
 
 
 def test_prepare_clip_verifies_hash_and_end_aligns(tmp_path: Path) -> None:
