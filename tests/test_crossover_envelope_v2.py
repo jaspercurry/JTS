@@ -65,7 +65,7 @@ def _step_statuses(env: dict) -> dict[str, str]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 8
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 9
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -80,7 +80,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = build_crossover_envelope(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 8
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 9
     assert env["flow"] == "v2"
 
 
@@ -702,6 +702,88 @@ def test_done_candidate_review_omits_linearization_fields_when_absent():
     assert review["linearization_octaves"] == []
 
 
+# --- two-stage commission D4: the level-cost disclosure, era-aware ------------
+
+
+def test_candidate_review_carries_the_headroom_cost_with_the_era_that_stamped_it():
+    """PR-L5's "this correction costs N dB of maximum level" reaches a
+    household-visible payload (D4). A candidate persisted by a build that
+    records its basis discloses the number AND which derivation produced it."""
+    from jasper.active_speaker.linearization_fit import (
+        HEADROOM_COST_BASIS_REALIZED_PEAK,
+    )
+
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            headroom_cost_db=5.2,
+            headroom_cost_basis=HEADROOM_COST_BASIS_REALIZED_PEAK,
+        ),
+    ))
+    assert env["candidate_review"]["headroom_cost"] == {
+        "db": 5.2, "basis": HEADROOM_COST_BASIS_REALIZED_PEAK,
+    }
+
+
+def test_a_pre_amendment_headroom_cost_never_renders_bare():
+    """D3's cross-era rule, pinned structurally rather than by convention.
+
+    ``headroom_cost_db``'s derivation changed under #1808 and the stamp is not
+    re-derived on load, so the same correction discloses ~22.5 dB under the old
+    rule where it now costs ~5. A candidate persisted before the basis was
+    recorded therefore reads as ``unknown`` — the absence is the only honest
+    evidence of era there is, and it is never assumed to be current.
+
+    The pin that makes "never bare" enforceable is the second half: there is no
+    lone ``headroom_cost_db`` scalar anywhere on this payload for a renderer to
+    reach for. The number is only obtainable through the compound that carries
+    its basis, so rendering it without the era is not a discipline anyone has
+    to remember — it is unavailable."""
+    from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN
+
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"},
+        # The pre-amendment shape: a number, and nothing saying how it was
+        # derived. 22.5 dB is the real JTS3 figure the old rule produced for a
+        # correction the new rule charges ~5 dB for.
+        candidate=_candidate_summary(headroom_cost_db=22.458),
+    ))
+    review = env["candidate_review"]
+    assert review["headroom_cost"] == {
+        "db": 22.458, "basis": HEADROOM_COST_BASIS_UNKNOWN,
+    }
+    assert "headroom_cost_db" not in review
+
+
+def test_an_absent_headroom_cost_is_unknown_not_a_free_correction():
+    """``db`` is ``None``, never ``0.0``, when the state carries no number.
+
+    Zero is a real and common answer here — every cut-only correction charges
+    nothing — so defaulting an absent value to it would state a measurement the
+    payload does not have, on the screen whose purpose is honesty."""
+    from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN
+
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert env["candidate_review"]["headroom_cost"] == {
+        "db": None, "basis": HEADROOM_COST_BASIS_UNKNOWN,
+    }
+
+
+def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
+    """The payload's schema-version bump (D4's own pin).
+
+    ``candidate_review`` gained a key, so the version a consumer reads to know
+    which shape it is holding moves with it. Additive — no key was removed or
+    re-typed — which is why the crossover wizard, whose module does not gate on
+    this version, keeps rendering an older page against a newer envelope."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 9
+    assert "headroom_cost" in env["candidate_review"]
+
+
 # --- volume recovery (W2 gate ruling) ----------------------------------------------
 
 
@@ -1232,7 +1314,7 @@ def test_applied_false_with_verify_phase_does_not_force_verify_fail():
 ])
 def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
-    assert env["schema_version"] == 8
+    assert env["schema_version"] == 9
     assert env["screen"]
     assert env["verdict_text"]
 

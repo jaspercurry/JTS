@@ -3560,6 +3560,7 @@ class CrossoverV2Conductor:
         gain_plan_db: Mapping[str, float] | None = None,
         index_phase_map: Mapping[int, str] | None = None,
         measure_predicted_sum: Any = None,
+        measure_predicted_spec_report: Mapping[str, Any] | None = None,
         measure_commanded_delta: Any = None,
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_baseline: Mapping[str, float] | None = None,
@@ -3697,6 +3698,23 @@ class CrossoverV2Conductor:
         # MEASURE→VERIFY handoff evidence. A verify-only re-arm session
         # rehydrates both from the persisted state (§5.2 re-verify).
         self._measure_predicted_sum: Any = measure_predicted_sum
+        # Two-stage commission D4: the spec verdict for the curve above, graded
+        # ONCE by ``_assert_accountable`` against the FULL-RESOLUTION in-memory
+        # tuple and held here in its serialized (``FlatSpecReport.to_dict``)
+        # form. Carried alongside ``_measure_predicted_sum`` by the same route
+        # and for the same reason a verify-only re-arm rehydrates that curve:
+        # the re-arm builds a fresh conductor which never runs a fit, so
+        # without this the first "Try again" would persist the curve with its
+        # verdict silently dropped (the ``cloud`` B1 bug shape).
+        #
+        # Serialized rather than the live dataclass on purpose: the rehydration
+        # route can only ever hand back JSON, so holding one type here keeps
+        # this field's readers from having to accept two.
+        self._measure_predicted_spec_report: dict[str, Any] | None = (
+            dict(measure_predicted_spec_report)
+            if isinstance(measure_predicted_spec_report, Mapping)
+            else None
+        )
         # PR-L5: what the applied correction COMMANDS on the summed response
         # (``_commanded_delta``). Carried alongside ``_measure_predicted_sum``
         # for the same reason and by the same route — the delta probe runs at
@@ -4073,6 +4091,27 @@ class CrossoverV2Conductor:
     @property
     def measure_predicted_sum(self) -> Any:
         return self._measure_predicted_sum
+
+    @property
+    def measure_predicted_spec_report(self) -> dict[str, Any] | None:
+        """The spec verdict for :attr:`measure_predicted_sum`, or ``None``.
+
+        Two-stage commission D4's "grade once" half. ``None`` means the
+        prediction could not be graded — **never that it passed**; the host
+        persists it verbatim and every surface that renders it must treat
+        absence as absence (see :func:`spec_report_for_predicted_sum`'s own
+        unknown-is-not-permission rule).
+
+        The report is graded against the full-resolution tuple, which is the
+        whole point of stashing it: what SURVIVES to the durable state is
+        ``_decimate_sum``'s 512-point stride, and re-grading that would be a
+        different instrument from the one the accountability veto refused on.
+        """
+        return (
+            dict(self._measure_predicted_spec_report)
+            if self._measure_predicted_spec_report is not None
+            else None
+        )
 
     @property
     def measure_commanded_delta(self) -> Any:
@@ -5145,10 +5184,13 @@ class CrossoverV2Conductor:
             #
             # This is the CONFIRM payload, which the host reads for
             # ``auto_apply``; it is not by itself the household disclosure the
-            # owner's ruling asks for. That lives on the browser-visible
-            # candidate summary (``correction_crossover_v2._candidate_summary``,
-            # same reducer), which the envelope's own screens read. Both are
-            # here because they answer to different readers, and both come from
+            # owner's ruling asks for. That one is persisted by
+            # ``correction_crossover_v2._candidate_summary`` (same reducer) and
+            # reaches the envelope's screens only through
+            # ``crossover_envelope_v2._candidate_review_payload``, which
+            # projects it as ``headroom_cost`` — the screens read that payload,
+            # never the summary directly. Both numbers are here because they
+            # answer to different readers, and both come from
             # ``worst_headroom_cost_db`` so they cannot drift.
             "headroom_cost_db": self._candidate_headroom_cost_db(),
         }
@@ -5292,16 +5334,37 @@ class CrossoverV2Conductor:
         # and require the correction to move ITS OWN model materially. Same
         # branches, same grid, same evaluator, same position — the room cancels
         # because it is not in either term.
+        #
+        # **Graded ONCE, here** (two-stage commission D4). This is the last
+        # place the FULL-RESOLUTION `(freqs, magnitudes)` tuple exists: what
+        # survives to the durable state is `_decimate_sum`'s 512-point stride,
+        # and re-grading that stride later would be a DIFFERENT instrument from
+        # the one this veto refuses on — the two can disagree on a narrow band,
+        # on the one screen whose entire purpose is the honest spec verdict. So
+        # the report this gate computes is the report the host persists, and
+        # the persisted curve stays what it is: a drawing, not the instrument.
+        #
+        # It is hoisted ABOVE the trims-only abstain below (it used to sit
+        # underneath) for a reason the gate itself does not care about but the
+        # review screen does: the trims-only lane still commits trims and still
+        # predicts a response, so it HAS a gradeable prediction. Leaving it
+        # ungraded would put "we could not predict this" in front of a
+        # household about a prediction we can in fact grade. **The gate's own
+        # decisions are untouched** — every `return` and `raise` below is
+        # exactly where it was, reached on exactly the same condition.
+        after = spec_report_for_predicted_sum(predicted_sum)
+        self._stash_predicted_spec_report(after, predicted_sum)
         if raw_predicted_sum is None or self._last_linearized_predicted_sum is None:
             # No fit ran this attempt (ineligible mic tier, or the fit failed
             # into SF2's trims-only fallback), so `predicted_sum` IS
             # `raw_predicted_sum` — the same object. Grading a thing against
             # itself always returns "no improvement", which would refuse every
             # trims-only candidate on the strength of arithmetic rather than
-            # evidence. Abstain, loudly.
-            self._log_prediction_ledger(reason="no_linearization")
+            # evidence. Abstain, loudly — carrying the after-report the hoist
+            # above just produced, so the ledger and the wire cannot state
+            # different verdicts about one session's one prediction.
+            self._log_prediction_ledger(reason="no_linearization", after=after)
             return
-        after = spec_report_for_predicted_sum(predicted_sum)
         if after is None:
             self._log_prediction_ledger(reason="prediction_ungradeable")
             return
@@ -5336,6 +5399,41 @@ class CrossoverV2Conductor:
             improvement_db=improvement_db, level=logging.ERROR,
         )
         raise self._refuse(REASON_CORRECTION_NOT_AN_IMPROVEMENT)
+
+    def _stash_predicted_spec_report(
+        self, report: Any, predicted_sum: Any,
+    ) -> None:
+        """Hold the graded prediction for the host to persist, and say so when
+        there is nothing to hold (two-stage commission D4).
+
+        The stash is the SERIALIZED report, taken from the one live
+        :class:`~jasper.active_speaker.flat_spec.FlatSpecReport` this session
+        ever built for this curve — never a second evaluation.
+
+        **An absent report becomes a user-visible dead end, so it gets its own
+        named line.** The two-stage flow's review screen (PR-T2) will render
+        "we could not predict this" and refuse the Apply control on it; the
+        line lands with the ``None`` rather than with the screen, because per
+        AGENTS.md's no-silent-failure rule a disclosure nobody can grep for is
+        not a disclosure — and the ``None`` is already reachable. The gate's
+        own ``correction.crossover_v2_prediction_gate`` ledger cannot serve:
+        it carries this state as one ``reason=`` value among seven, and it does
+        not fire at all on the trims-only lane's behalf. ``why`` separates the
+        two causes, which have different remedies — a prediction that was never
+        built (no summed model to grade) from one the evaluator refused (a
+        malformed or degenerate curve, already logged in detail by
+        :func:`spec_report_for_predicted_sum` itself).
+        """
+        self._measure_predicted_spec_report = (
+            report.to_dict() if report is not None else None
+        )
+        if report is not None:
+            return
+        log_event(
+            logger, "correction.crossover_v2_prediction_ungradeable",
+            level=logging.WARNING, session_id=self.session_id,
+            why="no_prediction" if predicted_sum is None else "evaluator_refused",
+        )
 
     def _log_prediction_ledger(
         self,

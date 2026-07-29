@@ -848,6 +848,34 @@ def linearization_filters_by_role(
     return out
 
 
+# --- what a stored ``headroom_cost_db`` MEANS, per era (#1808) -------------
+#
+# The charge's derivation changed: it was the SUM of a fit's positive filter
+# gains, and #1808 made it the realized peak of the branch chain the fit is
+# emitted into. On the 2026-07-28 JTS3 profile the two disagree by 5.6x —
+# 22.458 dB against a +4.00 dB realized peak — so the SAME correction discloses
+# an order-of-magnitude different level cost depending on which build stamped
+# it. ``docs/linearization-integrity-plan.md`` ("Cross-era disclosure") rules
+# that the stamp is NOT re-derived on load, deliberately: it is a record of
+# what that graph was emitted with, and a recommission replaces it.
+#
+# That ruling is what makes this vocabulary necessary. A number that cannot be
+# re-derived and cannot be trusted across eras must travel WITH the era it was
+# stamped in, or a household reads 22.5 dB for a correction that costs 5.
+#
+# The era is recorded, never inferred. Nothing on a persisted
+# ``LinearizationFit`` distinguishes the two rules — #1808 changed how the
+# field is computed, not the field set (its nearest neighbours, the ``lift_*``
+# family, predate it) — so sniffing would be a guess dressed as a fact. A
+# candidate serialized by THIS build carries REALIZED_PEAK because the fits
+# inside it were stamped by this build's composer; a candidate persisted by an
+# older build carries no stamp at all, and UNKNOWN is the honest reading of
+# that absence. Absent-means-unknown, never a default — the same rule ``tier``
+# and ``echo_band_provenance`` already carry.
+HEADROOM_COST_BASIS_REALIZED_PEAK = "realized_peak"
+HEADROOM_COST_BASIS_UNKNOWN = "unknown"
+
+
 def worst_headroom_cost_db(linearization_mapping: Mapping[str, Any]) -> float:
     """The max-level cost of a whole correction, dB — the WORST branch's
     :attr:`LinearizationFit.headroom_cost_db` (PR-L5).

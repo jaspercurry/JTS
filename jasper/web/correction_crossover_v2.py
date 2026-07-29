@@ -1117,6 +1117,39 @@ def _compact_cloud_status(
 CHART_CURVE_MAX_JSON_POINTS = 256
 
 
+def _decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
+    """Stride a stored curve down to :data:`CHART_CURVE_MAX_JSON_POINTS`.
+
+    THE chart feed's decimation — extracted from :func:`_chart_cloud_status`'s
+    body (two-stage commission D4) when the predicted curve became a second
+    curve on the same block. D4 asks for the prediction to ride "the existing
+    ``CHART_CURVE_MAX_JSON_POINTS`` path so the chart feed keeps one decimation
+    owner"; a second inline copy of this stride would be a second owner, and
+    two curves drawn in one frame at silently different densities is exactly
+    the drift that costs. ``None`` for anything that is not a usable pair, so a
+    caller never fabricates an empty curve out of malformed state.
+
+    **One deliberate behaviour delta from the inlined version this replaced.**
+    A zero-length pair used to yield ``{"freqs_hz": [], "magnitude_db": []}``;
+    it now yields ``None``. Reachable only from malformed durable state — a
+    pipeline marked ``available: True`` whose stored curve is empty — and the
+    new answer is the honest direction: an empty curve renders as "we looked
+    and there is nothing there", which is the fabricated-clean-reading shape
+    this module forbids, whereas ``None`` says "no curve", which is what an
+    empty stored curve actually means.
+    """
+    if not isinstance(freqs, list) or not isinstance(mags, list):
+        return None
+    n = min(len(freqs), len(mags))
+    if n == 0:
+        return None
+    step = max(1, n // CHART_CURVE_MAX_JSON_POINTS)
+    return {
+        "freqs_hz": [_finite(f) for f in freqs[:n:step]],
+        "magnitude_db": [_finite(m) for m in mags[:n:step]],
+    }
+
+
 def _chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     """PR-7's chart-feed projection of the durable ``cloud`` block — the ONE
     thing :func:`_compact_cloud_status` deliberately withholds: the decimated
@@ -1161,17 +1194,100 @@ def _chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
         if pipeline.get("available") is True:
             raw_curve = pipeline.get("curve")
             if isinstance(raw_curve, Mapping):
-                freqs = raw_curve.get("freqs_hz")
-                mags = raw_curve.get("magnitude_db")
-                if isinstance(freqs, list) and isinstance(mags, list):
-                    n = min(len(freqs), len(mags))
-                    step = max(1, n // CHART_CURVE_MAX_JSON_POINTS)
-                    curve = {
-                        "freqs_hz": [_finite(f) for f in freqs[:n:step]],
-                        "magnitude_db": [_finite(m) for m in mags[:n:step]],
-                    }
+                curve = _decimate_curve_for_chart(
+                    raw_curve.get("freqs_hz"), raw_curve.get("magnitude_db"),
+                )
         out[str(phase)] = {"curve": curve}
     return out or None
+
+
+def _prediction_status(state: Any) -> dict[str, Any] | None:
+    """The PREDICTED post-apply response and its stored spec verdict, or
+    ``None`` (two-stage commission D4).
+
+    Rides :func:`crossover_v2_status_block`'s returned dict beside ``cloud`` /
+    ``cloud_chart``. Both halves were already computed — the curve by
+    ``_decimate_sum`` at persist time, the verdict by the conductor's
+    accountability veto against the FULL-RESOLUTION tuple — and neither reached
+    any surface. This projects; it never grades.
+
+    **Nothing renders it yet.** It is the wire half of the two-stage flow's
+    review screen (PR-T2's "what we predict" panel and the chart's third
+    curve), landed on its own rung so that screen is built against data already
+    proven on the wire rather than against a shape invented alongside it.
+
+    **``curve`` and ``spec`` are independently absent, and all four
+    combinations are reachable.** Enumerated because a consumer — PR-T2's
+    review screen above all — has to render each one differently:
+
+    1. *Both present* — the ordinary closed session. Draw the curve, state the
+       verdict.
+    2. *Curve, no report* — a state written before D4, or a prediction the
+       evaluator refused (:func:`~jasper.active_speaker.crossover_v2_flow
+       .spec_report_for_predicted_sum` returned ``None``). Draw the curve, say
+       the verdict is unknown; **do not** infer one from the picture.
+    3. *Neither* — no session has closed a candidate. This function returns
+       ``None`` outright rather than an empty shell.
+    4. *Report, no curve* — **the refusal lane, and the least obvious of the
+       four.** The verdict is stashed by ``_assert_accountable`` BEFORE the
+       improvement gate runs, while ``_measure_predicted_sum`` is assigned only
+       after that gate returns — so a ``correction_not_an_improvement`` refusal
+       persists the report with ``predicted_sum`` still ``None`` (the
+       ``CaptureBeginRefused`` arm's terminal-failure persist). This is honest,
+       not a leak: the spec verdict genuinely evaluated that prediction, and
+       what the gate refused on was a *different* question — insufficient
+       improvement over the correction's own pre-fit model. A consumer shows
+       the verdict and has no curve to draw.
+
+    So ``overall_passed`` is ``None`` — not ``False`` — whenever no report was
+    stored, under the same never-fabricate-a-clean-reading rule
+    :func:`_compact_cloud_status` states at length. ``None`` here means
+    "unknown", and a consumer must not read it as permission. ``False`` is the
+    opposite: a real graded verdict that the prediction misses the spec, which
+    is exactly what state 4 carries.
+
+    ``spec_bands`` / ``reference_db`` mirror the compact cloud block's own
+    vocabulary key-for-key on purpose: the review screen draws the measured
+    curve and this one in ONE deviation frame with one tolerance corridor, and
+    a second spelling of the same five per-band numbers is how the two frames
+    would drift apart.
+    """
+    priors = (state or {}).get("verify_priors")
+    if not isinstance(priors, Mapping):
+        return None
+    raw_curve = priors.get("predicted_sum")
+    curve = (
+        _decimate_curve_for_chart(
+            raw_curve.get("freqs_hz"), raw_curve.get("magnitude_db"),
+        )
+        if isinstance(raw_curve, Mapping)
+        else None
+    )
+    spec = priors.get("predicted_spec")
+    spec = spec if isinstance(spec, Mapping) else {}
+    if curve is None and not spec:
+        return None
+    bands = spec.get("bands")
+    return {
+        "curve": curve,
+        "spec_bands": [
+            {
+                "f_lo_hz": b.get("f_lo_hz"),
+                "f_hi_hz": b.get("f_hi_hz"),
+                "passed": b.get("passed"),
+                "max_deviation_db": b.get("max_deviation_db"),
+                "tolerance_db": b.get("tolerance_db"),
+            }
+            for b in bands
+            if isinstance(b, Mapping)
+        ] if isinstance(bands, list) else [],
+        "overall_passed": (
+            spec.get("overall_passed")
+            if isinstance(spec.get("overall_passed"), bool)
+            else None
+        ),
+        "reference_db": _finite(spec.get("reference_db")),
+    }
 
 
 def crossover_v2_status_block() -> dict[str, Any] | None:
@@ -1219,6 +1335,17 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # _chart_cloud_status's own docstring for the measured byte cost and
         # its own re-decimation ceiling, which is the actual size mitigation.
         "cloud_chart": _chart_cloud_status((state or {}).get("cloud")),
+        # Two-stage commission D4: the PREDICTED post-apply response and the
+        # spec verdict the accountability veto graded it with. It rides beside
+        # ``cloud``/``cloud_chart`` because the review screen (PR-T2 — no
+        # consumer yet) will draw all three in one frame — measured, proposed,
+        # predicted — and a household
+        # deciding whether to apply is comparing exactly those. Kept as ONE key
+        # rather than split compact/chart the way ``cloud`` is: that split
+        # exists because the doctor reads ``cloud`` alone and should not have
+        # to skip curve-shaped data, and nothing reads the prediction that way.
+        # ``None`` until a candidate's close has stored a prediction.
+        "prediction": _prediction_status(state),
     }
     block["post_apply_grade"] = _post_apply_grade(block)
     return block
@@ -1321,6 +1448,20 @@ def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
     }
 
 
+def _predicted_spec_prior(conductor: Any) -> dict[str, Any] | None:
+    """The conductor's stored prediction verdict, in the shape the durable
+    state carries it (two-stage commission D4).
+
+    ``getattr`` rather than attribute access for the same reason
+    :func:`_cloud_summary` guards its own reads: this persistence helper is
+    called from test seams with conductor doubles that carry only the surfaces
+    a given test exercises, and a missing property must read as "no verdict",
+    not raise mid-persist and lose the whole snapshot.
+    """
+    report = getattr(conductor, "measure_predicted_spec_report", None)
+    return dict(report) if isinstance(report, Mapping) else None
+
+
 def _finite(value: Any) -> float | None:
     """Mirrors ``crossover_envelope_v2._finite``'s exact guard (reject
     bool, reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review
@@ -1379,6 +1520,14 @@ def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]
 
 
 def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
+    # Lazy, like ``_candidate_headroom_cost_db``'s own import below it: this
+    # module has no module-level numpy and the fit module does, so the
+    # socket-activated wizard process only pays for it on a path that
+    # genuinely has a candidate.
+    from jasper.active_speaker.linearization_fit import (
+        HEADROOM_COST_BASIS_REALIZED_PEAK,
+    )
+
     if candidate is None:
         return None
     analysis = candidate.analysis if isinstance(candidate.analysis, Mapping) else {}
@@ -1407,8 +1556,12 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # PR-L5). The owner's ruling on boost is that headroom spend is
         # DISCLOSED, never silently limited — and a number that only reaches the
         # journal is not disclosed to the household that owns the speaker. This
-        # is the payload the envelope's own screens read, so putting it here is
-        # what makes the ruling true rather than merely intended.
+        # is the DURABLE candidate block (``/state.crossover_v2.candidate``);
+        # the envelope's screens read
+        # ``crossover_envelope_v2._candidate_review_payload``, which projects
+        # this field into ``headroom_cost`` alongside the era stamp below. So
+        # persisting it here is the first half of making the ruling true — that
+        # projection is the half a household actually sees.
         #
         # The WORST branch's charge, matching the emitter's own worst-branch
         # rule (``camilla_yaml.linearization_headroom_db``): the driver chains
@@ -1419,6 +1572,16 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # zero rather than absent, so a surface never has to guess whether the
         # field is missing or the cost is nothing.
         "headroom_cost_db": _candidate_headroom_cost_db(candidate.linearization),
+        # WHICH derivation the number above was stamped under (#1808 /
+        # two-stage commission D3). Written unconditionally here because a
+        # candidate reaching this function was built by THIS process, so its
+        # per-fit charges are this build's realized-peak rule by construction.
+        # A candidate persisted by an older build has no such key, and its
+        # absence is the only honest evidence of era there is — see
+        # ``linearization_fit.HEADROOM_COST_BASIS_*`` for why it is recorded
+        # rather than sniffed, and ``crossover_envelope_v2
+        # ._candidate_review_payload`` for what an absent basis renders as.
+        "headroom_cost_basis": HEADROOM_COST_BASIS_REALIZED_PEAK,
     }
 
 
@@ -1591,6 +1754,19 @@ def persist_conductor_state(
         "cloud": _cloud_summary(conductor),
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
+            # Two-stage commission D4: the spec verdict for the curve above,
+            # graded ONCE by the conductor's accountability veto against the
+            # full-resolution tuple — this is a copy of that one report, never
+            # a re-grade of the decimation the line above just wrote.
+            # ``None`` means ungradeable, which is not a pass.
+            #
+            # Threaded through exactly like ``gate_window_ms`` and
+            # ``pilot_transfer_baseline`` below, and rehydrated by
+            # ``prepare_v2_verify`` for the same reason: a verify-only re-arm
+            # builds a fresh conductor that never runs a fit, so a verdict that
+            # did not travel that route would be dropped on the first
+            # "Try again" — the ``cloud`` B1 bug shape, one field over.
+            "predicted_spec": _predicted_spec_prior(conductor),
             "gate_window_ms": conductor.measure_gate_window_ms,
             # Measurement-honesty gate G3's reference (crossover_v2_flow's
             # ``verify_pilot_transfer_baseline`` property) — threaded through
@@ -4010,6 +4186,14 @@ def prepare_v2_verify(
             np.asarray(sum_raw["freqs_hz"], dtype=float),
             np.asarray(sum_raw["magnitude_db"], dtype=float),
         )
+    # Two-stage commission D4: the prediction's stored spec verdict, rehydrated
+    # exactly like ``gate_ms`` below so this re-arm's own persist carries it
+    # forward instead of blanking it. Absent (a state written before D4, or an
+    # ungradeable prediction) stays None — unknown, never a pass.
+    predicted_spec = (
+        priors_raw.get("predicted_spec") if isinstance(priors_raw, Mapping) else None
+    )
+    predicted_spec = predicted_spec if isinstance(predicted_spec, Mapping) else None
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
@@ -4119,6 +4303,7 @@ def prepare_v2_verify(
             gain_plan_db=state.get("gain_plan_db"),
             index_phase_map={1: PHASE_VERIFY},
             measure_predicted_sum=predicted_sum,
+            measure_predicted_spec_report=predicted_spec,
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),

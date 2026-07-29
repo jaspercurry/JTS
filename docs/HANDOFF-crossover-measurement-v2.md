@@ -810,6 +810,30 @@ applied profile that was never graded — the silence
 gates on a FAILING `PHASE_CLOUD_VERIFY` verdict and a missing one renders as no
 phase at all.
 
+**`/state.crossover_v2.prediction`** (two-stage commission work order D4,
+issue #1806) carries the PREDICTED post-apply response and the spec verdict it
+was graded with: `curve` (decimated through the same
+`_decimate_curve_for_chart` owner and the same 256-point ceiling the
+`cloud_chart` curves use, so all three curves in one chart are at one density),
+plus `spec_bands` / `overall_passed` / `reference_db` in the compact `cloud`
+block's own vocabulary. Both halves already existed and neither reached a
+surface — the curve was persisted at `MAX_PERSISTED_SUM_POINTS`, and
+`_assert_accountable` graded the full-resolution tuple and threw the report
+away.
+
+**The verdict is graded ONCE, at full resolution, and stored.** What survives
+to `verify_priors.predicted_sum` is a 512-point stride; re-grading that stride
+is a *different* instrument from the one the accountability veto refused on,
+and the two disagree (on the shipped conductor fixture, 180/617/823 graded bins
+against 45/155/205). So `_assert_accountable` stashes the report it computed,
+`verify_priors.predicted_spec` persists it verbatim, and `prepare_v2_verify`
+rehydrates it so a re-arm's own persist cannot blank it. The persisted curve is
+a drawing; the persisted report is the instrument. `None` throughout means
+ungradeable — **never a pass** — and an ungradeable prediction emits
+`event=correction.crossover_v2_prediction_ungradeable` with `why=no_prediction`
+(nothing was predicted) or `why=evaluator_refused` (the evaluator would not
+grade the curve). Nothing renders this yet; PR-T2 is the screen.
+
 *The carve-out disclosure* (flat-linearization plan PR-6b, owner decision 1 of
 2026-07-25). The gauge says how flat the speaker measured and how many
 spec-band bins left grading; `carve_outs_by_band` — same registry, same
