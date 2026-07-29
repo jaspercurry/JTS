@@ -51,6 +51,12 @@ LANDING_INSTALL_CONTRACTS = (
 )
 LANDING_PYTEST_TARGETS = (*LANDING_TEST_FILES, *LANDING_INSTALL_CONTRACTS)
 FAST_LANDING_PATHS = frozenset((LANDING_PAGE, *LANDING_TEST_FILES))
+# Keep the whole classifier contract together: discovery, registry integrity,
+# workflow dependencies, and the aggregate result table must all fail before
+# the expensive Python matrix starts.
+ROUTING_POLICY_PYTEST_TARGETS = (
+    "tests/test_ci_classifier.py",
+)
 
 # Prose documents outside docs/.  Root-level operational docs plus the PR
 # template, which tests/test_ci_classifier.py asserts against.
@@ -489,6 +495,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the registered documentation-contract pytest targets and exit",
     )
+    parser.add_argument(
+        "--routing-policy-pytest-targets",
+        action="store_true",
+        help="print the CI-routing policy pytest targets and exit",
+    )
     return parser
 
 
@@ -499,6 +510,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.docs_pytest_targets:
         print("\n".join(DOCS_TEST_FILES))
+        return 0
+    if args.routing_policy_pytest_targets:
+        print("\n".join(ROUTING_POLICY_PYTEST_TARGETS))
         return 0
 
     decision = decision_from_git(args.event, args.base, args.head)

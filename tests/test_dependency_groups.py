@@ -264,6 +264,9 @@ def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None
     # The lane sources its sibling tool resolver, so the scratch repo has to
     # carry it too (issue #1836).
     shutil.copy2(ROOT / "scripts" / "_test_lane.sh", repo / "scripts" / "_test_lane.sh")
+    shutil.copy2(
+        ROOT / "scripts" / "ci-classify.py", repo / "scripts" / "ci-classify.py"
+    )
 
     pytest_calls = repo / "pytest-calls.jsonl"
     fake_pytest = repo / "fake-pytest"

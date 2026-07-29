@@ -261,9 +261,50 @@ jobs:
           shellcheck --severity=warning "${shell_files[@]}"
           echo "shellcheck --severity=warning clean"
 
+  python-policy:
+    name: python policy
+    needs: classify
+    if: ${{ needs.classify.outputs.lane == 'full' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      JASPER_VOICE_PROVIDER: gemini
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.14"
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install the locked policy test toolchain
+        run: uv sync --locked --group fast-landing
+
+      - name: Gate the Python matrix on CI-routing policy
+        run: |
+          set -euo pipefail
+          routing_policy_output="$(
+            python3 scripts/ci-classify.py --routing-policy-pytest-targets
+          )"
+          routing_policy_tests=()
+          while IFS= read -r target; do
+            [[ -n "${target}" ]] && routing_policy_tests+=("${target}")
+          done <<< "${routing_policy_output}"
+          if (( ${#routing_policy_tests[@]} == 0 )); then
+            echo "CI routing policy returned no pytest targets" >&2
+            exit 1
+          fi
+          printf 'routing policy: %s\n' "${routing_policy_tests[@]}"
+          .venv/bin/pytest -q --tb=short "${routing_policy_tests[@]}"
+
   pytest-matrix:
     name: pytest / py${{ matrix.python-version }}
-    needs: classify
+    needs: [classify, python-policy]
     if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -343,15 +384,20 @@ jobs:
     name: pytest
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [classify, pytest-matrix]
+    needs: [classify, python-policy, pytest-matrix]
     if: ${{ always() && needs.classify.outputs.lane == 'full' }}
     steps:
-      - name: Require all Python matrix jobs
+      - name: Require Python policy and all matrix jobs
         run: |
+          if [[ "${{ needs['python-policy'].result }}" != "success" ]]; then
+            echo "python policy result: ${{ needs['python-policy'].result }}" >&2
+            exit 1
+          fi
           if [[ "${{ needs['pytest-matrix'].result }}" != "success" ]]; then
             echo "pytest matrix result: ${{ needs['pytest-matrix'].result }}" >&2
             exit 1
           fi
+          echo "python policy result: success"
           echo "pytest matrix result: success"
 
   js:
@@ -591,6 +637,7 @@ jobs:
       - fast-landing
       - docs
       - shell
+      - python-policy
       - pytest-matrix
       - pytest
       - js
@@ -604,6 +651,7 @@ jobs:
       FAST_LANDING_RESULT: ${{ needs['fast-landing'].result }}
       DOCS_RESULT: ${{ needs.docs.result }}
       SHELL_RESULT: ${{ needs.shell.result }}
+      PYTHON_POLICY_RESULT: ${{ needs['python-policy'].result }}
       PYTEST_MATRIX_RESULT: ${{ needs['pytest-matrix'].result }}
       PYTEST_RESULT: ${{ needs.pytest.result }}
       JS_RESULT: ${{ needs.js.result }}
@@ -626,6 +674,7 @@ jobs:
               for result in \
                 "${DOCS_RESULT}" \
                 "${SHELL_RESULT}" \
+                "${PYTHON_POLICY_RESULT}" \
                 "${PYTEST_MATRIX_RESULT}" \
                 "${PYTEST_RESULT}" \
                 "${JS_RESULT}" \
@@ -645,6 +694,7 @@ jobs:
               for result in \
                 "${FAST_LANDING_RESULT}" \
                 "${SHELL_RESULT}" \
+                "${PYTHON_POLICY_RESULT}" \
                 "${PYTEST_MATRIX_RESULT}" \
                 "${PYTEST_RESULT}" \
                 "${JS_RESULT}" \
@@ -667,6 +717,7 @@ jobs:
               fi
               for result in \
                 "${SHELL_RESULT}" \
+                "${PYTHON_POLICY_RESULT}" \
                 "${PYTEST_MATRIX_RESULT}" \
                 "${PYTEST_RESULT}" \
                 "${JS_RESULT}" \
