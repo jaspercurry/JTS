@@ -4,15 +4,15 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`7d6acbc45a`), including this branch:
+Last reconciled against `origin/main` (`33aa3c86ac`), including this branch:
 2026-07-29.
 
 ## Status counts
 
-- **open**: 276 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 275 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 388
+- **fixed**: 389
 - **in-progress**: 0
 - **mooted**: 13
 - **deferred**: 0
