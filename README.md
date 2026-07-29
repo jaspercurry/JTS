@@ -1055,6 +1055,16 @@ reference. Currently:
   predicted response is projected onto the wire, verify-failed demotes
   with Undo primary, and the phone gains an orientation/pattern preview
   plus honest time-budget and CHECK copy.
+- [`attribution-stage-plan.md`](docs/attribution-stage-plan.md)
+  — **Adopted work order (2026-07-29, issue #1866)** for the
+  measure → diagnose → prescribe attribution stage: findings as
+  persisted artifacts, an observed-first mechanism registry, the
+  discriminating-probe primitives (reverse-null, rotation,
+  position-variance, Farina harmonic separation), the quick-sweep harness
+  that doubles as the LLM-ready tooling deliverable, the bounded dial-in
+  loop, and the WO-0 corpus retrospective → WO-8 ladder. Verbatim research
+  behind it — two briefs plus the owner-run dissertation — in
+  [`docs/research/2026-07-29-attribution/`](docs/research/2026-07-29-attribution/README.md).
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
