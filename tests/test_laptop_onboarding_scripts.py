@@ -24,6 +24,13 @@ ENV_LOCAL = ROOT / ".env.local"
 ISOLATED_SCRIPTS = (DEPLOY, ONBOARD, LIB, USE)
 
 
+def git_head(*args: str) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", *args],
+        text=True,
+    ).strip()
+
+
 FAKE_SSH = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf 'SSH' >> "$FAKE_LOG"
@@ -81,29 +88,39 @@ printf '\n' >> "$FAKE_LOG"
 
 
 @contextmanager
-def isolated_checkout(env_local: str | None):
-    """Copy the scripts under test into a disposable checkout root."""
+def isolated_checkout(env_local: str | None, *, dirty: bool = False):
+    """Clone a disposable checkout with independent state and index."""
     with tempfile.TemporaryDirectory(prefix="jts-laptop-scripts-") as tmp:
-        checkout = Path(tmp)
+        checkout = Path(tmp) / "checkout"
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--quiet",
+                "--shared",
+                "--no-tags",
+                str(ROOT),
+                str(checkout),
+            ],
+            check=True,
+        )
+
         scripts = checkout / "scripts"
-        scripts.mkdir()
         for source in ISOLATED_SCRIPTS:
             shutil.copy2(source, scripts / source.name)
-
-        git_dir_text = subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "--git-dir"],
+        subprocess.run(
+            ["git", "update-index", "--refresh"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
             text=True,
-        ).strip()
-        git_dir = Path(git_dir_text)
-        if not git_dir.is_absolute():
-            git_dir = ROOT / git_dir
-        (checkout / ".git").write_text(
-            f"gitdir: {git_dir.resolve()}\n",
-            encoding="utf-8",
         )
 
         if env_local is not None:
             (checkout / ".env.local").write_text(env_local, encoding="utf-8")
+        if dirty:
+            with (scripts / "_lib.sh").open("a", encoding="utf-8") as stream:
+                stream.write("\n# Intentional dirty-checkout test marker.\n")
         yield checkout
 
 
@@ -171,10 +188,11 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         *,
         env_local: str | None = None,
         use_pty: bool = False,
+        dirty_checkout: bool = False,
         **env_overrides: str,
     ) -> subprocess.CompletedProcess[str]:
         env = fake.env(**env_overrides)
-        with isolated_checkout(env_local) as checkout:
+        with isolated_checkout(env_local, dirty=dirty_checkout) as checkout:
             deploy = checkout / "scripts" / "deploy-to-pi.sh"
             if use_pty:
                 return run_with_pty(
@@ -242,10 +260,30 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
 
         calls = fake.calls()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sha = git_head("--short", "HEAD")
+        sha_full = git_head("HEAD")
+        self.assertIn(f"sha:    {sha} ({sha_full})", result.stdout)
+        self.assertNotIn(f"sha:    {sha}-dirty", result.stdout)
         self.assertIn("alice@jts3.local:/home/alice/jts/", calls)
         self.assertIn("sudo\\ -n\\ JASPER_DEPLOY_SHA=", calls)
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
         self.assertNotIn("SSH -tt", calls)
+
+    def test_deploy_marks_an_intentionally_dirty_checkout(self):
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            dirty_checkout=True,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+        )
+
+        sha = git_head("--short", "HEAD")
+        sha_full = git_head("HEAD")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"sha:    {sha}-dirty ({sha_full})", result.stdout)
 
     def test_deploy_forwards_documented_build_sandbox_knobs(self):
         fake = FakeRemote(self)
