@@ -108,19 +108,24 @@ def isolated_checkout(env_local: str | None, *, dirty: bool = False):
         scripts = checkout / "scripts"
         for source in ISOLATED_SCRIPTS:
             shutil.copy2(source, scripts / source.name)
-        subprocess.run(
-            ["git", "update-index", "--refresh"],
-            cwd=checkout,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
 
         if env_local is not None:
             (checkout / ".env.local").write_text(env_local, encoding="utf-8")
         if dirty:
             with (scripts / "_lib.sh").open("a", encoding="utf-8") as stream:
-                stream.write("\n# Intentional dirty-checkout test marker.\n")
+                stream.write(
+                    "\nprintf '%s\\n' 'dirty live-script overlay executed'\n"
+                )
+
+        # Refresh the disposable index's stat cache without treating a
+        # legitimate live-script overlay as a harness failure.
+        subprocess.run(
+            ["git", "status", "--short"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         yield checkout
 
 
@@ -269,7 +274,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
         self.assertNotIn("SSH -tt", calls)
 
-    def test_deploy_marks_an_intentionally_dirty_checkout(self):
+    def test_deploy_runs_and_marks_an_overlaid_live_script_dirty(self):
         fake = FakeRemote(self)
         result = self.run_deploy(
             fake,
@@ -283,6 +288,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         sha = git_head("--short", "HEAD")
         sha_full = git_head("HEAD")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("dirty live-script overlay executed", result.stdout)
         self.assertIn(f"sha:    {sha}-dirty ({sha_full})", result.stdout)
 
     def test_deploy_forwards_documented_build_sandbox_knobs(self):
