@@ -8,8 +8,10 @@ Stdlib-only — runs in any Python 3.10+ environment, no Pi needed.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -349,6 +351,175 @@ def test_a_hold_may_be_taken_on_one_thread_and_released_on_another() -> None:
     assert not worker.is_alive()
     assert tracker._active_requests == 0
     assert tracker._holds == {}
+
+
+def test_the_leak_bound_keeps_its_margin_over_the_longest_legitimate_hold() -> None:
+    """Contract: HOLD_LEAK_WARN_AFTER_SEC >= 2x the longest session a wizard sizes for.
+
+    ``_systemd`` is shared by seven wizards and deliberately does NOT import
+    the correction session model at runtime, so its bound is a literal derived
+    by hand from ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S`` — the hard cap
+    on ``crossover_v2_flow.session_wall_clock_ceiling_s``, which already reaches
+    3360 s at the shipped 16-capture Full tier. A test may import freely, so the
+    relationship is pinned here instead of drifting silently.
+
+    If this fails, the ceiling grew and the margin eroded. RAISE THE BOUND
+    deliberately — do not relax the assertion. A leak alarm that fires on a
+    legitimate commission is worse than no alarm at all, which is the whole
+    reason the bound is 2x rather than snug (see the constant's own comment).
+    """
+    from jasper.active_speaker import session_volume_plan
+
+    assert _systemd.HOLD_LEAK_WARN_AFTER_SEC >= (
+        2 * session_volume_plan.MAX_WALL_CLOCK_CEILING_S
+    ), (
+        "the leak bound no longer clears 2x the longest session the volume "
+        f"plan permits ({session_volume_plan.MAX_WALL_CLOCK_CEILING_S}s)"
+    )
+
+
+def test_no_hold_holds_nothing_and_matches_the_real_seam() -> None:
+    """The explicit opt-out: same signature as ``hold``, no effect on the exit.
+
+    Call sites choose between the two, so they must be interchangeable — and
+    ``no_hold`` must genuinely not defer anything, or an opt-out would quietly
+    become the immortality bug it exists to avoid.
+    """
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 600
+
+    with _systemd.no_hold("relay:room_sweep"):
+        expired, _idle, active = tracker._idle_status()
+        assert active == 0
+        assert expired is True, "no_hold defers nothing"
+    assert tracker._holds == {}
+    assert tracker._busy_since is None
+
+    hold_params = set(
+        inspect.signature(_systemd.IdleShutdownTracker.hold).parameters
+    ) - {"self"}
+    assert set(inspect.signature(_systemd.no_hold).parameters) == hold_params
+
+
+def _deferred_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "idle-exit deferred" in r.getMessage()]
+
+
+def test_two_holds_under_one_label_survive_until_the_last_release(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Sessions can overlap under one label, so the label is refcounted.
+
+    Production-reachable: ``_run_relay_capture``'s runner frees the relay slot
+    (`_set_relay_capture({"status": "complete"})`) BEFORE its ``finally``
+    releases the hold, so the next session's POST can claim the slot and take a
+    second hold under the same ``relay:<kind>`` label while the first is still
+    unwinding. If release popped the label outright, the deferred-exit line
+    would report `holds: none` while a hold was demonstrably outstanding.
+    """
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+    log = logging.getLogger("jasper.web._systemd")
+
+    with tracker.hold("relay:crossover_v2:session"):
+        with tracker.hold("relay:crossover_v2:session"):
+            assert tracker._holds == {"relay:crossover_v2:session": 2}
+        # One released; the label survives with the remaining holder.
+        assert tracker._holds == {"relay:crossover_v2:session": 1}
+        assert tracker._active_requests == 1
+        with tracker._lock:
+            tracker._last_request = time.monotonic() - 600
+        expired, _idle, active = tracker._idle_status()
+        assert active == 1
+        assert expired is False
+        # ...and the deferred line still names it rather than "none".
+        with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+            tracker._log_deferred_exit(log, 600.0, 1)
+        assert "relay:crossover_v2:session" in _deferred_records(caplog)[-1].getMessage()
+
+    assert tracker._holds == {}
+
+
+def test_a_long_busy_stretch_escalates_the_deferred_line_to_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hold outstanding past the leak bound is a WARNING, not routine INFO.
+
+    Pre-#1854 the 600 s `os._exit(0)` accidentally reaped a WEDGED background
+    worker. It no longer does — a wedged CamillaDSP apply now pins the hold, so
+    the process never idle-exits, `_idle_exit_restore_capture_entry` never runs,
+    and the speaker can sit on the all-muted staged anchor until an operator
+    restarts the unit. Nothing here reaps it (see the constant's comment); what
+    changes is that the state stops looking like routine progress in the
+    journal. The bound is sized so no legitimate session reaches it — a line
+    that cried wolf on every Full-tier commission would be worse than none.
+    """
+    log = logging.getLogger("jasper.web._systemd")
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+    monkeypatch.setattr(_systemd, "HOLD_LEAK_WARN_AFTER_SEC", 30.0)
+
+    with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+        with tracker.hold("crossover-v2-auto-apply"):
+            # Young stretch: routine, INFO.
+            tracker._log_deferred_exit(log, 601.0, 1)
+            records = _deferred_records(caplog)
+            assert len(records) == 1
+            assert records[0].levelno == logging.INFO
+            assert "crossover-v2-auto-apply" in records[0].getMessage()
+
+            # Age the stretch past the bound; same call, escalated level.
+            caplog.clear()
+            with tracker._lock:
+                tracker._busy_since = time.monotonic() - 31
+            tracker._deferred_logged_at = None
+            tracker._log_deferred_exit(log, 601.0, 1)
+            records = _deferred_records(caplog)
+            assert len(records) == 1
+            assert records[0].levelno == logging.WARNING
+            message = records[0].getMessage()
+            assert "LEAKED" in message
+            assert "crossover-v2-auto-apply" in message, "names the leaking hold"
+            # Regex, not "31s": the epoch is backdated against the real clock,
+            # so a stall between that write and this call rounds the age up.
+            assert re.search(r"busy for \d+s", message), "reports the stretch age"
+
+            # Still rate-limited at WARNING — visible, never a flood.
+            caplog.clear()
+            tracker._log_deferred_exit(log, 616.0, 1)
+            assert _deferred_records(caplog) == []
+
+        # The stretch ends with the last hold, so a later one starts fresh.
+        assert tracker._busy_since is None
+        caplog.clear()
+        with tracker.hold("relay:room_sweep"):
+            tracker._deferred_logged_at = None
+            tracker._log_deferred_exit(log, 601.0, 1)
+            assert _deferred_records(caplog)[0].levelno == logging.INFO, (
+                "a new busy stretch is not born already leaked"
+            )
+
+
+def test_busy_stretch_spans_requests_and_holds_without_a_gap() -> None:
+    """One stretch, one epoch: overlapping tokens never restart the clock.
+
+    The escalation asks "has this process been unable to go idle for too long",
+    which is a property of the busy counter, not of any single label — so a
+    request handing off to a hold (exactly what starting a relay session does)
+    must not look like a fresh stretch.
+    """
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+
+    tracker.request_started()
+    started = tracker._busy_since
+    assert started is not None
+
+    with tracker.hold("relay:crossover_v2:session"):
+        tracker.request_finished()  # the POST returns; the hold carries on
+        assert tracker._active_requests == 1
+        assert tracker._busy_since == started, "the stretch did not restart"
+
+    assert tracker._active_requests == 0
+    assert tracker._busy_since is None
 
 
 def test_deferred_idle_exit_is_logged_and_rate_limited(

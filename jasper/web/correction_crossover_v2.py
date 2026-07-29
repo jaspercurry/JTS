@@ -51,13 +51,15 @@ import math
 import secrets
 import threading
 import time
-from contextlib import AbstractContextManager, ExitStack, nullcontext
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
+
+from ._systemd import no_hold
 
 logger = logging.getLogger(__name__)
 
@@ -2726,7 +2728,7 @@ def build_v2_run_and_consume(
     run_async: Any = None,
     camilla_factory: Any = None,
     playback_started: PlaybackStartSignal | None = None,
-    idle_hold: Callable[[str], AbstractContextManager[Any]] = nullcontext,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> Callable[[Any, Any], Any]:
     """The async ``run_and_consume(client, pi_session)`` for one v2 session.
 
@@ -3778,7 +3780,7 @@ def prepare_v2_session(
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
-    idle_hold: Callable[[str], AbstractContextManager[Any]] = nullcontext,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> V2PreparedSession:
     """Prepare the ``POST /crossover/v2/session`` relay hosting (S1a).
 
@@ -3965,7 +3967,7 @@ def prepare_v2_verify(
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
-    idle_hold: Callable[[str], AbstractContextManager[Any]] = nullcontext,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> V2PreparedSession:
     """Prepare ``POST /crossover/v2/verify`` — the §5.2 re-verify re-arm.
 

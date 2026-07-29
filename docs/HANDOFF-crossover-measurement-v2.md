@@ -2069,8 +2069,19 @@ no retries-as-bodge). Treat these as regression fences.
     `finally`; the auto-apply worker takes its OWN hold before
     `Thread.start()` (it can outlive the runner) and releases it in the
     worker's `finally`. A held-open exit is reported once per 5 minutes
-    (`systemd idle-exit deferred: … holds: …`) so a leaked hold can never
-    buy silent immortality. **Do not raise the threshold instead** — that
+    (`systemd idle-exit deferred: … holds: …`), escalating to WARNING once
+    the process has been continuously busy past
+    `_systemd.HOLD_LEAK_WARN_AFTER_SEC` (7200 s = 2× the volume plan's
+    `MAX_WALL_CLOCK_CEILING_S`, so no legitimate session — not even the
+    Full tier's 3360 s — can trip it), so a leaked hold can never buy
+    silent immortality. **The escalation is a log level, not a reaper.**
+    Before this fix the 600 s exit incidentally killed a *wedged* worker
+    too (the unbounded `drained.wait()` tail in
+    `correction_setup._run_async`); it no longer does, and that is
+    deliberate — `_run_async`'s fail-closed invariant says a terminal
+    response must never release measurement ownership while the
+    graph/volume finalizer can still mutate the speaker. A wedge gets
+    fixed at its own layer. **Do not raise the threshold instead** — that
     only moves the cliff; and do not read "idle" as "abandoned" anywhere
     that background work can be in flight (`_idle_exit_restore_capture_entry`,
     the abandoned-capture production restore, is correct again precisely

@@ -84,6 +84,29 @@ DEFAULT_WATCHDOG_NOTIFY_SEC = 15.0
 # Pi, so it must never be invisible either.
 DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 
+# Past this much CONTINUOUS busy time with nothing inbound, a hold is reported
+# at WARNING instead of INFO: no legitimate work runs this long, so the process
+# is stuck — it cannot idle-exit, and whatever its on-idle-exit hook converges
+# never converges.
+#
+# Derivation (this module stays generic — it deliberately does NOT import the
+# correction session model, so the number is a literal and this comment is the
+# audit trail): the longest-lived hold any wizard takes today is
+# correction-web's crossover-v2 relay session, whose own sizing is
+# `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s — the hard cap on
+# `crossover_v2_flow.session_wall_clock_ceiling_s`, which reaches 3360 s at the
+# shipped 16-capture Full tier. (NOT the 900 s relay `DEFAULT_TTL_S`: a cloud
+# session legitimately outlasts that, which is why the ceiling had to be scaled
+# per-entry in the first place.) A hold may then stand a little past the cap
+# through the terminal drain / analysis / purge tails. Doubling the cap gives a
+# bound nothing legitimate reaches, which is the property that matters — this
+# line is a leak alarm, and one that cried wolf on every Full-tier commission
+# would be worse than none. Escalation is the ONLY behavior change: nothing
+# reaps the process, per `correction_setup._run_async`'s fail-closed invariant
+# (a terminal response must never release measurement ownership while the
+# graph/volume finalizer can still mutate the speaker).
+HOLD_LEAK_WARN_AFTER_SEC = 7200.0
+
 
 def adopt_systemd_sockets() -> list[socket.socket]:
     """Return sockets handed off by systemd, or [] if not activated.
@@ -203,6 +226,12 @@ class IdleShutdownTracker:
         # between a five-minute and a two-hour diagnosis of a leak.
         self._holds: dict[str, int] = {}
         self._deferred_logged_at: float | None = None
+        # Monotonic epoch of the CURRENT busy stretch — set when the busy
+        # counter leaves zero, cleared when it returns. Deliberately not
+        # per-label: what "no legitimate work runs this long" is asked of is
+        # the process, and a stretch that never ends is the leak regardless of
+        # which label owns it.
+        self._busy_since: float | None = None
         self._idle_threshold = idle_threshold_sec
         self._watchdog_period = watchdog_period_sec
         self._stopped = False
@@ -226,17 +255,38 @@ class IdleShutdownTracker:
         with self._lock:
             self._last_request = time.monotonic()
 
+    def _take_busy_locked(self) -> None:
+        """Take one busy token. The ONE place the busy stretch opens.
+
+        Caller holds ``self._lock``. Shared by requests and holds so the
+        counter and its epoch can never disagree about when the process
+        stopped being idle.
+        """
+        if self._active_requests == 0:
+            self._busy_since = time.monotonic()
+        self._active_requests += 1
+        self._last_request = time.monotonic()
+
+    def _drop_busy_locked(self) -> None:
+        """Release one busy token and begin a fresh idle interval.
+
+        Caller holds ``self._lock``. The stretch closes only when the LAST
+        token goes.
+        """
+        self._active_requests = max(0, self._active_requests - 1)
+        if self._active_requests == 0:
+            self._busy_since = None
+        self._last_request = time.monotonic()
+
     def request_started(self) -> None:
         """Mark one parsed request active before its route handler runs."""
         with self._lock:
-            self._active_requests += 1
-            self._last_request = time.monotonic()
+            self._take_busy_locked()
 
     def request_finished(self) -> None:
         """Release one active request and begin a fresh idle interval."""
         with self._lock:
-            self._active_requests = max(0, self._active_requests - 1)
-            self._last_request = time.monotonic()
+            self._drop_busy_locked()
 
     @contextlib.contextmanager
     def hold(self, label: str = "") -> Iterator[None]:
@@ -262,20 +312,21 @@ class IdleShutdownTracker:
         """
         name = label or "background"
         with self._lock:
-            self._active_requests += 1
+            self._take_busy_locked()
             self._holds[name] = self._holds.get(name, 0) + 1
-            self._last_request = time.monotonic()
         try:
             yield
         finally:
             with self._lock:
-                self._active_requests = max(0, self._active_requests - 1)
+                self._drop_busy_locked()
+                # Two sessions can legitimately overlap under one label (the
+                # relay slot frees before the hold does), so the label survives
+                # until its LAST holder leaves.
                 remaining = self._holds.get(name, 0) - 1
                 if remaining > 0:
                     self._holds[name] = remaining
                 else:
                     self._holds.pop(name, None)
-                self._last_request = time.monotonic()
 
     def _idle_status(self) -> tuple[bool, float, int]:
         """Return ``(expired, idle_seconds, active_requests)`` atomically.
@@ -295,7 +346,22 @@ class IdleShutdownTracker:
         is holding it. Reported at most once per DEFERRED_EXIT_LOG_PERIOD_SEC
         so a legitimately long session costs a handful of lines, while a leaked
         hold — which forfeits the idle exit's whole point — is never silent.
-        Called only from the timer thread, so the timestamp needs no lock.
+
+        Past HOLD_LEAK_WARN_AFTER_SEC of unbroken busy time the same line
+        escalates to WARNING: at that age it is not a long session, it is a
+        stuck one, and the process can no longer idle-exit OR run the
+        on-idle-exit hook that converges what it left mid-flow. This escalates
+        only — nothing here ends the process; a wedged worker is a bug to fix
+        at its own layer, not something to reap out from under.
+
+        One rate limiter covers both levels, which is deliberate: an INFO
+        emitted just inside the bound delays the first WARNING by up to one
+        DEFERRED_EXIT_LOG_PERIOD_SEC window. Accepted — the condition it
+        reports is hours old by then, and a second timer per level would buy
+        five minutes at the cost of two things to reason about.
+
+        Called only from the timer thread, so the rate-limit timestamp needs no
+        lock; the counters it reads do.
         """
         now = time.monotonic()
         if (
@@ -306,10 +372,20 @@ class IdleShutdownTracker:
         self._deferred_logged_at = now
         with self._lock:
             holds = ",".join(sorted(self._holds)) or "none"
-        log.info(
+            busy_for = (
+                0.0 if self._busy_since is None else now - self._busy_since
+            )
+        leaked = busy_for >= HOLD_LEAK_WARN_AFTER_SEC
+        note = (
+            f" — busy past {HOLD_LEAK_WARN_AFTER_SEC:.0f}s, so this is a "
+            f"LEAKED hold, not a long session: the process can no longer "
+            f"idle-exit and its on-idle-exit hook cannot run"
+        ) if leaked else ""
+        log.log(
+            logging.WARNING if leaked else logging.INFO,
             "systemd idle-exit deferred: %d active requests/holds after %.0fs "
-            "idle (threshold %.0fs, holds: %s)",
-            active, idle, self._idle_threshold, holds,
+            "idle, busy for %.0fs (threshold %.0fs, holds: %s)%s",
+            active, idle, busy_for, self._idle_threshold, holds, note,
         )
 
     def stop(self) -> None:
@@ -346,6 +422,23 @@ class IdleShutdownTracker:
                 notify_stopping()
                 # os._exit, not sys.exit — see class docstring.
                 os._exit(0)
+
+
+def no_hold(label: str = "") -> contextlib.AbstractContextManager[None]:
+    """The null :meth:`IdleShutdownTracker.hold` — takes nothing, holds nothing.
+
+    The explicit counterpart to a real hold, so a call site that spawns
+    background work states which it wants instead of inheriting a default. Use
+    it when the work cannot outlive the request that started it, or when there
+    is no tracker at all (tests, direct/legacy invocation).
+
+    Same signature as ``tracker.hold`` so the two are interchangeable at the
+    seam. Named rather than passing ``contextlib.nullcontext`` directly:
+    ``nullcontext`` reads as a value, not as a decision about process
+    lifetime.
+    """
+    del label  # accepted for signature parity with hold(); nothing to record
+    return contextlib.nullcontext()
 
 
 def install_request_idle_bump(handler_cls, tracker: IdleShutdownTracker) -> None:

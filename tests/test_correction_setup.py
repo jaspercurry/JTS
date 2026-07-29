@@ -41,6 +41,7 @@ from pathlib import Path
 
 from jasper.capture_relay.spec import CAPTURE_PROTOCOL_VERSION
 from jasper.web import correction_setup, correction_tuning
+from jasper.web._systemd import no_hold
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
@@ -235,6 +236,7 @@ def test_relay_capture_client_uses_registration_token(monkeypatch):
             kind,
             "https://relay.test",
             return_url="http://jts5.local/correction/",
+            idle_hold=no_hold,
         )
     finally:
         correction_setup._set_relay_capture(None)
@@ -278,6 +280,7 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
             ),
             "https://relay.test",
             return_url="http://jts.local/correction/crossover/",
+            idle_hold=no_hold,
         )
         response = correction_setup._request_relay_stop("crossover_sweep:")
         assert response["status"] == "stopping"
@@ -328,6 +331,23 @@ class _RecordingIdleHold:
     @property
     def labels(self) -> list[str]:
         return [label for _kind, label in self.events]
+
+
+def test_the_relay_spawn_seam_has_no_silent_idle_hold_default():
+    """Whether a relay runner outlives its request is a per-call-site decision.
+
+    ``_run_relay_capture``'s job IS spawning work that outlives the POST, and
+    the socket-activated process exits after ~600 s with nothing inbound
+    (#1854). A default — safe or unsafe — makes that decision invisible and
+    lets the next call site inherit it silently. Required keyword-only means a
+    site that forgets fails at the call, not on a household's speaker.
+    """
+    param = inspect.signature(correction_setup._run_relay_capture).parameters["idle_hold"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty, (
+        "idle_hold must stay required — pass _systemd.no_hold to opt out "
+        "explicitly"
+    )
 
 
 def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
@@ -665,6 +685,7 @@ def test_relay_capture_failure_names_the_ramp_reason_not_the_exception_class(cap
             ),
             "https://relay.test",
             return_url="http://jts.local/correction/",
+            idle_hold=no_hold,
         )
         deadline = time.monotonic() + 2
         relay = None
@@ -1422,7 +1443,7 @@ def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
         lambda: session,
     )
 
-    def fake_run(kind, relay_base, *, return_url):
+    def fake_run(kind, relay_base, *, return_url, idle_hold):
         seen.update({
             "kind": kind,
             "relay_base": relay_base,
@@ -1478,7 +1499,7 @@ def test_room_sweep_and_verify_return_to_relay_native_room_page(monkeypatch):
     )
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
 
-    def fake_run(kind, relay_base, *, return_url):
+    def fake_run(kind, relay_base, *, return_url, idle_hold):
         seen.append((kind.label, relay_base, return_url))
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1550,7 +1571,7 @@ def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1814,7 +1835,7 @@ def test_room_relay_capture_refuses_changed_mic_before_playback(
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1902,7 +1923,7 @@ def test_room_relay_capture_refuses_changed_calibration_before_playback(
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1978,7 +1999,7 @@ def test_room_relay_verify_refuses_changed_calibration_before_playback(
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -2054,7 +2075,7 @@ def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_pa
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
     monkeypatch.setattr(correction_setup, "_maybe_auto_revert", lambda _sess: None)
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered.update(kind=kind, return_url=return_url)
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -2196,7 +2217,7 @@ def test_room_relay_verify_host_event_failure_contract(
         async def get_runtime_status(self, *, best_effort):
             return {}
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered.update(kind=kind, return_url=return_url)
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
