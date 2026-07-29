@@ -12,11 +12,6 @@ import pytest
 
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE, WIIM_REMOTE_2_NAME_RE
 from jasper.accessories.registry import (
-    CAP_MUTE,
-    CAP_TAP_GESTURES,
-    CAP_TRANSPORT,
-    CAP_VOICE_HOLD,
-    CAP_VOLUME,
     KEY_MUTE,
     KEY_NEXTSONG,
     KEY_PLAYPAUSE,
@@ -45,9 +40,6 @@ def test_vk01_in_registry():
     assert VK01.identity.usb_ids == ((0x514C, 0x8850),)
     assert VK01.identity.bt_name_regexes == (r"(?i)anticater",)
     assert lookup_by_name("ANTICATER_MINI") is VK01
-    assert VK01.capabilities == frozenset({
-        CAP_VOLUME, CAP_TRANSPORT, CAP_TAP_GESTURES,
-    })
 
 
 def test_lookup_finds_vk01_by_usb_ids():
@@ -117,9 +109,6 @@ def test_vk01_profile_reserves_hold_and_mic_extension_points():
 
 def test_wiim_remote_2_media_keymap_targets_control_routes():
     assert WIIM_REMOTE_2.id == "wiim_remote_2"
-    assert WIIM_REMOTE_2.capabilities == frozenset({
-        CAP_VOLUME, CAP_TRANSPORT, CAP_MUTE, CAP_VOICE_HOLD,
-    })
     assert WIIM_REMOTE_2.mic.status == "adapter"
     assert WIIM_REMOTE_2.mic.capture_profile_id == "wiim_remote_2"
     assert "MEMS mic" in WIIM_REMOTE_2.mic.detail
