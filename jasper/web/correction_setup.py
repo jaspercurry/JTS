@@ -50,7 +50,12 @@ import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import (
+    AbstractContextManager,
+    ExitStack,
+    asynccontextmanager,
+    nullcontext,
+)
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -717,12 +722,24 @@ def _run_relay_capture(
     relay_base: str,
     *,
     return_url: str,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = nullcontext,
 ) -> dict[str, Any]:
     """Own the common relay-capture lifecycle for any kind. The caller has already
     gated on the relay being configured and run the kind's own state/calibration
     prechecks; this claims the slot, registers, spawns the background runner, and
     surfaces the tap-link. Mirrors the room handler's prior inline body so room
-    behavior is unchanged — kinds just differ by their injected open/run."""
+    behavior is unchanged — kinds just differ by their injected open/run.
+
+    ``idle_hold`` is the wizard's socket-activation idle tracker
+    (``_systemd.IdleShutdownTracker.hold``), threaded in from ``main`` through
+    the handler cfg. The spawned runner serves no HTTP request, so without a
+    hold the process's only activity signal is the operator tab's polling —
+    and a phone-relay session whose operator IS the phone that navigated to the
+    capture origin generates none at all, so the 600 s idle exit killed it
+    mid-measurement (2026-07-29 JTS3, issue #1854). Taken here, on the request
+    thread BEFORE the runner is scheduled, and released in the runner's own
+    ``finally`` so no window exists in either direction. The default
+    (``nullcontext``) keeps direct/legacy invocation and tests unchanged."""
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.client import RelayClient
     from jasper.capture_relay.health import relay_registration_token_from_env
@@ -731,6 +748,7 @@ def _run_relay_capture(
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
     spawned = False
+    session_hold = ExitStack()
     try:
         # Register in the foreground (the session must exist before the phone opens
         # the tap-link), bounded so a slow/unreachable relay fails fast.
@@ -789,13 +807,21 @@ def _run_relay_capture(
                     "kind": kind.label,
                     "error": _relay_failure_message(exc),
                 })
+            finally:
+                # Every terminal path — complete, stopped, failed, and any
+                # raise out of the arms above — releases the idle-exit hold
+                # here, so the wizard can idle out again the moment the
+                # session is genuinely over.
+                session_hold.close()
 
         waiting = _publish_relay_waiting(kind.label, rc.tap_link)
+        session_hold.enter_context(idle_hold(f"relay:{kind.label}"))
         asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
         spawned = True
         return {"tap_link": rc.tap_link, "status": waiting["status"]}
     finally:
         if not spawned:
+            session_hold.close()  # nothing will run to release it
             _set_relay_capture(None)  # release the slot on any early failure
 
 
@@ -5540,7 +5566,10 @@ def _handle_crossover_relay_cancel() -> dict[str, Any]:
 
 
 def _handle_crossover_v2_relay(
-    handler: BaseHTTPRequestHandler, *, verify_only: bool
+    handler: BaseHTTPRequestHandler,
+    *,
+    verify_only: bool,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = nullcontext,
 ) -> dict[str, Any]:
     """POST /crossover/v2/session | /crossover/v2/verify (Wave 5a).
 
@@ -5549,6 +5578,12 @@ def _handle_crossover_v2_relay(
     runner; this bridges it into the shared relay slot/lifecycle machinery
     (``_run_relay_capture``) exactly as the other relay-hosted crossover
     captures do.
+
+    ``idle_hold`` reaches BOTH background lifetimes a v2 session owns: the
+    relay runner (through ``_run_relay_capture``) and the auto-apply worker
+    thread the runner spawns (through the preparer, which threads it into
+    ``build_v2_run_and_consume``). Neither serves an HTTP request, and this is
+    the flow the 600 s idle exit actually killed (issue #1854).
     """
     raw = _read_json_body(handler)
 
@@ -5568,6 +5603,7 @@ def _handle_crossover_v2_relay(
         status=status,
         run_async=_run_async,
         camilla_factory=_camilla,
+        idle_hold=idle_hold,
     )
     kind = RelayCaptureKind(
         label=prepared.label,
@@ -5580,6 +5616,7 @@ def _handle_crossover_v2_relay(
             kind,
             relay_base,
             return_url=_request_local_return_url(handler, "/correction/crossover/"),
+            idle_hold=idle_hold,
         )
     }
 
@@ -6506,6 +6543,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         _handle_crossover_v2_relay(
                             self,
                             verify_only=(path == "/crossover/v2/verify"),
+                            idle_hold=cfg["idle_hold"],
                         )
                     )
                 except ValueError as e:
@@ -7304,12 +7342,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(
-    target, *, hostname: str = "jts.local",
+    target,
+    *,
+    hostname: str = "jts.local",
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = nullcontext,
 ) -> ThreadingHTTPServer:
     """Build the wizard server. `target` is socket/tuple/int per
-    _systemd.make_http_server's contract."""
+    _systemd.make_http_server's contract.
+
+    ``idle_hold`` is ``main``'s ``IdleShutdownTracker.hold`` — the seam that
+    lets a route keep the socket-activated process alive across background work
+    it starts but does not await. Defaulting to ``nullcontext`` keeps a server
+    built without an idle tracker (tests, direct invocation) behaving exactly
+    as before."""
     from . import _systemd
-    cfg = {"hostname": hostname}
+    cfg = {"hostname": hostname, "idle_hold": idle_hold}
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 
@@ -7420,20 +7467,25 @@ def main(argv: list[str] | None = None) -> int:
     from . import _systemd
     sockets = _systemd.adopt_systemd_sockets()
     target = sockets[0] if sockets else (args.host, args.port)
-    server = make_server(target, hostname=args.hostname)
-
-    handler_cls = server.RequestHandlerClass
     # The idle exit is exactly the abandoned-sequence moment (user closed the
-    # tab, no requests for the threshold) — the daemon's last in-process
-    # chance to converge a capture sequence parked on the all-muted anchor
-    # back to production before the process goes away. The hook is bounded
-    # (_run_async timeout) and exception-guarded by the tracker; on a
-    # deferred/failed restore the durable stash survives for the next
-    # service-start claim boundary.
+    # tab, no requests for the threshold AND no work in flight) — the daemon's
+    # last in-process chance to converge a capture sequence parked on the
+    # all-muted anchor back to production before the process goes away. The
+    # hook is bounded (_run_async timeout) and exception-guarded by the
+    # tracker; on a deferred/failed restore the durable stash survives for the
+    # next service-start claim boundary.
+    #
+    # The tracker is built BEFORE the server so `tracker.hold` can ride the
+    # handler cfg: a route that spawns background work (the phone-relay
+    # measurement sessions) holds it for that work's whole lifetime, which is
+    # what makes "idle" mean abandoned again (issue #1854).
     tracker = _systemd.IdleShutdownTracker(
         on_idle_exit=_idle_exit_restore_capture_entry,
     )
-    _systemd.install_request_idle_bump(handler_cls, tracker)
+    server = make_server(
+        target, hostname=args.hostname, idle_hold=tracker.hold,
+    )
+    _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
     tracker.start()
 
     if sockets:

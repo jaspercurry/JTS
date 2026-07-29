@@ -8,6 +8,7 @@ Stdlib-only — runs in any Python 3.10+ environment, no Pi needed.
 """
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import threading
@@ -214,6 +215,194 @@ def test_long_inflight_request_cannot_trigger_idle_exit() -> None:
     expired, _idle, active = tracker._idle_status()
     assert active == 0
     assert expired is True
+
+
+def test_hold_defers_the_idle_exit_while_background_work_runs() -> None:
+    """A hold keeps the process alive across work that serves no request.
+
+    The 2026-07-29 JTS3 incident (issue #1854): correction-web's phone-relay
+    measurement session runs on background workers and its mid-session traffic
+    is all OUTBOUND to the relay, so the tracker saw zero inbound requests for
+    600 s and `os._exit(0)`'d 5 s after the verify capture arrived. The hold is
+    what makes "idle" mean abandoned again.
+
+    Also pins the one-busy-counter design: a hold takes the SAME
+    ``_active_requests`` an in-flight request takes, so ``_idle_status`` has
+    exactly one input to consult and cannot disagree with itself.
+    """
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+
+    with tracker.hold("measurement-session"):
+        assert tracker._active_requests == 1
+        with tracker._lock:
+            tracker._last_request = time.monotonic() - 600
+        expired, idle, active = tracker._idle_status()
+        assert idle >= 600
+        assert active == 1
+        assert expired is False
+
+
+def test_releasing_a_hold_re_arms_the_ordinary_idle_exit() -> None:
+    """Release restores normal expiry AND begins a fresh idle interval.
+
+    The fresh interval is the same courtesy a finished request gets: a session
+    that just ended is not retroactively idle for however long it ran.
+    """
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+    with tracker.hold("measurement-session"):
+        with tracker._lock:
+            tracker._last_request = time.monotonic() - 600
+    assert tracker._active_requests == 0
+
+    # Fresh interval: not immediately expired despite the 600 s backdate above.
+    expired, idle, active = tracker._idle_status()
+    assert active == 0
+    assert idle < 1.0
+    assert expired is False
+
+    # ...and the ordinary threshold applies again from here.
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 600
+    expired, _idle, active = tracker._idle_status()
+    assert active == 0
+    assert expired is True
+
+
+def test_hold_is_released_when_the_body_raises() -> None:
+    """A failing session must not leave the wizard immortal.
+
+    Every terminal path of the correction runner is an exception path (user
+    stop, relay timeout, begin-refused, the catch-all cleanup arm), so a hold
+    that only released on success would leak on the common cases.
+    """
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+
+    with pytest.raises(RuntimeError, match="relay died"):
+        with tracker.hold("measurement-session"):
+            raise RuntimeError("relay died")
+
+    assert tracker._active_requests == 0
+    assert tracker._holds == {}
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 600
+    expired, _idle, _active = tracker._idle_status()
+    assert expired is True
+
+
+def test_concurrent_holds_expire_only_after_the_last_release() -> None:
+    """Holds nest: the v2 session and its auto-apply worker overlap."""
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+
+    with tracker.hold("session"):
+        with tracker.hold("auto-apply"):
+            with tracker._lock:
+                tracker._last_request = time.monotonic() - 600
+            expired, _idle, active = tracker._idle_status()
+            assert active == 2
+            assert expired is False
+        # Inner released; the outer session still holds the process.
+        with tracker._lock:
+            tracker._last_request = time.monotonic() - 600
+        expired, _idle, active = tracker._idle_status()
+        assert active == 1
+        assert expired is False
+
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 600
+    expired, _idle, active = tracker._idle_status()
+    assert active == 0
+    assert expired is True
+
+
+def test_a_hold_may_be_taken_on_one_thread_and_released_on_another() -> None:
+    """The gap-free pattern for a worker thread: acquire BEFORE ``start()``,
+    release in the worker's own ``finally``.
+
+    ``build_v2_run_and_consume``'s auto-apply worker depends on this — a thread
+    scheduled but not yet started, while the session runner drops its own hold,
+    is exactly the window that would let the process exit mid-apply.
+    """
+    import contextlib
+
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+    stack = contextlib.ExitStack()
+    stack.enter_context(tracker.hold("auto-apply"))
+    assert tracker._active_requests == 1
+
+    released = threading.Event()
+
+    def _worker() -> None:
+        try:
+            with tracker._lock:
+                tracker._last_request = time.monotonic() - 600
+            expired, _idle, active = tracker._idle_status()
+            assert active == 1
+            assert expired is False
+        finally:
+            stack.close()
+            released.set()
+
+    worker = threading.Thread(target=_worker, name="auto-apply-test")
+    worker.start()
+    assert released.wait(timeout=2)
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert tracker._active_requests == 0
+    assert tracker._holds == {}
+
+
+def test_deferred_idle_exit_is_logged_and_rate_limited(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A held-open idle exit is visible, but costs at most one line per window.
+
+    A leaked hold silently forfeits the ~10-30 MB Pss the idle exit returns on
+    a 1 GB Pi, so it must be reported; the poll runs every ~15 s, so it must be
+    rate-limited or a legitimate 20-minute session would spam the journal.
+    """
+    tracker = _systemd.IdleShutdownTracker(
+        idle_threshold_sec=0.0, watchdog_period_sec=0.001,
+    )
+    polls: list[int] = []
+
+    def _tick() -> None:
+        polls.append(1)
+        if len(polls) >= 3:
+            tracker.stop()
+
+    monkeypatch.setattr(_systemd, "notify_watchdog", _tick)
+    monkeypatch.setattr(
+        _systemd.os,
+        "_exit",
+        lambda _code: pytest.fail("must not exit while a hold is outstanding"),
+    )
+
+    with tracker.hold("measurement-session"):
+        with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+            tracker._run()
+
+    assert len(polls) == 3
+    deferred = [
+        r.getMessage() for r in caplog.records
+        if "idle-exit deferred" in r.getMessage()
+    ]
+    assert len(deferred) == 1, "three polls, one line — the rate limit holds"
+    assert "measurement-session" in deferred[0], "the leaking hold is named"
+
+    # Prove the rate limit is what suppressed the other two: with a zero-length
+    # window every poll reports.
+    monkeypatch.setattr(_systemd, "DEFERRED_EXIT_LOG_PERIOD_SEC", 0.0)
+    tracker._stopped = False
+    polls.clear()
+    caplog.clear()
+    with tracker.hold("measurement-session"):
+        with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+            tracker._run()
+    deferred = [
+        r.getMessage() for r in caplog.records
+        if "idle-exit deferred" in r.getMessage()
+    ]
+    assert len(deferred) == 3
 
 
 def test_idle_exit_hook_runs_before_process_exit(
