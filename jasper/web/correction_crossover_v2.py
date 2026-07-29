@@ -1128,6 +1128,15 @@ def _decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     two curves drawn in one frame at silently different densities is exactly
     the drift that costs. ``None`` for anything that is not a usable pair, so a
     caller never fabricates an empty curve out of malformed state.
+
+    **One deliberate behaviour delta from the inlined version this replaced.**
+    A zero-length pair used to yield ``{"freqs_hz": [], "magnitude_db": []}``;
+    it now yields ``None``. Reachable only from malformed durable state — a
+    pipeline marked ``available: True`` whose stored curve is empty — and the
+    new answer is the honest direction: an empty curve renders as "we looked
+    and there is nothing there", which is the fabricated-clean-reading shape
+    this module forbids, whereas ``None`` says "no curve", which is what an
+    empty stored curve actually means.
     """
     if not isinstance(freqs, list) or not isinstance(mags, list):
         return None
@@ -1207,14 +1216,35 @@ def _prediction_status(state: Any) -> dict[str, Any] | None:
     curve), landed on its own rung so that screen is built against data already
     proven on the wire rather than against a shape invented alongside it.
 
-    **``curve`` and ``spec`` are independently absent, and both absences are
-    real.** A state written before D4 carries the curve with no report; a
-    prediction the evaluator refused carries a report of ``None`` with the
-    curve intact; a session that never reached MEASURE's close carries neither.
+    **``curve`` and ``spec`` are independently absent, and all four
+    combinations are reachable.** Enumerated because a consumer — PR-T2's
+    review screen above all — has to render each one differently:
+
+    1. *Both present* — the ordinary closed session. Draw the curve, state the
+       verdict.
+    2. *Curve, no report* — a state written before D4, or a prediction the
+       evaluator refused (:func:`~jasper.active_speaker.crossover_v2_flow
+       .spec_report_for_predicted_sum` returned ``None``). Draw the curve, say
+       the verdict is unknown; **do not** infer one from the picture.
+    3. *Neither* — no session has closed a candidate. This function returns
+       ``None`` outright rather than an empty shell.
+    4. *Report, no curve* — **the refusal lane, and the least obvious of the
+       four.** The verdict is stashed by ``_assert_accountable`` BEFORE the
+       improvement gate runs, while ``_measure_predicted_sum`` is assigned only
+       after that gate returns — so a ``correction_not_an_improvement`` refusal
+       persists the report with ``predicted_sum`` still ``None`` (the
+       ``CaptureBeginRefused`` arm's terminal-failure persist). This is honest,
+       not a leak: the spec verdict genuinely evaluated that prediction, and
+       what the gate refused on was a *different* question — insufficient
+       improvement over the correction's own pre-fit model. A consumer shows
+       the verdict and has no curve to draw.
+
     So ``overall_passed`` is ``None`` — not ``False`` — whenever no report was
     stored, under the same never-fabricate-a-clean-reading rule
     :func:`_compact_cloud_status` states at length. ``None`` here means
-    "unknown", and a consumer must not read it as permission.
+    "unknown", and a consumer must not read it as permission. ``False`` is the
+    opposite: a real graded verdict that the prediction misses the spec, which
+    is exactly what state 4 carries.
 
     ``spec_bands`` / ``reference_db`` mirror the compact cloud block's own
     vocabulary key-for-key on purpose: the review screen draws the measured
@@ -1526,8 +1556,12 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # PR-L5). The owner's ruling on boost is that headroom spend is
         # DISCLOSED, never silently limited — and a number that only reaches the
         # journal is not disclosed to the household that owns the speaker. This
-        # is the payload the envelope's own screens read, so putting it here is
-        # what makes the ruling true rather than merely intended.
+        # is the DURABLE candidate block (``/state.crossover_v2.candidate``);
+        # the envelope's screens read
+        # ``crossover_envelope_v2._candidate_review_payload``, which projects
+        # this field into ``headroom_cost`` alongside the era stamp below. So
+        # persisting it here is the first half of making the ruling true — that
+        # projection is the half a household actually sees.
         #
         # The WORST branch's charge, matching the emitter's own worst-branch
         # rule (``camilla_yaml.linearization_headroom_db``): the driver chains

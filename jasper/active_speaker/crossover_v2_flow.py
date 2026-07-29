@@ -5184,10 +5184,13 @@ class CrossoverV2Conductor:
             #
             # This is the CONFIRM payload, which the host reads for
             # ``auto_apply``; it is not by itself the household disclosure the
-            # owner's ruling asks for. That lives on the browser-visible
-            # candidate summary (``correction_crossover_v2._candidate_summary``,
-            # same reducer), which the envelope's own screens read. Both are
-            # here because they answer to different readers, and both come from
+            # owner's ruling asks for. That one is persisted by
+            # ``correction_crossover_v2._candidate_summary`` (same reducer) and
+            # reaches the envelope's screens only through
+            # ``crossover_envelope_v2._candidate_review_payload``, which
+            # projects it as ``headroom_cost`` — the screens read that payload,
+            # never the summary directly. Both numbers are here because they
+            # answer to different readers, and both come from
             # ``worst_headroom_cost_db`` so they cannot drift.
             "headroom_cost_db": self._candidate_headroom_cost_db(),
         }

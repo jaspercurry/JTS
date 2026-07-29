@@ -2485,6 +2485,59 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     assert prediction["reference_db"] is None
 
 
+def test_a_refused_correction_still_reaches_the_wire_with_its_verdict():
+    """The 4th reachable ``prediction`` state: report present, curve absent.
+
+    The verdict is stashed BEFORE the improvement gate runs, while
+    ``_measure_predicted_sum`` is assigned only after that gate returns — so a
+    ``correction_not_an_improvement`` refusal persists the report with
+    ``predicted_sum`` still ``None``. Honest rather than leaky: the spec
+    verdict genuinely evaluated that prediction, and the gate refused on a
+    different question (insufficient improvement over the correction's own
+    pre-fit model). Pinned because it is the state a review screen is most
+    likely to render wrong — ``overall_passed`` here is a REAL ``False``, not
+    the ``None`` that means unknown, and there is no curve to draw beside it.
+
+    Fixture is the shipped refusal case: a comb far denser than the 8-filter
+    budget, in both drivers so the shared level frame has nothing to fix.
+    """
+    from tests.test_crossover_v2_conductor import (
+        _LINEARIZABLE_FREQS_HZ,
+        FakeSeams,
+        _cloud_conductor,
+        _eligible_measure_analysis,
+        _walk_measure_cloud_to_close,
+    )
+
+    comb_db = 9.0 * np.sin(
+        2.0 * np.pi * np.log2(_LINEARIZABLE_FREQS_HZ / 200.0) * 5.0
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, woofer_db=comb_db, tweeter_db=comb_db,
+    )
+    conductor = _cloud_conductor(fakes)
+    with pytest.raises(CaptureBeginRefused):
+        _walk_measure_cloud_to_close(conductor)
+
+    # The speaker was left untouched — no candidate, no persisted curve.
+    assert conductor.candidate is None
+    assert conductor.measure_predicted_sum is None
+    v2host.persist_conductor_state(
+        conductor, failure_code="correction_not_an_improvement",
+    )
+    priors = v2host.load_v2_state()["verify_priors"]
+    assert priors["predicted_sum"] is None
+    assert priors["predicted_spec"] is not None
+
+    prediction = v2host.crossover_v2_status_block()["prediction"]
+    assert prediction["curve"] is None
+    # A graded miss, NOT an ungradeable unknown.
+    assert prediction["overall_passed"] is False
+    assert prediction["spec_bands"]
+    assert prediction["reference_db"] is not None
+
+
 def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
     """D3/D4's era stamp, at the only place that can honestly write it.
 

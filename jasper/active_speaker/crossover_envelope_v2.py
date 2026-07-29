@@ -266,12 +266,11 @@ def _candidate_review_payload(
             candidate.get("linearization_octaves")
         ),
         # "This correction costs N dB of maximum level" (PR-L5), reaching a
-        # household-visible payload for the first time (two-stage commission
-        # D4). The comment on ``correction_crossover_v2._candidate_summary``'s
-        # own copy claims this disclosure "lives on the browser-visible
-        # candidate summary … which the envelope's own screens read"; until
-        # this line it did not, because the screens read THIS payload and this
-        # payload did not carry it.
+        # screen-facing payload for the first time (two-stage commission D4).
+        # The number is persisted by
+        # ``correction_crossover_v2._candidate_summary``; this line is what
+        # carries it the last hop, since the envelope's screens render from
+        # this payload and not from that block.
         #
         # **A compound, not a bare float, and that is the whole point.** The
         # charge's derivation changed under #1808 and the stamp is not
