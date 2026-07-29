@@ -58,7 +58,11 @@ const encryptWav = async () => ({ blob: new Uint8Array(), plaintextLen: 0, sha25
 const float32ToWavBlob = () => ({ async arrayBuffer() { return new Uint8Array().buffer; } });
 const withinUploadCap = () => true;
 const inferCalibrationModel = () => null;
-const renderScreen = () => ({ buttons: [], levelMeters: [] });
+const renderScreen = (_screenEl, spec, options = {}) => {
+  globalThis.__lastRenderedSpec = spec;
+  globalThis.__lastRenderHandlers = options.handlers || {};
+  return { buttons: [], levelMeters: [] };
+};
 const runLevelRampProtocol = async () => ({ state: "locked", terminal: true });
 // setup-store.js stubs (the real module is browser-storage backed). The
 // binding-id derivation mirrors the real setupBindingId so the validation
@@ -465,6 +469,54 @@ async function testSilentHintNeverOverridesAlreadyChosenCalibration() {
   ok();
 }
 
+// ---- Room measurement-ready screen ownership (DA-0005) ---------------------
+
+async function testRoomReadyDelegatesTheExactPiSpecToTheDataRenderer() {
+  installDom();
+  globalThis.__lastRenderedSpec = null;
+  const { renderRoomReady } = await loadModule();
+  const screenEl = makeNode("main");
+  const spec = {
+    kind: "room_sweep",
+    ui: {
+      screen: [
+        { type: "heading", text: "Pi-owned room instruction" },
+        { type: "button", label: "Server start", action: "begin_capture" },
+      ],
+    },
+  };
+
+  renderRoomReady(screenEl, { spec, screenEl });
+
+  assert.equal(globalThis.__lastRenderedSpec, spec);
+  assert.equal(typeof globalThis.__lastRenderHandlers.begin_capture, "function");
+  ok();
+}
+
+async function testGuidedRoomSetupConvergesOnTheSamePiOwnedScreen() {
+  installDom();
+  globalThis.__lastRenderedSpec = null;
+  const { renderPositionCount } = await loadModule();
+  const screenEl = makeNode("main");
+  const spec = {
+    kind: "room_sweep",
+    ui: {
+      screen: [
+        { type: "heading", text: "Pi-owned room instruction" },
+        { type: "button", label: "Server start", action: "begin_capture" },
+      ],
+    },
+  };
+
+  renderPositionCount(screenEl, { spec, screenEl });
+  const continueButton = buttonLabeled(screenEl, "Continue to measurement");
+  assert.ok(continueButton);
+  await continueButton._listeners.click[0]();
+
+  assert.equal(globalThis.__lastRenderedSpec, spec);
+  ok();
+}
+
 const tests = [
   testResolvableSerialHintIsAccepted,
   testResolvableUploadHintIsAccepted,
@@ -479,6 +531,8 @@ const tests = [
   testSilentHintAppliesWhenResolvableAndNothingChosen,
   testSilentHintNoOpWhenHintIsInvalidOrAbsent,
   testSilentHintNeverOverridesAlreadyChosenCalibration,
+  testRoomReadyDelegatesTheExactPiSpecToTheDataRenderer,
+  testGuidedRoomSetupConvergesOnTheSamePiOwnedScreen,
 ];
 
 let failure = null;

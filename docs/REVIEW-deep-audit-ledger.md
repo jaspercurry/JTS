@@ -4,15 +4,15 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`33aa3c86ac`), including this branch:
+Last reconciled against `origin/main` (`64b5ce014f`), including this branch:
 2026-07-29.
 
 ## Status counts
 
-- **open**: 275 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 274 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 389
+- **fixed**: 390
 - **in-progress**: 0
 - **mooted**: 13
 - **deferred**: 0
@@ -42,7 +42,7 @@ Last reconciled against `origin/main` (`33aa3c86ac`), including this branch:
 | DA-0041 | `rust/jasper-fanin/src/host_compliance.rs` :: RevalidationTracker::step | should-fix | W5 | **fixed** | fresh-lock phantom strike re-arm removed + regression — #1237 |
 | DA-0003 | `jasper/route_latency/pairing.py` :: pair_events | should-fix | W5 | **fixed** | ambiguous mic candidates cannot re-enter certifiable matches — #1292 |
 | DA-0004 | `LICENSE` :: §6 Trademarks / §9 Accepting Warranty or Additional Liability | should-fix | W5 | **fixed** | canonical Apache-2.0 terms restored + packaged-license integrity guard — #1293 |
-| DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **open** | — |
+| DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **fixed** | guided and capture-only Room paths converge on the fixed DATA renderer; Pi spec owns position/trust-repeat copy; browser + builder contracts pinned — this branch |
 | DA-0007 | `deploy/systemd/jasper-usbsink.service` :: Slice=jts-audio.slice membership | should-fix | W5 | **fixed** | doctor derives and checks every protected audio/mic unit — #1287 |
 | DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
 | DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **open** | — |

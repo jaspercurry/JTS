@@ -90,6 +90,22 @@ def test_signed_room_repeat_role_round_trips_without_owning_state():
         presentation_variant="trust_repeat",
     )
 
+    assert spec.screen == (
+        {"type": "heading", "text": "Ready to repeat the main seat"},
+        {
+            "type": "note",
+            "text": (
+                "Keep the same microphone selected and return it to the main "
+                "listening position. This extra capture checks that the result "
+                "is trustworthy."
+            ),
+        },
+        {
+            "type": "button",
+            "label": "Start measurement",
+            "action": "begin_capture",
+        },
+    )
     assert spec.to_dict()["presentation_variant"] == "trust_repeat"
     assert CaptureSpec.from_dict(spec.to_dict()).to_dict() == spec.to_dict()
 
@@ -153,6 +169,30 @@ def test_room_sweep_ui_is_server_driven_copy():
     assert buttons and buttons[0]["action"] == "begin_capture"
     assert s.to_dict()["position"] == 2
     assert s.to_dict()["total_positions"] == 5
+
+
+def test_capture_only_room_screen_is_owned_by_the_pi_spec():
+    s = build_room_sweep_spec(
+        position=2,
+        total_positions=5,
+        guided_setup=False,
+    )
+
+    assert s.screen == (
+        {"type": "heading", "text": "Ready for position 2 of 5"},
+        {
+            "type": "note",
+            "text": (
+                "The speaker has set this position. Keep the same microphone "
+                "selected and place it where the speaker shows you."
+            ),
+        },
+        {
+            "type": "button",
+            "label": "Start measurement",
+            "action": "begin_capture",
+        },
+    )
 
 
 def test_room_sweep_calibration_models_are_registry_driven():

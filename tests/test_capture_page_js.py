@@ -103,7 +103,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260728.1",
+        "capture_page_build": "20260729.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -111,7 +111,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260728-1" in index_html
+    assert "main.js?v=20260729-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -567,7 +567,7 @@ def test_capture_page_level_ramp_uses_guided_mic_calibration_setup():
     assert "renderCalibration(screenEl, ctx)" in main_js
     assert "renderLevelReady(screenEl, ctx)" in main_js
     level_ready_start = main_js.index("function renderLevelReady")
-    level_ready_end = main_js.index("function renderBoundRoomReady", level_ready_start)
+    level_ready_end = main_js.index("function renderRoomReady", level_ready_start)
     level_ready_path = main_js[level_ready_start:level_ready_end]
     assert "renderScreen(screenEl, ctx.spec" in level_ready_path
     assert "onLevelRampStart(ctx)" in level_ready_path
@@ -598,7 +598,7 @@ def test_capture_page_supports_bound_and_pi_owned_capture_only_setup():
     assert "setup_collect_positions" in main_js
     assert 'spec.kind === "room_sweep" && spec.setup_validation === false' in main_js
     assert "if (setupCaptureOnly)" in main_js
-    assert "renderBoundRoomReady(screenEl, ctx)" in main_js
+    assert "renderRoomReady(screenEl, ctx)" in main_js
     assert "setup_identity: identity" in main_js
     assert "persistBoundSetup(ctx.spec, identity)" in main_js
     assert "setup: setupWirePayload()" in main_js
@@ -608,11 +608,13 @@ def test_capture_page_supports_bound_and_pi_owned_capture_only_setup():
 
 def test_capture_page_names_the_signed_room_trust_repeat():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    spec_py = (_REPO / "jasper/capture_relay/spec.py").read_text(encoding="utf-8")
 
-    assert 'ctx.spec.presentation_variant === "trust_repeat"' in main_js
-    assert "Ready to repeat the main seat" in main_js
-    assert "Ready for the main-seat trust check." in main_js
-    assert "This extra capture checks that the result is trustworthy." in main_js
+    assert 'ctx.spec.presentation_variant === "trust_repeat"' not in main_js
+    assert "Ready to repeat the main seat" not in main_js
+    assert 'if presentation_variant == "trust_repeat":' in spec_py
+    assert "Ready to repeat the main seat" in spec_py
+    assert "This extra capture checks that the result" in spec_py
 
 
 def test_capture_page_rejects_oversize_calibration_and_unproven_agc():

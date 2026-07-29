@@ -442,22 +442,34 @@ capture_spec:
   sanitizes it again and renders it only as a plain post-upload anchor, never as
   executable code or a cross-origin fetch.
 
-### Server-driven UI: the screen comes from the Pi — as DATA, not code
+### Server-driven measurement UI: the ready screen comes from the Pi as DATA
 
-The Pi drives the **content, copy, layout, steps, theme, and per-kind
-choreography** via the `ui` field, so UI changes ship with **Pi software updates**
-— **no web deploy** for the common case. The page ships a small, fixed, **trusted
-renderer** that maps known component types (`heading`, `steps`, `level_meter`,
-`button`, …) to DOM **safely** (escaped text via `textContent`; theme via a
-CSS-variable allowlist).
+Once browser-owned setup is complete, the Pi drives the measurement-ready
+screen's **content, copy, layout, steps, theme, and per-kind choreography** via
+the `ui` field. Those changes ship with **Pi software updates** — **no web
+deploy** for the common case. The page ships a small, fixed, **trusted renderer**
+that maps known component types (`heading`, `steps`, `level_meter`, `button`, …)
+to DOM **safely** (escaped text via `textContent`; theme via a CSS-variable
+allowlist). Room's guided and capture-only paths both converge on that renderer;
+position and trust-repeat copy have no second implementation in
+`capture-page/js/main.js`.
 
-- **Ships from the Pi (no web deploy):** all copy, layout, ordering, instructions,
-  theme, button labels, which controls show, supported calibration mic models,
-  and entirely new measurement kinds.
+The browser-specific setup shell — requesting microphone permission, choosing an
+input/calibration, and selecting a Room position count — remains page-owned
+because those are local browser interactions, not measurement-spec components.
+Adding a new setup interaction therefore needs a page publish. The ownership
+line is deliberate: setup mechanics on the page, measurement-ready copy in the
+Pi spec, with no sentence implemented in both places.
+
+- **Ships from the Pi (no web deploy):** measurement-ready copy, layout,
+  ordering, instructions, theme, button labels, which measurement controls show,
+  supported calibration mic models, and entirely new record-with-these-
+  constraints measurement kinds.
 - **Needs a renderer update (web publish):** a genuinely *new component type* the
-  renderer cannot draw (e.g. a spectrogram widget). Rare — and the static
-  page/renderer bundle can live in the JTS repo and publish to Pages as one step
-  of the normal release, so even that is not a disconnected web deploy.
+  renderer cannot draw (e.g. a spectrogram widget), or a new browser-owned setup
+  interaction. Rare — and the static page/renderer bundle can live in the JTS
+  repo and publish to Pages as one step of the normal release, so even that is
+  not a disconnected web deploy.
 
 **Why DATA and not executable HTML/CSS/JS — this is a security boundary, not a
 style choice. See §8.**

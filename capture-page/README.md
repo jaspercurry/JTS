@@ -51,7 +51,7 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
 | `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
-| `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload; session-spanning capture plans | `capture_plan_loop_test.mjs`, on-device |
+| `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload; session-spanning capture plans; Pi-owned Room ready-screen delegation | `capture_plan_loop_test.mjs`, `capture_calibration_confirm_test.mjs`, on-device |
 | `index.html` | Static shell + CSP + base styles | `node --check` |
 | `version.json` | Live page build + the supported capture protocol | `test_capture_page_js.py` |
 

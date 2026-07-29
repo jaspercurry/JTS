@@ -1395,10 +1395,6 @@ def build_room_sweep_spec(
         int(hard_timeout_ms),
     )
 
-    if position is not None and total_positions:
-        heading_text = f"Room measurement — position {position} of {total_positions}"
-    else:
-        heading_text = "Room measurement"
     seconds = round(stimulus_duration_ms / 1000)
     if calibration_models is None and guided_setup:
         from jasper.audio_measurement.calibration import supported_model_options
@@ -1406,6 +1402,50 @@ def build_room_sweep_spec(
         calibration_models = supported_model_options()
     elif calibration_models is None:
         calibration_models = ()
+
+    if presentation_variant == "trust_repeat":
+        screen = (
+            ui_heading("Ready to repeat the main seat"),
+            ui_note(
+                "Keep the same microphone selected and return it to the main "
+                "listening position. This extra capture checks that the result "
+                "is trustworthy."
+            ),
+            ui_button("Start measurement", action="begin_capture"),
+        )
+    elif not guided_setup:
+        position_label = (
+            f"position {position} of {total_positions}"
+            if position is not None and total_positions
+            else "this room position"
+        )
+        screen = (
+            ui_heading(f"Ready for {position_label}"),
+            ui_note(
+                "The speaker has set this position. Keep the same microphone "
+                "selected and place it where the speaker shows you."
+            ),
+            ui_button("Start measurement", action="begin_capture"),
+        )
+    else:
+        heading_text = (
+            f"Room measurement — position {position} of {total_positions}"
+            if position is not None and total_positions
+            else "Room measurement"
+        )
+        screen = (
+            ui_heading(heading_text),
+            ui_steps(
+                [
+                    "Stand at your listening position",
+                    "Hold the phone up at ear height",
+                    f"Tap Start, then stay quiet for about {seconds} seconds",
+                ]
+            ),
+            ui_level_meter("mic"),
+            ui_button("Start", action="begin_capture"),
+            ui_note("Keep the screen on — leaving this page stops the recording."),
+        )
 
     spec = CaptureSpec(
         kind="room_sweep",
@@ -1421,19 +1461,7 @@ def build_room_sweep_spec(
             clock_drift="ignore",
         ),
         theme=build_theme(accent=accent, font=font),
-        screen=(
-            ui_heading(heading_text),
-            ui_steps(
-                [
-                    "Stand at your listening position",
-                    "Hold the phone up at ear height",
-                    f"Tap Start, then stay quiet for about {seconds} seconds",
-                ]
-            ),
-            ui_level_meter("mic"),
-            ui_button("Start", action="begin_capture"),
-            ui_note("Keep the screen on — leaving this page stops the recording."),
-        ),
+        screen=screen,
         calibration_models=tuple(calibration_models),
         max_upload_bytes=max_upload_bytes,
         # Mic choice + calibration are session setup, not per-position work.
