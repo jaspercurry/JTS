@@ -1116,7 +1116,7 @@ def test_s0_main_leg_identifies_the_8_to_16_khz_family(s0_main_leg):
     as a free parameter rather than anchoring it on the arrival.
 
     RE-PINNED 2026-07-27 (flow-simplification PR-U1) for the corpus-reader
-    alignment fix — ``_flat_lin_corpus._sweep_anchor``, which anchors an
+    alignment fix — ``_flat_lin_corpus.sweep_anchor``, which anchors an
     archived capture on the sweep it deconvolves instead of on the whole
     composed program. The IDENTIFIED FAMILY is untouched (same three rungs,
     same centres to 0.1 Hz, same depths to 0.01 dB, same ladder tau); what
@@ -1459,7 +1459,7 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
       desk edge, 3    298.343     -7.058   0.0926      0.3746  0.0187
 
     The re-derivation is the corpus-reader alignment fix
-    (``_flat_lin_corpus._sweep_anchor``, flow-simplification PR-U1): archived
+    (``_flat_lin_corpus.sweep_anchor``, flow-simplification PR-U1): archived
     captures are now anchored on the sweep they deconvolve rather than on the
     whole composed program. Only ``cloud_04`` and ``cloud_09`` moved, so the
     three groupings that contain them moved and ``desk_edge`` — which contains
