@@ -4,15 +4,15 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`64b5ce014f`), including this branch:
+Last reconciled against `origin/main` (`52775d25d`), including this branch:
 2026-07-29.
 
 ## Status counts
 
-- **open**: 274 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 273 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 390
+- **fixed**: 391
 - **in-progress**: 0
 - **mooted**: 13
 - **deferred**: 0
@@ -162,7 +162,7 @@ Last reconciled against `origin/main` (`64b5ce014f`), including this branch:
 | DA-0218 | `jasper/web/wake_setup.py` :: _read_json_body | should-fix | W3 | **fixed** | wrapper delegates bounded canonical `read_json_object` — #1382 |
 | DA-0219 | `rust/jasper-fanin/src/impulse_tap.rs` :: module (whole file) vs rust/jasper-usbsink-a | should-fix | W3 | **mooted** | solo USB capture and second impulse-tap module deleted; fan-in is the sole remaining copy — #1209 |
 | DA-0220 | `rust/jasper-fanin/src/xrun_log.rs` :: escape_json (:232) | should-fix | W3 | **fixed** | control bytes now use one canonical JSON escaping path — #1379 |
-| DA-0221 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::begin_probe / HostClock::restart_ | should-fix | W3 | **open** | — |
+| DA-0221 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::begin_probe / HostClock::restart_ | should-fix | W3 | **fixed** | shared `reset_probe_measurement` owns the neutral probe-state reset — this branch |
 | DA-0222 | `rust/jasper-outputd/src/alsa_backend.rs` :: AlsaBackend::read_content_available (L220) / | should-fix | W3 | **open** | — |
 | DA-0223 | `rust/jasper-resampler/src/lib.rs` :: minimum_safe_fill_frames :88 | should-fix | W3 | **fixed** | outputd delegates its resampler fill floor to the canonical formula — #1385 |
 | DA-0224 | `scripts/_audit_wake_events.py` :: load_wav():29-40, rms():43-46 | should-fix | W3 | **fixed** | offline wake analyzers share one numerically pinned RMS metric — #1387 |

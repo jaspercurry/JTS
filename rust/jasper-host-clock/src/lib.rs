@@ -1254,18 +1254,9 @@ impl HostClock {
         self.fallback_reason = FallbackReason::None;
     }
 
-    fn begin_probe(&mut self, now_ms: u64, reason: &'static str, actions: &mut Vec<Action>) {
-        self.transition_to(Ladder::Probing, reason);
-        self.fallback_reason = FallbackReason::None;
-        self.probe_result = ProbeResult::None;
-        self.response_ratio = None;
-        // Enter the pre-probe wait: hold neutral until the lane reports `locked`
-        // for PROBE_SETTLE_SECS. `probe_started_ms` is (re)seated at the AwaitLock
-        // → Baseline transition, so the 4 s baseline window is measured from lock,
-        // not from this session edge (that was the warmup-ramp contamination).
+    fn reset_probe_measurement(&mut self, actions: &mut Vec<Action>) {
         self.probe_phase = ProbePhase::AwaitLock;
         self.lock_since_ms = None;
-        self.probe_started_ms = now_ms;
         self.probe_baseline_obs_ppm = 0.0;
         self.probe_step_obs_ppm = 0.0;
         self.probe_step_ppm = 0.0;
@@ -1275,6 +1266,19 @@ impl HostClock {
         self.correction_trim_ppm = 0.0;
         // Command neutral for the baseline measurement (forced write).
         self.command(0.0, true, actions);
+    }
+
+    fn begin_probe(&mut self, now_ms: u64, reason: &'static str, actions: &mut Vec<Action>) {
+        self.transition_to(Ladder::Probing, reason);
+        self.fallback_reason = FallbackReason::None;
+        self.probe_result = ProbeResult::None;
+        self.response_ratio = None;
+        // Enter the pre-probe wait: hold neutral until the lane reports `locked`
+        // for PROBE_SETTLE_SECS. `probe_started_ms` is (re)seated at the AwaitLock
+        // → Baseline transition, so the 4 s baseline window is measured from lock,
+        // not from this session edge (that was the warmup-ramp contamination).
+        self.probe_started_ms = now_ms;
+        self.reset_probe_measurement(actions);
         log::info!(
             "event={}.host_clock_probe_wait reason=await_lock settle_s={} obs_mode={} attempt={}",
             self.cfg.log_prefix,
@@ -1504,16 +1508,7 @@ impl HostClock {
     /// [`Ladder::Probing`] (no L2 demotion — a warmup re-entry is not a
     /// compliance failure).
     fn restart_probe_wait(&mut self, wait_reason: &'static str, actions: &mut Vec<Action>) {
-        self.probe_phase = ProbePhase::AwaitLock;
-        self.lock_since_ms = None;
-        self.probe_baseline_obs_ppm = 0.0;
-        self.probe_step_obs_ppm = 0.0;
-        self.probe_step_ppm = 0.0;
-        self.slope.rearm();
-        self.dll.reset();
-        self.feed_forward_ppm = 0.0;
-        self.correction_trim_ppm = 0.0;
-        self.command(0.0, true, actions);
+        self.reset_probe_measurement(actions);
         log::info!(
             "event={}.host_clock_probe_wait reason={} settle_s={} attempt={}",
             self.cfg.log_prefix,
