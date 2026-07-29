@@ -517,7 +517,7 @@ including lab boxes used for the acceptance matrix.
 | F-19 | Nit | no | `compile_applied_driver_domain_config` checks `validation.get("ok_to_apply")` on a dict that never contains it (`ok_to_apply` is a property, `to_dict` is `asdict`) — behaviorally inert (the surviving status check is equivalent) but dead and misleading; the same idiom pre-exists at two more sites (`baseline_profile.py` solo path, `jasper/cli/active_speaker.py`). | WO-1 |
 | F-20 | Nit | no | Orphaned state files on upgraded boxes: `/var/lib/jasper/active_speaker_follower_profile.json` and `/var/lib/jasper/active_leader_crossover_profile.json` have zero remaining readers/writers but linger on disk. | WO-1 |
 | F-21 | Nit | no | Duplication slated for cleanup: two near-identical drain-then-fresh owner-handoff functions in `reconcile.py`; the emitter's three-branch monkeypatch-seam call in `camilla_yaml.py::_emit_baseline_pipeline`; ~50 lines of browser verdict logic. | WO-1 (helper, emitter), WO-6 (browser) |
-| F-22 | Nit | no | `docs/doc-map.toml`'s `multiroom-grouping` entry does not list this plan doc, so docs-impact will not route grouping changes to it. | WO-1 |
+| F-22 | Nit | no | `docs/doc-map.toml`'s `multiroom-grouping` entry did not list this plan doc, so docs-impact would not route grouping changes to it (and the `test_root_and_top_level_docs_are_intentionally_mapped` guard failed CI on any branch carrying the doc). | Fixed with the v2 plan commit |
 | F-23 | Nit | no | `jasper/multiroom/balance.py`'s comment reasons about per-member buffer asymmetry that is structurally impossible (`--stream.buffer` is server-global; snapclient has no buffer flag; a follower's `JASPER_GROUPING_BUFFER_MS` is inert) — a load-bearing misstatement for measurement-error reasoning. | WO-1 |
 
 Confirmed-correct items from the validation (no action): the coupling
@@ -605,8 +605,9 @@ Shared rules for every work order:
    `/var/lib/jasper/active_leader_crossover_profile.json` to the install
    migrations (`deploy/lib/install/env-migrations.sh`, alongside its
    existing stale-file removals).
-10. **Docs routing (F-22).** Add this plan doc to `docs/doc-map.toml`'s
-    `multiroom-grouping` entry.
+10. **Docs routing (F-22): already done** — the plan doc is mapped in
+    `docs/doc-map.toml`'s `multiroom-grouping` entry as of the v2 plan
+    commit (the docs-impact guard test enforces it).
 11. **Fix the impossible-asymmetry comment (F-23).** Correct
     `jasper/multiroom/balance.py`'s buffer-asymmetry reasoning: the stream
     buffer is server-global, snapclient has no buffer flag, and a follower's

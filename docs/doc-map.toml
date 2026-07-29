@@ -1001,6 +1001,7 @@ docs = [
   "docs/HANDOFF-multiroom.md",
   "docs/HANDOFF-distributed-active.md",
   "docs/dumb-endpoint-bringup.md",
+  "docs/multiroom-pairing-reliability-plan.md",
 ]
 requires_docs_when = [
   "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
