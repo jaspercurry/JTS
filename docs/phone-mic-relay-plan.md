@@ -1022,7 +1022,7 @@ spec is uploaded.
   `/sync`, each via its own floor; **not** met on `room_sweep`, and
   `bass_nearfield` has no production flow to meet it on. No flow drives this off
   the spec's own `validity.require_alignment`, and none reaches
-  `assert_alignment_confident` — see §9 and the `DA-0002` tracking issue.
+  `assert_alignment_confident` — see §9 and `DA-0002` / issue #1882.
 - EC/AGC/NS left on (or capture not clean) → **refuse / labeled-degrade per kind**,
   never a silently-flattened measurement.
 - **Killing the relay mid-flow** → clear UI error, **not** a silent hang; existing
