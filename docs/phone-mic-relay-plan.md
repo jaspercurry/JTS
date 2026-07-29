@@ -1048,7 +1048,7 @@ reachable production caller, since #1384's lone call site needs an
 `ambient_duration_s` that only a transport-less commissioning path and a
 caller-less legacy replay supply — but it was wrong as a statement about the
 *property*: `/sync` has gated on its own alignment confidence since before the
-audit, and crossover v2 has gated on its own locate floors since #1583/#1838.
+audit, and crossover v2 has gated on its own locate floors since #1589/#1661.
 Coverage is per-flow and uneven (crossover ✓, `/sync` ✓, `room_sweep` ✗,
 `bass_nearfield` has no production flow), it is spread across three
 independent implementations of one quantity, and no flow reads the spec's own
