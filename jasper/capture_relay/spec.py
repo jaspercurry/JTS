@@ -1403,6 +1403,7 @@ def build_room_sweep_spec(
     elif calibration_models is None:
         calibration_models = ()
 
+    screen: tuple[Mapping[str, Any], ...]
     if presentation_variant == "trust_repeat":
         screen = (
             ui_heading("Ready to repeat the main seat"),
