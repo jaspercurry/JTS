@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -296,7 +297,12 @@ def test_render_escapes_hostname():
 def _drive(path: str, method: str = "GET", *, headers=None, body: bytes = b""):
     """Construct the wizard's Handler without binding a socket and drive a
     single request through it. Returns the raw response bytes."""
-    Handler = correction_setup._make_handler({"hostname": "jts.local"})
+    # Same shape make_server builds: a route that spawns background work reads
+    # the idle-exit hold off the cfg (#1854). nullcontext is the no-tracker
+    # default, so driving a handler here behaves exactly as before.
+    Handler = correction_setup._make_handler(
+        {"hostname": "jts.local", "idle_hold": nullcontext},
+    )
 
     request_line = f"{method} {path} HTTP/1.1\r\n".encode()
     header_lines = b"Host: jts.local\r\n"
@@ -859,15 +865,21 @@ def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
 
 
 def test_main_wires_idle_tracker_to_capture_entry_restore(monkeypatch):
-    """main() hands the capture-entry restore to the IdleShutdownTracker."""
+    """main() hands the capture-entry restore to the IdleShutdownTracker — and
+    the tracker's hold to the server, so a route can keep the process alive
+    across background work it starts but does not await (#1854)."""
 
     from jasper.web import _systemd
 
     captured = {}
+    server_kwargs = {}
 
     class FakeTracker:
         def __init__(self, *_args, **kwargs):
             captured.update(kwargs)
+
+        def hold(self, label=""):
+            raise AssertionError("not called in this test")
 
         def start(self):
             pass
@@ -878,14 +890,23 @@ def test_main_wires_idle_tracker_to_capture_entry_restore(monkeypatch):
         def serve_forever(self):
             raise KeyboardInterrupt
 
+    tracker_holder = {}
+
+    def _fake_tracker(*args, **kwargs):
+        tracker = FakeTracker(*args, **kwargs)
+        tracker_holder["tracker"] = tracker
+        return tracker
+
+    def _fake_make_server(*_a, **kw):
+        server_kwargs.update(kw)
+        return FakeServer()
+
     monkeypatch.setattr(
         correction_setup, "_claim_crossover_state_owners", lambda: None
     )
-    monkeypatch.setattr(
-        correction_setup, "make_server", lambda *_a, **_kw: FakeServer()
-    )
+    monkeypatch.setattr(correction_setup, "make_server", _fake_make_server)
     monkeypatch.setattr(_systemd, "adopt_systemd_sockets", lambda: [])
-    monkeypatch.setattr(_systemd, "IdleShutdownTracker", FakeTracker)
+    monkeypatch.setattr(_systemd, "IdleShutdownTracker", _fake_tracker)
     monkeypatch.setattr(_systemd, "install_request_idle_bump", lambda *_a: None)
     monkeypatch.setattr(_systemd, "notify_ready", lambda: None)
     monkeypatch.setattr(_systemd, "notify_stopping", lambda: None)
@@ -895,6 +916,7 @@ def test_main_wires_idle_tracker_to_capture_entry_restore(monkeypatch):
         captured.get("on_idle_exit")
         is correction_setup._idle_exit_restore_capture_entry
     )
+    assert server_kwargs["idle_hold"] == tracker_holder["tracker"].hold
 
 
 def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):

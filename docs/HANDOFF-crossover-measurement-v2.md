@@ -2047,6 +2047,46 @@ no retries-as-bodge). Treat these as regression fences.
     `PROFILE_NOT_CONFIRMED` slug for all three. The gate that holds the
     evidence is the gate that names the action.
 
+24. **Background work must hold the wizard's idle exit** (#1854,
+    2026-07-29). correction-web is socket-activated and `os._exit(0)`s
+    after 600 s with no INBOUND request (`IdleShutdownTracker`,
+    `jasper/web/_systemd.py`). A v2 session's only inbound traffic is the
+    POST that starts it plus whatever the operator tab polls — and when
+    the operator's browser IS the phone that then navigates to
+    `capture.jasper.tech`, there is none at all: relay polling, sweep
+    playback, analysis, auto-apply and verify are all outbound from
+    background workers. On JTS3 the process therefore exited exactly
+    600.2 s after the last envelope GET, 5 s after the verify capture
+    arrived, and the verify analysis died with it (no
+    `crossover_v2_result phase=verify` was ever logged; the candidate was
+    left applied but unverified). The relay session's own ~900 s budget
+    EXCEEDS the idle threshold, so a full-length relay-only session was
+    guaranteed to be killed. Fixed with
+    `IdleShutdownTracker.hold()` — the same busy counter an in-flight
+    request takes, so there is one idle decision, not two. The relay
+    orchestrator (`_run_relay_capture`) takes it on the request thread
+    before scheduling the runner and releases it in the runner's
+    `finally`; the auto-apply worker takes its OWN hold before
+    `Thread.start()` (it can outlive the runner) and releases it in the
+    worker's `finally`. A held-open exit is reported once per 5 minutes
+    (`systemd idle-exit deferred: … holds: …`), escalating to WARNING once
+    the process has been continuously busy past
+    `_systemd.HOLD_LEAK_WARN_AFTER_SEC` (7200 s = 2× the volume plan's
+    `MAX_WALL_CLOCK_CEILING_S`, so no legitimate session — not even the
+    Full tier's 3360 s — can trip it), so a leaked hold can never buy
+    silent immortality. **The escalation is a log level, not a reaper.**
+    Before this fix the 600 s exit incidentally killed a *wedged* worker
+    too (the unbounded `drained.wait()` tail in
+    `correction_setup._run_async`); it no longer does, and that is
+    deliberate — `_run_async`'s fail-closed invariant says a terminal
+    response must never release measurement ownership while the
+    graph/volume finalizer can still mutate the speaker. A wedge gets
+    fixed at its own layer. **Do not raise the threshold instead** — that
+    only moves the cliff; and do not read "idle" as "abandoned" anywhere
+    that background work can be in flight (`_idle_exit_restore_capture_entry`,
+    the abandoned-capture production restore, is correct again precisely
+    because the exit now only fires when nothing is running).
+
 ## Future work — the post-W6 follow-ups issue
 
 Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):

@@ -8,9 +8,20 @@ Each wizard runs as its own systemd service paired with a .socket unit.
 systemd binds the listening port(s) and hands the file descriptor(s) to
 us via the LISTEN_FDS / LISTEN_PID environment variables; we adopt the
 listening fd without re-binding. After IDLE_SHUTDOWN_SEC of no incoming
-requests across all our adopted sockets, the process exits cleanly.
+requests across all our adopted sockets — with no request in flight and
+no background-work hold outstanding — the process exits cleanly.
 systemd's socket stays in LISTEN state throughout, so the next request
 re-activates the service without losing any connections.
+
+Background work must hold the tracker:
+  Inbound requests are the only activity this module can observe on its
+  own. Work a request STARTS but does not await — the correction wizard's
+  phone-relay measurement session, whose mid-session traffic is all
+  OUTBOUND to the relay — therefore looks exactly like an abandoned tab,
+  and the process exits out from under it (2026-07-29 JTS3 incident,
+  issue #1854: a verify capture died 5 s after arriving). Whoever owns
+  that work's lifetime wraps it in `IdleShutdownTracker.hold()`, which
+  takes the same busy counter an in-flight request takes.
 
 Why bother:
   Setup wizards (Spotify OAuth, voice provider, room correction,
@@ -46,11 +57,13 @@ full prior-art survey (Cockpit, FPM, systemd-socket-proxyd).
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import socket
 import threading
 import time
+from collections.abc import Iterator
 from http.server import ThreadingHTTPServer
 
 # Per sd_listen_fds(3) — fds passed by systemd start at 3.
@@ -63,6 +76,36 @@ DEFAULT_IDLE_SHUTDOWN_SEC = 600.0
 # Send WATCHDOG=1 at half the systemd WatchdogSec= interval per
 # sd_notify(3) guidance. The wizards' .service units use WatchdogSec=30s.
 DEFAULT_WATCHDOG_NOTIFY_SEC = 15.0
+
+# How often a held-open idle exit may be reported. The poll below runs every
+# ~15 s, so an unrate-limited line would spam the journal for the whole of a
+# long measurement session; but a LEAKED hold makes the process immortal and
+# silently forfeits the ~10-30 MB Pss the idle exit exists to return on a 1 GB
+# Pi, so it must never be invisible either.
+DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
+
+# Past this much CONTINUOUS busy time with nothing inbound, a hold is reported
+# at WARNING instead of INFO: no legitimate work runs this long, so the process
+# is stuck — it cannot idle-exit, and whatever its on-idle-exit hook converges
+# never converges.
+#
+# Derivation (this module stays generic — it deliberately does NOT import the
+# correction session model, so the number is a literal and this comment is the
+# audit trail): the longest-lived hold any wizard takes today is
+# correction-web's crossover-v2 relay session, whose own sizing is
+# `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s — the hard cap on
+# `crossover_v2_flow.session_wall_clock_ceiling_s`, which reaches 3360 s at the
+# shipped 16-capture Full tier. (NOT the 900 s relay `DEFAULT_TTL_S`: a cloud
+# session legitimately outlasts that, which is why the ceiling had to be scaled
+# per-entry in the first place.) A hold may then stand a little past the cap
+# through the terminal drain / analysis / purge tails. Doubling the cap gives a
+# bound nothing legitimate reaches, which is the property that matters — this
+# line is a leak alarm, and one that cried wolf on every Full-tier commission
+# would be worse than none. Escalation is the ONLY behavior change: nothing
+# reaps the process, per `correction_setup._run_async`'s fail-closed invariant
+# (a terminal response must never release measurement ownership while the
+# graph/volume finalizer can still mutate the speaker).
+HOLD_LEAK_WARN_AFTER_SEC = 7200.0
 
 
 def adopt_systemd_sockets() -> list[socket.socket]:
@@ -157,9 +200,11 @@ class IdleShutdownTracker:
 
     The installed handler hooks mark a parsed request active before dispatch
     and inactive in ``handle_one_request``'s ``finally`` block. ``log_request``
-    also bumps the timestamp for every response. The background thread polls
-    every WATCHDOG_NOTIFY_SEC, sends WATCHDOG=1, and `os._exit(0)`'s only when
-    no request is active and completed activity exceeds the threshold.
+    also bumps the timestamp for every response. Background work a request
+    starts but does not await takes the same busy counter through
+    :meth:`hold`. The background thread polls every WATCHDOG_NOTIFY_SEC, sends
+    WATCHDOG=1, and `os._exit(0)`'s only when nothing is active and completed
+    activity exceeds the threshold.
 
     `os._exit` rather than `sys.exit` because the latter raises
     SystemExit which serve_forever() catches and resumes. We need
@@ -175,6 +220,18 @@ class IdleShutdownTracker:
         self._lock = threading.Lock()
         self._last_request = time.monotonic()
         self._active_requests = 0
+        # Labels of the outstanding holds — observability ONLY (the busy
+        # decision reads _active_requests, which every hold also takes). A
+        # deferred exit that names WHICH work is holding is the difference
+        # between a five-minute and a two-hour diagnosis of a leak.
+        self._holds: dict[str, int] = {}
+        self._deferred_logged_at: float | None = None
+        # Monotonic epoch of the CURRENT busy stretch — set when the busy
+        # counter leaves zero, cleared when it returns. Deliberately not
+        # per-label: what "no legitimate work runs this long" is asked of is
+        # the process, and a stretch that never ends is the leak regardless of
+        # which label owns it.
+        self._busy_since: float | None = None
         self._idle_threshold = idle_threshold_sec
         self._watchdog_period = watchdog_period_sec
         self._stopped = False
@@ -198,24 +255,138 @@ class IdleShutdownTracker:
         with self._lock:
             self._last_request = time.monotonic()
 
+    def _take_busy_locked(self) -> None:
+        """Take one busy token. The ONE place the busy stretch opens.
+
+        Caller holds ``self._lock``. Shared by requests and holds so the
+        counter and its epoch can never disagree about when the process
+        stopped being idle.
+        """
+        if self._active_requests == 0:
+            self._busy_since = time.monotonic()
+        self._active_requests += 1
+        self._last_request = time.monotonic()
+
+    def _drop_busy_locked(self) -> None:
+        """Release one busy token and begin a fresh idle interval.
+
+        Caller holds ``self._lock``. The stretch closes only when the LAST
+        token goes.
+        """
+        self._active_requests = max(0, self._active_requests - 1)
+        if self._active_requests == 0:
+            self._busy_since = None
+        self._last_request = time.monotonic()
+
     def request_started(self) -> None:
         """Mark one parsed request active before its route handler runs."""
         with self._lock:
-            self._active_requests += 1
-            self._last_request = time.monotonic()
+            self._take_busy_locked()
 
     def request_finished(self) -> None:
         """Release one active request and begin a fresh idle interval."""
         with self._lock:
-            self._active_requests = max(0, self._active_requests - 1)
-            self._last_request = time.monotonic()
+            self._drop_busy_locked()
+
+    @contextlib.contextmanager
+    def hold(self, label: str = "") -> Iterator[None]:
+        """Keep the process alive across background work that serves no request.
+
+        Takes the SAME ``_active_requests`` counter an in-flight request takes,
+        so the busy signal stays one value and :meth:`_idle_status` needs no
+        second input. ``label`` is a short name for the work (it appears in the
+        deferred-exit log line below); it never affects the decision.
+
+        Why this exists: inbound requests were the only activity the tracker
+        could observe, so work a request STARTS but does not await — the
+        correction wizard's phone-relay measurement session, whose mid-session
+        traffic is all outbound — read as an abandoned tab and the process
+        exited mid-flight (issue #1854).
+
+        Release is guaranteed by ``finally``, including when the body raises.
+        Entering on one thread and exiting on another is supported and is the
+        gap-free pattern for work whose starter may finish first: take the hold
+        BEFORE ``Thread.start()``, release it in that thread's own ``finally``.
+        Release also begins a fresh idle interval, exactly as a finished
+        request does — a session that just ended is not retroactively idle.
+        """
+        name = label or "background"
+        with self._lock:
+            self._take_busy_locked()
+            self._holds[name] = self._holds.get(name, 0) + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._drop_busy_locked()
+                # Two sessions can legitimately overlap under one label (the
+                # relay slot frees before the hold does), so the label survives
+                # until its LAST holder leaves.
+                remaining = self._holds.get(name, 0) - 1
+                if remaining > 0:
+                    self._holds[name] = remaining
+                else:
+                    self._holds.pop(name, None)
 
     def _idle_status(self) -> tuple[bool, float, int]:
-        """Return ``(expired, idle_seconds, active_requests)`` atomically."""
+        """Return ``(expired, idle_seconds, active_requests)`` atomically.
+
+        ``active_requests`` counts in-flight requests AND outstanding
+        :meth:`hold` s — one busy counter, one decision.
+        """
         with self._lock:
             active = self._active_requests
             idle = time.monotonic() - self._last_request
         return active == 0 and idle >= self._idle_threshold, idle, active
+
+    def _log_deferred_exit(self, log: logging.Logger, idle: float, active: int) -> None:
+        """Report an idle exit held open by in-flight work, rate-limited.
+
+        The threshold has passed and the process would have exited; something
+        is holding it. Reported at most once per DEFERRED_EXIT_LOG_PERIOD_SEC
+        so a legitimately long session costs a handful of lines, while a leaked
+        hold — which forfeits the idle exit's whole point — is never silent.
+
+        Past HOLD_LEAK_WARN_AFTER_SEC of unbroken busy time the same line
+        escalates to WARNING: at that age it is not a long session, it is a
+        stuck one, and the process can no longer idle-exit OR run the
+        on-idle-exit hook that converges what it left mid-flow. This escalates
+        only — nothing here ends the process; a wedged worker is a bug to fix
+        at its own layer, not something to reap out from under.
+
+        One rate limiter covers both levels, which is deliberate: an INFO
+        emitted just inside the bound delays the first WARNING by up to one
+        DEFERRED_EXIT_LOG_PERIOD_SEC window. Accepted — the condition it
+        reports is hours old by then, and a second timer per level would buy
+        five minutes at the cost of two things to reason about.
+
+        Called only from the timer thread, so the rate-limit timestamp needs no
+        lock; the counters it reads do.
+        """
+        now = time.monotonic()
+        if (
+            self._deferred_logged_at is not None
+            and now - self._deferred_logged_at < DEFERRED_EXIT_LOG_PERIOD_SEC
+        ):
+            return
+        self._deferred_logged_at = now
+        with self._lock:
+            holds = ",".join(sorted(self._holds)) or "none"
+            busy_for = (
+                0.0 if self._busy_since is None else now - self._busy_since
+            )
+        leaked = busy_for >= HOLD_LEAK_WARN_AFTER_SEC
+        note = (
+            f" — busy past {HOLD_LEAK_WARN_AFTER_SEC:.0f}s, so this is a "
+            f"LEAKED hold, not a long session: the process can no longer "
+            f"idle-exit and its on-idle-exit hook cannot run"
+        ) if leaked else ""
+        log.log(
+            logging.WARNING if leaked else logging.INFO,
+            "systemd idle-exit deferred: %d active requests/holds after %.0fs "
+            "idle, busy for %.0fs (threshold %.0fs, holds: %s)%s",
+            active, idle, busy_for, self._idle_threshold, holds, note,
+        )
 
     def stop(self) -> None:
         """Stop the timer without exiting. For tests."""
@@ -228,7 +399,11 @@ class IdleShutdownTracker:
             if self._stopped:
                 return
             notify_watchdog()
-            expired, idle, _active = self._idle_status()
+            expired, idle, active = self._idle_status()
+            # Would have exited, but something is still in flight. (`active`
+            # non-zero is exactly why `expired` is False here.)
+            if active and idle >= self._idle_threshold:
+                self._log_deferred_exit(log, idle, active)
             if expired:
                 log.info(
                     "systemd idle-exit: no requests for %.0fs (threshold %.0fs)",
@@ -247,6 +422,23 @@ class IdleShutdownTracker:
                 notify_stopping()
                 # os._exit, not sys.exit — see class docstring.
                 os._exit(0)
+
+
+def no_hold(label: str = "") -> contextlib.AbstractContextManager[None]:
+    """The null :meth:`IdleShutdownTracker.hold` — takes nothing, holds nothing.
+
+    The explicit counterpart to a real hold, so a call site that spawns
+    background work states which it wants instead of inheriting a default. Use
+    it when the work cannot outlive the request that started it, or when there
+    is no tracker at all (tests, direct/legacy invocation).
+
+    Same signature as ``tracker.hold`` so the two are interchangeable at the
+    seam. Named rather than passing ``contextlib.nullcontext`` directly:
+    ``nullcontext`` reads as a value, not as a decision about process
+    lifetime.
+    """
+    del label  # accepted for signature parity with hold(); nothing to record
+    return contextlib.nullcontext()
 
 
 def install_request_idle_bump(handler_cls, tracker: IdleShutdownTracker) -> None:

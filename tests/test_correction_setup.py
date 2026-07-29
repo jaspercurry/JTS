@@ -26,6 +26,7 @@ import io
 import inspect
 import json
 import logging
+from contextlib import contextmanager, nullcontext
 from types import MappingProxyType, SimpleNamespace
 import threading
 import time
@@ -40,6 +41,7 @@ from pathlib import Path
 
 from jasper.capture_relay.spec import CAPTURE_PROTOCOL_VERSION
 from jasper.web import correction_setup, correction_tuning
+from jasper.web._systemd import no_hold
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
@@ -234,6 +236,7 @@ def test_relay_capture_client_uses_registration_token(monkeypatch):
             kind,
             "https://relay.test",
             return_url="http://jts5.local/correction/",
+            idle_hold=no_hold,
         )
     finally:
         correction_setup._set_relay_capture(None)
@@ -277,6 +280,7 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
             ),
             "https://relay.test",
             return_url="http://jts.local/correction/crossover/",
+            idle_hold=no_hold,
         )
         response = correction_setup._request_relay_stop("crossover_sweep:")
         assert response["status"] == "stopping"
@@ -297,6 +301,269 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
     finally:
         release_cleanup.set()
         correction_setup._set_relay_capture(None)
+
+
+class _RecordingIdleHold:
+    """Stand-in for ``IdleShutdownTracker.hold`` that counts acquire/release.
+
+    Same shape as the real seam — call it with a label, get a context manager —
+    so a test can assert the pairing without a live tracker or a real timer
+    thread.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+        self.active = 0
+
+    def __call__(self, label: str):
+        @contextmanager
+        def _cm():
+            self.events.append(("acquire", label))
+            self.active += 1
+            try:
+                yield
+            finally:
+                self.active -= 1
+                self.events.append(("release", label))
+
+        return _cm()
+
+    @property
+    def labels(self) -> list[str]:
+        return [label for _kind, label in self.events]
+
+
+def test_the_relay_spawn_seam_has_no_silent_idle_hold_default():
+    """Whether a relay runner outlives its request is a per-call-site decision.
+
+    ``_run_relay_capture``'s job IS spawning work that outlives the POST, and
+    the socket-activated process exits after ~600 s with nothing inbound
+    (#1854). A default — safe or unsafe — makes that decision invisible and
+    lets the next call site inherit it silently. Required keyword-only means a
+    site that forgets fails at the call, not on a household's speaker.
+    """
+    param = inspect.signature(correction_setup._run_relay_capture).parameters["idle_hold"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty, (
+        "idle_hold must stay required — pass _systemd.no_hold to opt out "
+        "explicitly"
+    )
+
+
+def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
+    """The background runner keeps the socket-activated wizard alive (#1854).
+
+    2026-07-29 JTS3: a crossover-v2 session's last INBOUND request was the
+    envelope GET the phone made before it navigated to the capture origin.
+    Everything after that — relay polling, sweep playback, analysis, apply,
+    verify — ran on background workers holding nothing, so correction-web's
+    600 s idle exit fired mid-verify and `os._exit(0)`'d the analysis away.
+    The hold is taken on the request thread before the runner is scheduled and
+    released only when the runner reaches a terminal state.
+    """
+    idle_hold = _RecordingIdleHold()
+    release_runner = threading.Event()
+    runner_entered = threading.Event()
+
+    def open_capture(_client, _relay_base, _capture_origin, _return_url):
+        return SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        )
+
+    async def run_and_consume(_client, _pi_session):
+        runner_entered.set()
+        await asyncio.to_thread(release_runner.wait)
+
+    correction_setup._set_relay_capture(None)
+    try:
+        correction_setup._run_relay_capture(
+            correction_setup.RelayCaptureKind(
+                label="crossover_v2:session",
+                open=open_capture,
+                run_and_consume=run_and_consume,
+            ),
+            "https://relay.test",
+            return_url="http://jts.local/correction/crossover/",
+            idle_hold=idle_hold,
+        )
+        # Held from the moment the POST returns — before the runner has even
+        # been scheduled, which is the window a phone-only session sits in.
+        assert idle_hold.events == [("acquire", "relay:crossover_v2:session")]
+        assert runner_entered.wait(timeout=2)
+        assert idle_hold.active == 1
+
+        release_runner.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if correction_setup._get_relay_capture()["status"] == "complete":
+                break
+            time.sleep(0.01)
+        assert correction_setup._get_relay_capture()["status"] == "complete"
+    finally:
+        release_runner.set()
+        correction_setup._set_relay_capture(None)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and idle_hold.active:
+        time.sleep(0.01)
+    assert idle_hold.active == 0, "the completed session released its hold"
+    assert idle_hold.events == [
+        ("acquire", "relay:crossover_v2:session"),
+        ("release", "relay:crossover_v2:session"),
+    ]
+
+
+def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
+    """Every terminal path releases — failure included (#1854).
+
+    A hold that only released on the happy path would trade a killed session
+    for an immortal wizard, and the relay runner's ordinary endings (user stop,
+    relay timeout, begin-refused, the catch-all cleanup arm) are ALL exception
+    paths.
+    """
+    idle_hold = _RecordingIdleHold()
+    finished = threading.Event()
+
+    def open_capture(_client, _relay_base, _capture_origin, _return_url):
+        return SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        )
+
+    async def run_and_consume(_client, _pi_session):
+        raise RuntimeError("the measurement link timed out")
+
+    correction_setup._set_relay_capture(None)
+    try:
+        correction_setup._run_relay_capture(
+            correction_setup.RelayCaptureKind(
+                label="crossover_v2:verify",
+                open=open_capture,
+                run_and_consume=run_and_consume,
+            ),
+            "https://relay.test",
+            return_url="http://jts.local/correction/crossover/",
+            idle_hold=idle_hold,
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if correction_setup._get_relay_capture()["status"] == "failed":
+                finished.set()
+                break
+            time.sleep(0.01)
+        assert finished.is_set()
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and idle_hold.active:
+        time.sleep(0.01)
+    assert idle_hold.active == 0
+    assert idle_hold.events == [
+        ("acquire", "relay:crossover_v2:verify"),
+        ("release", "relay:crossover_v2:verify"),
+    ]
+
+
+def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
+    monkeypatch,
+):
+    """A failed spawn must not leave a hold nobody will ever release."""
+    idle_hold = _RecordingIdleHold()
+
+    def open_capture(_client, _relay_base, _capture_origin, _return_url):
+        return SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        )
+
+    async def run_and_consume(_client, _pi_session):
+        raise AssertionError("never scheduled")
+
+    def _refuse(coro, _loop):
+        coro.close()
+        raise RuntimeError("event loop is closed")
+
+    monkeypatch.setattr(
+        correction_setup.asyncio, "run_coroutine_threadsafe", _refuse,
+    )
+    correction_setup._set_relay_capture(None)
+    try:
+        with pytest.raises(RuntimeError, match="event loop is closed"):
+            correction_setup._run_relay_capture(
+                correction_setup.RelayCaptureKind(
+                    label="crossover_v2:session",
+                    open=open_capture,
+                    run_and_consume=run_and_consume,
+                ),
+                "https://relay.test",
+                return_url="http://jts.local/correction/crossover/",
+                idle_hold=idle_hold,
+            )
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    assert idle_hold.active == 0
+    assert idle_hold.labels == [
+        "relay:crossover_v2:session", "relay:crossover_v2:session",
+    ]
+
+
+def test_the_v2_dispatch_threads_the_idle_hold_into_both_background_owners(
+    monkeypatch,
+):
+    """One seam, both lifetimes a v2 session owns (#1854).
+
+    The relay runner is held by ``_run_relay_capture``; the auto-apply worker
+    thread it spawns can outlive that runner and is held by the preparer's
+    ``build_v2_run_and_consume``. A fix that reached only one of them would
+    still lose an apply to the idle exit.
+    """
+    idle_hold = _RecordingIdleHold()
+    seen: dict[str, object] = {}
+
+    def _fake_prepare(raw, *, status, run_async, camilla_factory, idle_hold):
+        seen["prepare"] = idle_hold
+        return SimpleNamespace(
+            label="crossover_v2:session",
+            open=lambda *a, **kw: None,
+            run_and_consume=lambda *a, **kw: None,
+            request_stop=lambda: None,
+        )
+
+    def _fake_run_relay_capture(kind, relay_base, *, return_url, idle_hold):
+        seen["orchestrator"] = idle_hold
+        return {"tap_link": "https://capture.test/#s=cap_1", "status": "awaiting_phone"}
+
+    from jasper.web import correction_crossover_backend
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "https://relay.test")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
+    monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", _fake_run_relay_capture)
+    monkeypatch.setattr(
+        correction_setup, "_request_local_return_url", lambda _h, _p: "http://jts.local/",
+    )
+
+    correction_setup._handle_crossover_v2_relay(
+        None, verify_only=False, idle_hold=idle_hold,
+    )
+
+    assert seen["prepare"] is idle_hold
+    assert seen["orchestrator"] is idle_hold
+
+    # ...and the route reads it off the handler cfg make_server builds. That
+    # dict is closed over by the handler class with no runtime seam to observe,
+    # so the last link is pinned on the source that must stay wired.
+    # (main() handing tracker.hold to make_server is pinned at runtime by
+    # test_web_correction_setup::test_main_wires_idle_tracker_to_capture_entry_restore.)
+    dispatch = inspect.getsource(correction_setup._make_handler)
+    assert 'idle_hold=cfg["idle_hold"]' in dispatch
+    assert '"idle_hold": idle_hold' in inspect.getsource(correction_setup.make_server)
 
 
 def test_relay_commit_and_stop_have_one_atomic_winner():
@@ -418,6 +685,7 @@ def test_relay_capture_failure_names_the_ramp_reason_not_the_exception_class(cap
             ),
             "https://relay.test",
             return_url="http://jts.local/correction/",
+            idle_hold=no_hold,
         )
         deadline = time.monotonic() + 2
         relay = None
@@ -1175,7 +1443,7 @@ def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
         lambda: session,
     )
 
-    def fake_run(kind, relay_base, *, return_url):
+    def fake_run(kind, relay_base, *, return_url, idle_hold):
         seen.update({
             "kind": kind,
             "relay_base": relay_base,
@@ -1231,7 +1499,7 @@ def test_room_sweep_and_verify_return_to_relay_native_room_page(monkeypatch):
     )
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
 
-    def fake_run(kind, relay_base, *, return_url):
+    def fake_run(kind, relay_base, *, return_url, idle_hold):
         seen.append((kind.label, relay_base, return_url))
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1303,7 +1571,7 @@ def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1567,7 +1835,7 @@ def test_room_relay_capture_refuses_changed_mic_before_playback(
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1655,7 +1923,7 @@ def test_room_relay_capture_refuses_changed_calibration_before_playback(
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1731,7 +1999,7 @@ def test_room_relay_verify_refuses_changed_calibration_before_playback(
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered["kind"] = kind
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1807,7 +2075,7 @@ def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_pa
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
     monkeypatch.setattr(correction_setup, "_maybe_auto_revert", lambda _sess: None)
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered.update(kind=kind, return_url=return_url)
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -1949,7 +2217,7 @@ def test_room_relay_verify_host_event_failure_contract(
         async def get_runtime_status(self, *, best_effort):
             return {}
 
-    def fake_run(kind, _relay_base, *, return_url):
+    def fake_run(kind, _relay_base, *, return_url, idle_hold):
         registered.update(kind=kind, return_url=return_url)
         return {"tap_link": "https://capture.jasper.tech/#redacted"}
 
@@ -4258,7 +4526,9 @@ def test_e2e_local_setup_and_noise_conflicts_are_client_errors(monkeypatch):
 
 
 def test_sync_analyze_rejects_oversized_capture_before_body_read():
-    handler_cls = correction_setup._make_handler({"hostname": "jts.local"})
+    handler_cls = correction_setup._make_handler(
+        {"hostname": "jts.local", "idle_hold": nullcontext},
+    )
     handler = handler_cls.__new__(handler_cls)
     handler.headers = Message()
     handler.headers["Content-Length"] = str(2 * 1024 * 1024 + 1)

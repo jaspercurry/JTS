@@ -31,6 +31,7 @@ import asyncio
 import json
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -496,6 +497,135 @@ def test_auto_apply_fires_exactly_once_on_trusted_measure_and_arms_verify(monkey
     assert len(calls) == 1
     assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
     assert v2host.load_v2_state()["applied"] is True
+
+
+class _RecordingIdleHold:
+    """Stand-in for ``IdleShutdownTracker.hold``: counts acquire/release and
+    remembers which thread each happened on."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, str]] = []
+        self.active = 0
+
+    def __call__(self, label: str):
+        @contextmanager
+        def _cm():
+            self.events.append(("acquire", label, threading.current_thread().name))
+            self.active += 1
+            try:
+                yield
+            finally:
+                self.active -= 1
+                self.events.append(
+                    ("release", label, threading.current_thread().name)
+                )
+
+        return _cm()
+
+    def wait_released(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.active == 0 and len(self.events) >= 2:
+                return True
+            time.sleep(0.01)
+        return False
+
+
+def _auto_apply_hold_events(hold: _RecordingIdleHold) -> list[tuple[str, str, str]]:
+    return [e for e in hold.events if e[1] == "crossover-v2-auto-apply"]
+
+
+def test_auto_apply_thread_holds_the_wizard_idle_exit_gap_free(monkeypatch):
+    """The apply worker holds the socket-activated wizard alive (#1854).
+
+    2026-07-29 JTS3: correction-web `os._exit(0)`'d mid-verify because the whole
+    relay session ran on background workers no inbound request was keeping
+    alive. The relay orchestrator now holds the tracker for the session, but the
+    auto-apply thread can OUTLIVE that runner (a relay death during the deferred
+    VERIFY hold ends the runner while ``handle_v2_apply`` is still writing DSP
+    config), so it takes its own hold.
+
+    Gap-free is the point: the hold is taken on the thread that SPAWNS the
+    worker, before ``start()``, and released in the worker's own ``finally``.
+    A worker that took its own hold would leave a window where the session's
+    hold is already gone and the worker's is not yet taken — an idle exit
+    landing there kills the process mid-apply.
+    """
+    idle_hold = _RecordingIdleHold()
+    applied_while_held: list[bool] = []
+
+    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
+        applied_while_held.append(idle_hold.active > 0)
+        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
+        return {"status": "applied"}
+
+    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+    volume = VolumeRecorder()
+    runner = _build_runner(
+        conductor, volume,
+        run_async=lambda coro, **kw: None,
+        camilla_factory=lambda: None,
+        idle_hold=idle_hold,
+    )
+    _run(runner, client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    assert applied_while_held == [True], "the apply ran inside the hold"
+    assert idle_hold.wait_released(), "the worker released its hold"
+
+    events = _auto_apply_hold_events(idle_hold)
+    assert [kind for kind, _label, _thread in events] == ["acquire", "release"]
+    acquire_thread = events[0][2]
+    release_thread = events[1][2]
+    assert acquire_thread != "crossover-v2-auto-apply", (
+        "the hold must be taken BEFORE the worker starts, not inside it"
+    )
+    assert release_thread == "crossover-v2-auto-apply", (
+        "and released by the worker itself, so it covers the whole apply"
+    )
+
+
+def test_auto_apply_thread_releases_its_idle_hold_when_the_apply_dies(monkeypatch):
+    """A crashed apply must not leave the wizard immortal (#1854).
+
+    The worker's failure arms persist ``apply_failed`` and restore the
+    household volume and then return; a hold released only on success would
+    trade a killed session for a process that never idles out again — losing
+    the ~10-30 MB Pss the idle exit exists to return on a 1 GB Pi.
+    """
+    idle_hold = _RecordingIdleHold()
+
+    def _exploding_handle_v2_apply(raw, run_async, camilla_factory):
+        raise RuntimeError("the DSP writer lock is wedged")
+
+    monkeypatch.setattr(v2host, "handle_v2_apply", _exploding_handle_v2_apply)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+    volume = VolumeRecorder()
+    runner = _build_runner(
+        conductor, volume,
+        run_async=_bg_run_async,
+        camilla_factory=_FakeVolCam,
+        idle_hold=idle_hold,
+    )
+    # The production shape: the crashed apply persists ``apply_failed``, the
+    # conductor's ``apply_failed`` seam turns VERIFY's deferred hold into a
+    # refusal, and the runner re-raises it through its begin-refused arm.
+    with pytest.raises(CaptureBeginRefused):
+        _run(runner, client, session)
+
+    assert idle_hold.wait_released(), "the failed apply released its hold"
+    events = _auto_apply_hold_events(idle_hold)
+    assert [kind for kind, _label, _thread in events] == ["acquire", "release"]
+    assert idle_hold.active == 0
 
 
 def test_auto_apply_fires_on_the_confirm_past_the_cloud_not_on_any_capture(monkeypatch):

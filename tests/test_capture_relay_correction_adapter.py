@@ -493,7 +493,7 @@ def test_sync_relay_endpoint_binds_originating_session_token(monkeypatch):
             session_token=session_token,
         )
 
-    def run_relay(kind, relay_base, *, return_url):
+    def run_relay(kind, relay_base, *, return_url, idle_hold):
         asyncio.run(kind.run_and_consume("client", "pi-session"))
         captured.update(relay_base=relay_base, return_url=return_url)
         return {"status": "awaiting_phone", "tap_link": "https://capture.test/#x"}
@@ -1592,7 +1592,7 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
 
     monkeypatch.setattr(adapter, "open_capture", open_capture)
 
-    def run_relay(kind, relay_base, *, return_url):
+    def run_relay(kind, relay_base, *, return_url, idle_hold):
         registered.update(
             label=kind.label,
             relay_base=relay_base,
@@ -1819,7 +1819,7 @@ def test_crossover_level_start_mid_sequence_anchor_mints_relay(monkeypatch):
 
     monkeypatch.setattr(adapter, "open_capture", open_capture)
 
-    def run_relay(kind, relay_base, *, return_url):
+    def run_relay(kind, relay_base, *, return_url, idle_hold):
         registered.update(label=kind.label, relay_base=relay_base)
         kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
         return {"url": "https://capture.jasper.tech/session"}
@@ -1975,7 +1975,7 @@ def _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease):
         correction_setup, "_run_relay_level_match", fake_run_relay_level_match
     )
 
-    def run_relay(kind, relay_base, *, return_url):
+    def run_relay(kind, relay_base, *, return_url, idle_hold):
         kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
 
         async def _drive():

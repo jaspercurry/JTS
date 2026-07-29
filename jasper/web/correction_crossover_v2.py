@@ -51,12 +51,15 @@ import math
 import secrets
 import threading
 import time
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
+
+from ._systemd import no_hold
 
 logger = logging.getLogger(__name__)
 
@@ -2725,6 +2728,7 @@ def build_v2_run_and_consume(
     run_async: Any = None,
     camilla_factory: Any = None,
     playback_started: PlaybackStartSignal | None = None,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> Callable[[Any, Any], Any]:
     """The async ``run_and_consume(client, pi_session)`` for one v2 session.
 
@@ -2775,6 +2779,12 @@ def build_v2_run_and_consume(
       re-raises.
     * Plan complete with VERIFY accepted ⇒ CLOSE (exact restore); a completed
       plan that did not reach done (attempt budget exhausted) abandons.
+
+    ``idle_hold`` is the socket-activated wizard's idle-exit hold
+    (``jasper.web._systemd.IdleShutdownTracker.hold``, threaded in from the
+    dispatch). The runner's OWN lifetime is already held by the relay
+    orchestrator that spawned it; what needs its own hold is the auto-apply
+    thread below, which can outlive this runner — see ``_fire_auto_apply``.
     """
 
     async def _run_and_consume(client: Any, pi_session: Any) -> None:
@@ -2896,7 +2906,17 @@ def build_v2_run_and_consume(
                     level=logging.WARNING,
                 )
 
-            def _worker() -> None:
+            # Taken HERE, before ``start()``, and released in the worker's own
+            # ``finally``: between this line and the worker's first statement
+            # the runner can reach a terminal path and drop the hold on the
+            # session that spawned it, and a socket-activation idle exit in
+            # that window would kill the process mid-apply — the same race
+            # issue #1854 is, one layer in. Entering on this thread and exiting
+            # on the worker's is exactly what ``hold`` supports.
+            apply_hold = ExitStack()
+            apply_hold.enter_context(idle_hold("crossover-v2-auto-apply"))
+
+            def _run_apply() -> None:
                 if _session_already_ending():
                     log_event(
                         logger,
@@ -2955,9 +2975,24 @@ def build_v2_run_and_consume(
                     status=payload.get("status"),
                 )
 
-            threading.Thread(
-                target=_worker, daemon=True, name="crossover-v2-auto-apply",
-            ).start()
+            def _worker() -> None:
+                try:
+                    _run_apply()
+                finally:
+                    apply_hold.close()
+
+            try:
+                threading.Thread(
+                    target=_worker, daemon=True, name="crossover-v2-auto-apply",
+                ).start()
+            except RuntimeError:
+                # The OS refused a new thread (memory pressure on a 1 GB Pi):
+                # nothing will ever run the release, so drop the hold here
+                # rather than leave the wizard immortal. The raise itself is
+                # unchanged — it escapes through ``authorize`` into the
+                # runner's catch-all cleanup arm, exactly as before.
+                apply_hold.close()
+                raise
 
         def authorize(index: int, attempt: int, entry: Any = None) -> None:
             with stop_lock:
@@ -3745,6 +3780,7 @@ def prepare_v2_session(
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> V2PreparedSession:
     """Prepare the ``POST /crossover/v2/session`` relay hosting (S1a).
 
@@ -3906,6 +3942,7 @@ def prepare_v2_session(
             run_async=run_async,
             camilla_factory=camilla_factory,
             playback_started=playback_started,
+            idle_hold=idle_hold,
         )
         return rc
 
@@ -3930,6 +3967,7 @@ def prepare_v2_verify(
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> V2PreparedSession:
     """Prepare ``POST /crossover/v2/verify`` — the §5.2 re-verify re-arm.
 
@@ -4095,6 +4133,13 @@ def prepare_v2_verify(
             stop_lock=stop_lock,
             evidence_refs=refs,
             playback_started=playback_started,
+            # Threaded for the same reason the preparers keep identical
+            # signatures: this session's whole background lifetime is held by
+            # the relay orchestrator, and it supplies no
+            # ``run_async``/``camilla_factory``, so ``_fire_auto_apply``
+            # returns before taking the hold. Wired anyway so the seam cannot
+            # be the thing that is missing if a verify session ever grows one.
+            idle_hold=idle_hold,
         )
         return rc
 
