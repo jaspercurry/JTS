@@ -203,10 +203,10 @@ if the sentinel carried `AUTO_ADVANCE_ON_APPLY` — and the session then
 collapses as a timeout. Bounded, but still a manufactured failure at the
 exact moment the household is being asked to decide.
 
-**D2 — Stage 2 is a real verify session, tier-matched. ADOPT, with one
-owner confirmation.** The ruling names "the SHIPPED 1-entry re-verify
-machinery (`prepare_v2_verify`)". That machinery builds a **1-entry**
-verify at the mark. Express's post-apply phase is already
+**D2 — Stage 2 is a real verify session, tier-matched. ADOPTED;
+owner-confirmed 2026-07-29.** The ruling names "the SHIPPED 1-entry
+re-verify machinery (`prepare_v2_verify`)". That machinery builds a
+**1-entry** verify at the mark. Express's post-apply phase is already
 `EXPRESS_CLOUD_VERIFY_POSITIONS = 1`, so for Express `prepare_v2_verify`
 *is* stage 2, exactly. **Full tier's post-apply phase is a 6-position
 cloud-verify walk** (`DEFAULT_CLOUD_VERIFY_POSITIONS = 6`), and running
@@ -259,19 +259,17 @@ between a plan's self-armed ceiling and the relay TTL is a separate,
 unresolved duplication (see the traps); this decision inherits it and
 must not be written up as having fixed it.
 
-**OWNER CONFIRMATION:** if the intent was that Full tier *also* drops to
-a single post-apply position (a real simplification with a real evidence
-cost), say so and D2 collapses to the 1-entry path for both tiers — with
-the lost spatial evidence disclosed on the chart, never silently. Two
-things that collapse must own: (a) it lands Full in the degenerate case
+**OWNER CONFIRMATION — RESOLVED 2026-07-29:** Option A is confirmed.
+Express remains a single post-apply position; Full remains the
+six-position spatial cloud-verify walk. The rejected one-position Full
+alternative would land Full in the degenerate case
 [`docs/gating-v2-plan.md`](gating-v2-plan.md) already named — *"express
 cloud-verify is 1 position → **0 curves → no combine at all**"* — so
 Full's post-apply group would produce no combined curve, not a smaller
-one; (b) it does not create symmetry, it preserves an asymmetry, because
-Express's stage 2 already makes no cross-position post-apply claim
-(`_TIER_CLAIMS`: Full *"re-checks the result at several spots around the
-mark"* vs Express *"confirms the result at the mark"*). "Tier-matched"
-is the shape that keeps that difference honest.
+one. It would also make the user-facing claim inconsistent with the
+evidence: `_TIER_CLAIMS` says Full *"re-checks the result at several
+spots around the mark"* while Express *"confirms the result at the
+mark"*. "Tier-matched" keeps that distinction honest.
 
 **D3 — The review screen is a new envelope branch on the existing
 surface. ADOPT — and this is a deliberate reversal.** A dedicated human
@@ -759,4 +757,4 @@ stages fit inside the relay TTL with the interlude untimed" — they do
 not, and D2 says why: every realized wall-clock ceiling still exceeds
 900 s. What the split buys is measurable and is what is stated here.)
 
-Last verified: 2026-07-28
+Last verified: 2026-07-29
