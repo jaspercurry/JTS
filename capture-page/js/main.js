@@ -1100,46 +1100,44 @@ function renderLevelReady(screenEl, ctx) {
   setStatus("Ready. Tap Start level check.", "info");
 }
 
-function renderBoundRoomReady(screenEl, ctx) {
-  const position = Number(ctx.spec.position) || 0;
-  const total = Number(
-    (ctx.boundSetup && ctx.boundSetup.summary && ctx.boundSetup.summary.total_positions) ||
-      ctx.spec.total_positions,
-  ) || 0;
-  const positionLabel = position > 0 && total >= position
-    ? `position ${position} of ${total}`
-    : "this room position";
-  const trustRepeat = ctx.spec.presentation_variant === "trust_repeat";
-  const heading = trustRepeat
-    ? "Ready to repeat the main seat"
-    : `Ready for ${positionLabel}`;
-  const instruction = trustRepeat
-    ? "Keep the same microphone selected and return it to the main listening position. This extra capture checks that the result is trustworthy."
-    : "The speaker has set this position. Keep the same microphone selected and place it where the speaker shows you.";
-  const start = button("Start measurement", async () => {
-    start.disabled = true;
+function renderRoomReady(
+  screenEl,
+  ctx,
+  { showBack = false, startCapture = onStart } = {},
+) {
+  let starting = false;
+  const start = async () => {
+    if (starting) return;
+    starting = true;
+    // Stop remains live once onStart installs activeAbort. Every other control
+    // is navigation or another start/retry affordance and must freeze together;
+    // otherwise Back can render a fresh Start while this capture is awaiting
+    // its mic/relay work.
+    const frozenControls = (ctx.captureRefs.buttons || [])
+      .filter((entry) => entry.action !== "stop")
+      .map((entry) => entry.el);
+    for (const entry of frozenControls) entry.disabled = true;
     try {
-      await onStart(ctx);
+      await startCapture(ctx);
     } finally {
-      start.disabled = false;
+      starting = false;
+      for (const entry of frozenControls) entry.disabled = false;
     }
-  });
-  setScreen(screenEl, [
-    el("h1", { class: "cap-heading", text: heading }),
-    el("p", {
-      class: "cap-note",
-      text: instruction,
-    }),
-    el("div", { class: "cap-actions" }, [start]),
-  ]);
-  ctx.captureRefs = {
-    buttons: [{ action: "begin_capture", el: start }],
-    levelMeters: [],
   };
-  setStatus(
-    trustRepeat ? "Ready for the main-seat trust check." : `Ready to measure ${positionLabel}.`,
-    "info",
-  );
+  // The setup wizard owns microphone/calibration selection. Once setup is
+  // complete, the Pi-owned capture spec is the one source of truth for the
+  // measurement-ready screen, including position and trust-repeat copy.
+  ctx.captureRefs = renderScreen(screenEl, ctx.spec, {
+    handlers: { begin_capture: start, retry: start, stop: stopCapture },
+  });
+  if (showBack) {
+    const back = button("Back", () => {
+      if (!starting) renderPositionCount(screenEl, ctx);
+    }, true);
+    screenEl.appendChild(el("div", { class: "cap-actions" }, [back]));
+    ctx.captureRefs.buttons.push({ action: null, el: back });
+  }
+  setStatus("Ready. Tap Start measurement.", "info");
 }
 
 function renderPositionCount(screenEl, ctx) {
@@ -1157,7 +1155,7 @@ function renderPositionCount(screenEl, ctx) {
   const continueFromPositions = async () => {
     setupState.total_positions = Number(positions.value) || 5;
     if (!levelRamp) {
-      await onStart(ctx);
+      renderRoomReady(screenEl, ctx, { showBack: true });
       return;
     }
     try {
@@ -1188,7 +1186,7 @@ function renderPositionCount(screenEl, ctx) {
       positions,
     ]),
     el("div", { class: "cap-actions" }, [
-      button(levelRamp ? "Continue to level check" : "Start measurement", continueFromPositions),
+      button(levelRamp ? "Continue to level check" : "Continue to measurement", continueFromPositions),
       button("Back", () => renderCalibration(screenEl, ctx), true),
     ]),
   ]);
@@ -3556,7 +3554,7 @@ async function boot() {
     boundSetup,
   };
   if (setupCaptureOnly) {
-    renderBoundRoomReady(screenEl, ctx);
+    renderRoomReady(screenEl, ctx);
   } else if (spec.kind === "room_sweep" || spec.kind === "level_ramp") {
     renderIntro(screenEl, ctx);
   } else {
@@ -3709,6 +3707,8 @@ export {
   setupWirePayload,
   calibrationModelLabel,
   renderCalibration,
+  renderRoomReady,
+  renderPositionCount,
   entryForIndex,
   renderPlanDeferred,
   advanceDeferredHoldHeading,
