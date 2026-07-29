@@ -463,7 +463,7 @@ same supervisor/health-probe pattern as the shipped T5.2
 | Music context (proxy) + bridge DSP config snapshot per event | **Shipped** | 38-col schema |
 | Corpus pull + audit + reset + `analyze-three-leg.sh` (incl. a threshold-tuning hint engine) | **Shipped** | `scripts/` |
 | Operator visibility for active mic/topology | **Shipped** | `/wake/` mic status card, backed by `jasper-control` `/aec` |
-| Mic-independent AEC reference | **Shipped** | `_ref_thread` / asoundrc |
+| Mic-independent AEC reference | **Shipped** | outputd final-reference UDP in production, with the `jasper_ref` ALSA fallback; both use `aec_bridge._ReferenceFrameConverter` |
 | Profile-first input policy: `/wake/` profile → reconciler → outputd reference fanout / AEC3 fallback / direct mic as appropriate | **Shipped** (`auto`, `xvf_chip_aec`, `xvf_chip_aec_testing`, `xvf_software_aec3`, `direct_mic`, `custom`) | `jasper/audio_profile_state.py`, `jasper/chip_aec_policy.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/control/server.py` |
 | Chip-AEC producer path: profile intent → outputd reference fanout → `aec-init` profile → bridge `:9876` repoint + `:9887`/`:9888` beams | **Shipped; used by `auto` only when the detected XVF profile and output DAC gate are approved; unapproved DACs use explicit `xvf_chip_aec_testing`** | `jasper/mics/xvf3800.py`, `jasper/cli/xvf_profile.py`, `jasper/chip_aec_policy.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/cli/aec_init.py`, `jasper/cli/aec_bridge.py` |
 | Cheap-USB capture (resample + AEC3 + DTLN) | **Prototype** (corpus-only legs `usb_*`) | `_usb_mic_thread` |
@@ -946,6 +946,9 @@ the wake cluster before each daemon-touching PR.
 
 ---
 
-Last verified: 2026-06-25 (profile-first input policy rechecked for the
-central chip-AEC gate and explicit `xvf_chip_aec_testing` profile; chip-AEC
-beam labels remain square-board vocabulary until a Flex corpus validates them.)
+Last verified: 2026-07-29 (targeted recheck that the production outputd UDP
+reference and `jasper_ref` ALSA fallback retain separate transport lifecycles
+while sharing `_ReferenceFrameConverter`; prior 2026-06-25 pass rechecked the
+profile-first input policy for the central chip-AEC gate and explicit
+`xvf_chip_aec_testing` profile; chip-AEC beam labels remain square-board
+vocabulary until a Flex corpus validates them.)

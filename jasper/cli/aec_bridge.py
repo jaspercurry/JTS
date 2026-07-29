@@ -506,7 +506,15 @@ class _DropLogDebouncer:
     last_log: float = 0.0
 
     def record(self, now: float) -> tuple[int, float] | None:
-        self.drops_in_window += 1
+        return self.record_many(now, 1)
+
+    def record_many(self, now: float, drops: int) -> tuple[int, float] | None:
+        self.drops_in_window += max(0, drops)
+        return self.flush(now)
+
+    def flush(self, now: float) -> tuple[int, float] | None:
+        if self.drops_in_window <= 0:
+            return None
         if self.last_log and now - self.last_log < self.interval_sec:
             return None
         window_sec = now - self.last_log if self.last_log else self.interval_sec
@@ -1405,6 +1413,112 @@ def _usb_capture_rate(config: BridgeConfig | None = None) -> int:
     return rate if rate > 0 else SAMPLE_RATE
 
 
+@dataclass(frozen=True)
+class _ReferenceFrameBatch:
+    frames: tuple[bytes, ...]
+    clipped_samples: int
+    total_samples: int
+
+
+class _ReferenceFrameConverter:
+    """Stateful 48 kHz stereo -> 16 kHz mono reference conversion.
+
+    Transport adapters own capture and lifecycle. This class owns only the
+    shared DSP contract: stereo folding, exact-size accumulation, resampling,
+    stateful HPF, gain, clipping telemetry, and int16 framing.
+    """
+
+    def __init__(self, *, ref_gain_db: float, ref_hpf_hz: float) -> None:
+        self.ref_gain_db = float(ref_gain_db)
+        self.ref_hpf_hz = float(ref_hpf_hz)
+        self.capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
+        self._ref_gain_lin = 10.0 ** (self.ref_gain_db / 20.0)
+        self._hpf_sos = butter(
+            2,
+            self.ref_hpf_hz,
+            btype="highpass",
+            fs=SAMPLE_RATE,
+            output="sos",
+        )
+        self._hpf_zi = np.zeros((self._hpf_sos.shape[0], 2), dtype=np.float64)
+        self._accum_48 = np.empty(0, dtype=np.float32)
+
+    @classmethod
+    def from_env(cls) -> _ReferenceFrameConverter:
+        return cls(
+            ref_gain_db=float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0")),
+            ref_hpf_hz=float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "125")),
+        )
+
+    def feed(self, interleaved: np.ndarray) -> _ReferenceFrameBatch:
+        arr = np.asarray(interleaved, dtype=np.int16).reshape(-1)
+        usable = arr.size - (arr.size % REF_CHANNELS)
+        if usable < REF_CHANNELS:
+            return _ReferenceFrameBatch((), 0, 0)
+        arr = arr[:usable]
+
+        left48 = arr[0::REF_CHANNELS].astype(np.float32)
+        right48 = arr[1::REF_CHANNELS].astype(np.float32)
+        mono48 = (left48 + right48) * 0.5
+        self._accum_48 = np.concatenate((self._accum_48, mono48))
+
+        frames: list[bytes] = []
+        clipped_samples = 0
+        total_samples = 0
+        while self._accum_48.size >= self.capture_block:
+            chunk = self._accum_48[:self.capture_block]
+            self._accum_48 = self._accum_48[self.capture_block:]
+            mono16 = resample_poly(chunk, up=1, down=3)
+            mono16, self._hpf_zi = sosfilt(
+                self._hpf_sos,
+                mono16,
+                zi=self._hpf_zi,
+            )
+            if self._ref_gain_lin != 1.0:
+                mono16 = mono16 * self._ref_gain_lin
+            clipped_samples += int(np.sum(np.abs(mono16) > 32767))
+            total_samples += int(mono16.size)
+            frames.append(
+                np.clip(mono16, -32768, 32767).astype(np.int16).tobytes()
+            )
+        return _ReferenceFrameBatch(
+            frames=tuple(frames),
+            clipped_samples=clipped_samples,
+            total_samples=total_samples,
+        )
+
+
+def _enqueue_reference_frames(
+    ref_q: Queue,
+    batch: _ReferenceFrameBatch,
+    *,
+    drop_log: _DropLogDebouncer,
+    drop_message: str,
+) -> None:
+    """Publish converted frames without letting reference capture block."""
+    global _ref_clipped_samples, _ref_total_samples
+
+    _ref_clipped_samples += batch.clipped_samples
+    _ref_total_samples += batch.total_samples
+    dropped = 0
+    for frame in batch.frames:
+        try:
+            ref_q.put_nowait(frame)
+        except Full:
+            dropped += 1
+    if dropped:
+        _bridge_stats.inc_nested("queue_drops", "ref", dropped)
+
+    now = time.monotonic()
+    report = (
+        drop_log.record_many(now, dropped)
+        if dropped
+        else drop_log.flush(now)
+    )
+    if report is not None:
+        logger.warning(drop_message, *report)
+
+
 def _ref_thread(ref_q: Queue) -> None:
     """Capture 48k stereo ref via alsaaudio (PortAudio doesn't see
     custom asoundrc PCMs like `jasper_capture`), sum L+R to mono,
@@ -1434,29 +1548,8 @@ def _ref_thread(ref_q: Queue) -> None:
     speakers + room amplify the chain). Boosting ref closes that
     gap so the adaptive filter operates near its design point. See
     docs/HANDOFF-aec.md "Tuning findings" for measured impact."""
-    global _ref_clipped_samples, _ref_total_samples
     import alsaaudio
-    import time as _time
-    capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
-    ref_gain_db = float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"))
-    ref_gain_lin = 10.0 ** (ref_gain_db / 20.0)
-
-    # Reference HPF — matches the effective mic-side cutoff so AEC3
-    # sees symmetric inputs. Default 125 Hz to match the chip's
-    # AEC_HPFONOFF=on125 (4th-order Butter at mic ingress, applied
-    # to channels 0/1 in the chip pipeline). Without symmetric
-    # reference filtering, AEC3's adaptive filter wastes coefficients
-    # trying to model an LF relationship the mic doesn't have.
-    # 125 Hz is above openWakeWord's 60 Hz mel floor for the
-    # reference; this filter applies to the reference, not the mic,
-    # so wake-word accuracy is unaffected regardless. See
-    # docs/HANDOFF-aec.md for the analysis.
-    REF_HPF_HZ = float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"))
-    hpf_sos = butter(2, REF_HPF_HZ, btype="highpass", fs=SAMPLE_RATE,
-                     output="sos")
-    # Per-section state, shape (n_sections, 2) for order-2 SOS sections.
-    # All zeros = starting from silence (correct for thread startup).
-    hpf_zi = np.zeros((hpf_sos.shape[0], 2), dtype=np.float64)
+    converter = _ReferenceFrameConverter.from_env()
 
     pcm = alsaaudio.PCM(
         type=alsaaudio.PCM_CAPTURE,
@@ -1465,64 +1558,37 @@ def _ref_thread(ref_q: Queue) -> None:
         rate=REF_RATE,
         channels=REF_CHANNELS,
         format=alsaaudio.PCM_FORMAT_S16_LE,
-        periodsize=capture_block,
+        periodsize=converter.capture_block,
     )
     logger.info(
         "ref capture opened: %s @ %d Hz, %d ch "
         "(pre-AEC gain=%+.1f dB, HPF=%.0f Hz 2nd Butter)",
-        REF_DEVICE, REF_RATE, REF_CHANNELS, ref_gain_db, REF_HPF_HZ,
+        REF_DEVICE,
+        REF_RATE,
+        REF_CHANNELS,
+        converter.ref_gain_db,
+        converter.ref_hpf_hz,
     )
-    accum_48 = np.empty(0, dtype=np.float32)
     # Drop-rate debouncing: during a mic stall the ref keeps producing
     # at ~50 Hz, so a naive per-frame WARNING floods the journal with
     # hundreds of entries that all say the same thing. Aggregate the
     # count and log one summary per second instead.
-    drops_in_window = 0
-    last_drop_log = 0.0
+    drop_log = _DropLogDebouncer()
     try:
         while not _shutdown.is_set():
             length, data = pcm.read()
             if length <= 0:
                 continue
             arr = np.frombuffer(data, dtype=np.int16)
-            # interleaved stereo → sum L+R to mono (×0.5 to keep
-            # peak-level the same, so REF_GAIN_DB tuning remains valid)
-            left48 = arr[0::REF_CHANNELS].astype(np.float32)
-            right48 = arr[1::REF_CHANNELS].astype(np.float32)
-            mono48 = (left48 + right48) * 0.5
-            accum_48 = np.concatenate([accum_48, mono48])
-            # Emit exact-sized chunks at the 48k rate so each
-            # downsample yields exactly FRAME_SAMPLES at 16k.
-            while accum_48.size >= capture_block:
-                chunk = accum_48[:capture_block]
-                accum_48 = accum_48[capture_block:]
-                mono16 = resample_poly(chunk, up=1, down=3)
-                # HPF before gain — matches AEC3's internal HPF on the
-                # capture side. Stateful across chunks (zi carried over)
-                # so there's no per-chunk transient.
-                mono16, hpf_zi = sosfilt(hpf_sos, mono16, zi=hpf_zi)
-                if ref_gain_lin != 1.0:
-                    mono16 = mono16 * ref_gain_lin
-                # Track samples that the hard-clip below will saturate.
-                # Reported in the periodic RMS log so we can see if the
-                # gain stage is destroying peak information.
-                _ref_clipped_samples += int(np.sum(np.abs(mono16) > 32767))
-                _ref_total_samples += len(mono16)
-                mono16 = np.clip(mono16, -32768, 32767).astype(np.int16)
-                try:
-                    ref_q.put_nowait(mono16.tobytes())
-                except Full:
-                    _bridge_stats.inc_nested("queue_drops", "ref")
-                    drops_in_window += 1
-            now = _time.monotonic()
-            if drops_in_window > 0 and now - last_drop_log >= 1.0:
-                logger.warning(
+            _enqueue_reference_frames(
+                ref_q,
+                converter.feed(arr),
+                drop_log=drop_log,
+                drop_message=(
                     "ref queue full, dropped %d frames in last %.1fs "
-                    "(mic queue likely empty — see next stall log)",
-                    drops_in_window, now - last_drop_log if last_drop_log else 1.0,
-                )
-                drops_in_window = 0
-                last_drop_log = now
+                    "(mic queue likely empty — see next stall log)"
+                ),
+            )
     finally:
         pcm.close()
 
@@ -1539,20 +1605,9 @@ def _outputd_ref_udp_thread(
     software AEC, chip-AEC, corpus, and diagnostics use this path so they
     all see the same final speaker reference.
     """
-    import time as _time
-
-    global _ref_clipped_samples, _ref_total_samples
     config = config or BridgeConfig.from_env()
-    ref_gain_db = float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"))
-    ref_gain_lin = 10.0 ** (ref_gain_db / 20.0)
-    ref_hpf_hz = float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"))
-    hpf_sos = butter(2, ref_hpf_hz, btype="highpass", fs=SAMPLE_RATE,
-                     output="sos")
-    hpf_zi = np.zeros((hpf_sos.shape[0], 2), dtype=np.float64)
-    capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
-    accum_48 = np.empty(0, dtype=np.float32)
-    drops_in_window = 0
-    last_drop_log = 0.0
+    converter = _ReferenceFrameConverter.from_env()
+    drop_log = _DropLogDebouncer()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((config.outputd_ref_udp_host, config.outputd_ref_udp_port))
@@ -1561,7 +1616,10 @@ def _outputd_ref_udp_thread(
         "outputd ref UDP opened: %s:%d @ %d Hz stereo -> %d Hz mono "
         "(pre-AEC gain=%+.1f dB, HPF=%.0f Hz 2nd Butter)",
         config.outputd_ref_udp_host, config.outputd_ref_udp_port,
-        REF_RATE, SAMPLE_RATE, ref_gain_db, ref_hpf_hz,
+        REF_RATE,
+        SAMPLE_RATE,
+        converter.ref_gain_db,
+        converter.ref_hpf_hz,
     )
     try:
         while not _shutdown.is_set():
@@ -1572,37 +1630,14 @@ def _outputd_ref_udp_thread(
             if not data:
                 continue
             arr = np.frombuffer(data, dtype=np.int16)
-            if arr.size < REF_CHANNELS:
-                continue
-            usable = arr.size - (arr.size % REF_CHANNELS)
-            arr = arr[:usable]
-            left48 = arr[0::REF_CHANNELS].astype(np.float32)
-            right48 = arr[1::REF_CHANNELS].astype(np.float32)
-            mono48 = (left48 + right48) * 0.5
-            accum_48 = np.concatenate([accum_48, mono48])
-            while accum_48.size >= capture_block:
-                chunk = accum_48[:capture_block]
-                accum_48 = accum_48[capture_block:]
-                mono16 = resample_poly(chunk, up=1, down=3)
-                mono16, hpf_zi = sosfilt(hpf_sos, mono16, zi=hpf_zi)
-                if ref_gain_lin != 1.0:
-                    mono16 = mono16 * ref_gain_lin
-                _ref_clipped_samples += int(np.sum(np.abs(mono16) > 32767))
-                _ref_total_samples += len(mono16)
-                mono16 = np.clip(mono16, -32768, 32767).astype(np.int16)
-                try:
-                    ref_q.put_nowait(mono16.tobytes())
-                except Full:
-                    _bridge_stats.inc_nested("queue_drops", "ref")
-                    drops_in_window += 1
-            now = _time.monotonic()
-            if drops_in_window > 0 and now - last_drop_log >= 1.0:
-                logger.warning(
-                    "outputd ref queue full, dropped %d frames in last %.1fs",
-                    drops_in_window, now - last_drop_log if last_drop_log else 1.0,
-                )
-                drops_in_window = 0
-                last_drop_log = now
+            _enqueue_reference_frames(
+                ref_q,
+                converter.feed(arr),
+                drop_log=drop_log,
+                drop_message=(
+                    "outputd ref queue full, dropped %d frames in last %.1fs"
+                ),
+            )
     finally:
         sock.close()
 
