@@ -514,6 +514,19 @@ ever reached a public page. The Pi side
 since the earlier PR in this series.
 
 **Host orchestrator (Wave-2 Pi finale — the flip):**
+
+> **Stale as of 2026-07-29 — this paragraph describes a deleted flow.**
+> `build_crossover_relay_plan_run_and_consume` and
+> `correction_setup.py`'s `_handle_crossover_relay_capture` were both removed by
+> #1688 ("legacy flow deletion"); the live driver path is the v2 conductor
+> (`correction_crossover_v2.py` → `active_speaker/crossover_v2_flow.py`), which
+> analyses through `audio_measurement/program_analysis.py`, **not** through
+> `record_driver_capture` / `driver_acoustics`. That deletion is why
+> `record_driver_capture` has no production caller today (see §9). Left in place
+> rather than rewritten because deriving the replacement narrative is a larger
+> scan than this doc-truth pass; tracked with the four sibling docs carrying the
+> same claim in #1882.
+
 `jasper/web/correction_crossover_flow.py`'s
 `build_crossover_relay_plan_run_and_consume` drives a driver's whole
 repeat SET over one relay session — `authorize_begin` wraps the SAME
@@ -795,33 +808,58 @@ mode for a tool whose entire job is a trustworthy result.
   common seam, and **no analysis path reads `validity.require_alignment` at
   all**; every enforcement that exists is hardcoded in its own flow. State as of
   2026-07-29 (`DA-0002`; per-flow map + rollout plan in issue #1882):
-  - `crossover_sweep` — **enforced**, but by the flow's own locate floors, not by
-    this module's gate: `_sweep_locate_confidence_ok` (0.3) and
-    `_stimulus_locate_ok` (0.1) in
+  - `crossover_sweep` — **gated by three floors of its own**, all in
     [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py),
-    scored over the `cross_correlation_alignment` call that
-    [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py)
-    makes in its own `_locate`. Neither raises `AlignmentError`, and both use
-    their own floors rather than the 0.40 default.
-  - `sync_marker` — **enforced by a second, independent implementation**, also
-    not this gate: [`multiroom/sync_measure.py`](../jasper/multiroom/sync_measure.py)'s
-    `MIN_CONFIDENCE = 0.35` marks `low_confidence`, which clears `ok`, which
-    keeps `/sync` out of `analyzed` and makes apply a 409.
-  - `room_sweep` — **not enforced.** The correction pipeline locates the direct
-    arrival by `argmax|h(t)|` ([`deconv.py`](../jasper/audio_measurement/deconv.py))
-    with no confidence metric to gate on.
+    none of them this module's gate:
+    `ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6` (the strictest, and the one that
+    decides whether a correction is built/auto-applied at all — it reads
+    `AlignmentEstimate.confidence` from
+    [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py)'s
+    `_gcc_phat`, a *third* implementation of the margin);
+    `_sweep_locate_confidence_ok` (0.3) and `_stimulus_locate_ok` (0.1), both
+    scored over the `cross_correlation_alignment` call `program_analysis` makes
+    in its own `_locate`. None raises `AlignmentError`; none uses the 0.40
+    default.
+  - `sync_marker` — **gated by a second, independent implementation**, also not
+    this gate: [`multiroom/sync_measure.py`](../jasper/multiroom/sync_measure.py)'s
+    `MIN_CONFIDENCE = 0.35` (defined `:29`, enforced `:295`) marks
+    `low_confidence`, which clears `ok`, which keeps `/sync` out of `analyzed`
+    and makes apply a 409. Different formula: a peak-parity ratio
+    `min(L,R)/(max(L,R)+baseline)`, not the locate-ambiguity margin.
+  - `room_sweep` — **not gated.** No *peak-ambiguity* confidence exists: the
+    correction pipeline locates the direct arrival by `argmax|h(t)|`
+    ([`deconv.py`](../jasper/audio_measurement/deconv.py)) and never compares a
+    competitor peak. But
+    [`acoustic_quality.py`](../jasper/correction/acoustic_quality.py)'s
+    `direct_to_pre_arrival_db` — computed on every correction capture and
+    persisted through session → artifacts → replay_artifacts — is an existing
+    arrival-quality proxy that is **gated on nothing**. Part of the work here is
+    wiring, not a pure new instrument.
   - `bass_nearfield` — declares it, but has **no production caller at all**
     (parked near-field workstream); there is no analysis path to gate.
 
   `assert_alignment_confident` itself has **exactly one call site in the tree**
   ([`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py), added
   by #1384) and that site is **not reachable from any live household flow
-  today**: it runs only when `ambient_duration_s` is supplied, and the two
-  suppliers are the commissioning capture producer — whose `RawCaptureTransport`
-  has no production implementation, only a synthetic one in tests, and whose
-  `capture_next` / `capture_post_apply` service entry points have no production
-  caller — and `legacy_replay`, which also has no production caller. #1384 built
-  the seam; it did not put the gate on a household path.
+  today**: it runs only when `ambient_duration_s` is supplied, and all **three**
+  suppliers are dead, each for a different reason:
+  1. the commissioning capture producer — `RawCaptureTransport` is a `TypeAlias`
+     for an async callable, and no production code ever supplies one (the
+     service's `capture_next` / `capture_post_apply` entry points have no
+     production caller, and non-test construction passes `None`);
+  2. `legacy_replay.replay_legacy_current_winner` — no production caller;
+  3. the web capture chain `correction_crossover_backend.record_driver_capture`
+     → `web_measurement.record_driver_capture` →
+     `commissioning_capture.record_driver_acoustic_capture` — dead because #1688
+     deleted the legacy crossover flow that called it, leaving the `/crossover/`
+     route set with no driver-capture upload route.
+
+  (3) is the one to watch: **a future maintainer re-adding a driver-capture POST
+  route arms this gate immediately**, with no change to either other supplier.
+  The dead surface is the whole `ambient_duration_s` branch, not just the gate
+  call, so #1384's signal-located repeat capture and band-SNR admission are
+  equally unreached. #1384 built the seam; it did not put the gate on a
+  household path.
 
   (Alignment-threshold tuning is deferred; see the footer.) See §11.
 - **Clock drift (per-kind guidance).** The phone's mic clock and the Pi's playback
@@ -1018,11 +1056,11 @@ spec is uploaded.
 - Adding `kind="balance_burst"` requires edits to **only the Pi and the page —
   zero relay changes.**
 - A **weak/ambiguous cross-correlation alignment fails loud** (not a silently-wrong
-  measurement). **Partially met (2026-07-29):** met on `crossover_sweep` and
-  `/sync`, each via its own floor; **not** met on `room_sweep`, and
-  `bass_nearfield` has no production flow to meet it on. No flow drives this off
-  the spec's own `validity.require_alignment`, and none reaches
-  `assert_alignment_confident` — see §9 and `DA-0002` / issue #1882.
+  measurement). **Partially met (2026-07-29):** met on `crossover_sweep` (three
+  floors of its own, strictest 0.6) and `/sync` (one of its own); **not** met on
+  `room_sweep`, and `bass_nearfield` has no production flow to meet it on. No
+  flow drives this off the spec's own `validity.require_alignment`, and none
+  reaches `assert_alignment_confident` — see §9 and `DA-0002` / issue #1882.
 - EC/AGC/NS left on (or capture not clean) → **refuse / labeled-degrade per kind**,
   never a silently-flattened measurement.
 - **Killing the relay mid-flow** → clear UI error, **not** a silent hang; existing
@@ -1049,11 +1087,13 @@ reachable production caller, since #1384's lone call site needs an
 caller-less legacy replay supply — but it was wrong as a statement about the
 *property*: `/sync` has gated on its own alignment confidence since before the
 audit, and crossover v2 has gated on its own locate floors since #1589/#1661.
-Coverage is per-flow and uneven (crossover ✓, `/sync` ✓, `room_sweep` ✗,
-`bass_nearfield` has no production flow), it is spread across three
-independent implementations of one quantity, and no flow reads the spec's own
-`validity.require_alignment`. No code changed — `DA-0002` in the deep-audit
-ledger tracks the remaining work. Prior
+Coverage is per-flow and uneven (crossover ✓ — three floors, strictest 0.6 —
+`/sync` ✓, `room_sweep` ✗, `bass_nearfield` has no production flow). One
+question ("how confidently was the stimulus located?") is answered by **three
+metric implementations** carrying **five disagreeing thresholds** (0.40 / 0.6 /
+0.35 / 0.3 / 0.1), of which the 0.40 is env-overridable and dead. No flow reads
+the spec's own `validity.require_alignment`. No code changed — `DA-0002` in the
+deep-audit ledger tracks the remaining work. Prior
 2026-07-27 — capture protocols 1 and 2 are DELETED. There is
 exactly one capture protocol; every builder emits it, `version.json` advertises
 exactly it, a spec that omits it is incompatible rather than legacy, every
