@@ -290,7 +290,7 @@ jobs:
           set -euo pipefail
           routing_policy_output="$(
             python3 scripts/ci-classify.py --routing-policy-pytest-targets
-          )
+          )"
           routing_policy_tests=()
           while IFS= read -r target; do
             [[ -n "${target}" ]] && routing_policy_tests+=("${target}")

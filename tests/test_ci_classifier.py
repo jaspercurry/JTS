@@ -743,6 +743,29 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     assert "paths-ignore" not in pull_request_trigger
 
 
+def test_python_policy_workflow_shell_is_syntactically_valid() -> None:
+    """The embedded preflight must parse before it can protect the matrix."""
+
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["python-policy"]["steps"]
+    script = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Gate the Python matrix on CI-routing policy"
+    )
+
+    result = subprocess.run(
+        ["bash", "-n"],
+        input=script,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_every_workflow_cancels_superseded_pull_request_runs() -> None:
     """A superseded run must not keep occupying a finite runner slot.
 
