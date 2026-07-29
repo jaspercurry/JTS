@@ -5893,6 +5893,141 @@ def test_prediction_gate_logs_a_ledger_line_on_every_path(caplog):
         assert ledger_field in caplog.text
 
 
+def test_the_stashed_prediction_verdict_is_the_full_resolution_grade():
+    """Two-stage commission D4, the "one grading instrument" pin.
+
+    The verdict the conductor holds for the host to persist must be the grade
+    of the FULL-RESOLUTION prediction — the same tuple the accountability veto
+    refused on — and not a re-grade of what survives persistence. This asserts
+    the identity AND that the identity is a real constraint: the 512-point
+    ``_decimate_sum`` stride is demonstrably a different instrument, grading
+    45/155/205 bins per band where the full 2048-point curve grades
+    180/617/823. Two reports built from those two inputs can disagree on a
+    narrow band, and the screen this feeds exists to state one honest spec
+    verdict."""
+    from jasper.web.correction_crossover_v2 import _decimate_sum
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+
+    stashed = c.measure_predicted_spec_report
+    assert stashed is not None
+    # It IS the full-resolution grade.
+    assert stashed == spec_report_for_predicted_sum(c.measure_predicted_sum).to_dict()
+
+    # ...and the thing it is NOT is reachable, so the assertion above is not
+    # satisfied by the two instruments happening to agree.
+    decimated = _decimate_sum(c.measure_predicted_sum)
+    assert len(decimated["freqs_hz"]) < c.measure_predicted_sum[0].size
+    re_graded = spec_report_for_predicted_sum((
+        np.asarray(decimated["freqs_hz"], dtype=float),
+        np.asarray(decimated["magnitude_db"], dtype=float),
+    )).to_dict()
+    assert re_graded != stashed
+    assert [b["n_bins"] for b in re_graded["bands"]] != [
+        b["n_bins"] for b in stashed["bands"]
+    ]
+
+
+def test_the_prediction_verdict_is_stashed_on_the_trims_only_lane_too():
+    """The hoist above the trims-only abstain, pinned.
+
+    A candidate with no linearization still commits trims and still predicts a
+    response, so it HAS a gradeable prediction — and the gate's own abstain
+    (which is about having no before/after to COMPARE) must not be what decides
+    whether the household is shown a verdict. Before D4 the grade sat below
+    that abstain and this lane reached the wire with no verdict at all, which
+    would have rendered "we could not predict this" over a prediction we can
+    grade."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, mic_tier="consumer",  # ineligible ⇒ no fit ⇒ no linearized sum
+    )
+    c = _cloud_conductor(fakes)
+    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+
+    assert c.candidate.linearization == {}
+    stashed = c.measure_predicted_spec_report
+    assert stashed is not None
+    assert stashed == spec_report_for_predicted_sum(c.measure_predicted_sum).to_dict()
+
+
+def test_the_gates_ledger_and_the_stashed_verdict_never_disagree(caplog):
+    """One session, one prediction, one verdict — on both surfaces.
+
+    The trims-only ledger line carries the after-report the hoist produces, so
+    a field read of the journal and a read of ``/state`` cannot state different
+    things about the same prediction. (The gate's DECISION is still recorded
+    separately, by ``reason=no_linearization``.)"""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, mic_tier="consumer",
+    )
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    assert "reason=no_linearization" in caplog.text
+    report = spec_report_for_predicted_sum(c.measure_predicted_sum)
+    assert report.to_dict() == c.measure_predicted_spec_report
+    # ``log_event`` renders booleans JSON-style, so compare in its vocabulary
+    # rather than Python's.
+    assert f"after_passed={'true' if report.overall_passed else 'false'}" in caplog.text
+    rms_db = round(float(spec_convergence_residual(report).rms_db), 3)
+    assert f"after_rms_db={rms_db}" in caplog.text
+
+
+def test_an_ungradeable_prediction_stashes_none_and_names_itself(caplog, monkeypatch):
+    """D4's ``None`` propagation and its named log line.
+
+    An absent report is a user-visible dead end — the review screen renders "we
+    could not predict this" and refuses Apply on it — so per AGENTS.md's
+    no-silent-failure rule it gets a line somebody can grep for, carrying WHICH
+    of the two causes fired. ``None`` must never be papered over into a
+    fabricated verdict."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    monkeypatch.setattr(flow_mod, "spec_report_for_predicted_sum", lambda _s: None)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    # Unknown is not a refusal: the session still completes (the gate has no
+    # evidence to refuse on), it just carries no verdict.
+    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+
+    assert c.measure_predicted_spec_report is None
+    assert "event=correction.crossover_v2_prediction_ungradeable" in caplog.text
+    # The prediction existed; the evaluator is what refused it.
+    assert "why=evaluator_refused" in caplog.text
+    assert "why=no_prediction" not in caplog.text
+
+
+def test_an_absent_prediction_names_the_other_cause(caplog):
+    """The second ``why``: nothing was predicted at all, so there was never a
+    curve to grade. Separated from the evaluator's refusal because the two have
+    different remedies and collapsing them would make the line unactionable.
+
+    Reached without monkeypatching the evaluator — an analysis that carries no
+    ``predicted_sum`` on the trims-only lane (nothing overrides it there) is the
+    real shape of this cause."""
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: dataclasses.replace(
+        _eligible_measure_analysis(program, mic_tier="consumer"),
+        predicted_sum=None,
+    )
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    assert c.measure_predicted_sum is None
+    assert c.measure_predicted_spec_report is None
+    assert "why=no_prediction" in caplog.text
+    assert "why=evaluator_refused" not in caplog.text
+
+
 def test_an_accountability_refusal_names_itself_to_the_host():
     """The refusal must reach the household as ITS OWN reason, not as a
     manufactured timeout.

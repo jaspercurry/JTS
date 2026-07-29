@@ -2314,6 +2314,196 @@ def test_the_tier_rides_the_durable_state_and_state_block():
     assert v2host.crossover_v2_status_block()["tier"] is None
 
 
+# --- two-stage commission D4: the prediction on the wire ------------------
+
+
+def _closed_cloud_conductor():
+    """A real conductor walked to its cloud-measure close, so it carries a
+    candidate, a full-resolution ``measure_predicted_sum``, and the spec report
+    its accountability veto graded that sum with."""
+    from tests.test_crossover_v2_conductor import (
+        FakeSeams,
+        _cloud_conductor,
+        _eligible_measure_analysis,
+        _walk_measure_cloud_to_close,
+    )
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    conductor = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(conductor)
+    return conductor
+
+
+def test_the_persisted_prediction_verdict_is_the_veto_s_not_a_re_grade():
+    """D4's "one grading instrument", at the persistence seam.
+
+    The durable state carries the prediction TWICE in different resolutions —
+    the curve at ``MAX_PERSISTED_SUM_POINTS`` (a drawing) and the verdict from
+    the full-resolution tuple (the instrument). This pins that the stored
+    verdict is the conductor's own, and that re-grading the stored curve would
+    have produced something else, so the distinction is load-bearing rather
+    than notional."""
+    from jasper.active_speaker.crossover_v2_flow import spec_report_for_predicted_sum
+
+    conductor = _closed_cloud_conductor()
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    priors = v2host.load_v2_state()["verify_priors"]
+    assert priors["predicted_spec"] == conductor.measure_predicted_spec_report
+    assert priors["predicted_spec"] == spec_report_for_predicted_sum(
+        conductor.measure_predicted_sum
+    ).to_dict()
+
+    # The curve that WAS persisted grades differently — which is exactly why
+    # the report is persisted instead of being recomputed from it.
+    stored_curve = priors["predicted_sum"]
+    re_graded = spec_report_for_predicted_sum((
+        np.asarray(stored_curve["freqs_hz"], dtype=float),
+        np.asarray(stored_curve["magnitude_db"], dtype=float),
+    )).to_dict()
+    assert re_graded != priors["predicted_spec"]
+
+
+def test_the_prediction_verdict_survives_a_verify_rearm_persist():
+    """The carry-forward, pinned on the shape that has broken three times.
+
+    A verify-only re-arm builds a FRESH conductor that never runs a fit, so
+    every MEASURE-owned prior has to travel to it explicitly or the first
+    "Try again" blanks it — the ``cloud`` B1 / ``pre_apply_profile`` W6.12 bug
+    shape. The verdict rides the same route as ``gate_window_ms``, and this is
+    what proves the route is wired at BOTH ends."""
+    conductor = _closed_cloud_conductor()
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    stored = v2host.load_v2_state()["verify_priors"]["predicted_spec"]
+    assert stored is not None
+
+    rearmed = CrossoverV2Conductor(
+        session_id="cap_rearm",
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=conductor._seams,
+        index_phase_map={1: PHASE_VERIFY},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        measure_predicted_sum=conductor.measure_predicted_sum,
+        measure_predicted_spec_report=stored,
+    )
+    assert rearmed.measure_predicted_spec_report == stored
+    v2host.persist_conductor_state(rearmed, failure_code=None)
+    assert v2host.load_v2_state()["verify_priors"]["predicted_spec"] == stored
+
+
+def test_the_prediction_reaches_the_status_block_with_its_verdict():
+    """D4's projection: curve + stored verdict, beside the cloud blocks."""
+    conductor = _closed_cloud_conductor()
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    prediction = v2host.crossover_v2_status_block()["prediction"]
+    stored = conductor.measure_predicted_spec_report
+    assert prediction["overall_passed"] == stored["overall_passed"]
+    assert prediction["reference_db"] == pytest.approx(stored["reference_db"])
+    # The per-band vocabulary matches the compact cloud block's, key for key,
+    # so the review screen can draw both curves in one tolerance corridor.
+    assert [set(b) for b in prediction["spec_bands"]] == [
+        {"f_lo_hz", "f_hi_hz", "passed", "max_deviation_db", "tolerance_db"}
+    ] * len(stored["bands"])
+    assert prediction["curve"]["freqs_hz"]
+
+
+def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
+    """D4: "the chart feed keeps one decimation owner".
+
+    The predicted curve and the cloud curves are drawn in one frame, so they
+    must be strided by the SAME function at the SAME ceiling — a second inline
+    copy of the stride is how two curves in one chart end up at silently
+    different densities. Pinned by handing both projections the identical raw
+    curve and requiring identical output.
+
+    **The ceiling is a SOFT one, and that is shipped behaviour rather than
+    something this rung introduced.** ``max(1, n // CAP)`` is an integer
+    stride, so a length that is not a multiple of it overshoots by up to one
+    stride — 1031 raw points stride by 4 and yield 258, not 256. The cloud
+    chart has always done this and the ~1% overshoot does not move its measured
+    byte-cost argument; the predicted curve inherits it precisely BECAUSE it
+    shares the owner. Tightening the stride would change the cloud chart's own
+    output and belongs to whoever wants that, not to a wire-plumbing rung."""
+    n = v2host.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
+    freqs = [100.0 + i for i in range(n)]
+    mags = [float(i % 5) for i in range(n)]
+    raw = {"freqs_hz": freqs, "magnitude_db": mags}
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "cloud": {
+            PHASE_CLOUD_MEASURE: {"pipeline": {"available": True, "curve": raw}},
+        },
+        "verify_priors": {"predicted_sum": raw},
+    })
+    block = v2host.crossover_v2_status_block()
+    predicted = block["prediction"]["curve"]
+    # THE pin: one owner, so identical input yields byte-identical output.
+    assert predicted == block["cloud_chart"][PHASE_CLOUD_MEASURE]["curve"]
+    assert len(predicted["freqs_hz"]) == len(predicted["magnitude_db"])
+    # Genuinely decimated, to exactly the shared owner's stride.
+    stride = n // v2host.CHART_CURVE_MAX_JSON_POINTS
+    assert len(predicted["freqs_hz"]) == -(-n // stride)
+    assert len(predicted["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS + stride
+
+
+def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
+    """``None`` is load-bearing on every field of this block.
+
+    Three absences, three honest shapes: no priors at all ⇒ no block; a curve
+    with no stored report (a state written before D4, or a prediction the
+    evaluator refused) ⇒ the curve with ``overall_passed`` **None** and no
+    bands — never ``False``, which would read as a measured failure, and never
+    ``True``, which the compact-cloud rule already forbids fabricating."""
+    v2host.save_v2_state({"session_id": "cap_x", "verify_priors": None})
+    assert v2host.crossover_v2_status_block()["prediction"] is None
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "verify_priors": {"predicted_sum": None, "predicted_spec": None},
+    })
+    assert v2host.crossover_v2_status_block()["prediction"] is None
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "verify_priors": {
+            "predicted_sum": {"freqs_hz": [100.0, 200.0], "magnitude_db": [0.0, 0.0]},
+            "predicted_spec": None,
+        },
+    })
+    prediction = v2host.crossover_v2_status_block()["prediction"]
+    assert prediction["curve"]["freqs_hz"] == [100.0, 200.0]
+    assert prediction["overall_passed"] is None
+    assert prediction["spec_bands"] == []
+    assert prediction["reference_db"] is None
+
+
+def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
+    """D3/D4's era stamp, at the only place that can honestly write it.
+
+    A candidate this function serializes was built by THIS process, so its
+    per-fit charges are the post-#1808 realized-peak rule by construction. The
+    stamp is recorded here rather than inferred downstream because nothing on a
+    persisted fit distinguishes the two derivations."""
+    from jasper.active_speaker.linearization_fit import (
+        HEADROOM_COST_BASIS_REALIZED_PEAK,
+    )
+
+    conductor = _closed_cloud_conductor()
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    candidate = v2host.load_v2_state()["candidate"]
+    assert candidate["headroom_cost_basis"] == HEADROOM_COST_BASIS_REALIZED_PEAK
+    assert isinstance(candidate["headroom_cost_db"], float)
+
+
 def test_apply_endpoint_requires_current_candidate():
     with pytest.raises(v2host.CrossoverV2Refused):
         v2host.handle_v2_apply(

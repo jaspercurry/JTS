@@ -61,11 +61,18 @@ from .delta_probe import VERDICT_LEVEL_MISMATCH
 
 logger = logging.getLogger(__name__)
 
+# Bumped 8 → 9: ``candidate_review`` gained ``headroom_cost`` — the PR-L5
+# max-level disclosure, carried as a ``{db, basis}`` compound so a cross-era
+# stamp can never render as a bare number (two-stage commission work order D4,
+# issue #1806). Additive: no key was removed or re-typed, and the crossover
+# wizard's own module does not gate on this version, so an unredeployed page
+# ignores the new key rather than refusing the envelope.
+#
 # Bumped 7 → 8: the screen vocabulary changed (review_apply removed, the
 # "applying" in-flight screen added, the "done"/RESULT screen's shape changed
 # to plain-outcome-first + expert disclosure + prominent Undo) — owner ruling,
 # 2026-07-20.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 8
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 9
 
 # The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
 # step is gone; these five are the whole journey.
@@ -173,6 +180,38 @@ def _linearization_octave_rows(
     return rows
 
 
+def _headroom_cost_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """``{"db": float|None, "basis": str}`` — the correction's disclosed
+    max-level cost, inseparable from the era that stamped it (D4 / #1808).
+
+    ``basis`` is :data:`~jasper.active_speaker.linearization_fit
+    .HEADROOM_COST_BASIS_REALIZED_PEAK` for a candidate persisted by a build
+    that records one, and ``unknown`` for anything older — the persisted
+    absence is the only evidence of era there is, and it is read as unknown
+    rather than assumed current. A renderer must say so; "costs 22.5 dB" and
+    "costs an amount measured a way we no longer use" are different sentences.
+
+    ``db`` is ``None`` — not ``0.0`` — when the stored value is missing or
+    unusable. Zero is a real, common answer here (every cut-only correction
+    charges nothing), so defaulting an absent number to it would state a
+    measurement the payload does not have.
+    """
+    from .linearization_fit import (
+        HEADROOM_COST_BASIS_REALIZED_PEAK,
+        HEADROOM_COST_BASIS_UNKNOWN,
+    )
+
+    basis = candidate.get("headroom_cost_basis")
+    return {
+        "db": _finite(candidate.get("headroom_cost_db")),
+        "basis": (
+            HEADROOM_COST_BASIS_REALIZED_PEAK
+            if basis == HEADROOM_COST_BASIS_REALIZED_PEAK
+            else HEADROOM_COST_BASIS_UNKNOWN
+        ),
+    }
+
+
 def _candidate_review_payload(
     candidate: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -226,6 +265,25 @@ def _candidate_review_payload(
         "linearization_octaves": _linearization_octave_rows(
             candidate.get("linearization_octaves")
         ),
+        # "This correction costs N dB of maximum level" (PR-L5), reaching a
+        # household-visible payload for the first time (two-stage commission
+        # D4). The comment on ``correction_crossover_v2._candidate_summary``'s
+        # own copy claims this disclosure "lives on the browser-visible
+        # candidate summary … which the envelope's own screens read"; until
+        # this line it did not, because the screens read THIS payload and this
+        # payload did not carry it.
+        #
+        # **A compound, not a bare float, and that is the whole point.** The
+        # charge's derivation changed under #1808 and the stamp is not
+        # re-derived on load (``docs/linearization-integrity-plan.md``,
+        # "Cross-era disclosure"), so the same correction discloses ~22.5 dB
+        # under the old rule where it now costs ~5. A renderer handed a lone
+        # ``headroom_cost_db`` has no way to know which it is holding and would
+        # put an order-of-magnitude wrong level cost on the one screen whose
+        # purpose is honesty. Pairing the number with its basis makes that
+        # mistake unavailable rather than merely discouraged: there is no bare
+        # scalar on this payload to render.
+        "headroom_cost": _headroom_cost_payload(candidate),
     }
     # A candidate with nothing displayable (no trims, no alignment) stays
     # hidden rather than rendering an empty card.
