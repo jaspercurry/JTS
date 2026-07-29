@@ -47,6 +47,7 @@ from .crossover_v2_flow import (
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
     PHASE_MEASURE,
+    PHASE_REVIEW,
     PHASE_VERIFY,
     REASON_REGISTRY,
     TEMPLATE_HARD_STOP,
@@ -61,6 +62,14 @@ from .delta_probe import VERDICT_LEVEL_MISMATCH
 
 logger = logging.getLogger(__name__)
 
+# Bumped 9 → 10: the screen vocabulary gained ``review`` — the two-stage
+# commission flow's apply-decision interlude (work order D3, issue #1806) — and
+# the envelope gained a ``prediction`` key (the predicted curve + its stored
+# spec verdict) that only that screen populates. Additive in both directions:
+# no key was removed or re-typed, the crossover wizard's own module does not
+# gate on this version, and every pre-existing screen's envelope is
+# byte-identical apart from the new always-present ``prediction: null``.
+#
 # Bumped 8 → 9: ``candidate_review`` gained ``headroom_cost`` — the PR-L5
 # max-level disclosure, carried as a ``{db, basis}`` compound so a cross-era
 # stamp can never render as a bare number (two-stage commission work order D4,
@@ -72,7 +81,7 @@ logger = logging.getLogger(__name__)
 # "applying" in-flight screen added, the "done"/RESULT screen's shape changed
 # to plain-outcome-first + expert disclosure + prominent Undo) — owner ruling,
 # 2026-07-20.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 9
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 10
 
 # The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
 # step is gone; these five are the whole journey.
@@ -104,6 +113,12 @@ _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
     PHASE_CLOUD_MEASURE: "measure",
+    # The review interlude sits on the APPLY step: measuring is finished and
+    # what the household is now doing IS the apply decision (two-stage D3).
+    # It shares the step with PHASE_APPLYING deliberately — the stepper tracks
+    # where the journey is, and "deciding to apply" and "applying" are the same
+    # place in it.
+    PHASE_REVIEW: "apply",
     PHASE_APPLYING: "apply",
     PHASE_VERIFY: "verify",
     PHASE_CLOUD_VERIFY: "verify",
@@ -526,6 +541,311 @@ def _carve_out_expert_lines(block: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+# --- the review interlude (two-stage commission D3 / D6) ---------------------
+
+# Mirrors ``jasper.web.correction_crossover_v2.STAGE2_PREFLIGHT_KEY``. Spelled
+# through a module constant on both sides rather than a bare literal in each,
+# since the writer lives in the web package and this reader does not.
+_STAGE2_PREFLIGHT_KEY = "stage2_preflight"
+
+
+def _stage2_preflight(status: Mapping[str, Any]) -> tuple[bool, str, dict[str, Any] | None]:
+    """``(can_open_stage_2, refusal_message, refusal_action)`` for the review
+    screen's Apply control (D3's render-time preflight).
+
+    **Absence is not permission.** An unset key means the predicate never ran —
+    an envelope built off a path that does not attach it, a durable state read
+    by an older build — and "we never checked" must render exactly like "we
+    checked and it refused", because the failure this control exists to prevent
+    (apply succeeds, stage 2 refuses at open, the speaker sits corrected and
+    ungraded forever) is identical in both cases. Only an explicit ``ok: True``
+    enables Apply. Same rule the compact cloud block states for its own fields:
+    never fabricate a clean reading.
+
+    The message is passed through verbatim — every one of
+    ``resolve_conductor_context``'s refusals is already household-facing and
+    already names what to finish first, so re-phrasing them here would be a
+    second copy of copy that is owned elsewhere.
+    """
+    preflight = _mapping(_v2(status).get(_STAGE2_PREFLIGHT_KEY))
+    if preflight.get("ok") is True:
+        return True, "", None
+    message = str(preflight.get("message") or "").strip()
+    action = preflight.get("next_action")
+    return (
+        False,
+        message or (
+            "JTS cannot start the confirming measurement on this speaker yet, "
+            "so applying this now would leave it unchecked."
+        ),
+        dict(action) if isinstance(action, Mapping) and action else None,
+    )
+
+
+def _worst_failing_band(bands: Any) -> tuple[float, float, float] | None:
+    """``(f_lo_hz, f_hi_hz, overshoot_db)`` for the band that misses the target
+    by the most, or ``None`` when no band carries a gradeable miss.
+
+    The overshoot is how far past the band's own tolerance the deviation
+    reaches — the number D3 asks the screen to name beside the band ("this
+    fails our spec by X in band Y"), not the raw deviation, which on its own
+    says nothing about whether it was allowed.
+
+    Reads only bands the report explicitly marks ``passed is False``. A band
+    with ``passed`` ``None`` was not graded, and treating an ungraded band as a
+    failing one would manufacture a verdict out of a missing measurement.
+    """
+    if not isinstance(bands, list):
+        return None
+    worst: tuple[float, float, float] | None = None
+    for band in bands:
+        if not isinstance(band, Mapping) or band.get("passed") is not False:
+            continue
+        lo = _finite(band.get("f_lo_hz"))
+        hi = _finite(band.get("f_hi_hz"))
+        deviation = _finite(band.get("max_deviation_db"))
+        tolerance = _finite(band.get("tolerance_db"))
+        if lo is None or hi is None or deviation is None or tolerance is None:
+            continue
+        overshoot = abs(deviation) - abs(tolerance)
+        if overshoot <= 0:
+            continue
+        if worst is None or overshoot > worst[2]:
+            worst = (lo, hi, overshoot)
+    return worst
+
+
+def _review_verdict(prediction: Mapping[str, Any] | None, has_candidate: bool) -> str:
+    """The review screen's primary copy — D3's items 3 and 4, in the
+    household's language.
+
+    **The prediction is a MODEL, and every sentence here says so.** The trap
+    this copy is written against is the work order's own: *"Any copy that
+    presents ``improvement_db`` as evidence about the room is measured-narrow-
+    stated-wide. The measured evidence on the review screen is the pre-apply
+    cloud; the prediction is a model, and the screen says so."* So the measured
+    curve gets "measured" and the predicted one never does — it is what JTS
+    "expects" or "works out", checked against the target rather than against
+    the room.
+
+    All four of ``_prediction_status``'s enumerated states render distinctly,
+    because a consumer that collapses them tells a household something untrue
+    about which of them it is in:
+
+    1. **Curve + report** — the ordinary close. A graded pass says so; a graded
+       miss names the band and the margin and is still offered, because
+       improved-but-failing is *presented, never applied silently* (D3.4).
+    2. **Curve, no report** — a prediction nothing could grade. Say the verdict
+       is unknown; never infer one from the picture.
+    3. **Neither** — nothing to review at all.
+    4. **Report, no curve** — the refusal lane, where ``overall_passed`` is a
+       REAL ``False`` rather than the ``None`` that means unknown. The verdict
+       genuinely evaluated a prediction; what is missing is the drawing, and
+       (this being the improvement-gate refusal) the candidate itself, which is
+       why ``has_candidate`` is what decides whether a decision is on offer.
+    """
+    opening = (
+        "JTS measured your speaker and worked out a correction for it. "
+        "Nothing has been applied yet — this is the proposal."
+    )
+    if not has_candidate:
+        # State 4's own shape, and any state with nothing applyable behind it:
+        # there is no decision to present, so do not stage one.
+        detail = ""
+        if prediction is not None and prediction.get("overall_passed") is False:
+            failing = _worst_failing_band(prediction.get("spec_bands"))
+            detail = (
+                " The correction it worked out would still have missed the "
+                f"target by {failing[2]:.1f} dB between {failing[0]:.0f} and "
+                f"{failing[1]:.0f} Hz."
+                if failing
+                else " The correction it worked out would still have missed "
+                "the target."
+            )
+        return (
+            "JTS measured your speaker but has no correction to propose from "
+            f"this measurement.{detail} Measure again to try afresh."
+        )
+    if prediction is None:
+        return (
+            f"{opening} JTS could not work out what the result would be, so "
+            "there is nothing to judge this proposal by. Measure again, or "
+            "leave things as they are."
+        )
+    passed = prediction.get("overall_passed")
+    if passed is None:
+        return (
+            f"{opening} JTS could not check the result it expects against the "
+            "target, so there is nothing to judge this proposal by. Measure "
+            "again, or leave things as they are."
+        )
+    if passed is False:
+        failing = _worst_failing_band(prediction.get("spec_bands"))
+        miss = (
+            f"misses the target by {failing[2]:.1f} dB between "
+            f"{failing[0]:.0f} and {failing[1]:.0f} Hz"
+            if failing
+            else "still misses the target"
+        )
+        return (
+            f"{opening} Even so, the result JTS expects {miss}. That is worked "
+            "out from the measurement, not measured — applying it is your "
+            "call, and JTS will measure the speaker again afterwards to find "
+            "out what really happened."
+        )
+    return (
+        f"{opening} The result JTS expects meets the target in every band it "
+        "checks. That is worked out from the measurement, not measured — "
+        "apply it and JTS will measure the speaker again to confirm."
+    )
+
+
+def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
+    """The REVIEW screen: the household's apply decision (work order D3).
+
+    A dedicated human review screen existed and was deliberately removed
+    (2026-07-20, "no human mid-flow Apply gate"); the 2026-07-28 ruling
+    restores it, because auto-applying a fit that failed its own spec by
+    +6.04 dB — inside the relay session, three seconds before VERIFY, with the
+    household holding a phone — left a box applied-and-ungraded with no
+    decision point anywhere in the sequence. **The review interlude IS the
+    apply decision point.**
+
+    Renders D3's five things in order: what we measured (the pre-apply cloud
+    curve and its per-band verdict — ``cloud``/``cloud_chart``, already on the
+    wire), what we propose (``candidate_review``, now including the L5 level
+    cost), what we predict (``prediction``'s curve and stored verdict, drawn in
+    the same deviation frame so the two are comparable by eye), the honest
+    verdict (``_review_verdict``), and the decision.
+
+    **No default, no timer, no auto-advance** (D3.5). The interlude is untimed
+    by construction — it is not a session, nothing is holding a budget open,
+    and the candidate stays reachable across a browser close, a page reload,
+    and a ``jasper-web`` restart because it lives in durable state with no TTL.
+
+    **"Leave it as it is" does not delete the candidate**, deliberately: it
+    ends the journey and returns to the speaker page, and the proposal stays
+    reviewable until a newer measurement replaces it. Deleting on decline would
+    make an accidental tap cost ten captures to undo.
+
+    **No Undo anywhere on this screen (D6).** Undo restores what an apply
+    replaced, and stage 1 replaced nothing — offering it here would invite a
+    household to "restore" a speaker that was never changed.
+    """
+    v2 = _v2(status)
+    candidate = _mapping(v2.get("candidate"))
+    review = _candidate_review_payload(candidate or None)
+    prediction = v2.get("prediction")
+    prediction = prediction if isinstance(prediction, Mapping) else None
+    fingerprint = str(candidate.get("fingerprint") or "")
+    # A proposal with no fingerprint cannot be applied even in principle: the
+    # apply endpoint's first gate is `expected_candidate_fingerprint`, and it
+    # refuses outright without one.
+    has_candidate = bool(review and fingerprint)
+
+    can_open_stage_2, preflight_message, preflight_action = _stage2_preflight(status)
+    # D4: an ungradeable prediction "renders as 'we could not predict this' and
+    # DISABLES the Apply control, rather than presenting an unevidenced
+    # proposal". A GRADED MISS is the opposite case and stays enabled on
+    # purpose — presenting improved-but-failing rather than applying it is the
+    # entire point of this screen (D3.4). `None` is not `False` here.
+    gradeable = bool(prediction and prediction.get("overall_passed") is not None)
+    apply_enabled = has_candidate and gradeable and can_open_stage_2
+
+    # ONE condition owns both the refusal sentence and the refusal's own
+    # resolution button below (review N-2). They were gated differently — the
+    # sentence also required `gradeable` — so an ungradeable prediction beside
+    # an action-carrying refusal rendered a bare "Confirm safety limits" button
+    # with nothing explaining why it was there.
+    #
+    # Aligned toward SHOWING both, not hiding one. A household in that state
+    # has two independent blockers, and the stage-2 refusal stays true after
+    # they re-measure: suppressing it would let them walk the whole
+    # measurement again only to meet a refusal that was knowable now. That is
+    # the exact cost #1828 moved this predicate earlier to avoid — "burned a
+    # link, walked to the phone, and hit a deterministic refusal that was
+    # knowable before any of it".
+    #
+    # `has_candidate` stays in the gate: with no candidate there is no Apply
+    # control at all, so a note about why Apply is unavailable is noise.
+    show_preflight_refusal = has_candidate and not can_open_stage_2
+    nudges: list[dict[str, str]] = []
+    if show_preflight_refusal:
+        # The refusal renders AS ITSELF, in the words the predicate used —
+        # never as a generic "cannot apply" (D3, and the #1828 precedent that
+        # moved this same predicate earlier for the same reason).
+        nudges.append({
+            "code": "crossover_v2_stage2_preflight_refused",
+            "severity": "warn",
+            "text": (
+                f"{preflight_message} Applying now would leave this speaker "
+                "corrected but unchecked, so Apply is unavailable until that "
+                "is sorted."
+            ),
+        })
+    if prediction is not None and prediction.get("overall_passed") is False:
+        nudges.append({
+            "code": "crossover_v2_prediction_out_of_spec",
+            "severity": "warn",
+            "text": "The predicted result does not meet the target.",
+        })
+
+    alternate_actions: list[dict[str, Any]] = [
+        {
+            "id": "review_remeasure",
+            "label": "Measure again",
+            "endpoint": "/correction/crossover/v2/session",
+            "body": {},
+            # W6.12's escape hatch, for the same reason it exists on
+            # verify_fail: a relay that is still winding down from stage 1
+            # (`finishing`/`committing`/`stopping`) would otherwise blanket-
+            # hide every alternate, and a household landing on the decision
+            # screen with no way out is precisely the dead end this flow is
+            # meant to remove.
+            "show_during_relay": True,
+        },
+        {
+            "id": "review_decline",
+            "label": "Leave it as it is",
+            "href": "/correction/",
+            "show_during_relay": True,
+        },
+    ]
+    if preflight_action and show_preflight_refusal:
+        # The refusal's own resolution control, from the SAME registry entry
+        # the hard-stop screen reads — one click to the fix rather than prose
+        # describing where to find it (#1820's precedent). Gated identically to
+        # the sentence above so the button never appears unexplained.
+        alternate_actions.insert(0, {**preflight_action, "show_during_relay": True})
+
+    return _envelope(
+        screen="review",
+        active_step="apply",
+        verdict=_review_verdict(prediction, has_candidate),
+        nudges=nudges,
+        next_action={
+            "id": "review_apply",
+            "label": "Apply and verify",
+            "endpoint": "/correction/crossover/v2/apply",
+            "body": {"expected_candidate_fingerprint": fingerprint},
+            "enabled": apply_enabled,
+            # D3: the restored screen's prior art, not a new mechanism — the
+            # `show_during_relay` primary is what keeps Apply visible (and owns
+            # the phone affordance) while the just-closed relay winds down.
+            "show_during_relay": True,
+        } if has_candidate else None,
+        alternate_actions=alternate_actions,
+        status=status,
+        candidate_review=review,
+        # D3.1: the pre-apply cloud IS the measured evidence on this screen, so
+        # its flatness/carve-out disclosure belongs here — the same lines the
+        # done screen folds away, on the screen where they inform a decision
+        # rather than explain a fait accompli.
+        expert_details=_flatness_details_lines(status),
+        prediction=prediction,
+    )
+
+
 def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     """The compact CLOUD-VERIFY entry of the ``cloud`` block, or empty.
 
@@ -808,6 +1128,7 @@ def _envelope(
     candidate_review: Mapping[str, Any] | None = None,
     expert_details: list[str] | None = None,
     advertise_relay: bool = True,
+    prediction: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
@@ -862,6 +1183,20 @@ def _envelope(
             if isinstance(_v2(status).get("tier"), str) and _v2(status).get("tier")
             else None
         ),
+        # Two-stage commission D3: the PREDICTED response and its stored spec
+        # verdict — the chart's third curve, drawn in the same deviation frame
+        # as the measured one so a household can compare them by eye.
+        #
+        # **Sent by the REVIEW screen only, and that is what keeps the renderer
+        # data-driven.** PR-T2's brief is explicit that the JS gains no
+        # `env.screen` switch; making the third curve conditional on the SCREEN
+        # in the client would be exactly that switch. Making it conditional on
+        # the DATA instead puts the policy where the rest of this envelope's
+        # policy already lives — here — and leaves the chart module with one
+        # honest rule: draw the predicted curve when the envelope carries one.
+        # It also leaves every shipped screen's chart byte-identical, since
+        # none of them carries this key.
+        "prediction": dict(prediction) if prediction else None,
     }
 
 
@@ -1269,6 +1604,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action=None,
             status=status,
         )
+    elif phase == PHASE_REVIEW:
+        env = _review_envelope(status)
     elif phase == PHASE_DONE:
         # The RESULT screen (owner ruling, 2026-07-20): plain-language outcome
         # first — no numbers, no jargon — with the measured numbers folded

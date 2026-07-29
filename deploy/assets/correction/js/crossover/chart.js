@@ -53,6 +53,10 @@
 const F_MIN_HZ = 20;
 const F_MAX_HZ = 20000;
 const DEVIATION_PAD_DB = 3;
+// The predicted curve's dash pattern, in CSS px (pre-DPR — the context is
+// already scaled). Long enough to read as a deliberate dash at 240 px tall
+// rather than as a dotted or broken line.
+const PREDICTED_DASH = [6, 4];
 const GRID_FREQS_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 
 function chartColor(canvas, name, fallback) {
@@ -142,10 +146,15 @@ function deviationDomain(pointSets, toleranceBound, gradedRange) {
 }
 
 // Renders the before/after overlay into `canvas` from a plain-data payload:
-//   measureCurve / verifyCurve: {freqs_hz, magnitude_db} | null
-//   measureReferenceDb / verifyReferenceDb: number | null — each phase's OWN
-//     flat-spec reference (evaluate_flat_spec's reference_db); every curve
-//     is plotted relative to its own, never a shared one (review B-1)
+//   measureCurve / verifyCurve / predictedCurve: {freqs_hz, magnitude_db} | null
+//   measureReferenceDb / verifyReferenceDb / predictedReferenceDb: number |
+//     null — each curve's OWN flat-spec reference (evaluate_flat_spec's
+//     reference_db); every curve is plotted relative to its own, never a
+//     shared one (review B-1). The predicted curve's comes from the STORED
+//     spec report that graded it, so an ungradeable prediction has no
+//     reference, contributes no points, and is simply not drawn — the honest
+//     outcome, since plotting it against another phase's reference would
+//     invent the one frame the screen exists to state truthfully.
 //   specBands: [{f_lo_hz, f_hi_hz, tolerance_db}] — the tolerance corridor,
 //     `0 ± tolerance_db` per band in this deviation frame
 //   excludedIntervals: [{f_lo_hz, f_hi_hz}] — dimmed vertical strips
@@ -156,15 +165,18 @@ function deviationDomain(pointSets, toleranceBound, gradedRange) {
 export function drawCloudChart(canvas, payload) {
   const measureCurve = payload && payload.measureCurve;
   const verifyCurve = payload && payload.verifyCurve;
+  const predictedCurve = payload && payload.predictedCurve;
   const measureReferenceDb = payload ? payload.measureReferenceDb : null;
   const verifyReferenceDb = payload ? payload.verifyReferenceDb : null;
+  const predictedReferenceDb = payload ? payload.predictedReferenceDb : null;
   const specBands = (payload && payload.specBands) || [];
   const excludedIntervals = (payload && payload.excludedIntervals) || [];
 
-  if (!measureCurve && !verifyCurve) return false;
+  if (!measureCurve && !verifyCurve && !predictedCurve) return false;
 
   const measurePoints = inRangeDeviations(measureCurve, measureReferenceDb);
   const verifyPoints = inRangeDeviations(verifyCurve, verifyReferenceDb);
+  const predictedPoints = inRangeDeviations(predictedCurve, predictedReferenceDb);
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -184,7 +196,12 @@ export function drawCloudChart(canvas, payload) {
   const H = rect.height - mt - mb;
 
   const [dbMin, dbMax] = deviationDomain(
-    [measurePoints, verifyPoints],
+    // The predicted curve gets a vote in the y-domain like any other series:
+    // it is drawn in this frame, so a prediction that overshoots the corridor
+    // must be VISIBLE overshooting it rather than clipped flat against the
+    // plot edge — that overshoot is the number the review screen's verdict
+    // names in words, and the chart is where a household sees it.
+    [measurePoints, verifyPoints, predictedPoints],
     maxToleranceDb(specBands),
     gradedFrequencyRange(specBands),
   );
@@ -203,6 +220,7 @@ export function drawCloudChart(canvas, payload) {
   const textColor = chartColor(canvas, '--muted', '#888');
   const measureColor = chartColor(canvas, '--crossover-chart-measure', '#c0392b');
   const verifyColor = chartColor(canvas, '--crossover-chart-verify', '#2e8b57');
+  const predictedColor = chartColor(canvas, '--crossover-chart-predicted', '#d08b25');
   const corridorColor = chartColor(canvas, '--crossover-chart-corridor', '#4a90a4');
   const excludedColor = chartColor(canvas, '--crossover-chart-excluded', '#888');
 
@@ -284,10 +302,15 @@ export function drawCloudChart(canvas, payload) {
   });
   c.restore();
 
-  function drawCurve(points, color) {
+  // `dash` (two-stage commission D3): the predicted curve is stroked dashed
+  // because it is a MODEL, not a measurement — the one visual difference that
+  // keeps "what the microphone heard" and "what JTS expects" from reading as
+  // two equally-evidenced lines. Solid for every measured series, unchanged.
+  function drawCurve(points, color, dash = null) {
     if (!points.length) return;
     c.strokeStyle = color;
     c.lineWidth = 2;
+    c.setLineDash(dash || []);
     c.beginPath();
     let first = true;
     points.forEach(({ f, dev }) => {
@@ -305,6 +328,8 @@ export function drawCloudChart(canvas, payload) {
 
   drawCurve(measurePoints, measureColor);
   drawCurve(verifyPoints, verifyColor);
+  drawCurve(predictedPoints, predictedColor, PREDICTED_DASH);
+  c.setLineDash([]); // never leak the dash into a later draw on this context
   c.restore(); // undo the clip
   return true;
 }

@@ -64,21 +64,45 @@ let lastChart = null;
 // yet"). `_compact_cloud_status` (jasper.web.correction_crossover_v2)
 // already projects the identical shape onto every phase entry, so this is
 // a read-side selection, not new server data.
-function specSourceFor(cloud, tier) {
+// `prediction` (two-stage commission D3.1) forces the pre-apply cloud, and it
+// is the REVIEW screen's marker — the envelope sends that key on no other
+// screen, so this stays a data test rather than the `env.screen` switch PR-T2
+// is explicitly not allowed to add.
+//
+// The review interlude renders BEFORE anything is applied, so a CLOUD-VERIFY
+// entry does not exist yet at Full and never will at Express. Falling through
+// to the Full branch there would leave the screen with no spec bands, hence no
+// tolerance corridor — and the corridor is what makes the predicted curve
+// legible as passing or missing at all, on the one screen whose purpose is
+// that verdict. D3.1 names the source outright: "the per-band verdict from
+// `env.cloud.cloud_measure.spec_bands`".
+//
+// This does NOT relax the standing rule that the pre-apply cloud is never
+// rendered as "how flat your speaker is" (the reason Full reads CLOUD-VERIFY
+// everywhere else): on this screen the pre-apply cloud is the measured
+// evidence being reviewed, framed as exactly that, and the corrected claim
+// belongs to stage 2's own cloud once it has been walked.
+function specSourceFor(cloud, tier, prediction) {
   const measure = (cloud && cloud[PHASE_CLOUD_MEASURE]) || null;
   const verify = (cloud && cloud[PHASE_CLOUD_VERIFY]) || null;
+  if (prediction) return measure;
   return tier === TIER_EXPRESS ? measure : verify;
 }
 
-function chartPayloadFor(cloud, cloudChart, tier) {
+function chartPayloadFor(cloud, cloudChart, tier, prediction) {
   const measure = (cloud && cloud[PHASE_CLOUD_MEASURE]) || null;
   const verify = (cloud && cloud[PHASE_CLOUD_VERIFY]) || null;
-  const specSource = specSourceFor(cloud, tier);
+  const specSource = specSourceFor(cloud, tier, prediction);
   const chartMeasure = (cloudChart && cloudChart[PHASE_CLOUD_MEASURE]) || null;
   const chartVerify = (cloudChart && cloudChart[PHASE_CLOUD_VERIFY]) || null;
   const measureCurve = (chartMeasure && chartMeasure.curve) || null;
   const verifyCurve = (chartVerify && chartVerify.curve) || null;
-  if (!measureCurve && !verifyCurve) return null;
+  // The PREDICTED response (two-stage commission D3's "what we predict"). The
+  // envelope sends `prediction` on the review screen only, so this module
+  // needs no screen test of its own — the presence of the data IS the
+  // instruction, the same rule every other series here already follows.
+  const predictedCurve = (prediction && prediction.curve) || null;
+  if (!measureCurve && !verifyCurve && !predictedCurve) return null;
 
   // Excluded intervals come from the spec source's own carve-out disclosure
   // (the current, graded truth for Full; the ONLY cloud Express ever
@@ -102,6 +126,12 @@ function chartPayloadFor(cloud, cloudChart, tier) {
   return {
     measureCurve,
     verifyCurve,
+    predictedCurve,
+    // The predicted curve's OWN reference, from the stored spec report that
+    // graded it — same per-curve rule as the two below (review B-1). `null`
+    // for an ungradeable prediction, which the chart then draws no points for
+    // rather than borrowing another phase's reference frame.
+    predictedReferenceDb: prediction ? prediction.reference_db : null,
     // Review B-1 (PR-7): each curve is plotted relative to its OWN
     // reference — linearization is cut-only, so VERIFY's reference is
     // always at or below MEASURE's, and a single shared reference
@@ -169,14 +199,28 @@ function renderCallouts(container, specSource) {
 function updateLegend(els, payload, tier) {
   const hasMeasure = Boolean(payload.measureCurve);
   const hasVerify = Boolean(payload.verifyCurve);
+  // The swatch tracks what is actually ON the canvas, not merely what was
+  // sent: an ungradeable prediction has a curve but no reference to plot it
+  // against, draws nothing, and must not advertise a series that is not there.
+  const hasPredicted = Boolean(
+    payload.predictedCurve && typeof payload.predictedReferenceDb === 'number',
+  );
   const hasCorridor = payload.specBands.length > 0;
   const hasExcluded = payload.excludedIntervals.length > 0;
   els.legendMeasure.hidden = !hasMeasure;
   els.legendVerify.hidden = !hasVerify;
+  if (els.legendPredicted) els.legendPredicted.hidden = !hasPredicted;
   els.legendCorridor.hidden = !hasCorridor;
   els.legendExcluded.hidden = !hasExcluded;
-  els.cloudPending.hidden = hasVerify;
-  if (!hasVerify) {
+  // The "after-correction curve is still coming" caption is about the
+  // POST-APPLY measurement, and on the review screen nothing has been applied
+  // for it to describe — the household has not decided yet, so neither
+  // "appears once the second pass finishes" nor express's "there is no after
+  // curve" is a true sentence there. The predicted curve carries its own
+  // meaning through the legend and the screen's verdict copy instead.
+  const suppressPendingCaption = Boolean(payload.predictedCurve);
+  els.cloudPending.hidden = hasVerify || suppressPendingCaption;
+  if (!hasVerify && !suppressPendingCaption) {
     els.cloudPending.textContent = tier === TIER_EXPRESS
       ? EXPRESS_NO_AFTER_CURVE_TEXT
       : VERIFY_PENDING_TEXT;
@@ -192,8 +236,9 @@ export function renderCloud(els, env) {
   const cloud = env && env.cloud;
   const cloudChart = env && env.cloud_chart;
   const tier = env && env.tier;
-  const specSource = specSourceFor(cloud, tier);
-  const payload = chartPayloadFor(cloud, cloudChart, tier);
+  const prediction = (env && env.prediction) || null;
+  const specSource = specSourceFor(cloud, tier, prediction);
+  const payload = chartPayloadFor(cloud, cloudChart, tier, prediction);
 
   const visible = Boolean(payload);
   els.cloud.hidden = !visible;

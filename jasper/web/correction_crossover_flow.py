@@ -66,6 +66,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <ul class="crossover-chart-legend">
       <li id="crossover-chart-legend-measure"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--measure"></span>Before correction</li>
       <li id="crossover-chart-legend-verify"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--verify"></span>After correction</li>
+      <li id="crossover-chart-legend-predicted" hidden><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--predicted"></span>Expected after correction (not measured)</li>
       <li id="crossover-chart-legend-corridor"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--corridor"></span>Spec tolerance</li>
       <li id="crossover-chart-legend-excluded"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Excluded (interference)</li>
     </ul>
@@ -147,7 +148,16 @@ def handle_envelope(
         build_crossover_envelope_logged,
     )
 
+    from .correction_crossover_v2 import attach_stage2_preflight
+
     status, _ = handle_status(relay=relay)
+    # Two-stage commission D3 (PR-T2): the review screen's Apply may only be
+    # offered on a box that can actually OPEN stage 2, so the same fail-closed
+    # predicate the verify re-arm will run is resolved here and rides the
+    # status the envelope renders from. A no-op on every phase but `review`;
+    # see attach_stage2_preflight for the cost/side-effect disclosure and for
+    # why it cannot live inside the (jasper.active_speaker) envelope builder.
+    attach_stage2_preflight(status)
     envelope = build_crossover_envelope_logged(status)
     # The "Start over" confirm copy is grouping-aware; carry the (cheap,
     # fail-open) member flag on every polled envelope so the button that is

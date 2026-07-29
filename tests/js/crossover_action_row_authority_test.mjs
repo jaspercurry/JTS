@@ -567,4 +567,59 @@ check(
   "(h) tier chooser: an action with no description still renders as a bare control",
 );
 
+// --- (i) `enabled: false` actually disables the control -------------------
+//
+// The renderer's `disabled: busy || action.enabled === false` seam has shipped
+// for a while but was only ever exercised with `enabled: true`. The two-stage
+// review screen (work order D3/D6, issue #1806) makes it load-bearing: the
+// envelope disables Apply when the prediction is ungradeable or the stage-2
+// openability preflight refused, and the whole point is that a household
+// CANNOT apply an unevidenced proposal. Server-side that state is pinned in
+// tests/test_crossover_envelope_v2.py; this is the client half — without it,
+// a renderer regression would present a live Apply button over exactly the
+// proposals that must not be applyable, and every server-side test would
+// still pass.
+render({
+  verdict_text: "Review",
+  steps: [],
+  nudges: [],
+  relay: null,
+  next_action: {
+    id: "review_apply",
+    label: "Apply and verify",
+    endpoint: "/correction/crossover/v2/apply",
+    body: {expected_candidate_fingerprint: "fp-1"},
+    enabled: false,
+    show_during_relay: true,
+  },
+  alternate_actions: [],
+});
+check(
+  actionRowChildren()[0].disabled === true,
+  "(i) a next_action with enabled:false renders a DISABLED control — the " +
+  "review screen's refusal to offer an apply it cannot stand behind",
+);
+
+// ...and the same action with the flag flipped is live, so the assertion above
+// is testing the flag rather than something incidental to this envelope.
+render({
+  verdict_text: "Review",
+  steps: [],
+  nudges: [],
+  relay: null,
+  next_action: {
+    id: "review_apply",
+    label: "Apply and verify",
+    endpoint: "/correction/crossover/v2/apply",
+    body: {expected_candidate_fingerprint: "fp-1"},
+    enabled: true,
+    show_during_relay: true,
+  },
+  alternate_actions: [],
+});
+check(
+  actionRowChildren()[0].disabled === false,
+  "(i) the same action with enabled:true is live",
+);
+
 console.log(JSON.stringify({ ok: true, passed }));

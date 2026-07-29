@@ -832,7 +832,65 @@ a drawing; the persisted report is the instrument. `None` throughout means
 ungradeable — **never a pass** — and an ungradeable prediction emits
 `event=correction.crossover_v2_prediction_ungradeable` with `why=no_prediction`
 (nothing was predicted) or `why=evaluator_refused` (the evaluator would not
-grade the curve). Nothing renders this yet; PR-T2 is the screen.
+grade the curve). The `review` screen below renders it.
+
+**The `review` screen** (two-stage commission work order D3/D6, PR-T2) is the
+household's apply decision point, and the terminal a MEASURE-ONLY session now
+resolves to. `_phase_from_state` used to walk a stage-1 session's
+`session_phases` and fall through to `PHASE_DONE` — the RESULT screen, "Your
+speaker is tuned" — over a speaker that had been measured and never touched;
+its one special case (VERIFY unaccepted ⇒ `PHASE_APPLYING`) cannot fire when
+VERIFY is not in the recorded phases at all. A session whose walked phases
+contain no VERIFY and that is not `applied` now resolves to `PHASE_REVIEW`
+instead. `applied` still wins (the decision has been made, and PHASE_DONE's
+"applied implies graded" ladder owns that copy), and a corrupt `session_phases`
+still walks `PRE_CLOUD_CAPTURE_PHASES` — which contains VERIFY — so a garbled
+state file cannot reach the review screen either.
+
+The screen renders the pre-apply cloud (measured), the candidate summary
+including the era-stamped `headroom_cost` level charge, the predicted curve
+drawn DASHED in the same deviation frame (it is a model, not a measurement),
+and the spec verdict stated plainly — naming the band and the margin past its
+tolerance when the prediction misses. An improved-but-spec-failing fit is
+**presented, never applied silently**: the miss is named and Apply stays
+available, because the decision is the household's. Actions are Apply and
+verify / Measure again / Leave it as it is, and **never Undo** (D6 — stage 1
+replaced nothing, so there is nothing to restore).
+
+Apply is enabled only when all three hold: a candidate with a fingerprint
+exists, the prediction is gradeable (`overall_passed is not None` — a graded
+MISS still qualifies; only unknown does not), and the **stage-2 openability
+preflight** resolved. That last one closes the hole the work order's premise 5
+named: `prepare_v2_verify`'s next line is `resolve_conductor_context(status)`,
+which is fail-closed and carries seven refusal sites plus
+`ensure_crossover_preview_ready()`'s — so a box can be applied and still be
+unable to open stage 2, leaving it corrected with no verdict.
+`attach_stage2_preflight` (`jasper.web.correction_crossover_v2`) runs that SAME
+predicate on the envelope path, **only** for `PHASE_REVIEW`, and stamps
+`crossover_v2.stage2_preflight`; the envelope reads it and never treats an
+absent key as permission. A refusal renders verbatim with its registry-declared
+resolution control beside it and emits
+`event=correction.crossover_v2_stage2_preflight_refused`. It is computed in the
+web layer because `jasper.active_speaker` never imports from `jasper.web`, and
+gated to one phase because the predicate is not cheap and
+`ensure_crossover_preview_ready()` can rewrite the preview.
+
+**Today that costs nothing at all, structurally.** `PHASE_REVIEW` is
+unreachable until PR-T3 lands the first measure-only plan: the only two
+`index_phase_map` constructions in the tree are
+`build_v2_cloud_index_phase_map`, which sets `mapping[n + 2] = PHASE_VERIFY`
+unconditionally for every tier and shape, and `prepare_v2_verify`'s
+`{1: PHASE_VERIFY}` — so every shipped session records a VERIFY, and the review
+branch keys on its absence. The corrupt-state fallback walks
+`PRE_CLOUD_CAPTURE_PHASES`, which also contains VERIFY. So
+`attach_stage2_preflight` early-returns on every envelope GET a shipped box can
+produce: zero reads, zero writes, zero log lines. Pinned by
+`test_every_shipped_index_phase_map_contains_verify`, which is also the tripwire
+— **when T3 makes that assertion fail, re-read the preflight's cost paragraph.**
+
+**The pre-POST half of that preflight is PR-T3's**, deliberately not here:
+`handle_v2_apply` is also today's auto-apply path, so gating it before T3
+removes auto-apply would newly refuse a shipped automatic path.
 
 *The carve-out disclosure* (flat-linearization plan PR-6b, owner decision 1 of
 2026-07-25). The gauge says how flat the speaker measured and how many
