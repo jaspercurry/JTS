@@ -826,11 +826,13 @@ docs = [
   "docs/gating-v2-plan.md",
   "docs/room-correction-regime-plan.md",
   "docs/two-stage-commission-flow-plan.md",
+  "docs/attribution-stage-plan.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
   "docs/research/2026-07-25-flat-linearization/README.md",
   "docs/research/2026-07-27-acoustics-round-2/README.md",
+  "docs/research/2026-07-29-attribution/README.md",
 ]
 requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
