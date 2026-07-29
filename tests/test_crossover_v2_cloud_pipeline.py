@@ -1061,7 +1061,7 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
     sites in ``test_spatial_combine`` and ``test_interference_nulls``: the
     corpus reader now anchors an archived capture on the sweep it deconvolves
     rather than on the whole composed program
-    (``_flat_lin_corpus._sweep_anchor``). Only ``r_time`` moved, 0.375 →
+    (``_flat_lin_corpus.sweep_anchor``). Only ``r_time`` moved, 0.375 →
     0.376, and only because ``cloud_04`` re-registers and joins the
     corroborating set. The identified ladder is untouched — same three rungs,
     same centres, same τ, same ``r_freq``, same disclosure sentence.

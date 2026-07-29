@@ -25,24 +25,28 @@ same ``_deconvolve_window`` on the ``sweep_verify`` segment.
 
 The ALIGNMENT is deliberately no longer "same as the kit" (2026-07-27):
 every reader here anchors on the sweep it deconvolves
-(:func:`_sweep_anchor`) rather than cross-correlating the WHOLE composed
+(:func:`sweep_anchor`) rather than cross-correlating the WHOLE composed
 program, because the latter makes an archived reading depend on where every
 other segment sits — so an unrelated composer edit silently re-reads
 historical evidence. See that function for the measurement that motivated
 the change and what it moved.
 
-The same shape SURVIVES, deliberately, in ``tests/test_spatial_combine``'s
-bespoke cdhorn loader, whose ``find_offset`` still registers against a
-freshly composed program. It is benign there, and MEASURED to be so
-(PR-L3 review, 2026-07-27): on that corpus it lands within **2 samples**
-(0.04 ms) of the sweep anchor, because the sweeps carry nearly all of the
-program's energy and so dominate the whole-program correlation. What the
-sweep anchor protects against is a different, larger error — see
-:func:`sweep_anchored_global_offset` — and that one is not reachable from
-that loader, which never asks for a program-global offset. Named here so
-the next reader recognises the shape instead of "fixing" it blind, and so
-that a future composer edit that DOES disturb it has somewhere to be traced
-from.
+The same shape SURVIVED, deliberately, in ``tests/test_spatial_combine``'s
+bespoke cdhorn loader until 2026-07-29, where it registered against the
+archived program WAV but took ``start_sample`` from a freshly composed one.
+That was measured benign at the time (PR-L3 review, 2026-07-27, within
+**2 samples** of the sweep anchor) with an explicit caveat that "a future
+composer edit that DOES disturb it has somewhere to be traced from".
+
+**That edit arrived the next day** (#1816, beeps-first + a 1.0 s pre-pilot
+ambient window) and moved ``sweep_verify.start_sample`` 369324 -> 417324,
+which placed that loader's deconvolution window 1.0 s late into a 6.0 s
+sweep and silently moved two pinned corpus readings. The caveat did its
+job — issue #1879 is the trace — and the conclusion is that the exemption
+was not worth its cost: **every** reader of these corpora now anchors on
+:func:`sweep_anchor`, and there is no second registration convention left
+to reason about. The larger, program-global form of the same hazard is
+:func:`sweep_anchored_global_offset`.
 """
 from __future__ import annotations
 
@@ -193,7 +197,7 @@ def _session_program(session_dir: Path) -> tuple[Any, Any, int, float]:
     """``(program, sweep_verify segment, rate, fc_hz)``.
 
     No rendered reference PCM: every reader anchors on the sweep alone
-    (:func:`_sweep_anchor`), so rendering the whole ~681k-sample program on
+    (:func:`sweep_anchor`), so rendering the whole ~681k-sample program on
     each call bought nothing but time.
     """
     from jasper.active_speaker.crossover_v2_flow import (
@@ -249,7 +253,7 @@ def _offset_of(captured: np.ndarray, reference: np.ndarray) -> int:
     return int(np.argmax(np.abs(np.fft.irfft(cross, n_fft)[:window])))
 
 
-def _sweep_anchor(captured: np.ndarray, segment: Any) -> int:
+def sweep_anchor(captured: np.ndarray, segment: Any) -> int:
     """Where ``segment``'s own stimulus sits inside an archived capture.
 
     **Why not the whole rendered program** (which is what this reader used
@@ -259,12 +263,24 @@ def _sweep_anchor(captured: np.ndarray, segment: Any) -> int:
     edit to the composer silently re-reads archived evidence.
 
     Note precisely what the §2.5 courtesy-tone move did and did not do. It did
-    NOT move the sweep: ``sweep_verify.start_sample`` is 369324 under both
-    compositions, because relocating the prelude from the head of the program
-    to just before the sweep is a PERMUTATION of the head block, not a shift.
-    What it changed is the shape the whole-program correlation matches
+    NOT move the sweep: ``sweep_verify.start_sample`` was 369324 under both of
+    THOSE compositions, because relocating the prelude from the head of the
+    program to just before the sweep is a PERMUTATION of the head block, not a
+    shift. What it changed is the shape the whole-program correlation matches
     against, and under that old anchor the registration disagreed with the
     sweep-only one by 1-5 samples on 8 of the corpus's 26 captures.
+
+    **A later composer edit did shift it, which is the case this function
+    exists for.** #1816's beeps-first reorder (2026-07-28) inserted a 1.0 s
+    pre-pilot ``ambient`` window ahead of the pilots, so ``sweep_verify``
+    starts at 417324 under today's composer against 369324 in every archived
+    2026-07-24/25 capture — a genuine 48000-sample INSERTION, not a
+    permutation. A reader that registers on the archived program but takes
+    ``start_sample`` from a freshly composed one therefore deconvolves 1.0 s
+    late into a 6.0 s sweep. That is not hypothetical: it is what happened to
+    ``test_spatial_combine``'s cdhorn loader, and issue #1879 is its trace.
+    Anchoring here is immune by construction — the sweep is located by its own
+    waveform, so where the composer puts it cannot matter.
 
     A 1-5 sample disagreement is mostly harmless, and the control for that is
     the pattern of which positions actually moved: a position whose two
@@ -298,7 +314,7 @@ def sweep_anchored_global_offset(captured: np.ndarray, segment: Any) -> int:
     sweep's own registration — what a whole-program analysis needs when the
     composer has moved on.
 
-    A single-segment reader wants :func:`_sweep_anchor` (the sweep's absolute
+    A single-segment reader wants :func:`sweep_anchor` (the sweep's absolute
     position). A reader that hands the capture to
     ``program_analysis.analyze_program_capture`` needs the offset that
     function's own ``_global_offset`` would have produced, because every
@@ -321,7 +337,7 @@ def sweep_anchored_global_offset(captured: np.ndarray, segment: Any) -> int:
     segment downstream still shares one anchor — so branch-to-branch relative
     timing is untouched.
     """
-    return _sweep_anchor(captured, segment) - segment.start_sample
+    return sweep_anchor(captured, segment) - segment.start_sample
 
 
 def s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
@@ -341,7 +357,7 @@ def s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
             pa._deconvolve_window(
                 captured,
                 segment,
-                _sweep_anchor(captured, segment),
+                sweep_anchor(captured, segment),
                 sample_rate,
             )[0]
             for _index, wav in sorted(groups[position_id])
@@ -396,7 +412,7 @@ def s0_position_captures(
             full_ir, _pre_guard = pa._deconvolve_window(
                 captured,
                 segment,
-                _sweep_anchor(captured, segment),
+                sweep_anchor(captured, segment),
                 sample_rate,
             )
             response = pa._driver_response(
@@ -469,7 +485,7 @@ def s0_position_driver_response(
         full_ir, _pre_guard = pa._deconvolve_window(
             captured,
             segment,
-            _sweep_anchor(captured, segment),
+            sweep_anchor(captured, segment),
             sample_rate,
         )
         occurrences.append(

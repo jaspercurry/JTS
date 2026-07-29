@@ -73,6 +73,7 @@ from tests._flat_lin_corpus import (
     requires_cdhorn,
     requires_s0,
     s0_position_irs,
+    sweep_anchor,
 )
 from tests._flat_lin_corpus import loopback_irs as _loopback_irs
 from jasper.audio_measurement.spatial_combine import (
@@ -3501,6 +3502,40 @@ def corpus_irs() -> dict[str, np.ndarray]:
     which is the authority on what DSP state those captures were taken
     under; re-deriving them here would risk silently analysing a different
     program than the one that was played.
+
+    REGISTRATION FIXED 2026-07-29 (issue #1879). This loader used to place
+    the deconvolution window at ``find_offset(capture, archived_program) +
+    segment.start_sample`` — an offset measured against the 2026-07-24
+    program WAV, plus a schedule position read off a *freshly composed* one.
+    Those agreed until #1816 (beeps-first, 2026-07-28) inserted a 1.0 s
+    pre-pilot ambient window ahead of the pilots, moving
+    ``sweep_verify.start_sample`` 369324 -> 417324 while every archived
+    capture still had its sweep at 369324. The window then landed 48000
+    samples late in a 288091-sample (6.0 s) sweep, reading its last 5.0 s
+    plus 1.0 s of tail, and two pinned readings moved with it.
+
+    Anchoring on :func:`~tests._flat_lin_corpus.sweep_anchor` — the shared
+    house registration, already used by every other reader of these corpora
+    — locates the sweep by its own waveform, so where the composer puts it
+    cannot matter. Note which reading did NOT move under the old scheme:
+    ``run7_tweeter`` registered against a freshly *rendered* MEASURE program,
+    so its reference and its ``start_sample`` shifted together and cancelled.
+    Self-consistency is what saved it, not correctness, and it is on the
+    shared anchor now for the same reason as the rest — leaving one loader on
+    a second convention is precisely what made #1879 possible.
+
+    One measured caveat on that, because it is not obvious: MEASURE ships
+    **three** repeats of each sweep, so anchoring on ``sweep_t``'s waveform
+    picks among three peaks that agree to 0.4% (553.02 / 551.05 / 551.88 on
+    the run 7 capture). It lands on the first, but the margin is thin and
+    should not be relied on. It does not need to be: the repeats ARE the same
+    measurement, and reading each at its own peak gives band deficits of
+    1.1130 / 1.1035 / 1.1077 dB and taus of 323.00 / 322.64 / 322.34 us —
+    a 0.01 dB, 0.7 us spread against a +/-0.3 dB pin. Note also that the later
+    repeats sit +16 and +32 samples off their scheduled positions (playback vs
+    capture clock drift, ~31 ppm over the 43.8 s capture), which is an
+    argument FOR locating each sweep by its own waveform rather than by
+    schedule arithmetic off one global offset.
     """
     import glob
     import wave
@@ -3511,7 +3546,6 @@ def corpus_irs() -> dict[str, np.ndarray]:
         RoleBand,
         build_measure_program,
         build_verify_program,
-        render_program_pcm,
     )
 
     def load(path: str) -> np.ndarray:
@@ -3535,45 +3569,72 @@ def corpus_irs() -> dict[str, np.ndarray]:
         courtesy_prelude=True,
     )
 
-    def render_mono(program) -> np.ndarray:
-        pcm = np.asarray(render_program_pcm(program), dtype=np.float64)
-        if pcm.ndim == 2:
-            if pcm.shape[0] < pcm.shape[1]:
-                pcm = pcm.T
-            pcm = pcm.sum(axis=1)
-        return pcm
-
-    def find_offset(capture: np.ndarray, reference: np.ndarray) -> int:
-        n_fft = 1 << (capture.size + reference.size - 1).bit_length()
-        cross = np.fft.rfft(capture, n_fft) * np.conj(np.fft.rfft(reference, n_fft))
-        window = max(1, capture.size - reference.size // 2)
-        return int(np.argmax(np.abs(np.fft.irfft(cross, n_fft)[:window])))
-
-    def impulse_response(capture, program, reference, segment_id) -> np.ndarray:
+    def impulse_response(capture, program, segment_id) -> np.ndarray:
         segment = program.segment(segment_id)
-        offset = find_offset(capture, reference) + segment.start_sample
+        offset = sweep_anchor(capture, segment)
         return pa._deconvolve_window(capture, segment, offset, SAMPLE_RATE)[0]
 
-    verify_reference = load(str(CORPUS / "run5_verify_program.wav"))
     measure_capture = load(sorted(glob.glob(f"{CORPUS}/*run7_measure.wav"))[-1])
 
     return {
         "run7_verify": impulse_response(
             load(sorted(glob.glob(f"{CORPUS}/*run7_verify.wav"))[-1]),
             verify_program,
-            verify_reference,
             "sweep_verify",
         ),
         "run5_verify": impulse_response(
             load(sorted(glob.glob(f"{CORPUS}/*run5_verify.wav"))[-1]),
             verify_program,
-            verify_reference,
             "sweep_verify",
         ),
-        "run7_tweeter": impulse_response(
-            measure_capture, measure_program, render_mono(measure_program), "sweep_t"
-        ),
+        "run7_tweeter": impulse_response(measure_capture, measure_program, "sweep_t"),
     }
+
+
+# Deliberately NOT ``@requires_corpus``, unlike everything else in this
+# section. Every corpus reading above rests on one property of
+# ``sweep_anchor`` — that it finds the sweep by its own waveform and owes
+# nothing to the composer's schedule — and that property is exactly what
+# #1879 turned out to need. Pinning it on a SYNTHETIC capture is what makes
+# it visible to CI, where the corpus is absent and every test that would
+# otherwise notice simply skips.
+def test_sweep_anchor_owes_nothing_to_the_composers_schedule():
+    """The registration invariant the archived corpora rest on.
+
+    #1879: this loader used to register an archived capture against the
+    archived program but read ``start_sample`` off a freshly composed one.
+    #1816 then inserted a 1.0 s pre-pilot ambient window ahead of the sweep,
+    the two disagreed by 48000 samples, and two pinned readings moved.
+
+    ``sweep_anchor`` is immune because it locates the stimulus by
+    cross-correlating the stimulus itself. This test is the guard on that
+    sentence: move the segment's declared schedule position and the answer
+    must not budge, because a capture recorded years ago cannot know where
+    today's composer would have put its sweep.
+    """
+    import dataclasses
+
+    from jasper.audio_measurement.program import build_verify_program, segment_stimulus
+
+    program = build_verify_program(
+        2000.0, leading_pilot_gains_db=(-16.0006, -6.0005), courtesy_prelude=True
+    )
+    segment = program.segment("sweep_verify")
+    stimulus = np.asarray(segment_stimulus(segment), dtype=np.float64)
+
+    # A capture that knows nothing about the schedule: the sweep sits at a
+    # position of our choosing, which is what an archived WAV amounts to.
+    planted_at = 12_345
+    capture = np.zeros(planted_at + stimulus.size + 8_000)
+    capture[planted_at : planted_at + stimulus.size] = stimulus
+
+    assert sweep_anchor(capture, segment) == planted_at
+
+    # Now claim the composer moved it — by exactly the shift #1816 applied,
+    # and by a shift in the other direction for good measure.
+    for delta in (48_000, -7_777):
+        moved = dataclasses.replace(segment, start_sample=segment.start_sample + delta)
+        assert sweep_anchor(capture, moved) == planted_at, delta
 
 
 @requires_corpus
@@ -3866,7 +3927,7 @@ def test_main_leg_is_unchanged_and_is_the_ground_plane_s_control(main_leg_irs):
     # locate an archived capture by cross-correlating the WHOLE composed
     # program against it, which made the deconvolution window depend on every
     # segment's placement rather than on the sweep it actually deconvolves —
-    # see ``_flat_lin_corpus._sweep_anchor``. Anchoring on the sweep changed
+    # see ``_flat_lin_corpus.sweep_anchor``. Anchoring on the sweep changed
     # exactly two of these ten positions, and BOTH moved toward a stronger
     # detection rather than a weaker one:
     #
@@ -3996,6 +4057,48 @@ def test_band_deficit_separates_honest_captures_from_stopband_residue(
     cabinet at the floor cost top-octave level, so those are the honest
     captures that come closest to looking like residue — and they are still
     13 dB clear of the threshold.
+
+    **RE-DERIVATION PROCEDURE.** Every number below is a reading off a fixed,
+    archived corpus through the shipped detector, so it moves for exactly two
+    reasons and they are not treated alike. Written down 2026-07-29 (#1879)
+    because it was not, and the first drift found no rule to follow.
+
+    1. Reproduce. Export ``JTS_FLAT_LIN_S0`` / ``JTS_FLAT_LIN_CORPUS`` and run
+       this file serially. Without them the whole lane SKIPS, which is why CI
+       is not evidence about any pin here.
+    2. Classify before touching anything, because only one of these two
+       licenses a new number:
+
+       * **The detector changed.** ``detect_echo``'s band screen, its window
+         contract, or a shipped default moved, and the corpus is being read
+         the same way it always was. The reading is honest and the pin is
+         re-derived against the tree it ships on.
+       * **The reading changed.** The IRs themselves moved — the loader,
+         the program composer, the calibration parse, or the deconvolution.
+         Then the pin is NOT the thing that is wrong. Find what moved the
+         IR and fix that; the pin comes back on its own.
+
+       The discriminator is cheap: the pins are readings off ONE detector
+       over THREE independently-captured populations (S0 ground-plane, S0
+       main leg, cdhorn). A detector change moves all three coherently. A
+       reading change moves whichever populations share the broken input and
+       leaves the others bit-identical, which is the signature to look for.
+    3. Bisect to the commit, and state the mechanism in the commit message.
+       "It drifted" is not a located cause; the released band edge here is
+       ±0.3 dB and nothing should reach it by accident.
+    4. Only then edit, and record the era: what moved the number, which
+       commit/issue, and the previous value. Never widen a tolerance to
+       admit a number you have not explained.
+
+    Worked example, and the reason step 2 exists: on 2026-07-28 #1816's
+    beeps-first reorder moved ``corpus_run5_verify`` 5.514 -> 5.133 and
+    ``corpus_run7_verify`` 1.537 -> 1.384 while every S0 population stayed
+    bit-identical. That split is case two — the corpus loader was reading a
+    2026-07-24 capture through a 2026-07-28 program layout (see
+    :func:`corpus_irs`). Repairing the registration restored both readings to
+    ten significant figures, so **no pin below was adjusted**. Had the pins
+    been nudged to 5.13/1.38 instead, the tree would have kept a green test
+    over a corpus it was misreading by a full second.
     """
     honest = {
         **{f"gp_{k}": (ir, S0_SUMMED_PASSBAND_HZ) for k, ir in ground_plane_irs.items()},
