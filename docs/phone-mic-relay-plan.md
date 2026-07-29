@@ -794,7 +794,7 @@ mode for a tool whose entire job is a trustworthy result.
   (`capture_relay/alignment.py`, `assert_alignment_confident`) is *not* the
   common seam, and **no analysis path reads `validity.require_alignment` at
   all**; every enforcement that exists is hardcoded in its own flow. State as of
-  2026-07-29 (`DA-0002`; per-flow map + rollout plan in the tracking issue):
+  2026-07-29 (`DA-0002`; per-flow map + rollout plan in issue #1882):
   - `crossover_sweep` — **enforced**, but by the flow's own locate floors, not by
     this module's gate: `_sweep_locate_confidence_ok` (0.3) and
     `_stimulus_locate_ok` (0.1) in
