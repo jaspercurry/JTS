@@ -451,6 +451,16 @@ def test_fast_bundle_covers_every_direct_landing_page_test() -> None:
     )
 
 
+def test_routing_policy_targets_cover_the_complete_classifier_contract(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    expected = ("tests/test_ci_classifier.py",)
+
+    assert ci_classifier.ROUTING_POLICY_PYTEST_TARGETS == expected
+    assert ci_classifier.main(["--routing-policy-pytest-targets"]) == 0
+    assert capsys.readouterr().out.splitlines() == list(expected)
+
+
 # The docs guard also follows glob/rglob, because a doc reader is as likely to
 # sweep a directory (`(ROOT / "docs").rglob("HANDOFF-*.md")`) as to name one
 # file. Landing keeps the narrower default set; both selections are asserted
@@ -686,6 +696,7 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     assert "  classify:\n" in workflow
     assert "  fast-landing:\n" in workflow
     assert "  docs:\n" in workflow
+    assert "  python-policy:\n" in workflow
     assert "  ci:\n" in workflow
     assert "name: ci" in workflow
     assert "if: ${{ always() }}" in workflow
@@ -696,14 +707,16 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     assert 'python-version: ["3.11", "3.12", "3.13"]' in workflow
     assert "python3 scripts/ci-classify.py --landing-pytest-targets" in workflow
     assert "python3 scripts/ci-classify.py --docs-pytest-targets" in workflow
+    assert "python3 scripts/ci-classify.py --routing-policy-pytest-targets" in workflow
 
-    # Every narrow lane must be a `needs` of the aggregate, or its failure
-    # could never be observed.
+    # Every conditional lane and preflight must be a `needs` of the aggregate,
+    # or its failure could never be observed.
     assert parsed["jobs"]["ci"]["needs"] == [
         "classify",
         "fast-landing",
         "docs",
         "shell",
+        "python-policy",
         "pytest-matrix",
         "pytest",
         "js",
@@ -712,9 +725,19 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     # Each conditional job must gate on the classifier, never on a path
     # filter: a workflow-level `paths:` skip leaves a required check Pending
     # forever, while a job skipped by conditional reports success.
-    for job in ("fast-landing", "docs", "shell", "pytest-matrix", "js", "rust"):
+    for job in ("fast-landing", "docs", "shell", "python-policy", "js", "rust"):
         assert parsed["jobs"][job]["needs"] == "classify", job
         assert "needs.classify.outputs.lane ==" in parsed["jobs"][job]["if"], job
+    assert parsed["jobs"]["pytest-matrix"]["needs"] == [
+        "classify",
+        "python-policy",
+    ]
+    assert "needs.classify.outputs.lane ==" in parsed["jobs"]["pytest-matrix"]["if"]
+    assert parsed["jobs"]["pytest"]["needs"] == [
+        "classify",
+        "python-policy",
+        "pytest-matrix",
+    ]
     pull_request_trigger = triggers.get("pull_request") or {}
     assert "paths" not in pull_request_trigger
     assert "paths-ignore" not in pull_request_trigger
@@ -779,6 +802,7 @@ def _run_aggregate(**overrides: str) -> subprocess.CompletedProcess[str]:
         "FAST_LANDING_RESULT": "skipped",
         "DOCS_RESULT": "skipped",
         "SHELL_RESULT": "success",
+        "PYTHON_POLICY_RESULT": "success",
         "PYTEST_MATRIX_RESULT": "success",
         "PYTEST_RESULT": "success",
         "JS_RESULT": "success",
@@ -802,6 +826,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
         LANE="fast-landing",
         FAST_LANDING_RESULT="success",
         SHELL_RESULT="skipped",
+        PYTHON_POLICY_RESULT="skipped",
         PYTEST_MATRIX_RESULT="skipped",
         PYTEST_RESULT="skipped",
         JS_RESULT="skipped",
@@ -812,6 +837,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
         DOCS_RESULT="success",
         FAST_LANDING_RESULT="skipped",
         SHELL_RESULT="skipped",
+        PYTHON_POLICY_RESULT="skipped",
         PYTEST_MATRIX_RESULT="skipped",
         PYTEST_RESULT="skipped",
         JS_RESULT="skipped",
@@ -827,6 +853,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
         {"DOCS_RESULT": "success"},
         {"DOCS_RESULT": "failure"},
         {"SHELL_RESULT": "failure"},
+        {"PYTHON_POLICY_RESULT": "cancelled"},
         {"PYTEST_MATRIX_RESULT": "cancelled"},
         {"PYTEST_RESULT": "skipped"},
         {"JS_RESULT": "failure"},
@@ -839,6 +866,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
             "DOCS_RESULT": "failure",
             "FAST_LANDING_RESULT": "skipped",
             "SHELL_RESULT": "skipped",
+            "PYTHON_POLICY_RESULT": "skipped",
             "PYTEST_MATRIX_RESULT": "skipped",
             "PYTEST_RESULT": "skipped",
             "JS_RESULT": "skipped",
@@ -849,6 +877,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
             "DOCS_RESULT": "cancelled",
             "FAST_LANDING_RESULT": "skipped",
             "SHELL_RESULT": "skipped",
+            "PYTHON_POLICY_RESULT": "skipped",
             "PYTEST_MATRIX_RESULT": "skipped",
             "PYTEST_RESULT": "skipped",
             "JS_RESULT": "skipped",
@@ -860,6 +889,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
             "DOCS_RESULT": "success",
             "FAST_LANDING_RESULT": "skipped",
             "SHELL_RESULT": "success",
+            "PYTHON_POLICY_RESULT": "skipped",
             "PYTEST_MATRIX_RESULT": "skipped",
             "PYTEST_RESULT": "skipped",
             "JS_RESULT": "skipped",
@@ -871,6 +901,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
             "DOCS_RESULT": "success",
             "FAST_LANDING_RESULT": "success",
             "SHELL_RESULT": "skipped",
+            "PYTHON_POLICY_RESULT": "skipped",
             "PYTEST_MATRIX_RESULT": "skipped",
             "PYTEST_RESULT": "skipped",
             "JS_RESULT": "skipped",
@@ -882,6 +913,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
             "DOCS_RESULT": "skipped",
             "FAST_LANDING_RESULT": "skipped",
             "SHELL_RESULT": "skipped",
+            "PYTHON_POLICY_RESULT": "skipped",
             "PYTEST_MATRIX_RESULT": "skipped",
             "PYTEST_RESULT": "skipped",
             "JS_RESULT": "skipped",
@@ -891,6 +923,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
             "LANE": "fast-landing",
             "FAST_LANDING_RESULT": "failure",
             "SHELL_RESULT": "skipped",
+            "PYTHON_POLICY_RESULT": "skipped",
             "PYTEST_MATRIX_RESULT": "skipped",
             "PYTEST_RESULT": "skipped",
             "JS_RESULT": "skipped",
@@ -900,6 +933,7 @@ def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
             "LANE": "fast-landing",
             "FAST_LANDING_RESULT": "success",
             "SHELL_RESULT": "success",
+            "PYTHON_POLICY_RESULT": "skipped",
             "PYTEST_MATRIX_RESULT": "skipped",
             "PYTEST_RESULT": "skipped",
             "JS_RESULT": "skipped",
@@ -921,6 +955,7 @@ def test_ci_aggregate_fails_closed(overrides: dict[str, str]) -> None:
                 "FAST_LANDING_RESULT": "skipped",
                 "DOCS_RESULT": "skipped",
                 "SHELL_RESULT": "success",
+                "PYTHON_POLICY_RESULT": "success",
                 "PYTEST_MATRIX_RESULT": "success",
                 "PYTEST_RESULT": "success",
                 "JS_RESULT": "success",
@@ -934,6 +969,7 @@ def test_ci_aggregate_fails_closed(overrides: dict[str, str]) -> None:
                 "FAST_LANDING_RESULT": "success",
                 "DOCS_RESULT": "skipped",
                 "SHELL_RESULT": "skipped",
+                "PYTHON_POLICY_RESULT": "skipped",
                 "PYTEST_MATRIX_RESULT": "skipped",
                 "PYTEST_RESULT": "skipped",
                 "JS_RESULT": "skipped",
@@ -947,6 +983,7 @@ def test_ci_aggregate_fails_closed(overrides: dict[str, str]) -> None:
                 "FAST_LANDING_RESULT": "skipped",
                 "DOCS_RESULT": "success",
                 "SHELL_RESULT": "skipped",
+                "PYTHON_POLICY_RESULT": "skipped",
                 "PYTEST_MATRIX_RESULT": "skipped",
                 "PYTEST_RESULT": "skipped",
                 "JS_RESULT": "skipped",

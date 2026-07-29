@@ -19,9 +19,27 @@ source "${_lane_dir}/_test_lane.sh"
 
 base_ref="${TEST_BASE:-origin/main}"
 pytest_bin="$(resolve_lane_tool test-fast pytest PYTEST)" || exit 1
-ruff_bin="$(resolve_lane_tool test-fast ruff RUFF)" || exit 1
 
 export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
+
+echo "==> pytest CI routing policy"
+if ! routing_policy_output="$(
+  python3 scripts/ci-classify.py --routing-policy-pytest-targets
+)"; then
+  echo "FATAL: could not resolve CI routing-policy tests" >&2
+  exit 1
+fi
+routing_policy_tests=()
+while IFS= read -r target; do
+  [[ -n "${target}" ]] && routing_policy_tests+=("${target}")
+done <<< "${routing_policy_output}"
+if (( ${#routing_policy_tests[@]} == 0 )); then
+  echo "FATAL: CI routing policy returned no pytest targets" >&2
+  exit 1
+fi
+"${pytest_bin}" -q --tb=short "${routing_policy_tests[@]}"
+
+ruff_bin="$(resolve_lane_tool test-fast ruff RUFF)" || exit 1
 
 changed_file_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-fast-files.XXXXXX")"
 selected_test_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-fast-tests.XXXXXX")"

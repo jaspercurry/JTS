@@ -35,10 +35,11 @@ _REPO = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO / "scripts"
 
 # Externals the lanes invoke before (and during) tool resolution: `git` for the
-# `cd`, `dirname` for the sibling-resolver `source`. The FATAL block itself
+# `cd`, `dirname` for the sibling-resolver `source`, and `python3` for
+# test-fast's checked-in routing-policy target registry. The FATAL block itself
 # needs nothing -- it is printed with the `printf` builtin precisely so a
 # mangled $PATH cannot swallow it (see test_fatal_block_survives_an_empty_path).
-_SANDBOX_TOOLS = ("git", "dirname")
+_SANDBOX_TOOLS = ("git", "dirname", "python3")
 
 _LANES = ("test-fast", "test-merge")
 
@@ -53,6 +54,7 @@ def lane_sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (repo / "scripts").mkdir(parents=True)
     for name in (*_LANES, "_test_lane.sh"):
         shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
+    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
     subprocess.run(
         ["git", "init", "-q"], cwd=repo, check=True, capture_output=True
     )
@@ -127,7 +129,9 @@ def test_test_fast_also_refuses_on_a_missing_ruff(
     failure attributable to ``ruff`` is the one observed.
     """
     repo, env = lane_sandbox
-    result = _run(repo, {**env, "PYTEST": shutil.which("cat") or "/bin/cat"}, "test-fast")
+    result = _run(
+        repo, {**env, "PYTEST": shutil.which("true") or "/usr/bin/true"}, "test-fast"
+    )
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
@@ -277,6 +281,7 @@ def test_fast_lane_routes_an_edit_to_its_own_resolver_to_these_guards(
     (repo / "tests").mkdir()
     for name in ("test-fast", "_test_lane.sh"):
         shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
+    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
     for guard in ("test_test_lane_tool_resolution.py", "test_dependency_groups.py"):
         (repo / "tests" / guard).write_text("", encoding="utf-8")
     _git(repo, "init", "-q")
@@ -323,6 +328,53 @@ def test_fast_lane_routes_an_edit_to_its_own_resolver_to_these_guards(
         for arg in json.loads(line)
     }
     assert "tests/test_test_lane_tool_resolution.py" in selected, selected
+
+
+def test_fast_lane_propagates_routing_policy_failure_before_later_work(
+    tmp_path: Path,
+) -> None:
+    """The cheap policy gate must stop the lane before lint or broad tests."""
+
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
+        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
+    _git(repo, "init", "-q")
+
+    calls = repo / "pytest-calls.jsonl"
+    recorder = repo / "recording-pytest"
+    recorder.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "raise SystemExit(23)\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    result = subprocess.run(
+        [_BASH, "scripts/test-fast", "--collect-only", "-k", "requested_test"],
+        cwd=repo,
+        env={
+            **os.environ,
+            "PYTEST": str(recorder),
+            "PYTEST_CALLS": str(calls),
+            "RUFF": str(repo / "missing-ruff"),
+            "TEST_BASE": "missing-base",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 23, result
+    assert "==> pytest CI routing policy" in result.stdout
+    assert "==> ruff" not in result.stdout
+    [call] = [
+        json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()
+    ]
+    assert call == ["-q", "--tb=short", "tests/test_ci_classifier.py"]
 
 
 @pytest.mark.parametrize("lane", _LANES)
