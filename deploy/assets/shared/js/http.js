@@ -93,7 +93,11 @@ async function parseResponse(r) {
   if (!r.ok) {
     let parsed = null;
     try { parsed = await r.json(); } catch (_) { /* non-JSON error page */ }
-    const message = (parsed && parsed.error) ? parsed.error : "HTTP " + r.status;
+    const message = (parsed && parsed.error)
+      ? parsed.error
+      : r.status === 403
+        ? "Request rejected (HTTP 403). Reload the page and try again."
+        : "HTTP " + r.status;
     const err = new Error(message);
     err.status = r.status;
     err.body = parsed;

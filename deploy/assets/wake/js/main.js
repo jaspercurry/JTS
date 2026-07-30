@@ -427,13 +427,7 @@ async function postUsbMicLeg(leg) {
   select.disabled = true;
   setText("usb-mic-leg-status", "Applying computer microphone source…");
   try {
-    const r = await fetch("usb-mic-leg", {
-      method: "POST",
-      headers: jsonHeaders(),
-      body: JSON.stringify({ leg }),
-    });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    const body = await postJSON("usb-mic-leg", { leg });
     usbMicLegBusy = false;
     applyState(body);
     ignorePollUntil = Date.now() + 1500;

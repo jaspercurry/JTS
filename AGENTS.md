@@ -2566,10 +2566,11 @@ source itself.
 and an echo-cancelled input profile is active, `/wake/` exposes a separate “Use
 JTS as a computer microphone” switch. Intent lives in
 `/var/lib/jasper/usb_mic.env` (off by default). Gadget composition owns the
-UAC2 `p_chmask`/descriptor revision; `jasper-aec-bridge` duplicates its final
-clean stream on dedicated localhost UDP `:9894`; `jasper-usbmic.service` owns
-the bounded ALSA relay. Do not bind voice's `:9876` or make the return path part
-of fan-in. The USB-mic switch is the sole end-user authority for export;
+UAC2 `p_chmask`/descriptor revision; `jasper-aec-bridge` emits the selected
+computer-only source on dedicated localhost UDP `:9894`;
+`jasper-usbmic.service` owns the bounded ALSA relay. Do not bind voice's `:9876`
+or make the return path part of fan-in. The USB-mic switch is the sole end-user
+authority for export;
 Voice assistant Pause does not silence it. Canonical lifecycle, privacy, and
 status details are in
 [`docs/HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md).

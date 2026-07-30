@@ -218,21 +218,12 @@ default and follows the same production-clean stream JTS uses for voice;
 the reconciler-applied `ChipBeamPlan` supplies both its fixed hardware beams and
 proof that the bridge is capturing the supported six-channel XVF shape. In that
 shape the UI also advertises the existing physical `raw0` capture as **Raw
-microphone (no echo cancellation)** with comparison-only copy. The bridge
-routes the already-captured channel-2 frame directly to `:9894`; it adds no
-capture stack, chip/software AEC, or JTS voice gain. The control endpoint
-fresh-reads the reconciler-owned plan (rather than trusting the long-lived
-control process environment) and rejects a choice it does not advertise.
-
-At the bridge's USB-only emit site, an explicit chip beam receives the same
-post-AEC gain and soft-limit as `primary`; if its frame is absent for an
-iteration (including in software-AEC mode), that iteration falls back to the
-final `clean` frame. An explicitly selected `raw0` frame never falls back: a
-missing frame is skipped and logged so comparison audio cannot silently change
-identity. The bridge publishes the effective physical leg plus
-`usb_mic_source_fallback_frames`, so UI/artifact evidence cannot label fallback
-audio as the requested beam. The normal `:9876` voice/session stream and all
-wake legs remain unchanged.
+microphone (no echo cancellation)** with comparison-only copy. The control
+endpoint fresh-reads the reconciler-owned plan (rather than trusting the
+long-lived control process environment) and rejects a choice it does not
+advertise. The bridge-owned processing, fallback, observability, and
+voice/wake-isolation contracts are canonical in
+[HANDOFF-aec.md](HANDOFF-aec.md#optional-computer-microphone-carrier-and-source-selection).
 
 This source change has a deliberately narrower restart path than the On/Off
 toggle. `/aec/usb-mic-leg` saves the preference, then asks the restart broker to
@@ -953,7 +944,7 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-22 (live Mac Studio total-audio wedge localized to the
+Last verified: 2026-07-30 (live Mac Studio total-audio wedge localized to the
 JTS composite DWC2 path and recovered by a gadget-only restart; pre-reset,
 post-start, and opt-in RAM-bounded rolling controller capture added and covered
 by focused tests; the active-plan-derived computer-microphone source

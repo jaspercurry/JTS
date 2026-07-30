@@ -387,6 +387,7 @@ def test_wake_module_renders_server_choices_action_and_runtime_effective_label()
     assert "source.choices" in module
     assert 'document.createElement("option")' in module
     assert "applied.effective_label" in module
+    assert 'await postJSON("usb-mic-leg", { leg })' in module
     assert 'const action = el("echo-status-action")' in module
     assert 'action.textContent = echo.action || ""' in module
 

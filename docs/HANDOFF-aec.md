@@ -144,6 +144,8 @@ whether the bridge is enabled and running. This contract closes the #1264
 failure where a USB combo toggle clean-stopped the bridge and voice watchdog-
 aborted 30 seconds later.
 
+### Optional computer microphone carrier and source selection
+
 The optional computer microphone is a second consumer of that carrier, not a
 voice socket takeover. When `/var/lib/jasper/usb_mic.env` explicitly enables
 the feature, the bridge emits one selected 16 kHz mono source to localhost UDP
@@ -195,12 +197,12 @@ the same post-AEC gain and soft-limit as `primary`. If that frame is absent for
 one iteration—including when software AEC3 is active—the export falls back to
 that iteration's final `clean` frame. `raw0` is intentionally different: a
 missing physical raw frame is skipped and logged, never replaced by clean or a
-beam, because comparison audio must not silently change identity. Bridge stats publish the bridge-applied
-selection separately from the resolved mode/physical leg so `/aec`, `/wake/`,
-and the latency artifact do not mistake saved intent for applied source. This
-branch is computer-microphone-only: it does not change the `:9876` session
-stream, any wake detector, the wake-leg wire format, or the chip primary-beam
-policy.
+beam, because comparison audio must not silently change identity. Bridge stats
+publish the bridge-applied selection separately from the resolved mode/physical
+leg so `/aec`, `/wake/`, and the latency artifact do not mistake saved intent
+for applied source. This branch is computer-microphone-only: it does not change
+the `:9876` session stream, any wake detector, the wake-leg wire format, or the
+chip primary-beam policy.
 
 The new relay accepts the old raw 20 ms and legacy 80 ms packet shapes, but
 compatibility is intentionally one-way: an old relay cannot decode the new
