@@ -1380,6 +1380,8 @@ def test_every_registry_code_renders_without_error(code, template):
 # something is applied.
 
 _DAY_S = 24 * 60 * 60
+# Old enough to render as a calendar date rather than "yesterday".
+_WEEK_S = 7 * _DAY_S
 
 # The owner's actual stale numbers, so these tests fail on the real screen.
 _PRIOR_SESSION_EVIDENCE = {
@@ -1392,6 +1394,44 @@ _PRIOR_SESSION_EVIDENCE = {
         "tracking_band_hi_hz": 4000.0,
     },
 }
+
+# The SECOND numbers surface (gate finding on the first round of this fix).
+# `_envelope` copies `cloud` / `cloud_chart` / `tier` from status on every
+# screen, `persist_conductor_state` writes `cloud` beside `failure`, and
+# `crossover/main.js` calls `renderCloud` with no screen switch — so without
+# suppression the aged greeting paints the dead session's before/after chart
+# card, its spec-band numbers, and a caption promising that the after-
+# correction curve "appears once the second measurement pass finishes".
+#
+# Note `cloud[phase]["session_id"]`: the block already stamps its producing
+# session, and on an aged resume that id EQUALS the state's own `session_id`
+# (it is the same dead session), so a provenance filter downstream could not
+# have caught this. The aged branch declaring "no session" is the fix.
+_PRIOR_SESSION_CLOUD = {
+    "cloud_measure": {
+        "geometry": {"verdict": "ok"},
+        "positions": [["mark", 1]],
+        "pipeline": {"spec": {"bands": [{"name": "handoff", "max_deviation_db": 6.66,
+                                         "tolerance_db": 3.0, "passed": False}]}},
+        "session_id": "cap_dead_session",
+    },
+}
+_PRIOR_SESSION_CLOUD_CHART = {
+    "cloud_measure": {"curve": [[100.0, -6.66], [1000.0, -3.0]]},
+}
+
+
+def _stale_measurement_status(code: str, *, age_s: float = _DAY_S, **v2) -> dict:
+    """The full returning-household state: an aged failure over a dead
+    session that left BOTH numbers surfaces populated."""
+    return _aged_status(
+        code, age_s=age_s, applied=True, session_id="cap_dead_session",
+        verify=_PRIOR_SESSION_EVIDENCE,
+        cloud=_PRIOR_SESSION_CLOUD,
+        cloud_chart=_PRIOR_SESSION_CLOUD_CHART,
+        tier="full",
+        **v2,
+    )
 
 
 def _aged_status(code: str, *, age_s: float = _DAY_S, **v2) -> dict:
@@ -1426,19 +1466,42 @@ def test_aged_failure_greets_with_the_entry_screen_not_the_terminal_one():
 
 
 def test_aged_failure_never_replays_the_previous_sessions_numbers():
-    """The 3.82 dB defect itself. A previous session's verify evidence must
-    not reach ANY surface of the resumed screen — not the verdict, not a
-    nudge, and not the collapsed expert disclosure."""
-    env = build_crossover_envelope_v2(_aged_status(
-        REASON_VERIFY_OUT_OF_TOLERANCE, phase="verify", applied=True,
-        verify=_PRIOR_SESSION_EVIDENCE,
-    ))
+    """The 3.82 dB defect itself, over BOTH numbers surfaces.
+
+    An earlier revision of this test populated only ``verify.evidence`` and so
+    passed vacuously while the chart card happily rendered the dead session's
+    curve and spec bands. The fixture now populates `cloud`/`cloud_chart` too,
+    which is what the real state file carries beside `failure`."""
+    env = build_crossover_envelope_v2(
+        _stale_measurement_status(REASON_VERIFY_OUT_OF_TOLERANCE, phase="verify"),
+    )
+    # Surface 1: the collapsed expert disclosure.
     assert env["expert_details"] == []
-    # Belt and braces: the numbers are nowhere in the payload at all, however
-    # a future key might carry them.
+    # Surface 2: the before/after chart card (main.js renderCloud, no screen
+    # switch — it draws from whatever these keys carry).
+    assert env["cloud"] is None
+    assert env["cloud_chart"] is None
+    assert env["tier"] is None
+    # Belt and braces: no stale number survives anywhere in the payload,
+    # however a future key might carry it.
     rendered = repr(env)
-    for stale in ("3.82", "1.46", "2000"):
+    for stale in ("3.82", "1.46", "2000", "6.66", "cap_dead_session"):
         assert stale not in rendered, f"{stale} crossed sessions: {rendered}"
+
+
+def test_aged_failure_fixture_would_paint_a_chart_without_the_fix():
+    """Guards the guard: proves the fixture above is not vacuous a SECOND
+    time. The same status rendered while the failure is FRESH still carries
+    both numbers surfaces, so the assertions above are testing suppression
+    rather than an absence that was there all along."""
+    fresh = _stale_measurement_status(REASON_VERIFY_OUT_OF_TOLERANCE,
+                                      age_s=0, phase="verify")
+    env = build_crossover_envelope_v2(fresh)
+    assert env["screen"] == "verify_fail"
+    assert env["cloud"] is not None
+    assert env["cloud_chart"] is not None
+    assert env["tier"] == "full"
+    assert "6.66" in repr(env)
 
 
 def test_aged_failure_keeps_undo_reachable_while_applied():
@@ -1465,24 +1528,31 @@ def test_aged_failure_offers_no_undo_when_nothing_was_applied():
     assert not any("Undo" in label for label in _labels(env))
 
 
-def test_aged_entry_screen_is_the_clean_entry_screen_plus_one_line():
-    """IA over copy (#1941 design principle 1). The resume is not a new
-    screen: it is the SAME entry screen a clean start renders, differing only
-    by one quiet history nudge and — because something is applied — Undo.
-    This is what keeps the fix from growing a second entry copy."""
+def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
+    """IA over copy (#1941 design principle 1), pinned over the FULL envelope.
+
+    The resume is not a new screen: it is the same entry screen a clean start
+    renders, differing only by one quiet history nudge and — because something
+    is applied — Undo. An earlier revision of this test hand-listed six keys
+    to compare and so let `cloud` / `cloud_chart` / `tier` diverge unnoticed;
+    comparing every key means a third diverging key can never pass again."""
     clean = build_crossover_envelope_v2(_status(phase="check"))
-    aged = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
-    ))
-    assert aged["screen"] == clean["screen"]
-    assert aged["verdict_text"] == clean["verdict_text"]
-    assert aged["next_action"] == clean["next_action"]
-    assert aged["expert_details"] == clean["expert_details"] == []
-    # A clean start says nothing; the resume says exactly one thing.
+    aged = build_crossover_envelope_v2(
+        _stale_measurement_status(REASON_RELAY_TIMEOUT, phase="verify"),
+    )
+    diverged = {
+        key for key in set(clean) | set(aged)
+        if clean.get(key) != aged.get(key)
+    }
+    assert diverged == {"alternate_actions", "nudges"}, (
+        f"aged resume diverges from a clean start in {sorted(diverged)}; only "
+        "the history nudge and the Undo action may differ"
+    )
+    # And the two intended deltas are exactly what they claim to be.
     assert clean["nudges"] == []
     assert len(aged["nudges"]) == 1
-    # Everything added to the action row is the Undo, nothing else.
-    assert [a for a in aged["alternate_actions"] if a not in clean["alternate_actions"]] == [
+    assert [a for a in aged["alternate_actions"]
+            if a not in clean["alternate_actions"]] == [
         {
             "id": "verify_undo",
             "label": "Undo (restore previous sound)",
@@ -1493,10 +1563,35 @@ def test_aged_entry_screen_is_the_clean_entry_screen_plus_one_line():
     ]
 
 
+def test_undo_action_never_shares_mutable_state_between_envelopes():
+    """The action carries a mutable ``body``. If it came from one module-level
+    dict copied shallowly, every envelope this process ever served would share
+    that dict — one mutation would poison the daemon for its whole life."""
+    first = build_crossover_envelope_v2(_aged_status(
+        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+    ))
+    undo = [a for a in first["alternate_actions"] if a["id"] == "verify_undo"][0]
+    undo["body"]["poisoned"] = True
+
+    second = build_crossover_envelope_v2(_aged_status(
+        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+    ))
+    assert [a for a in second["alternate_actions"]
+            if a["id"] == "verify_undo"][0]["body"] == {}
+    # The live verify-fail screen shares the same factory, so it is covered
+    # by the same guarantee.
+    live = build_crossover_envelope_v2(_status(
+        phase="verify", applied=True,
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+    ))
+    assert [a for a in live["alternate_actions"]
+            if a["id"] == "verify_undo"][0]["body"] == {}
+
+
 def test_aged_failure_note_is_one_quiet_dated_line():
     """"Your last session ended with X on <date>" — dated, because an undated
     outcome on a resume is precisely what read as a live verdict."""
-    at = time.time() - _DAY_S
+    at = time.time() - _WEEK_S
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True,
         failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE, "at": at},
@@ -1511,6 +1606,25 @@ def test_aged_failure_note_is_one_quiet_dated_line():
     assert note.count(".") == 1
 
 
+@pytest.mark.parametrize("age_s,expected", [
+    (2 * 60 * 60, "earlier today"),
+    (_DAY_S, "yesterday"),
+])
+def test_recent_history_reads_as_a_phrase_not_a_date(age_s, expected):
+    """A bare "on July 30" when today IS July 30 makes the household decode a
+    date into "oh, this morning". Follows the today/yesterday shape of
+    ``jasper.tools._format_relative_date``, the household-date precedent
+    already in the tree. Reachable in ordinary use: the freshness window is
+    30 minutes, so a same-day aged failure is not exotic."""
+    at = time.time() - age_s
+    if age_s < _DAY_S and time.localtime(at).tm_yday != time.localtime().tm_yday:
+        pytest.skip("clock is within 2 h of local midnight")
+    note = _history_note(build_crossover_envelope_v2(
+        _aged_status(REASON_VERIFY_OUT_OF_TOLERANCE, age_s=age_s),
+    ))
+    assert note == f"Your last measurement ended {expected} — the check didn't pass."
+
+
 def test_aged_failure_note_dates_a_previous_year_explicitly():
     """A speaker that sat unused for a year must not date its history with a
     bare "July 29" that reads as this year — the same year rule household
@@ -1520,6 +1634,65 @@ def test_aged_failure_note_dates_a_previous_year_explicitly():
         REASON_RELAY_TIMEOUT, age_s=400 * _DAY_S, phase="check",
     ))
     assert str(stamp.tm_year) in _history_note(env)
+
+
+# --- B2: a reason whose copy is durable state, not a session outcome ---------
+
+
+def test_rollback_failed_keeps_its_fact_and_its_instruction_when_aged():
+    """`correction_rollback_failed` says the speaker is STILL playing a tuning
+    JTS measured as faulty, and that Undo is what fixes it. That is true today
+    and true tomorrow. Aging it into a generic "it couldn't continue" would
+    leave the household on the faulty correction with the reason to press Undo
+    deleted — so this row keeps its fact and its instruction inside the dated
+    history treatment."""
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_CORRECTION_ROLLBACK_FAILED,
+    )
+
+    env = build_crossover_envelope_v2(
+        _stale_measurement_status(REASON_CORRECTION_ROLLBACK_FAILED, phase="verify"),
+    )
+    # Still the entry screen — exempt from the generic COPY, not from aging.
+    assert env["screen"] == "microphone_check"
+    note = _history_note(env)
+    assert "still applied" in note
+    assert "Undo restores it" in note
+    assert "it didn't finish" not in note
+    # And the button the sentence names is actually on the screen.
+    assert any("Undo" in label for label in _labels(env))
+
+
+def test_rollback_failed_falls_back_to_the_generic_note_when_nothing_is_applied():
+    """The exemption is gated on the state still corroborating the claim.
+    "The newer tuning is still applied" is not a sentence to print over a
+    durable state that says nothing is applied — that would be the #1942
+    defect wearing the fix's clothes."""
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_CORRECTION_ROLLBACK_FAILED,
+    )
+
+    env = build_crossover_envelope_v2(_aged_status(
+        REASON_CORRECTION_ROLLBACK_FAILED, phase="check", applied=False,
+    ))
+    note = _history_note(env)
+    assert "still applied" not in note
+    # Falls back to its TEMPLATE's generic clause (hard_stop), like any other.
+    assert note.endswith("— it couldn't continue.")
+
+
+def test_only_audited_durable_state_codes_are_exempt():
+    """The exemption list is a considered audit of the whole registry, not a
+    place things drift into. A new exempt row is a copy decision that needs
+    its own reasoning — see _DURABLE_STATE_FACTS for the line and the three
+    shapes deliberately left off it."""
+    from jasper.active_speaker.crossover_envelope_v2 import _DURABLE_STATE_FACTS
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_CORRECTION_ROLLBACK_FAILED,
+    )
+
+    assert set(_DURABLE_STATE_FACTS) == {REASON_CORRECTION_ROLLBACK_FAILED}
+    assert set(_DURABLE_STATE_FACTS) <= set(REASON_REGISTRY)
 
 
 @pytest.mark.parametrize("code,expected", [
@@ -1541,17 +1714,27 @@ def test_aged_failure_note_states_the_shape_not_the_live_instruction(code, expec
         assert spec.message not in note
 
 
+@pytest.mark.parametrize("applied", [False, True])
 @pytest.mark.parametrize("code", sorted(REASON_REGISTRY))
-def test_every_registry_code_ages_into_a_household_readable_note(code):
-    """No reason code can age into a bare slug, an empty line, or copy that
-    names hardware the flow does not talk about (#1941 R4: the actor is the
-    microphone; household copy never says "phone")."""
-    env = build_crossover_envelope_v2(_aged_status(code, phase="measure"))
+def test_every_registry_code_ages_into_a_household_readable_note(code, applied):
+    """No reason code can age into a bare slug, an empty line, an unterminated
+    sentence, or copy that names hardware the flow does not talk about (#1941
+    R4: the actor is the microphone; household copy never says "phone").
+
+    Both `applied` values, because that flag selects between the generic
+    reason clause and a `_DURABLE_STATE_FACTS` row's own sentence — every
+    code has to read well down both branches."""
+    env = build_crossover_envelope_v2(
+        _aged_status(code, age_s=_WEEK_S, phase="measure", applied=applied),
+    )
     assert env["screen"] == "microphone_check"
     note = _history_note(env)
     assert note.startswith("Your last measurement ended on ")
+    assert note.endswith(".")
     assert code not in note
     assert "phone" not in note.lower()
+    # Sentence-cased, never a clause spliced in mid-word.
+    assert "  " not in note
 
 
 def test_failure_without_a_timestamp_reads_as_aged():
@@ -1581,23 +1764,32 @@ def test_failure_without_a_timestamp_reads_as_aged():
     assert any("Undo" in label for label in _labels(env))
 
 
-@pytest.mark.parametrize("failure", [
-    {"code": REASON_RELAY_TIMEOUT, "at": "yesterday"},
-    {"code": REASON_RELAY_TIMEOUT, "at": None},
-    {"code": REASON_RELAY_TIMEOUT, "at": float("nan")},
-    {"code": REASON_RELAY_TIMEOUT, "at": float("inf")},
-    {"code": REASON_RELAY_TIMEOUT, "at": True},
+@pytest.mark.parametrize("stamp", [
+    "yesterday", None, float("nan"), float("inf"), True,
+    # Finite but out of the platform's calendar range. `time.localtime`
+    # raises OSError below roughly -1e16 on glibc, and an uncaught raise here
+    # is a 500 on the wizard's MAIN GET — the whole screen, not a corner.
+    -1e16, -1e18, -1.7e308,
+    # Finite, in range, and absurd: -1e11 renders as the year -1199. A
+    # nonsense date is not better than no date.
+    -1e11, -1.0,
 ])
-def test_unreadable_timestamp_reads_as_aged_never_as_fresh(failure):
+def test_unreadable_timestamp_reads_as_aged_and_never_raises(stamp):
     """A stamp that cannot be believed is not evidence of currency. Same
     direction as a missing one — never assert a live screen off a value the
-    envelope could not parse."""
+    envelope could not parse, and never let a corrupt byte on disk turn the
+    entry screen into a 500."""
     env = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {"phase": "check", "failure": failure},
+        "crossover_v2": {
+            "phase": "check", "failure": {"code": REASON_RELAY_TIMEOUT, "at": stamp},
+        },
     })
     assert env["screen"] == "microphone_check"
+    note = _history_note(env)
+    # No date claim at all, rather than a fabricated or nonsensical one.
+    assert note == "Your last measurement ended earlier — it stopped before finishing."
 
 
 # --- the fresh path, unchanged ---------------------------------------------------

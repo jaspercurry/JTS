@@ -52,6 +52,7 @@ from .crossover_v2_flow import (
     PHASE_CLOSING,
     PHASE_REVIEW,
     PHASE_VERIFY,
+    REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_REGISTRY,
     TEMPLATE_HARD_STOP,
     TEMPLATE_SESSION_RESTART,
@@ -1357,13 +1358,19 @@ def _entry_envelope(
 # survives for either screen to render from. #1942 keeps Undo reachable on both
 # of ITS paths; closing N2 means offering Undo on a clean-state entry screen,
 # which is a different decision about a screen this issue leaves untouched.
-_UNDO_ACTION: dict[str, Any] = {
-    "id": "verify_undo",
-    "label": "Undo (restore previous sound)",
-    "endpoint": "/correction/crossover/v2/restore",
-    "body": {},
-    "show_during_relay": True,
-}
+# A FACTORY, not a shared constant: the action carries a mutable ``body`` and
+# every caller hands its result to an envelope a caller may edit. A module-level
+# dict copied with ``dict(...)`` would share that one ``body`` by reference
+# across every envelope this process ever serves, so a single mutation would
+# poison the module for the life of the daemon. Cheap to build; never shared.
+def _undo_action() -> dict[str, Any]:
+    return {
+        "id": "verify_undo",
+        "label": "Undo (restore previous sound)",
+        "endpoint": "/correction/crossover/v2/restore",
+        "body": {},
+        "show_during_relay": True,
+    }
 
 # --- failure recency (issue #1942) -------------------------------------------
 
@@ -1411,6 +1418,39 @@ _FAILURE_HISTORY_REASONS = {
 # than a guess: all of them ended a measurement that did not finish.
 _FAILURE_HISTORY_REASON_DEFAULT = "it didn't finish"
 
+# EXEMPT from the generic reason clause above: codes whose copy states a
+# durable fact about the speaker RIGHT NOW rather than an outcome of a session
+# that is over. Aging one of these into "it didn't finish" would delete a fact
+# that is still true and an instruction the household still has to act on.
+#
+# The line, and why only one row is on it (registry audited in full, 2026-07-30
+# — the audit is in the PR body): the fact must describe a change **JTS itself
+# made and did not undo**, so it cannot silently become false while nobody is
+# looking. `correction_rollback_failed` qualifies — the delta probe found the
+# correction faulty, failed to roll it back, and the speaker is STILL playing
+# it until somebody presses Undo (which clears this state).
+#
+# Three shapes deliberately NOT on this list:
+#   * the sibling rollback rows (`correction_model_error`,
+#     `correction_level_shortfall`, `correction_spatially_costly`) say "the
+#     previous sound has been put back" — durable and still true, but it
+#     reports a COMPLETED restoration with no action pending, so the generic
+#     note loses a reassurance, not a remedy;
+#   * the `program_profile_*` family states configuration JTS RE-CHECKS every
+#     session, so it can silently become false — replaying it as current is
+#     the #1942 defect itself, and the live `_setup_ready` gate above the
+#     failure branch already catches a genuinely unready setup;
+#   * `volume_unresolved` is already exempt STRUCTURALLY and by the better
+#     mechanism — the `needs_recovery` branch outranks the failure branch
+#     entirely, so a live state fact wins over the stale record without any
+#     help from this list.
+_DURABLE_STATE_FACTS = {
+    REASON_CORRECTION_ROLLBACK_FAILED: (
+        "JTS could not put the previous sound back, so the newer tuning is "
+        "still applied — Undo restores it"
+    ),
+}
+
 
 def _failure_is_fresh(failure: Mapping[str, Any]) -> bool:
     """Is this persisted failure the screen the household is on RIGHT NOW?
@@ -1433,27 +1473,71 @@ def _failure_is_fresh(failure: Mapping[str, Any]) -> bool:
     return time.time() - at <= FAILURE_FRESH_WINDOW_S
 
 
-def _failure_history_note(code: str, failure: Mapping[str, Any]) -> str:
+def _failure_when_phrase(failure: Mapping[str, Any]) -> str:
+    """"yesterday" / "earlier today" / "on July 29" / "on July 29, 2025".
+
+    Follows ``jasper.tools._format_relative_date``'s shape (the household-date
+    precedent already in the tree): a bare "on July 30" when today IS July 30
+    reads as a date the household has to decode into "oh, this morning", and
+    with a 30-minute freshness window a same-day aged failure is ordinary.
+
+    Answers ``"earlier"`` — no date claim at all — for a record this build
+    cannot place on a calendar. That covers the undated pre-#1942 record AND
+    a stamp so far out of range that rendering it would either raise (glibc
+    ``localtime`` rejects roughly ≲ -1e16, and an uncaught ``OSError`` here is
+    a 500 on the wizard's main GET) or print a nonsense year. Both resolve the
+    same way, because "we cannot say when" is the honest answer to both.
+    """
+    at = _finite(failure.get("at"))
+    # A negative stamp is not a clock reading this project ever produced; it
+    # is a corrupt/garbage field, and the year it would render is nonsense.
+    if at is None or at < 0:
+        return "earlier"
+    try:
+        stamp = time.localtime(at)
+        now = time.localtime()
+        if (stamp.tm_year, stamp.tm_yday) == (now.tm_year, now.tm_yday):
+            return "earlier today"
+        yesterday = time.localtime(time.time() - 24 * 60 * 60)
+        if (stamp.tm_year, stamp.tm_yday) == (yesterday.tm_year, yesterday.tm_yday):
+            return "yesterday"
+        fmt = "%B %-d" if stamp.tm_year == now.tm_year else "%B %-d, %Y"
+        return f"on {time.strftime(fmt, stamp)}"
+    except (OSError, OverflowError, ValueError):
+        # Platform-dependent range limits. Never let a corrupt byte on disk
+        # turn the wizard's own entry screen into a 500.
+        return "earlier"
+
+
+def _failure_history_note(
+    code: str, failure: Mapping[str, Any], *, applied: bool,
+) -> str:
     """The aged failure's ONE quiet line: what happened, and when.
 
     Dated because an undated outcome presented on a resume is exactly the
     defect (#1942: last session's numbers read as this session's verdict).
-    The year is stated only when it is not the current one — the same rule
-    ``jasper.tools.gmail`` already applies to household-facing dates.
+
+    A ``_DURABLE_STATE_FACTS`` code keeps its own fact and instruction instead
+    of the generic reason clause — those sentences are still true, and the
+    household still has to act on them. The exemption is additionally gated on
+    ``applied``, because every fact on that list is a statement that something
+    JTS applied is still live: if the durable state no longer says so, the
+    claim is not corroborated and this falls back to the generic note rather
+    than asserting a change the state cannot confirm.
     """
+    when = _failure_when_phrase(failure)
+    durable = _DURABLE_STATE_FACTS.get(code)
+    if durable is not None and applied:
+        # Two sentences, not a third em-dash clause: the fact is the point
+        # here, so it gets its own sentence rather than a subordinate one.
+        return f"Your last measurement ended {when}. {durable[0].upper()}{durable[1:]}."
     spec = REASON_REGISTRY.get(code)
     reason = (
         _FAILURE_HISTORY_REASONS.get(spec.template, _FAILURE_HISTORY_REASON_DEFAULT)
         if spec is not None
         else _FAILURE_HISTORY_REASON_DEFAULT
     )
-    at = _finite(failure.get("at"))
-    if at is None:
-        # Undated record: say so plainly rather than inventing a date.
-        return f"Your last measurement ended earlier — {reason}."
-    stamp = time.localtime(at)
-    fmt = "%B %-d" if stamp.tm_year == time.localtime().tm_year else "%B %-d, %Y"
-    return f"Your last measurement ended on {time.strftime(fmt, stamp)} — {reason}."
+    return f"Your last measurement ended {when} — {reason}."
 
 
 def _aged_failure_envelope(
@@ -1470,25 +1554,38 @@ def _aged_failure_envelope(
 
     Three properties this shape buys, all of them the point:
 
-    * **No stale numbers, structurally.** The entry screen has no
-      ``expert_details`` mechanism at all, so a previous session's tracking
-      figures cannot reach it — they are not filtered here, there is simply
-      nowhere for them to go.
+    * **The entry screen's DATA contract, not just its copy.** There are TWO
+      numbers surfaces on this flow, and an earlier revision of this fix only
+      closed one of them. ``expert_details`` is empty on the entry screen and
+      so needs nothing done to it — but ``_envelope`` copies ``cloud`` /
+      ``cloud_chart`` / ``tier`` through from ``status`` on EVERY screen, the
+      persisted ``cloud`` sits beside ``failure`` in the same state file, and
+      ``crossover/main.js`` calls ``renderCloud`` with no screen switch. So a
+      resume rendered the dead session's before/after chart card — its curve,
+      its spec-band numbers, and a caption promising "the after-correction
+      curve appears once the second measurement pass finishes", a live-
+      progress claim about a session that ended yesterday. Those three keys
+      are nulled below. ``None`` is not a special aged-only value: it is what
+      the ``tier`` key's own contract already calls unknown, and this screen
+      genuinely HAS no session.
     * **Undo survives.** ``applied`` is the state fact that says something is
       live on the speaker, and W6.7 ruling 3 says the household is entitled to
       Undo whenever that is true. The live path offers it; so does this one.
-    * **Uniform across templates.** A stale ``hard_stop`` gets the same
-      treatment as a stale ``verify_fail``, because "act on this now" is
-      equally untrue of both. If the blocking condition still holds, the next
-      session refuses again and the household reads a FRESH verdict — which is
-      strictly better than acting on a day-old one that may already be fixed.
+    * **Uniform across templates, except where the copy is durable.** A stale
+      ``hard_stop`` gets the same treatment as a stale ``verify_fail``,
+      because "act on this now" is equally untrue of both. If the blocking
+      condition still holds, the next session refuses again and the household
+      reads a FRESH verdict — strictly better than acting on a day-old one
+      that may already be fixed. The exception is a reason whose copy states
+      a durable fact rather than a session outcome; see
+      ``_DURABLE_STATE_FACTS``.
     """
     next_action, alternate_actions = _tier_choice_actions(status)
-    return _entry_envelope(
+    env = _entry_envelope(
         status,
         next_action=next_action,
         alternate_actions=(
-            [*alternate_actions, dict(_UNDO_ACTION)] if applied
+            [*alternate_actions, _undo_action()] if applied
             else alternate_actions
         ),
         nudges=[{
@@ -1498,9 +1595,19 @@ def _aged_failure_envelope(
             # styles the two differently (crossover/main.js renderNudges), so
             # the quiet presentation needs no page change.
             "severity": "info",
-            "text": _failure_history_note(code, failure),
+            "text": _failure_history_note(code, failure, applied=applied),
         }],
     )
+    # The dead session's measurement payloads. Nulled AFTER the build rather
+    # than by sanitising ``status`` first, because the same ``tier`` value has
+    # a second, legitimate reader: ``_recommended_tier`` uses it to decide
+    # which tier carries the Recommended badge, which is durable history about
+    # the speaker (has a Full commission ever completed here?) and stays
+    # exactly as true on a resume as on a clean start. What must not survive
+    # is the CHART's copy of it. Pinned by the full-envelope guard test.
+    for dead_session_key in ("cloud", "cloud_chart", "tier"):
+        env[dead_session_key] = None
+    return env
 
 
 def _verify_fail_envelope(
@@ -1540,9 +1647,9 @@ def _verify_fail_envelope(
             "body": {},
         },
         alternate_actions=[
-            # Shared with the aged-failure entry screen — see ``_UNDO_ACTION``
+            # Shared with the aged-failure entry screen — see ``_undo_action``
             # for the restore-path rationale and the open W6.7 N2 item.
-            dict(_UNDO_ACTION),
+            _undo_action(),
             {
                 "id": "verify_remeasure",
                 "label": "Re-measure",
