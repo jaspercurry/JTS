@@ -658,10 +658,11 @@ async def test_autolevel_lock_fades_down_before_tone_cancel(tmp_path):
 
     player = _RecordingPlayer()
 
-    # Lock from above start_db so the fade-down loop has something to fade.
-    # Same reasoning as test_autolevel_locks_when_lock_event_set — the fixed
-    # `sleep(0.12)` this replaces beat run()'s pre-ramp sleep, so the ramp had
-    # not climbed at all.
+    # Lock from above start_db, same reasoning as
+    # test_autolevel_locks_when_lock_event_set: the fixed `sleep(0.12)` this
+    # replaces beat run()'s pre-ramp sleep, so the ramp had not climbed at
+    # all. This test's own assertions held either way — the gain here is
+    # determinism about which path it covers, not a vacuous assertion.
     async def _lock_after_first_step():
         await wait_signalled(ramp_stepped, "first autolevel ramp step")
         await sess.lock_autolevel()

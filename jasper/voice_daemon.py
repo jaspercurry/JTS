@@ -470,7 +470,7 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 # command's reply with a VOICE_MEASURE_PAUSE_TIMEOUT_SEC (3.0 s) read
 # timeout, and a coordinator that gives up believes voice was never
 # paused: it skips MEASURE_RESUME on the way out, and the speaker then
-# stays gated until the daemon's 2-minute auto-clear. install.sh restarts
+# stays gated until the daemon's auto-clear. install.sh restarts
 # jasper-voice and jasper-web at different points of a deploy, so an OLD
 # coordinator can be talking to a NEW daemon — the bound has to fit under
 # the timeout that coordinator already shipped with, not one we raise
@@ -961,8 +961,8 @@ class WakeLoop:
         # asks outputd to ignore content-meter samples so sweeps don't
         # become the next assistant-loudness baseline. Set / cleared via
         # MEASURE_PAUSE / MEASURE_RESUME; the safety task auto-clears
-        # after 2 min so a coordinator crash can't strand the speaker
-        # silent.
+        # after MEASUREMENT_AUTOCLEAR_SEC so a coordinator crash can't
+        # strand the speaker silent.
         self._measurement_active: asyncio.Event = asyncio.Event()
         self._measurement_safety_task: asyncio.Task | None = None
 
@@ -2406,8 +2406,9 @@ class WakeLoop:
 
     async def measurement_pause(self) -> str:
         """Open a measurement window. Set the gate event, pause content
-        activity observation, arm a 2-minute auto-clear safety timer, and
-        wait (bounded) for in-flight assistant audio to finish.
+        activity observation, arm the MEASUREMENT_AUTOCLEAR_SEC safety
+        timer, and wait (bounded) for in-flight assistant audio to
+        finish.
 
         Refuses with `BUSY` when a voice session is currently active
         — yanking the session would orphan the user's turn. The
@@ -2426,14 +2427,14 @@ class WakeLoop:
           None to any caller that reaches it;
         * mic frames stop immediately, so a wake cannot fire into the
           drain window and open a reactive cue behind our back;
-        * a crash mid-drain still auto-clears after 2 minutes.
+        * a crash mid-drain still auto-clears (MEASUREMENT_AUTOCLEAR_SEC).
 
         The drain therefore only ever waits out audio that was already
         playing when PAUSE landed. It defers to that audio; it never
         cancels it, so no wake-blocking cue is cut short or dropped.
 
         Idempotent — calling twice is harmless. The drain runs only on
-        the opening transition: the coordinator's 60 s lease refresh
+        the opening transition: the coordinator's lease refresh
         re-sends PAUSE into an already-open window, where the first
         capture has long since begun and no new output can start, so
         renewals stay latency-free.

@@ -86,7 +86,7 @@ async def test_pause_and_resume_voice(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_long_window_renews_voice_measurement_lease(monkeypatch):
-    """Human relay setup may exceed the voice daemon's 120 s safety timer."""
+    """Human relay setup may outlast the voice daemon's auto-clear timer."""
     uds_calls: list[str] = []
     lease_renewed = asyncio.Event()
 
