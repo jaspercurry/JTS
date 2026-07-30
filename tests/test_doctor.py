@@ -5411,6 +5411,10 @@ def test_check_correction_idle_exit_holds_skips_when_service_not_active(monkeypa
 def test_check_correction_idle_exit_holds_skips_when_journalctl_unavailable(
     monkeypatch,
 ):
+    """N-B1: the exception path must not collapse to a generic, indistinguishable
+    "unavailable" — the actual exception text must be visible so a broken
+    invocation reads differently from a clean no-findings run."""
+
     def fake_run(cmd, timeout=5.0):
         if cmd[0] == "systemctl":
             return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
@@ -5420,6 +5424,30 @@ def test_check_correction_idle_exit_holds_skips_when_journalctl_unavailable(
     r = doctor.check_correction_idle_exit_holds()
     assert r.status == "ok"
     assert "journalctl" in r.detail
+    assert "journalctl not found" in r.detail
+    assert "FileNotFoundError" in r.detail
+
+
+def test_check_correction_idle_exit_holds_skips_on_nonzero_journalctl_returncode(
+    monkeypatch,
+):
+    """N-B1: a malformed invocation (e.g. a bad --since) exits non-zero without
+    raising — that stderr must reach the detail string too, or this is
+    indistinguishable from a clean no-findings run forever."""
+
+    def fake_run(cmd, timeout=5.0):
+        if cmd[0] == "systemctl":
+            return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+        assert cmd[0] == "journalctl"
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="journalctl: invalid option -- since\n",
+        )
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_idle_exit_holds()
+    assert r.status == "ok"
+    assert "rc=1" in r.detail
+    assert "invalid option" in r.detail
 
 
 def test_check_correction_idle_exit_holds_ok_with_no_deferred_warning(monkeypatch):

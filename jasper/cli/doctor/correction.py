@@ -117,10 +117,17 @@ def check_correction_idle_exit_holds() -> CheckResult:
              "--no-pager", "--output=cat"],
             timeout=5.0,
         )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return CheckResult(label, "ok", "journalctl unavailable (skipped)")
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        return CheckResult(
+            label, "ok",
+            f"journalctl unavailable ({type(e).__name__}: {e}) — skipped",
+        )
     if journal.returncode != 0:
-        return CheckResult(label, "ok", "journalctl unavailable (skipped)")
+        return CheckResult(
+            label, "ok",
+            f"could not read journal (rc={journal.returncode}: "
+            f"{journal.stderr.strip()}) — skipped",
+        )
 
     # journalctl returns oldest-first; keep the LAST match so a resolved
     # older leak can't outrank a currently-outstanding one (or vice versa).

@@ -4081,7 +4081,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
         # One capture, bounded by run_capture's own timeouts: it cannot sit
         # through a 600 s inbound-idle window the way a multi-position cloud
-        # does, so no hold. (#1860 re-reviews every kind.)
+        # does, so no hold; reviewed and deliberately left unheld by #1860.
         idle_hold=no_hold,
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
@@ -4254,7 +4254,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
         # One capture, bounded by run_capture's own timeouts: it cannot sit
         # through a 600 s inbound-idle window the way a multi-position cloud
-        # does, so no hold. (#1860 re-reviews every kind.)
+        # does, so no hold; reviewed and deliberately left unheld by #1860.
         idle_hold=no_hold,
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
@@ -5591,7 +5591,7 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
             return_url=_request_local_return_url(handler, "/correction/sync"),
             # One capture, bounded by run_capture's own timeouts: it cannot sit
             # through a 600 s inbound-idle window the way a multi-position cloud
-            # does, so no hold. (#1860 re-reviews every kind.)
+            # does, so no hold; reviewed and deliberately left unheld by #1860.
             idle_hold=no_hold,
         )
     }
