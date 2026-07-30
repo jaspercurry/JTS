@@ -27,6 +27,7 @@ import subprocess
 from pathlib import Path
 
 from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
     value_for as _value_for,
     values_for as _values_for,
 )
@@ -63,15 +64,15 @@ def test_grouping_reconcile_trailing_service_runs_fixed_helper():
 
     unit = GROUPING_TRAILING_SERVICE_PATH.read_text()
     assert (
-        _value_for(unit, "ExecStart")
-        == "/usr/local/sbin/jasper-grouping-reconcile-trailing"
+        _assignments_for(unit, "ExecStart")
+        == ("/usr/local/sbin/jasper-grouping-reconcile-trailing",)
     )
     assert _values_for(unit, "Environment") == (
         "JASPER_GROUPING_TRAILING_DELAY_FILE="
         f"{control_server._GROUPING_RECONCILE_TRAILING_DELAY_FILE}",
     )
     assert _value_for(unit, "NoNewPrivileges") == "true"
-    assert _value_for(unit, "CapabilityBoundingSet") == ""
+    assert _values_for(unit, "CapabilityBoundingSet") == ()
 
 
 def test_install_installs_grouping_reconcile_trailing_helper():

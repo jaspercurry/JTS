@@ -10,6 +10,7 @@ import tomllib
 from pathlib import Path
 
 from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
     value_for as _value_for,
     values_for as _values_for,
 )
@@ -51,8 +52,8 @@ def test_readiness_marker_keeps_both_guards_before_bounded_card_wait():
     assert _directive_index(body, "ExecCondition=", "functions/uac2.usb0") < (
         _directive_index(body, "ExecStartPre=", "jasper-usbsink-wait-card")
     )
-    assert _value_for(body, "ExecStartPre") == (
-        "/usr/local/sbin/jasper-usbsink-wait-card 30"
+    assert _assignments_for(body, "ExecStartPre") == (
+        "/usr/local/sbin/jasper-usbsink-wait-card 30",
     )
     assert _value_for(body, "TimeoutStartSec") == "40s"
     assert _value_for(body, "TimeoutStopSec") == "5s"
@@ -62,7 +63,7 @@ def test_readiness_marker_is_process_free_and_reproved_with_gadget_lifecycle():
     body = UNIT_PATH.read_text()
     assert _value_for(body, "Type") == "oneshot"
     assert _value_for(body, "RemainAfterExit") == "yes"
-    assert _value_for(body, "ExecStart") == "/bin/true"
+    assert _assignments_for(body, "ExecStart") == ("/bin/true",)
     assert "jasper-usbgadget.service" in _values_for(body, "Requires")
     assert "jasper-usbgadget.service" in _values_for(body, "PartOf")
     assert "jasper-usbsink-volume.service" in _values_for(body, "Wants")
@@ -164,8 +165,8 @@ def test_readiness_marker_remains_unprivileged_and_read_only():
     body = UNIT_PATH.read_text()
     assert _value_for(body, "User") == "jasper-recon"
     assert _value_for(body, "Group") == "jasper"
-    assert _value_for(body, "CapabilityBoundingSet") == ""
-    assert _value_for(body, "AmbientCapabilities") == ""
+    assert _values_for(body, "CapabilityBoundingSet") == ()
+    assert _values_for(body, "AmbientCapabilities") == ()
     assert _value_for(body, "NoNewPrivileges") == "true"
     assert _value_for(body, "ProtectSystem") == "strict"
     assert _value_for(body, "ProtectHome") == "true"

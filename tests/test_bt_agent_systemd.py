@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.systemd_unit_helpers import value_for as _value_for
+from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
+    value_for as _value_for,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -16,8 +19,8 @@ UNIT_PATH = REPO / "deploy" / "systemd" / "bt-agent.service"
 
 def test_bt_agent_uses_jts_no_code_agent() -> None:
     unit = UNIT_PATH.read_text()
-    assert _value_for(unit, "ExecStart") == (
-        "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
+    assert _assignments_for(unit, "ExecStart") == (
+        "/opt/jasper/.venv/bin/jasper-bluetooth-agent",
     )
 
 

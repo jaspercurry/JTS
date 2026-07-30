@@ -20,6 +20,7 @@ from pathlib import Path
 
 from tests.install_surface import installer_text
 from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
     value_for as _value_for,
     values_for as _values_for,
 )
@@ -168,10 +169,10 @@ def test_runtime_directory():
     across daemon-restart events and the bind would race against
     stale-socket cleanup."""
     unit = _read_unit()
-    val = _value_for(unit, "RuntimeDirectory")
-    assert val == "jasper-fanin", (
+    values = _values_for(unit, "RuntimeDirectory")
+    assert values == ("jasper-fanin",), (
         f"jasper-fanin.service must declare RuntimeDirectory=jasper-fanin "
-        f"so /run/jasper-fanin/ is auto-managed. Got {val!r}"
+        f"so /run/jasper-fanin/ is auto-managed. Got {values!r}"
     )
 
 
@@ -201,11 +202,11 @@ def test_exec_start_points_at_installed_binary():
     binary. A divergence between unit and install.sh would let
     systemd start a stale binary or fail with ENOENT."""
     unit = _read_unit()
-    val = _value_for(unit, "ExecStart")
-    assert val == "/opt/jasper/bin/jasper-fanin", (
+    commands = _assignments_for(unit, "ExecStart")
+    assert commands == ("/opt/jasper/bin/jasper-fanin",), (
         f"jasper-fanin.service ExecStart must be "
         f"/opt/jasper/bin/jasper-fanin (matches install.sh's "
-        f"build_install_jasper_fanin destination). Got {val!r}"
+        f"build_install_jasper_fanin destination). Got {commands!r}"
     )
 
 
@@ -223,11 +224,12 @@ def test_combo_gated_pitch_neutralize_exec_stop_post():
     the helper's own tests in tests/test_fanin_pitch_neutralize.py.
     """
     unit = _read_unit()
-    val = _value_for(unit, "ExecStopPost")
-    assert val is not None, (
+    commands = _assignments_for(unit, "ExecStopPost")
+    assert len(commands) == 1, (
         "jasper-fanin.service must carry an ExecStopPost pitch-neutralize belt "
         "for the combo-mode host-clock (C6)."
     )
+    val = commands[0]
     # Best-effort (leading `-`): a missing card / combo-off must not fail stop.
     assert val.startswith("-"), (
         "the ExecStopPost must be best-effort (leading `-`) so a missing gadget "
@@ -444,7 +446,7 @@ def test_no_state_directory_needed_for_host_compliance():
     (/var/lib/jasper-fanin/) and is not the posture this feature uses; if
     a future edit adds one, revisit whether the compliance path moved."""
     unit = _read_unit()
-    assert _value_for(unit, "StateDirectory") is None, (
+    assert _values_for(unit, "StateDirectory") == (), (
         "jasper-fanin.service intentionally has NO StateDirectory — the "
         "host-compliance record reuses the already-owned "
         "/var/lib/jasper/fanin/ dir (see the module docstring in "

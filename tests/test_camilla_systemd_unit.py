@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
     value_for as _value_for,
     values_for as _values_for,
 )
@@ -156,7 +157,7 @@ def test_unit_uses_recovery_handler_instead_of_raw_reboot():
     graph restart, not an immediate blind reboot."""
     body = UNIT_PATH.read_text()
     assert _value_for(body, "StartLimitAction") == "none"
-    assert _value_for(body, "OnFailure") == "jasper-camilla-recover.service"
+    assert _values_for(body, "OnFailure") == ("jasper-camilla-recover.service",)
     assert "StartLimitIntervalSec=60" in body
     assert "StartLimitBurst=5" in body
 
@@ -164,8 +165,8 @@ def test_unit_uses_recovery_handler_instead_of_raw_reboot():
 def test_recovery_unit_points_at_installed_helper():
     body = RECOVER_UNIT_PATH.read_text()
     assert _value_for(body, "Type") == "oneshot"
-    assert _value_for(body, "ExecStart") == (
-        "/usr/local/sbin/jasper-camilla-recover --reason start-limit"
+    assert _assignments_for(body, "ExecStart") == (
+        "/usr/local/sbin/jasper-camilla-recover --reason start-limit",
     )
     assert _value_for(body, "TimeoutStartSec") == "45"
 

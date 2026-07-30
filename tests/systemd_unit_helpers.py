@@ -30,6 +30,17 @@ def value_for(unit_text: str, key: str) -> str | None:
     return values[-1] if values else None
 
 
+def assignments_for(unit_text: str, key: str) -> tuple[str, ...]:
+    """Resolve an accumulating directive while preserving each raw value."""
+    values: list[str] = []
+    for assigned in _assigned_values(unit_text, key):
+        if not assigned:
+            values.clear()
+        else:
+            values.append(assigned)
+    return tuple(values)
+
+
 def values_for(unit_text: str, key: str) -> tuple[str, ...]:
     """Resolve an accumulating, whitespace-tokenized systemd directive.
 
@@ -37,10 +48,7 @@ def values_for(unit_text: str, key: str) -> tuple[str, ...]:
     the list, matching systemd's list-directive semantics.
     """
     values: list[str] = []
-    for assigned in _assigned_values(unit_text, key):
-        if not assigned:
-            values.clear()
-            continue
+    for assigned in assignments_for(unit_text, key):
         try:
             values.extend(shlex.split(assigned))
         except ValueError:

@@ -17,6 +17,7 @@ from jasper.tts_routing import (
 )
 from tests.install_surface import installer_text
 from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
     value_for as _value_for,
     values_for as _values_for,
 )
@@ -48,7 +49,7 @@ def test_outputd_unit_is_notify_and_watchdog_managed():
 
 def test_outputd_unit_is_mainline_default_not_flag_gated():
     unit = _read_unit()
-    assert _value_for(unit, "ConditionPathExists") is None
+    assert _values_for(unit, "ConditionPathExists") == ()
     assert _value_for(unit, "StartLimitAction") == "reboot"
 
 
@@ -76,10 +77,12 @@ def test_outputd_unit_has_audio_realtime_shape():
 
 def test_outputd_unit_runtime_and_exec_paths():
     unit = _read_unit()
-    assert _value_for(unit, "RuntimeDirectory") == "jasper-outputd"
-    assert _value_for(unit, "ExecStart") == "/opt/jasper/bin/jasper-outputd"
-    assert _value_for(unit, "ExecStopPost") == (
-        "-/usr/local/sbin/jasper-outputd-failure-reconcile"
+    assert _values_for(unit, "RuntimeDirectory") == ("jasper-outputd",)
+    assert _assignments_for(unit, "ExecStart") == (
+        "/opt/jasper/bin/jasper-outputd",
+    )
+    assert _assignments_for(unit, "ExecStopPost") == (
+        "-/usr/local/sbin/jasper-outputd-failure-reconcile",
     )
     assert OUTPUTD_TTS_SOCKET_ENV not in unit
     for expected in [
