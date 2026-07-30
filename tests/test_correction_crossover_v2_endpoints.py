@@ -2105,6 +2105,210 @@ def test_both_session_preparers_rearm_the_walked_away_volume_ceiling():
     ) == DEFAULT_WALL_CLOCK_CEILING_S
 
 
+# --- the apply's stage-2 openability preflight (work order D3, PR-T3 half) ---
+
+
+def _ready_to_apply(monkeypatch, tmp_path):
+    """The real apply environment plus durable state holding its candidate.
+
+    Same seeding the neighbouring apply tests use, so these exercise the REAL
+    ``handle_v2_apply`` up to (and, when the preflight refuses, not past) the
+    transaction.
+    """
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_preflight",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    return candidate
+
+
+def test_apply_refuses_when_stage_2_could_not_be_opened(monkeypatch, tmp_path):
+    """**The pin the work order names for this rung.** A speaker that cannot
+    open its post-apply check must not be corrected and left ungraded — the
+    applied-and-ungraded end state this whole work order exists to eliminate.
+
+    T2 shipped the render-time half (Apply is disabled and the refusal renders
+    verbatim). This is the server-side half, and it is NOT redundant with it: a
+    disabled control is not a security boundary — a stale page, a second tab,
+    or a direct POST all reach this endpoint.
+    """
+    candidate = _ready_to_apply(monkeypatch, tmp_path)
+
+    def _refuse(_status):
+        raise v2host.CrossoverV2Refused(
+            "confirm the driver safety profile before measuring"
+        )
+
+    monkeypatch.setattr(v2host, "resolve_conductor_context", _refuse)
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            _FakeApplyCam,
+            status={},
+        )
+
+    # The predicate's OWN sentence reaches the household, not a generic one.
+    assert "confirm the driver safety profile" in str(excinfo.value)
+    assert "was not run" in str(excinfo.value)
+    # The DSP was never touched: nothing durable claims an apply happened, and
+    # no pre-apply profile was stashed (which only a real commit produces).
+    state = v2host.load_v2_state()
+    assert state.get("applied") is not True
+    assert state.get("pre_apply_profile") is None
+
+
+def test_an_unexpected_preflight_failure_refuses_the_apply_too(
+    monkeypatch, tmp_path,
+):
+    """Fail-closed in BOTH directions: "we could not check" and "we checked
+    and it is fine" must never produce the same outcome on the one action that
+    touches the speaker."""
+    candidate = _ready_to_apply(monkeypatch, tmp_path)
+
+    def _explode(_status):
+        raise RuntimeError("the topology file is unreadable")
+
+    monkeypatch.setattr(v2host, "resolve_conductor_context", _explode)
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            _FakeApplyCam,
+            status={},
+        )
+    assert "could not confirm" in str(excinfo.value)
+    assert v2host.load_v2_state().get("applied") is not True
+
+
+def test_the_preflight_runs_after_the_freshness_gates(monkeypatch):
+    """Ordering: a STALE candidate gets its own specific refusal ("review the
+    newest measurement"), not the preflight's. Getting this backwards would
+    tell a household to go fix their safety profile when what they actually
+    need is to re-read a newer measurement."""
+    v2host.save_v2_state({
+        "session_id": "cap_preflight",
+        "candidate": {"fingerprint": "a-newer-fingerprint"},
+        "applied": False,
+    })
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context",
+        lambda _status: (_ for _ in ()).throw(
+            v2host.CrossoverV2Refused("safety profile")
+        ),
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_apply(
+            {"expected_candidate_fingerprint": "the-reviewed-one"},
+            _bg_run_async,
+            _FakeApplyCam,
+            status={},
+        )
+    assert "no longer current" in str(excinfo.value)
+
+
+def test_the_apply_endpoint_cannot_skip_the_preflight():
+    """``status`` is REQUIRED and keyword-only, so no caller can quietly drop
+    it — and the dispatch really does supply one."""
+    import inspect
+
+    sig = inspect.signature(v2host.handle_v2_apply)
+    status_param = sig.parameters["status"]
+    assert status_param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert status_param.default is inspect.Parameter.empty
+
+    from jasper.web import correction_setup
+
+    source = inspect.getsource(correction_setup._handle_crossover_v2_apply)
+    assert "status=correction_crossover_backend.status_payload()" in source
+    # …and the call site really is inside handle_v2_apply, before the commit.
+    apply_source = inspect.getsource(v2host.handle_v2_apply)
+    assert "_assert_stage_2_can_open(status)" in apply_source
+    # rindex, not index: the first `apply_baseline_profile(` is the import.
+    assert apply_source.index("_assert_stage_2_can_open(status)") < apply_source.rindex(
+        "apply_baseline_profile("
+    )
+
+
+# --- stage 2's entry point (work order D2) -----------------------------------
+
+
+def test_the_verify_endpoint_opens_the_tier_matched_stage_2_or_the_recovery():
+    """ONE entry point, two shapes — generalized over the plan shape rather
+    than forked into a second builder (work order D2).
+
+    The tier comes from the durable state the MEASURING session wrote, so the
+    household's choice at the tier chooser governs both stages.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        TIER_EXPRESS,
+        TIER_FULL,
+        build_v2_verify_capture_plan,
+        resolve_plan_shape,
+    )
+
+    for tier, expected in ((TIER_FULL, 6), (TIER_EXPRESS, 1)):
+        shape = v2host._verify_plan_shape({"stage": "post_apply"}, {"tier": tier})
+        assert shape == resolve_plan_shape(tier)
+        assert build_v2_verify_capture_plan(
+            FC_HZ, plan_shape=shape,
+        ).capture_target == expected
+
+    # Absent / explicit "recovery" is the shipped 1-entry re-arm, which is what
+    # a FAILED stage 2 offers — every pre-two-stage caller posts `{}`.
+    for raw in ({}, {"stage": "recovery"}, None):
+        assert v2host._verify_plan_shape(raw, {"tier": TIER_FULL}) is None
+    assert build_v2_verify_capture_plan(FC_HZ).capture_target == 1
+
+
+def test_an_unknown_verify_stage_is_refused_rather_than_guessed():
+    """Same strictness ``normalize_tier`` applies to a tier: a caller asking
+    for an instrument this build does not have fails loudly rather than
+    silently measuring something else."""
+    from jasper.active_speaker.crossover_v2_flow import TIER_FULL
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host._verify_plan_shape({"stage": "turbo"}, {"tier": TIER_FULL})
+    assert "unknown verify stage" in str(excinfo.value)
+
+
+def test_the_failed_screens_re_verify_still_asks_for_the_recovery():
+    """The shipped ``verify_retry`` action posts no ``stage``, so a failed
+    post-apply check still offers ONE cheap sweep rather than re-walking the
+    whole post-apply cloud. Read off the envelope so a body change is visible
+    here rather than on hardware."""
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": PHASE_VERIFY,
+            "applied": True,
+            "failure": {"code": "verify_out_of_tolerance"},
+        },
+    })
+    retry = env["next_action"]
+    assert retry["endpoint"] == "/correction/crossover/v2/verify"
+    assert "stage" not in (retry.get("body") or {})
+
+
 # --- verify-only re-arm (S1d: resume skips accepted phases at the relay) --------
 
 
