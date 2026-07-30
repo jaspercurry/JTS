@@ -1724,6 +1724,16 @@ function entryForIndex(spec, index) {
 // check, so this is slower than the general status-poll cadence.
 const CAPTURE_DEFERRED_RETRY_POLL_MS = 1500;
 
+// How long the phone waits for the Pi to close a HELD capture set after the
+// household's "Continue" (two-stage work order D1). The Pi is doing the
+// session's slowest analysis in that window — the group combine plus the fit —
+// and this deliberately MIRRORS the Pi's own between-step inactivity budget
+// (`capture_relay.session.DEFAULT_TIMEOUT_S`, 120 s) rather than introducing a
+// tighter one, so the phone never gives up on work the speaker is still doing.
+// It is not a session time budget: nothing here changes how long any session
+// may live.
+const CAPTURE_SET_COMPLETE_TIMEOUT_MS = 120000;
+
 // Page-local danger confirm for the demoted Stop control (§2.1). The capture
 // page shares NOTHING with the Pi's /assets/shared/js/dialog.js — different
 // origin, different bundle, and a CSP that admits no external anything — so
@@ -2152,21 +2162,133 @@ function renderPlanNext(ctx, { index, attempt, target }) {
 function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
   const current = entryForIndex(ctx.spec, index);
   const screenCopy = (current && current.screen) || {};
-  const proceed = button("Continue", () => {
-    // Synchronous: advanceAfterAccepted renders the next screen (and, for the
-    // apply hold, schedules its begin) — this node is gone by then, so it is
-    // disabled rather than re-enabled in a finally.
+  const proceed = button("Continue", async () => {
+    // The tap is spent the moment it lands — this screen is replaced either
+    // way (the completion wait, then the end screen or a failure), so the
+    // button is disabled rather than re-enabled in a finally.
     proceed.disabled = true;
-    advanceAfterAccepted(ctx, { index, attempt, target });
+    await completePlanCaptureSet(ctx, { index, attempt, target });
   });
   renderStepScreen(ctx, {
     progress: String(screenCopy.progress || ""),
     headline: "All spots measured — ready to continue?",
+    // NOTE this detail line is FALSE for a measure-only (stage-1) plan: JTS
+    // tunes nothing next, the household decides next. The two-stage work
+    // order assigns this sentence — and `renderPlanAllDone`'s "the speaker
+    // continues automatically" fallback — to PR-T4, whose job is the phone's
+    // honesty layer; PR-T3 deliberately did not improvise replacement copy.
     detail: "JTS tunes the speaker next. Retake this spot first if you want to.",
     primary: proceed,
     secondary: retakeControl(ctx, { index, attempt }),
   });
   clearStatus();
+}
+
+// The household's explicit "I am done measuring" (two-stage work order D1).
+//
+// Before the split this tap called `advanceAfterAccepted`, i.e. posted a
+// begin for the NEXT entry — VERIFY's — and the Pi inferred the confirmation
+// from that begin's index being past the cloud group. A measure-only plan has
+// no next entry (its final cloud position IS `capture_target`), so there is no
+// begin to carry the meaning and `parse_begin_capture` would refuse one
+// anyway. The signal is its own authenticated event instead: the Pi, which has
+// been holding the set open for exactly this, closes the group, fits the
+// candidate, and ends the session — and the household goes back to the speaker
+// page to decide whether to apply it.
+async function completePlanCaptureSet(ctx, { index, attempt, target }) {
+  const controller = ctx.planController;
+  try {
+    setStatus(CAPTURE_CHECKING_MESSAGE, "info");
+    await ctx.client.postEvent({ complete_capture_set: true });
+    if (controller && controller.aborted) return;
+    const verdict = await waitForCaptureSetComplete(
+      ctx.client, ctx.spec, () => Boolean(controller && controller.aborted),
+    );
+    if (controller && controller.aborted) return;
+    if (verdict.deadSession) {
+      renderSessionExpired(ctx);
+    } else if (verdict.setExhausted) {
+      renderPlanExhausted(ctx, { ...verdict, target });
+    } else if (verdict.failed) {
+      renderPlanRetry(ctx, {
+        index,
+        attempt,
+        target,
+        reason: verdict.reason,
+        prompt: verdict.prompt,
+      });
+      return; // retryable: keep Stop wired and the session alive
+    } else {
+      renderPlanAllDone(ctx, { index });
+    }
+  } catch (err) {
+    if (controller && controller.aborted) return;
+    // Post-arm in every sense that matters: the captures are all consumed and
+    // the Pi owns what happens next, so there is nothing safe to re-tap here.
+    renderSweepFailed(ctx, err);
+  }
+  await endPlanSession(ctx);
+}
+
+// Wait for the Pi to close a HELD set. Deliberately not `waitForCaptureResult`:
+// the relay's host-event slot still holds this slot's own accepted
+// `capture_result` (the one this screen was rendered from), so that function
+// would match it immediately and route straight back to the confirm screen.
+// Only session-level outcomes count here — plus a NEW terminal verdict, which
+// is how a refused group close (the pre-apply accountability veto) reaches the
+// household instead of timing out.
+async function waitForCaptureSetComplete(client, spec, isAborted) {
+  const pollMs = Math.max(100, Math.min(1000, Number(spec.progress_poll_ms) || 250));
+  // The group close runs the combine and the fit — the slowest analysis of the
+  // session. Same budget the Pi gives the household's own between-step taps,
+  // so neither side gives up while the other is still working.
+  const deadline = Date.now() + CAPTURE_SET_COMPLETE_TIMEOUT_MS;
+  let reconnecting = null;
+  while (Date.now() < deadline) {
+    if (isAborted()) return { aborted: true };
+    let status;
+    try {
+      status = await client.fetchPhoneStatus();
+    } catch (err) {
+      if (isDeadSessionError(err)) return { deadSession: true };
+      if (isRelayConnectivityAbort(err, String((err && err.message) || err))) {
+        reconnecting = err;
+        setStatus(RELAY_RECONNECTING_RESULT_MESSAGE, "info");
+        await delayMs(pollMs);
+        continue;
+      }
+      throw err;
+    }
+    if (reconnecting) {
+      reconnecting = null;
+      setStatus(CAPTURE_CHECKING_MESSAGE, "info");
+    }
+    const event = (status && status.host_event) || {};
+    const phase = String(event.phase || "");
+    if (phase === "capture_set_complete") return { setComplete: true };
+    if (phase === "capture_set_exhausted") {
+      return {
+        setExhausted: true,
+        accepted: Number(event.accepted) || 0,
+        attempts: Number(event.attempts) || 0,
+      };
+    }
+    if (phase === "capture_refused" || (phase === "capture_result" && event.accepted === false)) {
+      return {
+        failed: true,
+        reason: event.error ? String(event.error)
+          : (event.reason ? String(event.reason) : String(event.banner || "")),
+        prompt: event.prompt ? String(event.prompt) : "",
+      };
+    }
+    await delayMs(pollMs);
+  }
+  if (reconnecting) throw reconnecting;
+  const failure = new Error(
+    "the speaker did not finish this measurement before the timeout",
+  );
+  failure.sweepFailed = true;
+  throw failure;
 }
 
 function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake = false }) {
@@ -3084,6 +3206,26 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       await endPlanSession(ctx);
       return;
     }
+    // ORDER IS LOAD-BEARING (two-stage work order D1). `awaitingConfirm` must
+    // beat the completion test, not follow it: in a measure-only plan the
+    // final cloud position IS `target`, so `verdict.accepted && index >=
+    // target` is true on the very capture whose verdict says the group is
+    // still open. Testing completion first would render "All measurements
+    // done" over the confirm screen the whole apply decision rests on. (The Pi
+    // also withholds `capture_set_complete` while it holds the set, so
+    // `setComplete` cannot be true here either — two independent guards,
+    // because this one is the page's own and survives an older Pi.)
+    if (verdict.accepted && verdict.awaitingConfirm) {
+      // The just-accepted capture becomes retakeable — until this page posts
+      // its next begin (§2.6) or signals the set complete.
+      armRetakeSlot(ctx, { index, attempt });
+      ctx.retakeAwaitingConfirm = true;
+      // The pre-apply cloud is walked but NOT closed: the Pi is holding the
+      // set open for the household's confirmation, which is exactly the
+      // window in which retaking this spot still means something.
+      renderPlanGroupConfirm(ctx, { index, attempt, target });
+      return;
+    }
     if (verdict.setComplete || (verdict.accepted && index >= target)) {
       renderPlanAllDone(ctx, { index });
       await endPlanSession(ctx);
@@ -3101,17 +3243,10 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       // …and remember WHICH screen this acceptance belongs on, so a rejected
       // retake of it can return to the same place (B1's escape) rather than
       // guessing. Survives the retake round; overwritten by the next accept.
-      ctx.retakeAwaitingConfirm = Boolean(verdict.awaitingConfirm);
-      if (verdict.awaitingConfirm) {
-        // The pre-apply cloud is walked but NOT closed: the Pi is holding the
-        // fit + apply behind a begin past the group, which is exactly the
-        // window in which retaking this spot still means something.
-        renderPlanGroupConfirm(ctx, { index, attempt, target });
-      } else {
-        // Route by the UPCOMING entry's auto-advance policy (§5.2): a hold that
-        // owns the screen (on_apply), a cancelable countdown, or the manual tap.
-        advanceAfterAccepted(ctx, { index, attempt, target });
-      }
+      ctx.retakeAwaitingConfirm = false;
+      // Route by the UPCOMING entry's auto-advance policy (§5.2): a hold that
+      // owns the screen (on_apply), a cancelable countdown, or the manual tap.
+      advanceAfterAccepted(ctx, { index, attempt, target });
     } else {
       // `error` first for the legacy shape (kinds whose host sets it), then
       // the v2 conductor's `reason`/`banner`; `prompt` is the separate

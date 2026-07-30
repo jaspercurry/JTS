@@ -1584,7 +1584,26 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="verify", active_step="verify",
             verdict=verdict,
-            next_action=None,
+            # STAGE 2's entry point (two-stage commission D2, PR-T3). The
+            # measuring session ended at the review screen and the household
+            # applied from there, so the post-apply check is a NEW session
+            # somebody has to start — and it must be started deliberately,
+            # because the relay TTL begins ticking at open and the household
+            # is still walking back to fetch the phone. ``stage:
+            # "post_apply"`` selects the tier's own verify shape rather than
+            # the 1-entry recovery re-arm; the tier itself comes from the
+            # durable state the measuring session wrote.
+            #
+            # No ``show_during_relay``: while stage 2's own relay IS in flight
+            # this screen renders the same copy with the action suppressed by
+            # the shared relay gate, exactly as every other in-session screen
+            # does — one button to start it, none to start it twice.
+            next_action={
+                "id": "verify_start",
+                "label": "Check the result",
+                "endpoint": "/correction/crossover/v2/verify",
+                "body": {"stage": "post_apply"},
+            },
             status=status,
             # B1 fix (adversarial review of PR #1780): Express's pre-apply
             # cloud has already closed by the time this screen renders (it

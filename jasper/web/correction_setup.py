@@ -5631,11 +5631,13 @@ def _handle_crossover_v2_relay(
     (``_run_relay_capture``) exactly as the other relay-hosted crossover
     captures do.
 
-    ``idle_hold`` reaches BOTH background lifetimes a v2 session owns: the
-    relay runner (through ``_run_relay_capture``) and the auto-apply worker
-    thread the runner spawns (through the preparer, which threads it into
-    ``build_v2_run_and_consume``). Neither serves an HTTP request, and this is
-    the flow the 600 s idle exit actually killed (issue #1854).
+    ``idle_hold`` covers the one background lifetime a v2 session still owns:
+    the relay runner (through ``_run_relay_capture``). It serves no HTTP
+    request, and it is the flow the 600 s idle exit actually killed (issue
+    #1854). It used to reach a SECOND lifetime — the auto-apply worker thread
+    the runner spawned — which the two-stage split removed: the apply is now a
+    household POST served in-request, so the tracker's ordinary
+    in-flight-request accounting holds the process for it.
     """
     raw = _read_json_body(handler)
 
@@ -5655,7 +5657,6 @@ def _handle_crossover_v2_relay(
         status=status,
         run_async=_run_async,
         camilla_factory=_camilla,
-        idle_hold=idle_hold,
     )
     kind = RelayCaptureKind(
         label=prepared.label,
@@ -5674,12 +5675,23 @@ def _handle_crossover_v2_relay(
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /crossover/v2/apply: apply the reviewed v2 measured candidate."""
+    """POST /crossover/v2/apply: apply the reviewed v2 measured candidate.
+
+    Reads the same ``status_payload()`` the session preparers do, because the
+    apply now runs the stage-2 openability preflight server-side (two-stage
+    commission work order D3): a speaker that cannot open its post-apply check
+    must not be corrected and left ungraded.
+    """
     raw = _read_json_body(handler)
 
-    from . import correction_crossover_v2 as v2host
+    from . import correction_crossover_backend, correction_crossover_v2 as v2host
 
-    return v2host.handle_v2_apply(raw, _run_async, _camilla)
+    return v2host.handle_v2_apply(
+        raw,
+        _run_async,
+        _camilla,
+        status=correction_crossover_backend.status_payload(),
+    )
 
 
 def _handle_crossover_v2_restore(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
