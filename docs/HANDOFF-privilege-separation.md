@@ -209,7 +209,19 @@ the broker is unreachable** — logged loudly (`event=restart_broker.
 fallback_direct`) so a silently-broken broker path is caught *before* the user
 drop removes the safety net. Once a client is a non-root service user
 (`geteuid() != 0`) the fallback is structurally impossible: the broker is the
-only path, as intended. `MANAGED_UNITS | START_ONLY_UNITS` is the same unit set
+only path, as intended.
+
+A **denied** peer gets its actual rejection, not a transport error. The two
+pre-auth rejections answer from the peer credentials alone, so the broker can
+reply and close before the client's `sendall` finishes; `request_restart`
+therefore records a peer-closed send error, reads the answer that is already
+queued, and reports the send error only when nothing arrived. Before that, 6%
+of denials under concurrent load surfaced as "broken pipe" and the
+`event=restart_broker.denied` line was the only evidence of the real reason.
+The auth boundary itself is unchanged — the broker still reads nothing from an
+unauthenticated peer.
+
+`MANAGED_UNITS | START_ONLY_UNITS` is the same unit set
 the 3b polkit rule will grant `jasper-control`; the broker enforces the narrower
 start-only semantics so authz and the polkit grant can't drift. Pinned by
 [`tests/test_restart_broker.py`](../tests/test_restart_broker.py) (verb

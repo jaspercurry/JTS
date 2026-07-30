@@ -264,19 +264,27 @@ _BROKER_CLOSED_WITHOUT_ANSWER = "empty broker response"
 #
 # entered AND crashed  -> the handler ran and blew up: a real broker bug, and
 #                         the one case that must never be retried.
-# entered, not crashed -> the handler ran fine and the client merely lost a
-#                         send race (the deny path replies and closes without
-#                         draining the request, so an unauthorized peer can see
-#                         EPIPE instead of its rejection). Retry is correct.
+# entered, not crashed -> the handler ran to completion and the client still
+#                         saw a transient error. Retry is correct.
 # neither              -> the accept-then-close race. Retry is correct.
 #
 # Requiring both is load-bearing, not belt-and-braces: gating on `entered`
 # alone made test_unauthorized_peer_uid_rejected fail 1-in-64 under 8-wide
-# concurrent load, because its handler legitimately runs before the client's
-# sendall completes.
+# concurrent load, because the deny path answers from peer credentials alone
+# and so legitimately runs before the client's sendall completes. (That client
+# now recovers the reply rather than reporting the send error — see
+# request_restart — so the deny path no longer *produces* a failure; the
+# middle row is pinned synthetically by
+# test_a_handler_that_ran_without_crashing_does_not_block_the_retry.)
 #
-# Written from the handler thread, read from the test thread, one client at a
-# time — the GIL makes that safe here.
+# `_retry_transient_broker_io` snapshots this once per attempt, so it assumes
+# one round trip per attempt: a `call()` making two, where the first succeeds
+# and the second crashes a handler, would be attributed to the pair. Every
+# call shape in this file is single-round-trip.
+#
+# Written from the handler thread, read from the test thread. Safe because
+# there is only ever one client in flight at a time, NOT because of the GIL —
+# `d[k] += 1` is load/add/store and is not atomic.
 _HANDLER_ACTIVITY = {"entered": 0, "crashed": 0}
 
 
@@ -854,6 +862,219 @@ def test_direct_fallback_guard_fails_loudly_without_a_pending_failure(monkeypatc
         restart_broker._direct_systemctl(
             "restart", ["jasper-mux.service"], no_block=True, timeout=5.0,
         )
+
+
+def _send_late(monkeypatch, answered):
+    """Make request_restart's sendall land AFTER the peer has answered.
+
+    That ordering is what the deny path hits under load: peer credentials
+    come from the socket itself, so the broker can reject and close before a
+    byte is sent. `answered` is an Event the peer sets once it is done with
+    the connection — having replied or not, depending on the caller.
+
+    Waiting on it rather than sleeping a guessed interval is what makes these
+    deterministic, and the reason is NOT that a slow peer would fail loudly.
+    Measured with the wait neutered so the client's send always wins: only
+    test_a_failed_send_with_no_answer_still_raises goes red. The other two —
+    including test_a_reply_already_delivered_survives_a_failed_send, the test
+    that pins the fix — go VACUOUSLY GREEN, taking the ordinary path and
+    never touching the salvage at all. A peer starved past a sleep window on
+    a loaded box would therefore retire the coverage silently instead of
+    reporting it, which is the exact failure mode this file exists to
+    prevent.
+
+    Patches only restart_broker's own `socket` name, so the server side and
+    every other socket in the process are untouched.
+    """
+    class LateSendingSocket(socket.socket):
+        def sendall(self, data, *args, **kwargs):
+            assert answered.wait(5), "peer never answered; ordering not forced"
+            # Re-arm, so a retried attempt waits for its OWN connection to be
+            # answered rather than sailing through on the previous one's
+            # signal — otherwise only the first attempt is actually ordered.
+            answered.clear()
+            return super().sendall(data, *args, **kwargs)
+
+    class _SocketModuleWithLateSend:
+        """Everything the real socket module has, except a slow-sending
+        socket class. The delegation is not optional: the broker's own
+        _peer_cred resolves SOL_SOCKET through this same name (SO_PEERCRED
+        itself is captured at import), so a shim carrying only what
+        request_restart uses crashed the handler instead of delaying the
+        client.
+        """
+
+        socket = LateSendingSocket
+
+        def __getattr__(self, name):
+            return getattr(socket, name)
+
+    monkeypatch.setattr(restart_broker, "socket", _SocketModuleWithLateSend())
+
+
+def test_a_reply_already_delivered_survives_a_failed_send(tmp_path, monkeypatch):
+    """A failed sendall must not discard an answer the peer already wrote.
+
+    The broker answers its two pre-auth rejections from peer credentials
+    alone, so it can reply and close before the client's send completes. The
+    reply is then sitting in the client's receive queue -- measured on Linux
+    AF_UNIX: sendall raised 200/200 and the reply was still readable 200/200.
+    Reporting the send error without looking is what turned "unauthorized
+    peer" into "broken pipe" for 6% of denials under 8-wide load on a Pi 5.
+
+    No _BrokerServer here (a plain listener replies and hangs up), so this
+    pins the client's control flow on every platform, not just Linux.
+    """
+    monkeypatch.chdir(tmp_path)  # AF_UNIX sun_path is ~104 chars on macOS
+    sock_path = "denied.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(sock_path)
+    listener.listen(1)
+    listener.settimeout(5)
+
+    answered = threading.Event()
+
+    def reply_without_reading():
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        try:
+            with conn:  # answer and hang up; never read the request
+                conn.sendall(b'{"ok": false, "error": "unauthorized peer"}\n')
+        finally:
+            answered.set()  # the close above is what fails the client's send
+
+    peer = threading.Thread(target=reply_without_reading, daemon=True)
+    peer.start()
+    _send_late(monkeypatch, answered)
+    try:
+        resp = restart_broker.request_restart("jasper-voice", socket_path=sock_path)
+        assert resp["ok"] is False
+        assert "unauthorized" in resp["error"]
+    finally:
+        peer.join(timeout=5)
+        assert not peer.is_alive()
+        listener.close()
+
+
+def test_a_failed_send_with_no_answer_still_raises(tmp_path, monkeypatch):
+    """The recovery above must not swallow a genuine send failure: with
+    nothing to read, the original error still surfaces as BrokerUnavailable
+    rather than degrading into a causeless "empty broker response" (which the
+    retry policy treats very differently)."""
+    monkeypatch.chdir(tmp_path)
+    sock_path = "silent.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(sock_path)
+    listener.listen(1)
+    listener.settimeout(5)
+
+    answered = threading.Event()
+
+    def close_without_answering():
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        try:
+            conn.close()
+        finally:
+            answered.set()
+
+    peer = threading.Thread(target=close_without_answering, daemon=True)
+    peer.start()
+    _send_late(monkeypatch, answered)
+    try:
+        with pytest.raises(restart_broker.BrokerUnavailable) as excinfo:
+            restart_broker.request_restart("jasper-voice", socket_path=sock_path)
+        assert isinstance(
+            excinfo.value.__cause__, (BrokenPipeError, ConnectionResetError),
+        )
+    finally:
+        peer.join(timeout=5)
+        assert not peer.is_alive()
+        listener.close()
+
+
+@requires_peercred
+def test_a_denied_peer_receives_its_rejection_not_a_broken_pipe(
+    tmp_path, monkeypatch,
+):
+    """The two pre-auth rejections answer from peer credentials alone, so the
+    handler can reply and close before the client's send completes. The reply
+    is NOT lost when that happens -- measured on Linux AF_UNIX against the
+    pre-fix server, sendall raised 200/200 and the reply was still readable
+    200/200. It was only skipped, because request_restart used to wrap the
+    send and the read in one `try`. The denied caller therefore saw "broken
+    pipe" and the journal's `event=restart_broker.denied` was the only
+    evidence left of why: 6% of denials (147/2400) under 8-wide concurrent
+    load on a Pi 5, 0% idle.
+
+    End to end against a real broker, with the ordering forced by the Event
+    rather than left to load, so the salvage is always the path exercised.
+    The signal comes from the server's `shutdown_request` — the moment the
+    connection is actually closed, and the one hook socketserver still calls
+    when the handler thread fails to spawn, so a transient race unblocks the
+    client into a retry instead of stalling it.
+    """
+    monkeypatch.setattr(restart_broker, "_allowed_uids", lambda: {999999})
+    sock_path = str(tmp_path / "restart.sock")
+    server = restart_broker.start_broker(sock_path)
+    assert server is not None
+
+    # Signal from the instance, not the class: socketserver closes the
+    # connection in shutdown_request, after the handler has replied, so this
+    # is the moment the client's send can start failing.
+    closed = threading.Event()
+    real_shutdown_request = server.shutdown_request
+
+    def shutdown_request_then_signal(request):
+        try:
+            return real_shutdown_request(request)
+        finally:
+            closed.set()
+
+    server.shutdown_request = shutdown_request_then_signal
+    _send_late(monkeypatch, closed)
+    try:
+        resp = _request_restart_retrying_transient_failures(
+            "jasper-voice", socket_path=sock_path,
+        )
+        assert resp["ok"] is False
+        assert "unauthorized" in resp["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@requires_peercred
+def test_a_handler_that_ran_without_crashing_does_not_block_the_retry(broker):
+    """The `crashed` half of the conjunction is load-bearing on its own.
+
+    A handler can run to completion and the client still see a transient
+    failure, so "a handler ran" must NOT by itself veto the retry -- that
+    over-strict rule passed every serial loop and then failed 1-in-64 under
+    8-wide concurrent load. Delete the `crashed` conjunct and this test goes
+    red: the round trip below enters a handler that never crashes, so an
+    entered-only rule would refuse to retry and re-raise the blip.
+    """
+    sock_path, _calls, _ = broker
+    attempts = {"n": 0}
+
+    def round_trip_then_blip():
+        attempts["n"] += 1
+        resp = restart_broker.request_restart(
+            "jasper-voice", socket_path=sock_path,
+        )  # a real, clean handler run: entered +1, crashed +0
+        if attempts["n"] == 1:
+            raise BrokenPipeError("synthetic post-handler blip")
+        return resp
+
+    with pytest.warns(_TransientBrokerConnectRetryWarning):
+        resp = _retry_transient_broker_io(round_trip_then_blip)
+    assert resp["ok"] is True
+    assert attempts["n"] == 2
 
 
 @requires_peercred
