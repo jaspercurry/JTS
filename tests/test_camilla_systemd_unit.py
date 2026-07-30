@@ -22,7 +22,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.systemd_unit_helpers import value_for as _value_for
+from tests.systemd_unit_helpers import (
+    value_for as _value_for,
+    values_for as _values_for,
+)
 
 UNIT_PATH = (
     Path(__file__).resolve().parent.parent
@@ -44,8 +47,8 @@ INSTALL_SH = (
 def test_unit_starts_after_outputd_and_fanin_for_pipe_rendezvous():
     body = UNIT_PATH.read_text()
 
-    after = _value_for(body, "After") or ""
-    wants = _value_for(body, "Wants") or ""
+    after = _values_for(body, "After")
+    wants = _values_for(body, "Wants")
     assert "jasper-outputd.service" in after
     assert "jasper-fanin.service" in after
     assert "jasper-outputd.service" in wants

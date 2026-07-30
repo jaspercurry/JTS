@@ -9,12 +9,12 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 
 ## Status counts
 
-- **open**: 158 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 159 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
 - **fixed**: 491
 - **in-progress**: 0
-- **mooted**: 28
+- **mooted**: 27
 - **deferred**: 0
 
 ## Ledger
@@ -473,8 +473,8 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0604 | `scripts/capture-chip-mic.sh` :: :41-45 | nit | W3 | **open** | — |
 | DA-0605 | `scripts/capture-reference-condition.sh` :: :189-216 | nit | W3 | **open** | — |
 | DA-0606 | `scripts/check-firmware-builds.sh` :: :35-37 | nit | W3 | **open** | — |
-| DA-0607 | `tests/js/relay_worker_test.mjs` :: :28,662-701 | nit | W3 | **fixed** | six capture/relay suites share one function-runner harness — this branch |
-| DA-0608 | `tests/js/sound_profile_harness.mjs` :: summedSummary (:3162) | nit | W3 | **mooted** | later harness consolidation routed the earlier summary assertions through the shared helper — later mainline refactor |
+| DA-0607 | `tests/js/relay_worker_test.mjs` :: :28,662-701 | nit | W3 | **fixed** | all 14 capture/relay suites with this runner shape share one failure-preserving harness — this branch |
+| DA-0608 | `tests/js/sound_profile_harness.mjs` :: summedSummary (:3162) | nit | W3 | **open** | — |
 | DA-0609 | `tests/test_active_speaker_environment.py` :: _valid_config | nit | W3 | **fixed** | active-speaker suites share one successful Camilla validation fixture — this branch |
 | DA-0610 | `tests/test_aec_bridge_systemd.py` :: _value_for | nit | W3 | **fixed** | systemd contract suites share a last-assignment-aware directive parser — this branch |
 | DA-0611 | `tests/test_aec_reconcile.py` :: _fake_outputd_status_socket | nit | W3 | **open** | — |
@@ -532,10 +532,10 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0664 | `tests/test_audio_hardware_reconcile.py` :: 105 | nit | W4 | **fixed** | unused TTS env-file variable removed from the reconciler fixture — this branch |
 | DA-0665 | `tests/test_dependency_groups.py` :: module scope | nit | W4 | **open** | — |
 | DA-0666 | `tests/test_doctor.py` :: test_run_async_parallelizes_blocking_checks_ | nit | W4 | **fixed** | concurrency proof uses an active-worker counter instead of a wall-clock threshold — this branch |
-| DA-0667 | `tests/test_doctor_usbsink.py` :: 1180 | nit | W4 | **mooted** | later fixture updates now stage the reconciler's real route key — later mainline refactor |
+| DA-0667 | `tests/test_doctor_usbsink.py` :: 1180 | nit | W4 | **mooted** | the stale env-drift fixture and obsolete route key were removed by later test restructuring — later mainline refactor |
 | DA-0668 | `tests/test_sound_setup.py` :: :1 | nit | W4 | **fixed** | sound setup suite now declares its module purpose — this branch |
 | DA-0669 | `tests/test_sound_setup.py` :: test_apply_profile_rolls_back_when_reload_fa | nit | W4 | **fixed** | rollback failure assertion uses the suite's standard `pytest.raises` contract — this branch |
-| DA-0670 | `tests/test_sound_setup.py` :: test_reconcile_current_dsp_skips_unknown_con | nit | W4 | **mooted** | later event-audit coverage now pins the sound mutation logging contract — later mainline refactor |
+| DA-0670 | `tests/test_sound_setup.py` :: test_reconcile_current_dsp_skips_unknown_con | nit | W4 | **mooted** | later tests directly assert skipped and unchanged `sound.reconcile_current_dsp` events — later mainline refactor |
 | DA-0671 | `tests/test_sources_setup_usbsink.py` :: _patch_config | nit | W4 | **fixed** | later source-wizard test refactor removed the unused helper |
 | DA-0672 | `tests/test_tools_spotify.py` :: test_revoked_then_relinked_recovers_without_ | nit | W4 | **fixed** | real same-clock 30-second router refresh cooldown exercised without force-resetting state — #1426 |
 | DA-0673 | `tests/test_usbsink_volume_bridge.py` :: test_run_retries_discovery_after_transient_m | nit | W4 | **fixed** | retry behavior and `amixer` timeout handling are asserted in separate tests — this branch |

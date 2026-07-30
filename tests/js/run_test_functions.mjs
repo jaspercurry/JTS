@@ -17,8 +17,7 @@ export async function runTestFunctions(tests, passedCount) {
       };
       console.error(failure.error);
       console.log(JSON.stringify({ ok: false, ...failure }));
-      process.exitCode = 1;
-      return;
+      process.exit(1);
     }
   }
 

@@ -69,6 +69,34 @@ def test_capture_page_harness(harness: str):
     assert out["passed"] >= 1, out
 
 
+def test_shared_runner_terminates_promptly_when_a_failed_test_leaks_a_handle():
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    helper_uri = (_JS_DIR / "run_test_functions.mjs").resolve().as_uri()
+    script = f"""
+import {{ runTestFunctions }} from {json.dumps(helper_uri)};
+await runTestFunctions(
+  [function leaksHandle() {{
+    setInterval(() => {{}}, 10_000);
+    throw new Error("expected failure");
+  }}],
+  () => 0,
+);
+"""
+
+    proc = subprocess.run(
+        [_NODE, "--input-type=module", "--eval", script],
+        capture_output=True,
+        text=True,
+        timeout=2,
+    )
+
+    assert proc.returncode == 1
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["ok"] is False
+    assert out["test"] == "leaksHandle"
+
+
 def test_capture_page_expired_link_message_points_back_to_speaker():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 

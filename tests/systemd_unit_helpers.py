@@ -6,15 +6,43 @@
 
 from __future__ import annotations
 
+import re
+import shlex
 
-def value_for(unit_text: str, key: str) -> str | None:
-    """Return the last value assigned to a scalar ``Key=Value`` directive."""
-    value: str | None = None
-    for line in unit_text.splitlines():
+
+def _assigned_values(unit_text: str, key: str) -> list[str]:
+    """Return every logical value assigned to ``key`` in file order."""
+    logical_text = re.sub(r"\\\s*\n\s*", " ", unit_text)
+    values: list[str] = []
+    for line in logical_text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith(("#", "[")):
             continue
         name, separator, candidate = stripped.partition("=")
         if separator and name.strip() == key:
-            value = candidate.strip()
-    return value
+            values.append(candidate.strip())
+    return values
+
+
+def value_for(unit_text: str, key: str) -> str | None:
+    """Return the last value assigned to a scalar ``Key=Value`` directive."""
+    values = _assigned_values(unit_text, key)
+    return values[-1] if values else None
+
+
+def values_for(unit_text: str, key: str) -> tuple[str, ...]:
+    """Resolve an accumulating, whitespace-tokenized systemd directive.
+
+    Repeated non-empty assignments append values. An empty assignment resets
+    the list, matching systemd's list-directive semantics.
+    """
+    values: list[str] = []
+    for assigned in _assigned_values(unit_text, key):
+        if not assigned:
+            values.clear()
+            continue
+        try:
+            values.extend(shlex.split(assigned))
+        except ValueError:
+            values.extend(assigned.split())
+    return tuple(values)

@@ -16,7 +16,10 @@ from jasper.tts_routing import (
     VOICE_TTS_SOCKET_ENV,
 )
 from tests.install_surface import installer_text
-from tests.systemd_unit_helpers import value_for as _value_for
+from tests.systemd_unit_helpers import (
+    value_for as _value_for,
+    values_for as _values_for,
+)
 
 from ._voice_runtime_text import voice_runtime_text
 
@@ -52,9 +55,9 @@ def test_outputd_unit_is_mainline_default_not_flag_gated():
 def test_outputd_starts_before_camilla_for_local_pipe_reader():
     unit = _read_unit()
 
-    assert "jasper-camilla.service" not in (_value_for(unit, "After") or "")
-    assert "jasper-fanin.service" not in (_value_for(unit, "After") or "")
-    assert "jasper-camilla.service" in (_value_for(unit, "Before") or "")
+    assert "jasper-camilla.service" not in _values_for(unit, "After")
+    assert "jasper-fanin.service" not in _values_for(unit, "After")
+    assert "jasper-camilla.service" in _values_for(unit, "Before")
 
 
 def test_outputd_unit_has_audio_realtime_shape():
@@ -158,7 +161,7 @@ def test_install_reloads_audio_udev_rules_without_synthetic_hotplug():
 
 def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
     unit = VOICE_UNIT_PATH.read_text()
-    after = set((_value_for(unit, "After") or "").split())
+    after = set(_values_for(unit, "After"))
     assert {
         "jasper-fanin.service",
         "jasper-camilla.service",
@@ -166,9 +169,9 @@ def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
         "network-online.target",
         "jasper-accessory-reconcile.service",
     } <= after
-    assert "jasper-fanin.service" in _value_for(unit, "Wants")
-    assert "jasper-outputd.service" in _value_for(unit, "Wants")
-    assert "jasper-accessory-reconcile.service" in _value_for(unit, "Wants")
+    assert "jasper-fanin.service" in _values_for(unit, "Wants")
+    assert "jasper-outputd.service" in _values_for(unit, "Wants")
+    assert "jasper-accessory-reconcile.service" in _values_for(unit, "Wants")
     assert f'Environment="{TTS_TRANSPORT_ENV}=outputd"' in unit
     assert f'Environment="{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"' in unit
     assert f'Environment="{DUCK_TRANSPORT_ENV}=fanin"' in unit
@@ -182,8 +185,8 @@ def test_voice_unit_parks_cleanly_when_provider_is_unconfigured():
     # the same way and now shares these lists — the exact "66 78" set is
     # pinned by tests/test_voice_input_gate.py; here we only assert this
     # test's own concern, that 78 stays a clean-park code.
-    assert "78" in _value_for(unit, "SuccessExitStatus").split()
-    assert "78" in _value_for(unit, "RestartPreventExitStatus").split()
+    assert "78" in _values_for(unit, "SuccessExitStatus")
+    assert "78" in _values_for(unit, "RestartPreventExitStatus")
 
 
 def test_voice_daemon_maps_unconfigured_provider_to_ex_config():

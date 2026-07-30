@@ -19,7 +19,10 @@ import re
 from pathlib import Path
 
 from tests.install_surface import installer_text
-from tests.systemd_unit_helpers import value_for as _value_for
+from tests.systemd_unit_helpers import (
+    value_for as _value_for,
+    values_for as _values_for,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -453,16 +456,15 @@ def test_install_target_is_multi_user():
     """`WantedBy=multi-user.target` matches the conventions of
     other jasper-* daemons."""
     unit = _read_unit()
-    val = _value_for(unit, "WantedBy")
-    assert val == "multi-user.target"
+    assert _values_for(unit, "WantedBy") == ("multi-user.target",)
 
 
 def test_fanin_starts_before_hot_path_consumers():
     """Fan-in must be initialized before Camilla/renderer consumers try
     to open the summed-reference graph."""
     unit = _read_unit()
-    before = _value_for(unit, "Before")
-    assert before is not None
+    before = _values_for(unit, "Before")
+    assert before
     for dep in (
         "jasper-camilla.service",
         "shairport-sync.service",

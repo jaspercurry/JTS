@@ -9,7 +9,10 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from tests.systemd_unit_helpers import value_for as _value_for
+from tests.systemd_unit_helpers import (
+    value_for as _value_for,
+    values_for as _values_for,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink.service"
@@ -60,9 +63,9 @@ def test_readiness_marker_is_process_free_and_reproved_with_gadget_lifecycle():
     assert _value_for(body, "Type") == "oneshot"
     assert _value_for(body, "RemainAfterExit") == "yes"
     assert _value_for(body, "ExecStart") == "/bin/true"
-    assert "jasper-usbgadget.service" in (_value_for(body, "Requires") or "")
-    assert "jasper-usbgadget.service" in (_value_for(body, "PartOf") or "")
-    assert "jasper-usbsink-volume.service" in (_value_for(body, "Wants") or "")
+    assert "jasper-usbgadget.service" in _values_for(body, "Requires")
+    assert "jasper-usbgadget.service" in _values_for(body, "PartOf")
+    assert "jasper-usbsink-volume.service" in _values_for(body, "Wants")
 
     for retired in (
         "jasper-usbsink-audio",
@@ -80,12 +83,12 @@ def test_readiness_marker_is_process_free_and_reproved_with_gadget_lifecycle():
 def test_gadget_waits_for_reconciled_hardware_capability() -> None:
     body = GADGET_UNIT_PATH.read_text()
     assert "jasper-audio-hardware-reconcile.service" in (
-        _value_for(body, "After") or ""
+        _values_for(body, "After")
     )
     assert "jasper-audio-hardware-reconcile.service" in (
-        _value_for(body, "Wants") or ""
+        _values_for(body, "Wants")
     )
-    unset = set((_value_for(body, "UnsetEnvironment") or "").split())
+    unset = set(_values_for(body, "UnsetEnvironment"))
     assert USB_ROLE_TEST_SEAMS <= unset
     assert "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD" in unset
 
@@ -101,7 +104,7 @@ def test_gadget_snapshots_controller_before_reset_and_after_bind() -> None:
     assert "ExecStop=-/usr/bin/timeout 2s " in body
     assert "jasper-usbgadget-snapshot pre_reset" in body
 
-    unset = set((_value_for(body, "UnsetEnvironment") or "").split())
+    unset = set(_values_for(body, "UnsetEnvironment"))
     assert {
         "JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT",
         "JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR",
@@ -141,7 +144,7 @@ def test_forensics_is_opt_in_ram_bounded_and_deploy_persistent() -> None:
     assert "systemctl enable --now jasper-usbgadget-forensics.path" in install
     assert "systemctl try-restart jasper-usbgadget-forensics.service" in install
 
-    unset = set((_value_for(service, "UnsetEnvironment") or "").split())
+    unset = set(_values_for(service, "UnsetEnvironment"))
     assert {
         "JASPER_USBGADGET_FORENSICS_ENABLED_FILE",
         "JASPER_USBGADGET_FORENSICS_RUN_DIR",
@@ -152,7 +155,7 @@ def test_forensics_is_opt_in_ram_bounded_and_deploy_persistent() -> None:
 
 def test_hardware_reconciler_strips_usb_role_test_seams() -> None:
     body = HARDWARE_RECONCILE_UNIT_PATH.read_text()
-    unset = set((_value_for(body, "UnsetEnvironment") or "").split())
+    unset = set(_values_for(body, "UnsetEnvironment"))
 
     assert USB_ROLE_TEST_SEAMS <= unset
 

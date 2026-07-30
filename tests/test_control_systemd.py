@@ -26,7 +26,10 @@ import re
 import subprocess
 from pathlib import Path
 
-from tests.systemd_unit_helpers import value_for as _value_for
+from tests.systemd_unit_helpers import (
+    value_for as _value_for,
+    values_for as _values_for,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -63,9 +66,9 @@ def test_grouping_reconcile_trailing_service_runs_fixed_helper():
         _value_for(unit, "ExecStart")
         == "/usr/local/sbin/jasper-grouping-reconcile-trailing"
     )
-    assert _value_for(unit, "Environment") == (
-        '"JASPER_GROUPING_TRAILING_DELAY_FILE='
-        f"{control_server._GROUPING_RECONCILE_TRAILING_DELAY_FILE}\""
+    assert _values_for(unit, "Environment") == (
+        "JASPER_GROUPING_TRAILING_DELAY_FILE="
+        f"{control_server._GROUPING_RECONCILE_TRAILING_DELAY_FILE}",
     )
     assert _value_for(unit, "NoNewPrivileges") == "true"
     assert _value_for(unit, "CapabilityBoundingSet") == ""
@@ -152,21 +155,20 @@ def test_readwritepaths_pins_control_write_contracts():
     ProtectSystem=strict edit would silently break persistence and
     regress to the reboot-loop the rate-limit exists to prevent."""
     unit = _read_unit()
-    val = _value_for(unit, "ReadWritePaths")
-    assert val is not None, (
+    paths = _values_for(unit, "ReadWritePaths")
+    assert paths, (
         "jasper-control.service must declare ReadWritePaths to pin its "
         "state and peering advert write contracts."
     )
-    paths = val.split()
     assert "/var/lib/jasper" in paths, (
         "ReadWritePaths must include /var/lib/jasper; the T5.2 reboot "
         "rate-limit at /var/lib/jasper/system_supervisor_reboot.json depends "
-        f"on it. Got {val!r}"
+        f"on it. Got {paths!r}"
     )
     assert "/etc/avahi/services" in paths, (
         "ReadWritePaths must include /etc/avahi/services; wake-response "
         "peering renders /etc/avahi/services/jasper-peer.service from inside "
-        f"jasper-control under ProtectSystem=full. Got {val!r}"
+        f"jasper-control under ProtectSystem=full. Got {paths!r}"
     )
 
 

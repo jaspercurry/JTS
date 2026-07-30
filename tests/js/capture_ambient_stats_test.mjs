@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { runTestFunctions } from "./run_test_functions.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const modulePath = resolve(here, "../../capture-page/js/ambient-stats.js");
@@ -144,20 +145,4 @@ const tests = [
   testMissingRunTokenCoercesToEmptyString,
 ];
 
-let failure = null;
-for (const t of tests) {
-  try {
-    t();
-  } catch (e) {
-    failure = { test: t.name, error: String(e && e.stack ? e.stack : e) };
-    break;
-  }
-}
-
-if (failure) {
-  console.error(failure.error);
-  console.log(JSON.stringify({ ok: false, ...failure }));
-  process.exit(1);
-} else {
-  console.log(JSON.stringify({ ok: true, passed }));
-}
+await runTestFunctions(tests, () => passed);
