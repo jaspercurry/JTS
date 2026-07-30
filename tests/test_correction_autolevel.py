@@ -130,8 +130,8 @@ class _StubTonePlayer:
 
 @pytest.mark.asyncio
 async def test_autolevel_locks_when_lock_event_set(tmp_path):
-    """Drive a fake autolevel: start the ramp, immediately signal
-    lock, expect status=LOCKED at the next ramp step."""
+    """Drive a fake autolevel: let the ramp take one step, signal lock,
+    expect status=LOCKED at the ramp value it had reached."""
     sess = _make_session(tmp_path)
     set_history: list[float] = []
     ramp_stepped = asyncio.Event()
