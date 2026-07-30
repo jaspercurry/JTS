@@ -394,7 +394,20 @@ def test_apply_blocked_at_a_non_apply_step_gets_no_extra_nudge():
 def test_verify_phase_screen():
     env = build_crossover_envelope_v2(_status(phase="verify"))
     assert env["screen"] == "verify"
-    assert env["next_action"] is None
+    # STAGE 2's entry point (two-stage work order D2, PR-T3). The measuring
+    # session ended at the review screen and the household applied from there,
+    # so the post-apply check is a NEW session somebody has to start — and
+    # deliberately so, because the relay TTL begins ticking at open and the
+    # household is still walking back to fetch the phone. It used to be None:
+    # the same screen rendered mid-session while the phone drove it, and the
+    # shared relay gate still suppresses this action while stage 2's own relay
+    # is in flight.
+    assert env["next_action"] == {
+        "id": "verify_start",
+        "label": "Check the result",
+        "endpoint": "/correction/crossover/v2/verify",
+        "body": {"stage": "post_apply"},
+    }
     assert _step_statuses(env)["verify"] == "active"
     # Full's VERIFY anchor is followed by the post-apply cloud — no
     # express-only disclosure here.

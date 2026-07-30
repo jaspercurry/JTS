@@ -497,11 +497,12 @@ def _applied_offset_gate() -> float:
     """The conductor's ``applied_offset_db`` seam: the whole-band level move
     the apply declared (#1811), read fresh off durable state.
 
-    Written by :func:`observe_apply_success` on the auto-apply's background
-    thread; read one capture later by the delta probe on the runner's. Durable
-    state is the only thing both sides share, which is why this is a seam
-    rather than a constructor argument — same reason ``apply_complete`` and
-    ``apply_failed`` are.
+    Written by :func:`observe_apply_success` on the apply's own request
+    thread (the auto-apply worker's, before the two-stage split removed it);
+    read by the delta probe on a LATER session's runner thread. Durable state
+    is the only thing the two share — since the split they are not even the
+    same session — which is why this is a seam rather than a constructor
+    argument, the same reason ``apply_complete`` and ``apply_failed`` are.
 
     ``0.0`` for an absent, malformed, or non-finite value: "nothing known".
     The probe treats that honestly (the whole shift stays visible in
@@ -517,20 +518,22 @@ def _applied_offset_gate() -> float:
 
 
 def _apply_failure_gate() -> str:
-    """The conductor's ``apply_failed`` seam: reads a durable auto-apply
-    failure code (empty when none). Written by ``build_v2_run_and_consume``'s
-    ``_fire_auto_apply`` background thread via the SAME
+    """The conductor's ``apply_failed`` seam: reads a durable apply failure
+    code (empty when none), persisted through the SAME
     ``persist_conductor_state`` path every other capture failure uses — see
     ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.authorize_begin``,
     which refuses the deferred VERIFY hold outright once this names a code
-    rather than holding it toward a dishonest relay_timeout.
+    rather than holding it toward a dishonest relay_timeout. Retained with
+    that hold and, like it, unreached by any shipped session since the
+    two-stage split (D10) — the writer it was built for was the auto-apply
+    worker thread, which is gone.
 
     N1 (adversarial review, 2026-07-20): the contract is LITERAL — this seam
-    answers "did the auto-apply itself fail?", never "is SOME failure code
-    sitting in durable state for any reason." Any other code that happens to
-    be persisted (e.g. a stale value from an unrelated path) must not be
-    misread by authorize_begin as an apply failure; only
-    ``REASON_APPLY_FAILED`` qualifies.
+    answers "did the apply itself fail?", never "is SOME failure code sitting
+    in durable state for any reason." Any other code that happens to be
+    persisted (e.g. a stale value from an unrelated path) must not be misread
+    by authorize_begin as an apply failure; only ``REASON_APPLY_FAILED``
+    qualifies.
     """
     from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
 

@@ -56,14 +56,17 @@ The conductor exposes the three ``run_capture_plan`` callbacks
 (:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
 lifecycle hooks the flow needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
-relay session (a heterogeneous ``CapturePlan`` — 16 entries at the full tier's
-shipped defaults, 7 on express: check / measure / the pre-apply position group /
-verify / the post-apply position group, which express omits entirely; see
-"position-group choreography" below)
-spans all phases; VERIFY is soft-held behind :class:`CaptureBeginDeferred`
-until the host's OWN auto-apply completes — the mechanism is unchanged from
-the pre-ruling design, only the release trigger moved from a human tap to
-:func:`jasper.web.correction_crossover_v2`'s auto-apply hook.
+journey spans TWO relay sessions since the two-stage split (work order D1/D2,
+issue #1806), each a heterogeneous ``CapturePlan``: **stage 1** is check /
+measure / the pre-apply position group (10 entries at the full tier's shipped
+defaults, 6 on express), and **stage 2** is verify / the post-apply position
+group (6 at Full, 1 on express, which omits the group entirely). See
+"position-group choreography" below. **Nothing is applied inside a session** —
+stage 1 ends on the household's explicit set-completion signal, which closes
+the group and publishes a candidate they then review and choose to apply on
+jts.local. VERIFY's soft hold behind :class:`CaptureBeginDeferred` is retained
+machinery that no shipped session reaches (D10): stage 1 has no VERIFY index
+and stage 2 is constructed already-applied.
 
 **Failure taxonomy (§5.10).** Terminal verdicts are internal reason codes, not
 screens: :data:`REASON_REGISTRY` maps each code to one of the four screen
@@ -1023,9 +1026,13 @@ REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # raw confidence number, so doubt becomes guidance ("move the mic"), never a
 # question ("apply anyway?").
 REASON_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
-# The conductor's OWN auto-apply (the same transaction a household's tap used
-# to trigger) came back blocked or raised — never silently stranding the
-# phone on a hold that can only time out dishonestly as relay_timeout.
+# The apply transaction came back blocked or raised. It was the conductor's
+# OWN auto-apply until the two-stage split (D1); since then the only apply is
+# the household's POST from the review screen, which persists its blocking
+# issue through ``_persist_apply_blocked`` and answers the request directly.
+# The code is retained: it is still the honest name for "the apply failed",
+# and ``_persist_terminal_failure`` still scopes its §5.6 evidence reset away
+# from it (an apply failure says nothing about the mic position).
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
 # relay-transport death — see the catch-all's exception classification in
@@ -1034,12 +1041,12 @@ REASON_APPLY_FAILED = "apply_failed"
 # honest copy instead of a manufactured "timed out" claim.
 REASON_USER_STOPPED = "user_stopped"
 # The deferred apply/"review" hold (CaptureBeginDeferred "awaiting_apply")
-# expired before the conductor's own auto-apply completed — the apply
-# transaction stalled past REVIEW_HOLD_BUDGET_S while the phone waited on the
-# hold. Distinct from a relay-transport death (relay_timeout) and a deliberate
-# phone Stop (user_stopped): name the actual cause (the apply step timed out)
-# rather than a generic "the measurement link timed out" claim (#1605). Same
-# TEMPLATE_SESSION_RESTART shape — a fresh session is the only way forward.
+# expired before an apply completed. Distinct from a relay-transport death
+# (relay_timeout) and a deliberate phone Stop (user_stopped): name the actual
+# cause rather than a generic "the measurement link timed out" claim (#1605).
+# Same TEMPLATE_SESSION_RESTART shape — a fresh session is the only way
+# forward. RETAINED but unreached since the two-stage split (D10): no shipped
+# session holds for an apply any more.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # Position-group choreography (flat-linearization PR-3b): the pre-apply cloud
 # closed with `spatial_combine.assess_geometry` reporting `locked` — every
@@ -1054,9 +1061,9 @@ REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # measurement on a defect no mic move can decorrelate.
 REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 # Accountability assertions (linearization-integrity PR-L4). Both refuse a
-# candidate at the confirm seam, BEFORE the auto-apply thread starts, so the
-# speaker is never touched: the honest outcome of "we cannot show this makes
-# your speaker better" is to leave it alone and say so.
+# candidate at the confirm seam, so no proposal ever reaches the review screen
+# and the speaker is never touched: the honest outcome of "we cannot show this
+# makes your speaker better" is to leave it alone and say so.
 #
 # item 1 — the two drivers' realized levels, read on their own mirrored
 # ±1-octave half-bands about Fc after the committed trim, sit further apart than
@@ -2254,10 +2261,9 @@ class AnalyzeCapture(Protocol):
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
 ApplyGate = Callable[[], bool]
-# Reads whether the conductor's own auto-apply (triggered by the host off the
-# candidate-carrying verdict — the CLOUD_MEASURE group close on a cloud
-# session, MEASURE's own accept on the pre-cloud shape; §owner rulings
-# 2026-07-20 and 2026-07-27) hit a TERMINAL failure —
+# Reads whether an apply hit a TERMINAL failure. Retained with the deferred
+# VERIFY hold it feeds, and unreached by any shipped session since the
+# two-stage split (D10) — its writer was the auto-apply worker thread —
 # returns the reason code (e.g. REASON_APPLY_FAILED) or "" while still
 # pending/never attempted. Distinct from ``apply_complete`` (success only) so
 # ``authorize_begin`` can REFUSE the deferred VERIFY with an honest reason
@@ -3655,12 +3661,13 @@ class CrossoverV2Conductor:
     the safety caps + session volume, and the injected :class:`V2FlowSeams`.
     Hand :meth:`authorize_begin`, :meth:`on_armed`, and :meth:`consume_capture`
     to :func:`jasper.capture_relay.session.run_capture_plan`; call
-    :meth:`note_apply_complete` once the host's own auto-apply lands (the
-    deferred VERIFY then arms) — an optional synchronous shortcut for a caller
-    that already holds this conductor; the seam-based ``apply_complete``/
-    ``apply_failed`` checks in :meth:`authorize_begin` are the durable path and
-    work even without this call. :meth:`snapshot` / :meth:`hydrate` carry phase
-    persistence.
+    :meth:`note_apply_complete` once an apply lands (the deferred VERIFY then
+    arms) — an optional synchronous shortcut for a caller that already holds
+    this conductor; the seam-based ``apply_complete``/``apply_failed`` checks
+    in :meth:`authorize_begin` are the durable path and work even without this
+    call. Since the two-stage split (D10) no shipped session reaches that hold,
+    so neither is on the critical path. :meth:`snapshot` / :meth:`hydrate`
+    carry phase persistence.
     """
 
     def __init__(
@@ -4200,15 +4207,13 @@ class CrossoverV2Conductor:
     def current_phase(self) -> str:
         for phase in self._phases:
             if phase not in self._accepted:
-                # Everything before VERIFY accepted but not yet applied ⇒ the
-                # conductor's own auto-apply is in flight (or has failed) — no
-                # human control page, just a brief machine-paced window before
-                # VERIFY arms. The MEASURE test is the cheap stand-in for
-                # "a candidate should exist by now": on a cloud session the
-                # pre-apply group sits between the two and is filtered out by
-                # the loop above before this branch is ever reached, so this
-                # only fires once the group has closed and the candidate has
-                # been built (2026-07-27 timing move).
+                # Everything before VERIFY accepted but not yet applied ⇒ an
+                # apply is pending. RETAINED and unreached by any shipped
+                # session since the two-stage split (D10): stage 1 has no
+                # VERIFY in ``self._phases`` at all, and stage 2 is
+                # constructed ``applied=True``. The wizard's own resolution
+                # (``_phase_from_state``) is what routes those two shapes, to
+                # the review interlude and to PHASE_VERIFY respectively.
                 if phase == PHASE_VERIFY and PHASE_MEASURE in self._accepted and not self._applied:
                     return PHASE_APPLYING
                 return phase

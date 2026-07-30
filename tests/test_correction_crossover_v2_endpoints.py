@@ -33,7 +33,6 @@ import json
 import logging
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,7 +44,6 @@ import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
     DEFAULT_CLOUD_MEASURE_POSITIONS,
-    DEFAULT_CLOUD_VERIFY_POSITIONS,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -69,7 +67,6 @@ from jasper.capture_relay.session import (
     CaptureAborted,
     CaptureBeginRefused,
     CaptureResult,
-    CaptureStopped,
     CaptureTimeout,
     mint_session,
     register_session,
