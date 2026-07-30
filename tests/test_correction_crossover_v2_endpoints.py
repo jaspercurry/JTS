@@ -563,6 +563,25 @@ def test_no_session_path_applies_anything(monkeypatch):
     assert "handle_v2_apply(" not in code
     assert "def _fire_auto_apply" not in code
     assert "threading.Thread" not in code
+    # …and the ONE background thread stage 1 does start — the eager-fit
+    # rider's speculative group close (2026-07-30) — is read here too rather
+    # than left outside this pin's reach. It lives in a module-level helper,
+    # so the runner's own "no thread" assertion above stayed literally true
+    # while the meaning it stands for ("nothing on the capture path can
+    # apply") would have quietly stopped being checked. Its target computes a
+    # candidate; making one real still needs the household's confirm, and
+    # applying it still needs their separate POST.
+    eager = "\n".join(
+        line
+        for line in inspect.getsource(
+            v2host._start_speculative_group_close
+        ).splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    # The call form, exactly as above: this helper's prose NAMES the apply it
+    # replaced, which is the point of the prose.
+    assert "handle_v2_apply(" not in eager
+    assert "target=conductor.run_speculative_group_close" in eager
 
     # The measurement still finished, and still produced a PROPOSAL.
     assert [kind for kind, _ in published] == ["check", "candidate"]
@@ -2042,6 +2061,114 @@ def test_the_held_window_is_not_the_review_screen(monkeypatch):
     block = v2host.crossover_v2_status_block()
     assert block["phase"] == "review"
     assert block["cloud_close"] == ""
+
+
+def test_the_eager_fit_is_invisible_to_the_speaker_page(monkeypatch):
+    """The eager-fit rider's UX ruling, pinned at the surface it is about.
+
+    The owner asked for two things: start computing the moment the last
+    position is accepted, and never show a stale-looking screen. The second one
+    does NOT mean showing ``running`` while the eager fit works — during that
+    window the household genuinely has something to do, and it is on their
+    phone. ``running`` says "nobody has anything to do"; rendering it here
+    would invite them to wait passively for a tap only they can make, which is
+    the same dead air the rider exists to remove, just relocated. It would also
+    have to be walked BACKWARDS on a retake, which the envelope has no
+    vocabulary for.
+
+    So the eager fit is invisible, and the rider delivers its promise the other
+    way: by the time the household taps Continue and reaches a browser, the
+    candidate is already built and the review screen renders immediately.
+    ``running`` keeps its honest meaning — the household confirmed, and the
+    close is in flight — for the now-rare case where the tap beats the fit.
+
+    Driven through the REAL conductor, the REAL persist path, and the REAL
+    envelope, reading durable state exactly as the wizard does.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+    attempt = 0
+    for index in range(1, STAGE1_LAST_INDEX + 1):
+        attempt += 1
+        conductor.consume_capture(index, attempt, CaptureResult(wav=b"w"))
+        v2host.persist_conductor_state(conductor, failure_code=None)
+
+    # The eager fit runs to completion…
+    assert conductor.run_speculative_group_close() is True
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    # …and the speaker page is byte-for-byte the held window it was before it:
+    # still "confirm on your phone", still not busy, still nothing to decide.
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "closing"
+    assert block["cloud_close"] == "awaiting_confirm"
+    assert block["candidate"] is None
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "closing"
+    assert "confirm on your phone" in env["verdict_text"]
+    assert "working out your correction" not in env["verdict_text"]
+    assert env["busy"] is False
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
+
+    # And the household's confirm lands the review screen straight away.
+    assert conductor.confirm_cloud_measure_group()["candidate_fingerprint"]
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert v2host.crossover_v2_status_block()["phase"] == "review"
+
+
+def test_the_runner_starts_the_eager_fit_on_the_group_close_accept(monkeypatch):
+    """The host wiring, through the REAL ``run_capture_plan`` and a real phone.
+
+    Pins WHERE the rider hooks in: the accept that leaves a walked, unconfirmed
+    cloud — not the confirm, and not any other capture in a ten-position
+    session. The trigger is run synchronously here so the assertion is about
+    the wiring rather than about thread scheduling; production hands the same
+    call to a daemon thread.
+    """
+    starts: list = []
+
+    def _synchronous_start(conductor):
+        starts.append(conductor.run_speculative_group_close())
+        return None
+
+    monkeypatch.setattr(v2host, "_start_speculative_group_close", _synchronous_start)
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    builds: list = []
+    real_build = conductor._build_candidate
+
+    def _counting_build(analysis, cloud):
+        builds.append(1)
+        return real_build(analysis, cloud)
+
+    conductor._build_candidate = _counting_build
+    _run(_build_runner(conductor, VolumeRecorder()), client, session)
+
+    # Fired exactly once across a whole ten-position walk, and it banked.
+    assert starts == [True]
+    # The fit ran ONCE — on the accept. The household's Continue committed it
+    # rather than paying for a second one.
+    assert len(builds) == 1
+    # …and the session is otherwise exactly what T3 shipped: one proposal,
+    # nothing applied.
+    assert [kind for kind, _ in published] == ["check", "candidate"]
+    assert v2host.load_v2_state().get("applied") is not True
+    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    assert phone.completions_posted == 1
 
 
 def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():

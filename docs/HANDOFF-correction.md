@@ -1936,8 +1936,10 @@ POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
                              6 on Express — an allowlisted `tier` body field,
                              flow-simplification PR-U1; absent = Full). The set
                              is HELD past its target until the phone posts
-                             `complete_capture_set`; that signal fits the
-                             candidate. Applies nothing (two-stage D1)
+                             `complete_capture_set`; that signal closes the
+                             group and publishes the candidate (the fit itself
+                             starts eagerly on the final position's accept).
+                             Applies nothing (two-stage D1)
 POST /crossover/v2/verify    v2 conductor: open the post-apply session. With
                              `{"stage": "post_apply"}` this is STAGE 2, the
                              tier's own verify walk (6 entries at Full, 1 on

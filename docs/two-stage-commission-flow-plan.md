@@ -176,9 +176,19 @@ Three changes, and PR-T3's **first and load-bearing** item:
 1. **`confirm_cloud_measure_group`'s index gate is replaced by an
    explicit confirmation entry point.** Its `index` contract changes:
    it stops meaning "a begin past the group" and becomes an explicit
-   host-called close. The `cloud_measure_group_awaiting_confirm()` /
-   `self._candidate` fire-at-most-once guard is what keeps it
-   idempotent, and stays.
+   host-called close. The `self._candidate` fire-at-most-once guard is
+   what keeps it idempotent, and stays.
+
+   *Amended by the eager-fit rider (2026-07-30).* The two questions
+   that guard originally answered together are now separate fields,
+   because they are separate questions. `self._candidate` remains the
+   fire-once guard. `cloud_measure_group_awaiting_confirm()` — the
+   runner's held-set predicate — now reads `_group_confirmed`, "has the
+   household confirmed?", and `confirm_cloud_measure_group` asks
+   `_group_combined` directly for "is there anything to confirm?".
+   Without that split, a candidate built before the confirm would have
+   flipped the predicate to False and shut the retake window in the
+   same instant it opened.
 2. **The phone's group-confirm "Continue" posts a session-completion
    signal** instead of `advanceAfterAccepted`; the host calls the group
    close directly, then ends the session and returns the household to
@@ -646,7 +656,11 @@ lanes (no `-n`). Corpus tests must report PASSED, not SKIPPED, under
   that changes what the speaker does**, and it lands only after T1 and
   T2 are green. Pins: no code path applies without an explicit household
   POST; the candidate is still built at group close (the fit did not
-  move); a 10-entry stage-1 plan renders the confirm screen, not "All
+  move — *re-worded by the eager-fit rider, 2026-07-30: the fit now
+  STARTS on the final position's accept, so the pin is the data
+  contract — the fit consumes the accepted cloud as of the close — with
+  the retake-discard pinned alongside it*); a 10-entry stage-1 plan
+  renders the confirm screen, not "All
   measurements done"; Express and Full each open the right stage-2
   shape; **`handle_v2_apply` refuses when the stage-2 preflight fails
   (the pre-POST half of D3's preflight — see the placement note below)**;
