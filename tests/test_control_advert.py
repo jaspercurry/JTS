@@ -398,14 +398,11 @@ def test_write_failure_returns_false_never_raises(template, tmp_path, monkeypatc
     """If the atomic write fails (disk full, read-only /etc), the render is
     fail-soft: returns False, never raises into the caller."""
     out = tmp_path / "rendered.service"
-    real_open = open
 
-    def _boom_open(path, *a, **k):
-        if str(path).endswith(".tmp"):
-            raise OSError("disk full")
-        return real_open(path, *a, **k)
+    def _boom_write(*_args, **_kwargs):
+        raise OSError("disk full")
 
-    monkeypatch.setattr("builtins.open", _boom_open)
+    monkeypatch.setattr(avahi_service, "atomic_write_text", _boom_write)
     ok = ca.render_control_advert("x", template=str(template), out=str(out), reload=True)
     assert ok is False
     assert not out.exists()
