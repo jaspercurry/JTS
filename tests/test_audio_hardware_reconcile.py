@@ -11,22 +11,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.reconcile_fixtures import (
+    fake_systemctl as _fake_systemctl,
+    systemctl_log as _systemctl_log,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
-
-
-def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
-    log = tmp_path / "systemctl.log"
-    fake = tmp_path / "systemctl"
-    fake.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    fake.chmod(0o755)
-    return fake, log
 
 
 def _fake_aplay(tmp_path: Path, listing: str) -> Path:
@@ -107,7 +99,6 @@ def _run_reconcile(
             "JASPER_ENV_FILE": str(tmp_path / "jasper.env"),
             "JASPER_OUTPUTD_ENV_FILE": str(tmp_path / "outputd.env"),
             "JASPER_FANIN_ENV_FILE": str(tmp_path / "fanin.env"),
-            "JASPER_TTS_ENV_FILE": str(tmp_path / "tts.env"),
             "JASPER_ASOUND_SOURCE_TEMPLATE": str(source_template),
             "JASPER_ASOUND_TEMPLATE": str(tmp_path / "asoundrc.jasper.template"),
             "JASPER_ASOUND_CONF": str(tmp_path / "asound.conf"),
@@ -201,11 +192,6 @@ def _fake_sys_output_card(
         encoding="utf-8",
     )
     return sys_class, proc_asound
-
-
-def _systemctl_log(tmp_path: Path) -> str:
-    log = tmp_path / "systemctl.log"
-    return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
 def _render_log(tmp_path: Path) -> str:

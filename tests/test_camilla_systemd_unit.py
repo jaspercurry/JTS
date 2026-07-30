@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.systemd_unit_helpers import value_for as _value_for
+
 UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla.service"
@@ -37,19 +39,6 @@ RECOVER_SCRIPT_PATH = (
 INSTALL_SH = (
     Path(__file__).resolve().parent.parent / "deploy" / "install.sh"
 )
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
 
 
 def test_unit_starts_after_outputd_and_fanin_for_pipe_rendezvous():

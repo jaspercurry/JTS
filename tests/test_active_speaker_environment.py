@@ -22,7 +22,7 @@ from jasper.active_speaker.path_safety import (
     PATH_SAFETY_EVIDENCE_KIND,
     requirements_payload,
 )
-from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from tests.active_speaker_fixtures import valid_camilla_config as _valid_config
 from tests.test_active_speaker_profile import _two_way_preset
 
 
@@ -42,13 +42,6 @@ def _runner(
     assert list(argv) == ["aplay", "-l"]
     assert timeout > 0
     return subprocess.CompletedProcess(argv, 0, stdout=_APLAY_STDOUT, stderr="")
-
-
-def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
-    return CamillaConfigValidationResult(
-        status=ValidationStatus.VALID,
-        path=str(path),
-    )
 
 
 def _path_safety_evidence(source: str) -> dict:

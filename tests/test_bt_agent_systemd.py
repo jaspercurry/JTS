@@ -7,20 +7,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.systemd_unit_helpers import value_for as _value_for
+
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "bt-agent.service"
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        name, sep, value = stripped.partition("=")
-        if sep and name == key:
-            return value
-    return None
 
 
 def test_bt_agent_uses_jts_no_code_agent() -> None:

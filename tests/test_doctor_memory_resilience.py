@@ -514,6 +514,30 @@ _EXPECTED_CONFIG = {
 }
 
 
+def _make_systemctl_show_run(
+    property_maps: dict[str, dict[str, str]],
+    *,
+    defaults: dict[str, str],
+    load_map: dict[str, str] | None = None,
+):
+    """Build the shared batched ``systemctl show --value`` wire double."""
+
+    def fake_run(cmd, **kwargs):
+        prop = cmd[3]
+        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
+        if prop == "LoadState":
+            values = [(load_map or {}).get(unit, "loaded") for unit in units]
+        else:
+            values_for_property = property_maps.get(prop, {})
+            default = defaults.get(prop, "")
+            values = [values_for_property.get(unit, default) for unit in units]
+        result = MagicMock()
+        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
+        return result
+
+    return fake_run
+
+
 def _make_oom_run(pid_map, config_map, load_map=None):
     """Build a `_run` mock for check_oom_score_adj's BATCHED systemctl
     calls (LoadState, MainPID, OOMScoreAdjust). Real wire format: when
@@ -528,22 +552,11 @@ def _make_oom_run(pid_map, config_map, load_map=None):
     "loaded", i.e. installed). Pass "not-found"/"masked" to simulate a
     profile that doesn't install a unit (e.g. streambox + voice/AEC).
     """
-    def fake_run(cmd, **kwargs):
-        prop = cmd[3]
-        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
-        result = MagicMock()
-        if prop == "LoadState":
-            values = [(load_map or {}).get(u, "loaded") for u in units]
-        elif prop == "MainPID":
-            values = [pid_map.get(u, "0") for u in units]
-        elif prop == "OOMScoreAdjust":
-            values = [config_map.get(u, "0") for u in units]
-        else:
-            values = []
-        # Real systemctl emits \n\n between values + trailing \n.
-        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
-        return result
-    return fake_run
+    return _make_systemctl_show_run(
+        {"MainPID": pid_map, "OOMScoreAdjust": config_map},
+        defaults={"MainPID": "0", "OOMScoreAdjust": "0"},
+        load_map=load_map,
+    )
 
 
 def test_oom_score_adj_skips_units_not_installed_on_streambox():
@@ -820,19 +833,14 @@ def _make_start_limit_action_run(
     `_systemctl_show_property` (i.e. `_shared._run`), so tests patch that
     one namespace. `load_map` overrides LoadState per unit (default:
     every unit "loaded")."""
-    def fake_run(cmd, **kwargs):
-        prop = cmd[3]
-        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
-        if prop == "LoadState":
-            values = [(load_map or {}).get(u, "loaded") for u in units]
-        elif prop == "StartLimitAction":
-            values = [actions.get(u, "none") for u in units]
-        else:  # OnFailure
-            values = [(on_failure or {}).get(u, "") for u in units]
-        result = MagicMock()
-        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
-        return result
-    return fake_run
+    return _make_systemctl_show_run(
+        {
+            "StartLimitAction": actions,
+            "OnFailure": on_failure or {},
+        },
+        defaults={"StartLimitAction": "none", "OnFailure": ""},
+        load_map=load_map,
+    )
 
 
 def test_start_limit_action_policy_all_set():

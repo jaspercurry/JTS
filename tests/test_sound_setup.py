@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Integration and contract tests for the household sound setup surface."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5074,17 +5076,13 @@ async def test_apply_profile_rolls_back_when_reload_fails(
     current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
     fake = FakeCamilla(str(current), fail_set=True)
 
-    try:
+    with pytest.raises(RuntimeError, match="reload failed"):
         await sound_setup._apply_profile(
             SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
             profile_path=tmp_path / "sound_profile.json",
             config_dir=config_dir,
             camilla_factory=lambda: fake,
         )
-    except RuntimeError as e:
-        assert "reload failed" in str(e)
-    else:  # pragma: no cover - defensive assertion style
-        raise AssertionError("expected reload failure")
 
     assert fake.set_calls[-1] == str(current)
     assert not (tmp_path / "sound_profile.json").exists()

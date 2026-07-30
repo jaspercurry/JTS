@@ -16,6 +16,7 @@ from jasper.tts_routing import (
     VOICE_TTS_SOCKET_ENV,
 )
 from tests.install_surface import installer_text
+from tests.systemd_unit_helpers import value_for as _value_for
 
 from ._voice_runtime_text import voice_runtime_text
 
@@ -28,19 +29,6 @@ ROLLBACK_SCRIPT_PATH = REPO / "scripts" / "disable-outputd-cutover.sh"
 
 def _read_unit() -> str:
     return UNIT_PATH.read_text()
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
 
 
 def test_outputd_unit_file_exists():

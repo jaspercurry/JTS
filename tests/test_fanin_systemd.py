@@ -19,6 +19,7 @@ import re
 from pathlib import Path
 
 from tests.install_surface import installer_text
+from tests.systemd_unit_helpers import value_for as _value_for
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -27,23 +28,6 @@ UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-fanin.service"
 
 def _read_unit() -> str:
     return UNIT_PATH.read_text()
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    """Pull the value of a `Key=Value` directive. Returns None if
-    absent. Matches the systemd convention: case-sensitive key, no
-    whitespace around `=`, value is everything to end-of-line."""
-    for line in unit_text.splitlines():
-        # Skip section headers and comments.
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
 
 
 def test_unit_file_exists():

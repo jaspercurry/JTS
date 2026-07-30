@@ -7,22 +7,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.systemd_unit_helpers import value_for as _value_for
+
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-aec-bridge.service"
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
 
 
 def _values_for(unit_text: str, key: str) -> set[str]:

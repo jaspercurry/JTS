@@ -2021,9 +2021,19 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
 ):
     from jasper.cli.doctor._registry import RegisteredCheck
 
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
     def make_check(name: str, delay: float):
         def check():
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
             time.sleep(delay)
+            with lock:
+                active -= 1
             return doctor.CheckResult(name, "ok", "ran")
         return check
 
@@ -2038,15 +2048,10 @@ def test_run_async_parallelizes_blocking_checks_but_preserves_order(
         RegisteredCheck(order=5, group="test", func=make_check("f", 0.15)),
     ])
 
-    started = time.perf_counter()
     results = asyncio.run(doctor.run_async(SimpleNamespace()))
-    elapsed = time.perf_counter() - started
 
     assert [r.name for r in results] == ["a", "b", "c", "d", "e", "f"]
-    assert elapsed < 0.65, (
-        f"doctor run took {elapsed:.3f}s; expected bounded parallelism, "
-        "not six sequential 150ms checks"
-    )
+    assert max_active == 3
 
 
 def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
@@ -2752,25 +2757,13 @@ def test_check_google_routes_ok_when_configured(monkeypatch):
 
 
 def _citibike_cfg(monkeypatch, *, stations: str = "", ebike_only: str = "") -> Config:
-    """Fresh Config with only the citibike + voice-provider env vars set.
-
-    Drops every JASPER_CITIBIKE_* from the calling shell so the test
-    picks up only the values we pass, then sets a minimal voice
-    provider config so `Config.from_env()` doesn't trip the
-    JASPER_VOICE_PROVIDER-not-set RuntimeError."""
-    for var in (
-        "JASPER_CITIBIKE_STATIONS", "JASPER_CITIBIKE_EBIKE_ONLY",
-        "GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
-        "JASPER_VOICE_PROVIDER",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
-    monkeypatch.setenv("GEMINI_API_KEY", "AIza-stub")
-    if stations:
-        monkeypatch.setenv("JASPER_CITIBIKE_STATIONS", stations)
-    if ebike_only:
-        monkeypatch.setenv("JASPER_CITIBIKE_EBIKE_ONLY", ebike_only)
-    return Config.from_env()
+    """Build the standard fresh config with only Citi Bike values layered in."""
+    return _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIza-stub",
+        JASPER_CITIBIKE_STATIONS=stations,
+        JASPER_CITIBIKE_EBIKE_ONLY=ebike_only,
+    )
 
 
 def test_check_citibike_skips_when_not_configured(monkeypatch):

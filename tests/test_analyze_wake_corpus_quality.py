@@ -12,6 +12,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 _SCRIPT = (
@@ -143,7 +144,7 @@ def test_analyze_wav_finds_transient_candidate(tmp_path: Path) -> None:
     )
 
     assert row["transient_event_count"] >= 1
-    assert row["events"][0]["t_s"] == pytest_approx(3000 / 16000, abs=0.01)
+    assert row["events"][0]["t_s"] == pytest.approx(3000 / 16000, abs=0.01)
 
 
 def test_analyze_wav_confirms_lpc_residual_damage(tmp_path: Path) -> None:
@@ -264,10 +265,3 @@ def test_latest_session_filter_selects_newest_session(tmp_path: Path) -> None:
 
     assert [s["session_id"] for s in sessions] == ["20260527T131954Z-new"]
     assert [c.session_id for c in clips] == ["20260527T131954Z-new"]
-
-
-def pytest_approx(value: float, *, abs: float):
-    """Tiny local shim keeps this test import-light for dynamic script loading."""
-    import pytest
-
-    return pytest.approx(value, abs=abs)

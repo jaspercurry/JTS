@@ -26,16 +26,8 @@ invariant so the bare-fatal form cannot silently regress.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-INSTALL_SH = ROOT / "deploy" / "install.sh"
-INSTALL_LIB_DIR = ROOT / "deploy" / "lib" / "install"
-
-
-def _install_text() -> str:
-    paths = [INSTALL_SH, *sorted(INSTALL_LIB_DIR.glob("*.sh"))]
-    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+from tests.install_surface import installer_text
 
 
 def _call_site_indices(lines: list[str]) -> list[int]:
@@ -75,7 +67,7 @@ def test_require_outputd_ready_call_is_non_fatal_and_loud():
     about outputd (the project's 'no silent failure' bar; non-fatal is not
     silent). Asserts the *property*, not one idiom: a `|| <warn>` fallback and
     an `if ! …; then <warn> fi` wrapper both pass; a bare statement does not."""
-    lines = _install_text().splitlines()
+    lines = installer_text().splitlines()
     for idx in _call_site_indices(lines):
         call_line = lines[idx]
         stripped = call_line.strip()
@@ -104,7 +96,7 @@ def test_require_outputd_ready_call_is_non_fatal_and_loud():
 def test_require_outputd_ready_is_owned_by_profile_runtime_starters():
     """Both install profiles (full + streambox) own outputd runtime startup
     via their runtime-starter helpers."""
-    text = _install_text()
+    text = installer_text()
     streambox_runtime = re.search(
         r"^start_streambox_runtime_units\(\)\s*\{\n(.*?)\n\}",
         text,
@@ -133,7 +125,7 @@ def test_recovery_surface_is_wired_after_systemd_units_in_main():
     (nginx + the doctor summary) is wired in `main()` AFTER
     `install_systemd_units` — which is where the outputd probe lives. If the
     probe were fatal, a transient miss would skip all of these."""
-    text = _install_text()
+    text = installer_text()
     m = re.search(r"^main\(\)\s*\{\n(.*?)\n\}", text, re.S | re.M)
     assert m, "could not locate main() body in install.sh"
     body = m.group(1)

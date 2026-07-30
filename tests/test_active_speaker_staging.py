@@ -22,10 +22,12 @@ from jasper.active_speaker import (
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.path_safety import _startup_muted_by_candidate
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import (
+    mono_output_topology,
+    valid_camilla_config as _valid_config,
+)
 
 # Canonical preset fixtures (stereo 2-way: tweeters on physical outputs 1 and 3).
 from tests.test_active_speaker_profile import _two_way_preset
@@ -298,13 +300,6 @@ def _crossover_preview(
             created_at="2026-06-10T12:00:00Z",
         ),
         created_at="2026-06-10T12:30:00Z",
-    )
-
-
-def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
-    return CamillaConfigValidationResult(
-        status=ValidationStatus.VALID,
-        path=str(path),
     )
 
 

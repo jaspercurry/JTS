@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 
 import { safeReturnUrl } from "../../capture-page/js/return-url.js";
+import { runTestFunctions } from "./run_test_functions.mjs";
 
 let passed = 0;
 function ok() {
@@ -49,19 +50,4 @@ const tests = [
   testMissingOrMalformedUrlIsBlank,
 ];
 
-let failure = null;
-for (const t of tests) {
-  try {
-    t();
-  } catch (e) {
-    failure = { test: t.name, error: String(e && e.stack ? e.stack : e) };
-    break;
-  }
-}
-
-if (failure) {
-  console.error(JSON.stringify({ ok: false, ...failure }));
-  process.exit(1);
-}
-
-console.log(JSON.stringify({ ok: true, passed }));
+await runTestFunctions(tests, () => passed);

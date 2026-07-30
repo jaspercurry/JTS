@@ -22,9 +22,11 @@ from jasper.active_speaker.startup_load import (
     load_startup_load_state,
     rollback_protected_startup_config,
 )
-from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_topology import OutputTopology
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import (
+    mono_output_topology,
+    valid_camilla_config as _valid_config,
+)
 
 
 class FakeCamilla:
@@ -59,13 +61,6 @@ def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
 
 def _topology(*, identity_verified: bool = True) -> OutputTopology:
     return mono_output_topology(identity_verified=identity_verified)
-
-
-def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
-    return CamillaConfigValidationResult(
-        status=ValidationStatus.VALID,
-        path=str(path),
-    )
 
 
 def _staged(tmp_path: Path) -> dict:

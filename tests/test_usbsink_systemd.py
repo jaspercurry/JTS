@@ -9,6 +9,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from tests.systemd_unit_helpers import value_for as _value_for
+
 REPO = Path(__file__).resolve().parent.parent
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink.service"
 GADGET_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget.service"
@@ -25,18 +27,6 @@ USB_ROLE_TEST_SEAMS = {
     "JTS_BOOT_CONFIG_FILE",
     "JASPER_UDC_CLASS_DIR",
 }
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    val: str | None = None
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#") or "=" not in stripped:
-            continue
-        found, _, value = stripped.partition("=")
-        if found == key:
-            val = value
-    return val
 
 
 def _directive_index(unit_text: str, prefix: str, needle: str) -> int:

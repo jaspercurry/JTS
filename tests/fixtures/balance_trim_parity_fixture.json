@@ -1,8 +1,6 @@
 {
   "balance_min_db": -24,
   "balance_max_db": 24,
-  "trim_db_min": -24.0,
-  "trim_db_max": 0.0,
   "cases": [
     {
       "balance_db": -99.0,
