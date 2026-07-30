@@ -3988,12 +3988,24 @@ class CrossoverV2Conductor:
         self._speculative_close: _SpeculativeClose | None = None
         # Serializes the group-close critical section against the eager fit,
         # which is the ONE piece of this conductor that runs off the relay
-        # thread. Everything that writes the fit's inputs
-        # (``_group_combined``, and ``_group_cloud_result`` via the pipeline)
-        # or consumes them lives inside it: ``_close_cloud_group``,
-        # ``run_speculative_group_close``, and
-        # ``confirm_cloud_measure_group``. Reentrant because the confirm path
-        # calls the close path beneath it.
+        # thread. Three entry points take it — ``_cloud_verdict``'s retain +
+        # close, ``run_speculative_group_close``, and
+        # ``confirm_cloud_measure_group`` — and none nests inside another, so a
+        # plain ``Lock`` is correct AND enforces that: the confirm path reaches
+        # ``_close_measure_cloud_candidate``, never the lock-taking
+        # ``_close_cloud_group``. A future edit that makes one call another
+        # deadlocks loudly here rather than quietly growing a second locking
+        # discipline.
+        #
+        # **What it actually covers**, stated honestly: the two fit inputs the
+        # eager path can race — ``_group_combined`` and the
+        # ``_group_cloud_result`` its ``_cloud_fit_evidence`` reads, both
+        # written by the cloud pipeline inside the same locked region. It does
+        # NOT cover ``_measure_analysis``, the fit's first argument, which is
+        # written at MEASURE's accept and released by the close. That one is
+        # safe by PHASE ORDERING rather than by this lock: it is written on the
+        # relay thread eight captures before any cloud group can close, and the
+        # only writer after that is the close itself, which holds this lock.
         #
         # **The invariant it buys, stated once.** The combine and the
         # speculative stash are written TOGETHER under this lock, so a banked
@@ -4002,7 +4014,7 @@ class CrossoverV2Conductor:
         # the same locked region. That is why no generation counter is needed
         # to tell a stale bank from a current one — there is no window in
         # which the two can disagree.
-        self._close_lock = threading.RLock()
+        self._close_lock = threading.Lock()
         # Set the instant the household's set-completion signal is admitted,
         # so the seconds the combine + fit spend are a NAMED state rather than
         # indistinguishable from "still waiting for the tap". Never cleared: a

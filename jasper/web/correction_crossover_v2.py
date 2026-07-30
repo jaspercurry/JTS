@@ -3030,6 +3030,7 @@ def _start_speculative_group_close(conductor: Any) -> threading.Thread | None:
             logger,
             "correction.crossover_v2_speculative_close_unstarted",
             level=logging.WARNING,
+            session_id=getattr(conductor, "session_id", ""),
         )
         return None
     return thread
@@ -3196,16 +3197,23 @@ def build_v2_run_and_consume(
             always False there and the runner ends those sets exactly as it
             always has.
 
-            **The constraint an eager/speculative fit has to respect** (owner
-            rider on #1806 — not implemented, deliberately not foreclosed):
-            this predicate resolves through ``self._candidate is None``, which
-            is ALSO the group close's fire-once guard. Building a candidate
-            before the household confirms would therefore flip this to False
-            and un-hold the runner's set — shutting the retake window in the
-            same instant, silently. The rider must decouple the two first: the
-            held-set question is "has the household confirmed?", not "does a
-            candidate exist?". See the predicate's own docstring on the
-            conductor.
+            **This is decoupled from the candidate, and has to stay that way**
+            (eager-fit rider on #1806, shipped 2026-07-30). The predicate used
+            to resolve through ``self._candidate is None``, which is ALSO the
+            group close's fire-once guard — so the rider, which fits a
+            candidate BEFORE the household confirms, would have flipped this to
+            False and un-held the runner's set, shutting the retake window in
+            the same instant, silently. It now resolves through
+            ``_group_confirmed``: the held-set question is "has the household
+            confirmed?", never "does a candidate exist?". An eagerly-fitted
+            candidate parks in ``_speculative_close`` and is invisible here.
+
+            The two must not be re-merged. If you are tempted, the discriminator
+            is ``test_an_eager_fit_failure_surfaces_on_the_confirm_not_before``:
+            after a close that RAISED, ``_candidate`` is unset (T3's
+            retryability) but the household has confirmed, so this must read
+            False. Only the decoupled predicate gets that right. See the
+            predicate's own docstring on the conductor.
             """
             return bool(conductor.cloud_measure_group_awaiting_confirm())
 

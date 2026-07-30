@@ -2188,6 +2188,17 @@ def test_an_eager_fit_failure_surfaces_on_the_confirm_not_before():
     with pytest.raises(RuntimeError, match="synthetic fit failure"):
         c.confirm_cloud_measure_group()
 
+    # **THE DISCRIMINATOR for the decoupling itself**, and the only assertion
+    # in the suite that can tell the two predicates apart. A close that RAISED
+    # leaves ``_candidate`` unset — that is T3's retryability contract, still
+    # intact below — so the pre-rider predicate (``self._candidate is None``)
+    # would report this set as still awaiting confirmation and re-hold a
+    # runner whose household already tapped Continue. Only a predicate that
+    # asks "has the household confirmed?" gets it right: the window shuts on
+    # the TAP, not on whether the fit behind it succeeded.
+    assert c.cloud_measure_group_awaiting_confirm() is False
+    assert c.candidate is None
+
 
 def test_only_the_pre_apply_group_close_fires_a_candidate_across_a_whole_session():
     """The `phase == PHASE_CLOUD_MEASURE` guard in ``_close_cloud_group`` is

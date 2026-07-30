@@ -159,8 +159,23 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # transaction. Its catch-all is cleanup-and-reraise only: it atomically restores
 # the prior extension (or removes the new one) for any import/probe failure,
 # then propagates the original exception. Ceilings 622 -> 623 / 815 -> 816.
-MAX_NOQA_MARKERS = 816
-MAX_BLE001_MARKERS = 623
+#
+# 2026-07-30 (two-stage eager-fit rider): +1 BLE001 for the SPECULATIVE group
+# close in crossover_v2_flow (``run_speculative_group_close``). It fits the
+# pre-apply cloud on a background thread before the household has confirmed,
+# so its failure is a failure of work nobody has asked about yet — and one the
+# household may still moot by retaking. The arm therefore drops the result and
+# leaves the bank empty; the confirm path then refits and raises the identical
+# exception from the identical place, where the host maps it to a real
+# terminal screen. It must not name a family: the PR-L4 accountability veto
+# (``CaptureBeginRefused``) already raises outside the named families this file
+# uses, and guessing the fit's raise surface is exactly how a swallowed
+# exception becomes a hang. Logs
+# event=correction.crossover_v2_speculative_close_failed at WARNING with the
+# exception type + traceback — never a silent path, and never the household's
+# only signal, since the confirm re-raises. Ceilings 623 -> 624 / 816 -> 817.
+MAX_NOQA_MARKERS = 817
+MAX_BLE001_MARKERS = 624
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
