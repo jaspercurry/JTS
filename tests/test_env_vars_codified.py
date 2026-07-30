@@ -107,6 +107,9 @@ _UNCODIFIED = {
     "JASPER_AEC_CHIP_AEC_PRIMARY_LEG",
     "JASPER_AEC_CHIP_SYS_DELAY",
     "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
+    # Explicit wake-corpus lab seam; production commissioning never reads it
+    # and tunes only its foreground SYS_DELAY result.
+    "JASPER_AEC_CORPUS_CHIP_SYS_DELAY",
     "JASPER_AEC_CORPUS_REF_ENABLED",
     "JASPER_AEC_CORPUS_USB_DTLN_ENABLED",
     "JASPER_AEC_CORPUS_USB_ENABLED",

@@ -110,6 +110,14 @@
   line-height: 1.45;
   margin-top: 0.18rem;
 }
+.echo-status__action {
+  color: var(--foreground);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin-top: 0.45rem;
+  overflow-wrap: anywhere;
+}
 .firmware-update {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

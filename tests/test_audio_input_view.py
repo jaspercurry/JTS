@@ -110,13 +110,14 @@ def test_no_mic_disables_echo_choices() -> None:
     assert all(not choice["enabled"] for choice in view["echo"]["choices"])
 
 
-def test_xvf_without_chip_plan_shows_software_path_and_blocks_hardware() -> None:
+def test_xvf_without_chip_plan_is_visibly_parked_without_software_fallback() -> None:
     status = _base_status()
     status["audio_profile"] = {
         "selection": "auto",
         "requested": "xvf_software_aec3",
         "active": "xvf_software_aec3",
         "state": "active",
+        "action": "Run sudo jasper-aec-commission",
     }
     status["chip_aec_gate"] = {
         "status": "needs_calibration",
@@ -152,13 +153,15 @@ def test_xvf_without_chip_plan_shows_software_path_and_blocks_hardware() -> None
 
     assert view["mic"]["kind"] == "xvf3800"
     assert view["mic"]["chip_aec_capable"] is False
-    assert view["echo"]["mode"] == "software_aec3"
+    assert view["echo"]["mode"] == "hardware_chip_aec_pending"
     hardware = _choice(view, "xvf_chip_aec")
     assert hardware["visible"] is True
     assert hardware["enabled"] is False
     assert hardware["status"] == "needs calibration"
     assert _choice(view, "xvf_software_aec3")["selected"] is False
+    assert _choice(view, "xvf_software_aec3")["visible"] is False
     assert _choice(view, "auto")["selected"] is True
+    assert view["echo"]["action"] == "Run sudo jasper-aec-commission"
     assert view["advanced"]["validation_profile"]["visible"] is False
 
 
@@ -175,6 +178,12 @@ def test_direct_mic_view_keeps_no_aec_danger_choice_visible() -> None:
         "active": False,
         "bypassed": False,
     }
+    status["microphone"].update({
+        "name": "USB microphone",
+        "variant_id": "generic_usb_mic",
+        "geometry": "",
+        "chip_beam_plan": "",
+    })
 
     view = build_microphone_settings_view(status)
     direct = _choice(view, "direct_mic")

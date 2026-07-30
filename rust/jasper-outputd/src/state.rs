@@ -1366,6 +1366,12 @@ impl OutputdState {
             "outputd_final_electrical",
         );
         buf.push(',');
+        push_kv_str(
+            &mut buf,
+            "chip_ref_transform",
+            "stereo_mean_boxcar_decimate_dual_mono_v1",
+        );
+        buf.push(',');
         push_kv_bool(&mut buf, "speaker_reference_is_fallback", false);
         buf.push(',');
         push_kv_bool(
@@ -2332,6 +2338,7 @@ mod tests {
             r#""last_period_clipped_samples":3"#,
             r#""clipped_samples":3"#,
             r#""reference_outputs":{"speaker_reference_source":"outputd_final_electrical""#,
+            r#""chip_ref_transform":"stereo_mean_boxcar_decimate_dual_mono_v1""#,
             r#""chip_ref_pcm":null"#,
             r#""chip_ref_sample_rate":16000"#,
             r#""chip_ref_period_frames":320"#,

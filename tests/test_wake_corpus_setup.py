@@ -502,6 +502,7 @@ def test_metadata_records_audio_context_snapshot(
             "JASPER_MIC_DEVICE=udp:9876\n"
             "JASPER_AEC_MIC_DEVICE=Array\n"
             "JASPER_AEC_CHIP_AEC_ENABLED=1\n"
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=ready\n"
             "JASPER_AEC_CHIP_AEC_PRIMARY_LEG=chip_aec_210\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888\n"
@@ -653,9 +654,10 @@ def test_audio_context_snapshot_uses_chip_aec_dac_gate(
     context = data["audio_context"]
     profile = context["production_audio_profile"]
     assert profile["selection"] == "auto"
-    assert profile["requested"] == "xvf_software_aec3"
-    assert profile["active"] == "xvf_software_aec3"
-    assert profile["validation_profile"] == "xvf_software_aec3"
+    assert profile["requested"] == "xvf_chip_aec"
+    assert profile["active"] is None
+    assert profile["state"] == "unavailable"
+    assert profile["validation_profile"] == "xvf_chip_aec"
 
 
 def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(

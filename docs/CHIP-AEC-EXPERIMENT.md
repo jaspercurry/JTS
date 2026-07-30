@@ -1,5 +1,11 @@
 # Chip-AEC experiment — conclusive test plan
 
+> **Status: historical.** Snapshot from 2026-05-29 through 2026-06-04,
+> when the external-DAC chip-AEC path was still being proved and promoted.
+> Preserved for primary-source archaeology; its profile, fallback, transport,
+> and validation claims will drift. Current managed-XVF operational truth
+> lives in [HANDOFF-aec.md](HANDOFF-aec.md).
+
 **Status: 2026-05-29 positive lab result; production profile shipped
 and deployed on 2026-06-04.**
 The experiment is no longer a shelved negative. A same-day lab pass

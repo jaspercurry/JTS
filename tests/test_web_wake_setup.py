@@ -113,6 +113,7 @@ def test_render_uses_canonical_toggle_for_each_layer():
 def test_render_has_echo_choices_and_advanced_validation():
     html = _render()
     assert "Echo cancellation" in html
+    assert 'id="echo-status-action"' in html
     for profile in (
         "auto",
         "xvf_chip_aec",
@@ -122,7 +123,7 @@ def test_render_has_echo_choices_and_advanced_validation():
         assert f'id="profile-{profile}"' in html
     assert "Advanced wake fusion" in html
     assert 'id="profile-xvf_chip_aec_testing"' in html
-    assert "not approved for automatic use" in html
+    assert "managed-XVF safety and commissioning still apply" in html
 
 
 def test_render_has_server_hydrated_computer_microphone_source_select():
@@ -377,7 +378,7 @@ def test_post_usb_mic_leg_proxies_choice_and_control_token(tmp_path, monkeypatch
     assert b'"requested":"primary"' in cap["body"]
 
 
-def test_wake_module_renders_server_choices_and_runtime_effective_label():
+def test_wake_module_renders_server_choices_action_and_runtime_effective_label():
     module = (
         Path(wake_setup.__file__).parents[2]
         / "deploy/assets/wake/js/main.js"
@@ -385,6 +386,8 @@ def test_wake_module_renders_server_choices_and_runtime_effective_label():
     assert "source.choices" in module
     assert 'document.createElement("option")' in module
     assert "applied.effective_label" in module
+    assert 'const action = el("echo-status-action")' in module
+    assert 'action.textContent = echo.action || ""' in module
 
 
 def test_get_unknown_path_404(tmp_path):

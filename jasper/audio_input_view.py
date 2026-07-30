@@ -22,6 +22,7 @@ from typing import Any, Mapping
 
 from .audio_profile_state import (
     PROFILE_AUTO,
+    PROFILE_CUSTOM,
     PROFILE_DIRECT_MIC,
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
@@ -112,15 +113,11 @@ _PROFILE_CHOICE_SPECS = (
         profile=PROFILE_XVF_CHIP_AEC_TESTING,
         choice_id="hardware_aec_testing",
         section="advanced",
-        label="Hardware AEC validation mode",
-        description="Run chip-AEC on a DAC that is not approved for automatic use.",
-        badge="Testing",
-        confirm_title="Use hardware AEC validation mode?",
-        confirm_body=(
-            "This routes the live mic path through hardware AEC on an unapproved "
-            "DAC so you can validate it. Use software AEC3 again if wake "
-            "reliability drops."
-        ),
+        label="Legacy hardware AEC test intent",
+        description="Legacy intent; managed-XVF safety and commissioning still apply.",
+        badge="Legacy",
+        confirm_title="Save the legacy hardware AEC test intent?",
+        confirm_body="No safety bypass: unapproved or uncommissioned XVFs stay parked.",
         confirm_danger=True,
     ),
 )
@@ -210,7 +207,7 @@ def _mic_view(mic: Mapping[str, Any], gate: Mapping[str, Any]) -> dict[str, Any]
     capabilities: list[str] = []
     if chip_capable:
         capabilities.append("hardware_aec")
-    if detected:
+    if detected and kind != "xvf3800":
         capabilities.append("software_aec")
     return {
         "detected": detected,
@@ -240,7 +237,14 @@ def _echo_view(
     active = str(profile.get("active") or "")
     state = str(profile.get("state") or "unknown")
     reason = str(profile.get("reason") or "")
-    chip_selected = requested in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
+    action = str(profile.get("action") or "")
+    managed_xvf = (
+        mic_view.get("kind") == "xvf3800" and selection != PROFILE_CUSTOM
+    )
+    chip_selected = managed_xvf or requested in {
+        PROFILE_XVF_CHIP_AEC,
+        PROFILE_XVF_CHIP_AEC_TESTING,
+    }
     chip_active = active in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
     software_active = active == PROFILE_XVF_SOFTWARE_AEC3
     direct_active = active == PROFILE_DIRECT_MIC or state == "disabled"
@@ -255,7 +259,7 @@ def _echo_view(
         mode = "hardware_chip_aec"
         title = "Using microphone hardware echo cancellation"
         detail = "The XVF3800 chip is producing the voice stream; software AEC3 is bypassed."
-    elif software_active:
+    elif software_active and not managed_xvf:
         mode = "software_aec3"
         title = "Using software echo cancellation"
         detail = reason or "WebRTC AEC3 is processing the microphone stream."
@@ -282,7 +286,8 @@ def _echo_view(
         ),
         _profile_choice(
             _profile_spec(PROFILE_XVF_CHIP_AEC),
-            selected=selection == PROFILE_XVF_CHIP_AEC,
+            selected=selection == PROFILE_XVF_CHIP_AEC
+            or (managed_xvf and selection != PROFILE_AUTO),
             enabled=detected and chip_production_available,
             visible=bool(mic_view.get("kind") == "xvf3800" or chip_selected),
             status=(
@@ -293,9 +298,9 @@ def _echo_view(
         ),
         _profile_choice(
             _profile_spec(PROFILE_XVF_SOFTWARE_AEC3),
-            selected=selection == PROFILE_XVF_SOFTWARE_AEC3,
+            selected=selection == PROFILE_XVF_SOFTWARE_AEC3 and not managed_xvf,
             enabled=detected,
-            visible=detected,
+            visible=detected and mic_view.get("kind") != "xvf3800",
             status=(
                 "active" if software_active
                 else "bypassed" if bool(software.get("bypassed"))
@@ -304,9 +309,9 @@ def _echo_view(
         ),
         _profile_choice(
             _profile_spec(PROFILE_DIRECT_MIC),
-            selected=selection == PROFILE_DIRECT_MIC,
+            selected=selection == PROFILE_DIRECT_MIC and not managed_xvf,
             enabled=detected,
-            visible=detected,
+            visible=detected and mic_view.get("kind") != "xvf3800",
             status="active" if direct_active else "available",
         ),
     ]
@@ -315,6 +320,7 @@ def _echo_view(
         "mode": mode,
         "title": title,
         "detail": detail,
+        "action": action,
         "state": state,
         "bridge_active": bridge_active,
         "hardware": {

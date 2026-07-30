@@ -1553,14 +1553,13 @@ reconcile_aec_state() {
     #                                 MEASUREMENT ONLY so the Layer-0 SRO
     #                                 drift estimator gets fed (mic path
     #                                 stays software AEC3). Default off.
-    # Defaults: profile auto. On approved XVF3800 + output-DAC hardware that
-    # resolves to chip-AEC with only the primary/session wake detector active
-    # (no stacked software AEC/raw/DTLN and no extra chip beams). When
-    # chip-AEC is unavailable it falls back to the software-AEC3 profile
-    # (AEC on, raw fallback on, DTLN off). Unapproved DACs use the explicit
-    # xvf_chip_aec_testing profile; auto never selects testing. DTLN and
-    # extra chip beams remain explicit custom/lab legs because they add
-    # detector memory on a 1 GB Pi.
+    # Defaults: profile auto. A managed XVF3800 resolves to the commissioned
+    # fixed chip-AEC profile only on supported mic/output hardware; otherwise
+    # the reconciler parks voice with an actionable reason. Named testing,
+    # software-AEC3, and direct-mic intents do not bypass that policy. Software
+    # AEC3/direct fallback remains available for non-XVF microphones, while
+    # low-level DTLN/raw/extra-beam lab work requires the explicit custom
+    # profile.
     #
     # On upgrade, the reconciler's ensure_mode_file appends any
     # missing keys with these same defaults — preserving an

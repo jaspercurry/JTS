@@ -161,4 +161,4 @@ def test_check_mic_capture_reports_expected_idle_when_marked(
     # bare stand-in cfg is enough.
     result = audio.check_mic_capture(SimpleNamespace())
     assert result.status == "ok"
-    assert "no microphone present" in result.detail.lower()
+    assert "no usable microphone input" in result.detail.lower()

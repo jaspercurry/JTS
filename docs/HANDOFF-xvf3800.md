@@ -29,6 +29,23 @@ If you came here trying to understand AEC, **read this first then
 you already know the channel layout and parameter space documented
 below.
 
+## Production AEC policy
+
+A reconciler-managed XVF3800 is a commissioned chip-AEC product, not a
+generic microphone. Supported hardware uses the single fixed profile owned by
+`jasper/mics/xvf3800.py`; unsupported firmware, output identity, missing
+commissioning, or failed silent reapply parks voice with an action. Managed
+XVFs never silently route through AEC3 or direct mic. `custom` remains the
+explicit low-level lab escape hatch, and AEC3 remains valid for non-XVF mics.
+
+The chip reference uses its native USB-IN contract: ALSA `hw`, 16 kHz,
+stereo, S16_LE, period 128, buffer 256. Only the foreground
+`sudo jasper-aec-commission` command may play the fixed bounded signal and
+issue one volatile reset. It tunes only `AUDIO_MGR_SYS_DELAY`; ordinary
+boot/replug reapplies the volatile profile silently from the installation
+artifact. Never call `SAVE_CONFIGURATION`. The complete operational lifecycle
+and evidence gates live in [HANDOFF-aec.md](HANDOFF-aec.md).
+
 ## Quick lookup
 
 | If you're trying to… | Read |
@@ -110,7 +127,10 @@ Note on the iSerial: it is exposed both via `lsusb -v` (the
 DFU descriptor when the chip is in safe / DFU mode). It is also
 fetchable via the chip's i2c control interface — see
 "`xvf_i2c_dfu` / `rpi_64bit`" reference in the upstream repo if we
-ever need it programmatically.
+ever need it outside USB mode. In normal production USB mode,
+`jasper/xvf/xvf_host.py` reads the descriptor directly; the chip-AEC
+commissioning artifact binds this stable factory serial so a replacement
+XVF cannot inherit another board's timing.
 
 ---
 
@@ -275,11 +295,12 @@ Operational rule for JTS:
 
 - Square/circular board: existing `Array` / `2886:001a` /
   `ua-io16-6ch-sqr` assumptions apply.
-- Flex LINEAR-4: flash `respeaker_flex_usb_l16k6ch_v1.0.1.bin`,
-  expect ALSA `L16K6Ch`, and begin retuning with `xvf_software_aec3`
-  / raw-mic corpus legs. Treat `chip_aec_150` / `chip_aec_210` as
-  unvalidated legacy square-board beam labels until a Flex-specific
-  corpus proves otherwise.
+- Flex LINEAR-4: flash `respeaker_flex_usb_l16k6ch_v1.0.1.bin` and
+  expect ALSA `L16K6Ch`. Until a Flex-specific fixed chip profile is
+  commissioned and supported, a reconciler-managed Flex XVF remains
+  parked; a software-AEC3/raw corpus investigation requires the explicit
+  `custom` lab route. Treat `chip_aec_150` / `chip_aec_210` as
+  unvalidated legacy square-board beam labels.
 
 ### 2.7 Reading the running firmware version
 
@@ -445,9 +466,10 @@ What that chain does, in order (User Guide §4.1, Fig. 4.1):
    before the SHF block. Disabled by default; we set `on125`
    (125 Hz) in jasper-aec-init.
 3. **SHF block** (AEC + beamformer + NS + AGC + NLP, gated on
-   `SHF_BYPASS`). The software fallback sets `SHF_BYPASS=1` to
-   bypass the entire SHF block and let host-side AEC3 do the work.
-   The recommended `xvf_chip_aec` profile sets `SHF_BYPASS=0` and
+   `SHF_BYPASS`). Historical/custom software-AEC experiments set
+   `SHF_BYPASS=1` to bypass the entire SHF block and let host-side
+   AEC3 do the work. The managed `xvf_chip_aec` product profile sets
+   `SHF_BYPASS=0` and
    feeds the chip a live XVF USB-IN reference from outputd.
 4. **Output mux** — routes the SHF output (or, when bypassed, the
    pre-SHF signal) to USB capture channels 0/1.
@@ -467,10 +489,10 @@ likely just MIC_GAIN being applied on ch 1 via the output mux but
 not on ch 2's Category 1 tap.
 
 If you want chip BF/NS/AGC to actually run, you need `SHF_BYPASS=0`.
-But that re-enables the chip's AEC, which is broken in our
-external-DAC topology. There is no chip parameter that lets you
-keep BF/NS/AGC while disabling only the AEC adaptive filter — they
-are gated on the same flag.
+That also arms the chip's AEC, so the managed product path does this only
+after the native XVF USB-IN reference and commissioned alignment artifact
+verify. There is no chip parameter that lets you keep BF/NS/AGC while
+disabling only the AEC adaptive filter — they are gated on the same flag.
 
 ### Which chip parameters affect which channels
 
@@ -489,8 +511,8 @@ are gated on the same flag.
 - With `SHF_BYPASS=0` (default), toggling `PP_MIN_NS` /
   `PP_AGCONOFF` while capturing 6 channels of pink noise showed
   1.5–8 dB of variation on ch 0/1; ch 2 showed 0.0–0.4 dB.
-- With `SHF_BYPASS=1` (the software-AEC fallback / restored profile
-  when chip-AEC flags are absent), the same toggles produced 0.2–1.0
+- With `SHF_BYPASS=1` (the explicit custom/lab bypass; historically the
+  software-AEC profile), the same toggles produced 0.2–1.0
   dB of variation on ch 1 — same as the measurement noise on ch 2
   (0.1–0.7 dB).
 
@@ -500,7 +522,7 @@ alike. Channels 0/1 become raw-ish mic feeds.
 
 ### What JTS uses, and why
 
-In the `xvf_software_aec3` fallback, **JTS captures channel 1
+In the explicit `custom` software-AEC3 lab route, **JTS captures channel 1
 (ASR beam tap, post-SHF mux)** as the AEC bridge's near-end input —
 see `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX = 1`. Combined with
 `SHF_BYPASS=1` in `jasper-aec-init`, this means JTS captures a
@@ -533,14 +555,12 @@ because: (a) it's the project-standard tap; (b) it includes
 MIC_GAIN; (c) if anyone ever flips SHF_BYPASS=0, ch 1 will
 automatically give us the ASR-tuned signal.
 
-The software fallback's pairing with `SHF_BYPASS=1` exists because the
-chip's own AEC is sabotaged unless the XVF USB-IN reference path is
-armed. `SHF_BYPASS=1` removes the chip AEC from the path — and, as a
-side effect, also disables chip BF + NS + AGC. Software AEC3 in
-jasper-aec-bridge handles echo cancellation + residual NS host-side
-using the music chain as a clean digital reference. The chip-AEC
-profile is the narrow production exception: outputd feeds the XVF
-USB-IN reference and the chip emits fixed ASR beams.
+The historical/custom software route pairs AEC3 with `SHF_BYPASS=1`
+because chip AEC cannot work without its XVF USB-IN reference. Bypass
+also disables chip BF + NS + AGC. It is not a managed-XVF fallback.
+In production outputd feeds the native XVF reference and the fixed
+profile emits the two ASR beams; failure to establish that path parks
+the managed XVF.
 
 See [HANDOFF-aec.md](HANDOFF-aec.md) § "Software-AEC tuning
 (2026-05-16)" for the fallback rationale and the bridge-side knobs
@@ -564,10 +584,11 @@ adaptive filter." That argument was defensible in isolation, but:
    "boomy bass" in the post-AEC output because the chip wasn't
    doing its job and AEC3 alone couldn't compensate.
 
-The switch to channel 1 + `SHF_BYPASS=1` is the canonical
-software-AEC fallback architecture with one targeted modification
-(chip AEC off, software AEC on). The chip's mild AGC non-linearity is
-a theoretical concern that AEC3 absorbs in practice.
+Historically, the switch to channel 1 + `SHF_BYPASS=1` established the
+software-AEC architecture with one targeted modification (chip AEC off,
+software AEC on). That route now exists only behind the explicit `custom`
+lab escape hatch; it is not a managed-XVF fallback. The chip's mild AGC
+non-linearity is a theoretical concern that AEC3 absorbs in practice.
 
 ### How channel routing actually works inside the chip
 
@@ -766,8 +787,8 @@ section (the "L is auto-select beam, R is Silence" baseline).
 **JTS does not leave `OP_R` at firmware default.** In the recommended
 `xvf_chip_aec` profile, `jasper-aec-init` writes and read-back verifies
 OP_L=`(7, 0)` and OP_R=`(7, 1)` to expose the fixed-gated 150°/210°
-ASR outputs while outputd feeds the XVF USB-IN reference. In the
-`xvf_software_aec3` fallback, the AEC bridge consumes XVF capture
+ASR outputs while outputd feeds the XVF USB-IN reference. In the explicit
+`custom` software-AEC3 lab route, the AEC bridge consumes XVF capture
 channel 1 (`MIC_CHANNEL_INDEX = 1`), so init restores OP_L=`(8, 0)`
 and OP_R=`(8, 0)`; leaving OP_R at the Seeed default `OP_R=(0, 0)`
 mutes the bridge input. Corpus chip-AEC mode uses the same
@@ -832,7 +853,9 @@ firmware data plane.
 
 If anyone has ever called this with mismatched values, the
 endpoint advertisement on USB might be inconsistent with how the
-host expects to read it — but on JTS we use defaults. **Cannot
+host expects to read it — but on JTS we use defaults and never write this
+as an operational repair. The foreground commissioner owns the only
+permitted volatile runtime reset. **Cannot
 cause ch2-5 silence** in isolation; would more likely cause the
 audio class endpoint to fail to enumerate at all.
 
@@ -851,12 +874,11 @@ state requiring `4mb_all_ff.bin` recovery. See §5.1.
 > "Set to any value to clear the current configuration and revert
 > to the default configuration."
 
-The companion to `SAVE_CONFIGURATION`. Returns the chip to
-factory-default parameters at next boot. Sanity move when you
-suspect the DataPartition contains a configuration that's silencing
-channels or otherwise misbehaving — **but be aware it won't reset
-DataPartition corruption that has already bricked the chip** (you
-need the recovery procedure in §5.1 for that).
+The companion to `SAVE_CONFIGURATION`. It returns the chip to
+factory-default parameters at next boot, but it is not an operational JTS
+repair command: do not invoke it on a managed speaker. Suspected
+DataPartition corruption belongs to the explicit DFU recovery procedure in
+§5.1.
 
 ### 4.13 `REBOOT` (resid 48, cmdid 7, length 1, uint8, WO)
 
@@ -864,13 +886,10 @@ need the recovery procedure in §5.1 for that).
 > default."
 
 A soft reset. The chip drops off USB, then re-enumerates ~2-3
-seconds later with all parameters returned to defaults. Used by
-`jasper-aec-init` as the first thing it does on boot, to clear
-any stale AEC filter state.
-
-This is the **safest fault-isolation move**: if `REBOOT 1` clears
-the symptom, your stale state was held in RAM (live parameters)
-rather than in flash (DataPartition).
+seconds later with all parameters returned to defaults. On JTS this command
+is owned exclusively by the explicit foreground `jasper-aec-commission`
+flow, which issues exactly one volatile reset before adaptation. Ordinary
+init, boot, replug, reconcile, and diagnostics never call it.
 
 ### 4.14 `BOOT_STATUS` (resid 48, cmdid 5, length 3, char, RO)
 
@@ -1323,26 +1342,12 @@ demo (e.g. someone followed the official "Output Selection"
 wiki and called `SAVE_CONFIGURATION` to persist a routing
 change).
 
-**Diagnostic moves (chip side):**
-
-```sh
-# 1. Soft reboot — clears RAM-state parameters
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host REBOOT --values 1
-sleep 3
-# Then re-test the channels. If ch2-5 wake up after REBOOT 1, the
-# fault was in live param state.
-
-# 2. Clear DataPartition (parameter store) — clears any persisted state
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host CLEAR_CONFIGURATION --values 1
-sleep 1
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host REBOOT --values 1
-sleep 3
-# Re-test. If this changes things, the DataPartition had persisted state.
-
-# 3. Nuclear option — wipe DataPartition via DFU recovery (procedure in §5.1).
-#    Only do this if 1 and 2 don't help and the chip is otherwise responsive.
-#    DO NOT call SAVE_CONFIGURATION on this chip again, regardless of outcome.
-```
+**Diagnostic boundary:** keep ordinary diagnosis read-only. A managed XVF
+with bad capture/profile state stays parked while `jasper-doctor`, mixer
+readback, firmware identity, and USB descriptors identify the fault. Do not
+call `REBOOT` or `CLEAR_CONFIGURATION` as probes; the foreground commissioner
+owns the sole volatile reset. Confirmed DataPartition corruption uses the
+explicit DFU recovery procedure in §5.1. Never call `SAVE_CONFIGURATION`.
 
 ### 7.3 **The chip's PDM decimator path for mic 0-3 raw output is faulty** (lower likelihood)
 
@@ -1354,9 +1359,9 @@ path**. But the raw-output mux on the 6-ch firmware is its own
 data plane — added in v2.0.8 as a new feature — and could in
 principle fail without affecting ch0/1.
 
-If this is the case, **`REBOOT 1` would not fix it** (live-state
-parameters are not involved). `CLEAR_CONFIGURATION` would not
-either. Re-flashing the same firmware **could** fix it (if the
+If this is the case, a volatile reset would not fix it (live-state parameters
+are not involved), nor would clearing parameter defaults. Re-flashing the same
+firmware **could** fix it (if the
 issue is corrupted firmware bits in the run-time partition), or
 not (if the chip silicon itself has a latch-up condition the
 firmware can't clear).
@@ -1364,7 +1369,9 @@ firmware can't clear).
 The most useful diagnostic is **re-flashing v2.0.8 6chl** and
 re-testing. If symptom persists, swap to the 2-ch firmware and
 verify ch0/1 still work; that confirms the chip is at least
-partially fine.
+partially fine. This is a hardware diagnostic only: 2-channel firmware is
+unsupported for the managed product route, so voice remains parked rather
+than falling back to either channel.
 
 ### 7.4 **Different revision of v2.0.8 6chl firmware between the two Pis** (less likely but cheap to rule out)
 
@@ -1620,8 +1627,13 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-06-30 (chip-AEC bridge routing language rechecked
-against `jasper/cli/aec_bridge.py` and `deploy/bin/jasper-aec-reconcile`:
+Last verified: 2026-07-30 (managed XVF chip-or-actionable-park policy,
+including unsupported/Flex/2-channel handling, native reference geometry,
+foreground-commissioner-only volatile reset boundary, and no-flash lifecycle
+rechecked against `jasper/mics/xvf3800.py`,
+`jasper/cli/aec_init.py`, and the reconciler. Prior 2026-06-30 pass rechecked
+chip-AEC bridge routing language against `jasper/cli/aec_bridge.py` and
+`deploy/bin/jasper-aec-reconcile`:
 the default production profile forwards the primary/session beam on `:9876`;
 optional `:9887`/`:9888` wake/scoring emitters require explicit runtime env.
 Prior 2026-06-29 pass: productized `/wake/` AEC firmware updater code/static
@@ -1632,5 +1644,5 @@ variants, BOOT-button Safe Mode entry, the "won't register as USB"
 troubleshooting signature, and the Linear-4 mic-geometry caveat validated on
 Flex Linear-4 + XIAO; Flex LINEAR-4 USB identity PID 2886:0022, ALSA L16K6Ch,
 and `ua-io16-6ch-lin` verified on jts5. Prior 2026-06-18 pass: DFU link,
-software fallback OP_R non-silent routing, and production/corpus chip-AEC
+historical custom-software OP_R routing, and production/corpus chip-AEC
 routing restore/readback.)

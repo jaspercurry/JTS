@@ -103,6 +103,11 @@ function applyProfileStatus(s) {
 
   setText("echo-status-title", echo.title || "Microphone input");
   setText("echo-status-detail", echo.detail || profile.reason || "—");
+  const action = el("echo-status-action");
+  if (action) {
+    action.hidden = !echo.action;
+    action.textContent = echo.action || "";
+  }
 
   const warning = el("echo-status-warning");
   const hardware = echo.hardware || {};
@@ -298,6 +303,11 @@ async function pollDetection() {
     });
     setText("echo-status-title", "Disconnected");
     setText("echo-status-detail", "Could not reach jasper-control.");
+    const echoAction = el("echo-status-action");
+    if (echoAction) {
+      echoAction.hidden = true;
+      echoAction.textContent = "";
+    }
     const fwCard = el("firmware-update-card");
     const fwButton = el("firmware-update-button");
     if (fwCard) fwCard.hidden = true;

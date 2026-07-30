@@ -869,8 +869,10 @@ def test_aec_full_status_rejects_unvalidated_beam_plan_from_one_probe(
     assert probe_calls == 1
     assert status["microphone"]["detected"] is True
     assert status["legs"]["chip_aec"]["available"] is False
-    assert status["audio_profile"]["requested"] == "xvf_software_aec3"
-    assert status["bridge_role"] == "software_aec3"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec"
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "unavailable"
+    assert status["bridge_role"] == "pending"
 
 
 def test_aec_full_status_surfaces_required_xvf_firmware_update(
@@ -933,6 +935,7 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "ready",
         },
     )
 
@@ -1009,7 +1012,7 @@ def test_custom_chip_beam_toggle_uses_saved_intent_until_reconcile(
     assert toggles["chip_aec_150"]["status"] == "starting"
 
 
-def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
+def test_aec_full_status_testing_profile_cannot_bypass_managed_xvf_policy(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
     aec_mode_file.write_text(
@@ -1029,7 +1032,10 @@ def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
-            "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "unavailable",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON": "output profile is not approved",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION": "Choose an approved output profile",
             "JASPER_AEC_CHIP_AEC_DAC_STATUS": "testing",
             "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "explicit_testing",
             "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "operator validation",
@@ -1039,8 +1045,9 @@ def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
     status = server._aec_full_status()
 
     assert status["profile"] == "xvf_chip_aec_testing"
-    assert status["audio_profile"]["requested"] == "xvf_chip_aec_testing"
-    assert status["audio_profile"]["active"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec"
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "unavailable"
     assert status["audio_profile"]["validation_profile"] == "xvf_chip_aec"
     assert status["chip_aec_gate"]["status"] == "testing"
     assert status["chip_aec_gate"]["auto_allowed"] is False
@@ -1049,7 +1056,7 @@ def test_aec_full_status_testing_profile_allows_unapproved_dac_testing(
     assert status["legs"]["chip_aec"]["production_available"] is False
 
 
-def test_aec_full_status_flex_linear_auto_resolves_software_aec3(
+def test_aec_full_status_flex_linear_auto_parks_without_software_fallback(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
     aec_mode_file.write_text(
@@ -1072,18 +1079,24 @@ def test_aec_full_status_flex_linear_auto_resolves_software_aec3(
             "JASPER_XVF_VARIANT": "xvf3800_flex_linear_6ch",
             "JASPER_XVF_GEOMETRY": "linear",
             "JASPER_XVF_CHIP_AEC_SUPPORTED": "0",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "unavailable",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON": "no validated beam plan",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION": "Install supported XVF hardware",
         },
     )
 
     status = server._aec_full_status()
 
     assert status["legs"]["chip_aec"]["available"] is False
-    assert status["audio_profile"]["requested"] == "xvf_software_aec3"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec"
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "unavailable"
+    assert status["bridge_role"] == "pending"
     assert status["microphone"]["variant_id"] == "xvf3800_flex_linear_6ch"
     assert status["microphone"]["geometry"] == "linear"
 
 
-def test_aec_full_status_chip_aec_request_shows_runtime_software_until_applied(
+def test_aec_full_status_chip_aec_request_never_reports_stale_software_fallback(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
     """The status card must not present intent as applied runtime truth."""
@@ -1103,6 +1116,8 @@ def test_aec_full_status_chip_aec_request_shows_runtime_software_until_applied(
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
             "JASPER_AEC_CHIP_AEC_ENABLED": "0",
             "JASPER_MIC_DEVICE_RAW": "udp:9877",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "checking",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON": "validating alignment",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
         },
@@ -1112,27 +1127,22 @@ def test_aec_full_status_chip_aec_request_shows_runtime_software_until_applied(
 
     assert status["raw_intent"]["leg_chip_aec"] is True
     assert status["legs"]["chip_aec"]["configured"] is False
-    assert status["legs"]["raw"]["configured"] is True
-    assert status["bridge_role"] == "software_aec3"
-    assert status["software_aec3"]["active"] is True
-    assert status["software_aec3"]["bypassed"] is False
+    assert status["legs"]["raw"]["configured"] is False
+    assert status["bridge_role"] == "pending"
+    assert status["software_aec3"]["active"] is False
     assert status["audio_profile"]["selection"] == "xvf_chip_aec"
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
-    assert status["audio_profile"]["active"] == "xvf_software_aec3"
-    assert status["audio_profile"]["state"] == "pending"
-    assert status["microphone"]["processing_mode"] == "Software AEC3"
-    assert status["mic_settings"]["echo"]["mode"] == "software_aec3"
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "checking"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC parked"
+    assert status["mic_settings"]["echo"]["mode"] == "hardware_chip_aec_pending"
     assert "not applied" in " ".join(status["microphone"]["warnings"])
 
 
-def test_aec_full_status_explicit_chip_fallback_reports_software_aec3(
+def test_aec_full_status_explicit_chip_failure_reports_actionable_park(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
-    """Unsupported explicit hardware-AEC request must show active fallback.
-
-    The reconciler fail-closes to software AEC3. `/aec` must report that
-    applied runtime truth instead of claiming WebRTC AEC3 is bypassed.
-    """
+    """Unsupported managed hardware-AEC remains parked and actionable."""
     aec_mode_file.write_text(
         "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec\n"
         "JASPER_AEC_MODE=auto\n"
@@ -1151,7 +1161,9 @@ def test_aec_full_status_explicit_chip_fallback_reports_software_aec3(
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AUDIO_DAC_ID": "dual_apple_usb_c_dac_4ch",
             "JASPER_AEC_CHIP_AEC_ENABLED": "0",
-            "JASPER_MIC_DEVICE_RAW": "udp:9877",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "unavailable",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON": "output profile needs calibration",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION": "Choose an approved output profile",
             "JASPER_AEC_CHIP_AEC_DAC_ID": "dual_apple_usb_c_dac_4ch",
             "JASPER_AEC_CHIP_AEC_DAC_STATUS": "needs_calibration",
             "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "static",
@@ -1163,21 +1175,17 @@ def test_aec_full_status_explicit_chip_fallback_reports_software_aec3(
 
     status = server._aec_full_status()
 
-    assert status["bridge_role"] == "software_aec3"
-    assert status["software_aec3"] == {
-        "configured": True,
-        "active": True,
-        "bypassed": False,
-        "reason": "Software AEC3 bridge is active.",
-    }
+    assert status["bridge_role"] == "pending"
+    assert status["software_aec3"]["active"] is False
     assert status["raw_intent"]["leg_chip_aec"] is True
     assert status["legs"]["chip_aec"]["configured"] is False
-    assert status["legs"]["raw"]["configured"] is True
+    assert status["legs"]["raw"]["configured"] is False
     assert status["audio_profile"]["selection"] == "xvf_chip_aec"
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
-    assert status["audio_profile"]["active"] == "xvf_software_aec3"
-    assert status["audio_profile"]["state"] == "fallback"
-    assert status["mic_settings"]["echo"]["mode"] == "software_aec3"
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "unavailable"
+    assert status["audio_profile"]["action"] == "Choose an approved output profile"
+    assert status["mic_settings"]["echo"]["mode"] == "hardware_chip_aec_pending"
     hardware = next(
         choice
         for choice in status["mic_settings"]["echo"]["choices"]
@@ -1290,6 +1298,7 @@ def test_aec_full_status_chip_aec_applied_requires_runtime_env(
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "ready",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
         },

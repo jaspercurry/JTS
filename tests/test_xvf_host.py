@@ -28,7 +28,7 @@ _FORBIDDEN_COMMANDS = {
 }
 
 _EXPECTED_XVF_COMMANDS_BY_CALLER = {
-    "jasper/cli/aec_init.py": {
+    "jasper/mics/xvf3800.py": {
         "AEC_AECEMPHASISONOFF",
         "AEC_ASROUTGAIN",
         "AEC_ASROUTONOFF",
@@ -38,11 +38,16 @@ _EXPECTED_XVF_COMMANDS_BY_CALLER = {
         "AEC_FIXEDBEAMSGATING",
         "AEC_FIXEDBEAMSONOFF",
         "AEC_HPFONOFF",
+        "AUDIO_MGR_MIC_GAIN",
         "AUDIO_MGR_OP_L",
         "AUDIO_MGR_OP_R",
+        "AUDIO_MGR_REF_GAIN",
         "AUDIO_MGR_SYS_DELAY",
         "SHF_BYPASS",
-        "VERSION",
+    },
+    "jasper/cli/aec_init.py": {"BLD_REPO_HASH", "SHF_BYPASS"},
+    "jasper/cli/aec_commission.py": {
+        "AEC_AECCONVERGED", "AUDIO_MGR_OP_L", "AUDIO_MGR_OP_R", "SHF_BYPASS",
     },
     "jasper/audio_validation.py": {
         "AEC_AECCONVERGED",
@@ -60,6 +65,7 @@ class _FakeUsbDevice:
     def __init__(self, responses: list[bytes] | None = None) -> None:
         self.responses = list(responses or [])
         self.calls = []
+        self.serial_number = " XVF3800-001 "
 
     def ctrl_transfer(
         self,
@@ -137,14 +143,12 @@ def _caller_command_literals(relpath: str) -> set[str]:
     return _shell_command_literals(path)
 
 
-def _aec_init_profile_writes() -> tuple[tuple[str, list[int | float]], ...]:
-    from jasper.cli import aec_init
+def _profile_writes() -> tuple[tuple[str, list[int | float]], ...]:
     from jasper.mics import xvf3800
 
     return (
-        *aec_init._chip_corpus_profile(xvf3800.SQUARE_FIXED_150_210_PLAN),
-        *aec_init._CHIP_PRODUCTION_PROFILE,
-        ("AEC_HPFONOFF", [0]),
+        *xvf3800.chip_aec_profile_commands(xvf3800.SQUARE_FIXED_150_210_PLAN),
+        *xvf3800.CHIP_AEC_BYPASS_PROFILE_COMMANDS,
     )
 
 
@@ -227,7 +231,7 @@ def test_production_xvf_callers_use_only_registered_commands() -> None:
             f"{sorted(write_only_reads)}"
         )
 
-    for command_name, values in _aec_init_profile_writes():
+    for command_name, values in _profile_writes():
         command = xvf_host.COMMANDS[command_name]
         assert command.access != "ro", f"{command_name} is read-only"
         assert len(values) == command.count, (
@@ -252,6 +256,18 @@ def test_write_packs_uint8_vendor_control_payload() -> None:
             xvf_host.DEFAULT_TIMEOUT_MS,
         )
     ]
+
+
+def test_factory_serial_uses_trimmed_usb_iserial() -> None:
+    assert xvf_host.ReSpeaker(_FakeUsbDevice()).factory_serial() == "XVF3800-001"
+
+
+def test_factory_serial_rejects_missing_usb_iserial() -> None:
+    fake = _FakeUsbDevice()
+    fake.serial_number = ""
+
+    with pytest.raises(xvf_host.XvfControlError, match="unavailable"):
+        xvf_host.ReSpeaker(fake).factory_serial()
 
 
 def test_write_accepts_integral_float_uint8_values() -> None:
@@ -327,6 +343,19 @@ def test_read_rejects_write_only_commands() -> None:
     with pytest.raises(ValueError, match="write-only"):
         dev.read("REBOOT")
     assert fake.calls == []
+
+
+def test_reboot_once_is_exactly_one_out_transfer_without_readback() -> None:
+    fake = _FakeUsbDevice()
+    dev = xvf_host.ReSpeaker(fake)
+
+    dev.reboot_once()
+
+    assert len(fake.calls) == 1
+    request_type, request, value, index, payload, timeout = fake.calls[0]
+    assert request_type == 0x40
+    assert request == 0
+    assert (value, index, bytes(payload), timeout) == (7, 48, b"\x01", dev.TIMEOUT)
 
 
 def test_control_timeout_stays_under_systemd_unit_start_default() -> None:
