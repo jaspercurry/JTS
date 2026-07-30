@@ -32,12 +32,6 @@ KEY_NEXTSONG = 163
 KEY_PLAYPAUSE = 164
 KEY_SEARCH = 217
 
-CAP_VOLUME = "volume"
-CAP_TRANSPORT = "transport"
-CAP_MUTE = "mute"
-CAP_TAP_GESTURES = "tap-gestures"
-CAP_VOICE_HOLD = "voice-hold"
-
 RemoteMicStatus = Literal[
     "none", "not_exposed", "reserved", "linux_audio", "adapter",
 ]
@@ -156,7 +150,6 @@ class RemoteProfile:
     name: str
     identity: RemoteIdentity
     keymap: Mapping[int, Action]
-    capabilities: frozenset[str] = frozenset()
     mic: RemoteMicSupport = field(default_factory=RemoteMicSupport)
     reserved_features: tuple[ReservedFeature, ...] = ()
 
@@ -194,7 +187,6 @@ VK01 = RemoteProfile(
             on_triple=KeyAction("POST", "/transport/previous", {}),
         ),
     },
-    capabilities=frozenset({CAP_VOLUME, CAP_TRANSPORT, CAP_TAP_GESTURES}),
     mic=RemoteMicSupport(
         status="reserved",
         detail=(
@@ -259,7 +251,6 @@ WIIM_REMOTE_2 = RemoteProfile(
             on_release=KeyAction("POST", "/session/end", {}),
         ),
     },
-    capabilities=frozenset({CAP_VOLUME, CAP_TRANSPORT, CAP_MUTE, CAP_VOICE_HOLD}),
     mic=RemoteMicSupport(
         status="adapter",
         capture_profile_id="wiim_remote_2",
