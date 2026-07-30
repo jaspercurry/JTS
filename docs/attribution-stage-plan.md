@@ -1214,14 +1214,14 @@ A **bold** owner is the primary disposition venue (dual-owner tie-break in
 | # | Guard | Source (printed pages) | Status | Owner |
 |---|---|---|---|---|
 | G1 | **Minimum-phase gate on `eq`** — an `eq` route carries minimum-phase evidence or discloses its absence | D/P pp. 513–515, 567; Toole p. 382; McCarthy p. 389 | new | **WO-4** |
-| G2 | **Nyquist origin-encirclement** as the cheap phase-class test (also catches mis-selected arrival time) | D/P p. 200 | new (derived view, no new capture) | WO-4 / WO-2 |
+| G2 | **Nyquist origin-encirclement** as the cheap phase-class test (also catches mis-selected arrival time) | D/P p. 200 | new (derived view, no new capture) | **WO-4** / WO-2 |
 | G3 | **EQ-authority ceiling**: > 3 dB per ⅓-octave, or slopes > 18 dB/oct ⇒ route `physical` ("replace the component") — adopted as *routing* only; any per-bin correction clamp still resolves through the shipped `linearization_envelope.ReasonCode` (§3.3) rather than re-litigating envelope ceilings | D/P p. 568 | new — **would have fired on the 7–11 dB dark tweeter and the 10 dB-dark linearization** | **WO-4** |
-| G4 | **Benefit-region disclosure with a filter-kind switch** — ripple filters get a disclosed region; broadband tilt does not | McCarthy p. 459; D/P pp. 517–519 | correction (to the recorded #1866 adoption, which lacked the switch) | **WO-4 / WO-6** |
+| G4 | **Benefit-region disclosure with a filter-kind switch** — ripple filters get a disclosed region; broadband tilt does not | McCarthy p. 459; D/P pp. 517–519 | correction (to the recorded #1866 adoption, which lacked the switch) | **WO-4** / WO-6 |
 | G5 | **Reflection-severity ladder** — −20 dB negligible / −8 dB problems expected / −1 dB maximum | Everest Table 17-2, pp. 376–377 | new — computable from the corpus today (E8) | **WO-4** (M2/M5 copy) |
 | G6 | **"First significant reflection"** = within 6 dB of the highest-level reflection (defined for the no-reverberant-field case we are in) | D/P p. 240 | new | WO-4 |
 | G7 | **Resolution honesty** — never claim phase/delay finer than the time resolution behind it (20 µs ⇒ ±72° at 20 kHz) | McCarthy **pp. 417–418** (not p. 466 — X5) | partial (#1869/#1870 carry it with the wrong page cite) | **WO-3** |
 | G8 | **Equidistance precondition** on any position-pair level comparison — unequal propagation delay ⇒ the level difference is distance-contaminated, not axial | McCarthy p. 446 | new — free; per-position µs delays already computed | **WO-4** (gates Q-D, §9) |
-| G9 | **6 dB OFFAX membership gate** on cloud positions, two-sided (also flags OFFAX approaching unity) | McCarthy pp. 449 (×2), 442 | partial (adopted as a routing rule; never applied to cloud membership) | WO-4 / WO-1 |
+| G9 | **6 dB OFFAX membership gate** on cloud positions, two-sided (also flags OFFAX approaching unity) | McCarthy pp. 449 (×2), 442 | partial (adopted as a routing rule; never applied to cloud membership) | **WO-4** / WO-1 |
 | G10 | **Coherence gates**: (a) EQ only on stable data; (b) stable-low vs unstable-low discriminator (deterministic summation vs contamination); (c) coherence collapse tracking frequency = uncompensated delay — a free instrument self-check | McCarthy pp. 387–391 | new (JTS has no coherence surface) | **WO-2** (Stage-0), WO-5 |
 | G11 | **Restart-on-apply averaging semantics** — fixed averages, restarted on change, for systems where change is expected | McCarthy pp. 370–372, 391 | new — the iterate loop's averaging contract | **WO-7** |
 | G12 | **EHD before HD** — divide by `H(n·jω₁)` from the same sweep; removes the `D(N·f₀)/D(f₀)` transfer-path error at both frequencies | Klippel Eq. 12 p. 24, p. 66 | new — free reprocessing, the panel's highest value/cost item | **WO-4** (M6; lands in §5's P6 guard list) |
@@ -1230,7 +1230,7 @@ A **bold** owner is the primary disposition venue (dual-owner tie-break in
 | G15 | **Per-bin amplitude thresholding** — gate bins without sufficient excitation rather than reporting them | McCarthy p. 372 | new — required for any music-sourced capture | WO-2 |
 | G16 | **RMS-vs-vector averaging audit** — complex-trace RMS discards the phase discrimination separating causal from non-causal energy | McCarthy p. 370 | new (audit item) | WO-2 |
 | G17 | **Post-divider reference trap** — a reference tapped after the crossover divides it out ("a low-passed electrical reference can make a subwoofer appear flat to 10 kHz"); declare the reference tap point in the harness schema | McCarthy p. 429 | new | **WO-2** |
-| G18 | **Pull-away test + the two far-field criteria** (≥1λ at the lowest frequency of interest **and** ≥10× the source's longest dimension) — converts M4 from "frames disagree" into "which side of the near-field boundary we are on" | D/P pp. 444–445 | new — the library's cheapest high-yield probe; pairs with P5; harness-first per §5's promotion criterion | **WO-2 / WO-3** |
+| G18 | **Pull-away test + the two far-field criteria** (≥1λ at the lowest frequency of interest **and** ≥10× the source's longest dimension) — converts M4 from "frames disagree" into "which side of the near-field boundary we are on" | D/P pp. 444–445 | new — the library's cheapest high-yield probe; pairs with P5; harness-first per §5's promotion criterion | **WO-2** / WO-3 |
 | G19 | **Probe by intervention** — apply a known change; a shortfall from the predicted move *is* the evidence | McCarthy pp. 460–461 (knob probe); D/P p. 574 (persistence probe); Klippel (level ladder) — three independent antecedents | partial (`delta_probe` ships the shape) | **WO-7** |
 | G20 | **Ground-plane +6 dB coupling correction** — cross-leg level comparisons correct for it; plane size sets the LF limit | McCarthy p. 444 | partial (recorded; M4's five-frame table is the consumer) | WO-4 |
 | G21 | **Onset defined on the fundamental** (`C(f,U)`), never on a distortion threshold; per-order slopes H2–H5 | Klippel pp. 32–33 | new — H4/H5 free from the same deconvolution | WO-4 (M6) |
@@ -1261,7 +1261,8 @@ The full 28-entry contradictions register lives with the synthesis
   directly (p. 185, math tier): halving the solid angle raises **SPL by
   6 dB but sound power by 3 dB** — "this is not correct" aimed squarely
   at the industry's +3 dB-SPL folklore, valid at wavelengths long against
-  the source and with no other reflectors. So a "+3 dB" figure can be a
+  the source size **and the source-to-boundary separation**, with no
+  other reflectors. So a "+3 dB" figure can be a
   different *model* (constant-power) **or** a different *quantity* (sound
   power), and the rule covers both: **any boundary-gain figure names its
   model and its quantity (SPL vs power).** Our desk/small-woofer regime
