@@ -270,13 +270,15 @@ The profile is a *policy input consumed above the shared foundation*:
   end-to-end — the design-axis flat contract, the gated per-driver
   measurement, the mechanism registry, the carve layer, the two-stage
   flow. A speaker whose direct sound is flat and smooth is the starting
-  point both profiles inherit; nothing in T1–T5 or WO-1…WO-5 branches on
-  profile.
+  point both profiles inherit; as scoped today, nothing in T1–T5 or
+  WO-1…WO-5 branches on profile (T4's crossover-cloud position prompts
+  and ONAX/OFFAX/XOVR role labels serve both profiles unchanged).
 - **Profile-steered (the layers above):** the room line's target policy
   (WO-8 / the regime plan), the grading/display frame and its disclosure
-  copy (WO-6), measurement-position *guidance* (tight cluster at the seat
-  vs spread over the area — the cloud remains one instrument either way),
-  and, later, the preference-tilt layer.
+  copy (WO-6), the **room line's** measurement-position *guidance* when
+  it ships (tight cluster at the seat vs spread over the listening
+  area — the crossover cloud remains one profile-independent instrument
+  either way), and, later, the preference-tilt layer.
 - **Group invariant (owner note, must not be lost):** every speaker bonded
   into one playback group — a stereo pair (wired or wireless), a 2.1 set
   with a subwoofer, any bonded set presenting one soundstage — carries the
@@ -328,9 +330,9 @@ not earn it (see M4's #1857 row).
 | M3 | Unfitted-overlap slope error | **model-derived / synthetic — the least-grounded seed.** 0.9 dB of the 07-29 Fc dip (model); #1817's synthetic reconstruction shows the fit attracted +2.379 dB at 1570.6 Hz fitting *through* an LR4 against a flat target. Its own signature has never been measured | Reverse-null cannot be driven deep at any delay; broad magnitude error | Reverse-null (P1) | `refit` |
 | M4 | Frame mismatch (reference frame generally, incl. window vs power) | **adjudicated (mic and speaker physically moved), and the corpus's largest disagreement.** S0's five-frame spread on **one speaker with one DSP state** reaches **17.5 dB** at 8–16 kHz (desk edge −6.94 … ground plane −24.43 dB) — but read the frames literally: three of the five are physical relocations, up to and including removing the desk and putting the speaker on the floor. Every frame is legitimate; none is "the same setup analysed differently." #1859's 3–7.7 dB cross-session case is *corroborating* only — it names geometry frame as the "leading candidate" and does not exclude a physical change over the intervening ~40 h. #1857's 3.13 dB of intra-verdict frame drag is **reproduced to the digit** from the persisted curve — arithmetic verification, not a probe, so it does not earn the `adjudicated` tier | Same speaker measures differently under different frames; window flat where cloud mean dips (or vice versa) | Design-axis capture vs cloud (P5); the matched-geometry A/B #1859 names | `measure_differently` / `document_as_physics` |
 | M5 | Boundary/SBIR (desk bounce) | **Observed**, two sessions (P2 — *corroborating* for SBIR specifically, since position-variance proves "not source-fixed", not "boundary"); **adjudicated** only as a positive control (S0 ground plane); **refuted** for the 1.8 kHz dip. Observed: position-variant LF dips at **735 / 854 Hz** and **1161 / 1166 Hz**, **2.7–4.4 dB** deep, present at **75–100 %** of positions (noon's 1250 Hz candidate is 9/12), CV **15–17 %** — against the source-fixed features' 0.6–1.5 % in the same captures. That factor-of-ten separation is the classifier's whole basis. A first cancellation near 800 Hz implies a ~21 cm direct-vs-reflected path difference, which the geometry model must be checked against. Positive control: S0's ground-plane leg (deliberately created bounce at 125–146 µs, r 0.74–0.93 — the *worst* top-octave reference of the three legs). **Refuted** for the one feature it had previously been invoked on (S0's 1.8 kHz dip mispredicts by 19–70 %) — a mechanism being real does not make every invocation of it right | Position-variant null (CV > 8 % across the cloud); frequency tracks geometry | Position-variance (P2); geometry model; **move-the-speaker probe (the split's adjudicator — bench)** | **Mechanism-conditional (library panel, 2026-07-29 — this split is a detector requirement, not a doctrine choice).** Position-variant **interference null** (narrow, tracks path difference) → `physical`, never `eq`. Boundary **loading** (broad, minimum-phase-ish, tracks solid angle — the radiation-resistance change Toole treats as legitimately EQ-able, pp. 187–188) → `eq` permitted. The blanket `physical` this row shipped with was *stronger than any school*; the M5 detector must distinguish the two before routing, and the discriminating move is physical: shift the speaker relative to the desk and read whether the feature tracks solid angle (loading) or path difference (interference) — a #1870 bench item. Boundary-gain arithmetic in the geometry model **names its model** (§11.3, X1): constant-velocity (+6 dB/boundary) for this small mass-controlled woofer near a desk; Yamaha's +3 dB ladder is constant-power physics for a different regime |
-| M6 | Nonlinearity (driver/port, level-dependent) | **Now measured (WO-0 Farina pass). The woofer dominates by ~9 dB *in relative THD* — a frame that must be named:** woofer H3 **−47.0 dB / 0.45 %** at 200–400 Hz vs the tweeter's worst supported band at −56.1 dB, both referred to **each driver's own fundamental**. In *absolute* harmonic level at the microphone the ordering **reverses** — the fundamentals sit ~14 dB apart (−22.1 vs −8.1 dB), putting the tweeter's H3 ~5 dB higher. Naming the frame is not pedantry in a plan whose own instrument-error catalog makes `frame` the dominant failure class. H3 > H2 **in the 200–800 Hz bands where the woofer's distortion is largest** (the symmetric-nonlinearity signature); **the ordering reverses above 800 Hz** (H2 above H3 by 1.8 dB noon, 3.9 dB morning, all supported data). The tweeter's H2 sits at or near the floor in both bands, so **the horn's even-order behaviour is currently unmeasured, not measured-as-low**. Two independent measurement paths (laptop full-range, Pi per-driver) agree **on the woofer's H3** within 1.5–3 dB. The UMIK-2 chain is *not* the sensitivity limit **at the levels that matter here** (the iLoud control resolves 0.02–0.74 % with 6–30 dB of headroom); where the fundamental itself was 10 dB down, H2 became unmeasurable. Separately, one reference-tier P3 negative: identical within 0.12 dB at 10 dB lower drive. **Onset level is NOT derivable from existing data** — the shipped two-level pilot's low leg sits at the harmonic floor (0.1–2.8 dB headroom). **Suggestive, unconfirmed:** the woofer's 200–400 Hz H3 is level-*invariant* in ratio (−0.06 dB/dB, vs +2.0 for a memoryless cubic) while 400–800 Hz grows at +1.45 and 800–1600 Hz at +2.65 dB/dB. That rests on a **clean cross-session lever of only 2.62 dB with up to 1.1 dB of DSP confound** in the bands where the harmonics land — which is exactly why it is a hypothesis. If it survives a deliberate probe, the speaker's largest distortion is a **fixed** mechanism (resonance / port / cabinet) rather than motor nonlinearity *[library inversion, 2026-07-29 — see the fix-class column: Klippel's catalog has **no** small-signal mechanism that produces a level-invariant distortion **ratio**, so the first hypothesis for genuine invariance is a linear feature in the harmonic window, not a fixed acoustic mechanism]* | Order dominance (H3 ⇒ symmetric-**supported**, H2 ⇒ asymmetric — support, not proof: asymmetric nonlinearities inside the feedback loop also generate odd order); frequency shape **in units of `fs`** (`fs` as installed is unrecorded — bench item, with sealed-vs-vented / `fp`); per-order level slope **H2–H5** (soft: slope rises with order; hard limiting: all orders rise at the same rate); ICHD crest screen (< 10 dB smooth / > 10 dB defect — screening line only, calibrate before it drives copy); `C(f,U)` on the fundamental **defines onset** — never a distortion threshold | P3 as a **≥3-leg ladder** (≥12 dB floor, 18 dB / 4 legs target, legs interleaved hi/lo/hi in one capture, one DSP state, full sweep length per leg); P6 with **EHD** (orders 2–5) + ICHD; **one near-field woofer leg at a shared drive level** (tests the linear-artefact hypothesis directly and buys ~20 dB of harmonic headroom) | `physical` (operating point) / `carve` when a genuine nonlinearity is confirmed — **but the level-invariance branch is inverted from WO-0's proposal (§11.3, X28)**: a level-invariant *ratio* routes **`measure_differently` first** (no catalogued mechanism produces one below onset; the prime suspect is a linear feature — our own τ ≈ 310 µs source-fixed comb spans a 200–400 Hz fundamental and its 600–1200 Hz H3 at genuinely different points — leaking a level-independent, frequency-dependent bias into the measured ratio, the same `D(N·f₀)/D(f₀)` class that produced the `eqlow` artefact), surviving to `physical` only after **EHD + the near-field leg + a repeat** agree. The deliberate ladder adjudicates: ratio slope ≈ +2 dB/dB ⇒ strain-driven cone/surround nonlinearity, `physical`, "driver character" copy; ratio ≈ 0 after EHD + near-field ⇒ `measure_differently` — a P6 instrument finding, not a property of the speaker. **Must-not-claim** (pinned): suspension-vs-motor from a sweep alone — `Xdc` cannot exist in pressure and HD cannot separate `Kms(x)` from `Bl(x)`, so the honest v1 label is *"displacement-driven driver nonlinearity (suspension or motor)"*; and any audibility verdict |
+| M6 | Nonlinearity (driver/port, level-dependent) | **Now measured (WO-0 Farina pass). The woofer dominates by ~9 dB *in relative THD* — a frame that must be named:** woofer H3 **−47.0 dB / 0.45 %** at 200–400 Hz vs the tweeter's worst supported band at −56.1 dB, both referred to **each driver's own fundamental**. In *absolute* harmonic level at the microphone the ordering **reverses** — the fundamentals sit ~14 dB apart (−22.1 vs −8.1 dB), putting the tweeter's H3 ~5 dB higher. Naming the frame is not pedantry in a plan whose own instrument-error catalog makes `frame` the dominant failure class. H3 > H2 **in the 200–800 Hz bands where the woofer's distortion is largest** (the symmetric-nonlinearity signature); **the ordering reverses above 800 Hz** (H2 above H3 by 1.8 dB noon, 3.9 dB morning, all supported data). The tweeter's H2 sits at or near the floor in both bands, so **the horn's even-order behaviour is currently unmeasured, not measured-as-low**. Two independent measurement paths (laptop full-range, Pi per-driver) agree **on the woofer's H3** within 1.5–3 dB. The UMIK-2 chain is *not* the sensitivity limit **at the levels that matter here** (the iLoud control resolves 0.02–0.74 % with 6–30 dB of headroom); where the fundamental itself was 10 dB down, H2 became unmeasurable. Separately, one reference-tier P3 negative: identical within 0.12 dB at 10 dB lower drive. **Onset level is NOT derivable from existing data** — the shipped two-level pilot's low leg sits at the harmonic floor (0.1–2.8 dB headroom). **Suggestive, unconfirmed:** the woofer's 200–400 Hz H3 is level-*invariant* in ratio (−0.06 dB/dB, vs +2.0 for a memoryless cubic) while 400–800 Hz grows at +1.45 and 800–1600 Hz at +2.65 dB/dB. That rests on a **clean cross-session lever of only 2.62 dB with up to 1.1 dB of DSP confound** in the bands where the harmonics land — which is exactly why it is a hypothesis. If it survives a deliberate probe, the speaker's largest distortion is a **fixed** mechanism (resonance / port / cabinet) rather than motor nonlinearity *[library inversion, 2026-07-29 — see the fix-class column: Klippel's catalog has **no** small-signal mechanism that produces a level-invariant distortion **ratio**, so the first hypothesis for genuine invariance is a linear feature in the harmonic window, not a fixed acoustic mechanism]* | Order dominance (H3 ⇒ symmetric-**supported**, H2 ⇒ asymmetric — support, not proof: asymmetric nonlinearities inside the feedback loop also generate odd order); frequency shape **in units of `fs`** (`fs` as installed is unrecorded — bench item, with sealed-vs-vented / `fp`); per-order level slope **H2–H5** (soft: slope rises with order; hard limiting: all orders rise at the same rate); ICHD crest screen (< 10 dB smooth / > 10 dB defect — screening line only, calibrate before it drives copy); `C(f,U)` on the fundamental **defines onset** — never a distortion threshold | P3 as a **≥3-leg ladder** (≥12 dB floor, 18 dB / 4 legs target, legs interleaved hi/lo/hi in one capture, one DSP state, full sweep length per leg); P6 with **EHD** (orders 2–5) + ICHD; **one near-field woofer leg at a shared drive level** (tests the linear-artefact hypothesis directly and buys ~20 dB of harmonic headroom — measure the actual floor at the near-field position rather than assuming the gain) | `physical` (operating point) / `carve` when a genuine nonlinearity is confirmed — **but the level-invariance branch is inverted from WO-0's proposal (§11.3, X28)**: a level-invariant *ratio* routes **`measure_differently` first** (no catalogued mechanism produces one below onset; the prime suspect is a linear feature — our own τ ≈ 310 µs source-fixed comb spans a 200–400 Hz fundamental and its 600–1200 Hz H3 at genuinely different points — leaking a level-independent, frequency-dependent bias into the measured ratio, the same `D(N·f₀)/D(f₀)` class that produced the `eqlow` artefact), surviving to `physical` only after **EHD + the near-field leg + a repeat** agree. The deliberate ladder adjudicates: ratio slope ≈ +2 dB/dB ⇒ strain-driven cone/surround nonlinearity, `physical`, "driver character" copy; ratio ≈ 0 after EHD + near-field ⇒ `measure_differently` — a P6 instrument finding, not a property of the speaker. **Must-not-claim** (pinned): suspension-vs-motor from a sweep alone — `Xdc` cannot exist in pressure and HD cannot separate `Kms(x)` from `Bl(x)`, so the honest v1 label is *"displacement-driven driver nonlinearity (suspension or motor)"*; and any audibility verdict |
 | M7 | **Inter-driver level-frame error** | **adjudicated** (by the extended definition above — a known intervention was applied and the feature responded) **— the corpus's largest measured defect, and the only mechanism with a before/after listening verdict.** A 7–11 dB dark tweeter; 13.9 dB between the two per-driver fit targets; the trim frame sitting at the bare datasheet sensitivity gap with a −14.4 dB L-pad in circuit; #1667's 1.7–6.3 dB trim bias. An independent hand correction moved every band 300 Hz–16 kHz to within ±0.9 dB of the reference. **The two drivers' realized passband levels are never compared anywhere in the pipeline** *[Dickason addendum: the trap is named in 2006 print — pad/trim attenuation computed from broadband datasheet sensitivity instead of the in-passband measured curve gives "a distorted picture" (p. 180, D42) — independent confirmation of exactly the #1667 case]* | One driver's passband sits N dB off the other's against any common anchor; broad and monotonic, **not** an interference notch | Per-driver passband comparison against a declared-sensitivity prior (free, back-catalog) | `eq` (level) — and **`refit` when the level error is upstream in the fit's own frame**, which is the #1667 case: a trim solved by band-averaging inside the woofer's rolloff skirt is not fixed by adding level, it is fixed by re-solving. WO-0 proposed `eq (level)` alone; the second class is this plan's addition, on the M7-vs-M3 distinction below |
-| M8 | **Vertical lobing at Fc** | **adjudicated (old horn; re-run owed).** S0 measured the Fc-region dip against mic height: **10.7 dB** at tweeter height (n=6) → **4.1 dB** a hand-width low (n=4) → **1.7 dB** on the ground plane (n=3), while the 8–16 kHz ripple held then *deepened*; Pearson r between the two features = **−0.05** (n=13). Consistent with the noon cloud's 32 % walk in the Fc dip's centre (M1's row), though those are **uncontrolled position clouds, not vertical-angle sweeps**, and the morning cloud is ambiguous — the dissertation's signature is ">~10 % **with vertical angle**," which only P5 actually tests. S0 predates the 07-27 horn swap, so this is a reason to re-run P5 on current hardware, not a finished answer. *[Dickason addendum — magnitude tension, recorded not reconciled: his baffle-position study puts position-driven variation at 1–2.4 dB (Table 6.1, D22), an order of magnitude below the 10.7 dB measured here; pure baffle diffraction does not obviously explain a defect this size — see §11's addendum block]* | Fc-region dip depth and/or frequency tracks vertical mic offset; **uncorrelated with the HF ripple** | Design-axis / vertical-offset capture (P5) | `physical` / `measure_differently` |
+| M8 | **Vertical lobing at Fc** | **adjudicated (old horn; re-run owed).** S0 measured the Fc-region dip against mic height: **10.7 dB** at tweeter height (n=6) → **4.1 dB** a hand-width low (n=4) → **1.7 dB** on the ground plane (n=3), while the 8–16 kHz ripple held then *deepened*; Pearson r between the two features = **−0.05** (n=13). Consistent with the noon cloud's 32 % walk in the Fc dip's centre (M1's row), though those are **uncontrolled position clouds, not vertical-angle sweeps**, and the morning cloud is ambiguous — the dissertation's signature is ">~10 % **with vertical angle**," which only P5 actually tests. S0 predates the 07-27 horn swap, so this is a reason to re-run P5 on current hardware, not a finished answer. *[Dickason addendum — magnitude tension, recorded not reconciled: his baffle-position studies put position-driven variation at 1.07–3.07 dB in the 500 Hz–3 kHz band that contains Fc (Table 6.2, D30; the 2–10 kHz tweeter table, D22, shows 1.04–2.41 dB) — a factor of ~3.5–10 below the 10.7 dB measured here; pure baffle diffraction does not obviously explain a defect this size — see §11's addendum block]* | Fc-region dip depth and/or frequency tracks vertical mic offset; **uncorrelated with the HF ripple** | Design-axis / vertical-offset capture (P5) | `physical` / `measure_differently` |
 
 **M1, M3, and M8 are three different mechanisms wearing one symptom.** All
 three present as "the dip at Fc," and they route to `delay`, `refit`, and
@@ -412,7 +414,7 @@ label with the **two-branch routing in the row above**, which the deliberate
 P3 ladder adjudicates (§8). Two honesty bounds ride with M6 into WO-4:
 
 - **Normal-for-class copy.** Our woofer's measured 0.26–0.45 % over
-  200–800 Hz sits inside the ≈0.3–1 % (with 400/800 Hz break-up bumps)
+  200–800 Hz overlaps the ≈0.3–1 % (with 400/800 Hz break-up bumps)
   Klippel reports for his own 6-inch woofer in the same band — *frame
   caveat:* his curve is equivalent-input, ours is raw acoustic, so this is
   suggestive of "normal for the class," never a like-for-like match. The
@@ -718,7 +720,11 @@ tests in the same PR, docs-impact run, memory/issue updates.
 §11.2 guard candidates assigned to it: **adopted with a pinned test, or
 declined with a stated reason — never silently dropped.** Assignment is not
 adoption; the ledger exists so no guard dies of being forgotten rather than
-being decided.
+being decided. Three ledger rows are owned by venues that are not WOs —
+G23 by the #1870 bench, G30/G31 by the bass-extension program — and are
+dispositioned in that venue's next session record or contract revision.
+Dual-owner rows are dispositioned by the first listed (**bold**) owner to
+ship; the later owner inherits the record and may extend it.
 
 - **WO-0 — Corpus retrospective** (multi-agent, read-only; no code).
   **Reported 2026-07-29, both passes; acceptance met.** The five findings
@@ -812,13 +818,21 @@ being decided.
   **Added by the 2026-07-29 amendment:** the two cloud-legitimacy gates of
   §11.3 E4 — the **equidistance precondition** (compare per-position
   propagation delays, which the flow already computes, before reading any
-  position-pair level difference as axial) and the **two-sided 6 dB OFFAX
-  membership gate** on cloud positions — implemented so each cloud position
-  carries its gate verdicts into findings. These are independently useful
-  attribution gates *and* the recorded preconditions for ever re-asking
-  Q-D's grading/display-frame question (§9); landing them does not move any
-  frame. WO-4 also dispositions its §11.2 guard assignments (G1–G6, G8, G9,
-  G12, G20–G22, G24, G25) per §7's disposition rule.
+  position-pair level difference as axial; its tolerance is policy,
+  recorded with the finding per §5's half-width pattern, and WO-4 states
+  the value in-PR) and the **two-sided 6 dB OFFAX membership gate** on
+  cloud positions — implemented so each cloud position carries its gate
+  verdicts into findings. These are independently useful attribution gates
+  *and* the preconditions the Q-D ruling names for any later per-profile
+  grading-frame re-ask (§9); landing them does not move any frame.
+  **Also added, from the Q-D ruling's (c): the carve layer's load-bearing
+  status pinned by test** — a test asserting that the carve/exclusion
+  layer genuinely removes uncorrectable (position-variant /
+  interference-flagged) bands from the **fit path**, because the margin
+  against EQ-into-a-null is the carve, not the frame choice. This is a
+  new test, distinct from §3.3's already-pinned *routing* rule. WO-4 also
+  dispositions its §11.2 guard assignments (G1–G6, G8, G9, G12, G20–G22,
+  G24, G25) per §7's disposition rule.
 - **WO-5 — Verdict honesty rewires.** #1868 (VERIFY also grades an
   absolute frame at Fc, or emits the "cannot sum flat as designed"
   finding) and #1857 (spec worst-band pointer anchored honestly) —
@@ -883,7 +897,9 @@ being decided.
   `env.screen === 'review'` lands in the wrong envelope.
   Same #1858 precondition as WO-5 for anything drawn from the persisted
   prior. Acceptance: conventions tests (escaping, `canonical_page()`, no
-  bare numbers as confidence), copy review.
+  bare numbers as confidence), copy review. If this rung is the first to
+  ship the listening-profile setting (§3.5), the bonded-group
+  same-declaration invariant lands with a pinned test in the same PR.
 - **WO-7 — The dial-in loop** (owner ruling, 2026-07-29 afternoon; #1866).
   The single-shot measure → propose → apply → verify becomes a **bounded
   iterative refinement** riding the two-stage flow's stage-2 sessions:
@@ -926,7 +942,10 @@ being decided.
 - **WO-8 — Room-line adoption.** The room-correction line selects its
   mechanism set (M4/M5 + regime-plan mechanisms) and frame policy
   through the same library; explicitly NOT a merge of the flows.
-  Acceptance: the SoC boundary test — no cross-line policy import.
+  Acceptance: the SoC boundary test — no cross-line policy import. If
+  this rung is the first to ship the listening-profile setting (§3.5),
+  the bonded-group same-declaration invariant lands with a pinned test in
+  the same PR.
 
 ## 8. Sequencing and dependencies
 
@@ -1097,17 +1116,22 @@ hypothesis sources, never authorities**; the §10 do-nots still bind, and
 nothing in this section adds a mechanism without a corpus citation.
 
 **Dickason addendum (7th ed., digested 2026-07-29 late evening — the
-speaker-building school, closing the panel at eight sources).** The
-identity-verified digest (307 pp; Ch. 3 passive radiators, Ch. 5–8 read in
-full; Chs. 1, 2, 4, 9–12 TOC-skimmed — an honest scope limit) moved the two
-rows the panel predicted, plus three seed-table touches folded in place:
+speaker-building school, closing the panel at eight sources).** The digest
+(source identity-verified, 307 PDF pp; Ch. 3 passive radiators and
+Chs. 5–8 read in full; Ch. 0 in part, its advanced-transducer tail
+unread; Chs. 1, 2, 4 and 9 opening-pages-or-TOC only; Chs. 10–12 not
+read — the digest records per-chapter coverage tiers) moved the two rows
+the panel predicted, plus three seed-table touches folded in place. Page
+cites are printed folios as read; the printed↔PDF offset is +12 through
+early Ch. 6 and +10 from Ch. 7 onward, per the digest's header.
 
-- **X1 (boundary fork): a third independent +6 dB source.** The
+- **X1 (boundary fork): a fourth independent +6 dB source.** The
   single-boundary loading gain is derived twice independently in one
   section — "a doubling of the sound pressure, or 6 dB of gain" for
   full→half-space (p. 207, math-derived; library claim D58). *Conflation
   caveat:* Ch. 6's ~13 dB baffle-size sweep (D26, p. 135) measures a
-  different quantity (edge-diffraction ripple across a size sweep) and is
+  different quantity (baffle-step corner-rolloff amplitude across a
+  baffle-size sweep, likely folding in edge-diffraction ripple) and is
   not a competing number. Folded into X1 below and G25.
 - **The power-frame fork (panel X2) gains a third position**: Dickason
   rejects the "Constant Power Crossover" convention outright for
@@ -1120,14 +1144,15 @@ rows the panel predicted, plus three seed-table touches folded in place:
   curve (p. 180; D42) — the exact trap M7's #1667 case names. Noted in
   M7's row.
 - **M8 magnitude tension, recorded not reconciled**: Dickason's
-  baffle-position study puts position-driven response variation at
-  **1–2.4 dB** (Table 6.1; D22) — an order of magnitude below S0's
-  measured 10.7 dB Fc-region dip. Pure baffle diffraction does not
-  obviously explain a defect that size; readings (driver spacing vs
-  wavelength per D40, filter-order vertical tilt per D38, or another
-  JTS-specific factor) are checkable once #1864 lands real spacing. Noted
-  in M8's row — and it reinforces §4's rule that M1/M3/M8 stay separate
-  entries.
+  baffle-position studies put position-driven response variation at
+  **1.07–3.07 dB in the 500 Hz–3 kHz band that contains Fc** (Table 6.2;
+  D30 — the 2–10 kHz tweeter table, D22, shows 1.04–2.41 dB) — a factor
+  of ~3.5–10 below S0's measured 10.7 dB Fc-region dip. Pure baffle
+  diffraction does not obviously explain a defect that size; readings
+  (driver spacing vs wavelength per D40, filter-order vertical tilt per
+  D38, or another JTS-specific factor) are checkable once #1864 lands
+  real spacing. Noted in M8's row — and it reinforces §4's rule that
+  M1/M3/M8 stay separate entries.
 - **P1 prior art**: a ≥10 dB polarity-reversal null centred at Fc as a
   design-verification check (p. 189; D50) — corroborates the reverse-null
   approach; explicitly *not* a substitute for P1's delay-sweep
@@ -1151,13 +1176,21 @@ ladder's PR-T names:
 Set A is corpus-corroborated; set B is school-consensus/corpus-silent, split
 out so nothing is laundered as observed when it is only derived.
 
+**Status — same discipline as §11.2's ledger:** these rows are *inputs
+dispositioned by their owner WOs* (§7's rule), not blanket adoptions,
+"adoption set" naming the readiness of the input, not its state. Where a
+row is already binding, the row or its consumer says so explicitly: A3's
+*routing* rule is pinned today (§3.3/§4); A6's prescription ordering and
+G11's averaging contract are adopted into WO-7's bullet on the owner's
+recorded McCarthy adoptions (#1866).
+
 | # | Claim | Sources (printed pages) | Corpus | Tier | Owner |
 |---|---|---|---|---|---|
 | A1 | **Comb closed forms**: nulls at `(2n−1)/(2t)`, peaks at `n/t`, spacing `1/t`, first null `1/(2t)` | McCarthy p. 79; Everest pp. 380, 493 (independently, D'Antonio); Davis/Patronis (three chapters, two authors) — four independent derivations | τ = 310 ± 8 µs over 21 screened positions (CV 2.13 %); three estimators within 2.5 % | **C1** | WO-4 (M2) |
 | A2 | **Averaging attenuates position-variant features and preserves position-invariant ones** — averaging is itself a mechanism discriminator | Toole pp. 378, 187; Yamaha pp. 254–255; McCarthy p. 434 (the same rule inverted, as a validity scope) | Bake-off: **zero overlap** — CV<3 % features attenuate 2.8–16.1 % under aggregation, everything else 26.5–69.3 % | **C1** | WO-4 (P2 — free on WO-1's persisted curves) |
-| A3 | **Never fill a null with EQ** | Toole p. 518; McCarthy pp. 435/437; Davis/Patronis pp. 567, 517–519; Yamaha p. 370 | Shipped carve layer; every aggregate frame under-renders position-variant nulls 37–50 %, so **the carve, not the frame, is the safety mechanism** | **C2** | WO-4 (already pinned; warrant note in §3.3) |
+| A3 | **Never fill a null with EQ** | Toole p. 518; McCarthy pp. 435/437; Davis/Patronis pp. 567, 517–519; Yamaha p. 370 | Shipped carve layer; every aggregate frame under-renders position-variant nulls 37–50 %, so **the carve, not the frame, is the safety mechanism** | **C2** | WO-4 (the *routing* rule is already pinned, warrant note in §3.3; the carve **fit-path** test is new — the Q-D ruling's (c), in WO-4's §7 acceptance) |
 | A4 | **Level offset changes null depth, not null frequency** | Everest (figure-structural: attenuation series shares identical null frequencies); Klippel (same algebra one level up) | The 07-27 horn swap: τ held while r fell 0.373 → ≈0.28 — depth moved, frequency did not | **C2** | WO-4 (τ-recovery robustness) |
-| A5 | **A single-position measurement cannot characterise a crossover** | McCarthy pp. 92–93, 95 (vertical displacement); Davis/Patronis p. 386 (summation preconditions — the stronger derivation, see E10 note in §11.3); Toole p. 374 (vertical orbit in the standard data set) | The same speaker's Fc dip measured 1425 → 1980 Hz on mic position alone | **C2** | WO-4 (routing test, already pinned in §4) |
+| A5 | **A single-position measurement cannot characterise a crossover** | McCarthy pp. 92–93, 95 (vertical displacement); Davis/Patronis p. 386 (summation preconditions — the stronger derivation, see E10 note in §11.3); Toole p. 374 (his standard data set *includes* the full vertical orbit — instrument coverage, not a stated agreement; per E10, do not represent Toole as agreeing) | The same speaker's Fc dip measured 1425 → 1980 Hz on mic position alone | **C2** | WO-4 (routing test, already pinned in §4) |
 | A6 | **Physical before electronic; EQ last** | Yamaha ×4 (pp. 254, 362, 370 + cost list); McCarthy pp. 307–308, 467; Toole p. 267; Davis/Patronis p. 555 | M7 (the corpus's largest measured defect) was a level-frame error; M5's nulls route `physical` | **C2** | WO-6 / WO-7 routing |
 | A7 | **Plot the members alongside the aggregate; never ship the aggregate alone** | Toole (always both, Figs 4.10/13.17); McCarthy p. 433 (optical averaging); Yamaha pp. 109–110 | WO-0: per-position yield computed then discarded; the bake-off's clearest leg depends on having members | **C2** | WO-1 (persistence) / WO-6 (display) |
 | A8 | **The gate trade: reflection-freedom is bought with resolution** (`Δf·ΔT ≥ 1`) | Toole pp. 382–383 (the worked 280 Hz failure); McCarthy pp. 226, 445; Davis/Patronis p. 198; CLIO's worked `f_min = 1/T` | The 143 Hz floor; per-capture gates 2.1–2.3 ms in the bake-off's own method table | **C2** | WO-2 (artifact declares gate + resolution; see E5) |
@@ -1174,14 +1207,15 @@ out so nothing is laundered as observed when it is only derived.
 
 **None is adopted by this table.** §7's disposition rule is the binding:
 each owning WO adopts with a pinned test or declines with a stated reason.
-Status: `new` = no JTS analogue; `partial` = shipped in some form;
+A **bold** owner is the primary disposition venue (dual-owner tie-break in
+§7). Status: `new` = no JTS analogue; `partial` = shipped in some form;
 `correction` = fixes an already-recorded adoption.
 
 | # | Guard | Source (printed pages) | Status | Owner |
 |---|---|---|---|---|
 | G1 | **Minimum-phase gate on `eq`** — an `eq` route carries minimum-phase evidence or discloses its absence | D/P pp. 513–515, 567; Toole p. 382; McCarthy p. 389 | new | **WO-4** |
 | G2 | **Nyquist origin-encirclement** as the cheap phase-class test (also catches mis-selected arrival time) | D/P p. 200 | new (derived view, no new capture) | WO-4 / WO-2 |
-| G3 | **EQ-authority ceiling**: > 3 dB per ⅓-octave, or slopes > 18 dB/oct ⇒ route `physical` ("replace the component") | D/P p. 568 | new — **would have fired on the 7–11 dB dark tweeter and the 10 dB-dark linearization** | **WO-4** |
+| G3 | **EQ-authority ceiling**: > 3 dB per ⅓-octave, or slopes > 18 dB/oct ⇒ route `physical` ("replace the component") — adopted as *routing* only; any per-bin correction clamp still resolves through the shipped `linearization_envelope.ReasonCode` (§3.3) rather than re-litigating envelope ceilings | D/P p. 568 | new — **would have fired on the 7–11 dB dark tweeter and the 10 dB-dark linearization** | **WO-4** |
 | G4 | **Benefit-region disclosure with a filter-kind switch** — ripple filters get a disclosed region; broadband tilt does not | McCarthy p. 459; D/P pp. 517–519 | correction (to the recorded #1866 adoption, which lacked the switch) | **WO-4 / WO-6** |
 | G5 | **Reflection-severity ladder** — −20 dB negligible / −8 dB problems expected / −1 dB maximum | Everest Table 17-2, pp. 376–377 | new — computable from the corpus today (E8) | **WO-4** (M2/M5 copy) |
 | G6 | **"First significant reflection"** = within 6 dB of the highest-level reflection (defined for the no-reverberant-field case we are in) | D/P p. 240 | new | WO-4 |
@@ -1190,7 +1224,7 @@ Status: `new` = no JTS analogue; `partial` = shipped in some form;
 | G9 | **6 dB OFFAX membership gate** on cloud positions, two-sided (also flags OFFAX approaching unity) | McCarthy pp. 449 (×2), 442 | partial (adopted as a routing rule; never applied to cloud membership) | WO-4 / WO-1 |
 | G10 | **Coherence gates**: (a) EQ only on stable data; (b) stable-low vs unstable-low discriminator (deterministic summation vs contamination); (c) coherence collapse tracking frequency = uncompensated delay — a free instrument self-check | McCarthy pp. 387–391 | new (JTS has no coherence surface) | **WO-2** (Stage-0), WO-5 |
 | G11 | **Restart-on-apply averaging semantics** — fixed averages, restarted on change, for systems where change is expected | McCarthy pp. 370–372, 391 | new — the iterate loop's averaging contract | **WO-7** |
-| G12 | **EHD before HD** — divide by `H(n·jω₁)` from the same sweep; removes the `D(N·f₀)/D(f₀)` transfer-path error at both frequencies | Klippel Eq. 12 p. 24, p. 66 | new — free reprocessing, the panel's highest value/cost item | **WO-4** (M6) / P6 |
+| G12 | **EHD before HD** — divide by `H(n·jω₁)` from the same sweep; removes the `D(N·f₀)/D(f₀)` transfer-path error at both frequencies | Klippel Eq. 12 p. 24, p. 66 | new — free reprocessing, the panel's highest value/cost item | **WO-4** (M6; lands in §5's P6 guard list) |
 | G13 | **Verify constancy, not absolute response** — mic self-verification is circular; verifiable things are mic-to-mic matching and constancy under reproducible conditions | McCarthy p. 419 | new — the principled phone-mic trust answer | WO-2 |
 | G14 | **Self-verification as a stage** — prove findings are in the system, not the tool (test the generator's THD before attributing THD) | McCarthy pp. 402, 408 | partial (done once as the loopback control; not a stage) | **WO-2** |
 | G15 | **Per-bin amplitude thresholding** — gate bins without sufficient excitation rather than reporting them | McCarthy p. 372 | new — required for any music-sourced capture | WO-2 |
@@ -1203,7 +1237,7 @@ Status: `new` = no JTS analogue; `partial` = shipped in some form;
 | G22 | **ICHD crest-factor defect screen** (< 10 dB smooth / > 10 dB defect) before any mechanism claim | Klippel pp. 25–26, 54 | new — calibrate before it drives copy (X15) | WO-4 (M6) |
 | G23 | **Near-field capture for distortion SNR**, then predict the far field from the small-signal `H(jω)` | Klippel p. 66 | new | #1870 bench |
 | G24 | **Two ripple constants, not one** — the 4 dB zone boundary derives at ±6 dB ripple (12 dB total), the 10 dB boundary at 6 dB total (±3); a 2× relation, not one constant | McCarthy (library verification pass, §6 of its record) | **correction** (to the recorded "ONE named constant" adoption on #1866) | **WO-4** |
-| G25 | **Name the boundary-loading model** — +3 dB/boundary (constant-power) vs +6 dB/boundary (constant-velocity); the small mass-controlled woofer near a desk takes constant-velocity | Yamaha pp. 229–230 vs corpus/McCarthy/CLIO/Dickason p. 207 (X1) | **correction**, doc-level (no code hard-codes either yet) | WO-4 (M5) |
+| G25 | **Name the boundary-loading model and quantity (SPL vs power)** — +3 dB/boundary (constant-power) vs +6 dB/boundary (constant-velocity); the small mass-controlled woofer near a desk takes the constant-velocity SPL numbers | Yamaha pp. 229–230 vs corpus/McCarthy/CLIO/Dickason p. 207; Toole p. 185 states the quantity split (X1) | **correction**, doc-level (no code hard-codes either yet) | WO-4 (M5) |
 | G26 | **Instrument-noise-floor honesty** — never report a number the instrument cannot resolve | Yamaha p. 312 | partial (the honesty machinery's ethos, with a citable 1989 statement) | WO-5 |
 | G27 | **"±3 dB means a 6 dB window"** — tolerance-vocabulary units guard | Yamaha p. 230 | new | WO-5 |
 | G28 | **Modal Q bound from physics**: mode bandwidth = `2.2/RT60` ⇒ modal `Q = f₀·RT60/2.2` — input for the regime plan's "shape-plausible as modal" bound | Everest p. 337 | new | **WO-8** |
@@ -1223,11 +1257,18 @@ The full 28-entry contradictions register lives with the synthesis
   by the Dickason addendum — Dickason's twice-derived single-boundary
   "doubling of the sound pressure, or 6 dB" at p. 207 — **four**
   independent sources) is the constant-**velocity** result for a small
-  mass-controlled woofer. **Rule: any boundary-gain figure names its
-  model.** Our desk/small-woofer regime takes constant-velocity. Dickason
-  is silent on the multi-boundary cascade, and his ~13 dB baffle-size
-  sweep is a different quantity — do not conflate (§11's addendum block).
-  No code hard-codes either today; this rule exists so none inherits the
+  mass-controlled woofer. Toole states the fork's *quantity* distinction
+  directly (p. 185, math tier): halving the solid angle raises **SPL by
+  6 dB but sound power by 3 dB** — "this is not correct" aimed squarely
+  at the industry's +3 dB-SPL folklore, valid at wavelengths long against
+  the source and with no other reflectors. So a "+3 dB" figure can be a
+  different *model* (constant-power) **or** a different *quantity* (sound
+  power), and the rule covers both: **any boundary-gain figure names its
+  model and its quantity (SPL vs power).** Our desk/small-woofer regime
+  takes the constant-velocity SPL numbers. Dickason is silent on the
+  multi-boundary cascade, and his ~13 dB baffle-size sweep is a different
+  quantity again — do not conflate (§11's addendum block). No code
+  hard-codes any of these today; this rule exists so none inherits the
   wrong one.
 - **X4 — McCarthy's printed averaging example is arithmetically wrong.**
   The book prints `(5 + 5.5 + 6 − 19.2)/4 = −0.4`; the correct average is
@@ -1237,6 +1278,11 @@ The full 28-entry contradictions register lives with the synthesis
   cite the 20 µs ⇒ ±72°-at-20-kHz rule as McCarthy p. 466; it is
   **pp. 417–418**. Note the opposite valence on p. 22: 20 µs is fine as a
   delay-*setting* increment and hazardous as an *analysis* quantum.
+- **X15 — Klippel's `ICHD > 10 dB` threshold is a screening line, not a
+  decision boundary.** One round number, one illustrated instance, no
+  distribution behind it. Calibrate against a known-good and a
+  known-defective capture before it drives any household copy. Consumed
+  by §5's P6 guard 5 and by G22.
 - **X22 — never-fill-nulls has two warrants of unequal strength.** The
   physics warrant (energy added into a cancellation is itself cancelled) is
   airtight and multiply derived; the psychoacoustic warrant (Buchlein 1962)

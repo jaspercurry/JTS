@@ -77,7 +77,7 @@ pooled 32/50 ABX threshold, and 05's composed scheduler Rules A–C.
 ## Cross-reference: boundary-gain figures name their model (2026-07-29)
 
 The 2026-07-29 reference-library panel
-([attribution plan §11.3, X1](../../attribution-stage-plan.md)) surfaced a
+(the [attribution plan](../../attribution-stage-plan.md), §11.3 X1) surfaced a
 2× fork in boundary-gain figures that this directory sits on one side of:
 report 03's half-space / baffle-step "~6 dB" figures are
 **constant-velocity-model** numbers (the correct family for a small
