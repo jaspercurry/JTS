@@ -1,0 +1,566 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""WO-1 schema contracts: the finding artifact, the registry, the identity.
+
+Pins the acceptance items ``docs/attribution-stage-plan.md`` §7 assigns to
+WO-1 that are about *shape* rather than *storage* — the schema test, the
+golden round-trip, the stable cross-store session identity, and the plan rules
+the excluded-band promotion path is bound by. Storage, retention, and the
+per-position evidence live in ``tests/test_attribution_persistence.py``.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from jasper.attribution.findings import (
+    EVIDENCE_STORE_BUNDLE,
+    EVIDENCE_STORE_CAPTURE_RING,
+    FINDING_FIELD_DESCRIPTIONS,
+    FINDING_SCHEMA,
+    FINDING_SET_SCHEMA,
+    EvidenceRef,
+    Finding,
+    FindingError,
+    FindingSet,
+)
+from jasper.attribution.mechanisms import (
+    MECHANISM_BOUNDARY_SBIR,
+    MECHANISM_HF_REFLECTION,
+    MECHANISM_REGISTRY,
+    MechanismError,
+    mechanism_spec,
+)
+from jasper.attribution.promotion import PRODUCED_BY, promote_carve_outs
+from jasper.attribution.session_identity import (
+    ALIAS_RELAY_SESSION_ID,
+    SESSION_IDENTITY_KEY,
+    SessionIdentity,
+    SessionIdentityError,
+    read_session_identity,
+    stamp_session_identity,
+)
+from jasper.attribution.vocabulary import (
+    CONFIDENCE_TIERS,
+    EVIDENCE_TIERS,
+    FIX_CLASSES,
+    PROBES,
+)
+
+_SESSION = SessionIdentity(
+    session_id="7f54494228cc",
+    aliases={ALIAS_RELAY_SESSION_ID: "cap_Ktm3xQ2p"},
+)
+_CITE = EvidenceRef(
+    session=_SESSION,
+    store=EVIDENCE_STORE_BUNDLE,
+    locator="evidence/v1/artifacts/crossover_v2/cap_Ktm3xQ2p/cloud_measure.json",
+    sha256="a" * 64,
+)
+
+
+def _finding(**overrides: object) -> Finding:
+    kwargs: dict[str, object] = {
+        "mechanism": MECHANISM_HF_REFLECTION,
+        "band_hz": (4200.0, 4600.0),
+        "evidence": {"tau_us": 310.0, "r_time": 0.28, "depth_db": -6.4},
+        "confidence": "unsure",
+        "fix_class": "carve",
+        "household_copy": (
+            "A narrow range here cancels rather than plays quietly, and "
+            "adding level cannot fill a cancellation."
+        ),
+        "probes_run": ("P2",),
+        "probes_recommended": ("P4",),
+        "cites": (_CITE,),
+    }
+    kwargs.update(overrides)
+    return Finding(**kwargs)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# The schema test (§7 acceptance)
+# --------------------------------------------------------------------------- #
+
+
+def test_finding_carries_exactly_the_plan_s_fields() -> None:
+    """§3.1's artifact is ``{mechanism, band, evidence, confidence, fix_class,
+    household_copy, probes_run, probes_recommended}`` plus the citation §7's
+    acceptance requires. Serialized keys are pinned so a field cannot be
+    dropped or renamed without this failing."""
+
+    payload = _finding().to_dict()
+    assert set(payload) == {
+        "schema",
+        "mechanism",
+        "band_hz",
+        "evidence",
+        "confidence",
+        "fix_class",
+        "household_copy",
+        "probes_run",
+        "probes_recommended",
+        "cites",
+    }
+    assert payload["schema"] == FINDING_SCHEMA
+
+
+def test_every_serialized_field_carries_an_inline_description() -> None:
+    """§6: "JSON with a ``schema`` field and inline field descriptions (no
+    code-reading needed to interpret — the v2-state friction)". A new field
+    that ships without its description fails here."""
+
+    payload = _finding().to_dict()
+    described = set(FINDING_FIELD_DESCRIPTIONS)
+    assert described == set(payload) - {"schema"}
+    for name, text in FINDING_FIELD_DESCRIPTIONS.items():
+        assert text.strip(), name
+
+    inline = FindingSet(
+        session=_SESSION, produced_by=PRODUCED_BY, findings=(_finding(),)
+    ).to_dict()["field_descriptions"]
+    assert set(inline) == {"set", "finding"}
+    assert set(inline["finding"]) == described
+
+
+def test_the_closed_vocabularies_are_the_plan_s(  # noqa: D103
+) -> None:
+    # §3.3's closed set, verbatim and in order.
+    assert FIX_CLASSES == (
+        "delay",
+        "polarity",
+        "eq",
+        "refit",
+        "carve",
+        "physical",
+        "document_as_physics",
+        "measure_differently",
+    )
+    # §3.2's Q6 ruling: three words, never a bare number.
+    assert CONFIDENCE_TIERS == ("confident", "likely", "unsure")
+    # §5's probe table.
+    assert PROBES == ("P1", "P2", "P3", "P4", "P5", "P6", "P7")
+
+
+@pytest.mark.parametrize(
+    "overrides, fragment",
+    [
+        ({"mechanism": "M99"}, "unregistered mechanism"),
+        ({"confidence": "0.8"}, "confidence must be one of"),
+        ({"fix_class": "delay"}, "may not route"),
+        ({"fix_class": "not_a_class"}, "may not route"),
+        ({"band_hz": (4600.0, 4200.0)}, "f_lo_hz < f_hi_hz"),
+        ({"band_hz": (float("nan"), 4200.0)}, "finite"),
+        ({"probes_run": ("P9",)}, "outside the §5 table"),
+        ({"cites": ()}, "must cite at least one"),
+        ({"evidence": {"tau_us": float("inf")}}, "finite"),
+    ],
+)
+def test_a_malformed_finding_is_refused(overrides: dict, fragment: str) -> None:
+    with pytest.raises(FindingError, match=fragment):
+        _finding(**overrides)
+
+
+def test_an_unsure_finding_must_recommend_a_probe() -> None:
+    """§3.2: "``unsure`` carries the single recommended disambiguating
+    probe". An unsure finding with nothing to recommend is a dead end dressed
+    as a diagnosis — the flow could not offer §3.4's
+    refuse-and-recommend-the-probe outcome."""
+
+    with pytest.raises(FindingError, match="must recommend at least one probe"):
+        _finding(confidence="unsure", probes_recommended=())
+    # The same finding at a higher tier needs no recommendation.
+    assert _finding(confidence="likely", probes_recommended=()).probes_recommended == ()
+
+
+@pytest.mark.parametrize(
+    "copy, fragment",
+    [
+        ("The horn reflects at this frequency.", "hardware-noun-free"),
+        ("The tweeter is 7 dB dark here.", "hardware-noun-free"),
+        ("This desk bounce cancels the low end.", "hardware-noun-free"),
+        ("This range is position_invariant.", "not an internal slug"),
+        ("M2 explains this range.", "must not name a mechanism id"),
+        ("   ", "non-empty"),
+    ],
+)
+def test_household_copy_stays_phenomenon_level(copy: str, fragment: str) -> None:
+    """§3.1's two-vocabularies rule, inherited verbatim from the shipped
+    ``_null_classification_copy`` prohibition: "No hardware noun appears here
+    … naming one would be the device-taxonomy guess this program forbids in
+    shipped copy". ``mechanism`` may name hardware; ``household_copy`` may
+    not."""
+
+    with pytest.raises(FindingError, match=fragment):
+        _finding(household_copy=copy)
+
+
+def test_hardware_noun_matching_respects_word_boundaries() -> None:
+    """A substring check would reject "important" for containing "port" and
+    "concern" for containing "cone". The guard must be a word match, or it
+    becomes the reason nobody can write a household sentence."""
+
+    assert _finding(
+        household_copy=(
+            "It is important to note this concerns a narrow range, and the "
+            "reported result is unchanged."
+        )
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The golden round-trip (§7 acceptance)
+# --------------------------------------------------------------------------- #
+
+GOLDEN_FINDING_SET: dict = {
+    "schema": "jts_attribution_finding_set/1",
+    "session": {
+        "scheme": "jts-session-1",
+        "session_id": "7f54494228cc",
+        "aliases": {"relay_session_id": "cap_Ktm3xQ2p"},
+    },
+    "produced_by": PRODUCED_BY,
+    "findings": [
+        {
+            "schema": "jts_attribution_finding/1",
+            "mechanism": "M2",
+            "band_hz": [4200.0, 4600.0],
+            "evidence": {"tau_us": 310.0, "r_time": 0.28, "depth_db": -6.4},
+            "confidence": "unsure",
+            "fix_class": "carve",
+            "household_copy": (
+                "A narrow range here cancels rather than plays quietly, and "
+                "adding level cannot fill a cancellation."
+            ),
+            "probes_run": ["P2"],
+            "probes_recommended": ["P4"],
+            "cites": [
+                {
+                    "session": {
+                        "scheme": "jts-session-1",
+                        "session_id": "7f54494228cc",
+                        "aliases": {"relay_session_id": "cap_Ktm3xQ2p"},
+                    },
+                    "store": "commissioning_bundle",
+                    "locator": (
+                        "evidence/v1/artifacts/crossover_v2/cap_Ktm3xQ2p/"
+                        "cloud_measure.json"
+                    ),
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+    ],
+}
+
+
+def test_one_golden_finding_round_trips_byte_for_byte() -> None:
+    """§7 acceptance: "one golden finding round-trip". Both directions, and
+    through canonical JSON — the exact serialization the evidence store
+    persists and re-hashes, so a change that survives in Python but not on
+    disk still fails."""
+
+    built = FindingSet(
+        session=_SESSION, produced_by=PRODUCED_BY, findings=(_finding(),)
+    )
+    payload = built.to_dict()
+    payload.pop("field_descriptions")
+    assert payload == GOLDEN_FINDING_SET
+    # The golden's schema tags are the shipped constants, not a copy that
+    # could drift past a version bump unnoticed.
+    assert GOLDEN_FINDING_SET["schema"] == FINDING_SET_SCHEMA
+    assert GOLDEN_FINDING_SET["findings"][0]["schema"] == FINDING_SCHEMA
+
+    reopened = FindingSet.from_mapping(built.to_dict())
+    assert reopened == built
+
+    canonical = json.dumps(built.to_dict(), sort_keys=True, separators=(",", ":"))
+    assert FindingSet.from_mapping(json.loads(canonical)) == built
+
+
+def test_reopen_refuses_an_unknown_or_missing_field() -> None:
+    """Strictness on read is what makes the round-trip a contract rather than
+    a coincidence: a field this version does not understand must not be
+    silently dropped on the next write."""
+
+    payload = _finding().to_dict()
+    with pytest.raises(FindingError, match="unknown fields"):
+        Finding.from_mapping({**payload, "surprise": 1})
+    with pytest.raises(FindingError, match="missing fields"):
+        Finding.from_mapping({k: v for k, v in payload.items() if k != "evidence"})
+    with pytest.raises(FindingError, match="unsupported finding schema"):
+        Finding.from_mapping({**payload, "schema": "jts_attribution_finding/99"})
+
+
+# --------------------------------------------------------------------------- #
+# The registry (§2 shape, §10 do-not)
+# --------------------------------------------------------------------------- #
+
+
+def test_no_mechanism_entry_without_a_citation_carrying_its_tier() -> None:
+    """§10's first do-not, enforced structurally rather than by review:
+    ``MechanismSpec`` cannot be constructed without both fields, so a
+    speculative entry fails at import."""
+
+    assert MECHANISM_REGISTRY, "the registry must not be empty"
+    for mechanism_id, spec in MECHANISM_REGISTRY.items():
+        assert spec.id == mechanism_id
+        assert spec.corpus_citation.strip()
+        assert spec.corpus_evidence_tier in EVIDENCE_TIERS
+        assert set(spec.fix_classes) <= set(FIX_CLASSES)
+        assert set(spec.discriminating_probes) <= set(PROBES)
+
+
+def test_the_registry_is_a_declaration_map_not_a_plugin_registry() -> None:
+    """§2: the shape is the shipped registry-of-declarations — a pure-data
+    mapping from a stable id to a spec, read by an engine with zero per-entry
+    knowledge — deliberately NOT the transit provider pattern. A declaration
+    that grew behaviour would be the drift this pins."""
+
+    for spec in MECHANISM_REGISTRY.values():
+        for value in vars(spec).values():
+            assert not callable(value), f"{spec.id} declaration grew a callable"
+    with pytest.raises(MechanismError, match="unregistered mechanism"):
+        mechanism_spec("M404")
+
+
+def test_m5_declares_both_branches_of_its_conditional_routing() -> None:
+    """§4 M5, library panel 2026-07-29: the split is a *detector*
+    requirement. A position-variant interference null routes ``physical`` and
+    never ``eq``; boundary **loading** — broad, minimum-phase-ish, tracking
+    solid angle — is legitimately EQ-able. The registry declares both because
+    the blanket ``physical`` the row shipped with was stronger than any
+    school."""
+
+    spec = mechanism_spec(MECHANISM_BOUNDARY_SBIR)
+    assert set(spec.fix_classes) == {"physical", "eq"}
+
+
+# --------------------------------------------------------------------------- #
+# The stable cross-store session identity (§6, §7 acceptance)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_identity_round_trips_and_survives_a_flat_carrier() -> None:
+    assert SessionIdentity.from_mapping(_SESSION.to_dict()) == _SESSION
+    assert _SESSION.token == "jts-session-1:7f54494228cc"
+    # A token carries the identity, not its decoration.
+    assert SessionIdentity.from_token(_SESSION.token).session_id == _SESSION.session_id
+
+
+def test_one_key_name_carries_the_identity_through_every_store() -> None:
+    """§6's requirement is "one identifier that survives every hop". The
+    mechanism is one canonical key: a reader that finds
+    ``jts_session_identity`` in a bundle artifact, a capture-ring sidecar, or
+    a laptop archive manifest resolves the session without knowing which
+    store it came from."""
+
+    hops = [
+        {"kind": "jts_crossover_v2_cloud_evidence", "phase": "cloud_measure"},
+        {"phase": "measure", "wav_sha256": "b" * 64},
+        {"schema": "jts_attribution_finding_set/1"},
+    ]
+    for payload in hops:
+        stamp_session_identity(payload, _SESSION)
+        assert SESSION_IDENTITY_KEY in payload
+        assert read_session_identity(payload) == _SESSION
+
+
+def test_an_unstamped_payload_reads_as_legacy_not_as_an_error() -> None:
+    """Every artifact written before this module existed carries no identity
+    key — and that corpus is exactly what WO-0 had to read. Absence is
+    history; malformation is a writer bug."""
+
+    assert read_session_identity({"phase": "measure"}) is None
+    assert read_session_identity(None) is None
+    with pytest.raises(SessionIdentityError):
+        read_session_identity({SESSION_IDENTITY_KEY: {"session_id": "x", "junk": 1}})
+
+
+def test_a_token_cannot_be_confused_with_a_content_hash() -> None:
+    """§6: "Content hashing stays the *verifier*; it must stop being the
+    *index*." The scheme prefix is what keeps an identity self-identifying
+    wherever it appears, so a bare hex digest can never be mistaken for one."""
+
+    with pytest.raises(SessionIdentityError):
+        SessionIdentity.from_token("a" * 64)
+    with pytest.raises(SessionIdentityError):
+        SessionIdentity(session_id="7f54494228cc", scheme="sha256")
+
+
+# --------------------------------------------------------------------------- #
+# The excluded-band promotion path (§3.1's embryo)
+# --------------------------------------------------------------------------- #
+
+
+def _carve_outs(**overrides: object) -> list[dict]:
+    row = {
+        "f_lo_hz": 4200.0,
+        "f_hi_hz": 4600.0,
+        "source": "identified_null",
+        "f_center_hz": 4400.0,
+        "n": 3,
+        "tau_us": 310.0,
+        "r_time": 0.28,
+        "r_freq": 0.31,
+        "depth_db": -6.4,
+        "classification": "position_invariant",
+        "reason": (
+            "This range is a cancellation between two arrivals. Adding level "
+            "cannot fill a cancellation, so it is left out of correction and "
+            "out of grading. It sat at the same frequencies at every "
+            "microphone position."
+        ),
+    }
+    row.update(overrides)
+    return [{"band_hz": [2000.0, 8000.0], "intervals": [row]}]
+
+
+def test_the_embryo_becomes_a_finding_with_mechanism_and_fix_class() -> None:
+    """§3.1: "The excluded-band tau records are the embryo: [attribution]
+    promotes them from 'reason to refuse EQ' to findings with mechanism and
+    fix class attached."""
+
+    findings = promote_carve_outs(
+        _carve_outs(), session=_SESSION, cites=(_CITE,)
+    )
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.mechanism == MECHANISM_HF_REFLECTION
+    assert finding.fix_class == "carve"
+    assert finding.band_hz == (4200.0, 4600.0)
+    assert finding.evidence["tau_us"] == 310.0
+    assert finding.evidence["classification"] == "position_invariant"
+
+
+def test_a_p2_only_finding_never_rises_above_unsure() -> None:
+    """§5, unconditionally: "Any finding whose only support is P2 stays
+    ``unsure`` with P4 as its recommended probe." The cloud is a P2
+    instrument — the shipped ``interference_nulls`` docstring says a single
+    session cannot separate "travels with the speaker" from "a path that did
+    not change while measuring" — so no tau, however clean, earns a higher
+    tier from this path."""
+
+    for classification in ("position_invariant", "position_dependent"):
+        findings = promote_carve_outs(
+            _carve_outs(classification=classification),
+            session=_SESSION,
+            cites=(_CITE,),
+        )
+        assert [f.confidence for f in findings] == ["unsure"]
+        assert [f.probes_run for f in findings] == [("P2",)]
+        assert [f.probes_recommended for f in findings] == [("P4",)]
+
+
+def test_promotion_never_routes_eq() -> None:
+    """§3.3's hard rule, pinned: ``eq`` is never the routed class for a
+    position-variant null or a source-fixed interference ripple. The warrant
+    is the physics one (§11.3 X22) — energy added into a cancellation is
+    itself cancelled, so the null is an interference zero, not a deficit the
+    drive can fill — not the headphones-only psychoacoustic one."""
+
+    for classification in ("position_invariant", "position_dependent"):
+        findings = promote_carve_outs(
+            _carve_outs(classification=classification),
+            session=_SESSION,
+            cites=(_CITE,),
+        )
+        assert findings
+        assert all(f.fix_class != "eq" for f in findings)
+    variant = promote_carve_outs(
+        _carve_outs(classification="position_dependent"),
+        session=_SESSION,
+        cites=(_CITE,),
+    )
+    assert variant[0].mechanism == MECHANISM_BOUNDARY_SBIR
+    assert variant[0].fix_class == "physical"
+
+
+def test_an_unattributable_record_is_left_alone_not_guessed_at() -> None:
+    """§10: "No speculative mechanisms." A position-screen carve has no tau
+    and no classification by construction, and a null the shipped gate called
+    ``insufficient_evidence`` has, by that gate's own verdict, nothing to
+    attribute."""
+
+    assert (
+        promote_carve_outs(
+            _carve_outs(source="position_screen", classification=""),
+            session=_SESSION,
+            cites=(_CITE,),
+        )
+        == ()
+    )
+    assert (
+        promote_carve_outs(
+            _carve_outs(classification="insufficient_evidence"),
+            session=_SESSION,
+            cites=(_CITE,),
+        )
+        == ()
+    )
+    assert promote_carve_outs(None, session=_SESSION, cites=(_CITE,)) == ()
+    assert promote_carve_outs([], session=_SESSION, cites=(_CITE,)) == ()
+
+
+def test_a_straddling_null_becomes_one_finding_not_two() -> None:
+    """``carve_outs_by_band`` lists a null under every spec band it overlaps —
+    correct for disclosure, since it removes bins from both — but a
+    straddling null is one physical feature."""
+
+    row = _carve_outs()[0]["intervals"][0]
+    straddling = [
+        {"band_hz": [250.0, 2000.0], "intervals": [row]},
+        {"band_hz": [2000.0, 8000.0], "intervals": [row]},
+    ]
+    assert len(
+        promote_carve_outs(straddling, session=_SESSION, cites=(_CITE,))
+    ) == 1
+
+
+def test_the_household_sentence_is_the_shipped_one_copied() -> None:
+    """One owner per verdict (§3.1): the carve-out record's own ``reason`` is
+    the shipped SSOT for what a household is told about an excluded band.
+    Minting a second sentence here would put the hardware-noun prohibition in
+    two places instead of one."""
+
+    carve_outs = _carve_outs()
+    shipped = carve_outs[0]["intervals"][0]["reason"]
+    findings = promote_carve_outs(carve_outs, session=_SESSION, cites=(_CITE,))
+    assert findings[0].household_copy == shipped
+
+
+def test_a_finding_must_be_anchored_in_the_bundle_that_holds_its_evidence() -> None:
+    """Q-C, made structural. A finding whose only citations were the capture
+    ring or a laptop archive would have no lifetime binding at all — both
+    prune on their own schedules — so it could silently outlive everything
+    that justified it."""
+
+    ring_only = EvidenceRef(
+        session=_SESSION,
+        store=EVIDENCE_STORE_CAPTURE_RING,
+        locator="1785340835947079_cloud_measure_iPhone.wav",
+    )
+    with pytest.raises(FindingError, match="commissioning_bundle"):
+        _finding(cites=(ring_only,))
+    # A ring citation alongside a bundle one is fine: it is a cross-store
+    # join, not a support claim.
+    assert _finding(cites=(_CITE, ring_only)).cites == (_CITE, ring_only)
+
+
+def test_a_set_may_not_hold_a_finding_from_another_session_s_bundle() -> None:
+    other = SessionIdentity(session_id="9445639e508f")
+    stray = _finding(
+        cites=(
+            EvidenceRef(
+                session=other,
+                store=EVIDENCE_STORE_BUNDLE,
+                locator="evidence/v1/artifacts/crossover_v2/x/cloud_measure.json",
+            ),
+        )
+    )
+    with pytest.raises(FindingError, match="own session"):
+        FindingSet(session=_SESSION, produced_by=PRODUCED_BY, findings=(stray,))

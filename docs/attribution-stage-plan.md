@@ -128,11 +128,12 @@ Owner rulings this plan is bound by (recorded 2026-07-29 on #1866):
 
 A **finding** is the unit of diagnosis: `{mechanism, band, evidence,
 confidence, fix_class, household_copy, probes_run, probes_recommended}`.
-Findings are persisted (retention model per **Q-C** — undecided, and WO-1
-decides it before it writes anything), rendered on the review screen, and
+Findings are persisted (retention model per **Q-C** — ruled 2026-07-29:
+**bundle-lifetime**, §9), rendered on the review screen, and
 consumed by the prescription stage. The excluded-band τ records are the
-embryo: WO-4 promotes them from "reason to refuse EQ" to findings with
-mechanism and fix class attached.
+embryo: WO-1 ships the promotion path — the carve-out records the cloud
+pipeline already persists become findings with mechanism and fix class
+attached — and WO-4 extends it with per-mechanism detectors.
 
 **Two vocabularies, one artifact.** `mechanism` is *internal* taxonomy —
 it names physics, it may name hardware, and it appears on ops/forensic
@@ -989,9 +990,20 @@ ship; the later owner inherits the record and may extend it.
   operator apply path. Whichever is chosen must be the same answer for both.
 - **Q-B: harness invocation surface.** Operator CLI only, or also a
   `/tools/`-style lab page? (v1 proposal: CLI only.)
-- **Q-C: findings retention.** Bundle-lifetime (current proposal) or an
-  independent ring like wake events? WO-1 cannot ship without an answer;
-  §3.1 states none.
+- **Q-C: findings retention — CLOSED by owner ruling 2026-07-29 night
+  (recorded on #1866): bundle-lifetime.** A finding lives inside the session
+  bundle whose evidence it cites and dies with it, structurally satisfying the
+  pinned constraint (a finding must not outlive, or silently predecease, the
+  evidence it cites). Longitudinal analysis reads across bundles via WO-1's
+  stable cross-store session identity. A summary ledger for long-horizon
+  retrospectives is **explicitly deferred** to a later WO, if a future
+  WO-0-style sweep needs one. Implemented and pinned by WO-1: findings are
+  published as ordinary artifacts in the commissioning evidence bundle, whose
+  retention evicts whole directories, so the "must not outlive" half is a
+  consequence of the storage shape rather than a retention loop; the "must not
+  silently predecease" half is enforced on read, which re-resolves and
+  re-hashes every bundle citation and raises rather than returning a finding
+  whose support it could not confirm.
 - **Q-D: proposed supersession of the design-axis fit anchor — CLOSED by
   owner ruling 2026-07-29 (see the ruling at the end of this entry; the
   body is preserved as the decision record).** The adopted

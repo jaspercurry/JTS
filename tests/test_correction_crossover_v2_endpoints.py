@@ -1322,8 +1322,16 @@ def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
         Path(info["bundle_dir"]) / "evidence" / "v1" / "artifacts"
         / "crossover_v2" / "cap_cloud_session"
     )
+    # One CLOUD artifact per closed group, distinctly named — the claim this
+    # test exists for. Attribution's per-phase finding set (WO-1) rides in the
+    # same directory under its own `findings_` prefix and shares the same
+    # per-phase rule, so it is named here rather than allowed to widen the
+    # assertion into "whatever happens to be on disk".
     assert sorted(p.name for p in artifacts_dir.glob("*.json")) == [
-        f"{PHASE_CLOUD_MEASURE}.json", f"{PHASE_CLOUD_VERIFY}.json",
+        f"{PHASE_CLOUD_MEASURE}.json",
+        f"{PHASE_CLOUD_VERIFY}.json",
+        f"findings_{PHASE_CLOUD_MEASURE}.json",
+        f"findings_{PHASE_CLOUD_VERIFY}.json",
     ]
     measure_on_disk = json.loads(
         (artifacts_dir / f"{PHASE_CLOUD_MEASURE}.json").read_text()
