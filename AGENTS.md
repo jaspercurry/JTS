@@ -14,6 +14,7 @@ document order):
 **Conventions & quality bars**
 - **Extensibility doctrine — the lens for adding anything modular: [`docs/extensibility.md`](docs/extensibility.md)** (one invariant, five contracts, decision tree)
 - [Agent behavior baseline](#agent-behavior-baseline)
+- [The standing multi-agent method](#the-standing-multi-agent-method)
 - [COAH quality bar](#coah-quality-bar)
 - [Config ownership — which pattern for a new DAC / mic / provider / city](#config-ownership--which-pattern-for-a-new-dac--mic--provider--city)
 - [Documentation paradigm](#documentation-paradigm)
@@ -200,6 +201,53 @@ detail; they do not replace this baseline.
   band-limiting to roughly 100 Hz-7 kHz is often a win; human-
   perceptual tunings can make ML consumers worse. See
   [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
+
+---
+
+## The standing multi-agent method
+
+How multi-agent sessions run in this repo — binding on every AI agent,
+Claude Code and Codex alike, per the [Agent behavior
+baseline](#agent-behavior-baseline) above. Previously oral (the owner
+restated it every session); it lives here now so a fresh session
+inherits it from the repo instead of being told.
+
+- **The conductor rule.** The session-driving model — the architect
+  session, historically Fable — is the conductor: architect, debugger,
+  and coordinator ONLY. It plans, diagnoses from evidence (baseline rule
+  3), dispatches work, reviews results, and records decisions. It does
+  not implement. ALL implementation is delegated to subagents —
+  Opus-class for complex or judgment-laden work, Sonnet-class for
+  simpler mechanical work. Conductor-level probes (log pulls, one-line
+  reads, `gh` operations, evidence fetches) are conducting; anything
+  that writes product code is not the conductor's to do directly.
+- **The adversarial gate rule.** Every PR — code or docs, any size —
+  passes an INDEPENDENT adversarial review in a SEPARATE agent before
+  merge, using
+  [.claude/commands/adversarial-review.md](.claude/commands/adversarial-review.md)
+  as the bar, to **0 blockers / 0 should-fixes**. Fix rounds get a delta
+  re-review from the same reviewer, not a fresh read. The architect
+  spot-checks load-bearing claims rather than trusting the gate blindly.
+  Nobody is exempt, including the architect's own changes — the gate
+  re-derives implementer-reported numbers, it never just trusts them.
+  [`.claude/agents/adversarial-gate.md`](.claude/agents/adversarial-gate.md)
+  packages this as a launchable subagent type so any session can
+  dispatch it directly instead of re-deriving the method ad hoc.
+- **The handoff rule.** Every session-handoff prompt
+  (`captures/NEXT-SESSION-PROMPT-*.md` and any equivalent) MUST restate
+  the conductor rule, the gate rule, and the values below. A handoff
+  that omits them is defective — the next session inherits only what
+  the prompt actually says, not what a prior session merely knew.
+- **The owner's engineering values.** In the owner's own words:
+  saturation concerns — both context saturation (conductors delegate to
+  keep their window lean; prefer deliberate handoffs over
+  auto-compaction) and system saturation (bounded CPU/memory/IO/
+  subprocess/network under load — the [COAH](#coah-quality-bar) bar);
+  single source of truth; elastic, modular, observable, resilient,
+  reliable, performant code.
+
+The [COAH quality bar](#coah-quality-bar) below is what the gate
+reviews against; this section is who reviews and how work gets there.
 
 ---
 

@@ -51,6 +51,12 @@ wake-events/
 # like /onboard-pi.
 !.claude/commands/
 !.claude/commands/**
+# Agent definitions ARE checked in too — they're how any session launches
+# a first-class subagent type (e.g. the adversarial-gate reviewer) instead
+# of re-deriving the standing method ad hoc. See AGENTS.md "The standing
+# multi-agent method".
+!.claude/agents/
+!.claude/agents/**
 
 # Per-laptop active-Pi marker, written by scripts/onboard.sh. Loaded
 # into Claude Code's context via CLAUDE.md's @-import directive.
