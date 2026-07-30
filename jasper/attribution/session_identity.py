@@ -189,8 +189,19 @@ class SessionIdentity:
         aliases = raw.get("aliases") or {}
         if not isinstance(aliases, Mapping):
             raise SessionIdentityError("aliases must be an object")
+        # ``session_id`` is REQUIRED, and its absence gets its own message.
+        # This method already refuses unknown fields; it did not require the
+        # one field that matters, so a mapping missing it fell through to
+        # ``__post_init__``'s charset check and reported a malformed
+        # identifier rather than a missing one. (``Finding.from_mapping``
+        # checks presence explicitly — this was the inconsistent sibling.)
+        session_id = raw.get("session_id")
+        if not isinstance(session_id, str):
+            raise SessionIdentityError(
+                "session identity is missing a string session_id"
+            )
         return cls(
-            session_id=raw.get("session_id"),
+            session_id=session_id,
             aliases=dict(aliases),
             scheme=str(raw.get("scheme") or SESSION_IDENTITY_SCHEME),
         )

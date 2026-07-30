@@ -14,6 +14,7 @@ per-position evidence live in ``tests/test_attribution_persistence.py``.
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -39,6 +40,7 @@ from jasper.attribution.promotion import PRODUCED_BY, promote_carve_outs
 from jasper.attribution.session_identity import (
     ALIAS_RELAY_SESSION_ID,
     SESSION_IDENTITY_KEY,
+    SESSION_IDENTITY_SCHEME,
     SessionIdentity,
     SessionIdentityError,
     read_session_identity,
@@ -376,6 +378,20 @@ def test_one_key_name_carries_the_identity_through_every_store() -> None:
         assert read_session_identity(payload) == _SESSION
 
 
+def test_an_identity_without_a_session_id_is_refused_by_name() -> None:
+    """``from_mapping`` refused unknown fields but never REQUIRED the one
+    field that matters, so a mapping missing it fell through to the charset
+    check and reported a malformed identifier rather than a missing one.
+    (``Finding.from_mapping`` checks presence explicitly — this was the
+    inconsistent sibling.) Caught by the mypy lenient-baseline gate, which
+    gives unbaselined modules full strictness."""
+
+    for raw in ({}, {"scheme": SESSION_IDENTITY_SCHEME}, {"session_id": None},
+                {"session_id": 12}):
+        with pytest.raises(SessionIdentityError, match="missing a string session_id"):
+            SessionIdentity.from_mapping(raw)
+
+
 def test_an_unstamped_payload_reads_as_legacy_not_as_an_error() -> None:
     """Every artifact written before this module existed carries no identity
     key — and that corpus is exactly what WO-0 had to read. Absence is
@@ -510,6 +526,78 @@ def test_an_unattributable_record_is_left_alone_not_guessed_at() -> None:
     )
     assert promote_carve_outs(None, session=_SESSION, cites=(_CITE,)) == ()
     assert promote_carve_outs([], session=_SESSION, cites=(_CITE,)) == ()
+
+
+@pytest.mark.parametrize(
+    "bound",
+    [
+        {"f_lo_hz": None},
+        {"f_hi_hz": None},
+        {"f_lo_hz": "4200"},
+        {"f_hi_hz": float("nan")},
+        {"f_lo_hz": float("inf")},
+        {"f_hi_hz": True},
+    ],
+)
+def test_an_attributable_record_with_an_unusable_band_is_refused_loudly(
+    bound: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The chosen behaviour, pinned: **refused with an event**, not skipped.
+
+    This record IS attributable — the shipped gate classified it — but its
+    own frequency edges are missing or non-finite, which makes it malformed
+    rather than "correctly not attributable". Those are different states and
+    only the first deserves a log line, so a silent drop here would hide a
+    genuine data defect behind the same silence that correctly covers a
+    position-screen carve.
+
+    ``True`` is in the table on purpose: ``isinstance(True, int)`` is true in
+    Python, so a band edge of ``True`` would otherwise be accepted as 1.0 Hz.
+
+    The refusal is not new — ``Finding``'s own validation already rejected
+    these and the caller already logged. What the explicit narrowing adds is
+    that the call site passes a real ``tuple[float, float]`` instead of two
+    ``Any | None`` values that only happened to be numbers, and that the
+    message now NAMES the bad bound instead of reporting a generic band
+    error. The message assertion below is what pins that, and it is what
+    fails if the narrowing is removed and the record falls through to the
+    constructor again.
+    """
+
+    with caplog.at_level(logging.WARNING, logger="jasper.attribution.promotion"):
+        findings = promote_carve_outs(
+            _carve_outs(**bound), session=_SESSION, cites=(_CITE,)
+        )
+
+    assert findings == ()
+    assert "attribution.carve_out_promotion_refused" in caplog.text
+    assert "no usable band" in caplog.text
+    # The offending values are quoted, so a reader does not have to re-derive
+    # which edge was bad from the record.
+    assert "f_lo_hz=" in caplog.text and "f_hi_hz=" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"source": "position_screen", "classification": ""},
+        {"classification": "insufficient_evidence"},
+    ],
+)
+def test_a_correctly_unattributable_record_is_skipped_silently(
+    overrides: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The other half of the same distinction. §10's "no speculative
+    mechanisms" means these records SHOULD produce nothing, so producing a
+    warning for them would train a reader to ignore the warning that matters."""
+
+    with caplog.at_level(logging.WARNING, logger="jasper.attribution.promotion"):
+        findings = promote_carve_outs(
+            _carve_outs(**overrides), session=_SESSION, cites=(_CITE,)
+        )
+
+    assert findings == ()
+    assert caplog.text == ""
 
 
 def test_a_straddling_null_becomes_one_finding_not_two() -> None:

@@ -55,6 +55,7 @@ the promoter as much as to the registry.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Iterable, Mapping, Sequence
 
 from jasper.log_event import log_event
@@ -128,6 +129,35 @@ def _intervals(carve_outs: Any) -> list[Mapping[str, Any]]:
     return flat
 
 
+def _band_bounds(row: Mapping[str, Any]) -> tuple[float, float] | None:
+    """This record's ``(f_lo_hz, f_hi_hz)`` as real floats, or ``None``.
+
+    ``Finding`` validates the band itself, so this is not a second validator
+    — it is the narrowing that lets the call site pass a genuine
+    ``tuple[float, float]`` instead of two ``Any | None`` values that only
+    happen to be numbers. Persisted carve-out records come from JSON, where
+    any field can be absent or the wrong type, and relying on the
+    constructor to catch that made the call site statically dishonest about
+    what it was passing.
+
+    ``bool`` is excluded explicitly: ``isinstance(True, int)`` is true in
+    Python, so a band edge of ``True`` would otherwise become 1.0 Hz.
+    Ordering and non-negativity stay :class:`Finding`'s to enforce — one
+    owner per rule.
+    """
+
+    bounds: list[float] = []
+    for key in ("f_lo_hz", "f_hi_hz"):
+        value = row.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        number = float(value)
+        if not math.isfinite(number):
+            return None
+        bounds.append(number)
+    return bounds[0], bounds[1]
+
+
 def promote_carve_outs(
     carve_outs: Any,
     *,
@@ -166,11 +196,34 @@ def promote_carve_outs(
             key: row[key] for key in _EVIDENCE_KEYS if row.get(key) is not None
         }
         evidence["classification"] = str(row.get("classification"))
+        band_hz = _band_bounds(row)
+        if band_hz is None:
+            # A record that IS attributable but whose band is unusable. This
+            # is a REFUSAL, not one of the two skips above, and the
+            # distinction is deliberate: those skip records that are
+            # correctly not attributable (§10's "no speculative mechanisms"),
+            # whereas a null the shipped gate classified but whose own
+            # frequency edges are missing or non-finite is a malformed
+            # record, and a silent drop would hide it. Same event and same
+            # continue as the ``FindingError`` arm below, which this simply
+            # reaches earlier and with a better message.
+            log_event(
+                logger,
+                "attribution.carve_out_promotion_refused",
+                level=logging.WARNING,
+                mechanism=mechanism,
+                classification=str(row.get("classification")),
+                error=(
+                    "carve-out record has no usable band: "
+                    f"f_lo_hz={row.get('f_lo_hz')!r} f_hi_hz={row.get('f_hi_hz')!r}"
+                ),
+            )
+            continue
         try:
             out.append(
                 Finding(
                     mechanism=mechanism,
-                    band_hz=(row.get("f_lo_hz"), row.get("f_hi_hz")),
+                    band_hz=band_hz,
                     evidence=evidence,
                     # Rule 1 — P2-only support never rises above `unsure`.
                     confidence=CONFIDENCE_UNSURE,
