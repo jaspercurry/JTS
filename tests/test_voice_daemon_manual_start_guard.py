@@ -20,8 +20,6 @@ import asyncio
 import logging
 import types
 
-from jasper.voice_daemon import MEASUREMENT_AUTOCLEAR_SEC
-
 
 class _SpyCalls:
     """Records that a side-effecting coroutine was awaited."""
@@ -130,6 +128,8 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
     )
     timer_started = asyncio.Event()
     release_timer = asyncio.Event()
+
+    from jasper.voice_daemon import MEASUREMENT_AUTOCLEAR_SEC
 
     async def fake_sleep(seconds):
         assert seconds == MEASUREMENT_AUTOCLEAR_SEC
