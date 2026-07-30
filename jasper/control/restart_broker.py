@@ -481,7 +481,7 @@ class _BrokerServer(ThreadingUnixStreamServer):
         logger.exception("restart broker handler crashed")
 
 
-def start_broker(socket_path: str = DEFAULT_SOCKET_PATH) -> _BrokerServer | None:
+def start_broker(socket_path: str | None = None) -> _BrokerServer | None:
     """Bind the broker UDS (0660) and serve it on a daemon thread.
 
     Returns the server (so callers can ``shutdown()`` it) or ``None`` if
@@ -489,7 +489,14 @@ def start_broker(socket_path: str = DEFAULT_SOCKET_PATH) -> _BrokerServer | None
     other surfaces (volume, /state, supervisors) must keep running even if the
     broker can't come up — the wizards degrade to their existing fail-soft
     "restart didn't happen, logged" behaviour.
+
+    ``socket_path`` defaults to :data:`DEFAULT_SOCKET_PATH` resolved at CALL
+    time. Spelling it as a ``None`` sentinel rather than a default argument
+    value is deliberate: a default is bound once at def time, so rebinding the
+    module attribute would not reach it.
     """
+    if socket_path is None:
+        socket_path = DEFAULT_SOCKET_PATH
     parent = os.path.dirname(socket_path)
     try:
         if parent:
@@ -522,7 +529,7 @@ def request_restart(
     reason: str = "",
     no_block: bool = True,
     timeout: float = 5.0,
-    socket_path: str = DEFAULT_SOCKET_PATH,
+    socket_path: str | None = None,
 ) -> dict[str, Any]:
     """Ask the broker to run one closed-vocabulary systemctl action.
 
@@ -530,7 +537,15 @@ def request_restart(
     :class:`BrokerUnavailable` if the socket can't be reached or the broker
     doesn't answer with a parseable line — callers that want best-effort
     behaviour should use :func:`manage_units` instead.
+
+    ``socket_path`` defaults to :data:`DEFAULT_SOCKET_PATH` resolved at CALL
+    time. Spelling it as a ``None`` sentinel rather than a default argument
+    value is deliberate: a default is bound once at def time, so rebinding the
+    module attribute would not reach it — which silently sent every
+    :func:`manage_units` call to the import-time path regardless.
     """
+    if socket_path is None:
+        socket_path = DEFAULT_SOCKET_PATH
     payload = json.dumps({
         "verb": verb,
         "units": [_normalize_unit(u) for u in units],
@@ -545,12 +560,45 @@ def request_restart(
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout + _CLIENT_SOCKET_MARGIN_SEC)
             sock.connect(socket_path)
-            sock.sendall((payload + "\n").encode("utf-8"))
-            while b"\n" not in buf and len(buf) < 8192:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
+            # The broker answers its two pre-auth rejections from the peer
+            # credentials alone, so it can reply and close before this send
+            # completes — and its reply is already queued on our side when
+            # that happens. Raising here without looking would turn
+            # "unauthorized peer" into "broken pipe" and leave the journal's
+            # event=restart_broker.denied line as the only evidence of why
+            # (measured: 6% of denials under 8-wide load on a Pi 5, 0% idle).
+            # So remember the send failure and go read the answer first.
+            #
+            # Exactly the two "peer already closed on us" errors, not
+            # OSError. A peer that has fully closed makes the read below
+            # return at once, whereas a send that TIMED OUT would buy a
+            # second full socket deadline on top of the first — settimeout is
+            # per-operation — and the source-intent budget has no room for
+            # it: 793 s + a 5 s margin, doubled, is 1596 s against nginx's
+            # derived proxy_read_timeout of 1700s.
+            #
+            # The honest cost of narrowing: a send failing ENOBUFS under
+            # memory pressure could in principle have an answer waiting and
+            # will not salvage it. That degrades to the pre-existing symptom
+            # (a transport error instead of the denial), never to a new
+            # failure, and it is not worth re-opening the timeout hole for.
+            send_error: OSError | None = None
+            try:
+                sock.sendall((payload + "\n").encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError) as exc:
+                send_error = exc
+            try:
+                while b"\n" not in buf and len(buf) < 8192:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+            except OSError:
+                if send_error is None:
+                    raise  # an ordinary read failure, reported as always
+                buf = b""  # nothing legible arrived; the send error is the story
+            if send_error is not None and not buf:
+                raise send_error
     except (OSError, socket.timeout) as exc:
         raise BrokerUnavailable(str(exc)) from exc
     line = buf.split(b"\n", 1)[0].strip()
