@@ -2222,15 +2222,15 @@ async function completePlanCaptureSet(ctx, { index, attempt, target }) {
       renderSessionExpired(ctx);
     } else if (verdict.setExhausted) {
       renderPlanExhausted(ctx, { ...verdict, target });
-    } else if (verdict.failed) {
-      renderPlanRetry(ctx, {
-        index,
-        attempt,
-        target,
-        reason: verdict.reason,
-        prompt: verdict.prompt,
-      });
-      return; // retryable: keep Stop wired and the session alive
+    } else if (verdict.refused) {
+      // TERMINAL. The Pi refused ON the confirmation — the pre-apply
+      // accountability veto is the shipped case — and re-raised, so the
+      // session is already gone: failure persisted, volume abandoned, relay
+      // purged. `renderPlanRefused` is the page's existing terminal for
+      // exactly this, and it offers no begin affordance, which is the point:
+      // a retry screen here would put a "Try again" button in front of a
+      // household whose session no longer exists.
+      renderPlanRefused(ctx, { error: verdict.error });
     } else {
       renderPlanAllDone(ctx, { index });
     }
@@ -2286,12 +2286,28 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
         attempts: Number(event.attempts) || 0,
       };
     }
-    if (phase === "capture_refused" || (phase === "capture_result" && event.accepted === false)) {
+    // TERMINAL, both of them. `capture_refused` is always terminal for the
+    // whole session (see waitForCaptureAuthorized's own note) and the held-set
+    // refusal is no exception: the Pi publishes it and RE-RAISES, so by the
+    // time the phone reads it the failure is persisted, the volume abandoned
+    // and the relay session purged. A `capture_result` carrying
+    // `accepted: false` this late is the host's own terminal event, addressed
+    // to the last armed capture — equally dead. Neither may route to a retry
+    // screen: the only thing a "Try again" could do is post into a purged
+    // session.
+    if (phase === "capture_refused") {
       return {
-        failed: true,
-        reason: event.error ? String(event.error)
+        refused: true,
+        code: event.code ? String(event.code) : "",
+        error: event.error ? String(event.error) : String(event.reason || ""),
+      };
+    }
+    if (phase === "capture_result" && event.accepted === false) {
+      return {
+        refused: true,
+        code: event.code ? String(event.code) : "",
+        error: event.error ? String(event.error)
           : (event.reason ? String(event.reason) : String(event.banner || "")),
-        prompt: event.prompt ? String(event.prompt) : "",
       };
     }
     await delayMs(pollMs);
@@ -2617,13 +2633,17 @@ function advanceAfterAccepted(ctx, { index, attempt, target }) {
 
 // `index` (the just-completed FINAL wire index, 1-based) is optional — most
 // callers of this shared plan-completion screen (room sweep, sync, balance)
-// have no per-flow completion copy and get the generic text below. Owner
-// ruling (2026-07-20): the crossover-v2 flow's own auto-apply means the
-// household never sees a browser-tab Apply step, so its own end screen must
-// say the outcome plainly and point at the speaker page for undo/compare —
-// carried as `done_title`/`done_body` on the LAST plan entry (the VERIFY
-// entry in jasper.active_speaker.crossover_v2_flow.build_v2_capture_plan) so
-// this shared screen needs no flow-specific branch.
+// have no per-flow completion copy and get the generic text below. A flow that
+// wants its own end copy carries `done_title`/`done_body` on the LAST plan
+// entry, so this shared screen needs no flow-specific branch.
+//
+// For crossover-v2 that entry is STAGE 2's tail since the two-stage split —
+// the post-apply group's last position at Full, the anchor at Express (see
+// build_v2_verify_capture_plan). Stage 1's plan deliberately carries no done
+// copy at all: it is not the end of the journey, and the household's next step
+// is a decision on the speaker page. That makes the fallback below FALSE for a
+// stage-1 session — "the speaker continues automatically" is exactly what it
+// does not do — which is PR-T4's to fix, per the work order's D7 list.
 function renderPlanAllDone(ctx, { index } = {}) {
   const returnUrl = safeReturnUrl(ctx.spec);
   const entry = typeof index === "number" ? entryForIndex(ctx.spec, index) : null;

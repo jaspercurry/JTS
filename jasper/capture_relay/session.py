@@ -65,21 +65,30 @@ DEFAULT_TIMEOUT_S = 120.0
 # deferred begin retry rearms it (counts as liveness) and a vanished phone
 # still eventually collapses here (teardown intact).
 #
-# Owner ruling (2026-07-20): the human mid-flow Apply gate is gone — the
-# conductor auto-applies the candidate itself, so this hold now covers only
-# the auto-apply TRANSACTION's own latency (a CamillaDSP set-config +
-# confirm round trip, typically well under a few seconds), not a human
-# reading a candidate and deciding whether to tap Apply. The budget shrank
-# from the prior 900 s (sized for a human review) to 30 s — generous
-# multi-second margin over typical apply latency without holding the phone
-# through anything resembling a human-scale wait. A genuinely stuck apply
-# (well past 30 s) is itself an anomaly worth surfacing as a session
-# collapse rather than holding indefinitely. Re-derive from W6 bench
-# observation of real auto-apply latency if this proves too tight.
+# **RETAINED, and unreached by any shipped session** (two-stage commission
+# work order D10, PR-T3). The sole consumer is ``begin_budget``'s
+# ``auto_advance == on_apply`` arm, and no plan emits that entry any more:
+# stage 1 has no VERIFY index at all and stage 2 opens already-applied. Kept
+# because D10 keeps the hold itself — a conductor built without a prior apply
+# still gets the honest deferral — but no new design may depend on it.
+#
+# The history below is why the number is 30 and not 900, and it describes a
+# ruling that has since been REVERSED; read it as archaeology, not as current
+# behaviour. Owner ruling (2026-07-20): the human mid-flow Apply gate is gone
+# — the conductor auto-applied the candidate itself, so this hold covered only
+# the auto-apply TRANSACTION's own latency (a CamillaDSP set-config + confirm
+# round trip, typically well under a few seconds), not a human reading a
+# candidate and deciding whether to tap Apply. The budget shrank from the prior
+# 900 s (sized for a human review) to 30 s. The 2026-07-28 ruling restored the
+# human decision and moved it OUT of the session entirely (the untimed review
+# interlude on jts.local), which is why nothing holds for an apply now. Anyone
+# reviving this budget re-derives it against whatever it would then be holding
+# for.
 REVIEW_HOLD_BUDGET_S = 30.0
 
 # The ``auto_advance`` policy value (mirrors
-# ``jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_ON_APPLY``) that marks a
+# ``jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_ON_APPLY``, whose own
+# comment records that no plan emits it since PR-T3) that marks a
 # capture-plan entry whose begin is gated on the apply-complete host event. Kept
 # as a local literal so this generic runner does not import the v2 flow upward;
 # the two are pinned equal by tests/test_capture_relay_plan.py.
@@ -2017,8 +2026,16 @@ def _poll_capture_plan(
                     first_begin_timeout_s if first_begin
                     else begin_budget(accepted_count + 1)
                 )
+                # A HELD set has no next capture to begin — the target is met
+                # and the runner is waiting on the household's own signal — so
+                # naming one would send a support read looking for a capture
+                # that was never expected. Say what actually ran out.
                 detail = (
-                    f"phone never began the next capture within {waited_s:.0f}s"
+                    "the household never confirmed the finished measurement "
+                    f"within {waited_s:.0f}s (their phone ended the walk, or "
+                    "the page went stale at the confirm screen)"
+                    if completion_pending
+                    else f"phone never began the next capture within {waited_s:.0f}s"
                 )
             raise CaptureTimeout(
                 f"{detail} (session {session.session_id})",

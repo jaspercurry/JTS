@@ -1813,12 +1813,14 @@ GET  /crossover/status       active-speaker targets + measurement evidence
 GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              {schema_version, screen, active, steps,
                              verdict_text, nudges, next_action, progress, relay,
-                             candidate_review, prediction}; schema v10
+                             candidate_review, prediction, busy}; schema v11
                              (CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION — this
                              route dispatches to the v2 envelope, which is
                              the only flow since W5b). `prediction` is the
                              predicted response + its stored spec verdict,
-                             sent on the `review` screen only
+                             sent on the `review` screen only. `busy` marks a
+                             machine-paced screen (the `closing` state's
+                             fit-in-flight moment, and nowhere else)
 GET  /bass                   read-only bass-management display page
 GET  /bass/status            read-only active bass-management corner/status
 GET  /balance                stereo-pair acoustic balance page

@@ -3536,10 +3536,18 @@ async function testContinueSignalsThenWaitsForTheSetToClose() {
 }
 
 // ============================================================================
-// 57 (D1). A REFUSED group close reaches the household as the refusal, not as
-// a silent hang or a false "done". The pre-apply accountability veto raises
-// CaptureBeginRefused on the confirmation, which the runner publishes as
-// `capture_refused` exactly like an admission refusal.
+// 57 (D1; strengthened after the PR-T3 gate's blocker B1). A REFUSED group
+// close is TERMINAL and must render as such.
+//
+// The Pi publishes the refusal and RE-RAISES: by the time the phone reads it,
+// the failure is persisted, the volume abandoned and the relay session purged.
+// The first version of this screen folded `capture_refused` into the generic
+// failure bucket, so "JTS could not stand behind this correction" rendered
+// under a move-the-mic headline with a live "Try again" that could only post
+// into a purged session. The assertions here are therefore POSITIVE about the
+// terminal (a negative pair is satisfied by the wrong screen too): the
+// refusal's own heading, its sentence, and the ABSENCE of any begin
+// affordance.
 // ============================================================================
 async function testARefusedGroupCloseSurfacesRatherThanHanging() {
   statusHistory.length = 0;
@@ -3584,13 +3592,25 @@ async function testARefusedGroupCloseSurfacesRatherThanHanging() {
   await fire(primaryButton(ctx)); // Continue
 
   await waitFor(
-    () => headingText(ctx.screenEl) !== "All spots measured — ready to continue?",
-    "the refusal to render",
+    () => headingText(ctx.screenEl) === "Measurement refused",
+    "the terminal refusal screen",
   );
-  assert.notEqual(
-    headingText(ctx.screenEl), "All measurements done",
-    "a refused close never reads as a finished measurement",
+  // The predicate's own sentence reaches the household…
+  assert.ok(
+    noteTexts(ctx.screenEl).some((t) => t.includes("could not stand behind")),
+    "the refusal's own words render",
   );
+  // …on the TERMINAL screen, which offers nothing to tap into a dead session.
+  // Asserted against what is actually ON SCREEN rather than ctx bookkeeping:
+  // every terminal in this page replaces the screen wholesale (setScreen), so
+  // the household's only affordance is the "Back to speaker" link.
+  assert.deepEqual(actionLabels(ctx.screenEl), []);
+  assert.equal(
+    ctx.screenEl.children.filter((c) => c.tagName === "BUTTON").length,
+    0,
+    "a purged session is offered no button of any kind",
+  );
+  assert.notEqual(headingText(ctx.screenEl), "All measurements done");
   ok();
 }
 

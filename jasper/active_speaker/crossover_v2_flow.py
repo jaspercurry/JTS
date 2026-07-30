@@ -194,7 +194,22 @@ PHASE_CLOUD_VERIFY = "cloud_verify"
 # speaker that had been measured and not tuned at all (work order current-state
 # premise 6, a verified collision rather than a theoretical one).
 PHASE_REVIEW = "review"
+# The measuring session's own tail (two-stage work order D1): every stage-1
+# phase is accepted, and the pre-apply cloud's close has NOT produced a
+# candidate yet — either because the household has not confirmed on the phone,
+# or because the fit is running. Like PHASE_REVIEW it is a control-page phase
+# with no capture index, and it exists because without it those moments
+# resolved to PHASE_REVIEW: the wizard told a household mid-hold that the
+# measurement had produced nothing and offered to throw it away, while the
+# relay was still live and the phone was waiting for their tap.
+PHASE_CLOSING = "closing"
 PHASE_DONE = "done"
+
+# Where the pre-apply cloud's close has got to. Read by the wizard through
+# durable state; see :attr:`V2ConductorSnapshot.cloud_close`.
+CLOUD_CLOSE_NONE = ""
+CLOUD_CLOSE_AWAITING_CONFIRM = "awaiting_confirm"
+CLOUD_CLOSE_RUNNING = "running"
 
 # Capture-plan index → phase. APPLYING is a control-page phase (no capture)
 # that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
@@ -2346,6 +2361,15 @@ class V2ConductorSnapshot:
     # guessing one would attach a post-apply cross-position claim to a result
     # that never measured across positions.
     tier: str = ""
+    # WHERE the pre-apply cloud's close has got to, for the surfaces that have
+    # to say something true while it is in flight (two-stage work order D1).
+    # One of :data:`CLOUD_CLOSE_NONE` / :data:`CLOUD_CLOSE_AWAITING_CONFIRM` /
+    # :data:`CLOUD_CLOSE_RUNNING`. Persisted because the wizard renders from
+    # durable state alone: without it, "every stage-1 phase is accepted and
+    # there is no candidate" reads identically at three very different moments
+    # — the household holding a phone at the confirm screen, the fit running,
+    # and a session that ended having produced nothing.
+    cloud_close: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2356,6 +2380,7 @@ class V2ConductorSnapshot:
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
             "tier": self.tier,
+            "cloud_close": self.cloud_close,
         }
 
 
@@ -3918,6 +3943,13 @@ class CrossoverV2Conductor:
         # ``hydrate`` — see that method for why production cannot.
         self._measure_analysis: Any = None
         self._candidate: Any = None
+        # Set the instant the household's set-completion signal is admitted,
+        # so the seconds the combine + fit spend are a NAMED state rather than
+        # indistinguishable from "still waiting for the tap". Never cleared: a
+        # close that raises leaves its own failure state, which renders ahead
+        # of any phase, and a close that succeeds sets ``_candidate``, which
+        # takes precedence in ``cloud_close_state``.
+        self._group_close_running = False
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
         # The VERIFY tracking numbers behind the verify_fail screen's collapsed
         # expert disclosure (#1605). Set only once the tolerance comparison is
@@ -4394,6 +4426,7 @@ class CrossoverV2Conductor:
                 if self._candidate is not None else None
             ),
             tier=self._tier,
+            cloud_close=self.cloud_close_state,
         )
 
     @classmethod
@@ -5139,12 +5172,52 @@ class CrossoverV2Conductor:
 
         True exactly between the final prompted position's acceptance and the
         household's confirmation past it — the window in which a voluntary
-        retake of that position is still meaningful (§2.6).
+        retake of that position is still meaningful (§2.6), and the predicate
+        the host wires as the runner's held-set gate (work order D1).
+
+        **A constraint for anyone adding a speculative/eager fit.** This reads
+        ``self._candidate is None``, and ``self._candidate`` is also
+        :meth:`confirm_cloud_measure_group`'s fire-once guard. Building a
+        candidate BEFORE the household confirms would therefore make this
+        return False, which would un-hold the runner's set and shut the retake
+        window in the same instant — silently, at the exact moment the design
+        exists to keep open. An eager fit has to decouple the two first: the
+        held-set predicate must ask "has the household confirmed?", not "does a
+        candidate exist?".
         """
         return (
             PHASE_CLOUD_MEASURE in self._group_combined
             and self._candidate is None
         )
+
+    @property
+    def cloud_close_state(self) -> str:
+        """Where the pre-apply cloud's close has got to — the household-facing
+        distinction the wizard renders while no candidate exists yet.
+
+        ``awaiting_confirm`` (walked, the phone is showing the confirm screen),
+        ``running`` (the household confirmed; the combine + fit are in flight),
+        or ``""`` (nothing pending — no cloud group, or the candidate is built,
+        or the close already failed and its own failure state renders).
+        """
+        if self._candidate is not None:
+            return CLOUD_CLOSE_NONE
+        if self._group_close_running:
+            return CLOUD_CLOSE_RUNNING
+        if self.cloud_measure_group_awaiting_confirm():
+            return CLOUD_CLOSE_AWAITING_CONFIRM
+        return CLOUD_CLOSE_NONE
+
+    def note_group_close_started(self) -> None:
+        """The household's set-completion signal arrived; the fit is next.
+
+        The host calls this and persists BEFORE running the close, because the
+        close is the session's slowest step (the combine plus the fit) and the
+        wizard renders from durable state: without this write the speaker page
+        would keep telling a household to confirm on their phone for the
+        several seconds after they already did.
+        """
+        self._group_close_running = True
 
     def confirm_cloud_measure_group(self) -> dict[str, Any] | None:
         """Close out the pre-apply cloud on the household's EXPLICIT confirmation.
@@ -5397,8 +5470,14 @@ class CrossoverV2Conductor:
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
     ) -> None:
-        """The three pre-apply accountability assertions, run before the apply
-        fires: PR-L5's shared-level-frame agreement, then PR-L4's items 1 and 2.
+        """The three accountability assertions, run before the PROPOSAL exists:
+        PR-L5's shared-level-frame agreement, then PR-L4's items 1 and 2.
+
+        "Pre-apply" until PR-T3, when the apply moved out of the session
+        entirely; the gate did not move with it, and did not need to. Refusing
+        here means no candidate is ever stashed or published, so the review
+        screen has nothing to offer and the household is never asked to decide
+        about a correction JTS cannot stand behind.
 
         Raises :class:`CaptureBeginRefused` with a named
         :data:`REASON_REGISTRY` code — the host's own refusal arm then persists
@@ -7288,7 +7367,12 @@ AUTO_ADVANCE_COUNTDOWN_S = 5
 # (page policy, not a protocol change — the field is opaque to the schema).
 AUTO_ADVANCE_TAP = "tap"            # requires the user's tap (first capture)
 AUTO_ADVANCE_COUNTDOWN = "countdown"  # auto-begins behind a cancelable countdown
-AUTO_ADVANCE_ON_APPLY = "on_apply"  # armed by the apply-complete host event
+# Armed by the apply-complete host event. RETAINED but emitted by no plan
+# since PR-T3 (D10): stage 1 has no VERIFY entry and stage 2 opens
+# already-applied, so nothing waits on an apply inside a session any more. Kept
+# as plan-grammar vocabulary — the page and the runner both still understand it
+# — and deliberately not deleted; no new design may depend on it.
+AUTO_ADVANCE_ON_APPLY = "on_apply"
 
 # PROVISIONAL (W6.10 fold-in): phone-inactivity budget for the very FIRST begin
 # of a v2 session (before any capture). The microphone-check screen's placement

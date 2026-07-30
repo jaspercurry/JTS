@@ -859,6 +859,7 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     from jasper.active_speaker.crossover_v2_flow import (
         CAPTURE_PHASES,
         PHASE_APPLYING,
+        PHASE_CLOSING,
         PHASE_DONE,
         PHASE_MEASURE,
         PHASE_REVIEW,
@@ -929,7 +930,23 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     # above resolves the rest of the journey — including PHASE_DONE's "applied
     # implies graded" ladder for a stage 2 that ran and could not decide.
     if PHASE_VERIFY not in phases:
-        return PHASE_VERIFY if applied else PHASE_REVIEW
+        if applied:
+            return PHASE_VERIFY
+        # …and the measuring session's own TAIL is not the review interlude
+        # either. Accepting the final cloud position marks every stage-1 phase
+        # accepted, so this walk resolves the instant that capture lands —
+        # while the household is still holding a phone at the confirm screen
+        # (up to the runner's full between-step budget) and again while the
+        # combine + fit run. Both used to render the review screen's
+        # no-candidate copy: "JTS measured your speaker but has no correction
+        # to propose — measure again to try afresh", with a destructive
+        # "Measure again" beside it, over a measurement that was still in
+        # progress. ``cloud_close`` is what tells those moments apart from a
+        # session that genuinely ended with nothing (where it is ``""``, and
+        # the review screen's absence copy is the honest answer).
+        if str((state or {}).get("cloud_close") or ""):
+            return PHASE_CLOSING
+        return PHASE_REVIEW
     return PHASE_DONE
 
 
@@ -1352,6 +1369,9 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # that declared none). Never defaulted to "full" — see
         # ``persist_conductor_state``.
         "tier": (str((state or {}).get("tier") or "") or None),
+        # Which sub-moment of the measuring session's tail this is, when
+        # ``phase`` is ``closing`` (two-stage D1). ``""`` everywhere else.
+        "cloud_close": str((state or {}).get("cloud_close") or ""),
         "candidate": (state or {}).get("candidate"),
         "verify": (state or {}).get("verify"),
         "failure": (state or {}).get("failure"),
@@ -1736,6 +1756,14 @@ def persist_conductor_state(
         # claim the measurement never made (the same unknown-vs-default rule
         # ``echo_band_provenance`` carries, issue #1763).
         "tier": snap.tier,
+        # WHERE the pre-apply cloud's close has got to (two-stage D1). The
+        # wizard renders from this file alone, and "every stage-1 phase
+        # accepted, no candidate" is true at three different moments — the
+        # household holding a phone at the confirm screen, the fit running,
+        # and a session that ended having produced nothing. Without this they
+        # rendered as the third one, which offered to throw away a
+        # measurement that was still in progress.
+        "cloud_close": snap.cloud_close,
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "candidate": _candidate_summary(conductor.candidate),
@@ -3084,6 +3112,15 @@ def build_v2_run_and_consume(
             it to the phone and ends the session exactly as an admission
             refusal does.
             """
+            # Persist FIRST, before the close runs. The combine plus the fit
+            # are the slowest thing in the session, the wizard renders from
+            # durable state, and until this write landed the speaker page kept
+            # telling the household to confirm on their phone for the several
+            # seconds after they already had.
+            conductor.note_group_close_started()
+            persist_conductor_state(
+                conductor, failure_code=None, evidence=evidence_refs,
+            )
             confirmed = conductor.confirm_cloud_measure_group()
             if confirmed is not None:
                 persist_conductor_state(
@@ -3111,6 +3148,17 @@ def build_v2_run_and_consume(
             recovery re-verify) never stashes a pre-apply group, so this is
             always False there and the runner ends those sets exactly as it
             always has.
+
+            **The constraint an eager/speculative fit has to respect** (owner
+            rider on #1806 — not implemented, deliberately not foreclosed):
+            this predicate resolves through ``self._candidate is None``, which
+            is ALSO the group close's fire-once guard. Building a candidate
+            before the household confirms would therefore flip this to False
+            and un-hold the runner's set — shutting the retake window in the
+            same instant, silently. The rider must decouple the two first: the
+            held-set question is "has the household confirmed?", not "does a
+            candidate exist?". See the predicate's own docstring on the
+            conductor.
             """
             return bool(conductor.cloud_measure_group_awaiting_confirm())
 
@@ -3206,7 +3254,8 @@ def build_v2_run_and_consume(
                 evidence=evidence_refs,
             )
             # (An ``auto_apply``-keyed branch lived here until
-            # flow-simplification PR-U1. It fired the apply off whichever
+            # flow-simplification PR-U1, and the flag it read is itself gone
+            # since PR-T3 removed auto-apply. It fired the apply off whichever
             # capture verdict carried the flag — MEASURE's accept originally,
             # the CLOUD_MEASURE group close after the 2026-07-27 timing move.
             # §2.6 moved the trigger off a capture verdict entirely and onto
@@ -3415,7 +3464,10 @@ def build_v2_run_and_consume(
                 # The deferred apply/"review" hold (CaptureBeginDeferred
                 # "awaiting_apply") expired: MEASURE was accepted but the
                 # conductor's own auto-apply never landed within
-                # REVIEW_HOLD_BUDGET_S. current_phase is PHASE_APPLYING ONLY in
+                # REVIEW_HOLD_BUDGET_S. RETAINED but unreached since PR-T3
+                # (D10): no shipped session parks on that hold any more, so
+                # this arm cannot fire in production — kept with the hold it
+                # classifies. current_phase is PHASE_APPLYING ONLY in
                 # that exact window (MEASURE accepted, VERIFY pending, apply not
                 # observed), so it cleanly separates a hold expiry from a
                 # generic transport death (#1605) — name the real cause instead
@@ -3829,14 +3881,15 @@ STAGE2_PREFLIGHT_KEY = "stage2_preflight"
 def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     """Run the stage-2 openability predicate for the REVIEW screen (D3).
 
-    Two-stage commission work order D3, PR-T2's half: *"The review screen runs
+    Two-stage commission work order D3: *"The review screen runs
     ``resolve_conductor_context``'s predicate — the same fail-closed resolution
     ``prepare_v2_verify`` will run — twice: once at review render, and again
     server-side immediately before the apply commits."* This is the render-time
-    half. **The pre-POST half belongs to PR-T3** and is deliberately absent
-    here: ``handle_v2_apply`` is also today's auto-apply path, so refusing there
-    before T3 removes auto-apply would newly refuse a shipped automatic path on
-    a screen-only rung (the ladder's own placement note).
+    half. **The pre-POST half landed with PR-T3** and lives in
+    :func:`_assert_stage_2_can_open`, which ``handle_v2_apply`` calls
+    immediately before the transaction commits. Neither is redundant: a
+    disabled control is not a security boundary, and a stale page, a second
+    tab, or a direct POST all reach the endpoint without ever rendering this.
 
     Without it, the failure mode is exactly the applied-and-ungraded end state
     the whole work order exists to eliminate — premise 5: a box can be applied
@@ -3857,25 +3910,16 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     gates, which is precisely how a screen ends up promising an apply that
     stage 2 then refuses.
 
-    **Today this costs exactly nothing, and the reason is structural.**
-    ``PHASE_REVIEW`` is **unreachable in production until PR-T3 lands the first
-    measure-only plan.** There are only two ``index_phase_map`` constructions in
-    the tree: :func:`~jasper.active_speaker.crossover_v2_flow
-    .build_v2_cloud_index_phase_map`, which sets ``mapping[n + 2] =
-    PHASE_VERIFY`` unconditionally for every tier and shape, and
-    ``prepare_v2_verify``'s ``{1: PHASE_VERIFY}``. So every shipped session's
-    recorded ``session_phases`` contains VERIFY, and ``_phase_from_state``'s
-    review branch keys on its ABSENCE. The corrupt-state fallback cannot reach
-    it either — it walks ``PRE_CLOUD_CAPTURE_PHASES``, which also contains
-    VERIFY. This function therefore early-returns on every envelope GET a
-    shipped box can produce: zero reads, zero writes, zero log lines. Pinned by
-    ``test_every_shipped_index_phase_map_contains_verify``.
+    **What it costs, re-derived against what the code now does.** PR-T2 argued
+    this cost nothing because ``PHASE_REVIEW`` was unreachable — no
+    ``index_phase_map`` could omit VERIFY — and named T3 as the rung that would
+    falsify that. It did: stage 1's map omits VERIFY by design, so the review
+    phase is real and this predicate runs for it.
 
-    **What it will cost once T3 makes the screen reachable, measured rather
-    than waved at.** One call is roughly six JSON reads (the topology and
-    design draft are each read more than once through different loaders), a
-    canonical-JSON SHA-256 profile fingerprint, and a preset compile. It is not
-    free of side effects: ``ensure_crossover_preview_ready()`` can write BOTH
+    One call is roughly six JSON reads (the topology and design draft are each
+    read more than once through different loaders), a canonical-JSON SHA-256
+    profile fingerprint, and a preset compile. It is not free of side effects:
+    ``ensure_crossover_preview_ready()`` can write BOTH
     ``active_speaker_crossover_preview.json`` and the topology file, and emits
     ``correction.crossover_v2_preview_ensured`` on every call, ready or not.
     The writes are self-limiting rather than per-call, though — that function
@@ -3883,17 +3927,25 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     already-ready one byte-untouched. No subprocess, no network, no
     audio-device probing.
 
-    Two things will bound it then, both structural rather than a cache. It runs
-    ONLY on the review phase, so no other screen pays anything. And the review
-    interlude is not a polled screen: the wizard polls only while a relay is in
-    flight (``main.js``'s ``schedulePoll(relayIsActive(env.relay) ? POLL_MS :
-    null)``), and stage 1's session has ENDED by the time this renders — so the
-    calls are bounded to the few seconds a just-closed relay spends winding
-    down, then stop, and a household sitting on the decision costs nothing.
-    **That second bound is a property of T3's session-end, so T3 owns
-    re-checking it** when it makes stage 1 real: a review screen that somehow
-    rendered beside a permanently in-flight relay would turn the writes above
-    into a 1.5 s loop, and that is the one shape this design would not survive.
+    **T2's second bound was WRONG, and the correction is the gate below.** T2
+    reasoned that the review interlude is never polled because stage 1's
+    session has ended by the time it renders, and named the one shape the
+    design would not survive: a review screen rendering beside a live relay,
+    turning those writes into a 1.5 s loop. That shape was real. Accepting the
+    final cloud position resolves every stage-1 phase, so the phase flipped the
+    instant that capture landed — while the runner was parked in D1's held-set
+    window (up to the full between-step budget) and the wizard was polling at
+    1.5 s. Measured mid-hold: ~80 calls per hold.
+
+    Two things bound it now, both structural rather than a cache. The
+    **candidate gate** below is the real one: with no candidate there is
+    nothing to apply, so there is nothing to preflight — which is exactly the
+    held-set window, the fit-in-flight window, and the refusal lane, and it
+    reduces all three to a dict lookup. (Those first two no longer resolve to
+    ``review`` at all since ``PHASE_CLOSING`` exists, so the gate is
+    belt-and-braces there; it is load-bearing for the refusal lane, where a
+    spec report exists with no candidate behind it.) And it runs ONLY on the
+    review phase, so no other screen pays anything.
 
     **Fail-closed in both directions.** A refusal disables Apply and hands the
     screen the refusal's own sentence; an UNEXPECTED exception does the same
@@ -3913,6 +3965,14 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 
     v2 = status.get("crossover_v2")
     if not isinstance(v2, MutableMapping) or v2.get("phase") != PHASE_REVIEW:
+        return
+    # No candidate ⇒ nothing to apply ⇒ nothing to preflight. See the cost
+    # paragraph above: this is what keeps the predicate off a polled screen.
+    # Absence of the key it would have written is NOT permission — the
+    # envelope's own reader treats it as a refusal — and with no candidate the
+    # Apply control does not render at all, so nothing is being hidden.
+    candidate = v2.get("candidate")
+    if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         return
     try:
         resolve_conductor_context(status)
@@ -4694,10 +4754,11 @@ def handle_v2_apply(
     issue = None
     if payload.get("status") == "blocked":
         # Finding N: name the blocker compactly (not buried in the full
-        # composed profile) and persist it so the "applying"-phase
-        # fix_and_retry screen can surface it (owner ruling, 2026-07-20:
-        # this endpoint is also the auto-apply's own SSOT) instead of the
-        # household seeing a generic message with no specific cause.
+        # composed profile) and persist it so the failure screen can surface
+        # it instead of the household seeing a generic message with no
+        # specific cause. This endpoint is the flow's ONE apply path since
+        # PR-T3 removed auto-apply, so it is also the only writer of this
+        # blocking issue — the SSOT claim survives its original reason.
         issue = _blocking_apply_issue(payload)
         if issue is not None:
             payload["issue"] = issue

@@ -725,9 +725,10 @@ together. Design rationale:
   unchanged and a retake at position 2 cannot refuse position 7.
 - **Session budget.** `session_wall_clock_ceiling_s(plan)` scales the
   walked-away measurement-volume ceiling with plan length
-  (1800 s + 120 s per capture beyond the 3-entry baseline = 3360 s for the
-  Full tier's shipped 16-capture plan, 2280 s for Express's 7, hard-capped
-  by `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s). The
+  (1800 s + 120 s per capture beyond the 3-entry baseline), and each STAGE
+  arms its own from its own plan since the two-stage split: Full 2640 s
+  (stage 1, 10 captures) / 2160 s (stage 2, 6), Express 2160 s / 1800 s,
+  hard-capped by `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s. The
   restore ladder and the restore-once latch are unchanged: a walked-away
   household can never leave the speaker at measurement volume.
 - **Resume is unchanged (§5.6).** A new relay session invalidates every
@@ -869,9 +870,25 @@ ungradeable — **never a pass** — and an ungradeable prediction emits
 (nothing was predicted) or `why=evaluator_refused` (the evaluator would not
 grade the curve). The `review` screen below renders it.
 
+**The `closing` screen** (PR-T3) is the measuring session's own TAIL, and it
+exists because the review screen used to render there. Accepting the final
+cloud position marks every stage-1 phase accepted, so `_phase_from_state`
+resolved the instant that capture landed — while the runner was parked in D1's
+held-set window with the relay live and the wizard polling at 1.5 s. The
+household read *"JTS measured your speaker but has no correction to propose —
+measure again to try afresh"* over a measurement that was still running, with a
+destructive "Measure again" beside it: an absence being reported as a verdict
+when it was only a timestamp. `cloud_close` on the durable state
+(`awaiting_confirm` / `running` / `""`) is what tells those moments apart from a
+session that genuinely ended with nothing, and the host persists `running`
+BEFORE the close runs so the several seconds of combine + fit are a named state
+rather than a stale "confirm on your phone". The screen offers **no actions at
+all** — every one it could offer destroys work in progress — and sets `busy`
+on the fit-in-flight moment, the flow's one genuinely machine-paced wait.
+
 **The `review` screen** (two-stage commission work order D3/D6, PR-T2) is the
-household's apply decision point, and the terminal a MEASURE-ONLY session now
-resolves to. `_phase_from_state` used to walk a stage-1 session's
+household's apply decision point, and the terminal a MEASURE-ONLY session
+resolves to once its candidate exists. `_phase_from_state` used to walk a stage-1 session's
 `session_phases` and fall through to `PHASE_DONE` — the RESULT screen, "Your
 speaker is tuned" — over a speaker that had been measured and never touched;
 its one special case (VERIFY unaccepted ⇒ `PHASE_APPLYING`) cannot fire when
@@ -1270,10 +1287,14 @@ most visible thing on the screen.
    `DEFAULT_WALL_CLOCK_CEILING_S` (1800 s) plus
    `WALL_CLOCK_CEILING_PER_ENTRY_S` (120 s) per capture beyond the
    3-entry baseline, hard-capped at `MAX_WALL_CLOCK_CEILING_S`
-   (3600 s) — so the Full tier's 16-capture cloud gets 3360 s, Express's
-   6-capture Express stage 1 gets 2160 s, and the 1-entry re-verify gets
-   the bare 1800 s (each STAGE arms its own, from its own plan). **The number moves with the plan; the
-   cap is what makes the guarantee.** A user who walks away can never
+   (3600 s). **Each STAGE arms its own, from its own plan** (two-stage
+   D2): Full's stage 1 (10 captures) gets 2640 s and its stage 2 (6) gets
+   2160 s; Express's stage 1 (6) gets 2160 s and its stage 2 (1) the bare
+   1800 s, as does the recovery re-verify. **The number moves with the
+   plan; the cap is what makes the guarantee.** The split lowers the worst
+   case from the single session's 3360 s and gives each stage a fresh relay
+   TTL — it does NOT make either stage fit inside that 900 s TTL, and
+   nothing here should be read as claiming it does. A user who walks away can never
    leave the speaker pinned at measurement volume. The voice-daemon measurement pause is held for
    the *whole* session (acquired before the first volume set) so the
    idle reconciler can't revert it. (#1811's **failed auto-apply** drain is
@@ -2203,14 +2224,19 @@ no retries-as-bodge). Treat these as regression fences.
     request takes, so there is one idle decision, not two. The relay
     orchestrator (`_run_relay_capture`) takes it on the request thread
     before scheduling the runner and releases it in the runner's
-    `finally`; the auto-apply worker takes its OWN hold before
-    `Thread.start()` (it can outlive the runner) and releases it in the
-    worker's `finally`. A held-open exit is reported once per 5 minutes
+    `finally`. (A second holder existed until PR-T3: the auto-apply worker
+    thread, which could outlive the runner and so took its own hold before
+    `Thread.start()`. That thread is gone — the apply is a household POST
+    served in-request, which the tracker's ordinary in-flight-request
+    accounting already holds — so the runner's hold is the only one this
+    flow takes. #1860 later added the two level-ramp kinds.) A held-open
+    exit is reported once per 5 minutes
     (`systemd idle-exit deferred: … holds: …`), escalating to WARNING once
     the process has been continuously busy past
     `_systemd.HOLD_LEAK_WARN_AFTER_SEC` (7200 s = 2× the volume plan's
     `MAX_WALL_CLOCK_CEILING_S`, so no legitimate session — not even the
-    Full tier's 3360 s — can trip it), so a leaked hold can never buy
+    longest stage, Full's 2640 s stage 1 — can trip it), so a leaked hold
+    can never buy
     silent immortality. **The escalation is a log level, not a reaper.**
     Before this fix the 600 s exit incidentally killed a *wedged* worker
     too (the unbounded `drained.wait()` tail in

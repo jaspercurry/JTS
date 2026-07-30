@@ -1851,6 +1851,12 @@ def test_a_corrupt_state_cannot_reach_the_review_screen_either():
 
 
 def _preflight_status(phase, **v2):
+    # A candidate by default: the preflight also gates on one (PR-T3), because
+    # with nothing to apply there is nothing to preflight, and every REAL
+    # review screen that renders an Apply control has one. A fixture without
+    # it would be testing the cost gate, not the predicate — the tests that
+    # ARE about the cost gate pass ``candidate=None`` explicitly.
+    v2.setdefault("candidate", {"fingerprint": "fp-preflight"})
     return {
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -1864,7 +1870,9 @@ def test_the_preflight_runs_only_on_the_review_screen():
     and ``ensure_crossover_preview_ready()`` can WRITE a regenerated preview.
     No other screen may pay that, so the phase gate is a contract, not an
     optimisation — pinned by refusing to let a non-review phase call the
-    predicate at all."""
+    predicate at all. (``closing`` is in the list for PR-T3's own reason: it
+    is a POLLED screen — the relay is still live — so the predicate running
+    there would be the 1.5 s write loop the cost paragraph names.)"""
     calls = []
 
     def _boom(status):
@@ -1875,7 +1883,7 @@ def test_the_preflight_runs_only_on_the_review_screen():
     v2host.resolve_conductor_context = _boom
     try:
         for phase in (PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
-                      PHASE_VERIFY, "applying", "done"):
+                      PHASE_VERIFY, "applying", "closing", "done"):
             status = _preflight_status(phase)
             v2host.attach_stage2_preflight(status)
             assert v2host.STAGE2_PREFLIGHT_KEY not in status["crossover_v2"]
@@ -1964,6 +1972,132 @@ def test_an_unexpected_preflight_failure_fails_closed(caplog):
     assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
 
 
+def test_the_held_window_is_not_the_review_screen(monkeypatch):
+    """**PR-T3 gate blocker B2.** Accepting the final cloud position marks
+    every stage-1 phase accepted, so the phase resolution fires the INSTANT
+    that capture lands — while the runner is parked in D1's held-set window,
+    the relay is live, and the household is holding a phone at the confirm
+    screen. That used to resolve to ``review``, whose no-candidate copy told
+    them "JTS measured your speaker but has no correction to propose — measure
+    again to try afresh" and offered a destructive "Measure again" beside it,
+    over a measurement that was still in progress.
+
+    Driven through the REAL conductor and the REAL persist path, reading the
+    durable state exactly as the wizard does.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+    attempt = 0
+    for index in range(1, STAGE1_LAST_INDEX + 1):
+        attempt += 1
+        conductor.consume_capture(index, attempt, CaptureResult(wav=b"w"))
+        v2host.persist_conductor_state(conductor, failure_code=None)
+
+    # HELD: walked, unconfirmed, no candidate.
+    assert conductor.cloud_measure_group_awaiting_confirm() is True
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "closing"
+    assert block["cloud_close"] == "awaiting_confirm"
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "closing"
+    assert "confirm on your phone" in env["verdict_text"]
+    assert env["busy"] is False
+    # NOTHING destructive, and nothing to decide: the phone owns the only live
+    # control (Retake / Continue), and every action this screen could offer
+    # would throw away work in progress.
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
+    assert "no correction to propose" not in env["verdict_text"]
+
+    # CONFIRMED, fit in flight: the host persists BEFORE running the close.
+    conductor.note_group_close_started()
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "closing"
+    assert block["cloud_close"] == "running"
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "closing"
+    assert "working out your correction" in env["verdict_text"]
+    assert env["busy"] is True  # the flow's one machine-paced wait
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
+
+    # CLOSED: the candidate exists, and only now is it the household's move.
+    assert conductor.confirm_cloud_measure_group()["candidate_fingerprint"]
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "review"
+    assert block["cloud_close"] == ""
+
+
+def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():
+    """The state ``closing`` must NOT swallow: a measure-only session that
+    genuinely produced no candidate — and is not mid-close — is still the
+    review screen's absence case, which is the honest place to offer
+    "measure again"."""
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "applied": False,
+    })
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "review"
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "review"
+    assert any(a["id"] == "review_remeasure" for a in env["alternate_actions"])
+
+
+def test_the_preflight_does_not_run_without_a_candidate(caplog):
+    """The cost gate (gate blocker B2's second half). The preflight is not
+    cheap — six JSON reads, a profile fingerprint, a preset compile, and
+    ``ensure_crossover_preview_ready`` which can WRITE two files and logs on
+    every call — and it used to run on every 1.5 s poll of a live held window
+    (~80 calls per hold, measured). With no candidate there is nothing to
+    apply, so there is nothing to preflight."""
+    calls: list = []
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = lambda status: calls.append(status) or object()
+    try:
+        status = {
+            "active": True,
+            "crossover_v2": {"phase": "review", "candidate": None},
+        }
+        v2host.attach_stage2_preflight(status)
+        assert calls == []
+        assert v2host.STAGE2_PREFLIGHT_KEY not in status["crossover_v2"]
+        # …and a candidate WITH a fingerprint still runs it, so the gate is a
+        # condition rather than a switch that turned the feature off.
+        status["crossover_v2"]["candidate"] = {"fingerprint": "abc"}
+        v2host.attach_stage2_preflight(status)
+        assert len(calls) == 1
+        assert status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]["ok"] is True
+    finally:
+        v2host.resolve_conductor_context = original
+
+
 def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
     """**The deliberate T3 tripwire, re-derived** (work order D1/D2).
 
@@ -2015,10 +2149,12 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
         shape = resolve_plan_shape(
             cloud_measure_positions=n, cloud_verify_positions=m,
         )
-        assert PHASE_VERIFY not in build_v2_cloud_index_phase_map(
-            plan_shape=shape
-        ).values(), (n, m)
-        assert build_v2_verify_index_phase_map(plan_shape=shape)[1] == PHASE_VERIFY
+        stage1 = build_v2_cloud_index_phase_map(plan_shape=shape)
+        assert PHASE_VERIFY not in stage1.values(), (n, m)
+        assert PHASE_CLOUD_VERIFY not in stage1.values(), (n, m)
+        stage2 = build_v2_verify_index_phase_map(plan_shape=shape)
+        assert stage2[1] == PHASE_VERIFY, (n, m)
+        assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, (n, m)
     # The recovery re-verify keeps its shipped one-entry map.
     assert build_v2_verify_index_phase_map() == {1: PHASE_VERIFY}
 
@@ -5479,7 +5615,7 @@ class _StubConductor:
         return SimpleNamespace(
             session_id=self._session_id, accepted_phases=(), session_phases=(),
             tier="", applied=self._applied, gain_plan_db=None,
-            candidate_fingerprint=None,
+            candidate_fingerprint=None, cloud_close="",
         )
 
 
