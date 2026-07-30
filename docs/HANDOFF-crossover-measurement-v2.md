@@ -1536,7 +1536,8 @@ additional `log_event` per consumed capture, **on the accepted path AND
 every rejection**, carrying that phase's full numeric diagnostics (pure
 additive observability — none of these calls choose a verdict). The two
 position groups emit `crossover_v2_cloud_diag`, which is 13 of the 16
-captures in a Full-tier session (4 of Express's 7) — grep for
+captures in a Full-tier JOURNEY (4 of Express's 7) — both stages, since
+the two-stage split put the two groups in different sessions — grep for
 `check|measure|verify` alone and you see three:
 
 ```sh

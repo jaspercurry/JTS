@@ -2045,10 +2045,19 @@ def test_the_held_window_is_not_the_review_screen(monkeypatch):
 
 
 def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():
-    """The state ``closing`` must NOT swallow: a measure-only session that
-    genuinely produced no candidate — and is not mid-close — is still the
-    review screen's absence case, which is the honest place to offer
-    "measure again"."""
+    """The state ``closing`` must NOT swallow the absence case.
+
+    **What this actually covers, stated precisely:** durable state with every
+    stage-1 phase accepted, no candidate, and NO ``cloud_close`` — which is
+    state written before this field existed, or state whose ``cloud_close``
+    was never populated. It is genuine and correctly handled: the review
+    screen's absence copy plus "measure again" is the honest answer for a
+    session that is not in progress. It is NOT a live-conductor path — no live
+    conductor reaches all-phases-accepted with an empty ``cloud_close``,
+    because accepting the group's last index stashes the combine and the
+    property reads ``awaiting_confirm`` from that moment until a candidate
+    exists. The pin is about the READER's fallback, not about a state the
+    writer can produce."""
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )

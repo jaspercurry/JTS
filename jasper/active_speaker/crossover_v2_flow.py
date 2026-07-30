@@ -5216,6 +5216,17 @@ class CrossoverV2Conductor:
         wizard renders from durable state: without this write the speaker page
         would keep telling a household to confirm on their phone for the
         several seconds after they already did.
+
+        **The corner that ordering buys, named rather than left to be found.**
+        A crash in the window between that persist and the close leaves
+        ``running`` on disk with nothing running — the speaker page would show
+        "JTS is working out your correction" indefinitely. It is bounded (the
+        wizard's Start over is present on every screen and clears the durable
+        state) and it is the right trade: the alternative ordering lies to
+        every household on every successful close, this one only after a
+        crash. The cheap mitigation if it ever bites: ``running`` beside a
+        relay that is no longer in flight is DETECTABLY stale, and the
+        envelope already has ``status["relay"]`` to see that with.
         """
         self._group_close_running = True
 
