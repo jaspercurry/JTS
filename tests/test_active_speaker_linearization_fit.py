@@ -15,6 +15,7 @@ description for the offline sanity numbers.
 """
 from __future__ import annotations
 
+import math
 import re
 
 import numpy as np
@@ -50,6 +51,7 @@ from jasper.active_speaker.linearization_fit import (
     _ladder_smooth,
     _shelf_stage,
     complex_correction_response,
+    core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
     linearization_filters_by_role,
@@ -1541,8 +1543,15 @@ def test_an_empty_frame_raises_rather_than_being_invented():
 
 
 def test_driver_core_level_matches_the_fits_own_target_exactly():
-    """Not a second estimator: the frame and the fit must not be able to
-    disagree about where a driver sits."""
+    """Not a second estimator: with no radiating band supplied, the frame's
+    level and the fit's target are the same resample → smooth → core-mask →
+    median chain, to the bit.
+
+    #1929 gave the frame a band the fit's target deliberately does not take,
+    so the two coincide only on this call shape — which is every caller that
+    does not pass one, and is what makes the default provably non-breaking.
+    The divergence when a band IS passed is pinned below.
+    """
     resp, envelope = _dip_response()
     fit = fit_driver_linearization(resp, envelope)
     assert driver_core_level_db(resp, envelope) == pytest.approx(
@@ -1820,11 +1829,13 @@ def test_an_unbounded_fit_is_byte_identical_to_before_the_bound_existed():
 
 
 def test_the_bound_does_not_move_the_target_level_or_the_give_back():
-    """Scoped to the SHAPE question. ``target_level_db`` (which the shared
-    level frame reconciles) and ``correction_giveback_db`` (which anchors the
-    trim) are level questions read over the envelope's own region, and #1809
-    must not move them — narrowing their band walks the frame straight into
-    PR-L5's disagreement refusal."""
+    """Scoped to the SHAPE question. ``target_level_db`` is the flat line every
+    stage in this fit grades against, so it is read over the whole region the
+    fit may place a filter on; ``correction_giveback_db`` anchors the trim and
+    is a power-domain average over the same region. #1809's bound must move
+    neither, and #1929 did not change that — it gave the FRAME's own median a
+    band (:func:`driver_core_level_db`), which is a different question.
+    """
     from jasper.active_speaker.branch_chain import radiating_band_hz
 
     resp, envelope, sections = _crossed_over_woofer()
@@ -1837,3 +1848,382 @@ def test_the_bound_does_not_move_the_target_level_or_the_give_back():
     )
     assert bounded.target_level_db == unbounded.target_level_db
     assert driver_core_level_db(resp, envelope) == unbounded.target_level_db
+
+
+# --------------------------------------------------------------------------- #
+# #1929 — the level frame's median runs over the RADIATING band
+# --------------------------------------------------------------------------- #
+
+
+def test_the_core_level_median_excludes_the_drivers_own_crossover_stopband():
+    """**The #1929 keystone, woofer side.**
+
+    A driver is measured THROUGH its own crossover, and the band it is swept
+    over is a CAPTURE-COVERAGE declaration (``measurement_band_hz``) that
+    routinely reaches past Fc — this fixture's woofer is declared to 8000 Hz
+    against a 2000 Hz LR4, which puts 36% of its core-mask bins in its own
+    stopband. The core level is a MEDIAN, in which a −40 dB stopband bin
+    counts exactly as much as a passband one, so those bins push the median
+    down the driver's own passband and the number stops describing where the
+    driver sits.
+
+    **The size of the error is the passband's own spread, not the skirt's
+    depth**, which is why it is pinned here on two shapes rather than one. A
+    perfectly flat driver barely moves (its passband has nothing to slide
+    down); give it the gentle fall a real cone has toward its crossover and
+    the same declaration costs 1.80 dB — the class of number #1809's comment
+    measured at 1.66 dB on the conductor fixture, the JTS3 corpus pays at
+    2.09 dB (``test_audio_measurement_program_analysis``), and #1870's field
+    session was refused 3.395 dB of frame disagreement over.
+    """
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    resp, envelope, sections = _crossed_over_woofer()
+    band = radiating_band_hz(sections)
+
+    # Flat driver: the mechanism is present and signed, and small.
+    flat_wide = driver_core_level_db(resp, envelope)
+    flat_radiating = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+    assert flat_radiating == pytest.approx(0.0, abs=0.1)
+    assert 0.0 < flat_radiating - flat_wide < 0.6
+
+    # ...and the same declaration on a driver with a real passband.
+    tilt_db = np.clip(-1.5 * np.log2(_NATIVE_FREQS_HZ / 300.0), -8.0, 4.0)
+    real = _driver_response("woofer", resp.magnitude_db + tilt_db)
+    real_envelope = _envelope("woofer", real, excited_band_hz=(150.0, 8000.0))
+    real_wide = driver_core_level_db(real, real_envelope)
+    real_radiating = driver_core_level_db(
+        real, real_envelope, radiating_band_hz=band,
+    )
+    assert real_radiating - real_wide == pytest.approx(1.80, abs=0.15)
+
+
+def test_the_core_level_band_mirrors_onto_the_tweeter():
+    """**The mirror case.** Nothing about #1929 is woofer-specific: a
+    silk-dome declared from well below its crossover — the overwhelmingly
+    common tweeter declaration — feeds its own HIGH-pass skirt into its median
+    by exactly the same mechanism, reflected about Fc. The tweeter side is if
+    anything worse, because a declaration reaching an octave below Fc puts
+    over half the core mask in the stopband: 2.70 dB here on a driver that is
+    otherwise perfectly flat.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    sections = (CrossoverSection(fc_hz=2000.0, order=4, highpass=True),)
+    resp = _driver_response(
+        "tweeter", crossover_response_db(_NATIVE_FREQS_HZ, sections),
+    )
+    # Declared from an octave below Fc — the shape a real tweeter declaration
+    # has, and the reason the mirror is not a hypothetical.
+    envelope = _envelope("tweeter", resp, excited_band_hz=(1000.0, 20000.0))
+    band = radiating_band_hz(sections)
+    assert band[0] > 2000.0  # radiates ABOVE Fc, so the declared bottom is skirt
+
+    whole_band = driver_core_level_db(resp, envelope)
+    radiating = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+    assert radiating - whole_band == pytest.approx(2.70, abs=0.15)
+    # The residue on the radiating side is the LR4 knee itself: the band's
+    # own edge is 3 dB down by definition, so a flat tweeter reads a little
+    # under unity there. That is the threshold's cost, not contamination.
+    assert -1.0 < radiating < 0.0
+
+
+def test_a_declared_band_inside_the_radiating_band_reads_bit_identical():
+    """**The no-crossing regression.** #1929 must be invisible to a driver
+    whose declared span never reaches its own handoff — the same float, not
+    merely a close one, so a future change cannot quietly re-band a session
+    the defect never touched.
+    """
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    resp, envelope, sections = _crossed_over_woofer()
+    band = radiating_band_hz(sections)
+    inside = _envelope("woofer", resp, excited_band_hz=(150.0, band[1] * 0.75))
+
+    assert driver_core_level_db(
+        resp, inside, radiating_band_hz=band,
+    ) == driver_core_level_db(resp, inside)
+
+
+def test_an_inverted_radiating_band_falls_back_to_the_core_mask():
+    """A three-way mid squeezed between two crossovers closer together than
+    their own edges honestly has NO radiating band (``radiating_band_hz``
+    returns ``lo > hi``). Its level is still measured — over the whole core
+    mask, as before #1929 — rather than the role dropping out of the frame,
+    because a frame with one role missing stops grading every other one.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    squeezed = (
+        CrossoverSection(fc_hz=2000.0, order=4, highpass=True),
+        CrossoverSection(fc_hz=2200.0, order=4, highpass=False),
+    )
+    band = radiating_band_hz(squeezed)
+    assert band[0] > band[1], "the fixture must have an empty band to mean anything"
+
+    resp = _driver_response(
+        "midrange", crossover_response_db(_NATIVE_FREQS_HZ, squeezed),
+    )
+    envelope = _envelope("midrange", resp, excited_band_hz=(500.0, 8000.0))
+    level = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+    assert level is not None
+    assert level == driver_core_level_db(resp, envelope)
+    assert core_level_band_hz(envelope, radiating_band_hz=band) == core_level_band_hz(
+        envelope
+    )
+
+
+def _sub_floor_tweeter(fc_hz: float, order: int = 2):
+    """A flat tweeter behind a HIGH crossover, declared 300 Hz-20 kHz at
+    reference tier with the production-default ``driver_class`` — the shape
+    whose radiating band lands at or past its own core mask's top edge.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=True),)
+    resp = _driver_response(
+        "tweeter", crossover_response_db(_NATIVE_FREQS_HZ, sections),
+    )
+    envelope = _envelope("tweeter", resp, excited_band_hz=(300.0, 20000.0))
+    return resp, envelope, radiating_band_hz(sections)
+
+
+def _sub_floor_woofer(fc_hz: float, validity_floor_hz: float, order: int = 4):
+    """A flat woofer behind a LOW crossover whose response the room gate
+    trusts only above ``validity_floor_hz`` — the shape whose radiating band
+    lands at or below its own core mask's BOTTOM edge.
+
+    The mirror of :func:`_sub_floor_tweeter`, and the reason the width floor
+    has to be two-sided: a low-pass edge sits at ~0.80*Fc and slides DOWN as
+    Fc falls, while a room gate raises the trusted floor to meet it, so the
+    intersection runs out of room at the opposite end from a tweeter's.
+    Reachable whenever ``Fc <= 1.57 * validity_floor_hz`` — an ordinary
+    horn-in-a-room shape, not a contrived one.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=False),)
+    resp = _driver_response(
+        "woofer", crossover_response_db(_NATIVE_FREQS_HZ, sections),
+        validity_floor_hz=validity_floor_hz,
+    )
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    return resp, envelope, radiating_band_hz(sections)
+
+
+def _core_level_sweep(make, fcs) -> list[float]:
+    """``driver_core_level_db`` across a sweep of crossover frequencies, on
+    the production defaults, so a test can grade CONTINUITY rather than pick
+    two points and hope."""
+    levels = []
+    for fc_hz in fcs:
+        resp, envelope, band = make(float(fc_hz))
+        level = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+        assert level is not None
+        levels.append(level)
+    return levels
+
+
+def _worst_adjacent_step_db(levels: list[float]) -> float:
+    return max(abs(b - a) for a, b in zip(levels, levels[1:]))
+
+
+@pytest.mark.parametrize(
+    "validity_floor_hz, fcs",
+    [
+        # Fc step is 2.5 Hz, not the tweeter's 20-25: a woofer's widened band
+        # sits on its own low-pass shoulder, where the curve genuinely moves
+        # ~0.015 dB per Hz of Fc, so the sampling interval has to be fine
+        # enough to separate that SLOPE from a STEP. It is not a looser test —
+        # the ceiling is the same 0.10 dB, and the refinement below proves the
+        # variation is slope.
+        (600.0, np.arange(800.0, 1121.0, 2.5)),
+        (400.0, np.arange(540.0, 761.0, 2.5)),
+    ],
+)
+def test_the_woofer_core_level_is_continuous_across_the_width_floor(
+    validity_floor_hz, fcs,
+):
+    """**The floor is TWO-SIDED, and the woofer is why.**
+
+    Widening downward is the tweeter's fix: its high-pass edge slides UP into
+    the core mask's top, so there is always passband below to widen into. A
+    woofer runs out at the other end — its low-pass edge sits at ~0.80*Fc and
+    slides DOWN, while a room gate raises the trusted floor to meet it — so a
+    downward-only widen is clamped by ``core &`` and silently returns the
+    still-sub-floor intersection. The floor then never enforces at all in the
+    one region it was written for. Measured with the downward-only version:
+    a 600 Hz gate at Fc 760 and a 400 Hz gate at Fc 520 both read ONE-BIN
+    medians, with 21-30 dB steps in the neighbourhood.
+
+    So the deficit is made up UPWARD from the core's own bottom bin instead,
+    spending at most a floor width of the woofer's own low-pass skirt — the
+    same trade the tweeter already makes into its high-pass knee.
+
+    This sweep runs entirely ABOVE the empty-intersection transition (which
+    for these gates sits at Fc ≈ 757 and ≈ 512), so what it grades is the
+    FLOOR boundary specifically: the point where the intersection stops being
+    sub-floor and the widened band hands back over to it. Worst adjacent step
+    measured 0.073 dB (600 Hz gate) and 0.066 dB (400 Hz gate).
+    """
+    levels = _core_level_sweep(
+        lambda fc: _sub_floor_woofer(fc, validity_floor_hz), fcs,
+    )
+    worst = _worst_adjacent_step_db(levels)
+    assert worst < 0.10, f"worst adjacent step {worst:.4f} dB"
+    # The estimate stays on the radiating side throughout — never the
+    # whole-mask number, which for these shapes is 25-35 dB down.
+    assert all(level > -6.0 for level in levels)
+
+
+def test_the_woofer_floor_variation_is_slope_not_a_step():
+    """The discriminator behind the sweep above, made explicit: refine the Fc
+    increment and a genuine discontinuity does NOT shrink, while smooth
+    variation does, proportionally.
+
+    Measured on the 600 Hz-gate sweep — worst adjacent step 0.292 dB at 20 Hz,
+    0.149 at 10 Hz, 0.076 at 5 Hz — i.e. ~0.015 dB per Hz of Fc at every
+    resolution. That is the low-pass shoulder moving under a band that is
+    tracking it, not a band being swapped for another one.
+    """
+    coarse = _worst_adjacent_step_db(
+        _core_level_sweep(
+            lambda fc: _sub_floor_woofer(fc, 600.0), np.arange(800.0, 1121.0, 20.0),
+        )
+    )
+    fine = _worst_adjacent_step_db(
+        _core_level_sweep(
+            lambda fc: _sub_floor_woofer(fc, 600.0), np.arange(800.0, 1121.0, 5.0),
+        )
+    )
+    assert coarse == pytest.approx(0.292, abs=0.02)
+    # Quartering the Fc step quarters the observed jump, within the bin
+    # quantisation that eventually floors it. A step would not move at all.
+    assert fine < coarse / 3.0
+
+
+@pytest.mark.parametrize(
+    "order, fcs, ceiling_db",
+    [
+        (2, np.arange(2700.0, 3101.0, 20.0), 0.10),
+        (4, np.arange(3450.0, 3801.0, 25.0), 0.10),
+    ],
+)
+def test_the_core_level_is_continuous_across_the_width_floor(order, fcs, ceiling_db):
+    """**The floor WIDENS a too-narrow bound; it does not discard it — and this
+    is the test that proves the difference.**
+
+    As Fc rises, a tweeter's radiating band eats into its own core mask from
+    below and the intersection narrows toward nothing. Somewhere in there it
+    crosses :data:`_MIN_LEVEL_BAND_OCTAVES`. The first cut of #1929's floor
+    treated that crossing as "unusable" and fell back to the whole core mask —
+    which does not remove a discontinuity, it MOVES one, from the 0↔1-bin edge
+    down to the 9↔10-bin edge at lower and much more ordinary Fc. Measured on
+    exactly this fixture with that version: **LR2 2900→2920 Hz stepped 13.14 dB
+    and LR4 3625→3650 stepped 33.84 dB**, into a gate whose whole tolerance is
+    3.0 dB. A two-point test at 3750/3775 called that "the cliff is gone",
+    because 3750/3775 is the one place the cliff had moved away FROM.
+
+    Widening instead — anchor on the intersection's own top edge, extend down
+    to exactly the floor width, stay inside the core mask — is continuous by
+    construction: an exact no-op at the boundary width, a constant band below
+    it, the shrinking intersection above it. Measured here, the worst adjacent
+    step across the whole boundary region is **0.033 dB (LR2)** and
+    **0.052 dB (LR4)**, so the ceiling asserted is 0.10 dB: comfortably above
+    the measurement, two orders below the tolerance it feeds, and nowhere near
+    loose enough to let either 13 dB or 34 dB back in.
+
+    Sweeping is the point. A pair of points can only ever prove the property at
+    the pair; the defect this replaces was invisible to exactly such a pair.
+    """
+    levels = _core_level_sweep(lambda fc: _sub_floor_tweeter(fc, order=order), fcs)
+    worst = _worst_adjacent_step_db(levels)
+    assert worst < ceiling_db, f"worst adjacent step {worst:.4f} dB"
+    # ...and the level stays where the driver radiates rather than collapsing
+    # to the contaminated whole-mask number (about −19 dB on this fixture).
+    assert all(level > -6.0 for level in levels)
+
+
+@pytest.mark.parametrize(
+    "order, fcs, expected_step_db",
+    [
+        (2, np.arange(3650.0, 3901.0, 25.0), 15.82),
+        (4, np.arange(4500.0, 4801.0, 25.0), 40.42),
+    ],
+)
+def test_the_empty_intersection_step_is_the_one_residual_and_it_is_disclosed(
+    order, fcs, expected_step_db,
+):
+    """**The discontinuity that remains, measured and owned rather than hidden.**
+
+    Widening needs an intersection to anchor on. When the radiating band clears
+    the core mask's top entirely there is none at all — not "too narrow" but
+    *none* — and the level falls back to the whole core mask, which is the
+    pre-#1929 answer. That transition really is a step: **15.82 dB at LR2 and
+    40.42 dB at LR4** on this fixture. (Both are ~0.1-0.2 dB smaller than the
+    downward-only version of the widen produced, because the two-sided rule
+    snaps each widened edge OUTWARD to the first bin that truly reaches the
+    floor, so the band it steps away from is one bin wider.)
+
+    It is kept, deliberately, because the alternative is worse. There is no
+    honest radiating-band estimate to widen toward — the driver's trusted
+    region and the band it radiates in do not overlap — so any number produced
+    there would be an invention. What #1929 owes such a session is not a
+    fabricated level but the truth about which band produced the one it has,
+    and that is what :func:`core_level_band_hz` reports and the refusal journal
+    now carries.
+
+    These configurations refused before #1929 and still refuse; the estimate is
+    ~19 dB (LR2) from where the driver sits either way. Closing THAT is the
+    comparator family's work, not this issue's.
+    """
+    levels = _core_level_sweep(lambda fc: _sub_floor_tweeter(fc, order=order), fcs)
+    assert _worst_adjacent_step_db(levels) == pytest.approx(
+        expected_step_db, abs=0.05
+    )
+
+
+def test_the_disclosed_band_is_the_one_the_median_actually_used():
+    """#1929 observability, at the seam. Two things must be disclosable, and
+    :func:`core_level_band_hz` is the one place that decides both because it
+    shares :func:`_core_level_mask` with the level itself:
+
+    * a sub-floor bound that was WIDENED — the span used is wider than the
+      bound and still sits on the radiating side;
+    * an EMPTY intersection that fell back — the span used is the whole core
+      mask, and saying so is the difference between a reader reaching for the
+      right lever and the wrong one.
+    """
+    # Widened: the bound was too narrow, so the span used starts BELOW it —
+    # but nowhere near the bottom of the core mask.
+    resp, envelope, band = _sub_floor_tweeter(3750.0)
+    widened = core_level_band_hz(envelope, radiating_band_hz=band)
+    whole_mask = core_level_band_hz(envelope)
+    assert widened is not None and whole_mask is not None
+    assert widened[0] < band[0]
+    assert widened != whole_mask
+    assert widened[0] > whole_mask[0] * 4.0
+    assert math.log2(widened[1] / widened[0]) == pytest.approx(1 / 3, abs=0.05)
+
+    # Empty: nothing to widen toward, so the whole mask is used — and reported.
+    _r, empty_env, empty_band = _sub_floor_tweeter(3775.0)
+    assert core_level_band_hz(
+        empty_env, radiating_band_hz=empty_band,
+    ) == core_level_band_hz(empty_env)
+
+    # Ordinary tweeter: the bound is used as-is, and that is what is disclosed.
+    ordinary_resp, ordinary_env, ordinary_band = _sub_floor_tweeter(2000.0, order=4)
+    ordinary = core_level_band_hz(ordinary_env, radiating_band_hz=ordinary_band)
+    assert ordinary is not None and ordinary[0] >= ordinary_band[0]
+    assert ordinary != core_level_band_hz(ordinary_env)
+    assert driver_core_level_db(
+        ordinary_resp, ordinary_env, radiating_band_hz=ordinary_band,
+    ) == pytest.approx(-0.585, abs=0.01)

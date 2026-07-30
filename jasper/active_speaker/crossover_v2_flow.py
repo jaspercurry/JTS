@@ -115,6 +115,7 @@ from jasper.active_speaker.branch_chain import (
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
     complex_correction_response,
+    core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
     solve_shared_level_frame,
@@ -2184,6 +2185,26 @@ def _driver_response_by_role(analysis: ProgramAnalysis, role: str) -> Any | None
     return None
 
 
+def _rounded_band_hz(
+    band_hz: tuple[float, float] | None,
+) -> tuple[float, float | None] | None:
+    """A ``(lo, hi)`` band rounded for the journal, with a non-finite upper
+    edge rendered as ``None`` rather than ``inf``.
+
+    A high-pass branch radiates to infinity, and ``inf`` is not JSON-safe;
+    ``None`` reads as "no upper bound" and survives every consumer. Shared by
+    the two places that log a band so they cannot render the same number two
+    ways.
+    """
+    if band_hz is None:
+        return None
+    lo_hz, hi_hz = band_hz
+    return (
+        round(float(lo_hz), 1),
+        round(float(hi_hz), 1) if math.isfinite(hi_hz) else None,
+    )
+
+
 def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
     for pilot in analysis.pilots:
         if pilot.role == role:
@@ -2363,7 +2384,7 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 # How far the two measured level estimates may disagree before the session is
 # refused (linearization-integrity PR-L5). The estimates are the trim solve's
 # power-band average on each side of Fc (`program_analysis.solve_branch_trims`)
-# and the fit's median over each driver's whole trusted passband
+# and the fit's median over each driver's own RADIATING band since #1929
 # (`linearization_fit.driver_core_level_db`), reconciled by
 # `solve_shared_level_frame` into one frame whose per-role offset IS their
 # disagreement.
@@ -2372,10 +2393,40 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 # REALIZED_LEVEL_MATCH_TOLERANCE_DB`, and imported from it rather than written
 # twice: both answer one question — do two estimates of where these drivers sit
 # agree — and PR-L4 already derived 3.0 dB for it from this exact evidence (the
-# worst honest frame disagreement across the five archived captures is 1.30 dB
-# after PR-L3; the 2026-07-27 profile that shipped 9-11 dB dark sat at
-# 8.76 dB). A second number for the same question is how two instruments start
-# disagreeing about what "agree" means.
+# 2026-07-27 profile that shipped 9-11 dB dark sat at 8.76 dB). A second number
+# for the same question is how two instruments start disagreeing about what
+# "agree" means.
+#
+# The FLOOR argument moved with #1929 and is no longer 1.08-1.30 dB. That range
+# was PR-L3's measurement with the median over each driver's whole DECLARED
+# capture span, which counted the driver's own crossover stopband as driver
+# level. On archived run 5 — the capture this repo replays, in
+# `tests/test_audio_measurement_program_analysis.py` — banding the median takes
+# the same session's disagreement from 1.076 dB to 0.510 dB. The other four
+# archived captures have not been re-measured under the band, so the honest
+# statement is "the one capture we replay halved", not a new range.
+#
+# What the tolerance still does NOT buy is a small residual. A pair that is
+# identical by construction still reads 0.910 dB, and the number climbs with
+# ordinary driver shape at roughly 1.33 dB per dB/octave of woofer passband
+# tilt (measured on the conductor fixture: 0.910 flat, 2.251 at -1 dB/oct,
+# 3.574 at -2, 4.883 at -3), so a -2 dB/oct woofer — an unremarkable driver —
+# refuses while the realized-level instrument reads 1.41 dB and passes.
+#
+# That gradient is the honest read of this constant: about 1.6 dB/oct of real
+# passband tilt is the whole budget, because 0.910 dB is spent before the
+# speaker contributes anything. #1929 removed one structural bias; it did not
+# make the two estimators agree, and the next field refusal comes from what is
+# left. Closing THAT is the comparator family's work (plan section 4 M7 /
+# WO-4), and the frame-gate SEMANTICS ruling on #1866 is the next step of it.
+#
+# EXTERNAL FIELD EVIDENCE, not reproducible from this repo: an offline re-fit
+# of the 2026-07-30 field bundle puts that session at 3.2307 dB under this
+# banded estimator — still refused. Provenance and fidelity are recorded on
+# #1870; the bundle is laptop-side and gitignored, so no test replays it and
+# nothing here should be read as if one did. The archived-corpus numbers above
+# ARE in-repo and are a different session's bytes — both true, neither derived
+# from the other.
 LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 # How much the correction must improve ITS OWN two-branch model before a
@@ -4239,6 +4290,9 @@ class CrossoverV2Conductor:
         # NOT a pass; the gate that reads them only refuses on evidence.
         self._last_level_frame: Any = None
         self._last_level_frame_disagreement_db: float = 0.0
+        # …and the per-role core levels that frame was solved from, with the
+        # radiating band each was read over (#1929) — the refusal's evidence.
+        self._last_level_frame_cores: dict[str, dict[str, Any]] = {}
         # VERIFY's own measured-vs-predicted curve pair and gated validity
         # floor, held so the post-apply group's close can re-run the probe with
         # the spatial arm without re-analyzing a capture.
@@ -5088,6 +5142,7 @@ class CrossoverV2Conductor:
         self._last_realized_level_match = None
         self._last_level_frame = None
         self._last_level_frame_disagreement_db = 0.0
+        self._last_level_frame_cores = {}
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         # --- "too quiet" runs BEFORE "glitched" (D3, issue #1838) ---
@@ -6186,6 +6241,7 @@ class CrossoverV2Conductor:
                     {k: round(float(v), 3) for k, v in frame.offset_db.items()}
                     if frame is not None else {}
                 ),
+                core_level_db=self._last_level_frame_cores,
             )
             raise self._refuse(REASON_DRIVER_LEVELS_DISAGREE)
 
@@ -7175,6 +7231,7 @@ class CrossoverV2Conductor:
                 self._last_realized_level_match = None
                 self._last_level_frame = None
                 self._last_level_frame_disagreement_db = 0.0
+                self._last_level_frame_cores = {}
                 self._last_linearization_outcome = "fit_failed"
 
         return MeasuredCrossoverCandidate(
@@ -7427,17 +7484,26 @@ class CrossoverV2Conductor:
         # reaching it boosts that back (the same profile's tweeter, +5.6163 dB
         # at 2020 Hz).
         #
-        # It bounds LIFT and nothing else. Cuts still run to the fit band's
-        # own edge — leakage past the handoff still reaches the summed
-        # response and removing it spends no headroom — and the fit still reads its
-        # target level, its core level for the shared frame, and its
-        # give-back over the envelope's own region. Those are level questions
-        # and this is a shape fix; narrowing their band too would move the
-        # frame and the trim anchor as a side effect (measured on the
-        # conductor fixture: the woofer's core median rises 1.66 dB once its
-        # own crossover skirt stops dragging it down, which walks the frame
-        # disagreement straight into PR-L5's 3.0 dB refusal). That band
-        # question is real and belongs with the trim's own bands, not here.
+        # It bounds LIFT and nothing else in the SHAPE layer. Cuts still run to
+        # the fit band's own edge — leakage past the handoff still reaches the
+        # summed response and removing it spends no headroom — and the fit
+        # still reads its target level, its plateau and its give-back over the
+        # envelope's own region.
+        #
+        # The band ALSO bounds one LEVEL question, and only one (#1929): the
+        # core-level median this frame is built from, below. #1809 left that
+        # open — "narrowing their band too would move the frame and the trim
+        # anchor as a side effect of a shape fix", measured then on the
+        # conductor fixture at 1.66 dB of woofer core median — and the
+        # 2026-07-30 JTS3 session (#1870) is what closed it: a woofer declared
+        # to 4000 Hz against this session's 2000 Hz LR4 put ~28% of its core
+        # bins an octave inside its own stopband, read 3.395 dB away from the
+        # trim solve's estimate of the same physical level, and refused a
+        # healthy speaker at the gate below. The move is no longer a side
+        # effect of a shape fix; it IS the fix, and it stops at the median —
+        # the give-back is a power-domain average that quiet stopband bins
+        # barely reach, and the fit target is #1817's crossover-shaped-target
+        # question, not a band. See `driver_core_level_db`'s own docstring.
         sections = {
             role: self._branch_crossover_sections(role)
             for role in (woofer_role, tweeter_role)
@@ -7451,8 +7517,8 @@ class CrossoverV2Conductor:
             session_id=self.session_id,
             fc_hz=round(float(self._fc_hz), 3),
             radiating_band_hz={
-                role: (round(lo, 1), round(hi, 1) if math.isfinite(hi) else None)
-                for role, (lo, hi) in radiating_bands.items()
+                role: _rounded_band_hz(band)
+                for role, band in radiating_bands.items()
             },
             crossover_order={
                 role: tuple(s.order for s in sections[role])
@@ -7488,8 +7554,10 @@ class CrossoverV2Conductor:
         core_levels_db = {
             role: level
             for role in (woofer_role, tweeter_role)
-            if (level := driver_core_level_db(responses[role], envelopes[role]))
-            is not None
+            if (level := driver_core_level_db(
+                responses[role], envelopes[role],
+                radiating_band_hz=radiating_bands[role],
+            )) is not None
         }
         # The frame reconciles two LEVEL-MATCH estimates, so its trim term is
         # the trim solve's own level-match result (`trim_band_average_db`) —
@@ -7514,21 +7582,52 @@ class CrossoverV2Conductor:
         # (``core_level + trim``) sits below the loudest — which is exactly the
         # DISAGREEMENT between two measured estimates of the same physical
         # relationship: the trim solve's power-band average on each side of Fc,
-        # and the fit's median over each driver's whole trusted passband. After
-        # PR-L3 fixed the trim's band-clamp asymmetry those two agree to
-        # 1.08-1.30 dB across the five archived captures, so a small offset is
-        # an honest reconciliation and gets applied. A LARGE one is not: it
-        # means the two instruments are measuring different things again, and
-        # blindly preferring either — which is what applying a 10 dB offset on
-        # one estimator's say-so would be — is the same "nothing ever compared
+        # and the fit's median over each driver's own RADIATING band (#1929;
+        # before that, over its whole declared capture span, which counted the
+        # driver's own crossover stopband as driver level). A small offset is an
+        # honest reconciliation and gets applied. A LARGE one is not: it means
+        # the two instruments are measuring different things again, and blindly
+        # preferring either — which is what applying a 10 dB offset on one
+        # estimator's say-so would be — is the same "nothing ever compared
         # these" failure the 2026-07-27 profile shipped, pointed a new
         # direction. So it is stashed here and refused at the confirm seam,
         # beside PR-L4's own two assertions.
+        #
+        # How close "close" actually is, measured rather than asserted: on the
+        # archived run-5 capture the two land 0.510 dB apart (1.076 before
+        # #1929), and on a pair that is identical by construction they still
+        # land 0.910 dB apart. The residual is real and #1929 did not close it —
+        # see LEVEL_FRAME_AGREEMENT_TOLERANCE_DB's own comment for what is left
+        # and where the next refusal comes from.
         self._last_level_frame = level_frame
         self._last_level_frame_disagreement_db = (
             max((abs(v) for v in level_frame.offset_db.values()), default=0.0)
             if level_frame is not None else 0.0
         )
+        # The frame's own INPUTS, held for the refusal's journal line (#1929).
+        # A refusal that names only the disagreement asks whoever reads it to
+        # re-derive which driver read what, and over which band — and since
+        # #1929 the band is the answer to the most common cause.
+        #
+        # BOTH bands are reported, and that is the point. `radiating_band_hz`
+        # is the bound this gate asked for; `band_hz` is the span the median
+        # was actually taken over (`core_level_band_hz`, the same helper that
+        # decides it). They differ exactly when the bound was refused for
+        # leaving too little band — and that is the case where a reader
+        # diagnosing a refusal would otherwise be shown a band the number in
+        # front of them was never computed over.
+        self._last_level_frame_cores = {
+            role: {
+                "level_db": round(float(level), 3),
+                "band_hz": _rounded_band_hz(
+                    core_level_band_hz(
+                        envelopes[role], radiating_band_hz=radiating_bands[role],
+                    )
+                ),
+                "radiating_band_hz": _rounded_band_hz(radiating_bands[role]),
+            }
+            for role, level in core_levels_db.items()
+        }
 
         # Boost permission is EVIDENCE-gated, and this is the gate. TWO
         # conditions, both necessary:

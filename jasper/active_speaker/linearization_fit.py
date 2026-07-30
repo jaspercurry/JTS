@@ -1030,6 +1030,154 @@ def _core_or_fallback_mask(
     return core if core.any() else envelope_mask
 
 
+#: Narrowest span, in octaves, a core-level MEDIAN may be read over (#1929).
+#:
+#: Not a magic number: this fit ladder-smooths at 1/6 octave below 4 kHz
+#: (:func:`_ladder_smooth`), so bins closer together than that are not
+#: independent samples of anything. A third of an octave is two smoothing
+#: kernels — the narrowest span on which "the median" is a statistic rather
+#: than one smoothed point wearing a statistic's name. On the production grid
+#: (:data:`~jasper.active_speaker.linearization_envelope.
+#: DEFAULT_ENVELOPE_GRID_HZ`, 176 log bins over 150 Hz-20 kHz ≈ 24.8 per
+#: octave) that is about 8 bins.
+#:
+#: What it protects against is a DISCONTINUITY, not a wrong answer. A tweeter
+#: whose radiating band starts just inside its core mask's top edge gets a
+#: one-bin intersection, and one bin narrower it is empty. Measured at
+#: reference tier on a flat tweeter declared 300 Hz-20 kHz, the raw
+#: intersection alone read −2.847 dB from a single bin at LR2 Fc 3750 and
+#: −19.401 dB from the whole-mask fallback at Fc 3775 — 16.55 dB across 25 Hz
+#: of crossover frequency, into a gate whose whole tolerance is 3.0 dB.
+#:
+#: **How the floor is applied is the whole design, and DISCARDING is the wrong
+#: way.** A first cut treated a sub-floor intersection as unusable and fell
+#: back to the whole core mask. That does not remove the cliff, it MOVES it —
+#: to wherever the intersection crosses the floor width, which is lower and
+#: more common Fc: measured, LR2 2900→2920 Hz stepped −2.286 → −15.427
+#: (13.14 dB over 20 Hz) and LR4 3625→3650 stepped −1.803 → −35.642 (33.84 dB
+#: over 25 Hz), i.e. straight into ordinary two-way crossover territory.
+#:
+#: So a sub-floor intersection is WIDENED to exactly this width instead, never
+#: discarded — and the rule is TWO-SIDED, which the first version of it was
+#: not. Widening runs downward from the intersection's own top edge; if the
+#: core mask's bottom stops that short, the remaining deficit is made up
+#: UPWARD from the core's bottom bin.
+#:
+#: Both directions are needed because the two roles run out of room at
+#: opposite ends. A tweeter's intersection is pinned against the core mask's
+#: TOP (its high-pass edge slides up into it), so there is always passband
+#: below to widen into. A woofer's slides DOWN — its low-pass edge sits at
+#: ~0.80*Fc — and meets a room gate that has raised the trusted floor, so
+#: below is where the room is gone. Downward-only widening therefore no-ops
+#: on the woofer side exactly when it is needed: measured with a 600 Hz gate,
+#: Fc 760 read a 1-bin median with the floor silently inactive, and a 400 Hz
+#: gate did the same at Fc 520 — 23-30 dB steps in the neighbourhood,
+#: reachable whenever Fc <= 1.57x the validity floor (an ordinary
+#: horn-in-a-room shape). Widening upward spends at most one floor width of
+#: the woofer's own low-pass skirt, which is the same trade the tweeter side
+#: already makes into its high-pass knee.
+#:
+#: The result is continuous by construction: an exact no-op at the boundary
+#: width, a constant-width band below it, the shrinking intersection above it
+#: — and the estimate stays a statement about THIS driver rather than a
+#: whole-mask number tens of dB away. Two cases still take the whole mask, and
+#: :func:`core_level_band_hz` discloses both: a genuinely EMPTY intersection,
+#: and a core mask that is itself narrower than the floor (nothing left to
+#: widen into, and the whole mask is what widening was converging on anyway).
+_MIN_LEVEL_BAND_OCTAVES: float = 1.0 / 3.0
+
+
+def _spans_floor(lo_hz: float, hi_hz: float) -> bool:
+    """Is ``[lo_hz, hi_hz]`` at least :data:`_MIN_LEVEL_BAND_OCTAVES` wide?
+
+    One predicate so the "is this enough band" question is asked identically
+    of the raw intersection and of each widened candidate — asking it two ways
+    is how the first version of this floor came to be silently inactive on the
+    woofer side.
+    """
+    return lo_hz > 0.0 and math.log2(hi_hz / lo_hz) >= _MIN_LEVEL_BAND_OCTAVES
+
+
+def _core_level_mask(
+    envelope: EnvelopeCurve,
+    envelope_mask: np.ndarray,
+    radiating_band_hz: tuple[float, float] | None,
+) -> np.ndarray:
+    """The bins a core-level median runs over: the core mask, narrowed to
+    ``radiating_band_hz``, widened back to :data:`_MIN_LEVEL_BAND_OCTAVES` if
+    that narrowing left less band than a median can be taken over.
+
+    THE one implementation of that rule — :func:`driver_core_level_db` and
+    :func:`core_level_band_hz` both bottom out here, so the level and the band
+    disclosed beside it are always the same decision.
+
+    Three outcomes, and the middle one is the design (see
+    :data:`_MIN_LEVEL_BAND_OCTAVES`):
+
+    * the intersection is at least a floor's width — use it;
+    * it is narrower — WIDEN it downward from its own top edge to exactly a
+      floor's width, clamped inside the core mask. Continuous by construction,
+      and the level stays a statement about the band this driver radiates in;
+    * it is EMPTY — fall back to the whole core mask. A three-way mid squeezed
+      between two crossovers closer together than their own edges honestly has
+      no radiating band at all (:func:`~jasper.active_speaker.branch_chain.
+      radiating_band_hz` documents that case), and a driver whose level is
+      read over a wider-than-ideal band is still a measured level; dropping it
+      from the frame instead would let one squeezed role stop grading every
+      other one. This is the one path that changes what the number MEANS, so
+      it is the one :func:`core_level_band_hz` exists to disclose.
+    """
+    core = _core_or_fallback_mask(envelope, envelope_mask)
+    if radiating_band_hz is None:
+        return core
+    lo_hz, hi_hz = radiating_band_hz
+    grid_hz = envelope.freqs_hz
+    narrowed = core & (grid_hz >= lo_hz) & (grid_hz <= hi_hz)
+    if not narrowed.any():
+        return core
+    used = grid_hz[narrowed]
+    lo_used, hi_used = float(used[0]), float(used[-1])
+    if _spans_floor(lo_used, hi_used):
+        return narrowed
+
+    # Sub-floor. Widening is done on the core mask's OWN bins, and each edge is
+    # snapped OUTWARD to the first bin that actually reaches the floor width —
+    # snapping inward leaves the result a bin short of the floor it just asked
+    # for, which silently sends every widened band to the whole-mask fallback.
+    core_idx = np.flatnonzero(core)
+    core_freqs = grid_hz[core_idx]
+    span = 2.0 ** _MIN_LEVEL_BAND_OCTAVES
+
+    # DOWN from this intersection's own top edge first. Anchoring on
+    # ``hi_used`` rather than on the crossover is what makes the neighbourhood
+    # continuous — at exactly the floor width the widened band IS the
+    # intersection, and below it the band stops moving instead of being swapped
+    # for another. This is the tweeter case: the room below is its passband.
+    top = int(np.searchsorted(core_freqs, hi_used, side="right")) - 1
+    bottom = int(np.searchsorted(core_freqs, hi_used / span, side="right")) - 1
+    if bottom < 0:
+        # Downward room is exhausted — the WOOFER case, where a low Fc slides
+        # ``hi_used`` down to meet a room gate that raised the trusted floor.
+        # Make the deficit up UPWARD from the core's own bottom bin instead.
+        # That spends at most one floor width of the driver's own low-pass
+        # skirt, the same trade the tweeter side already makes into its
+        # high-pass knee, and it keeps the estimate a statement about THIS
+        # driver rather than a whole-mask number tens of dB away.
+        bottom = 0
+        top = int(np.searchsorted(core_freqs, core_freqs[0] * span, side="left"))
+        if top >= core_freqs.size:
+            # Neither direction has room: the core mask is itself narrower than
+            # the floor. Nothing left to widen into, so take the documented
+            # whole-mask fallback — which for a core this small is what the
+            # widening was converging on anyway, so the neighbourhood stays
+            # continuous.
+            return core
+
+    widened = np.zeros_like(core)
+    widened[core_idx[bottom:top + 1]] = True
+    return widened
+
+
 def _target_and_plateau_db(
     smoothed_db: np.ndarray, level_mask: np.ndarray,
 ) -> tuple[float, float]:
@@ -1044,17 +1192,48 @@ def _target_and_plateau_db(
 
 def driver_core_level_db(
     primary: DriverResponse, envelope: EnvelopeCurve,
+    *, radiating_band_hz: tuple[float, float] | None = None,
 ) -> float | None:
-    """One driver's own core-passband level — the number a
+    """One driver's own passband level — the number a
     :class:`SharedLevelFrame` reconciles across drivers (PR-L5).
 
-    Deliberately NOT a second estimator. It runs the identical resample →
-    ladder-smooth → core-mask → median chain :func:`fit_driver_linearization`
-    runs, and returns the same ``target_level_db`` that fit would have chosen
-    on its own, so a frame built from this and a fit built from that cannot
-    disagree about where a driver sits. It exists as a separate entry point
-    only because the frame has to be solved across ALL drivers before any one
-    of them is fitted.
+    It runs :func:`fit_driver_linearization`'s own resample → ladder-smooth →
+    core-mask → median chain, and exists as a separate entry point only
+    because the frame has to be solved across ALL drivers before any one of
+    them is fitted.
+
+    ``radiating_band_hz`` (#1929) narrows the median's band to where this
+    driver's own crossover leaves it radiating —
+    :func:`jasper.active_speaker.branch_chain.radiating_band_hz`, solved by
+    the composer, so nothing here knows what a crossover is. ``None`` (the
+    default, and every caller before #1929) is the pre-#1929 whole-core-mask
+    median, byte for byte. A branch with no crossover sections is NOT that
+    case: it gets ``(0.0, inf)`` from the solver, which narrows nothing, so a
+    caller never has to decide between the two. The narrowing is subject to
+    :func:`_core_level_mask`'s width floor — a bound that leaves too little
+    band to take a median over is not applied, and
+    :func:`core_level_band_hz` reports which way that went.
+
+    **Why the band matters, and why only here.** The core mask is bounded by
+    the driver's declared ``measurement_band_hz`` — a CAPTURE-COVERAGE
+    declaration, "sweep me over this span", which routinely reaches well past
+    the session's Fc. A branch is measured THROUGH its own crossover, so every
+    declared bin past the handoff carries that crossover's stopband, and a
+    MEDIAN is a rank statistic: a −40 dB stopband bin counts exactly as much
+    as a passband one. On the 2026-07-30 JTS3 session (#1870) the woofer was
+    declared to 4000 Hz against a 2000 Hz LR4, putting ~28% of its core bins
+    an octave inside its own stopband and reading its level 3.4 dB away from
+    the trim solve's mirrored ±1-octave estimate of the same physical
+    quantity — past :data:`~jasper.active_speaker.crossover_v2_flow.
+    LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, refusing a healthy speaker. Two
+    identical flat drivers behind a matched LR4 pair reproduce it at 9.4 dB.
+
+    The contamination is specific to the rank statistic, so the fix is. The
+    give-back (:attr:`LinearizationFit.correction_giveback_db`) is a
+    POWER-domain band average over the same mask and is already effectively
+    immune — quiet stopband bins contribute almost nothing to a power mean —
+    and the fit's own ``target_level_db`` is a different question with a
+    different right answer (see :func:`fit_driver_linearization`).
 
     Returns ``None`` — not a number — when the envelope allows correction
     nowhere. That driver's level is UNKNOWN, and a frame is a claim about
@@ -1070,8 +1249,33 @@ def driver_core_level_db(
     envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
     if not envelope_mask.any():
         return None
-    level_mask = _core_or_fallback_mask(envelope, envelope_mask)
-    return _target_and_plateau_db(smoothed_db, level_mask)[0]
+    return _target_and_plateau_db(
+        smoothed_db, _core_level_mask(envelope, envelope_mask, radiating_band_hz),
+    )[0]
+
+
+def core_level_band_hz(
+    envelope: EnvelopeCurve, *,
+    radiating_band_hz: tuple[float, float] | None = None,
+) -> tuple[float, float] | None:
+    """The span :func:`driver_core_level_db` ACTUALLY reads its median over,
+    for the same arguments — ``None`` when it would return ``None``.
+
+    Exists so a caller that discloses the band (the conductor's refusal
+    journal) discloses the realized one rather than the bound it asked for.
+    Those differ exactly when the bound is refused by
+    :func:`_core_level_mask`'s width floor, which is precisely the case a
+    reader diagnosing a refusal needs told rather than hidden. Both functions
+    bottom out in that one helper, so the number logged and the number used
+    cannot drift.
+    """
+    envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
+    if not envelope_mask.any():
+        return None
+    used = envelope.freqs_hz[
+        _core_level_mask(envelope, envelope_mask, radiating_band_hz)
+    ]
+    return (float(used[0]), float(used[-1]))
 
 
 def _adaptive_band_trim(
@@ -1843,15 +2047,27 @@ def fit_driver_linearization(
 
     It bounds the LIFT stage and deliberately nothing else. Cuts still run to
     the fit band's own edge — out-of-band leakage is real, reaches the summed
-    response, and removing it spends no headroom — and ``target_level_db``, the
-    core-band level :func:`driver_core_level_db` reconciles into the shared
-    frame, and ``correction_giveback_db`` are all still read over the
-    envelope's own region, because those are LEVEL questions and narrowing
-    their band would move the shared frame and the trim anchor as a side
-    effect of a SHAPE fix. What #1809 is about is a driver spending GAIN
+    response, and removing it spends no headroom — and ``target_level_db``,
+    ``plateau_level_db`` and ``correction_giveback_db`` are all still read over
+    the envelope's own region. What #1809 is about is a driver spending GAIN
     against its own crossover: the 2026-07-28 JTS3 woofer carried +11.6155 dB
     (Q 8) at 2747 Hz, above its own 2 kHz LR4 crossover, which arrived at
     +1.06 dB of net acoustic contribution and cost 11.6 dB of headroom.
+
+    ``target_level_db`` staying whole-region is a POSITIVE choice, not an
+    oversight. It is the flat line every stage here grades against — the
+    shelf's slope reference, the peaking loop's target array, the adaptive
+    band trim's floor, the give-back frame, the residual/verify/observe claims
+    — so it has to be derived from the bins the fit may place a filter on. A
+    target read over a sub-band would grade the bins outside it against a line
+    nothing outside it contributed to. The right fix for the crossover-shaped
+    curve the fit flattens toward a flat target is a crossover-shaped TARGET
+    (#1817), which is a change to what this number MEANS and not a band.
+    ``driver_core_level_db`` is a different question — where does this driver
+    SIT relative to its sibling — and since #1929 it reads its median over the
+    radiating band, because only the bins a driver radiates in carry that.
+    The two were the same number by construction until #1929 proved they were
+    never the same question.
 
     ``level_frame`` is the session's :class:`SharedLevelFrame`; when supplied,
     this driver's :attr:`~LinearizationFit.level_frame_offset_db` reports how
