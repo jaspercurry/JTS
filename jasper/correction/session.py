@@ -2708,7 +2708,7 @@ class MeasurementSession:
     ) -> bool:
         """Reassert the saved lock immediately before an acoustic sweep.
 
-        The physical dial is external and another software controller may have
+        The physical remote is external and another software controller may have
         changed CamillaDSP volume since the level check.  A cached ``locked``
         flag alone is therefore not permission to play.
         """

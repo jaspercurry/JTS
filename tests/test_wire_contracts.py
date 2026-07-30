@@ -31,7 +31,6 @@ CONTROL_SERVER_PY = REPO / "jasper" / "control" / "server.py"
 CONTROL_SPLIT_MODULES = (
     CONTROL_SERVER_PY,
     REPO / "jasper" / "control" / "aec_endpoints.py",
-    REPO / "jasper" / "control" / "dial.py",
     REPO / "jasper" / "control" / "state_aggregate.py",
     REPO / "jasper" / "control" / "uds.py",
     REPO / "jasper" / "control" / "volume_ops.py",

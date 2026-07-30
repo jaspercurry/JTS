@@ -279,7 +279,7 @@ async def test_set_volume_nonzero_clears_mute_after_volume_write(tmp_path):
 
 
 async def test_set_volume_airplay_active_routes_to_camilla(tmp_path):
-    """AirPlay is camilla-as-master: dial/voice/HTTP changes must be
+    """AirPlay is camilla-as-master: remote/voice/HTTP changes must be
     audible even though modern AirPlay 2 sender slider reflection via
     shairport-sync is unavailable."""
     coord, cam, _ = _coord(
@@ -1463,8 +1463,8 @@ async def test_transition_spotify_to_bluetooth_pushes_to_new_source(tmp_path):
 
 async def test_set_camilla_deferred_during_voice_session(tmp_path):
     """During a voice session the Ducker owns camilla; coordinator
-    writes are deferred. Regression for the dial-during-duck overshoot:
-    the dial path goes set_listening_level → _dispatch → _set_camilla,
+    writes are deferred. Regression for the remote-during-duck overshoot:
+    the remote path goes set_listening_level → _dispatch → _set_camilla,
     and was unconditionally writing camilla mid-duck. Now it returns
     early on voice_session_active. listening_level still updates so
     Ducker.restore lands at the user's intended level."""
@@ -1494,7 +1494,7 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
 
 
 async def test_fanin_voice_session_keeps_live_camilla_volume_control(tmp_path):
-    """Fan-in owns program ducking, not Camilla, so an in-session dial edit
+    """Fan-in owns program ducking, not Camilla, so an in-session remote edit
     must land immediately while source transitions remain session-gated."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=-25.0)
@@ -1864,11 +1864,11 @@ async def test_context_snapshot_stamp_is_bound_before_slow_probe(
 # callable that asks jasper-voice over UDS whether the Ducker is currently
 # engaged. The probe is the authoritative signal — no inference. Probe-true
 # defers (same effect as the flag); probe-false writes camilla; probe-None
-# (UDS unreachable, voice wedged, malformed response) fails open so the dial
+# (UDS unreachable, voice wedged, malformed response) fails open so the remote
 # never silently stops working.
 #
 # Replaces the prior dB-comparison heuristic that conflated "user spinning
-# fast" with "duck active" (a fast 3-detent dial spin = +6 dB request,
+# fast" with "duck active" (a fast 3-detent remote spin = +6 dB request,
 # above the old 5 dB threshold, used to defer spuriously and poison
 # listening_level — see docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal").
 
@@ -1877,7 +1877,7 @@ async def test_set_camilla_deferred_when_probe_returns_true(tmp_path):
     """Per-request coordinator with a probe that signals duck-active.
     Camilla write is deferred, listening_level still persists so
     Ducker.restore lands at user intent on session end. Regression
-    for the original PR #299 bug: dial twist during TTS would
+    for the original PR #299 bug: remote twist during TTS would
     clobber the Ducker and music became audibly louder mid-utterance."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=-40.0)  # already ducked
@@ -1922,7 +1922,7 @@ async def test_set_camilla_writes_when_probe_returns_none(tmp_path):
     response malformed) → write camilla anyway. Fail-open is the
     correct default for a home appliance: better to occasionally
     un-duck music for a moment than to leave the user with a dead
-    dial because of an inter-daemon problem."""
+    remote because of an inter-daemon problem."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=-40.0)
     backend = _FakeBackend(active={})
@@ -1981,20 +1981,20 @@ async def test_set_camilla_writes_when_no_probe_configured(tmp_path):
 
 
 async def test_set_camilla_fast_spin_regression(tmp_path):
-    """Regression for the dial-fast-spin desync bug observed 2026-05-25.
+    """Regression for the remote-fast-spin desync bug observed 2026-05-25.
 
     Reproduction: per-request coordinator, no active duck. User spins
-    the dial fast enough that one POST batches 3 detents (+12% / +6 dB).
+    the remote fast enough that one POST batches 3 detents (+12% / +6 dB).
     Under the old dB-comparison heuristic, this triggered an
     `inferred_duck` defer because target_db - current_db = +6 > 5,
     even though there was no actual session. listening_level was
-    persisted while main_volume stayed put — every subsequent dial
+    persisted while main_volume stayed put — every subsequent remote
     twist read the inflated listening_level and kept deferring
     (cascade), trapping the user with a knob that did nothing until
     they spun all the way down.
 
     After the fix: probe returns False (no session) → camilla gets
-    written. No defer. No cascade. The dial spin lands."""
+    written. No defer. No cascade. The remote spin lands."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     # Match the production log: camilla at -18 dB (64%), in sync with
     # listening_level=64%.
@@ -2527,12 +2527,12 @@ async def test_get_camilla_target_db_uses_effective_temporary_mute(tmp_path):
 
 async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
     """Cross-process staleness guard for the duck-restore path. The
-    control daemon (dial / HTTP) writes listening_level to disk on
+    control daemon (remote / HTTP) writes listening_level to disk on
     every twist; voice-daemon's in-memory `_level` only auto-refreshes
     on its own set/adjust/mute/transition calls. Without a refresh
     here, Ducker.restore() at the end of a wake reads the stale
     `_level` and writes camilla to the wrong dB — observed as a 56 dB
-    jump (camilla -56 dB → 0 dB) at duck-off after a dial-spin to
+    jump (camilla -56 dB → 0 dB) at duck-off after a remote-spin to
     100% landed between voice-daemon operations.
 
     Mirrors test_transition_refreshes_from_disk but for the
@@ -2545,7 +2545,7 @@ async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
     persistence.save_listening_level(80)
     # Ducker.restore() reads this target after a failed turn. With the
     # refresh, we use 80%; without it we'd use the stale 38%, and once
-    # the dial-truth eventually catches up to the
+    # the remote-truth eventually catches up to the
     # coordinator (e.g. via an unrelated source-state transition), the
     # NEXT duck-restore would jump camilla loudly to satisfy 100%.
     target = await coord.get_camilla_target_db()
@@ -2554,7 +2554,7 @@ async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
 
 
 async def test_transition_refreshes_from_disk(tmp_path):
-    """Cross-process staleness guard. The control daemon (dial / HTTP)
+    """Cross-process staleness guard. The control daemon (remote / HTTP)
     writes listening_level to disk on every twist. voice_daemon's
     in-memory `_level` only auto-refreshes on its own set/adjust/mute
     calls, not on observer-triggered transitions."""
@@ -2595,7 +2595,7 @@ async def test_transition_uses_effective_level_while_temporarily_muted(tmp_path)
 
 
 async def test_volume_coordinator_proceeds_when_camilla_unreachable(tmp_path):
-    """Regression: a dial twist arriving during a 2 s camilla restart
+    """Regression: a remote twist arriving during a 2 s camilla restart
     blip (Restart=always brings camilla back) must not throw.
     listening_level is updated in memory and on disk; the camilla
     write itself is skipped silently and the next set_listening_level
@@ -2614,7 +2614,7 @@ async def test_volume_coordinator_proceeds_when_camilla_unreachable(tmp_path):
     # Camilla goes down (mid-restart).
     cam.unavailable = True
 
-    # Dial twist lands during the blip. Must not raise.
+    # Remote twist lands during the blip. Must not raise.
     new_level = await coord.set_listening_level(70)
     assert new_level == 70
 
@@ -2637,7 +2637,7 @@ async def test_volume_coordinator_proceeds_when_camilla_unreachable(tmp_path):
 
 
 async def test_set_volume_usbsink_active_routes_to_camilla(tmp_path):
-    """USB sink behaves like AirPlay for outbound: dial/voice writes
+    """USB sink behaves like AirPlay for outbound: remote/voice writes
     land on CamillaDSP. The gadget mixer is NOT written back to (the
     host's slider is observed-only)."""
     coord, cam, _ = _coord(
@@ -2922,7 +2922,7 @@ async def test_usbsink_is_camilla_master(tmp_path):
 # ---------- bluealsa transport-path probe goes through shared backoff -------
 #
 # _bluez_alsa_active_transport_path runs in jasper-control on every BT
-# volume set from the dial/web. It must reuse jasper.bluealsa_probe so a
+# volume set from the remote/web. It must reuse jasper.bluealsa_probe so a
 # D-Bus permission denial backs off process-wide instead of hammering the
 # system bus once per volume set. These tests fail if the helper reverts
 # to its own raw `bluealsa-cli list-pcms` subprocess.

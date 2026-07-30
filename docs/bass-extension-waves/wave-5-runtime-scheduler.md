@@ -158,7 +158,7 @@ Modify (small, seam-only):
   existing-process command, not a route, daemon, task, or second
   coordinator.
 - `jasper/control/volume_ops.py` — do **not** construct a bass runtime.
-  For every web/dial set, adjust, or unmute that resolves to an
+  For every web/accessory set, adjust, or unmute that resolves to an
   accepted/current sealed profile **or a pending Wave 3 intent**,
   delegate the resulting absolute target to voice's `VOLUME_SET`
   command so the whole mutation has the sole owner above. A returned

@@ -19,7 +19,7 @@ Coverage:
   - healthcheck (GET /api/), config (GET /api/config), list_agents
     (GET /api/states with conversation.* filter)
   - the no_valid_targets-with-speech case (success=True because the
-    text is non-empty, per the multi-satellite-benign convention)
+    text is non-empty, per the multi-speaker-benign convention)
 """
 from __future__ import annotations
 
@@ -300,7 +300,7 @@ async def test_process_no_intent_match_is_speakable_but_logged_as_intent_miss():
 
 @pytest.mark.asyncio
 async def test_process_no_valid_targets_with_speech_is_intent_miss_but_speakable():
-    """no_valid_targets is documented as benign in multi-satellite homes —
+    """no_valid_targets is documented as benign in multi-speaker homes —
     HA's speech text is still useful to surface, and `success` reflects
     "is the speech speakable" not "did the intent succeed". The model
     speaks HA's text verbatim."""

@@ -9,7 +9,7 @@
 This is intentionally lightweight. It does not try to solve SBOMs,
 apt snapshots, or Python hash installs in one jump; it guards the
 surfaces JTS already owns directly: release archives, source archives,
-PlatformIO top-level inputs, and curated model downloads.
+curated model downloads, and other pinned build inputs.
 """
 from __future__ import annotations
 
@@ -115,7 +115,6 @@ def validate_artifacts(data: dict[str, Any]) -> list[str]:
             "source-archive",
             "python-source-archive",
             "onnx-model",
-            "platformio-platform-archive",
         } and not sha:
             errors.append(f"{artifact_id}: {kind} requires sha256")
 
@@ -124,7 +123,6 @@ def validate_artifacts(data: dict[str, Any]) -> list[str]:
             "python-source-archive",
             "git-source",
             "python-direct-git",
-            "platformio-git-library",
         }:
             if not commit:
                 errors.append(f"{artifact_id}: {kind} requires commit")
@@ -152,7 +150,7 @@ def validate_artifacts(data: dict[str, Any]) -> list[str]:
                     errors.append(
                         f"{artifact_id}: upstream_resolved_url must embed commit"
                     )
-        if kind in {"git-source", "python-direct-git", "platformio-git-library"}:
+        if kind in {"git-source", "python-direct-git"}:
             if not (artifact.get("repository") or artifact.get("direct_url")):
                 errors.append(f"{artifact_id}: {kind} requires repository or direct_url")
     return errors
@@ -211,28 +209,6 @@ def pyproject_requirement_urls(path: Path) -> set[str]:
     return urls
 
 
-def platformio_urls(path: Path) -> set[str]:
-    urls: set[str] = set()
-    in_lib_deps = False
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith(";"):
-            continue
-        line = _strip_comment(stripped, ";").strip()
-        if line.startswith("[") and line.endswith("]"):
-            in_lib_deps = False
-            continue
-        if line.startswith("platform ="):
-            urls.update(URL_RE.findall(line))
-            continue
-        if line.startswith("lib_deps"):
-            in_lib_deps = True
-            continue
-        if in_lib_deps:
-            urls.update(URL_RE.findall(line))
-    return urls
-
-
 def registry_urls() -> set[str]:
     sys.path.insert(0, str(ROOT))
     from jasper.aec_engines.dtln_models import REGISTRY as DTLN_REGISTRY
@@ -262,12 +238,6 @@ def discovered_fetch_urls(root: Path = ROOT) -> dict[str, set[str]]:
         "pyproject.toml": pyproject_requirement_urls(root / "pyproject.toml"),
         "jasper_aec3/pyproject.toml": pyproject_requirement_urls(
             root / "jasper_aec3" / "pyproject.toml"
-        ),
-        "firmware/dial/platformio.ini": platformio_urls(
-            root / "firmware" / "dial" / "platformio.ini"
-        ),
-        "firmware/satellite-amoled/platformio.ini": platformio_urls(
-            root / "firmware" / "satellite-amoled" / "platformio.ini"
         ),
         "model registries": registry_urls(),
     }
@@ -372,7 +342,6 @@ def validate_source_consistency(
 
     _validate_pycamilladsp(data, root, errors)
     _validate_model_registries(data, root, errors)
-    _validate_platformio_git_artifacts(data, root, errors)
     return errors
 
 
@@ -457,25 +426,6 @@ def _validate_model_registries(
                 expected_sha,
                 f"jasper.aec_engines.dtln_models {path.name}",
             )
-
-
-def _validate_platformio_git_artifacts(
-    data: dict[str, Any],
-    root: Path,
-    errors: list[str],
-) -> None:
-    artifact = artifacts_by_id(data).get("improv-wifi-library")
-    if artifact is None:
-        errors.append("deploy/provenance.toml: missing artifact improv-wifi-library")
-        return
-    expected = str(artifact.get("direct_url", ""))
-    for relpath in (
-        "firmware/dial/platformio.ini",
-        "firmware/satellite-amoled/platformio.ini",
-    ):
-        text = (root / relpath).read_text(encoding="utf-8")
-        if expected not in text:
-            errors.append(f"improv-wifi-library: direct_url missing from {relpath}")
 
 
 def _find_surface(data: dict[str, Any], surface_id: str) -> dict[str, Any] | None:

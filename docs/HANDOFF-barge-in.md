@@ -746,12 +746,6 @@ incrementally.
 
 These are real and worth weighing:
 
-- **Solves the multi-mic arbitration problem cleanly.**
-  PipeWire's `module-combine-stream` is the canonical primitive
-  for the planned multi-satellite-mic feature documented in
-  [satellites.md](satellites.md). Today's plan is to roll a
-  custom arbitration daemon; PipeWire reduces that to graph
-  config.
 - **Better resampler defaults.** PipeWire's SPA resampler is
   generally on par with libsamplerate-best and benefits from
   more recent tuning than the ALSA defaults. The 12 dB 4-8 kHz
@@ -821,8 +815,7 @@ These are real and worth weighing:
 - Barge-in robustness has been measured to actually matter (see
   Option C).
 - You're also seeing the multi-renderer contention bug in real
-  use, the multi-mic-satellite arbitration is on the near
-  roadmap, and the ALSA-only patchwork is starting to feel like
+  use, and the ALSA-only patchwork is starting to feel like
   it's accumulating workarounds rather than solving root causes.
 - You have 2-4 weeks of focused time and willingness to retest
   the full audio chain.
@@ -974,11 +967,11 @@ signal cleanly." Not a substitute for the architectural fix
 when conditions push the VAD's discrimination window past its
 limit.
 
-### Push-to-talk barge-in via the dial
+### Push-to-talk barge-in via a supported remote
 
-The rotary dial has a "hold to talk" Gemini session. A
-variation: while TTS is playing, holding the dial drops TTS
-volume to zero AND opens an interrupt path. Reliable, but
+Supported Bluetooth remotes can open a push-to-talk session. A
+variation: while TTS is playing, holding the mapped button drops
+TTS volume to zero AND opens an interrupt path. Reliable, but
 trades the no-physical-interaction property of voice barge-in
 for a button press. Worth offering as a complementary capability,
 not a substitute.
@@ -1124,9 +1117,6 @@ Internal cross-references (for the next reader):
 - [HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md) — active
   workstream building the measurement infrastructure Option C
   would extend rather than duplicate.
-- [satellites.md](satellites.md) — multi-mic arbitration
-  design that Option B would simplify.
-
 ---
 
 Last verified: 2026-06-22 (operational sections — current state + plan —

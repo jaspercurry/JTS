@@ -1,12 +1,8 @@
 <?xml version="1.0" standalone='no'?>
 <!--
-  Advertise jasper-control over mDNS so the rotary dial can find the
-  Pi without hardcoding a hostname. The dial does
-    MDNS.queryService("jasper-control", "tcp")
-  at every WiFi-up and posts to whichever Pi answers; if no Pi
-  answers it falls back to the dial's compile-time JASPER_HOST.
-  This file lets us swap the Pi underneath the dial without
-  re-flashing firmware.
+  Advertise jasper-control over mDNS so room management and
+  LAN automation can find a speaker without
+  hardcoding its hostname.
 
   Survives Pi rename and IP change. avahi auto-substitutes %h
   with the system hostname so the friendly name in the browse
@@ -23,18 +19,17 @@
   The `name=` TXT record lets the /rooms/ directory show the same
   friendly name peers see on Spotify / AirPlay / Bluetooth. The
   rendered value is XML-escaped before substitution (a stray `&` or
-  `<` would drop the whole service-group and break dial discovery).
+  `<` would drop the whole service-group and break discovery).
   The `peer_id=` TXT record carries the speaker's stable identity
   (/var/lib/jasper/peer_id — a UUID that survives renames, IP churn,
   and Avahi collision renames). Consumers that must address a
   SPECIFIC speaker — the laptop deploy guard, the /rooms bond-forming
-  UI, future accessory pinning — match on peer_id and treat the
+  UI — match on peer_id and treat the
   advertised hostname as transport, never as identity. mDNS is
   unauthenticated, so peer_id is a stable handle, not a security
   boundary: anything trust-sensitive confirms it over HTTP against
   the speaker itself.
-  Unlike _jasper-peer, this service is ALWAYS advertised — it is the
-  always-on control-plane advert the dial depends on — so the
+  Unlike _jasper-peer, this service is ALWAYS advertised so the
   rendered file always exists (never removed).
 
   jasper-doctor's "avahi: _jasper-control._tcp" check confirms it.

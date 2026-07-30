@@ -53,7 +53,6 @@ from . import (
     wifi_guardian_state,
 )
 from .aec_endpoints import _aec_full_status
-from .dial import _dial_heartbeat, _probe_dial_reachable
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 
 logger = logging.getLogger(__name__)
@@ -64,7 +63,7 @@ _source_availability_lock = threading.Lock()
 OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
 
 # Per-probe ceiling for the CamillaDSP /state probe. Every other probe in
-# _get_state already self-bounds (voice/mpris 2 s, mux 1 s, dial 0.5 s,
+# _get_state already self-bounds (voice/mpris 2 s, mux 1 s,
 # fan-in/outputd 2 s); the CamillaDSP probe did not, so a wedged-but-
 # listening DSP — TCP accepted, websocket read stalled — could hang the
 # whole aggregate indefinitely. On timeout the probe fails soft to its
@@ -697,14 +696,12 @@ async def _get_state(
     mux_socket_command: Callable[..., Any] = _mux_socket_command,
     local_status_json: Callable[..., Any] = _local_status_json,
     aec_full_status: Callable[[], dict] = _aec_full_status,
-    dial_heartbeat: dict[str, Any] = _dial_heartbeat,
-    dial_probe: Callable[..., Any] = _probe_dial_reachable,
     read_transit_state_func: Callable[[], dict] = read_transit_state,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Aggregate state across daemons for GET /state. Each section
-    fails soft — voice unreachable / camilla restarting / dial never
-    connected → that section reports null instead of erroring out
+    fails soft — voice unreachable or Camilla restarting reports null
+    in the affected section instead of erroring out
     the whole response. Slow probes fan out in parallel so the call
     completes in ~200 ms typical."""
     from datetime import datetime, timezone
@@ -864,18 +861,6 @@ async def _get_state(
             logger.exception("home assistant state snapshot failed")
             return _ha_failed_status()
 
-    # Snapshot dial heartbeat early so the parallel reachability probe
-    # has a stable IP target even if the UDP listener mutates the dict
-    # mid-call. last_seen_ip is None until the dial has dlogged at
-    # least once — without an IP we can't probe, so online stays false.
-    dial_snapshot = dict(dial_heartbeat)
-    dial_ip = dial_snapshot.get("last_seen_ip")
-
-    async def _dial_online() -> bool:
-        if not dial_ip:
-            return False
-        return await dial_probe(dial_ip)
-
     async def _fanin_status() -> dict | None:
         """Probe the jasper-fanin daemon's UDS STATUS endpoint.
 
@@ -919,7 +904,6 @@ async def _get_state(
             airplay,
             voice_st,
             ha_status,
-            dial_online,
             fanin_st,
             outputd_st,
             mux_st,
@@ -930,7 +914,6 @@ async def _get_state(
                 _airplay_playing(),
                 _voice_status(),
                 _ha_status(),
-                _dial_online(),
                 _fanin_status(),
                 _outputd_status(local_status_json=local_status_json),
                 _mux_status(),
@@ -1025,18 +1008,6 @@ async def _get_state(
         mux_status=mux_st,
         diagnostics=_read_volume_diagnostics(),
     )
-
-    # Build the dial section from the snapshot taken before the gather
-    # so age_seconds is consistent with whatever IP the probe targeted.
-    # `online` reflects real TCP reachability (see _probe_dial_reachable),
-    # not UDP-dlog freshness — an idle dial is now correctly online
-    # rather than mislabelled offline after 30 s of no encoder activity.
-    dial = dial_snapshot
-    if dial.get("last_seen_at") is not None:
-        dial["age_seconds"] = round(time.time() - dial["last_seen_at"], 1)
-    else:
-        dial["age_seconds"] = None
-    dial["online"] = dial_online
 
     # Multiroom grouping. Re-reads /var/lib/jasper/grouping.env fresh
     # (never os.environ — jasper-control isn't restarted on a wizard
@@ -1258,9 +1229,6 @@ async def _get_state(
         # second control-plane request. null only when the probe itself fails.
         "aec": aec_status,
         "source_selection": mux_st,
-        "satellites": {
-            "dial": dial,
-        },
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
             # Bonded-member runtime liveness: dac_content starvation

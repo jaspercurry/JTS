@@ -9,8 +9,8 @@ is guarded by `if [[ "${BASH_SOURCE[0]}" == "${0:-}" ]]`. Tests source
 the file and invoke individual functions.
 
 Coverage started with `_compute_min_free_kbytes` (Concern 9 of the
-staff-eng review) and now also pins install-time optional firmware
-build behavior. These bash helpers are small, but easy to regress
+staff-eng review) and now also pins upgrade cleanup behavior. These
+bash helpers are small, but easy to regress
 because they sit on the deploy path.
 """
 from __future__ import annotations
@@ -152,7 +152,7 @@ def _run_install_helper(
 # Pi 5 SKU memory sizes (real values from /proc/meminfo on each
 # variant — approximate; actual values vary by ~5 MB per board).
 _PI5_1GB_MEMTOTAL_KB = 1014768   # 991 MB
-_PI5_2GB_MEMTOTAL_KB = 2031264   # 1983 MB (some firmware budget)
+_PI5_2GB_MEMTOTAL_KB = 2031264   # 1983 MB (some hardware-reserved memory)
 _PI5_4GB_MEMTOTAL_KB = 4063920   # 3968 MB
 _PI5_8GB_MEMTOTAL_KB = 8128464   # 7938 MB
 _PI5_16GB_MEMTOTAL_KB = 16264848 # 15883 MB
@@ -307,53 +307,29 @@ def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o750
 
 
-def test_optional_firmware_builds_are_install_opt_in():
-    """ESP32 satellites are optional accessories. Base speaker installs
-    should stage firmware source but avoid PlatformIO builds unless the
-    operator explicitly opts in."""
-    text = "\n".join(_installer_shell_texts().values())
-    assert "JASPER_BUILD_OPTIONAL_FIRMWARE" in text
-    assert re.search(
-        r'if \[\[ "\$\{JASPER_BUILD_OPTIONAL_FIRMWARE:-0\}" == "1" \]\]; then'
-        r'\s+_build_firmware_if_stale "dial" "jasper-dial\.bin"'
-        r'\s+_build_firmware_if_stale "satellite-amoled" '
-        r'"jasper-satellite-amoled\.bin"',
-        text,
-    )
-
-
-def test_firmware_staging_retires_only_legacy_discovery_sources(tmp_path):
-    """A no-delete firmware upgrade converges on the shared discovery owner
-    without removing locally staged factory images."""
-    installed_root = tmp_path / "installed/firmware"
-    source_root = tmp_path / "source/firmware"
-    obsolete = (
-        "dial/src/discovery.cpp",
-        "dial/src/discovery.h",
-        "satellite-amoled/src/discovery.cpp",
-        "satellite-amoled/src/discovery.h",
-    )
-    for relative in obsolete:
-        path = installed_root / relative
+def test_retired_esp32_accessory_files_are_removed_on_upgrade(tmp_path):
+    """A deploy removes source, build caches, staged images, and heartbeat
+    state left by the retired dial/AMOLED stack without touching sibling
+    speaker state."""
+    install_root = tmp_path / "opt/jasper"
+    state_root = tmp_path / "var/lib/jasper"
+    env_root = tmp_path / "etc/jasper"
+    staged_bin = install_root / "firmware/dial/jasper-dial.bin"
+    build_cache = install_root / "firmware/satellite-amoled/.pio/cache"
+    heartbeat = state_root / "dial_heartbeat.json"
+    heartbeat_tmp = state_root / "dial_heartbeat.json.tmp"
+    unrelated = state_root / "speaker_volume.json"
+    for path in (staged_bin, build_cache, heartbeat, heartbeat_tmp, unrelated):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("// obsolete project-local owner\n")
-    bins = (
-        installed_root / "dial/jasper-dial.bin",
-        installed_root / "satellite-amoled/jasper-satellite-amoled.bin",
+        path.write_text("stale\n")
+    env_root.mkdir(parents=True)
+    jasper_env = env_root / "jasper.env"
+    jasper_env.write_text(
+        "JASPER_DIAL_LOG_HOST=0.0.0.0\n"
+        "JASPER_DIAL_LOG_PORT=5514\n"
+        "JASPER_BUILD_OPTIONAL_FIRMWARE=1\n"
+        "JASPER_HOSTNAME=jts.local\n"
     )
-    for path in bins:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"factory image")
-    source_shared = source_root / "common/jasper-control-discovery/src/discovery.cpp"
-    source_shared.parent.mkdir(parents=True)
-    source_shared.write_text("// staged shared owner\n")
-
-    # Mirrors rsync without --delete: new source is copied over the old tree,
-    # while locally staged bins and removed source paths remain until the
-    # narrow retirement helper runs.
-    shutil.copytree(source_root, installed_root, dirs_exist_ok=True)
-    assert all((installed_root / relative).exists() for relative in obsolete)
-    shared = installed_root / "common/jasper-control-discovery/src/discovery.cpp"
 
     result = subprocess.run(
         [
@@ -361,8 +337,13 @@ def test_firmware_staging_retires_only_legacy_discovery_sources(tmp_path):
             "-c",
             "source "
             + shlex.quote(str(_INSTALL_LIB_DIR / "python-runtime.sh"))
-            + " && retire_legacy_firmware_discovery_sources "
-            + shlex.quote(str(installed_root)),
+            + " && INSTALL_DIR="
+            + shlex.quote(str(install_root))
+            + " && STATE_DIR="
+            + shlex.quote(str(state_root))
+            + " && ENV_DIR="
+            + shlex.quote(str(env_root))
+            + " && retire_esp32_accessory_files",
         ],
         capture_output=True,
         text=True,
@@ -370,15 +351,151 @@ def test_firmware_staging_retires_only_legacy_discovery_sources(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert all(not (installed_root / relative).exists() for relative in obsolete)
-    assert all(path.read_bytes() == b"factory image" for path in bins)
-    assert shared.read_text() == "// staged shared owner\n"
+    assert not (install_root / "firmware").exists()
+    assert not heartbeat.exists()
+    assert not heartbeat_tmp.exists()
+    assert unrelated.read_text() == "stale\n"
+    assert jasper_env.read_text() == "JASPER_HOSTNAME=jts.local\n"
+    assert not (env_root / "jasper.env.bak").exists()
 
     runtime = (_INSTALL_LIB_DIR / "python-runtime.sh").read_text()
-    rsync_pos = runtime.index('"${REPO_DIR}/firmware" "${INSTALL_DIR}/"')
-    retire_pos = runtime.index("retire_legacy_firmware_discovery_sources", rsync_pos)
-    build_pos = runtime.index('_build_firmware_if_stale "dial"', rsync_pos)
-    assert rsync_pos < retire_pos < build_pos
+    rsync_pos = runtime.index("rsync -a --delete")
+    retire_pos = runtime.index("retire_esp32_accessory_files", rsync_pos)
+    assert rsync_pos < retire_pos
+    streambox = runtime[runtime.index("install_streambox_jasper() {"):]
+    streambox_rsync_pos = streambox.index("rsync -a --delete")
+    streambox_retire_pos = streambox.index(
+        "retire_esp32_accessory_files",
+        streambox_rsync_pos,
+    )
+    assert streambox_rsync_pos < streambox_retire_pos
+
+
+def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
+    install_root = tmp_path / "opt/jasper"
+    pip = install_root / ".venv/bin/pip"
+    pip.parent.mkdir(parents=True)
+    calls = tmp_path / "pip.calls"
+    pip.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PIP_CALLS\"\n"
+    )
+    pip.chmod(0o755)
+    env = os.environ.copy()
+    env["PIP_CALLS"] = str(calls)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_LIB_DIR / "python-runtime.sh"))
+            + " && INSTALL_DIR="
+            + shlex.quote(str(install_root))
+            + " && retire_esp32_accessory_python_packages",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    call = calls.read_text()
+    assert call.startswith("uninstall -y ")
+    for package in (
+        "platformio",
+        "esptool",
+        "pyserial",
+        "bitarray",
+        "bitstring",
+        "click",
+        "intelhex",
+        "markdown-it-py",
+        "mdurl",
+        "reedsolo",
+        "rich",
+        "rich-click",
+        "tibs",
+    ):
+        assert package in call.split()
+
+    runtime = (_INSTALL_LIB_DIR / "python-runtime.sh").read_text()
+    pip_upgrade_pos = runtime.index('pip" install --upgrade')
+    retire_pos = runtime.index(
+        "retire_esp32_accessory_python_packages",
+        pip_upgrade_pos,
+    )
+    assert pip_upgrade_pos < retire_pos
+    streambox = runtime[runtime.index("install_streambox_jasper() {"):]
+    streambox_pip_upgrade_pos = streambox.index('pip" install --upgrade')
+    streambox_retire_pos = streambox.index(
+        "retire_esp32_accessory_python_packages",
+        streambox_pip_upgrade_pos,
+    )
+    assert streambox_pip_upgrade_pos < streambox_retire_pos
+
+
+def test_retired_dial_units_are_disabled_and_removed_on_upgrade(tmp_path):
+    systemd_lib = _INSTALL_LIB_DIR / "systemd-units.sh"
+    helper = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "sed -n '/^retire_esp32_accessory_units()/,/^}/p' "
+            + shlex.quote(str(systemd_lib)),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    systemd_root = tmp_path / "systemd"
+    service = systemd_root / "jasper-dial-web.service"
+    socket = systemd_root / "jasper-dial-web.socket"
+    unrelated = systemd_root / "jasper-control.service"
+    for path in (service, socket, unrelated):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("unit\n")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "systemctl.calls"
+    systemctl = fake_bin / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$SYSTEMCTL_CALLS\"\n"
+    )
+    systemctl.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SYSTEMCTL_CALLS"] = str(calls)
+    env["SYSTEMD_DIR"] = str(systemd_root)
+
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{helper}\nretire_esp32_accessory_units"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text().strip() == (
+        "disable --now jasper-dial-web.socket jasper-dial-web.service"
+    )
+    assert not service.exists()
+    assert not socket.exists()
+    assert unrelated.read_text() == "unit\n"
+
+    text = systemd_lib.read_text(encoding="utf-8")
+    assert re.search(
+        r"install_streambox_systemd_units\(\) \{\n"
+        r"\s+retire_esp32_accessory_units",
+        text,
+    )
+    assert re.search(
+        r"install_systemd_units\(\) \{\n"
+        r"\s+retire_esp32_accessory_units",
+        text,
+    )
 
 
 def test_active_speaker_tone_artifacts_are_writable_by_web_service():
@@ -530,81 +647,6 @@ def test_install_enables_wifi_recover_timer_with_now():
     assert "jasper-wifi-scan-repair.service" in install_sh
     assert "systemctl enable --now jasper-wifi-recover.timer" in install_sh
 
-
-def test_firmware_staleness_includes_platformio_inputs(tmp_path):
-    """Dependency-pin changes live in platformio.ini, so the optional
-    rebuild freshness check must not look only at src/."""
-    fw_root = tmp_path / "firmware" / "dial"
-    (fw_root / "src").mkdir(parents=True)
-    (fw_root / "include").mkdir()
-    bin_path = fw_root / "jasper-dial.bin"
-    platformio = fw_root / "platformio.ini"
-    build_sh = fw_root / "build.sh"
-    bin_path.write_bytes(b"old")
-    platformio.write_text("[env]\nlib_deps = fastled/FastLED@3.10.3\n")
-    build_sh.write_text("#!/usr/bin/env bash\n")
-
-    os_old = 1_716_470_400
-    os_new = 1_716_556_800
-    os.utime(bin_path, (os_old, os_old))
-    os.utime(platformio, (os_new, os_new))
-    os.utime(build_sh, (os_old, os_old))
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            "source "
-            + shlex.quote(str(_INSTALL_SH))
-            + " >/dev/null && _newer_firmware_input "
-            + shlex.quote(str(fw_root))
-            + " "
-            + shlex.quote(str(bin_path)),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-
-    assert result.returncode == 0
-    assert result.stdout.strip() == str(platformio)
-
-
-def test_firmware_staleness_includes_shared_libraries(tmp_path):
-    """A shared accessory library change must invalidate every staged
-    firmware image that consumes it through PlatformIO's common library dir."""
-    firmware_root = tmp_path / "firmware"
-    fw_root = firmware_root / "dial"
-    shared_source = firmware_root / "common/jasper-control-discovery/src/discovery.cpp"
-    shared_source.parent.mkdir(parents=True)
-    (fw_root / "src").mkdir(parents=True)
-    bin_path = fw_root / "jasper-dial.bin"
-    bin_path.write_bytes(b"old")
-    shared_source.write_text("// shared discovery\n")
-
-    os_old = 1_716_470_400
-    os_new = 1_716_556_800
-    os.utime(bin_path, (os_old, os_old))
-    os.utime(shared_source, (os_new, os_new))
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            "source "
-            + shlex.quote(str(_INSTALL_SH))
-            + " >/dev/null && _newer_firmware_input "
-            + shlex.quote(str(fw_root))
-            + " "
-            + shlex.quote(str(bin_path)),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-
-    assert result.returncode == 0
-    assert result.stdout.strip() == str(shared_source)
 
 
 def test_install_dry_run_exits_before_root_and_lists_major_surfaces():

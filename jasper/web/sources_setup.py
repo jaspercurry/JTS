@@ -489,10 +489,9 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
             bt_degraded.append("the Bluetooth radio is not RF-killed")
     return {
         # Sibling key, not a source: the JS iterates a fixed SOURCES list,
-        # so this rides alongside safely. Satellite-only installs park every
-        # local source; bonded followers on full/streambox installs are parked
-        # by the grouping reconciler. The page disables toggles and explains;
-        # POST /set 409s.
+        # so this rides alongside safely. Bonded followers are parked by the
+        # grouping reconciler. The page disables toggles and explains; POST
+        # /set 409s.
         "pair": {"parked": parked},
         "airplay": _systemd_source_state(
             Source.AIRPLAY,

@@ -5,8 +5,8 @@
 """manual_session_start must honor the user-deliberate stop-listening
 gates the wake path enforces.
 
-The dial long-press / POST /session/start entry opens a paid LLM turn
-and ducks music via _begin_turn. The wake path refuses to do that when
+The supported push-to-talk remote / POST /session/start entry opens a
+paid LLM turn and ducks music via _begin_turn. The wake path refuses to do that when
 the mic is muted or a room-correction measurement sweep is active
 (_wake_late_cancelled). These tests pin that manual_session_start does
 the same: it returns a refusal code, logs event=session.manual_refused,

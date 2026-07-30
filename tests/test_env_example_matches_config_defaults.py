@@ -21,7 +21,7 @@ legitimately have no safe code default (an empty / template value the
 operator or a wizard must fill in): API keys, the hostname, weather
 coordinates / location, transit station ids, and the provider selection
 (which isn't in .env.example at all). Daemon-owned knobs read elsewhere
-(JASPER_AEC_*, JASPER_OUTPUTD_*, JASPER_CONTROL_*, JASPER_DIAL_*, ...) are
+(JASPER_AEC_*, JASPER_OUTPUTD_*, JASPER_CONTROL_*, ...) are
 out of scope here — they have no `Config` field to compare against.
 
 Defaults are read by constructing `Config.from_env()` under a cleaned

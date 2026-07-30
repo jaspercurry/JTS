@@ -106,7 +106,7 @@ def doctor_check(
             between their orders (e.g. 20.5); no renumber. Must be unique.
         group: subsystem/domain the check belongs to (env, voice, audio,
             wake, renderers, integrations, web, correction, memory,
-            resilience, aec, usbsink, network, satellites, peering,
+            resilience, aec, usbsink, network, peering,
             grouping). Organizational metadata only.
         label: explicit display/crash label. Required for ``needs_cfg``
             checks (the original ``(label, lambda)`` tuples). Leave empty

@@ -139,7 +139,6 @@ async def _state_snapshot(monkeypatch, tmp_path):
         mux_socket_command=no_status,
         local_status_json=no_status,
         aec_full_status=lambda: {},
-        dial_heartbeat={},
         read_transit_state_func=lambda: {"packs": []},
         ha_status_snapshot=lambda: {"configured": False, "connected": False},
     )

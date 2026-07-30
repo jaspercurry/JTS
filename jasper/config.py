@@ -943,7 +943,7 @@ class Config:
                 "/var/lib/jasper/mic_mute.env",
             ),
             # Unix-domain socket where voice_daemon listens for external
-            # session triggers (dial hold-to-talk via jasper-control).
+            # session triggers (remote hold-to-talk via jasper-control).
             # systemd's RuntimeDirectory=jasper auto-creates /run/jasper
             # at service start with mode 0750.
             voice_control_socket=_env(

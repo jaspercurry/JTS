@@ -117,6 +117,22 @@ def test_empty_page_dir_is_tolerated_under_strict_mode(tmp_path: Path):
     assert (web_root / "assets" / "empty-page").is_dir()
 
 
+def test_retired_dial_assets_are_removed_on_upgrade(tmp_path: Path):
+    repo = _fake_repo(tmp_path)
+    web_root = tmp_path / "web"
+    stale = web_root / "assets" / "dial" / "js" / "main.js"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("retired")
+
+    result = _run(repo, web_root)
+
+    assert result.returncode == 0, result.stderr
+    assert not (web_root / "assets" / "dial").exists()
+    assert "dial/" not in (
+        web_root / "assets" / MANIFEST_NAME
+    ).read_text(encoding="utf-8")
+
+
 def test_manifest_name_parity_between_installer_and_doctor():
     """The installer writes and the doctor reads the same literal name."""
     assert MANIFEST_NAME in WEB_ASSETS_LIB.read_text(encoding="utf-8")

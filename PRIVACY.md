@@ -20,10 +20,8 @@ against Google, but matched message or event content can be included in the
 tool result that the voice provider sees. Home Assistant responses can also be
 included when the household enables that integration.
 
-Operator diagnostics can upload audio when explicitly run. In particular,
-`jasper/cli/satellite_validation.py` uses Gemini STT/TTS for satellite
-validation and can send captured WAVs to Gemini as part of that diagnostic
-workflow.
+Operator diagnostics can upload audio when explicitly run; those commands
+describe the provider and data path before capture or upload.
 
 ## What Stays On The Device
 

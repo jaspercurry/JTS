@@ -41,7 +41,6 @@ _LEGACY_JSON_RESPONSE_ASSEMBLERS = {
 
 _SHARED_JSON_OBJECT_READERS = {
     "bluetooth_setup.py": ("_read_json", "max_bytes=1_000_000"),
-    "dial_setup.py": ("_read_json", "max_bytes=1_000_000"),
     "chat_setup.py": ("_read_json", "max_bytes=MAX_JSON_BYTES"),
     "balance_flow.py": ("_read_json", "max_bytes=65_536"),
     "wake_setup.py": ("_read_json_body", "max_bytes=_LAYER_BODY_LIMIT"),
@@ -108,7 +107,6 @@ def test_local_json_responses_use_the_shared_response_helper():
 def test_migrated_local_object_responses_use_object_helper_not_byte_helper():
     for filename in (
         "bluetooth_setup.py",
-        "dial_setup.py",
         "home_assistant_setup.py",
         "rooms_setup.py",
         "sources_setup.py",
@@ -142,7 +140,6 @@ def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
 def test_migrated_json_body_reads_remain_after_csrf_guard():
     direct_readers = {
         "bluetooth_setup.py": ("guard_mutating_request", "body = self._read_json()"),
-        "dial_setup.py": ("guard_mutating_request", "body = self._read_json()"),
         "chat_setup.py": ("guard_mutating_request", "self._set_capture()"),
         "wifi_setup.py": ("guard_mutating_request", "body = self._read_json()"),
         "sources_setup.py": ("guard_mutating_request", "body = self._read_json()"),
@@ -860,7 +857,7 @@ def test_wizard_markup_hides_elements_with_the_attribute_not_a_class():
 
 
 # The HTML-entity escaper (the five-char & < > " ' table) was copied across the
-# wifi/bluetooth/dial/sound-profile/correction modules under two names
+# wifi/bluetooth/sound-profile/correction modules under two names
 # (escapeHtml / escapeText) before it was promoted to the shared module at
 # /assets/shared/js/escape.js (same shared-by-promotion path as dialog.js /
 # http.js). Pages now import escapeHtml (and the escapeAttr alias / cssIdSafe)

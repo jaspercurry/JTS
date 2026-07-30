@@ -51,9 +51,8 @@
 | Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Point a laptop-durable flat-linearization corpus at a non-default location, or re-derive a pinned reading after a detector/reading change | [`tests/_flat_lin_corpus.py`](../tests/_flat_lin_corpus.py) — `JTS_FLAT_LIN_S0` / `JTS_FLAT_LIN_CORPUS` env vars; re-derivation procedure lives in `tests/test_spatial_combine.py::test_band_deficit_separates_honest_captures_from_stopband_residue` |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
-| Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
-| Capture from a non-bridge source (satellite mic, raw chip) | [Capture: alternative sources](#capture-alternative-sources) |
+| Capture directly from the raw chip path | [Capture: alternative sources](#capture-alternative-sources) |
 
 ---
 
@@ -120,8 +119,8 @@ surface only; real host-specific no-op decisions still live in
 [`scripts/check-provenance.py`](../scripts/check-provenance.py)
 validates [`deploy/provenance.toml`](../deploy/provenance.toml)
 against the fetch-bearing install/build surfaces JTS owns directly:
-`deploy/install.sh`, Python direct URL dependencies, firmware
-PlatformIO inputs, and the wake/DTLN model registries.
+`deploy/install.sh`, Python direct URL dependencies, and the wake/DTLN
+model registries.
 
 Run it when touching install/build downloads or dependency declarations:
 
@@ -245,27 +244,6 @@ losing the JS coverage silently. If you touch that CI wiring, either keep Node
 preinstalled on the pytest runner or move these harnesses to a job that installs
 Node explicitly. (`scripts/check-js-syntax.sh` in the `js` job only
 `node --check`s syntax — it does not run the harnesses.)
-
----
-
-## Optional ESP32 firmware builds
-
-[`scripts/check-firmware-builds.sh`](../scripts/check-firmware-builds.sh)
-builds the optional ESP32 satellite firmware projects without flashing
-hardware:
-
-```sh
-scripts/check-firmware-builds.sh              # dial + AMOLED
-scripts/check-firmware-builds.sh dial         # just the rotary dial
-scripts/check-firmware-builds.sh satellite-amoled
-```
-
-Run it when touching `firmware/`, PlatformIO dependency pins, or
-accessory onboarding. It is deliberately not part of always-on PR CI:
-most JTS installs do not use accessory hardware, and first-run
-PlatformIO toolchain setup is a large download. Normal `install.sh`
-stages firmware source but only rebuilds staged binaries when the
-operator opts in with `JASPER_BUILD_OPTIONAL_FIRMWARE=1`.
 
 ---
 
@@ -933,14 +911,14 @@ Live Pi state without modifying anything:
 |---|---|
 | `sudo /opt/jasper/.venv/bin/jasper-doctor` | Codified BRINGUP smoke tests — first command to run when something's broken. Checks run with bounded parallelism while ALSA-sensitive probes stay serialized, so the flat report keeps stable ordering without summing every subprocess timeout. Also re-checks output hardware observed-vs-active state plus presence/hashes for opaque runtime model files that JTS stages directly (required openWakeWord assets, the active wake model when registry-pinned, and configured DTLN ONNX stages when DTLN is enabled). |
 | `curl -s http://jts.local/system/diagnostics.json \| jq` | Management dashboard doctor snapshot. It serves the last root-fidelity `jasper-doctor --json --out` result immediately and schedules a background refresh when the cache is stale or missing, so the dashboard does not block on a live doctor run. |
-| `curl -s http://jts.local:8780/state \| jq` | Cross-daemon JSON snapshot (voice / audio including `output_hardware` / AEC runtime profile / renderers / satellites). Fail-soft per section. |
+| `curl -s http://jts.local:8780/state \| jq` | Cross-daemon JSON snapshot (voice / audio including `output_hardware` / AEC runtime profile / renderers). Fail-soft per section. |
 | `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact --samples <latencies.json> --duration-seconds <s> --route-health-ok` | Writes the doctor-consumed `route_latency` validation artifact from measured USB click/capture latencies and the live `jasper.audio_runtime_plan` route identity. It is not the measurement harness; only pass `--route-health-ok` when the same window had complete, clean fan-in/outputd telemetry. |
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + monotonic boot timelines + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks plus `log-noise-summary-latest.txt` for line counts and repeated-message fingerprints. |
 | [`scripts/journal-review.sh`](../scripts/journal-review.sh) | Read-only journal-health digest run ON the Pi for the last `--since` window (default `7 days ago`): journal disk usage + retention/truncation, per-unit auto-restart counts, warning+ volume by unit, top `event=<domain.action>` keys with a week-over-week DELTA + never-seen-before keys, OOM/watchdog fingerprints, and repeated-message fingerprints (reuses `fetch-pi-logs.sh`'s fingerprinter). `--json` for machine consumption. Bounded (windowed journalctl + awk, no full-journal scan); always exits 0; the only write is its own `/var/lib/jasper/journal-review.state.json` week-over-week baseline. |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |
 | [`scripts/pi-system-soak.sh`](../scripts/pi-system-soak.sh) | Convenience wrapper for a bounded `jasper-system-soak` run on the active Pi; writes a versioned JSON resource artifact. |
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
-| [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, dial routing, wake/turn boundaries) |
+| [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, volume routing, wake/turn boundaries) |
 | [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) | Read-only capture of the AirPlay latency budget + AP2 stream type a real sender negotiates (from shairport's `log_verbosity = 2` journal), so you know whether a bonded leader's downstream delay fits inside it (free vs. tight regime). No config change, no restart. Rationale: [`HANDOFF-airplay.md`](HANDOFF-airplay.md). |
 | [`scripts/airplay-receiver-timing-proof.py`](../scripts/airplay-receiver-timing-proof.py) | Passive receiver-path proof during live, transient-rich AirPlay playback on the loopback coupling. Captures at least 95% of the requested interval from the exact production lane-7 summed-program diagnostic tap and outputd's final electrical reference without binding the bridge-owned UDP port, writes private raw/WAV/JSON artifacts, and reports accepted correlation plus configured/live queue-model deltas. Fails unless AirPlay remains active, outputd's `:9891` publisher is live, correlation is at least medium-confidence, health counters are known and monotonic with zero content/DAC/fan-in xrun deltas, and outputd uses ALSA rather than `shm_ring`; lane 7 is only a lossy mirror in the ring topology. Live fan-in/outputd buffer geometry takes precedence over env, while CamillaDSP values are explicitly inferred. This is not sender-display or acoustic A/V timing; methodology and privacy boundary: [`HANDOFF-airplay.md`](HANDOFF-airplay.md). |
 | `ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh` | One-shot full diagnostic dump as a tarball |
@@ -1076,8 +1054,7 @@ Non-bridge captures, for completeness:
 
 | Tool | Source | Use |
 |---|---|---|
-| [`scripts/capture-chip-mic.sh`](../scripts/capture-chip-mic.sh) | XVF3800 processed conference channel via `arecord` | Quick single-stream mic recording for SNR comparison; does NOT use the bridge |
-| [`scripts/capture-satellite-amoled.sh`](../scripts/capture-satellite-amoled.sh) | AMOLED satellite ESP32 via USB-CDC | Validating satellite mic firmware; compares against the chip mic |
+| [`scripts/capture-chip-mic.sh`](../scripts/capture-chip-mic.sh) | XVF3800 processed conference channel via `arecord` | Quick single-stream mic recording; does NOT use the bridge |
 
 ---
 
@@ -1085,7 +1062,8 @@ Non-bridge captures, for completeness:
 
 Default to extending. Add new only when:
 
-- **Different audio source** the existing tools can't access (e.g. satellite via USB-CDC vs. the XVF via USB-UAC2 vs. a future Bluetooth mic).
+- **Different audio source** the existing tools can't access (e.g. a phone
+  relay vs. the XVF via USB-UAC2 vs. the WiiM Remote 2 Bluetooth mic).
 - **Different output target audience** (e.g. CSV for spreadsheet review vs. one-shot text report — `score-baseline-wakeword.py` vs. `_offline_wake_count.py`).
 - **Fundamentally different question** (test-track generation vs. wake counting are different questions, hence different tools).
 

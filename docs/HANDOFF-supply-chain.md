@@ -7,8 +7,8 @@ pinned, and what remains intentionally unresolved.
 ## Current Policy
 
 JTS treats deploy-time network inputs as part of the appliance's trusted
-computing base. If a script downloads code, a binary, firmware tooling,
-or a model that later runs on the speaker, that input needs an entry in
+computing base. If a script downloads code, a binary, or a model that
+later runs on the speaker, that input needs an entry in
 [`deploy/provenance.toml`](../deploy/provenance.toml).
 
 The manifest is deliberately small and operational:
@@ -22,7 +22,6 @@ The manifest is deliberately small and operational:
   mirrors for upstream GitHub/GitLab auto-generated source archives.
   The upstream commit archive URLs stay in provenance as
   `upstream_url` / `upstream_resolved_url`.
-- Firmware top-level PlatformIO inputs record exact versions or commits.
 - Known gaps are represented as `[[surface]]` entries instead of being
   hidden in prose.
 
@@ -52,8 +51,6 @@ fetch-bearing surfaces still have provenance entries:
 - `deploy/install.sh`
 - `pyproject.toml` direct URL dependencies
 - `jasper_aec3/pyproject.toml` build requirements and direct URL dependencies
-- `firmware/dial/platformio.ini`
-- `firmware/satellite-amoled/platformio.ini`
 - `jasper/wake_models.py`
 - `jasper/aec_engines/dtln_models.py`
 
@@ -154,16 +151,6 @@ x86_64 environments, and `deploy/constraints-pi.txt` for the arm64 Pi
 runtime. The remaining Python gap is hash-level verification for PyPI
 artifacts and `jasper_aec3` build-isolation dependencies.
 
-The two PlatformIO firmware projects now pin their shared git library
-dependency by commit and use exact top-level registry versions rather
-than semver ranges. The pioarduino platform archive has a recorded hash
-in the manifest, but PlatformIO itself does not consume that hash yet.
-Normal speaker installs copy the optional firmware source tree but do
-not run PlatformIO unless the operator explicitly sets
-`JASPER_BUILD_OPTIONAL_FIRMWARE=1`; maintainers use
-`scripts/check-firmware-builds.sh` when touching firmware or
-PlatformIO pins.
-
 Rust audio daemons commit lockfiles for their binary crates:
 `rust/jasper-fanin/Cargo.lock` and `rust/jasper-outputd/Cargo.lock`.
 `install.sh` builds both crates with `cargo --locked`, so lock drift
@@ -207,9 +194,6 @@ These are real and intentionally left for later slices:
   `jasper_aec3/pyproject.toml` requirements. The next supply-chain slice
   should add a hash-checked artifact or mirror path without collapsing the
   local-development/CI and Pi-runtime lock stories into one misleading file.
-- **PlatformIO transitive/toolchain resolution.** Top-level firmware
-  inputs are exact, but PlatformIO still consults its package registry
-  for toolchains and metadata.
 - **Python direct archive hosting.** `pycamilladsp` is pinned by commit
   and SHA-256 in `pyproject.toml`, but pip still downloads an upstream
   GitHub commit archive directly. Mirroring it should happen with the
@@ -265,9 +249,7 @@ direct `git` fetches for `nqptp`, `shairport-sync`,
 `webrtc-audio-processing`, and `pycamilladsp`. The 2026-06-12
 source-mirroring slice moved the three install.sh source-build archives
 to byte-exact JTS release assets while retaining upstream commit archive
-URLs as provenance. Optional firmware builds may still involve
-PlatformIO's git-backed library handling, but that path remains opt-in
-behind `JASPER_BUILD_OPTIONAL_FIRMWARE=1`.
+URLs as provenance.
 
 For the current private fleet, this slice is intentionally fresh/rebuild
 focused. Existing installed renderer binaries are not fingerprinted and

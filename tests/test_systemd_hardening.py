@@ -326,7 +326,7 @@ DROPPED = {
     # 3b-2: control's privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group; it opens no
     # ALSA/input device. The one supplementary group is `systemd-journal` —
-    # several /state cards (airplay_health, dial, wifi_guardian) read the journal.
+    # the airplay_health and wifi_guardian /state cards read the journal.
     # Deliberately NOT in jasper-secrets: it reads the active provider NAME from
     # the (now keyless) voice_provider.env, never the keys (Phase 4a).
     "jasper-control": ("jasper-control", {"systemd-journal", "jasper-intsecrets"}),

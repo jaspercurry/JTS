@@ -262,7 +262,7 @@ async def test_notify_session_ended_swallows_errors():
 
 async def test_arbitrate_acquire_drain_aborts_when_mic_muted():
     """If the user mutes the mic between wake-frame dispatch and this
-    task starting (e.g. tapped the dial), don't open a session — the
+    task starting (e.g. tapped the remote), don't open a session — the
     user just deliberately stopped listening."""
     from jasper.voice_daemon import State
     wl = _make_wake_loop(peering_enabled=False)

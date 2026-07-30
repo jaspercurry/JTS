@@ -51,9 +51,9 @@ Tier 6: peer_id (lowest UUID wins, lex compare)
   Final deterministic tiebreaker. Guarantees that even if every
   other signal is identical, every peer picks the same winner.
 
-The design hub for these signals is docs/satellites.md "Proposed
-approach for JTS" — this implements the multi-Pi version of those
-rules (the doc describes the multi-mic-around-one-Pi case).
+These priorities are deliberately self-contained here and in
+docs/HANDOFF-peering.md so the peering contract does not depend on an
+unrelated hardware design.
 """
 from __future__ import annotations
 

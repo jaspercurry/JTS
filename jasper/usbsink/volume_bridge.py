@@ -16,7 +16,7 @@ square-root step transfer (see `_raw_to_pct`), and POSTs to
 jasper-control's /volume/set endpoint with
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
-prevention — so a dial twist that triggered an outbound write to the
+prevention — so a remote twist that triggered an outbound write to the
 gadget mixer (we don't actually do this, see HANDOFF-usbsink.md §3.2
 "Why no outbound write back to the host") wouldn't bounce back as a
 phantom user-side change.

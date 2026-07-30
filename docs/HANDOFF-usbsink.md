@@ -304,7 +304,7 @@ operation assumes the splitter-backed path.
 - Host computer → configured speaker name as a USB audio output
   (unidirectional, host-side is playback-only)
 - Host volume slider drives JTS canonical `listening_level` (Mac volume
-  feels like spinning the dial)
+  feels like spinning the remote)
 - Latest-source-wins arbitration via `jasper-mux`
 - On/off toggle in `/sources/` wizard
 - Disabled by default
@@ -481,7 +481,7 @@ pcm.usbsink_substream ──► hw:Loopback,0,3
                               pcm.jasper_capture (summed substream 7)
                                           ▼
                                   jasper-camilla
-                                  (main_volume — the dial knob)
+                                  (main_volume — the remote knob)
                                           │
                                           ▼
                                    pcm.jasper_out
@@ -583,7 +583,7 @@ Concretely, in `jasper.volume_coordinator.VolumeCoordinator`:
   once per second until USB becomes active; only an accepted value is
   deduplicated. This prevents a deploy/control restart from caching a
   declined initial read forever.
-- Outbound: dial twist / voice "louder" goes through the normal
+- Outbound: remote twist / voice "louder" goes through the normal
   `_set_camilla` path. **No write back to the gadget mixer**.
 
 #### Why no outbound write back to the host
@@ -596,7 +596,7 @@ volume directly. We don't do that for JTS because:
    Voice sessions duck music, then restore. If the host's slider were
    wired directly to `main_volume`, ducking would push the host's
    slider visually down on the Mac, which is wrong.
-2. The dial / voice / "louder" path must remain authoritative.
+2. The remote / voice / "louder" path must remain authoritative.
    Bidirectional sync would require either echo prevention on both
    ends (complex) or always-wins logic on one end (confusing).
 
@@ -683,7 +683,7 @@ and never learns ALSA units.
 Host's mute toggle hits `PCM Capture Switch`. Observer treats
 mute-on as `level=0` (no separate mute concept exposed to
 VolumeCoordinator; coordinator's own `mute()/unmute()` flow is for
-the dial's mute button and voice). When the host unmutes, observer
+the remote's mute button and voice). When the host unmutes, observer
 reads the current volume value and sets that as `listening_level`.
 
 ### 3.3 Source arbitration
@@ -1194,7 +1194,7 @@ The `source: "usbsink"` field is new — jasper-control's `/volume/set`
 gains a `source` field so the coordinator can call
 `observe_source_volume(Source.USBSINK, ...)` (which goes through echo
 prevention) instead of `set_listening_level(...)` (which is for
-"authoritative" writes like the dial).
+"authoritative" writes like the remote).
 
 This is a small surgical addition to
 [jasper/control/server.py:496-624](../jasper/control/server.py:496) — see
@@ -1835,7 +1835,7 @@ baseline minus the ~50 KB dwc2 module.
 
 **Acceptance**: From Mac, set JTS as output, play music. JTS speakers
 play it. CamillaDSP `main_volume` attenuates it (verify via
-`watch -n 0.5 'cdspctl get volume'` while spinning the dial).
+`watch -n 0.5 'cdspctl get volume'` while spinning the remote).
 
 ### Phase 3 — Source-state probe + mux wiring (~3 h)
 
@@ -1862,7 +1862,7 @@ between USB and existing sources.
 
 ### Phase 4 — Volume bridge (~2 h)
 
-**Goal**: Mac slider drives JTS volume (feels like dial twist).
+**Goal**: Mac slider drives JTS volume (feels like remote twist).
 
 **Deliverables**:
 - `jasper/usbsink/volume_bridge.py`
@@ -1872,7 +1872,7 @@ between USB and existing sources.
 
 **Acceptance**:
 - Move Mac slider → JTS volume changes within ~100 ms
-- Spin dial up → JTS volume changes; Mac slider stays put (one-way
+- Spin remote up → JTS volume changes; Mac slider stays put (one-way
   is acceptable)
 - Mac mute toggle → JTS goes silent; unmute restores
 
@@ -1976,7 +1976,7 @@ in `BRINGUP.md`:
 5. Play music from Mac → audible from JTS speakers
 6. Adjust Mac volume → JTS volume follows (verify via dashboard or
    `curl :8780/state | jq .voice.listening_level`)
-7. Spin dial up → JTS volume changes
+7. Spin remote up → JTS volume changes
 8. Start AirPlay from phone → JTS stops playing Mac audio, starts
    playing phone audio
 9. Stop AirPlay → JTS resumes Mac audio (if Mac still playing)
@@ -2237,19 +2237,18 @@ Rejected: complexity beats RAM at this margin.
 
 Pros: ~3 MB RAM, fast.
 
-Cons: Adds a second language to the codebase (no Rust elsewhere). The
-firmware/ subdirectory is C++ via PlatformIO, but that's a separate
-target. Build pipeline complexity, less DRY. The RAM win
+Cons: At the time this decision was made, it added another build
+pipeline for a marginal RAM win. The RAM difference
 (~15 MB) is marginal in the overall JTS RAM picture.
 
 Rejected: Python keeps the stack uniform.
 
-### Alternative D: Bidirectional volume (Mac slider ↔ dial in sync)
+### Alternative D: Bidirectional volume (Mac slider ↔ remote in sync)
 
 Pros: Mac UI always shows JTS's true volume.
 
 Cons: Bidirectional sync requires echo prevention on both ends. The
-dial writes camilla; observer reads camilla; observer would have to
+remote writes camilla; observer reads camilla; observer would have to
 ignore its own observer-induced writes. Double-bookkeeping for
 minimal UX gain. Today's Mac shows the slider where the user last
 left it, which is the OS-native behavior.
@@ -2262,7 +2261,7 @@ Pros: simpler — no Python observer for volume.
 
 Cons: `main_volume` is also the ducking knob. Voice session would
 duck the music AND move the Mac slider visually downward, which is
-wrong. Also can't be combined with dial-driven volume (the link is
+wrong. Also can't be combined with remote-driven volume (the link is
 one-to-one).
 
 Rejected: violates ducker semantics.

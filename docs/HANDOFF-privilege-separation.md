@@ -473,7 +473,7 @@ coupled artifacts make the drop work:
     missing. Full fidelity, no new privilege primitive, no dashboard request
     blocked on a live doctor run.
   - **`systemd-journal` supplementary group.** Three `/state` cards
-    (`airplay_health`, `dial`, `wifi_guardian`'s last-action) read the journal;
+    (`airplay_health`, `wifi_guardian`'s last-action) read the journal;
     a non-root reader needs the group.
   - **Non-secret state widened to `0640`:** `sound_profile.json` /
     `sound_settings.json` (the EQ config the sound card reads).

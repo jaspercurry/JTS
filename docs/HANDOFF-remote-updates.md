@@ -134,7 +134,7 @@ layers that change at different rates and want different mechanisms.
 | **App code** | Python files in `jasper/` | rsync + `pip install -e` (no-op on file changes since editable) | Easy. Just git pull + restart. |
 | **Python deps** | `pyproject.toml` pins (e.g. `google-genai==1.13.0`, `openai>=2.36.0`, `scipy>=1.13,<2`) | `pip install -e .` re-resolves on each install.sh run | Medium. Needs network, can fail on PyPI hiccup. |
 | **System packages** | `apt install ...`, source-built shairport-sync, librespot .deb, `libwebrtc-audio-processing-dev`, etc. | `install.sh` walks each section idempotently | Hard. Needs root, slow (3–5 min if shairport rebuilds), can break the audio chain mid-install. |
-| **Firmware** | XVF3800 DFU image, ESP32 dial firmware, ESP32 satellite firmware | Out-of-band: BRINGUP.md DFU procedure for the chip; `jasper-dial-onboard` / `jasper-satellite-onboard` for the ESP32s | **Out of scope for OTA.** Different code paths, physically attached, not in `install.sh`'s blast radius. |
+| **Microphone firmware** | XVF3800 DFU image | Out-of-band: BRINGUP.md DFU procedure | **Out of scope for OTA.** Physically attached and not in `install.sh`'s blast radius. |
 
 The key takeaway: a button that only handles Layer 1 is genuinely
 simple. A button that handles Layers 1+2+3 is approximately what
@@ -295,12 +295,11 @@ workflow on a fast-moving `main`" for the authoritative description):
     `cargo test`).
   - The doc-hygiene workflows (`docs-impact.yml`, `docs-links.yml`,
     `doc-freshness.yml`).
-- **Not in CI today.** The `jasper_aec3` pybind11 binding and the
-  ESP32 firmware builds are still built on the Pi / on-demand, not on
-  the runner — a Stage-1 extension worth doing if release artifacts
-  want prebuilt bins (verify Trixie's `libwebrtc-audio-processing-dev`
-  v1.3-3 on Ubuntu-latest / a Trixie container; pioarduino needs
-  Python ≥ 3.10, which runners have).
+- **Not in CI today.** The `jasper_aec3` pybind11 binding is still
+  built on the Pi, not on the runner — a Stage-1 extension worth doing
+  if release artifacts want prebuilt binaries (verify Trixie's
+  `libwebrtc-audio-processing-dev` v1.3-3 on Ubuntu-latest / a Trixie
+  container).
 - **No deploy step.** CI is still just a green check; the deploy is
   not gated on it (see "What's missing" above).
 
@@ -533,12 +532,7 @@ quick spike:
    Ubuntu-latest? If not, switch to a Trixie container in CI. The
    binding is already built on the Pi during `install.sh`, so the
    build steps and dep names are known and copyable.
-2. **ESP32 firmware builds on CI.** Per
-   [`docs/satellites.md`](satellites.md), pioarduino requires
-   Python ≥ 3.10. GitHub runners have 3.11+, so this should work,
-   but verify before committing to the matrix.
-
-Both are ~30-minute spikes. Worth doing before the Stage 1 work
+This is a small spike. Worth doing before the Stage 1 work
 begins.
 
 ---
@@ -563,18 +557,8 @@ implementation:
    does the rollback re-run `install.sh` against the old SHA, or
    just `git checkout` and trust the venv to still be consistent?
    This is the structurally-hardest rollback case.
-5. **CI runtime feasibility.** Spike the C++ binding build and
-   ESP32 firmware build on GitHub-hosted Ubuntu runners before
-   committing to the approach.
-6. **Firmware updates.** Explicitly out of scope, or wire the
-   dial / satellite firmware refresh in alongside? Today
-   `jasper-dial-onboard` / `jasper-satellite-onboard` are separate
-   physically-attached flows. Could become a "Configure remotes"
-   sub-flow per PLAN.md's
-   "Configure remotes wizard — the satellite-onboarding sub-page"
-   section, but the OTA story is fundamentally different (network
-   push to running ESP32, not USB-attached flash). Defer until
-   the speaker-side button ships.
+5. **CI runtime feasibility.** Spike the C++ binding build on
+   GitHub-hosted Ubuntu runners before committing to the approach.
 
 ---
 
@@ -585,9 +569,9 @@ In rough order, each step independently shippable:
 1. ~~**One-week spike** — write `.github/workflows/ci.yml` with just
    `pytest`.~~ **Done** — `tests.yml` (#251) shipped and has grown to
    the multi-language matrix described in Stage 1 above.
-2. **Add binding + firmware builds** to CI (still outstanding — the
-   `jasper_aec3` binding and ESP32 firmwares are not built on the
-   runner today). Cache aggressively.
+2. **Add the `jasper_aec3` binding build** to CI (still outstanding —
+   it is built on the Pi rather than the runner today). Cache
+   aggressively.
 3. **Auto-release on merge to `main`.** Verify a release shows up
    at `https://github.com/jaspercurry/JTS/releases`.
 4. **Pi-side `jasper-check-updates` CLI** (no UI yet) — reads

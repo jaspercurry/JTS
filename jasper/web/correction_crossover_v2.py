@@ -3942,7 +3942,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         # VERIFY passes while the LISTENING POSITION carries the full error
         # (~23° at 2 kHz for 15 cm spacing measured at 1 m).
         # W6 CHECKLIST ITEM (pre-existing): a deliberate household volume
-        # action mid-session (dial / voice "louder" / :8780 HTTP) still moves
+        # action mid-session (remote / voice "louder" / :8780 HTTP) still moves
         # the CamillaDSP main volume — the session measurement pause holds off
         # the idle reconciler, not VolumeCoordinator writes. W6 validation
         # runs hands-off; a session-long volume guard is a follow-up.

@@ -38,14 +38,6 @@ a bug in this runbook — fix it and update.
   pre-configured it in Imager)
 - Laptop on the same LAN
 
-Optional (satellite devices — see [docs/satellites.md](docs/satellites.md)):
-- ELECROW CrowPanel 1.28" HMI ESP32-S3 rotary dial + USB-C cable
-  (the wireless physical knob — volume, transport toggle,
-  hold-to-talk; Phase 1–3 working on hardware)
-- Waveshare ESP32-S3-Touch-AMOLED-1.8 + USB-C cable (touchscreen +
-  mic satellite; Phase 0 firmware shipped, Phase 1 push-to-talk
-  in progress)
-
 ---
 
 ## Phase 0 — Flash Raspberry Pi OS Lite (10 min)
@@ -658,7 +650,7 @@ ssh pi@jts.local 'sudo systemctl restart jasper-usbgadget'
 The Apple dongle's `Headphone` control is the **fixed analog
 ceiling, pinned at 100% by `jasper-dac-init` at boot** — software
 never adjusts it. CamillaDSP's `main_volume` is the canonical
-software volume knob (the dial, voice tools, and the HTTP API all
+software volume knob (supported remotes, voice tools, and the HTTP API all
 converge on it). For first-boot calibration:
 
 ```sh
@@ -679,7 +671,7 @@ laptop's AirPlay picker after a few seconds). At main_volume =
 −30 dB you should hear barely-audible audio. Now adjust the
 **amp's physical gain knob** until that level is your
 "barely-audible" comfort floor. After that, raising main_volume
-toward 0 dB (the dial's 100%) puts you at your calibrated
+toward 0 dB (the control surface's 100%) puts you at your calibrated
 comfortable-max listening level. The dongle stays at 100% always.
 
 ---
@@ -825,7 +817,7 @@ deep-diagnostic tool is `bash scripts/xvf-interrogate.sh --host
 ## Phase 9 — Trust the speaker's HTTPS cert on each iPhone (one-time, 1 min per device)
 
 This step is **only required** if you want to use the room-correction
-wizard at `https://jts.local/correction/`. The Spotify, voice, and dial
+wizard at `https://jts.local/correction/`. The Spotify and voice
 settings pages don't need it (they're plain HTTP). If you don't plan
 to run room correction yet, skip this section — you can come back any
 time.
@@ -876,32 +868,6 @@ To remove the CA from an iPhone (e.g., decommissioning a speaker):
 → Remove Profile**.
 
 ---
-
-## Optional: ESP32 rotary dial
-
-If you have the CrowPanel ESP32-S3 dial:
-
-```sh
-# One-time, explicit accessory firmware build (not part of base install):
-bash /opt/jasper/firmware/dial/build.sh
-
-# Plug the dial into a Pi USB-C port, then on the Pi:
-sudo /opt/jasper/.venv/bin/jasper-dial-onboard
-# → flashes via esptool, reads Pi's WiFi creds, pushes via Improv,
-#   waits for dial to appear at jasper-dial.local. ~30 s.
-
-# Unplug from Pi, connect to USB power. Dial reconnects to WiFi
-# from NVS flash on every subsequent boot.
-```
-
-The web wizard at `http://jts.local/dial/` shows whether
-`/opt/jasper/firmware/dial/jasper-dial.bin` is missing, current, or
-stale relative to the staged source and prints the same build command
-when a dial owner needs it.
-
-The dial's WS2812 LED 0 is a status indicator: magenta=boot,
-yellow=connecting, dim green=online, red blink=HTTP error, solid
-red=WiFi down.
 
 ---
 

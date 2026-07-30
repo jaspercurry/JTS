@@ -162,8 +162,8 @@ class RemoteProfile:
 # config (deferred).
 #
 # We map the click (KEY_MUTE keycode) to a TapAction so single = play/
-# pause toggle, double = next, triple = previous — matching the dial's
-# semantics. The hardware sends KEY_MUTE per press but we treat the
+# pause toggle, double = next, triple = previous. The hardware sends
+# KEY_MUTE per press but we treat the
 # keycode as opaque button-id and dispatch by tap count.
 VK01 = RemoteProfile(
     id="anticater_vk01",

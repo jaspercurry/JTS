@@ -129,14 +129,3 @@ def db_to_percent(db: float, *, floor_db: float | None = None) -> int:
         return 100
     span = VOLUME_CEILING_DB - floor
     return max(1, min(100, round(1.0 + (value - floor) / span * 99.0)))
-
-
-def delta_db_to_delta_percent(
-    delta_db: float, *, floor_db: float | None = None
-) -> int:
-    """Convert a dB delta into calibrated slider percentage points."""
-    floor = _floor(floor_db)
-    span = VOLUME_CEILING_DB - floor
-    if span <= 0:
-        return 0
-    return round(float(delta_db) / span * 99.0)

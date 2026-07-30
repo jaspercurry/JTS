@@ -16,7 +16,6 @@ from jasper.volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     configured_volume_floor_db,
     db_to_percent,
-    delta_db_to_delta_percent,
     percent_to_db,
 )
 
@@ -40,11 +39,6 @@ def test_custom_floor_changes_curve_span():
     assert percent_to_db(1, floor_db=-20.0) == -20.0
     assert percent_to_db(50, floor_db=-20.0) == pytest.approx(-10.101, abs=0.001)
     assert db_to_percent(-10.101, floor_db=-20.0) == 50
-
-
-def test_delta_db_uses_calibrated_span():
-    assert delta_db_to_delta_percent(5.0, floor_db=-50.0) == 10
-    assert delta_db_to_delta_percent(5.0, floor_db=-25.0) == 20
 
 
 def test_configured_floor_cache_reloads_when_settings_file_changes(

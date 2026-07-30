@@ -29,7 +29,6 @@ SERVER_SRC = (ROOT / "jasper" / "control" / "server.py").read_text()
 # exists in the server.
 CLIENT_PATHS = [
     "/state",
-    "/dial/status",
     "/healthz",
     "/volume/adjust",
     "/volume/set",
@@ -199,8 +198,8 @@ async def test_async_client_headers_default_none_is_backward_compatible(monkeypa
 # ----------------------------------------------------------------------
 #
 # JASPER_CONTROL_HOST is primarily the *server bind* address (seeded
-# 0.0.0.0 on installs so the dial can reach 8780 from the LAN). The
-# client must connect via loopback instead: connecting to 0.0.0.0
+# 0.0.0.0 on installs so household clients and LAN automation can reach
+# 8780). The client must connect via loopback instead: connecting to 0.0.0.0
 # "works" on Linux but carries `Host: 0.0.0.0:8780`, which the
 # management-host guard rejects — the 2026-06-11 regression where every
 # /system/ dashboard poll 403ed.

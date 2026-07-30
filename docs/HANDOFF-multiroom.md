@@ -1477,9 +1477,9 @@ V1 — a bonded set shares one level.
 > the RPC), NOT `master_gain`; **(3)** a transport follower never receives a
 > `POST /volume/set` (no master_gain to set) — its level is Snapcast client volume
 > only. The asymmetric-room balance trim flagged below therefore lives in Snapcast
-> client volume, not Camilla. The dial's live gauge will lead the audible change by
-> up to a buffer on the shared level — acceptable for a knob driving music, but note
-> it.
+> client volume, not Camilla. The command acknowledgment can lead the audible
+> change by up to a buffer on the shared level — acceptable for music control,
+> but note it.
 
 Hard constraints (from the volume subsystem; see
 [HANDOFF-volume.md](HANDOFF-volume.md)):
@@ -1714,7 +1714,7 @@ story; "parked-by-role" is surfaced state, NEVER a silent failure):
 - Doctor: 8 liveness checks read "parked (bonded follower)" via
   `_parked_as_bonded_follower` (doctor/_shared); `pair channels` does
   the cross-member coherence probe.
-- Dial: volume + play/pause forward to the leader; hold-to-talk is
+- Remote: volume + play/pause forward to the leader; hold-to-talk is
   dead while parked (accepted).
 
 **DSP ownership — the two-kinds split (decided 2026-06-12):**
@@ -1950,18 +1950,19 @@ to `/etc/jasper/avahi-templates/` and renders the live
 `/etc/avahi/services/jasper-control.service` via
 [`render_control_advert`](../jasper/control_advert.py); the `/speaker`
 save (`speaker_setup._apply_name`) re-renders + reloads Avahi on every
-name change. Safety contract (the dial depends on this service
-resolving):
+name change. Safety contract (room management and LAN automation depend
+on this service resolving):
 
 - **Purely additive vs. the historical static service** — same
   `<service>`/`<type>`/`<port>` byte-for-byte, only the one
-  `<txt-record>name=…</txt-record>` added. The dial keys off service type
+  `<txt-record>name=…</txt-record>` added. LAN clients key off service type
   + address; a TXT record cannot affect discovery. (Pinned by
   `tests/test_control_advert.py`'s byte-equivalence check.)
 - **XML-escaped before substitution** — a free-form name with `&`, `<`,
   or `>` would otherwise make Avahi reject the whole `<service-group>` and
-  drop `_jasper-control._tcp`, breaking the dial. A hostile-name test
-  asserts the rendered file is still valid XML and round-trips.
+  drop `_jasper-control._tcp`, breaking room discovery and LAN automation.
+  A hostile-name test asserts the rendered file is still valid XML and
+  round-trips.
 - **Fail-soft, never raises** — a missing/unreadable template, stray
   placeholder, or write failure logs `event=avahi_service.*` and returns
   `RenderResult.FAILED`; `_apply_name` then emits
@@ -2272,7 +2273,7 @@ mic/profile shape including the custom-mic early exit. Doctor: the
 bridge/mic liveness family (AEC bridge ×3, mic card, mic capture) reads
 "parked (bonded follower)" via the shared skip idiom; the landing page's
 mic card says "Paired — the assistant listens on the pair leader".
-Accepted costs (owner sign-off): follower timers die on bond-form; dial
+Accepted costs (owner sign-off): follower timers die on bond-form; remote
 hold-to-talk is dead on a follower (volume/transport still forward).)
 Earlier same day (DUMB-FOLLOWER PR-A — local source resource groups park
 while bonded. `plan()` role=follower now stops the registry-owned park
@@ -2293,7 +2294,7 @@ _apply treats absent units as clean no-ops (the endpoint install tier's
 dependency: stop/restore against never-installed units must not flip
 rc). ShairportSupervisor gains a parked_by_role gate (no WARN buildup
 against a deliberately-stopped shairport; snapshot says parked). The
-dial's play/pause on a follower forwards to the leader (/transport/*
+remote's play/pause on a follower forwards to the leader (/transport/*
 joins /volume* on the pair forward — with mux parked the local toggle
 would be a dead button). Doctor: renderer liveness checks
 (librespot/shairport/nqptp/mux/bluealsa) read "parked (bonded follower)"
@@ -2326,7 +2327,7 @@ pair-volume proxy + channel swap. jasper-control's /volume,
 /volume/{set,adjust,mute} now FORWARD to the leader's control API when
 this speaker is an active bonded follower (every follower volume surface
 was INERT — bonded content bypasses the local CamillaDSP — so slider,
-paired dial, and curl now control the PAIR volume from any member; loop
+paired remote, and curl now control the PAIR volume from any member; loop
 breaker via X-JTS-Pair-Forwarded; tiny load_config read per call, never
 the runtime derive; responses additively tagged pair_leader). The
 landing page polls GET /grouping (new exact-match nginx proxy) and on a
@@ -2744,7 +2745,7 @@ discovering membership via the new CSRF-free `GET /grouping` read on
 bond/unbond fan-out now runs concurrently across members. (3) Documented
 the grouping control plane's threat model (§7): `POST /grouping/set` / `GET
 /grouping` / the fan-out are UNAUTHENTICATED by design — the same home-LAN
-trust model as the dial `/volume`; the SSRF guard bounds cross-speaker
+trust model as the remote `/volume`; the SSRF guard bounds cross-speaker
 targets to private/loopback IPv4 (bare hostnames rejected) and grants no
 capability a LAN client lacked, but bond/unbond makes "LAN = trusted"
 load-bearing ACROSS devices — an explicit, accepted home-appliance

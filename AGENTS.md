@@ -47,9 +47,6 @@ document order):
 - [shairport-sync AP2 wedge — auto-recovers](#shairport-sync-ap2-wedge--auto-recovers)
 - [T5.2 — userspace-liveness SystemSupervisor — read first](#t52--userspace-liveness-systemsupervisor--read-first)
 
-**Hardware accessories**
-- [Satellite devices — opt-in hardware](#satellite-devices--opt-in-hardware)
-
 **Debugging, testing & PR workflow**
 - [Debugging — fetch evidence before guessing](#debugging--fetch-evidence-before-guessing)
 - [Testing](#testing)
@@ -184,13 +181,13 @@ detail; they do not replace this baseline.
   over `/etc/*` files when both exist.
 - **JTS is a production speaker — design for resilience.**
   Reasonable physical actions (unplugging speakers, power
-  cycling, briefly losing WiFi, removing a satellite) must not
+  cycling, briefly losing WiFi, removing a USB device) must not
   put the speaker in a state it can't self-recover from. When
   touching systemd units, daemon startup paths, or any code near
   hardware, ask whether the resource can disappear and later
   recover without operator intervention. No silent restart loops:
   either the system recovers or someone hears/sees the issue via a
-  cue, log, dashboard, or dial LED.
+  cue, log, or dashboard.
 - **Scope fixes to the observed-broken path, not symmetric ones.**
   When fixing a bug in one provider's adapter (for example,
   OpenAI session), don't preemptively mirror the change into
@@ -778,9 +775,8 @@ interactive-sudo deploys skip it too. The helper
 install.sh, where it also skips the changed-Rust-binary service restart),
 `JTS_ACCEPT_NEW_IDENTITY=1` (accept a changed deploy-target peer_id),
 `JASPER_DEPLOY_ALLOW_DOWNGRADE=1` (deploy an older commit deliberately),
-`JASPER_BUILD_OPTIONAL_FIRMWARE=1` (explicitly rebuild optional
-ESP32 dial/satellite firmware during install), `PI_HOST=...`,
-`PI_USER=...`, `JASPER_HOSTNAME=...` (speaker identity/cert hostname
+`PI_HOST=...`, `PI_USER=...`, `JASPER_HOSTNAME=...`
+(speaker identity/cert hostname
 when the SSH target is an IP), `REMOTE_REPO_DIR=...` (rare override
 for nonstandard remote homes).
 
@@ -1751,7 +1747,7 @@ sudo /opt/jasper/.venv/bin/jasper-doctor | grep "Home Assistant"
 - **HA's `response_type=error` returns HTTP 200**. Caller must
   inspect the body, not just the status code. Covered by
   `HAClient._parse` — outcome bucket is `intent_miss`.
-- **`no_valid_targets` is NOT a hard error**. In multi-satellite
+- **`no_valid_targets` is NOT a hard error**. In multi-speaker
   homes, another device may have answered the same utterance. HA's
   speech text is still useful to surface; we speak it.
 - **LLM-backed HA agents add 1-3 s latency**. If the household has
@@ -2179,7 +2175,7 @@ instead of looping. Plug-in recovers via the existing udev →
 duplicated as a literal in the unit, the reconciler, and
 [`jasper/voice/input_presence.py`](jasper/voice/input_presence.py)
 (pinned by `tests/test_voice_input_gate.py`). Full design — including
-why output and satellites needed no change — is
+why output needed no equivalent change — is
 [`docs/HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md).
 
 The bridge→voice transport is UDP localhost (`udp:9876`) since
@@ -2613,10 +2609,10 @@ The on/off enforcement is in three places:
 3. `jasper-doctor` warns on intent/runtime/composition drift
 
 **Volume model**: Mac slider drives JTS canonical `listening_level`
-just like the dial. The host's slider is observed via ALSA mixer
+like other supported controls. The host's slider is observed via ALSA mixer
 events on `PCM Capture Volume` (polled at 4 Hz by `volume_bridge.py`)
 and routed through `VolumeCoordinator.observe_source_volume()`.
-Dial / voice "louder" / etc. do NOT write back to the gadget mixer
+Remote / voice "louder" / etc. do NOT write back to the gadget mixer
 — the host slider is one-way input, mirroring AirPlay sender
 behavior. See HANDOFF-usbsink.md §3.2 for the rationale.
 
@@ -2706,143 +2702,6 @@ Mirrors `JASPER_AIRPLAY_METADATA_GATE` / `JASPER_MUX_SPOTIFY_PREEMPT_RESTART`
 
 ---
 
-## Satellite devices — opt-in hardware
-
-The cross-cutting design home for ESP32 satellites (existing rotary
-dial, AMOLED touchscreen mic satellite in progress, future devices)
-lives in [`docs/satellites.md`](docs/satellites.md). It owns shared
-protocols, multi-mic arbitration design, and per-device roadmap. Read
-that first when working on satellite firmware or related Pi-side
-daemons.
-
-### Rotary dial
-
-The CrowPanel 1.28" HMI ESP32-S3 rotary dial is a wireless physical
-controller that talks to the Pi over WiFi. **Currently working
-end-to-end on hardware:** volume control via encoder with an
-on-screen volume gauge, transport toggle on short-press (play/pause),
-hold-to-talk Gemini session on long-press. The other LVGL scenes
-(clock face, listening orb, speaking waveform, now-playing card with
-album art) have firmware scaffold but aren't yet validated on-device.
-
-Pi side: `jasper-control` daemon binds `0.0.0.0:8780`, exposes
-`POST /volume/adjust` (and `/volume/set`, `/healthz`). Volume
-requests route through `VolumeCoordinator` (see
-[`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md)), which dispatches
-according to mux's effective source and
-[`jasper/music_sources.py`](jasper/music_sources.py)'s `VolumeMode`:
-AirPlay/USB use CamillaDSP as master; Spotify/Bluetooth push their
-source-side volume and use Camilla only as a degraded-safe guard.
-Persistence is explicit shared state in
-`/var/lib/jasper/speaker_volume.json`, so dial-driven volume survives
-restarts and converges with voice-daemon observers. Service file at
-`deploy/systemd/jasper-control.service`.
-No auth — home LAN only.
-
-Dial side: PlatformIO project at `firmware/dial/`. ESP32-S3, native
-USB-CDC, Improv-over-Serial provisioning. WS2812 LED 0 = status
-indicator (magenta=boot, yellow=connecting, dim green=online,
-red blink=HTTP error, solid red=WiFi down). Normal speaker installs
-stage the firmware source but do **not** compile optional ESP32
-firmware; most speakers do not have accessory hardware, and first-run
-PlatformIO setup is a large accessory-specific download. Use
-`JASPER_BUILD_OPTIONAL_FIRMWARE=1` for an intentional install-time
-rebuild, or run `scripts/check-firmware-builds.sh` as a maintainer
-check when touching firmware or PlatformIO pins.
-
-To onboard a fresh dial, end-to-end:
-
-```sh
-# One-time, explicit accessory firmware build on the Pi:
-bash /opt/jasper/firmware/dial/build.sh
-# Stages bin to /opt/jasper/firmware/dial/jasper-dial.bin
-
-# Plug the dial into a Pi USB-C port, then on the Pi:
-sudo /opt/jasper/.venv/bin/jasper-dial-onboard
-# → flashes via esptool, reads Pi's current WiFi creds from
-#   NetworkManager (or wpa_supplicant), pushes via Improv,
-#   waits for dial to appear at jasper-dial.local. ~30 s.
-
-# Unplug from Pi and connect to USB power. Dial reconnects to
-# WiFi from NVS flash on every subsequent boot.
-```
-
-To re-provision after a WiFi password change: same command, same
-USB plug. The dial accepts `SUBMIT_SETTINGS` over Improv whenever
-it's connected to USB.
-
-If the dial is already flashed and you just need to update creds,
-pass `--no-flash`. If auto-detection of WiFi creds fails (locked-down
-NM secret store, etc.), pass `--ssid` and `--password` explicitly.
-
-The control daemon is always installed and enabled by `install.sh`,
-even if there's no dial — it costs <10 MB RAM idle and the volume
-endpoints are useful for any LAN client (Home Assistant, shortcuts,
-etc.).
-
-### AMOLED satellite (Phases 0, 1.1, 1.2 done; 1.3+ in progress)
-
-Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
-Project at `firmware/satellite-amoled/`. Both ESP32 firmware projects
-(dial + satellite) on **Arduino-ESP32 v3.x via pioarduino** — see
-`docs/satellites.md` "Toolchain — Arduino-ESP32 v3.x via pioarduino"
-for the rationale and v2.x→v3.x deltas.
-
-Shipped:
-- Phase 0 (2026-05-08) — ES8311 mic capture, 16 kHz mono PCM over
-  USB-CDC. Validated against music playback. See
-  `docs/satellites.md` "Audio init footguns" for the non-obvious
-  ES8311 init quirks (I²S stereo + demux for slot alignment;
-  REG02 pre_multi=3 for SCLK-derived MCLK).
-- Phase 1.1 (2026-05-08) — WiFi join from NVS-stored creds,
-  Improv-over-Serial provisioning, mDNS-SD discovery of
-  `_jasper-control._tcp`, dlog over USB-CDC + UDP `:5514`.
-- Phase 1.2 (2026-05-09) — on-screen connection-status indicator
-  on the 368×448 SH8601 AMOLED via Arduino_GFX. Direct draws (no
-  LVGL yet); colored circle + label keyed off the `Status` enum;
-  `setStatus()` helper redraws inline so PROVISION→ONLINE
-  transitions show up immediately. See "Display init footguns"
-  in `docs/satellites.md` for the SH8601 + TCA9554 reset
-  sequence and Arduino_GFX subclass gotchas.
-
-Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL "Tap
-to Talk" surface, control-plane HTTP, I²S mic capture gated on
-press, UDP audio stream to a new Pi-side `MicSource` endpoint.
-
-**Onboarding flow:** plug the satellite into a Pi USB-C port, then
-`sudo /opt/jasper/.venv/bin/jasper-satellite-onboard`. Mirrors
-`jasper-dial-onboard`: USB CDC discovery → optional flash from
-`/opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin`
-(populated by `bash firmware/satellite-amoled/build.sh`) → push
-WiFi creds via Improv → wait for `jasper-satellite-amoled.local`.
-The flash itself wipes NVS (factory.bin pads 0x0–0x10000 with
-0xFF, including the 0x9000–0xe000 NVS region) but the cred-push
-that follows refills it — no manual provisioning step.
-
-**Local PIO setup** for the v3.x toolchain (laptop-side):
-pioarduino requires Python ≥ 3.10. The JTS project itself now floors
-at Python 3.11 (`pyproject.toml`) and the Pi runtime is Python 3.13,
-so installing PlatformIO into a normal JTS/dev venv is fine. The
-separate-venv dance is only for hosts whose `python3`/current venv is
-older (notably Apple's system Python 3.9) or for maintainers who want
-to keep the large PlatformIO toolchain out of the repo venv:
-`brew install python@3.11 && python3.11 -m venv /tmp/jts-pio-venv
-&& /tmp/jts-pio-venv/bin/pip install platformio`. Prefix `pio`
-invocations with `PATH="/opt/homebrew/bin:$PATH"` if PIO's subprocess
-cannot find git for the Improv-WiFi library install. The Pi already has
-Python 3.13 + PIO and builds cleanly without the dance.
-
-To capture audio for testing or SNR comparisons:
-
-```sh
-bash scripts/capture-satellite-amoled.sh 10        # 10 s → captures/<ts>.wav
-bash scripts/capture-chip-mic.sh 10                # same shape, from XVF3800
-```
-
-Capture scripts assume the satellite is plugged into the Pi via
-USB-C and the Pi is at `jts.local`. WAVs land in `captures/` (which
-is gitignored — large binaries, regenerate as needed).
-
 ---
 
 ## Debugging — fetch evidence before guessing
@@ -2898,7 +2757,7 @@ bash scripts/tail-pi-logs.sh jasper-voice   # just one
 ```
 
 For just the cross-daemon "events" — duck transitions, source
-preempts, dial volume routing, wake/turn boundaries — the
+preempts, volume routing, wake/turn boundaries — the
 `jasper-trace.sh` wrapper filters the live tail down to the
 high-signal lines:
 
@@ -2908,8 +2767,8 @@ SINCE='1 hour ago' bash scripts/jasper-trace.sh
 ```
 
 For a single JSON snapshot of cross-daemon state (voice provider /
-session / spend, main_volume_db / listening_level, renderer states,
-dial heartbeat), hit jasper-control's `/state` aggregator:
+session / spend, main_volume_db / listening_level, and renderer states),
+hit jasper-control's `/state` aggregator:
 
 ```sh
 curl -s http://jts.local:8780/state | jq

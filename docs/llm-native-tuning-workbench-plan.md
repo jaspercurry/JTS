@@ -782,7 +782,7 @@ restores; unreachable, rejected, renewal-loss, daemon-restart,
 active-source-change, and push-volume-change paths are fault-injection tests.
 Separately gate the
 jasper-control volume-mutation endpoint so **every** source refuses while the
-experiment's volume resource is held—including dial/control requests and the
+experiment's volume resource is held—including accessory/control requests and the
 USB-sink bridge's 4 Hz host-volume writes, not merely interactive UI calls
 (jasper-control constructs a short-lived coordinator per request; it does
 not run a second observer/reconciler). Hold a durable restore-once latch shaped

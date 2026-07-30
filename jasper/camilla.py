@@ -829,7 +829,7 @@ class CueDuck:
     Async context manager — `__aenter__` snapshots pre-duck camilla
     main_volume and drops by `duck_db` (additive); `__aexit__`
     writes the snapshot back. Distinct from `Ducker` (which restores
-    to the live coordinator-canonical target so dial twists during a
+    to the live coordinator-canonical target so remote twists during a
     long voice turn win): cues are short and passive, the user
     isn't actively adjusting volume mid-cue, so simple snapshot
     semantics is more predictable than reading a target that may
@@ -876,11 +876,11 @@ class Ducker:
     Why asymmetric: at duck time nothing else is competing for camilla
     (the voice session is just opening); additive is fine. At restore
     time, anything could have happened during the ducked window —
-    crucially, the dial / voice tools / external slider observers could
+    crucially, the remote / voice tools / external slider observers could
     have changed `listening_level`. The previous implementation used
     additive restore (`+= -duck_db`), which wedged camilla at
     `pre_duck_value + delta` if any other writer touched it during the
-    duck. Real symptom: dial twist during a voice turn → restore
+    duck. Real symptom: remote twist during a voice turn → restore
     overshoots by the duck delta → camilla pinned out-of-range positive
     → sustained clipping when the next source connects. Reading the
     canonical target on restore makes the behavior independent of any

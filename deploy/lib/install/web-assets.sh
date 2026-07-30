@@ -63,6 +63,10 @@ install_web_assets() {
     local manifest="${assets_root}/.install-manifest"
     local manifest_tmp asset_dir page f
     install -d -m 0755 "${assets_root}"
+    # Upgrade cleanup for the retired ESP32 dial wizard. Page directories are
+    # copied additively, so this exact stale directory would otherwise survive
+    # forever on speakers that had already shipped it.
+    rm -rf -- "${assets_root:?}/dial"
     rm -f "${manifest}.tmp."*
     manifest_tmp="$(mktemp "${manifest}.tmp.XXXXXX")"
 

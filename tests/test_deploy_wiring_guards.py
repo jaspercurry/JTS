@@ -315,7 +315,6 @@ _RECOVERABLE_SOCKET_WEB_UNITS = (
     _DEPLOY / "jasper-web-streambox.service",
     _DEPLOY / "jasper-bluetooth-web.service",
     _DEPLOY / "jasper-correction-web.service",
-    _DEPLOY / "jasper-dial-web.service",
     _DEPLOY / "jasper-system-web.service",
     _DEPLOY / "jasper-chat-web.service",
 )
@@ -405,7 +404,6 @@ def test_legacy_ad_hoc_recovery_window_dropins_are_removed():
         "jasper-web",
         "jasper-bluetooth-web",
         "jasper-correction-web",
-        "jasper-dial-web",
         "jasper-system-web",
         "jasper-chat-web",
     ):

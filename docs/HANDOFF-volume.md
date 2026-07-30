@@ -2,7 +2,7 @@
 
 Volume control on a Pi-based smart speaker has more moving parts than
 "set the slider" suggests. The user's iPhone, the Spotify app, the
-Bluetooth phone, the rotary dial, the voice tool, and the always-on
+Bluetooth phone, a supported remote, the voice tool, and the always-on
 CamillaDSP all attenuate audio independently. This document explains
 how `jasper.volume_coordinator` makes them feel like one knob.
 
@@ -66,7 +66,7 @@ attenuator is actually doing the work.
 
 ### Outbound dispatch
 
-When the voice tool / dial / "louder" wants to change volume:
+When the voice tool / remote / "louder" wants to change volume:
 
 1. Coordinator asks `backend.selected_source()` for mux's effective
    audible source: manual `selected_source` when the user picked one,
@@ -128,7 +128,7 @@ knobs are inert — bonded content bypasses the local CamillaDSP entirely
 [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2). jasper-control
 therefore forwards `GET /volume` and `POST /volume/{set,adjust,mute}`
 verbatim to the leader's control API and relays the answer (tagged
-`pair_leader`), so the landing-page slider, a paired dial, and any HTTP
+`pair_leader`), so the landing-page slider, a paired remote, and any HTTP
 client control the PAIR volume from whichever member they talk to. A
 `X-JTS-Pair-Forwarded` header breaks forward loops; the follower check
 is one grouping.env parse per call. Solo speakers and leaders never
@@ -225,7 +225,7 @@ mute; host unmute restores Camilla to the observed level immediately during a
 normal fan-in voice session. Only the legacy Camilla-ducker lock defers the dB
 write; the mute flag always reflects the user's current intent.
 
-A JTS temporary mute (remote, dial, or voice) preserves the remembered
+A JTS temporary mute (remote, web, or voice) preserves the remembered
 `listening_level` and atomically records `pre_mute_level` plus a fresh
 `mute_token`; source dispatch still receives the derived effective 0%.
 Spotify/Bluetooth writes can be slow, so a nonzero observation is ignored until
@@ -250,8 +250,8 @@ sender's slider sits *upstream* of camilla in the audio chain —
 honoring it as the user's master-volume intent would mean the
 canonical level bounces around with whatever the phone/Mac is
 showing, disconnected from what camilla (the actual master) is
-doing. So we ignore the iPhone/Mac AirPlay slider and let the dial
-and voice tools own the canonical JTS speaker level. The sender
+doing. So we ignore the iPhone/Mac AirPlay slider and let JTS remote,
+web, and voice controls own the canonical speaker level. The sender
 slider remains upstream trim, not the JTS volume source of truth.
 
 ### Echo prevention
@@ -309,12 +309,13 @@ surface. Five tools: `get_volume`, `set_volume`, `adjust_volume`,
 `mute`, `unmute`. Each is a thin wrapper around the coordinator's
 public API.
 
-**`jasper.control.server`** — HTTP surface for the rotary dial and
-LAN automation. Builds a fresh `VolumeCoordinator` per request via
+**`jasper.control.server`** — HTTP surface for management clients,
+supported accessories, and LAN automation. Builds a fresh
+`VolumeCoordinator` per request via
 `_with_coordinator` (matches the pre-existing `_toggle_transport`
-pattern). Both legacy `delta_db`/`db` payloads and newer
-`delta_percent`/`percent` payloads are accepted; the legacy ones
-convert at the HTTP boundary.
+pattern). Relative adjustments use `delta_percent`; absolute setters
+accept `percent`, with the established `db` form retained for
+automation compatibility.
 
 Both daemons converge through the persistence file. voice_daemon's
 coordinator runs the inbound observers; control_daemon's
@@ -336,8 +337,8 @@ All successful `/volume` responses share one additive payload contract:
 
 `percent` and `db` are the effective values every existing client should
 render. `muted` is the effective silence assertion (temporary mute or explicit
-0%); `restore_percent` is non-null only for a temporary mute. Legacy dial and
-USB clients remain compatible because they can continue reading only
+0%); `restore_percent` is non-null only for a temporary mute. Existing
+clients remain compatible because they can continue reading only
 `percent`. The landing page polls `GET /volume` every 500 ms while visible,
 with at most one request in flight, and does no volume fetch from a hidden tab;
 with no page open there is no web polling. The USB gadget's separate 4 Hz ALSA
@@ -348,7 +349,7 @@ a web-view refresh loop.
 
 Voice-session state and Camilla ownership are separate facts. The current
 production `FanInDucker` attenuates only renderer/program audio in fan-in;
-Camilla remains the final master for music + TTS, so a dial/web/voice volume
+Camilla remains the final master for music + TTS, so a remote/web/voice volume
 change must still write Camilla during speech. The legacy Camilla `Ducker`
 temporarily owns `main_volume`, so only that transport defers Camilla writes.
 
@@ -365,7 +366,7 @@ Per-request coordinators in jasper-control cannot read the process-local lock,
 so `_duck_active_probe` asks jasper-voice `STATUS` for the explicit
 `camilla_volume_locked` boolean. During rolling upgrades it falls back to the
 older `duck_active` field. Probe `None` (voice unreachable, wedged, or malformed)
-fails open so the physical dial never becomes inert. Both fields are visible in
+fails open so an accessory control never becomes inert. Both fields are visible in
 `/state.voice`; `duck_active=true, camilla_volume_locked=false` is the normal
 fan-in speech state.
 
@@ -420,27 +421,25 @@ measurement/reference policy. The complete loudness contract lives in
 Until 2026-05-25, gate #2 was a heuristic: "if the requested target
 is more than 5 dB above camilla's current `main_volume`, infer a
 duck and defer." This conflated two situations that produced an
-identical signal — *Ducker has lowered camilla by 25 dB* and *user
-spun the dial 3 detents in one batch (+6 dB)*. The dial firmware
-batches multi-detent spins into one POST (correct behavior — what
-makes fast spins feel responsive), so any sufficiently fast spin
-crossed the threshold.
+identical signal — *Ducker has lowered camilla by 25 dB* and *a
+client sent one large relative increase*. Any sufficiently large
+request crossed the threshold.
 
 The misfire wasn't merely a glitch. When the heuristic deferred,
 `listening_level` was persisted (the caller does it in `_dispatch`'s
 finally block) but `main_volume_db` was not. With no actual Ducker
-running, nothing came along to converge them. Every subsequent dial
-twist computed its target from the now-inflated `listening_level`,
+running, nothing came along to converge them. Every subsequent
+relative request computed its target from the now-inflated `listening_level`,
 the gap to current `main_volume` only widened, and the heuristic
-fired again — a self-perpetuating cascade. Users saw the dial UI
-and web slider both reading 100% while the speaker stayed quiet.
+fired again — a self-perpetuating cascade. Users saw control surfaces
+reading 100% while the speaker stayed quiet.
 
 The probe replaces a structurally ambiguous signal with an
 authoritative one: jasper-voice is the source of truth about whether
 its own Ducker owns Camilla, so we ask it. The fail-open behavior
 preserves the AGENTS.md "production speaker — must be resilient and
-plug-and-play" contract: if jasper-voice is down or wedged, the dial
-keeps working at the cost of *possibly* un-ducking music for a
+plug-and-play" contract: if jasper-voice is down or wedged, accessory
+controls keep working at the cost of *possibly* un-ducking music for a
 moment (which wouldn't happen anyway because the wedged daemon
 can't duck either). The previous fix's asymmetric "only raises
 defer" rationale was correct in spirit but the wrong target — what
@@ -622,9 +621,8 @@ blocked receive, drains the worker while retaining the controller lock, then
 forgets the client before propagating cancellation. This prevents a detached
 thread from applying an obsolete volume/config write after its caller has moved
 on. The AirPlay health sampler and `jasper-doctor` use the same boundary.
-The operator-only `jasper-aec-tune` helper and containment-bound experimental
-`satellite_validation` harness still construct pycamilladsp directly; they are
-not covered by this daemon availability guarantee.
+The operator-only `jasper-aec-tune` helper still constructs pycamilladsp
+directly; it is not covered by this daemon availability guarantee.
 
 `set_config_file_path()` is a sequential `SetConfigFilePath` then `Reload`, not
 an atomic protocol. A higher-level DSP transaction that needs rollback must
@@ -657,13 +655,13 @@ So instead of trying to drive the AirPlay sender's slider, we
 attenuate at camilla — `main_volume` sits *downstream* of
 shairport's receiver in the audio chain (shairport → snd-aloop →
 camilla → DAC), so it reduces what the speakers actually emit
-regardless of what the sender chose to send. The dial behaves like
+regardless of what the sender chose to send. JTS controls behave like
 a master volume on every source.
 
 **Trade:** the iPhone/Mac AirPlay slider on the sender does not
-visibly move when the dial turns. The audio at the speaker does.
-Voice volume control and the rotary dial share the same coordinator
-path, so both remain reliable during AirPlay.
+visibly move when a JTS control changes volume. The audio at the
+speaker does. Voice, web, and supported remote volume controls share
+the same coordinator path, so they remain reliable during AirPlay.
 
 Mux-owned source handoff is the primary boundary path. The observer
 backstop, `apply_active_source_transition`, still follows the same
@@ -683,14 +681,14 @@ and find the speaker mysteriously twice as quiet as expected).
 
 **Cross-process staleness fix.** `apply_active_source_transition`
 calls `_refresh_from_disk()` before dispatch. The control daemon
-(dial / HTTP) writes listening_level to disk on every twist; without
+(accessory / HTTP) writes `listening_level` to disk on every change; without
 the refresh, voice_daemon's in-memory cache lags and a transition
 that fires between voice operations would dispatch a stale level.
 
 If the sender slider is below 100%, it pre-attenuates upstream of
-camilla and the dial position stops being a 1:1 read of perceived
-loudness. JTS still responds audibly; the user may just turn the dial
-further. Do not add hidden fallback behavior that sometimes treats
+camilla and the JTS control position stops being a 1:1 read of perceived
+loudness. JTS still responds audibly; the user may need to raise the
+JTS volume further. Do not add hidden fallback behavior that sometimes treats
 AirPlay as push-mode — that recreates two competing product contracts.
 
 A previous iteration tried to make AirPlay push-mode by calling

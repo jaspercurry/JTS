@@ -25,7 +25,7 @@ Background work must hold the tracker:
 
 Why bother:
   Setup wizards (Spotify OAuth, voice provider, room correction,
-  Bluetooth pair, dial onboarding, AirPlay sync mode) are touched
+  Bluetooth pair, AirPlay sync mode) are touched
   maybe once a month, but each was costing ~10-30 MB Pss resident
   24/7. With socket activation, the daemon exits after 10 min idle
   and only re-spawns when a tab actually opens the page — saving

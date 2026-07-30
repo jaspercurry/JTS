@@ -88,11 +88,6 @@ full = [
     # we capture the AEC reference from), while the USB-mic relay needs
     # nonblocking period writes and explicit gadget-ring occupancy control.
     "pyalsaaudio>=0.11; sys_platform == 'linux'",
-    # jasper-{dial,satellite}-onboard: pyserial for USB CDC discovery
-    # + Improv handshake; esptool for firmware flash. Both pure-Python
-    # and tiny.
-    "pyserial>=3.5",
-    "esptool>=4.7",
     # Google integration (Calendar + Gmail voice tools). google-auth and
     # google-auth-oauthlib drive the per-account OAuth + refresh flow;
     # google-api-python-client is the discovery-based service factory
@@ -194,15 +189,12 @@ jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
 jasper-usb-mic-latency-artifact = "jasper.cli.usb_mic_latency_artifact:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
 jasper-usbsink-volume = "jasper.cli.usbsink_volume_main:main"
-jasper-dial-onboard = "jasper.cli.dial_onboard:main"
-jasper-dial-web = "jasper.web.dial_setup:main"
 jasper-correction-web = "jasper.web.correction_setup:main"
 jasper-correction-bundle = "jasper.cli.correction_bundle:main"
 jasper-calibration-agent = "jasper.calibration_agent.cli:main"
 jasper-active-speaker = "jasper.cli.active_speaker:main"
 jasper-bass-extension-bench = "jasper.cli.bass_extension_bench:main"
 jasper-output-topology-reset = "jasper.cli.output_topology_reset:main"
-jasper-satellite-onboard = "jasper.cli.satellite_onboard:main"
 jasper-cues = "jasper.cues.cli:main"
 jasper-input = "jasper.accessories.bridge:main"
 jasper-accessory-reconcile = "jasper.accessories.reconcile:main"
@@ -337,7 +329,6 @@ module = [
     "jasper.bluetooth.scan",
     "jasper.camilla",
     "jasper.citibike",
-    "jasper.cli._esp32_onboard",
     "jasper.cli.aec_bridge",
     "jasper.cli.aec_init",
     "jasper.cli.doctor",
@@ -346,7 +337,6 @@ module = [
     "jasper.cli.doctor.correction",
     "jasper.cli.doctor.grouping",
     "jasper.cli.doctor.resilience",
-    "jasper.cli.satellite_validation",
     "jasper.cli.wake_enroll",
     "jasper.control.aec_endpoints",
     "jasper.control.airplay_health",
@@ -394,7 +384,6 @@ module = [
     "jasper.web._common",
     "jasper.web.balance_flow",
     "jasper.web.bluetooth_setup",
-    "jasper.web.dial_setup",
     "jasper.web.rooms_setup",
     "jasper.web.sound_setup",
     "jasper.web.spotify_setup",

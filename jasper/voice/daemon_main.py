@@ -665,7 +665,7 @@ async def run() -> None:
             cfg.hostname,
         )
     # Volume coordinator: owns the canonical listening_level (0-100),
-    # follows mux's effective source, and dispatches voice/dial-driven
+    # follows mux's effective source, and dispatches voice/accessory-driven
     # changes to the right volume carrier (Camilla-master for
     # AirPlay/USB/idle, push-mode for Spotify/BT). Boot path applies
     # a safety regression to extreme stale values.

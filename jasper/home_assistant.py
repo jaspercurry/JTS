@@ -41,7 +41,7 @@ endpoint returns no response body (HA core issues #93754, #104122 —
 still live in 2026). The purpose-built REST endpoint is the one used
 here.
 
-`no_valid_targets` is NOT a hard error. In multi-satellite homes,
+`no_valid_targets` is NOT a hard error. In multi-speaker homes,
 another device may have answered; speak the returned text regardless
 as long as it's non-empty.
 

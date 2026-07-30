@@ -20,10 +20,22 @@ WIZARD_UNITS=(
     jasper-web
     jasper-bluetooth-web
     jasper-correction-web
-    jasper-dial-web
     jasper-system-web
     jasper-chat-web
 )
+
+retire_esp32_accessory_units() {
+    # Upgrade cleanup for the retired bespoke ESP32 dial/AMOLED stack.
+    # Removing the source unit files does not remove copies already installed
+    # under /etc/systemd/system. Stop and disable both activation paths before
+    # deleting the exact files; each caller performs daemon-reload afterward.
+    systemctl disable --now \
+        jasper-dial-web.socket jasper-dial-web.service \
+        >/dev/null 2>&1 || true
+    rm -f -- \
+        "${SYSTEMD_DIR:?}/jasper-dial-web.service" \
+        "${SYSTEMD_DIR:?}/jasper-dial-web.socket"
+}
 
 cleanup_legacy_recovery_window_dropins() {
     # 2026-06-29: jts2 received these ad hoc drop-ins during an emergency
@@ -743,7 +755,6 @@ park_streambox_brain_units() {
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
         jasper-aec-reconcile.service jasper-input.service \
-        jasper-dial-web.socket jasper-dial-web.service \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
     done
@@ -868,6 +879,7 @@ start_streambox_runtime_units() {
 }
 
 install_streambox_systemd_units() {
+    retire_esp32_accessory_units
     install_jasper_support_files
     install_local_audio_graph_unit_files
     install_streambox_web_unit_files
@@ -889,6 +901,7 @@ install_streambox_systemd_units() {
 }
 
 install_systemd_units() {
+    retire_esp32_accessory_units
     # Full speakers and streamboxes consume the same support-file and core-graph
     # owners before any profile-specific units are staged or started.
     install_jasper_support_files
@@ -911,16 +924,10 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.socket" \
         "${SYSTEMD_DIR}/jasper-web.socket"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-dial-web.service" \
-        "${SYSTEMD_DIR}/jasper-dial-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-dial-web.socket" \
-        "${SYSTEMD_DIR}/jasper-dial-web.socket"
     # /correction/ wizard. Phase 0 = mic-permission verify only;
     # future phases pull in heavy deps (numpy / scipy / pyfar) so
     # this lives in its own process rather than colocating with
-    # jasper-web (Spotify + voice settings). Mirrors jasper-dial-web.
+    # jasper-web (Spotify + voice settings).
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-correction-web.service" \
         "${SYSTEMD_DIR}/jasper-correction-web.service"
@@ -1078,9 +1085,7 @@ install_systemd_units() {
     # libflac, avahi client, etc.) and an enabled-by-default snapserver
     # daemon socket — pure dead weight + attack surface on a box that
     # will never group. Mirrors the off-by-default posture of the
-    # usbsink dtoverlay (staged but inert until the wizard opts in) and
-    # the optional ESP32 firmware (sources staged, build gated behind
-    # JASPER_BUILD_OPTIONAL_FIRMWARE=1). The units reference
+    # usbsink dtoverlay (staged but inert until the wizard opts in). The units reference
     # /usr/bin/snapserver and /usr/bin/snapclient (Trixie's `snapserver`
     # / `snapclient` apt packages); installing those is the grouping
     # OPT-IN's job — now IMPLEMENTED (it used to be a comment with no code):

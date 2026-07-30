@@ -73,7 +73,7 @@ def test_guard_allows_raw_rfc1918_ip():
 
 def test_guard_allows_loopback_and_missing_host():
     assert _common.guard_mutating_host(_FakeHandler(Host="127.0.0.1")) is True
-    # Non-browser clients (curl, dial) may omit Host entirely.
+    # Non-browser clients (curl, remote) may omit Host entirely.
     assert _common.guard_mutating_host(_FakeHandler()) is True
 
 

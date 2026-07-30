@@ -363,8 +363,7 @@ print_streambox_install_plan() {
 No host changes are made in this mode. This is the Raspberry Pi Zero-class
 local-renderer tier: AirPlay, Spotify Connect, Bluetooth, and USB Audio Input,
 CamillaDSP sound/EQ/correction, and the same grouping reconciler as full
-speakers — without voice, wake-word, mic/AEC, assistant providers, or
-accessory firmware surfaces.
+speakers — without voice, wake-word, mic/AEC, or assistant providers.
 
 Run for real from a Pi-local checkout:
   sudo JASPER_INSTALL_PROFILE=streambox JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
@@ -488,7 +487,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 6. Explicitly out of scope for the streambox tier
    - Voice, wake-word, microphone/AEC, assistant provider SDKs, Google
      account tools, transit/weather voice tools, local TTS/cues, HID
-     accessory bridge, dial/satellite firmware, wake corpus tooling, and
+     accessory bridge, wake corpus tooling, and
      CamillaGUI.
 
 This dry run is a planning aid for contributors; it is not a substitute
@@ -586,8 +585,6 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      failure leaves the .so absent (doctor warns); a REBUILD failure
      leaves the prior .so installed and the doctor reads ok (stale-binary
      class) — the transcript build-failure WARN is the only signal.
-   - Optional ESP32 dial/satellite firmware only when
-     JASPER_BUILD_OPTIONAL_FIRMWARE=1.
    - All heavy source builds above (jasper_aec3 v1, the Rust daemons,
      shairport-sync, nqptp) run RAM-bounded and cgroup-contained
      via deploy/lib/install/build-sandbox.sh, so an OOM during an
@@ -607,8 +604,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Write /var/lib/jasper/voice_provider_ids from the Python voice
      catalog so boot/hotplug shell can validate providers without
      importing Python.
-   - Copy Python source, jasper_aec3, pyproject.toml, firmware sources,
-     landing pages, nginx config, Avahi service templates, systemd
+   - Copy Python source, jasper_aec3, pyproject.toml, landing pages,
+     nginx config, Avahi service templates, systemd
      units, udev rules, ALSA templates, and helper binaries.
    - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
    - Install the inert jts_ring device definitions
@@ -812,7 +809,7 @@ _install_renderer_native_deps() {
     # `libnss-mdns` (resolution only) by default but does NOT install
     # the daemon, so without this line `<hostname>.local` from another
     # device fails to find us, `_jasper-control._tcp` isn't advertised
-    # to the dial, and `avahi-utils` tools have no daemon to talk to.
+    # for speaker discovery, and `avahi-utils` tools have no daemon to talk to.
     # `avahi-utils` provides avahi-browse / avahi-publish for diagnostics.
     apt-get install -y --no-install-recommends \
         autoconf automake libtool pkg-config \
@@ -1457,106 +1454,6 @@ set_jasper_env_value() {
 }
 
 
-# Rebuild an optional satellite firmware .bin from source if (a) it's
-# missing, or (b) any firmware input is newer than the staged .bin. This
-# is opt-in via JASPER_BUILD_OPTIONAL_FIRMWARE=1; the base speaker
-# install should stay focused on appliance runtime, not accessory
-# toolchains. Most JTS households won't have ESP32 satellites, and
-# first-run PlatformIO pulls ~300-500 MB of ESP32-S3 toolchain.
-#
-# PIO can live in any of three places (mirrors build.sh's resolution
-# order): on PATH, at /opt/jasper/.venv/bin/pio (the wizard's install
-# target), or at /home/pi/.platformio/penv/bin/pio (PIO's own
-# installer-script default). We accept any of them.
-#
-# Build runs as the pi user when /home/pi/.platformio exists, so the
-# toolchain cache lands in one place and root doesn't end up with a
-# duplicate copy. This follows the same user boundary as the Rust
-# daemon builds: the public appliance path is username `pi`; custom
-# PI_USER is currently onboarding/deploy-only. Otherwise we run as
-# whoever invoked install.sh.
-#
-# Soft-fails: a failed build prints a warning and lets install.sh
-# continue. The accessory wizards surface missing/stale bins to the
-# user at the moment they choose to onboard accessory hardware.
-_newer_firmware_input() {
-    local fw_root="$1"
-    local bin_path="$2"
-    local shared_root
-    shared_root="$(dirname "${fw_root}")/common"
-    local -a inputs=()
-    local input
-    for input in "${fw_root}/src" "${fw_root}/include" \
-                 "${fw_root}/platformio.ini" "${fw_root}/build.sh" \
-                 "${shared_root}"; do
-        [[ -e "$input" ]] && inputs+=("$input")
-    done
-    [[ ${#inputs[@]} -gt 0 ]] || return 0
-
-    find "${inputs[@]}" -type f -newer "${bin_path}" -print -quit 2>/dev/null || true
-}
-
-_build_firmware_if_stale() {
-    local fw_dir="$1"
-    local bin_name="$2"
-    local fw_root="${INSTALL_DIR}/firmware/${fw_dir}"
-    local bin_path="${fw_root}/${bin_name}"
-    local build_script="${fw_root}/build.sh"
-
-    [[ -f "$build_script" ]] || return 0
-    [[ -d "${fw_root}/src" ]] || return 0
-
-    local need_build=0
-    if [[ ! -f "$bin_path" ]]; then
-        need_build=1
-    elif [[ -n "$(_newer_firmware_input "$fw_root" "$bin_path")" ]]; then
-        need_build=1
-    fi
-    [[ $need_build -eq 1 ]] || return 0
-
-    # Detect PIO anywhere build.sh would find it.
-    local pio_found=0
-    if command -v pio >/dev/null 2>&1 \
-       || [[ -x "/opt/jasper/.venv/bin/pio" ]] \
-       || [[ -x "/home/pi/.platformio/penv/bin/pio" ]]; then
-        pio_found=1
-    fi
-
-    if [[ $pio_found -ne 1 ]]; then
-        echo "==> ${fw_dir} firmware: source newer than staged .bin, but"
-        echo "    PlatformIO is not installed on this Pi. The wizard will"
-        echo "    skip flashing for ${fw_dir} until PIO is available."
-        echo "    To enable, run once on the Pi:"
-        echo "      sudo /opt/jasper/.venv/bin/pip install platformio"
-        echo "    Then run:"
-        echo "      JASPER_BUILD_OPTIONAL_FIRMWARE=1 sudo -E bash deploy/install.sh"
-        return 0
-    fi
-
-    # Pick the build user. Prefer pi when pi has any PIO state, so a
-    # populated toolchain cache gets reused on each rebuild.
-    local build_user
-    local -a build_cmd
-    if [[ -d "/home/pi/.platformio" ]]; then
-        build_user="pi"
-        build_cmd=(sudo -u pi -H bash "$build_script")
-    else
-        build_user="$(id -un)"
-        build_cmd=(bash "$build_script")
-    fi
-
-    echo "==> ${fw_dir} firmware: building as ${build_user} (~30 s incremental, ~5 min first run)"
-    if "${build_cmd[@]}"; then
-        if [[ -f "$bin_path" ]] && [[ -z "$(_newer_firmware_input "$fw_root" "$bin_path")" ]]; then
-            echo "    Staged ${bin_path}"
-        else
-            echo "==> ${fw_dir} firmware: build completed, but ${bin_path} is still missing or stale"
-        fi
-    else
-        echo "==> ${fw_dir} firmware: build FAILED — wizard will skip flash until next deploy"
-    fi
-}
-
 
 migrate_calibration_sign_convention() {
     # A measurement mic's vendor calibration file (miniDSP UMIK, Dayton)
@@ -1899,8 +1796,8 @@ PYBAKE
 
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
-    # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
-    # (rotary-dial onboarding) on plain HTTP. /correction/ starts with
+    # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
+    # HTTP. /correction/ starts with
     # a plain-HTTP preflight page, then the measurement UI switches to
     # HTTPS. The legacy routes stay HTTP — Spotify's HTTPS requirement
     # is satisfied by the GitHub Pages bounce, and there's no point
@@ -1925,7 +1822,7 @@ install_nginx_site() {
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  nginx reloaded — http://<host>/{,spotify,voice,dial} + https://<host>/{correction,google} are live"
+        echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
     else
         echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
     fi
@@ -1954,13 +1851,9 @@ install_streambox_nginx_site() {
 }
 
 install_avahi_jasper_control() {
-    # Advertise jasper-control over mDNS so the rotary dial can find
-    # us via service discovery instead of a hardcoded hostname. See
-    # deploy/avahi/jasper-control.service for the rationale and the
-    # firmware-side counterpart in
-    # firmware/common/jasper-control-discovery/src/discovery.cpp.
-    #
-    # The advertised file now also carries a name= TXT record with the
+    # Advertise jasper-control over mDNS as the always-on discovery surface
+    # used by the /rooms speaker directory and identity-aware automation.
+    # The advertised file carries a name= TXT record with the
     # speaker's friendly display name (the /speaker identity), so the
     # /rooms directory shows friendly names. Because the name is a
     # per-runtime value, the file is RENDERED from a TEMPLATE rather
@@ -1995,8 +1888,8 @@ install_avahi_jasper_control() {
     # import resolves here. render_control_advert is fail-soft (returns
     # False, never raises); we still guard the whole call with `|| true`
     # plus a static-file fallback so a render failure can never leave
-    # _jasper-control._tcp un-advertised — the dial (and jasper-doctor's
-    # "avahi: _jasper-control._tcp" check) depend on it always existing.
+    # _jasper-control._tcp un-advertised — /rooms and jasper-doctor's
+    # "avahi: _jasper-control._tcp" check depend on it always existing.
     local rendered=0
     if [[ -x "${INSTALL_DIR}/.venv/bin/python" ]] \
        && "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
@@ -2176,9 +2069,9 @@ install_camillagui() {
     # file management. We use the prebuilt PyInstaller bundle from the
     # upstream release rather than a venv/source install — bundle is
     # self-contained (Python 3.12 + frontend assets baked in), no apt
-    # deps, no pip resolution. Listens on 0.0.0.0:5005 directly (parity
-    # with /spotify, /voice, /dial — all unauthenticated, all home-LAN-
-    # only). The landing page links straight to http://${HOSTNAME}:5005.
+    # deps, no pip resolution. Listens on 0.0.0.0:5005 directly like the
+    # other unauthenticated, home-LAN-only management surfaces. The landing
+    # page links straight to http://${HOSTNAME}:5005.
     local CAMILLAGUI_VERSION="4.1.0"
     local CAMILLAGUI_DIR="/opt/camillagui"
     local arch bundle bundle_sha256

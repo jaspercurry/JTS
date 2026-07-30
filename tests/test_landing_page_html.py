@@ -332,7 +332,6 @@ def test_landing_page_uses_grouped_settings_rows() -> None:
         "Assistant",
         "Integrations",
         "Network",
-        "Accessories",
         "System",
     ):
         assert f">{heading}</h2>" in html
@@ -347,12 +346,8 @@ def test_landing_page_uses_grouped_settings_rows() -> None:
         "Assistant",
         "Integrations",
         "Network",
-        "Accessories",
         "System",
     ]
-    assert "snap.satellites" not in html
-
-
 def test_landing_page_capability_gates_fail_closed() -> None:
     html = _index_html()
 

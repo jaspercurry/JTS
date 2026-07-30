@@ -1054,7 +1054,7 @@ fresh running-graph fingerprint, then proves the required directional filters,
 per-output limiter, exact admitted per-output commissioning gain, capture route,
 audible/mute mask, headroom, and a `devices.volume_limit` no higher than the
 locked listening volume from a non-best-effort CamillaDSP readback. That
-transient ceiling makes the output envelope independent of a racing dial or
+transient ceiling makes the output envelope independent of a racing control or
 control-process main-volume write; a fresh post-play volume read rejects any
 remaining quieter drift without issuing capture authority. The profile's
 minimum cooldown is enforced as a cancellation-safe pre-play wait on every

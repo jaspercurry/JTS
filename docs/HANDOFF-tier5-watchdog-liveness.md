@@ -89,7 +89,7 @@ no production precedent).
 
 ### The 2026-05-23 incident
 
-A PlatformIO compile on the 1 GB Pi 5 OOM-stalled userspace for
+A large third-party toolchain compile on the 1 GB Pi 5 OOM-stalled userspace for
 >2 minutes during a JTS install session:
 
 - **ICMP ping**: healthy (~7 ms RTT, 0% loss) — kernel + network
@@ -322,12 +322,10 @@ Two production options:
    two problems**: watchdog liveness AND graceful shutdown on
    power loss (relevant given the 2026-05-23 WiFi-profile
    corruption story documented in HANDOFF-resilience.md).
-2. **DIY ESP32-as-watchdog**: a separate microcontroller monitors
+2. **DIY microcontroller watchdog**: a separate controller monitors
    Pi mDNS responsiveness / pings / HTTP probe, drives a relay
-   on power-cycle. ~$15 in parts. JTS already has ESP32-S3
-   satellites (dial, AMOLED) in the family — adding a watchdog
-   sat would mirror the existing pattern. But this is a third
-   satellite with a different I/O profile.
+   on power-cycle. ~$15 in parts. This would be an independent
+   hardware product with its own firmware and support burden.
 
 **Why deferred**: software options (A + B) ship in days. Hardware
 options change the BOM, require chassis revision, and depend on

@@ -23,7 +23,7 @@ camilla_port: 1234
 # idle-exit so this backend can shut down between admin sessions,
 # reclaiming ~50 MB Pss the Python interpreter holds onto. Direct
 # bind on 0.0.0.0:5005 (as in earlier installs) would keep us
-# resident 24/7. Security parity with /spotify, /voice, /dial is
+# resident 24/7. Security parity with /spotify and /voice is
 # unchanged — :5005 stays unauthenticated, home-LAN-only.
 bind_address: "127.0.0.1"
 port: 5006

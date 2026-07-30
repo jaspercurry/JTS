@@ -9,17 +9,50 @@
 # Extracted from install.sh; functions assume install.sh globals and
 # set -euo pipefail from the sourcing shell.
 
-retire_legacy_firmware_discovery_sources() {
-    # Firmware is staged without rsync --delete so locally-built factory
-    # images survive deploys. Retire only the four source files superseded by
-    # firmware/common; leaving them behind can shadow or duplicate the shared
-    # PlatformIO library on an upgraded Pi.
-    local firmware_root="$1"
+retire_esp32_accessory_files() {
+    # The bespoke ESP32 dial/AMOLED accessory stack was removed in 2026-07.
+    # Its source and locally-built images were deliberately staged without
+    # rsync --delete, so deleting them from the repository is insufficient on
+    # an upgraded speaker. Remove the exact retired tree plus its tiny
+    # heartbeat record. The :? guards make an unset install/state root fatal
+    # before either destructive path is resolved.
+    rm -rf -- "${INSTALL_DIR:?}/firmware"
     rm -f -- \
-        "${firmware_root}/dial/src/discovery.cpp" \
-        "${firmware_root}/dial/src/discovery.h" \
-        "${firmware_root}/satellite-amoled/src/discovery.cpp" \
-        "${firmware_root}/satellite-amoled/src/discovery.h"
+        "${STATE_DIR:?}/dial_heartbeat.json" \
+        "${STATE_DIR:?}/dial_heartbeat.json.tmp"
+    if [[ -f "${ENV_DIR:?}/jasper.env" ]]; then
+        sed -i.bak \
+            -e '/^JASPER_DIAL_LOG_HOST=/d' \
+            -e '/^JASPER_DIAL_LOG_PORT=/d' \
+            -e '/^JASPER_BUILD_OPTIONAL_FIRMWARE=/d' \
+            "${ENV_DIR}/jasper.env"
+        rm -f -- "${ENV_DIR}/jasper.env.bak"
+    fi
+}
+
+retire_esp32_accessory_python_packages() {
+    # Editable installs add/update requirements but pip does not prune
+    # dependencies that disappear from pyproject.toml. Remove the retired
+    # firmware/onboarding stack and the transitive packages that vanished
+    # from uv.lock, including an operator-installed PlatformIO in JTS's own
+    # venv. This never touches ~/.platformio or any system Python.
+    local -a retired_packages=(
+        platformio
+        esptool
+        pyserial
+        bitarray
+        bitstring
+        click
+        intelhex
+        markdown-it-py
+        mdurl
+        reedsolo
+        rich
+        rich-click
+        tibs
+    )
+    "${INSTALL_DIR:?}/.venv/bin/pip" uninstall -y \
+        "${retired_packages[@]}" >/dev/null 2>&1
 }
 
 seed_capture_relay_env() {
@@ -142,34 +175,7 @@ install_jasper() {
         "${REPO_DIR}/jasper" "${REPO_DIR}/jasper_aec3" \
         "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
-
-    # Stage firmware/ next to the package so jasper-{dial,satellite}-onboard
-    # find their respective bins (default --bin paths:
-    # /opt/jasper/firmware/dial/jasper-dial.bin,
-    # /opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin).
-    # The .pio build dir is excluded — that's local to whoever ran the
-    # per-firmware build.sh and contains absolute paths.
-    #
-    # NO --delete: build.sh writes each .bin INTO ${INSTALL_DIR}/firmware/
-    # (not into the source repo), so --delete would silently remove the
-    # staged .bin on every deploy. Verified failure mode: the /dial/
-    # wizard's "Force flash" silently skipped flashing after re-deploy
-    # because jasper-dial-onboard saw no bin and fell through to its
-    # creds-only path. Instead we leave any locally-staged .bin in
-    # place. Rebuilds are explicit accessory work: set
-    # JASPER_BUILD_OPTIONAL_FIRMWARE=1 when intentionally refreshing
-    # staged ESP32 firmware from source.
-    if [[ -d "${REPO_DIR}/firmware" ]]; then
-        rsync -a \
-            --exclude='.pio' --exclude='.pioenvs' --exclude='.piolibdeps' \
-            "${REPO_DIR}/firmware" "${INSTALL_DIR}/"
-        retire_legacy_firmware_discovery_sources "${INSTALL_DIR}/firmware"
-
-        if [[ "${JASPER_BUILD_OPTIONAL_FIRMWARE:-0}" == "1" ]]; then
-            _build_firmware_if_stale "dial" "jasper-dial.bin"
-            _build_firmware_if_stale "satellite-amoled" "jasper-satellite-amoled.bin"
-        fi
-    fi
+    retire_esp32_accessory_files
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
@@ -189,6 +195,7 @@ install_jasper() {
     # pass it via `-c` so every deploy replays the reviewed resolve.
     # No file → empty args → installs behave exactly as before.
     "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip==26.1.2 wheel==0.47.0
+    retire_esp32_accessory_python_packages
 
     local -a pip_constraints=()
     local constraints_file
@@ -433,11 +440,13 @@ install_streambox_jasper() {
         "${REPO_DIR}/README.md" \
         "${REPO_DIR}/docs" \
         "${INSTALL_DIR}/"
+    retire_esp32_accessory_files
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
     fi
     "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip==26.1.2 wheel==0.47.0
+    retire_esp32_accessory_python_packages
 
     local -a pip_constraints=()
     local constraints_file

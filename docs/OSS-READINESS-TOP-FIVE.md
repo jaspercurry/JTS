@@ -58,7 +58,7 @@ while the larger security posture is designed.
 #339. Full local authentication / HTTPS / pairing remains backlog.
 
 **Why it matters.** `jasper-control` exposes useful LAN endpoints for
-the dashboard, dial, scripts, and future accessories. Some endpoints
+the dashboard, supported accessories, scripts, and automation. Some endpoints
 can restart audio, toggle wake/AEC behavior, mute the mic, reboot, or
 power off the speaker.
 
@@ -71,8 +71,8 @@ also waste memory in a root-running daemon.
 - Reject unknown/public `Host` headers on `jasper-control` reads and
   writes.
 - Reject mutating requests with cross-site, `null`, or mismatched
-  `Origin` headers while preserving no-Origin clients like curl, the
-  dial, Home Assistant, and local proxy code.
+  `Origin` headers while preserving no-Origin clients like curl,
+  supported accessories, Home Assistant, and local proxy code.
 - Cap `jasper-control` POST bodies with an environment override.
 - Emit `Cache-Control: no-store` on control JSON responses.
 - Cover the behavior with pure helper tests and route-level tests.
@@ -90,11 +90,11 @@ canonical manifest, checksum/commit verification where JTS controls the
 fetch, and a local provenance check. Python determinism now has a
 platform-specific split: `uv.lock` for local development and the
 Pi-generated `deploy/constraints-pi.txt` consumed by deploy-time pip
-installs. Remaining work: Python hash verification/mirroring, apt
-snapshots, and PlatformIO transitive/toolchain lock depth.
+installs. Remaining work: Python hash verification/mirroring and apt
+snapshots.
 
 **Why it matters.** Fresh installs fetch Python packages, models,
-firmware tools, `.deb` artifacts, and source repos. OSS users need to
+`.deb` artifacts, and source repos. OSS users need to
 know what they are running and maintainers need repeatable installs.
 
 **Risk of not doing it.** A mutable upstream tag, changed binary, or

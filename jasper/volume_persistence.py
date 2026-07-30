@@ -12,7 +12,7 @@ Core fields tracked:
 
 - `listening_level` (0-100): the canonical user-facing volume. With
   source-aware coordination (volume_coordinator.py), this is the
-  number "volume up" / "set volume to 50%" / dial-knob ticks all
+  number "volume up" / "set volume to 50%" / remote-knob ticks all
   drive. Spotify and Bluetooth push the level to their own sliders.
   AirPlay and idle map the level to CamillaDSP main_volume.
 
@@ -336,7 +336,7 @@ class VolumePersistence:
 
         Refreshes from disk before writing so the file's
         listening_level + last_used_at fields (which might have been
-        updated by another process — e.g. jasper-control via dial)
+        updated by another process — e.g. jasper-control via remote)
         aren't trampled by this process's stale in-memory state.
         Only main_volume_db is treated as owned by this writer."""
         db = float(main_volume_db)
