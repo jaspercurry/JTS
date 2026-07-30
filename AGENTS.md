@@ -108,6 +108,50 @@ detail; they do not replace this baseline.
    operational probe that proves the change. If the environment cannot
    run a relevant check, say exactly what blocked it.
 
+### Session working agreement — roles, review, and what the owner weighs
+
+These are standing expectations, not per-session preferences. They were
+being restated by hand every session; they live here now so a fresh agent
+inherits them, and **so does any prompt you write for another session or
+subagent — pass this section through rather than assuming it is known.**
+
+**Roles.** Fable is the architect, debugger, and coordinator. It plans,
+directs, diagnoses, and reviews; implementation is delegated to Opus or
+Sonnet subagents. This is the default shape for non-trivial work — not a
+rule against Fable editing code, but a bias: when a task is large enough to
+decompose, Fable decomposes and reviews rather than typing the whole thing.
+
+**Adversarial review is not optional.** Any change touching production code
+gets `/adversarial-review`
+([`.claude/commands/adversarial-review.md`](.claude/commands/adversarial-review.md))
+**before merge**, run by a separate agent with a read-only posture — not by
+the author, and not after the fact. Test-only or doc-only changes can be
+reviewed at judgement, but say explicitly when review was skipped rather
+than letting silence imply it happened. Green CI is not a review: it proves
+the tests that exist still pass, which is orthogonal to whether the change
+is right. Retroactive review is worth running when it was missed, but it can
+only produce follow-ups — it cannot gate what already landed.
+
+**What the owner weighs, named so you can weigh it too:**
+
+- **Saturation.** Headroom, clipping, gain staging, and anything that can
+  run out — buffers, descriptors, memory, sockets, retries. Ask what
+  saturates before asking what is fast.
+- **Single source of truth.** One owner and one writer per fact. A value
+  restated in a second place is a bug in waiting, whether the copy is in
+  code, a comment, a doc, or a log line.
+- **Elastic, modular, observable, resilient, reliable, performant.** In
+  that spirit: extend a seam rather than special-casing; make state visible
+  through stable `event=` logs, `/state`, and doctor; recover without an
+  operator; fail loudly rather than silently; and respect the Pi's budget.
+
+**Diagnosis honesty is part of the bar.** A log line that names a resource
+is not evidence the resource ran out; a plausible mechanism is not a located
+cause. State what was measured, and say plainly when a claim is inference.
+Correcting your own earlier conclusion is cheaper than letting the next
+reader inherit it — see the `docs/testing-tooling.md` fd-leak row for a
+worked example of getting this wrong and repairing it.
+
 ### Project-specific reinforcements
 
 - **Bug work starts with evidence.** Fetch the logs, probe the
