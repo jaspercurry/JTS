@@ -481,7 +481,7 @@ class _BrokerServer(ThreadingUnixStreamServer):
         logger.exception("restart broker handler crashed")
 
 
-def start_broker(socket_path: str = DEFAULT_SOCKET_PATH) -> _BrokerServer | None:
+def start_broker(socket_path: str | None = None) -> _BrokerServer | None:
     """Bind the broker UDS (0660) and serve it on a daemon thread.
 
     Returns the server (so callers can ``shutdown()`` it) or ``None`` if
@@ -489,7 +489,13 @@ def start_broker(socket_path: str = DEFAULT_SOCKET_PATH) -> _BrokerServer | None
     other surfaces (volume, /state, supervisors) must keep running even if the
     broker can't come up — the wizards degrade to their existing fail-soft
     "restart didn't happen, logged" behaviour.
+
+    ``socket_path`` defaults to :data:`DEFAULT_SOCKET_PATH` resolved at CALL
+    time. Spelling it as a ``None`` sentinel rather than a default argument
+    value is deliberate: a default is bound once at def time, so rebinding the
+    module attribute would not reach it.
     """
+    socket_path = socket_path or DEFAULT_SOCKET_PATH
     parent = os.path.dirname(socket_path)
     try:
         if parent:
@@ -522,7 +528,7 @@ def request_restart(
     reason: str = "",
     no_block: bool = True,
     timeout: float = 5.0,
-    socket_path: str = DEFAULT_SOCKET_PATH,
+    socket_path: str | None = None,
 ) -> dict[str, Any]:
     """Ask the broker to run one closed-vocabulary systemctl action.
 
@@ -530,7 +536,14 @@ def request_restart(
     :class:`BrokerUnavailable` if the socket can't be reached or the broker
     doesn't answer with a parseable line — callers that want best-effort
     behaviour should use :func:`manage_units` instead.
+
+    ``socket_path`` defaults to :data:`DEFAULT_SOCKET_PATH` resolved at CALL
+    time. Spelling it as a ``None`` sentinel rather than a default argument
+    value is deliberate: a default is bound once at def time, so rebinding the
+    module attribute would not reach it — which silently sent every
+    :func:`manage_units` call to the import-time path regardless.
     """
+    socket_path = socket_path or DEFAULT_SOCKET_PATH
     payload = json.dumps({
         "verb": verb,
         "units": [_normalize_unit(u) for u in units],
