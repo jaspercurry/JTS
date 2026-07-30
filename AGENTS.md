@@ -2887,8 +2887,13 @@ commands. This is the contract for humans and LLM agents:
 - **Merge lane:** `scripts/test-merge` before publishing or merging
   non-trivial work. This is the full hardware-free pytest lane:
   parallel pytest, short tracebacks, and `tests/voice_eval` excluded.
-  The full CI lane also runs `ruff check .` and the lenient, baselined
-  `mypy` gate before this suite.
+  It also runs the lenient, baselined `mypy` gate (pyproject.toml
+  config, same invocation as CI; ~30-35s cold) as a step before
+  pytest, so a new unbaselined package's type errors fail locally
+  instead of only at CI's py3.13 leg (issue #1910). The full CI lane
+  additionally runs `ruff check .`, which stays covered locally by
+  `scripts/test-fast` instead. For a quick type-only spot-check, run
+  the bare `.venv/bin/mypy` directly.
 - **Deep/manual lane:** hardware, paid LLM evals, firmware builds, and
   Pi deploy checks. Run only when the touched subsystem requires it,
   with explicit cost/hardware scope.
