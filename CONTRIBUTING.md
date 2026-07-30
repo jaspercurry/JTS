@@ -63,9 +63,10 @@ scripts/test-fast
 That runs the fast local lane without a Pi, mic, or speaker. The audio
 I/O, network calls, and systemd surfaces are mocked in the default suite.
 Before publishing substantial work, run `scripts/test-merge`; that mirrors
-the full hardware-free pytest lane and runs the suite in four pytest-xdist
-workers. The full CI lane also runs `ruff check .` and the lenient,
-baselined `mypy` gate before the suite.
+the full hardware-free pytest lane (four pytest-xdist workers) and also
+runs the lenient, baselined `mypy` gate as a step before pytest. The full
+CI lane additionally runs `ruff check .`, which stays covered locally by
+`scripts/test-fast`.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then replays the
 committed lock with
@@ -162,13 +163,17 @@ Two operational notes:
   pytest selection, and always-on guard tests.
 - **Python merge lane** (`scripts/test-merge`) — required green before
   merge through the full `ci` lane. No SDK auth or network. Runs the
-  hardware-free suite in parallel and excludes paid `tests/voice_eval`.
-  Full CI runs this lane on Python 3.11, 3.12, and 3.13; the internal
-  `pytest` aggregate fails unless every versioned matrix leg passes.
+  lenient, baselined `mypy` gate (pyproject.toml config) as a step
+  before pytest, then the hardware-free suite in parallel, excluding
+  paid `tests/voice_eval`. Full CI runs this lane on Python 3.11, 3.12,
+  and 3.13; the internal `pytest` aggregate fails unless every
+  versioned matrix leg passes.
 - **Python static checks** (`ruff check .` and `mypy`) — run once in the
   Python 3.13 matrix leg before the test suite. mypy starts permissive
   and baselined so existing type debt does not block day-one adoption,
-  but new unbaselined errors fail the job.
+  but new unbaselined errors fail the job. `scripts/test-merge` now runs
+  the same `mypy` gate locally too; `ruff check .` stays covered locally
+  by `scripts/test-fast` and `pre-commit`.
 - **Rust audio-daemon gate** (`cargo fmt --all -- --check`, then
   `cargo clippy --release --locked --all-targets -- --no-deps
   -D warnings` (build+lint, no separate `cargo build` step), then

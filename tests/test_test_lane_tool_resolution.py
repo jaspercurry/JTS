@@ -4,14 +4,15 @@
 
 """Guards the executable test lanes' interpreter resolution (issue #1836).
 
-``scripts/test-fast`` and ``scripts/test-merge`` resolve pytest (and ruff) from
-``$PYTEST``/``$RUFF``, then ``./.venv/bin/``, then ``$PATH``. Both lanes ``cd``
-to ``git rev-parse --show-toplevel``, which in an agent worktree is the
-*worktree* root -- a directory with no ``.venv`` of its own. The ``$PATH``
-fallback is therefore the common case in exactly the environment the
-orchestration pattern runs implementers in, and before this guard neither lane
-said which interpreter it had picked. A transcript in which nothing ran was
-indistinguishable from a passing one.
+``scripts/test-fast`` and ``scripts/test-merge`` resolve pytest (test-fast
+also ruff; test-merge also mypy) from ``$PYTEST``/``$RUFF``/``$MYPY``, then
+``./.venv/bin/``, then ``$PATH``. Both lanes ``cd`` to ``git rev-parse
+--show-toplevel``, which in an agent worktree is the *worktree* root -- a
+directory with no ``.venv`` of its own. The ``$PATH`` fallback is therefore
+the common case in exactly the environment the orchestration pattern runs
+implementers in, and before this guard neither lane said which interpreter it
+had picked. A transcript in which nothing ran was indistinguishable from a
+passing one.
 
 These tests reproduce that environment rather than simulating it: a scratch git
 repo (so the lanes' ``cd`` lands somewhere with no ``.venv``) plus a sandboxed
@@ -20,7 +21,7 @@ promises pinned are the ones the fix makes: refuse with a *named* error naming
 the tool, say plainly that nothing ran, exit nonzero, and on success announce
 the resolved interpreter on stderr without polluting stdout.
 
-Two related contracts share this file rather than growing their own:
+Three related contracts share this file rather than growing their own:
 
 * **issue #1850** -- a caller piping a lane through ``2>&1 | tail -N`` sees
   exit 0 from a failed lane whenever the shell lacks ``set -o pipefail``, so
@@ -33,6 +34,11 @@ Two related contracts share this file rather than growing their own:
   or deleted test) makes pytest's own machinery silently fall back to
   collecting and running everything in scope. ``test-fast`` validates cached
   ids itself before ever handing them to pytest.
+* **issue #1910** -- no local lane ran mypy at all, so a new unbaselined
+  package's type errors surfaced only at CI's py3.13 gate. ``test-merge`` now
+  resolves mypy the same way as pytest (a named FATAL, never a silent skip)
+  and runs it as a step before pytest, composing with the #1850 sentinel so a
+  mypy failure still ends the lane with ``==> test-merge: FAILED``.
 """
 
 from __future__ import annotations
@@ -164,26 +170,47 @@ def test_lane_announces_the_resolved_interpreter_on_stderr(
 ) -> None:
     """Provenance is announced, and stdout stays pure test output.
 
-    ``true`` stands in for pytest: it accepts and ignores the lanes' flags and
-    exits 0, so the announcement is observed without running a suite.
+    ``true`` stands in for ruff/mypy: it accepts and ignores the lanes' flags
+    and exits 0, so those gates clear without doing anything. ``pytest`` is a
+    RECORDING stand-in rather than ``true`` and its call log is asserted on
+    below -- issue #1910's gate review caught that, with only a `true`
+    stand-in and no ``$MYPY`` override, this test (and its sibling below) had
+    silently degraded into a resolution-only check for ``test-merge``: the
+    lane died at the mypy FATAL immediately after announcing pytest, pytest
+    itself never ran, and neither original assertion here noticed because
+    neither checked that it had. Recording the call closes that gap.
 
-    The assertion is on POSITION, not membership. A membership check is
-    vacuous for ``test-merge``: were the announcement misdirected to stdout,
-    the lane's ``exec`` would fail on a path that has the announcement text
-    glued to the front of it, and bash's own error echoes that path back on
-    stderr -- so ``"==> pytest: ..." in result.stderr`` still holds while
-    nothing is announced. Pinning it as the first stderr line kills that.
+    The stderr assertion is on POSITION, not membership. A membership check
+    is vacuous for ``test-merge``: were the announcement misdirected to
+    stdout, the lane's ``exec`` would fail on a path that has the
+    announcement text glued to the front of it, and bash's own error echoes
+    that path back on stderr -- so ``"==> pytest: ..." in result.stderr``
+    still holds while nothing is announced. Pinning it as the first stderr
+    line kills that.
     """
     repo, env = lane_sandbox
-    stand_in = shutil.which("true") or "/usr/bin/true"
+    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
+    calls = repo / "calls.jsonl"
+    pytest_stub = _recording_stub(repo, "pytest", calls)
     result = _run(
-        repo, {**env, "PYTEST": stand_in, "RUFF": stand_in}, lane
+        repo,
+        {
+            **env,
+            "PYTEST": str(pytest_stub),
+            "RUFF": other_tool_stand_in,
+            "MYPY": other_tool_stand_in,
+        },
+        lane,
     )
 
     assert result.stderr.splitlines()[:1] == [
-        f"==> pytest: {stand_in} ($PYTEST override)"
+        f"==> pytest: {pytest_stub} ($PYTEST override)"
     ], result.stderr
-    assert stand_in not in result.stdout
+    assert str(pytest_stub) not in result.stdout
+    assert result.returncode == 0, result
+    assert "pytest" in calls.read_text(encoding="utf-8").splitlines(), (
+        "the pytest stand-in must actually run, not just resolve"
+    )
 
 
 @pytest.mark.parametrize("lane", _LANES)
@@ -198,13 +225,26 @@ def test_lane_works_when_invoked_by_a_relative_path_from_a_subdirectory(
     ``../scripts/_test_lane.sh: No such file or directory`` -- and, because the
     helper never loaded, with none of the FATAL wording that exists to make a
     non-run unmissable. The lane dir is therefore captured before the ``cd``.
+
+    ``pytest`` is a RECORDING stand-in for the same #1910 gate-review reason
+    as its sibling test above: without a working ``$MYPY``, ``test-merge``
+    was silently dying at the mypy FATAL right after the stderr
+    announcement, and neither original assertion here noticed that pytest
+    never actually ran.
     """
     repo, env = lane_sandbox
     (repo / "tests").mkdir()
-    stand_in = shutil.which("true") or "/usr/bin/true"
+    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
+    calls = repo / "calls.jsonl"
+    pytest_stub = _recording_stub(repo, "pytest", calls)
     result = _run(
         repo,
-        {**env, "PYTEST": stand_in, "RUFF": stand_in},
+        {
+            **env,
+            "PYTEST": str(pytest_stub),
+            "RUFF": other_tool_stand_in,
+            "MYPY": other_tool_stand_in,
+        },
         lane,
         cwd=repo / "tests",
         argv0=f"../scripts/{lane}",
@@ -212,8 +252,12 @@ def test_lane_works_when_invoked_by_a_relative_path_from_a_subdirectory(
 
     assert "_test_lane.sh: No such file or directory" not in result.stderr
     assert result.stderr.splitlines()[:1] == [
-        f"==> pytest: {stand_in} ($PYTEST override)"
+        f"==> pytest: {pytest_stub} ($PYTEST override)"
     ], result.stderr
+    assert result.returncode == 0, result
+    assert "pytest" in calls.read_text(encoding="utf-8").splitlines(), (
+        "the pytest stand-in must actually run, not just resolve"
+    )
 
 
 @pytest.mark.parametrize("lane", _LANES)
@@ -445,6 +489,7 @@ def test_lane_sources_the_shared_resolver_rather_than_reimplementing_it(
     assert "resolve_lane_tool" in body
     assert 'pytest_bin="pytest"' not in body
     assert 'ruff_bin="ruff"' not in body
+    assert 'mypy_bin="mypy"' not in body
 
 
 # --------------------------------------------------------------------------- #
@@ -488,8 +533,20 @@ def test_lane_prints_passed_sentinel_as_the_last_stdout_line_on_success(
     repo, env = lane_sandbox
     stand_in = repo / "fake-pytest"
     _fake_pytest_script(stand_in)
-    ruff_stand_in = shutil.which("true") or "/usr/bin/true"
-    result = _run(repo, {**env, "PYTEST": str(stand_in), "RUFF": ruff_stand_in}, lane)
+    # `true` stands in for both ruff (test-fast) and mypy (test-merge): both
+    # just need to resolve and exit 0 so the lane reaches its pytest phase(s)
+    # -- irrelevant but harmless for whichever lane doesn't read that var.
+    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
+    result = _run(
+        repo,
+        {
+            **env,
+            "PYTEST": str(stand_in),
+            "RUFF": other_tool_stand_in,
+            "MYPY": other_tool_stand_in,
+        },
+        lane,
+    )
 
     assert result.returncode == 0, result
     last_line = result.stdout.rstrip("\n").splitlines()[-1]
@@ -526,8 +583,22 @@ def test_lane_prints_failed_sentinel_as_the_last_stdout_line_on_a_real_failure(
         else "--ignore=tests/voice_eval"
     )
     _fake_pytest_script(stand_in, fail_argv_substring=fail_marker)
-    ruff_stand_in = shutil.which("true") or "/usr/bin/true"
-    result = _run(repo, {**env, "PYTEST": str(stand_in), "RUFF": ruff_stand_in}, lane)
+    # `true` stands in for ruff (test-fast) and mypy (test-merge) and must
+    # succeed here: the failure under test is specifically the fake pytest's
+    # own nonzero exit, not a resolution-path FATAL (those are covered
+    # separately below) and not the mypy gate rejecting the run before
+    # pytest is ever reached.
+    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
+    result = _run(
+        repo,
+        {
+            **env,
+            "PYTEST": str(stand_in),
+            "RUFF": other_tool_stand_in,
+            "MYPY": other_tool_stand_in,
+        },
+        lane,
+    )
 
     assert result.returncode != 0, result
     last_line = result.stdout.rstrip("\n").splitlines()[-1]
@@ -761,3 +832,117 @@ def test_fast_lane_skips_last_failed_when_every_cached_id_is_stale(
 
     pruned = json.loads((cache_dir / "lastfailed").read_text(encoding="utf-8"))
     assert pruned == {}, pruned
+
+
+# --------------------------------------------------------------------------- #
+# issue #1910 -- test-merge carries a local mypy gate ahead of pytest
+# --------------------------------------------------------------------------- #
+
+
+def test_test_merge_also_refuses_on_a_missing_mypy(
+    lane_sandbox: tuple[Path, dict[str, str]],
+) -> None:
+    """test-merge resolves two tools; mypy must be guarded like pytest.
+
+    Mirrors ``test_test_fast_also_refuses_on_a_missing_ruff`` for the tool
+    this PR adds. Pointing ``$PYTEST`` at a real executable clears the first
+    gate so the failure attributable to ``mypy`` is the one observed -- this
+    also pins that pytest is resolved before mypy, so an entirely bare
+    sandbox (no overrides at all) still reports the pre-existing "pytest
+    unresolvable" FATAL via the parametrized
+    ``test_lane_refuses_loudly_when_pytest_is_unresolvable`` above, unchanged
+    by this addition.
+    """
+    repo, env = lane_sandbox
+    result = _run(
+        repo, {**env, "PYTEST": shutil.which("true") or "/usr/bin/true"}, "test-merge"
+    )
+
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "FATAL" in combined
+    # The exact resolve_lane_tool phrasing, not a bare "mypy" substring: a
+    # loose membership check would also pass if the FATAL named some other
+    # tool but "mypy" happened to appear elsewhere in the transcript.
+    assert "could not resolve 'mypy'" in combined
+    assert "NO TESTS WERE RUN" in combined
+
+
+def _recording_stub(repo: Path, name: str, calls_path: Path, *, exit_code: int = 0) -> Path:
+    """A stand-in executable that appends ``name`` to ``calls_path`` and exits.
+
+    Prints a real-looking ``-q`` summary line so a stand-in used as the
+    ``$PYTEST`` override does not break ``lane_extract_passed_count`` if a
+    caller happens to pipe it through ``lane_pipe_pytest``.
+    """
+    path = repo / f"recording-{name}"
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        f"NAME = {name!r}\n"
+        f"CALLS = {str(calls_path)!r}\n"
+        "with open(CALLS, 'a', encoding='utf-8') as f:\n"
+        "    f.write(NAME + '\\n')\n"
+        "print('3 passed in 0.01s')\n"
+        f"raise SystemExit({exit_code})\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+def test_test_merge_runs_mypy_before_pytest(
+    lane_sandbox: tuple[Path, dict[str, str]],
+) -> None:
+    """The mypy gate runs, and it runs strictly before the pytest phase.
+
+    Issue #1910: no local lane ran mypy at all. This is the positive-path
+    ordering proof -- both tools are recording stand-ins, and the call order
+    written to the log is the real ordering claim, not a string search over
+    the script's source (which would still pass if the call were dead code).
+    """
+    repo, env = lane_sandbox
+    calls = repo / "calls.jsonl"
+    mypy_stub = _recording_stub(repo, "mypy", calls)
+    pytest_stub = _recording_stub(repo, "pytest", calls)
+
+    result = _run(
+        repo,
+        {**env, "MYPY": str(mypy_stub), "PYTEST": str(pytest_stub)},
+        "test-merge",
+    )
+
+    assert result.returncode == 0, result
+    assert calls.read_text(encoding="utf-8").splitlines() == ["mypy", "pytest"], (
+        result.stdout + result.stderr
+    )
+
+
+def test_test_merge_mypy_failure_stops_before_pytest_and_fails_the_lane(
+    lane_sandbox: tuple[Path, dict[str, str]],
+) -> None:
+    """A mypy failure must fail the #1850 sentinel AND never reach pytest.
+
+    The merge lane runs the mypy invocation unguarded under `set -e`, so a
+    nonzero mypy exit aborts the script immediately -- pytest must never even
+    start, and the EXIT trap must still print the lane's FAILED sentinel as
+    the true last stdout line, exactly composing with #1850's machinery
+    rather than needing its own verdict path.
+    """
+    repo, env = lane_sandbox
+    calls = repo / "calls.jsonl"
+    mypy_stub = _recording_stub(repo, "mypy", calls, exit_code=1)
+    pytest_stub = _recording_stub(repo, "pytest", calls)
+
+    result = _run(
+        repo,
+        {**env, "MYPY": str(mypy_stub), "PYTEST": str(pytest_stub)},
+        "test-merge",
+    )
+
+    assert result.returncode != 0, result
+    last_line = result.stdout.rstrip("\n").splitlines()[-1]
+    assert last_line == "==> test-merge: FAILED", result.stdout
+    assert calls.read_text(encoding="utf-8").splitlines() == ["mypy"], (
+        "pytest must never run once the mypy gate fails"
+    )
