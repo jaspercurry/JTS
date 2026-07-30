@@ -590,6 +590,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 >= int(entry.get("tool_count") or 0)
                 and int(entry.get("tool_count") or 0) > 0
             )
+            changed = False
             with _STATE_LOCK:
                 state = read_tool_state(cfg["state_path"])
                 if setup_only:
@@ -599,7 +600,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         updated_setup.add(pack_id)
                     else:
                         updated_setup.discard(pack_id)
-                    if updated_setup != enabled_setup:
+                    changed = updated_setup != enabled_setup
+                    if changed:
                         try:
                             write_tool_state(
                                 cfg["state_path"],
@@ -624,7 +626,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         updated_tools.discard(singleton_tool)
                     else:
                         updated_tools.add(singleton_tool)
-                    if updated_tools != disabled_tools:
+                    changed = updated_tools != disabled_tools
+                    if changed:
                         try:
                             write_tool_state(
                                 cfg["state_path"],
@@ -649,7 +652,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         updated_packs.discard(pack_id)
                     else:
                         updated_packs.add(pack_id)
-                    if updated_packs != disabled_packs:
+                    changed = updated_packs != disabled_packs
+                    if changed:
                         try:
                             write_tool_state(
                                 cfg["state_path"],
@@ -667,12 +671,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                                 status=500,
                             )
                             return
-                log_event(
-                    logger, "tools.toggle_pack",
-                    pack=pack_id, enabled=enabled,
-                    singleton_tool=singleton_tool if isinstance(singleton_tool, str) else None,
-                    client=self.address_string(),
-                )
+                if changed:
+                    log_event(
+                        logger, "tools.toggle_pack",
+                        pack=pack_id, enabled=enabled,
+                        singleton_tool=(
+                            singleton_tool
+                            if isinstance(singleton_tool, str)
+                            else None
+                        ),
+                        client=self.address_string(),
+                    )
             pending = bool(
                 catalog_view(
                     cfg["catalog_path"],

@@ -174,16 +174,17 @@ class Registry:
         return cls(accounts=accounts, default_name=data.get("default", ""), path=path)
 
     def save(self) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
         payload = {
             "version": 1,
             "default": self.default_name,
             "accounts": [asdict(a) for a in self.accounts],
         }
-        tmp = self.path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(payload, f, indent=2)
-        os.replace(tmp, self.path)
+        atomic_write_text(
+            self.path,
+            json.dumps(payload, indent=2),
+            mode=SPOTIFY_CACHE_FILE_MODE,
+            group_from_parent=True,
+        )
 
     def get(self, name: str) -> Account | None:
         for a in self.accounts:

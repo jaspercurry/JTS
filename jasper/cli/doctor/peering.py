@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from ...peering.config import PEERING_OFF_VALUES, PEERING_ON_VALUES
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -38,9 +39,9 @@ def check_peering_mode() -> CheckResult:
                 break
     except OSError as e:
         return CheckResult(label, "warn", f"can't read {p}: {e}")
-    if raw in ("", "off", "false", "0", "no", "disabled"):
+    if raw in PEERING_OFF_VALUES:
         return CheckResult(label, "ok", "off (configured)")
-    if raw in ("on", "true", "1", "yes", "enabled"):
+    if raw in PEERING_ON_VALUES:
         return CheckResult(
             label, "ok",
             "on — jasper-control runs the peering daemon",

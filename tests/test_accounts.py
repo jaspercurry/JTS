@@ -64,6 +64,7 @@ def test_registry_round_trip():
         assert r2.default_name == "jasper"
         assert r2.get("brittany") is not None
         assert r2.get("brittany").cache_path.endswith("brittany.json")
+        assert stat.S_IMODE(os.stat(path).st_mode) == SPOTIFY_CACHE_FILE_MODE
     finally:
         for f in (path, path + ".tmp"):
             if os.path.exists(f):

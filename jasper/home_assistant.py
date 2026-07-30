@@ -581,7 +581,7 @@ def build_ha_client(cfg) -> HAClient | None:
         url=cfg.ha_url,
         token=cfg.ha_token,
         agent_id=cfg.ha_agent_id or None,
-        verify_ssl=bool(getattr(cfg, "ha_verify_ssl", True)),
+        verify_ssl=cfg.ha_verify_ssl,
     )
 
 

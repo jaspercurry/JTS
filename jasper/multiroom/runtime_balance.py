@@ -23,7 +23,14 @@ from typing import Any, Awaitable, Callable, Literal
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.log_event import log_event
 
-from .config import GROUPING_ENV_FILE, GroupingConfig, TRIM_DB_MAX, TRIM_DB_MIN, load_config
+from .config import (
+    GROUPING_ENV_FILE,
+    GroupingConfig,
+    TRIM_DB_MAX,
+    TRIM_DB_MIN,
+    is_active_member,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +78,7 @@ def coerce_trim_db(trim_db: float) -> float:
 def active_endpoint(cfg: GroupingConfig, *, active_box_reader: Callable[[], bool]) -> bool:
     """Return true when this member's pair trim lives in CamillaDSP."""
     return (
-        cfg.enabled
-        and cfg.error is None
+        is_active_member(cfg)
         and cfg.role in {"leader", "follower"}
         and active_box_reader()
     )
@@ -144,7 +150,7 @@ async def apply_local_trim(
     """Apply this member's persisted pair trim to the currently running path."""
     trim = coerce_trim_db(trim_db)
     cfg = cfg or load_config(GROUPING_ENV_FILE)
-    if not (cfg.enabled and cfg.error is None):
+    if not is_active_member(cfg):
         return LiveTrimApplyResult(False, "not_bonded", trim, "grouping is not active")
 
     if active_box_reader is None:

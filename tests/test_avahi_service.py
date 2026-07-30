@@ -265,8 +265,8 @@ def test_stray_placeholder_introduced_by_template_drift(template, tmp_path, _moc
 
 def test_idempotent_render_skips_write_and_reload(template, tmp_path, monkeypatch):
     """A second byte-identical render returns ``UNCHANGED`` and does NOT
-    rewrite the file or reload. Asserted via a write counter (os.replace is
-    the commit point) so the guard is exact, not mtime-precision-dependent.
+    rewrite the file or reload. Asserted via the canonical writer call count
+    so the guard is exact, not mtime-precision-dependent.
     Critical for long-lived adverts: a needless rewrite tears down + re-adds
     the service-group, opening a discovery gap. The WROTE-vs-UNCHANGED
     return is what lets callers reload only on a real change."""
@@ -276,15 +276,15 @@ def test_idempotent_render_skips_write_and_reload(template, tmp_path, monkeypatc
     reloads: list = []
     monkeypatch.setattr(avahi_service, "reload_avahi", lambda: reloads.append(1))
 
-    # Count commits (os.replace) so we can prove the second render didn't write.
+    # Count canonical atomic writes so we can prove the second render did not write.
     writes = {"n": 0}
-    real_replace = avahi_service.os.replace
+    real_write = avahi_service.atomic_write_text
 
-    def _counting_replace(src, dst):
+    def _counting_write(path, text, **kwargs):
         writes["n"] += 1
-        return real_replace(src, dst)
+        return real_write(path, text, **kwargs)
 
-    monkeypatch.setattr(avahi_service.os, "replace", _counting_replace)
+    monkeypatch.setattr(avahi_service, "atomic_write_text", _counting_write)
 
     # First render: WROTE → writes + reloads.
     assert avahi_service.render_service(str(template), str(out), dict(subs)) is RenderResult.WROTE
@@ -383,14 +383,10 @@ def test_write_failure_returns_false_never_raises(template, tmp_path, monkeypatc
     """If the atomic write fails (disk full, read-only /etc), render is
     fail-soft: returns False, never raises into the caller."""
     out = tmp_path / "rendered.service"
-    real_open = open
+    def _boom_write(*_args, **_kwargs):
+        raise OSError("disk full")
 
-    def _boom_open(path, *a, **k):
-        if str(path).endswith(".tmp"):
-            raise OSError("disk full")
-        return real_open(path, *a, **k)
-
-    monkeypatch.setattr("builtins.open", _boom_open)
+    monkeypatch.setattr(avahi_service, "atomic_write_text", _boom_write)
     res = avahi_service.render_service(
         str(template), str(out), {"__SPEAKER_NAME__": "x", "__ROOM__": "y"},
     )

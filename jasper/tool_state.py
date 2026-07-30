@@ -120,37 +120,3 @@ def write_tool_state(path: str | os.PathLike, state: ToolState) -> None:
         lines.append(f"{_SETUP_PACKS_KEY}={setup_packs}")
     lines.append(f"{_TOOLS_KEY}={tools}")
     atomic_write_text(Path(path), "\n".join(lines) + "\n", mode=0o644)
-
-
-def write_disabled_tools(
-    path: str | os.PathLike,
-    names: "frozenset[str] | set[str] | list[str]",
-) -> None:
-    """Atomically write the disabled-set as a comma-joined sorted list.
-    Mode 0644 (no secret; jasper-doctor + non-root readers inspect it).
-    Best-effort: raises OSError on hard failure (caller decides policy)."""
-    current = read_tool_state(path)
-    write_tool_state(
-        path,
-        ToolState(
-            disabled_tools=frozenset(n.strip() for n in names if n.strip()),
-            disabled_packs=current.disabled_packs,
-            setup_enabled_packs=current.setup_enabled_packs,
-        ),
-    )
-
-
-def write_disabled_packs(
-    path: str | os.PathLike,
-    names: "frozenset[str] | set[str] | list[str]",
-) -> None:
-    """Atomically write the disabled pack set while preserving tool state."""
-    current = read_tool_state(path)
-    write_tool_state(
-        path,
-        ToolState(
-            disabled_tools=current.disabled_tools,
-            disabled_packs=frozenset(n.strip() for n in names if n.strip()),
-            setup_enabled_packs=current.setup_enabled_packs,
-        ),
-    )

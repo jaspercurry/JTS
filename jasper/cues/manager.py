@@ -166,7 +166,7 @@ class AudioCueManager:
         return os.path.isfile(self.expected_path(cue))
 
     def status(self) -> list[dict]:
-        """Snapshot for `jasper-cues list` and `jasper-doctor`. Each
+        """Snapshot for ``jasper-cues list``. Each
         entry is {slug, rendered_text, expected_filename, cached,
         description}."""
         out = []

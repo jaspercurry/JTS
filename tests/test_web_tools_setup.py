@@ -39,7 +39,6 @@ from jasper.tool_state import (
     ToolState,
     read_disabled_tools,
     read_tool_state,
-    write_disabled_tools,
     write_tool_state,
 )
 from jasper.web import tools_setup
@@ -449,7 +448,10 @@ def test_post_toggle_enable_removes_from_disabled_set(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     state = tmp_path / "state.env"
     _write_catalog(cat, [_tool("get_weather"), _tool("spotify_play")])
-    write_disabled_tools(str(state), {"spotify_play", "get_weather"})
+    write_tool_state(
+        state,
+        ToolState(disabled_tools=frozenset({"spotify_play", "get_weather"})),
+    )
     monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
     h = _post_toggle(
         _handler_cls(str(cat), str(state)),
@@ -488,6 +490,44 @@ def test_post_toggle_pack_stages_pack_without_restart(tmp_path, monkeypatch):
     assert payload["pending"] is True
     assert restarted["n"] == 0
     assert read_tool_state(str(state)).disabled_packs == {"spotify"}
+
+
+def test_post_toggle_pack_no_op_does_not_rewrite_or_log(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    cat = tmp_path / "tools.json"
+    state = tmp_path / "state.env"
+    _write(cat, {
+        "schema_version": 2,
+        "tools": [_tool(
+            "spotify_play",
+            pack={"id": "spotify", "title": "Spotify", "summary": ""},
+        )],
+        "packs": [_pack("spotify")],
+    })
+    write_tool_state(
+        state,
+        ToolState(disabled_packs=frozenset({"spotify"})),
+    )
+    writes = []
+    monkeypatch.setattr(
+        tools_setup,
+        "write_tool_state",
+        lambda *args: writes.append(args),
+    )
+    caplog.set_level("INFO", logger=tools_setup.__name__)
+
+    h = _post_toggle_pack(
+        _handler_cls(str(cat), str(state)),
+        {"id": "spotify", "enabled": False},
+    )
+    h.do_POST()
+
+    assert h.status == 200
+    assert writes == []
+    assert "event=tools.toggle_pack" not in caplog.text
 
 
 def test_post_toggle_singleton_pack_writes_child_tool_state(tmp_path, monkeypatch):
@@ -611,7 +651,10 @@ def test_post_toggle_no_op_does_not_rewrite(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     state = tmp_path / "state.env"
     _write_catalog(cat, [_tool("spotify_play")])
-    write_disabled_tools(str(state), {"spotify_play"})
+    write_tool_state(
+        state,
+        ToolState(disabled_tools=frozenset({"spotify_play"})),
+    )
     monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
     calls = {"n": 0}
     real_write = write_tool_state
@@ -916,7 +959,10 @@ def test_catalog_overlays_fresh_disabled_set(tmp_path):
     cat = tmp_path / "tools.json"
     state = tmp_path / "state.env"
     _write_catalog(cat, [_tool("get_weather", status="active")])
-    write_disabled_tools(str(state), {"get_weather"})
+    write_tool_state(
+        state,
+        ToolState(disabled_tools=frozenset({"get_weather"})),
+    )
     h = _make_request(_handler_cls(str(cat), str(state)), "/catalog.json")
     h.do_GET()
     payload = json.loads(h.wfile.getvalue().decode())

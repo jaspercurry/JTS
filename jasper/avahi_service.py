@@ -31,7 +31,7 @@ each caller; for the control advert, the retry opportunities are a later
 render is idempotent (a byte-stable render skips the write+reload, so a
 long-lived advert like
 ``_jasper-control._tcp`` never tears down and re-adds its service-group)
-and atomic (tmp + ``os.chmod(0o644)`` + ``os.replace``).
+and atomic through :func:`jasper.atomic_io.atomic_write_text`.
 
 The two callers differ only in whether the substituted values need
 XML-escaping, which is the ``escape`` knob:
@@ -62,12 +62,12 @@ from __future__ import annotations
 
 import enum
 import logging
-import os
 import re
 import subprocess
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
+from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 # Detector for any unresolved __FOO__ placeholder. Catches template
@@ -197,12 +197,7 @@ def render_service(
         pass
 
     try:
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        tmp = out_path + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(rendered)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, out_path)
+        atomic_write_text(out_path, rendered, mode=0o644)
     except OSError as e:
         log_event(
             logger,

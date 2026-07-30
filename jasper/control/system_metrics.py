@@ -323,7 +323,7 @@ class SystemSampler:
         fan = self._read_fan()
         now_mono = time.monotonic()
         if now_mono - self._last_service_state_at >= self._service_state_interval:
-            self._service_state_snapshot = self._read_service_states()
+            self._service_state_snapshot = self.read_service_states()
             self._last_service_state_at = now_mono
         services = self._tick_services(
             service_states=self._service_state_snapshot,
@@ -700,10 +700,11 @@ class SystemSampler:
         return out
 
     @classmethod
-    def _read_service_states(
+    def read_service_states(
         cls,
         units: list[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
+        """Read the selected systemd unit states in one bounded call."""
         selected = units if units is not None else cls._tracked_service_units()
         if not selected:
             return {}

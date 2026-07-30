@@ -388,18 +388,13 @@ def format_roster(members) -> str:
     return ",".join(out)
 
 
-# Back-compat alias: the serializer was introduced private; `format_roster` is
-# the public spelling now that it is a cross-package contract.
-_format_roster = format_roster
-
-
 def _parse_roster(raw: str) -> tuple[BondMember, ...]:
     """Parse JASPER_GROUPING_ROSTER into a tuple of :class:`BondMember`.
 
     TOTAL — never raises. Splits on "," into entries, each entry on "|"
     into exactly ``addr|name|channel``; an entry without exactly three
     parts, or with an empty addr, is silently skipped. Each field is
-    stripped. Inverse of :func:`_format_roster`. Range/IP/channel
+    stripped. Inverse of :func:`format_roster`. Range/IP/channel
     validation is the loud job of :func:`validate_grouping`, not this
     parser."""
     members: list[BondMember] = []

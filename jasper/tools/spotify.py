@@ -454,6 +454,15 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             base += f" tell the user to visit {setup_url} to set one up."
         return base
 
+    def _device_not_linked_error() -> dict[str, str]:
+        return {
+            "error": (
+                "Spotify Connect on the speaker isn't linked to your "
+                "account yet. Open Spotify, tap the device picker, "
+                f"and select {librespot_name} once. Then try again."
+            ),
+        }
+
     async def _ensure_clients() -> bool:
         """Per-call client availability check. Returns True iff the
         router has at least one usable client after attempting a
@@ -586,13 +595,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             # claimed at least once. The system prompt instructs the model
             # to read the `error` field verbatim, so the message below IS
             # the user-facing fix instruction.
-            return {
-                "error": (
-                    f"Spotify Connect on the speaker isn't linked to your "
-                    f"account yet. Open Spotify, tap the device picker, "
-                    f"and select {librespot_name} once. Then try again."
-                ),
-            }
+            return _device_not_linked_error()
 
         pick = await _resolve_query(
             sp, query, kind, configured_playlists=configured_playlists,
@@ -689,13 +692,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         sp, device_id, stops, account_name, _ = resolved
         if not device_id:
             # Same root cause as spotify_play — see comment there.
-            return {
-                "error": (
-                    f"Spotify Connect on the speaker isn't linked to your "
-                    f"account yet. Open Spotify, tap the device picker, "
-                    f"and select {librespot_name} once. Then try again."
-                ),
-            }
+            return _device_not_linked_error()
 
         safe_artist = artist.replace(chr(34), "")
         try:
@@ -817,13 +814,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         sp, device_id, _, account_name, _ = resolved
         if not device_id:
             # Same root cause as spotify_play — see comment there.
-            return {
-                "error": (
-                    f"Spotify Connect on the speaker isn't linked to your "
-                    f"account yet. Open Spotify, tap the device picker, "
-                    f"and select {librespot_name} once. Then try again."
-                ),
-            }
+            return _device_not_linked_error()
         results = await asyncio.to_thread(sp.search, q=query, type="track", limit=1)
         items = results.get("tracks", {}).get("items", [])
         if not items:

@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -253,10 +254,7 @@ def _read_state(path: Path) -> dict[str, Any]:
 
 def _write_state(path: Path, state: dict[str, Any]) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.tmp")
-        tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_write_text(path, json.dumps(state, sort_keys=True) + "\n")
     except OSError as e:
         log_event(
             logger,
