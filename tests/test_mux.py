@@ -26,6 +26,8 @@ import jasper.mux as mux_module
 from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 
+from ._async_wait import wait_signalled
+
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -314,23 +316,59 @@ async def test_alert_storm_does_not_postpone_fixed_patrol(
 
     mux._run_control_server = control_forever
     triggers = []
+    two_patrols_seen = asyncio.Event()
 
     async def record_reconcile(*, trigger, dirty_sources):
         triggers.append(trigger)
         if dirty_sources:
             mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
+        if sum(1 for t in triggers if "patrol" in t) >= 2:
+            two_patrols_seen.set()
 
     mux._reconcile = record_reconcile
-    task = asyncio.create_task(mux.run())
-    try:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + 0.14
-        while loop.time() < deadline:
+    mux_task = asyncio.create_task(mux.run())
+
+    async def alert_storm():
+        while True:
             mux.notify_source_changed(Source.AIRPLAY, "test")
             await asyncio.sleep(0.005)
+
+    # The storm runs concurrently with (rather than for a fixed wall-clock
+    # window before) the bounded wait below: a fixed real-time window raced
+    # the mux's own reconcile cadence and flaked under load (#1909) — a
+    # loaded box could cadence reconciles more slowly than the window
+    # assumed, observing only 1 patrol-tagged trigger instead of >= 2.
+    # Waiting on the observable (2 patrol triggers recorded) instead proves
+    # the same property — patrols keep firing despite a continuous alert
+    # storm — without depending on how much wall-clock time that takes.
+    #
+    # wait_signalled's own timeout is a hang-breaker, not a timing assertion
+    # (tests/_async_wait.py:30-32) — it is generous enough (10s default) to
+    # never flake, which means it alone cannot catch a real cadence
+    # regression (e.g. ALERT_COALESCE_SEC drifting 10x slower): the test
+    # would just wait longer and still pass. The elapsed ceiling below is
+    # what pins the actual rate promise, per that same doctrine — "the
+    # test's own assertions are what pin timing promises." 2.0s is 100x
+    # POLL_INTERVAL_SEC and 14x the old fixed window that flaked, so it
+    # cannot itself flake under load while still catching a real regression.
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    storm_task = asyncio.create_task(alert_storm())
+    try:
+        await wait_signalled(
+            two_patrols_seen, "second patrol-tagged reconcile trigger",
+            producer=mux_task,
+        )
+        elapsed = loop.time() - start
+        assert elapsed < 2.0, (
+            f"2 patrol-tagged reconciles took {elapsed:.3f}s under a "
+            "continuous alert storm -- the fixed-patrol cadence may have "
+            "regressed"
+        )
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        storm_task.cancel()
+        mux_task.cancel()
+        await asyncio.gather(storm_task, mux_task, return_exceptions=True)
 
     patrol_triggers = [trigger for trigger in triggers if "patrol" in trigger]
     assert len(patrol_triggers) >= 2

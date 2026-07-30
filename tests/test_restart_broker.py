@@ -16,6 +16,8 @@ import json
 import os
 import socket
 import subprocess
+import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -335,6 +337,205 @@ def test_nonzero_systemctl_surfaces_rc_and_stderr(broker):
     assert calls  # it DID attempt the restart
 
 
+# --- Connection resilience under load ---------------------------------------
+#
+# test_unauthorized_peer_uid_rejected starts a real _BrokerServer
+# (ThreadingUnixStreamServer) and connects a real client socket to it. Under
+# FD/thread pressure from a loaded parallel run (the same resource-exhaustion
+# class documented in test_wifi_guardian_script.py's module docstring —
+# #1909's third flake), CPython's socketserver can fail to spin up the
+# per-connection handler thread (`threading.Thread.start()` inside
+# `ThreadingMixIn.process_request`); its caller (`_handle_request_noblock`)
+# then unconditionally closes the already-accepted socket in a `finally`
+# without ever reading the request. The client's `sock.sendall()`
+# (restart_broker.py's `request_restart`) then sees `BrokenPipeError` /
+# `ConnectionResetError`, which `request_restart` wraps as `BrokerUnavailable`.
+# Observed once in CI (#1909): the run's only failure among 16,421 items,
+# alongside 14 contemporaneous `_TransientSpawnRetryWarning`s from
+# test_wifi_guardian_script.py in the same worker pool — the same class, just
+# manifesting as a stdlib thread-spawn failure instead of a subprocess fork()
+# failure.
+#
+# This is a test-harness resource hiccup, not a broker bug: the broker's
+# accept/dispatch/auth code never touches the socket until a handler thread
+# exists, so retrying the CLIENT's connection attempt changes nothing about
+# what gets asserted afterward. Only the two "peer already closed on us"
+# exceptions are retried; a genuinely absent socket, a real broker answer
+# (including a real "unauthorized" rejection), or a hang all still fail
+# immediately — mirrors test_wifi_guardian_script.py's `_run_guardian`
+# discipline (bounded attempts, warn per retry, never mask a real failure).
+_BROKER_CONNECT_RETRIES = 5
+
+
+class _TransientBrokerConnectRetryWarning(UserWarning):
+    """Emitted once per transient-connection retry (see comment above).
+
+    A momentary blip warns 1-2x and the test still passes; a persistently
+    broken connection warns on every attempt and then fails loudly via the
+    bounded re-raise, so the retry can never silently hide a real problem.
+    """
+
+
+def _request_restart_retrying_transient_failures(*args, **kwargs):
+    """`restart_broker.request_restart`, retried only on a transient
+    connection failure (see the module comment above)."""
+    last_exc: restart_broker.BrokerUnavailable | None = None
+    for attempt in range(_BROKER_CONNECT_RETRIES + 1):
+        try:
+            return restart_broker.request_restart(*args, **kwargs)
+        except restart_broker.BrokerUnavailable as exc:
+            if not isinstance(
+                exc.__cause__, (BrokenPipeError, ConnectionResetError),
+            ):
+                raise
+            last_exc = exc
+            warnings.warn(
+                f"test_restart_broker: retrying broker connect (attempt "
+                f"{attempt + 1}/{_BROKER_CONNECT_RETRIES + 1}) after "
+                f"transient failure: {exc.__cause__!r}",
+                _TransientBrokerConnectRetryWarning,
+                stacklevel=2,
+            )
+            time.sleep(0.05 * (attempt + 1))
+    assert last_exc is not None  # only reached via the except-continue path
+    raise last_exc
+
+
+# The wrapper's own retry/no-retry decision is pinned directly against a
+# monkeypatched restart_broker.request_restart -- no real socket, no
+# SO_PEERCRED, so these run on every platform and every CI leg (the
+# integration test below is Linux-only). Mirrors
+# test_wifi_guardian_script.py's own harness-resilience tests
+# (test_run_guardian_retries_transient_spawn_oserror,
+# test_run_guardian_warns_on_each_transient_retry,
+# test_run_guardian_does_not_retry_real_oserror).
+
+
+def test_retry_wrapper_passes_through_genuine_response_untouched(monkeypatch):
+    """A real broker response -- including a genuine "unauthorized"
+    rejection -- never raises BrokerUnavailable, so the wrapper must call
+    through exactly once and never warn."""
+    calls = {"n": 0}
+
+    def real_response(*args, **kwargs):
+        calls["n"] += 1
+        return {"ok": False, "error": "peer uid 999999 is unauthorized"}
+
+    monkeypatch.setattr(restart_broker, "request_restart", real_response)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = _request_restart_retrying_transient_failures(
+            "jasper-voice.service", verb="restart",
+        )
+    assert result == {"ok": False, "error": "peer uid 999999 is unauthorized"}
+    assert calls["n"] == 1
+    assert not [
+        w for w in caught
+        if issubclass(w.category, _TransientBrokerConnectRetryWarning)
+    ]
+
+
+def test_retry_wrapper_retries_transient_connection_failures_then_succeeds(
+    monkeypatch,
+):
+    """BrokenPipeError then ConnectionResetError as the BrokerUnavailable
+    cause -- the two "peer already closed on us" signatures the accept-
+    then-close race produces -- are each retried, warning once per retry,
+    until the real response comes through."""
+    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)  # no real backoff
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            try:
+                raise BrokenPipeError("synthetic transient failure")
+            except BrokenPipeError as cause:
+                raise restart_broker.BrokerUnavailable(str(cause)) from cause
+        if calls["n"] == 2:
+            try:
+                raise ConnectionResetError("synthetic transient failure")
+            except ConnectionResetError as cause:
+                raise restart_broker.BrokerUnavailable(str(cause)) from cause
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "request_restart", flaky)
+    with pytest.warns(_TransientBrokerConnectRetryWarning) as record:
+        result = _request_restart_retrying_transient_failures("jasper-voice.service")
+    assert result == {"ok": True}
+    assert calls["n"] == 3
+    retries = [
+        w for w in record
+        if issubclass(w.category, _TransientBrokerConnectRetryWarning)
+    ]
+    assert len(retries) == 2
+    assert "attempt 1/" in str(retries[0].message)
+
+
+def test_retry_wrapper_does_not_retry_a_causeless_broker_unavailable(monkeypatch):
+    """A BrokerUnavailable with no chained cause (e.g. "empty broker
+    response", "invalid broker response") is a real protocol-level answer,
+    never a load artefact -- it must surface on the very first attempt."""
+    calls = {"n": 0}
+
+    def not_transient(*args, **kwargs):
+        calls["n"] += 1
+        raise restart_broker.BrokerUnavailable("empty broker response")
+
+    monkeypatch.setattr(restart_broker, "request_restart", not_transient)
+    with pytest.raises(restart_broker.BrokerUnavailable, match="empty broker response"):
+        _request_restart_retrying_transient_failures("jasper-voice.service")
+    assert calls["n"] == 1
+
+
+def test_retry_wrapper_does_not_retry_a_non_transient_cause(monkeypatch):
+    """A BrokerUnavailable chained from an unrelated OSError (the socket
+    genuinely absent) is a real bug or misconfiguration, not FD/thread
+    pressure -- it must surface on the very first attempt, never be
+    retried into a confusing multi-second delay."""
+    calls = {"n": 0}
+
+    def not_transient(*args, **kwargs):
+        calls["n"] += 1
+        try:
+            raise FileNotFoundError("no such socket")
+        except FileNotFoundError as cause:
+            raise restart_broker.BrokerUnavailable(str(cause)) from cause
+
+    monkeypatch.setattr(restart_broker, "request_restart", not_transient)
+    with pytest.raises(restart_broker.BrokerUnavailable) as excinfo:
+        _request_restart_retrying_transient_failures("jasper-voice.service")
+    assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+    assert calls["n"] == 1
+
+
+def test_retry_wrapper_bounded_retries_then_raises_loudly(monkeypatch):
+    """A persistently-broken connection must not retry forever: bounded at
+    _BROKER_CONNECT_RETRIES + 1 total attempts, one warning per attempt,
+    then the last exception is raised loudly -- never swallowed."""
+    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)  # no real backoff
+    calls = {"n": 0}
+
+    def always_transient(*args, **kwargs):
+        calls["n"] += 1
+        try:
+            raise BrokenPipeError("synthetic, persistent failure")
+        except BrokenPipeError as cause:
+            raise restart_broker.BrokerUnavailable(str(cause)) from cause
+
+    monkeypatch.setattr(restart_broker, "request_restart", always_transient)
+    with pytest.warns(_TransientBrokerConnectRetryWarning) as record:
+        with pytest.raises(restart_broker.BrokerUnavailable) as excinfo:
+            _request_restart_retrying_transient_failures("jasper-voice.service")
+    assert isinstance(excinfo.value.__cause__, BrokenPipeError)
+    assert calls["n"] == _BROKER_CONNECT_RETRIES + 1 == 6
+    retries = [
+        w for w in record
+        if issubclass(w.category, _TransientBrokerConnectRetryWarning)
+    ]
+    assert len(retries) == _BROKER_CONNECT_RETRIES + 1 == 6
+
+
 @requires_peercred
 def test_unauthorized_peer_uid_rejected(tmp_path, monkeypatch):
     """A peer whose uid is not in the allowlist is refused before any
@@ -349,7 +550,7 @@ def test_unauthorized_peer_uid_rejected(tmp_path, monkeypatch):
     sock_path = str(tmp_path / "restart.sock")
     server = restart_broker.start_broker(sock_path)
     try:
-        resp = restart_broker.request_restart(
+        resp = _request_restart_retrying_transient_failures(
             "jasper-voice.service", verb="restart", socket_path=sock_path,
         )
         assert resp["ok"] is False
