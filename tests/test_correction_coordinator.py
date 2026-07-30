@@ -18,6 +18,8 @@ from jasper.correction.coordinator import (
     measurement_window,
 )
 
+from ._async_wait import wait_signalled
+
 REAL_ACQUIRE_MEASUREMENT_GATE = coordinator._acquire_measurement_gate
 REAL_RELEASE_MEASUREMENT_GATE = coordinator._release_measurement_gate
 
@@ -108,6 +110,7 @@ async def test_lease_refresh_failure_retries_and_still_restores(monkeypatch):
     """A malformed/empty renewal cannot strand voice paused."""
     uds_calls: list[str] = []
     pause_calls = 0
+    third_pause_call = asyncio.Event()
 
     async def fake_uds(path, cmd, **kw):
         nonlocal pause_calls
@@ -118,14 +121,23 @@ async def test_lease_refresh_failure_retries_and_still_restores(monkeypatch):
             pause_calls += 1
             if pause_calls == 2:
                 raise RuntimeError("empty response")
+            if pause_calls >= 3:
+                third_pause_call.set()
         return {"result": "ok"}
 
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.005)
 
+    # The retry loop is real (both delays above are just shrunk to keep the
+    # test fast) — wait on the observable the test cares about (a 3rd
+    # MEASURE_PAUSE, proving the 2nd call's failure was retried) instead of a
+    # fixed wall-clock sleep racing that same loop. A fixed window flaked
+    # under load (#1909): scheduling jitter could leave pause_calls at 2 when
+    # the window closed and the lease-refresh task got cancelled. The bound
+    # here is a hang-breaker, not a timing assertion — see tests/_async_wait.py.
     async with measurement_window(skip_music_isolation=True):
-        await asyncio.sleep(0.03)
+        await wait_signalled(third_pause_call, "third MEASURE_PAUSE retry call")
 
     assert pause_calls >= 3
     assert "MEASURE_RESUME" in uds_calls

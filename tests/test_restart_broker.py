@@ -16,6 +16,8 @@ import json
 import os
 import socket
 import subprocess
+import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -335,6 +337,70 @@ def test_nonzero_systemctl_surfaces_rc_and_stderr(broker):
     assert calls  # it DID attempt the restart
 
 
+# --- Connection resilience under load ---------------------------------------
+#
+# test_unauthorized_peer_uid_rejected starts a real _BrokerServer
+# (ThreadingUnixStreamServer) and connects a real client socket to it. Under
+# FD/thread pressure from a loaded parallel run (the same resource-exhaustion
+# class documented in test_wifi_guardian_script.py's module docstring —
+# #1909's third flake), CPython's socketserver can fail to spin up the
+# per-connection handler thread (`threading.Thread.start()` inside
+# `ThreadingMixIn.process_request`); its caller (`_handle_request_noblock`)
+# then unconditionally closes the already-accepted socket in a `finally`
+# without ever reading the request. The client's `sock.sendall()`
+# (restart_broker.py's `request_restart`) then sees `BrokenPipeError` /
+# `ConnectionResetError`, which `request_restart` wraps as `BrokerUnavailable`.
+# Observed once in CI (#1909): the run's only failure among 16,421 items,
+# alongside 14 contemporaneous `_TransientSpawnRetryWarning`s from
+# test_wifi_guardian_script.py in the same worker pool — the same class, just
+# manifesting as a stdlib thread-spawn failure instead of a subprocess fork()
+# failure.
+#
+# This is a test-harness resource hiccup, not a broker bug: the broker's
+# accept/dispatch/auth code never touches the socket until a handler thread
+# exists, so retrying the CLIENT's connection attempt changes nothing about
+# what gets asserted afterward. Only the two "peer already closed on us"
+# exceptions are retried; a genuinely absent socket, a real broker answer
+# (including a real "unauthorized" rejection), or a hang all still fail
+# immediately — mirrors test_wifi_guardian_script.py's `_run_guardian`
+# discipline (bounded attempts, warn per retry, never mask a real failure).
+_BROKER_CONNECT_RETRIES = 5
+
+
+class _TransientBrokerConnectRetryWarning(UserWarning):
+    """Emitted once per transient-connection retry (see comment above).
+
+    A momentary blip warns 1-2x and the test still passes; a persistently
+    broken connection warns on every attempt and then fails loudly via the
+    bounded re-raise, so the retry can never silently hide a real problem.
+    """
+
+
+def _request_restart_retrying_transient_failures(*args, **kwargs):
+    """`restart_broker.request_restart`, retried only on a transient
+    connection failure (see the module comment above)."""
+    last_exc: restart_broker.BrokerUnavailable | None = None
+    for attempt in range(_BROKER_CONNECT_RETRIES + 1):
+        try:
+            return restart_broker.request_restart(*args, **kwargs)
+        except restart_broker.BrokerUnavailable as exc:
+            if not isinstance(
+                exc.__cause__, (BrokenPipeError, ConnectionResetError),
+            ):
+                raise
+            last_exc = exc
+            warnings.warn(
+                f"test_restart_broker: retrying broker connect (attempt "
+                f"{attempt + 1}/{_BROKER_CONNECT_RETRIES + 1}) after "
+                f"transient failure: {exc.__cause__!r}",
+                _TransientBrokerConnectRetryWarning,
+                stacklevel=2,
+            )
+            time.sleep(0.05 * (attempt + 1))
+    assert last_exc is not None  # only reached via the except-continue path
+    raise last_exc
+
+
 @requires_peercred
 def test_unauthorized_peer_uid_rejected(tmp_path, monkeypatch):
     """A peer whose uid is not in the allowlist is refused before any
@@ -349,7 +415,7 @@ def test_unauthorized_peer_uid_rejected(tmp_path, monkeypatch):
     sock_path = str(tmp_path / "restart.sock")
     server = restart_broker.start_broker(sock_path)
     try:
-        resp = restart_broker.request_restart(
+        resp = _request_restart_retrying_transient_failures(
             "jasper-voice.service", verb="restart", socket_path=sock_path,
         )
         assert resp["ok"] is False
