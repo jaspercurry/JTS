@@ -88,18 +88,28 @@ async def test_pause_and_resume_voice(monkeypatch):
 async def test_long_window_renews_voice_measurement_lease(monkeypatch):
     """Human relay setup may exceed the voice daemon's 120 s safety timer."""
     uds_calls: list[str] = []
+    lease_renewed = asyncio.Event()
 
     async def fake_uds(path, cmd, **kw):
         uds_calls.append(cmd)
         if cmd == "STATUS":
             return {"state": "WAKE"}
+        if cmd == "MEASURE_PAUSE" and uds_calls.count("MEASURE_PAUSE") >= 2:
+            lease_renewed.set()
         return {"result": "ok"}
 
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
 
+    # The refresh loop is real (the interval above is just shrunk to keep the
+    # test fast) — wait on the observable the assertion names (a 2nd
+    # MEASURE_PAUSE, i.e. one lease renewal) instead of a fixed wall-clock
+    # window racing that loop. That fixed-window shape is what flaked under
+    # load in the sibling lease-refresh test (#1909): scheduling jitter could
+    # close the window before the renewal landed. The bound here is a
+    # hang-breaker, not a timing assertion — see tests/_async_wait.py.
     async with measurement_window(skip_music_isolation=True):
-        await asyncio.sleep(0.035)
+        await wait_signalled(lease_renewed, "voice measurement lease renewal")
 
     assert uds_calls.count("MEASURE_PAUSE") >= 2
     assert uds_calls[-1] == "MEASURE_RESUME"
