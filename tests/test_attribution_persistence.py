@@ -16,6 +16,7 @@ import dataclasses
 import json
 import math
 import shutil
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -561,6 +562,35 @@ def test_the_block_is_json_native() -> None:
             assert isinstance(value, (str, int, float))
     for value in block["curve_grid"]["freqs_hz"]:
         assert type(value) is float
+
+
+def test_sampling_emits_no_divide_by_zero_warning() -> None:
+    """The ``log2(0)`` guard's real and only observable effect.
+
+    The source grid is an ``rfftfreq`` grid whose first bin is DC. Measured
+    (not assumed): dropping it does **not** change a single sampled value,
+    because the grid starts at ``max(floor, lowest positive bin)`` and no
+    query point can reach the ``[-inf, log2(f1)]`` segment. What it does
+    change is that ``np.log2`` no longer warns and the result no longer
+    depends on how ``np.interp`` treats a ``-inf`` left edge, which numpy
+    does not specify.
+
+    So this pins the guard by the one thing it actually does. Delete the
+    ``freqs > 0.0`` filter in ``_sample_onto`` and this test fails; an
+    output-equality test would not, which is why the docstring there claims
+    only what is true.
+    """
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        block = position_evidence_block(
+            _combined(), position_records=_records(), validity_floor_hz=142.9
+        )
+
+    # And the block really was produced, not short-circuited into an
+    # "unavailable" that would pass this vacuously.
+    assert block["available"] is True
+    assert block["positions"][0]["magnitude_db"]
 
 
 def test_log_grid_refuses_a_degenerate_range() -> None:

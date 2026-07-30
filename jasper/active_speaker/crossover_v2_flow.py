@@ -3885,10 +3885,17 @@ class CrossoverV2Conductor:
         # WO-1: the per-position evidence metadata handed to the retention
         # seam, kept by position id so the group close can serialize the
         # members alongside the aggregate (attribution plan §6 / §11.1 A7).
-        # Same idempotency rule as ``_group_positions``: a retaken position
-        # REPLACES its earlier take, so this can never hold two records for
-        # one prompted spot. Small and bounded — one flat dict of scalars per
-        # accepted position.
+        # Small and bounded — one flat dict of scalars per accepted position.
+        #
+        # It tracks ``_group_positions`` on REPLACEMENT (a retake overwrites
+        # its position id, so this never holds two records for one prompted
+        # spot) but NOT on REMOVAL: the geometry-retry branch drops a take
+        # from ``_group_positions`` and leaves its record here. That is
+        # harmless rather than merely tolerated — the serializer joins on
+        # ``combined.position_ids``, which is built from the retained
+        # positions, so an orphaned record is never read. Do not "fix" it by
+        # pruning in the retry branch without checking that: the retake
+        # normally arrives and overwrites the record anyway.
         self._group_position_meta: dict[str, dict[str, dict[str, Any]]] = {
             phase: {} for phase in self._group_indexes
         }
@@ -5090,6 +5097,30 @@ class CrossoverV2Conductor:
 
         Idempotent per index: a retaken position REPLACES the earlier take, so
         a group can never carry two curves for one prompted spot.
+
+        **WO-1 moved the ``retain_position is None`` early return BELOW the
+        metadata build**, so the metadata is now assembled whether or not a
+        retention seam is bound. That is deliberate, not an oversight: the
+        metadata has two consumers now. The seam is one; the group close is
+        the other — ``_run_cloud_pipeline`` reads
+        ``_group_position_meta`` to serialize the per-position members — and
+        the close happens on every session, including the offline/test
+        configurations that bind no retention seam at all. Building it only
+        when a storage seam existed would have made the per-position evidence
+        silently depend on operator retention being wired.
+
+        The added cost when no seam is bound is one small dict plus one
+        SHA-256 of the capture's WAV bytes (:func:`_capture_wav_sha256`) — a
+        few milliseconds per accepted position, ~10 times per session.
+
+        **That hash stays inside ``_close_lock`` on purpose.** ``_group_position_meta``
+        is written here and read by :meth:`_run_cloud_pipeline` at the group
+        close, and since the eager-fit rider that close can run on a
+        background thread. Both sides are already under ``_close_lock`` —
+        exactly the protection the rider's own comment claims for the
+        retained positions and the cloud pipeline result — so the members and
+        the aggregate a fit reads are always the same group's. Hoisting the
+        hash out of the lock to shave milliseconds would buy a torn read.
         """
         retained = self._group_positions[phase]
         retained[:] = [p for p in retained if p.index != position.index]

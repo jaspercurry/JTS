@@ -77,9 +77,24 @@ _MECHANISM_ID_RE = re.compile(r"\bM[0-9]{1,2}\b")
 # Word-boundary matched, so "important" does not trip "port" and "concern"
 # does not trip "cone". Seeded from the device-taxonomy nouns §3.1's cited
 # prohibition is about; WO-4 extends the list as its detectors add copy.
+#
+# Two entries need their scope stated, because neither is obvious from the
+# name "hardware noun":
+#
+# * "subwoofer" is listed SEPARATELY from "woofer" and is not redundant: the
+#   word boundary that stops "important" tripping "port" also stops
+#   "\bwoofer\b" matching inside "subwoofer". It is a live noun — JTS ships
+#   2.1 and wireless-sub support — so the gap was reachable, not theoretical.
+# * "desk" is not hardware at all; it is a *reflector*. It belongs here
+#   because the rule §3.1 states is about naming WHAT PRODUCED a feature, not
+#   about a parts list: "the desk bounce" is the same device-taxonomy guess as
+#   "the horn's rim wave", made about the room instead of the speaker, and a
+#   single session licenses neither. Read this list as "nouns that name a
+#   cause", which is what the prohibition is actually for.
 _HARDWARE_NOUNS: tuple[str, ...] = (
     "horn",
     "tweeter",
+    "subwoofer",
     "woofer",
     "midrange",
     "driver",

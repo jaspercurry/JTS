@@ -1015,10 +1015,19 @@ shared **1/12-octave log grid from the group's validity floor up**, its echo
 scalars (τ, confidence, concentration, refusal), and — joined from the
 conductor's own retained metadata — the gate actually applied, the summed
 ripple, which attempt survived (`take_id`), and the capture's SHA-256. Cost
-measured on the S0 ten-position cloud: **+15.7 kB per closed group** (~1.57 kB
-per position, 89 grid points), of which 1.6 kB is the inline
-`field_descriptions` the attribution plan's §6 requires so the artifact reads
-without code. Serialization only — no new signal, no threshold, no verdict —
+measured on the S0 ten-position cloud, **per closed group, and it depends on
+which serialization you mean** — the two stores write the same block
+differently, so quoting one figure alone understates the other by ~13 KiB:
+
+| Store | Serialization | Before → after | Added |
+|---|---|---|---|
+| Bundle artifact (`cloud_<phase>.json`) | canonical JSON (`separators=(",",":")`) | 28,047 → 43,706 B | **+15,659 B (+15.3 KiB, +56 %)** |
+| Durable v2 state file | `json.dumps(..., indent=2, sort_keys=True)` | 38,420 → 67,209 B | **+28,789 B (+28.1 KiB, +75 %)** |
+
+That is ~1.57 kB per position canonical (89 grid points), of which ~1.6 kB per
+group is the inline `field_descriptions` the attribution plan's §6 requires so
+the artifact reads without code. Serialization only — no new signal, no
+threshold, no verdict —
 and it never raises, degrading to `{"available": false, "reason": …}` like the
 rest of this block. It deliberately does **not** ride `_compact_cloud_status`:
 `/state` stays the shape-scoped projection, pinned by

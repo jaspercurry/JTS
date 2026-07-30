@@ -179,10 +179,19 @@ def _sample_onto(
     the top of each interval far more heavily than the bottom.
 
     The source grid is an ``rfftfreq`` grid, so its first bin is DC and
-    ``log2(0)`` is ``-inf``. Dropping the non-positive bins before the
-    transform is not cosmetic: leaving them in makes the whole interpolation
-    depend on an infinity, and the resulting curve's bottom end is silently
-    wrong rather than loudly absent.
+    ``log2(0)`` is ``-inf``. **What dropping the non-positive bins actually
+    buys, stated exactly:** it suppresses a ``divide by zero`` RuntimeWarning
+    and removes any reliance on how ``np.interp`` treats a ``-inf`` left edge,
+    which numpy does not specify. It does **not** change the sampled values —
+    measured, not assumed: :func:`position_evidence_block` builds the grid at
+    ``max(floor, lowest positive bin)``, so no query point can ever land in
+    the ``[-inf, log2(f1)]`` segment, and the guarded and unguarded results
+    are bit-identical on the shipped grid.
+
+    The guard stays because depending on unspecified behaviour for a
+    correct answer is a latent bug, not because it is currently load-bearing.
+    Pinned by ``test_sampling_emits_no_divide_by_zero_warning`` — which fails
+    if it is deleted, so the reason above stays honest.
     """
 
     freqs = np.asarray(freqs_hz, dtype=float)

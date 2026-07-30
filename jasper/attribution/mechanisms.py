@@ -25,8 +25,20 @@ shape* and only the entries its own promotion path can actually produce:
 Several §4 rows state their tier in prose that does not reduce to one tier
 word without a judgment call (M6's "now measured", for one), and guessing at
 those tiers here would launder a claim into code for no benefit: nothing in
-WO-1 can reach them. WO-4 seeds M1, M3, M4, M6, M7, and M8 alongside the
-detectors that make them reachable.
+WO-1 can reach them.
+
+**Who adds the rest, and when — because it is NOT all WO-4.** §8's critical
+path is WO-1 → WO-2 → WO-3, and **WO-3 ships before WO-4**: its acceptance is
+"the M1/M3 decision recorded as a finding", which this registry would refuse
+today, since :func:`mechanism_spec` raises on an unregistered id. That is the
+correct order rather than an obstacle. WO-3 is the reverse-null probe (P1),
+and P1 is precisely the probe §4 names as load-bearing for separating M1 from
+M3 — a separation **no measurement in the corpus has ever made**, which is why
+both rows currently read `model-derived`. So WO-3 adds M1 and M3 *with the
+evidence that fixes their tiers in hand*, and states the tier its own probe
+earned rather than inheriting a guess made here. WO-4 then seeds M4, M6, M7,
+and M8 alongside the detectors that make those reachable. Adding an entry is a
+one-tuple edit to :data:`_SEED`; the engine needs no change.
 
 **The two required fields are the do-not, made structural.**
 :class:`MechanismSpec` cannot be constructed without both

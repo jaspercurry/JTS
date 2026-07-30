@@ -21,6 +21,26 @@ verifier; it must stop being the index.** A finding cites its evidence by a
 along to *verify* the bytes are the ones that were cited, never to *find*
 them.
 
+**Scope as shipped — which of the four stores actually writes this.** Two do,
+and the gap is stated rather than implied:
+
+* **crossover-v2 commissioning bundle** — writer shipped. The bundle session
+  id is the canonical value, and the cloud artifact and finding set both
+  carry it.
+* **operator capture ring** — writer shipped, and it is the store that needed
+  it most: it carried no session id of any kind, only the epoch-microsecond
+  filename stamp.
+* **laptop `captures/` archive** — **no writer here.** It inherits identity
+  transitively, from ring sidecars pulled off the Pi, which now carry the key.
+  ``EVIDENCE_STORE_LAPTOP_ARCHIVE`` exists so a finding can *cite* an archive
+  file; nothing in this repo stamps one.
+* **room-correction bundles** — **deferred to WO-8**, which is the rung that
+  adopts the room line onto this library (§3.5's SoC boundary). The type is
+  ready for it; the writer is not this WO's.
+
+So "survives every hop" is true of every hop WO-1 owns, and the two remaining
+hops are named above rather than left for a reader to discover as an absence.
+
 **The shape.** One identifier, one canonical key name, written unchanged into
 every store that holds a byproduct of the session:
 

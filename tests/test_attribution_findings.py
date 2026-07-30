@@ -183,6 +183,12 @@ def test_an_unsure_finding_must_recommend_a_probe() -> None:
         ("The horn reflects at this frequency.", "hardware-noun-free"),
         ("The tweeter is 7 dB dark here.", "hardware-noun-free"),
         ("This desk bounce cancels the low end.", "hardware-noun-free"),
+        # Listed separately from "woofer" on purpose: the word boundary that
+        # keeps "important" from tripping "port" also keeps "\bwoofer\b" from
+        # matching inside "subwoofer". A live noun — JTS ships 2.1 and
+        # wireless-sub support — so this gap was reachable.
+        ("The subwoofer arrives late here.", "hardware-noun-free"),
+        ("Both subwoofers arrive late here.", "hardware-noun-free"),
         ("This range is position_invariant.", "not an internal slug"),
         ("M2 explains this range.", "must not name a mechanism id"),
         ("   ", "non-empty"),

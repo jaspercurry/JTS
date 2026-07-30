@@ -206,22 +206,30 @@ def verify_finding_evidence(store: Any, finding_set: FindingSet) -> None:
     finding is covered by this check.
     """
 
+    # Every finding a group produces cites the SAME cloud artifact, so a
+    # naive walk re-reads and re-hashes one file once per finding. Memoize by
+    # locator: the digest of a write-once artifact cannot change underneath a
+    # single verification pass, and the read is what costs.
+    digests: dict[str, str] = {}
     for finding in finding_set.findings:
         for cite in finding.cites:
             if cite.store != EVIDENCE_STORE_BUNDLE:
                 continue
-            try:
-                identity = store.identify_artifact(cite.locator)
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                raise FindingEvidenceMissing(
-                    f"{finding.mechanism} cites {cite.locator!r}, which this "
-                    f"bundle can no longer produce: {exc}"
-                ) from exc
-            if cite.sha256 and str(identity.sha256) != cite.sha256:
+            digest = digests.get(cite.locator)
+            if digest is None:
+                try:
+                    digest = str(store.identify_artifact(cite.locator).sha256)
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    raise FindingEvidenceMissing(
+                        f"{finding.mechanism} cites {cite.locator!r}, which this "
+                        f"bundle can no longer produce: {exc}"
+                    ) from exc
+                digests[cite.locator] = digest
+            if cite.sha256 and digest != cite.sha256:
                 raise FindingEvidenceMissing(
                     f"{finding.mechanism} cites {cite.locator!r} at "
                     f"{cite.sha256[:12]}…, but the bundle now holds "
-                    f"{str(identity.sha256)[:12]}…"
+                    f"{digest[:12]}…"
                 )
 
 
