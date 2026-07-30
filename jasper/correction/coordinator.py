@@ -24,7 +24,11 @@ What gets paused (and why):
     WakeLoop drops mic frames during the window — no wake events
     fire, no Ducker calls happen, no TTS plays. The outputd content
     meter is paused so the sweep does not become the next assistant
-    loudness baseline.
+    loudness baseline. PAUSE also holds its reply while assistant audio
+    that was ALREADY in playout when it landed drains, so a cue or timer
+    that started a moment earlier cannot bleed into the first capture
+    (#1898); that drain is bounded daemon-side and must stay under
+    VOICE_MEASURE_PAUSE_TIMEOUT_SEC below.
 
 What does NOT get paused:
 
@@ -73,6 +77,16 @@ DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
 # renewal preserves that legitimate window without weakening crash recovery.
 MEASUREMENT_LEASE_REFRESH_SEC = 60.0
 MEASUREMENT_LEASE_RETRY_SEC = 5.0
+# How long we wait for the daemon's MEASURE_PAUSE reply. Named because it
+# is now a contract, not a local timeout: since #1898 the daemon may hold
+# that reply while it drains assistant audio that was already in playout,
+# and a coordinator that gives up believes voice was never paused — it
+# skips MEASURE_RESUME on the way out and leaves the speaker gated until
+# the daemon's 2-minute auto-clear. The daemon's drain bound
+# (voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC) must therefore stay under
+# this value; a test pins the pair. Lowering this needs the daemon-side
+# bound lowered first, in an earlier release.
+VOICE_MEASURE_PAUSE_TIMEOUT_SEC = 3.0
 MEASUREMENT_FANIN_LABEL = "correction"
 MEASUREMENT_GATE_OWNER = "correction-measurement"
 MEASUREMENT_GATE_REFRESH_SEC = 20.0
@@ -372,7 +386,9 @@ async def measurement_window(
         if not skip_voice_pause:
             try:
                 resp = await _voice_uds_command(
-                    voice_socket_path, "MEASURE_PAUSE", timeout=3.0,
+                    voice_socket_path,
+                    "MEASURE_PAUSE",
+                    timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
                 )
                 if resp.get("result") == "ok":
                     voice_paused = True
@@ -385,7 +401,7 @@ async def measurement_window(
                                 renewal = await _voice_uds_command(
                                     voice_socket_path,
                                     "MEASURE_PAUSE",
-                                    timeout=3.0,
+                                    timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
                                 )
                             except (
                                 FileNotFoundError,
