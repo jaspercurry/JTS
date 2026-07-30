@@ -80,7 +80,7 @@ import math
 import time
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import numpy as np
 
@@ -2133,17 +2133,44 @@ def _compose_sigma_db(
 # Injected seams. The web host binds the production implementations
 # (jasper.web.correction_crossover_v2); tests inject fakes.
 PlayProgram = Callable[[str, ExcitationProgram], None]
-# analyze(program, capture_result, priors, geometry) → ProgramAnalysis. The
-# second argument is the relay CaptureResult (wav + phone-reported device +
-# setup — the production binding resolves the mic calibration from it; fakes
-# may pass raw bytes). ``geometry`` is the conductor's declared
-# MeasurementGeometry so the parallax correction actually reaches
-# analyze_program_capture — a seam that dropped it would silently analyze
-# with zero spacing.
-AnalyzeCapture = Callable[
-    [ExcitationProgram, Any, MeasurementPriors, MeasurementGeometry],
-    ProgramAnalysis,
-]
+
+
+class AnalyzeCapture(Protocol):
+    """analyze(program, capture_result, priors, geometry, *, phase) → ProgramAnalysis.
+
+    The second argument is the relay CaptureResult (wav + phone-reported
+    device + setup — the production binding resolves the mic calibration
+    from it; fakes may pass raw bytes). ``geometry`` is the conductor's
+    declared MeasurementGeometry so the parallax correction actually reaches
+    analyze_program_capture — a seam that dropped it would silently analyze
+    with zero spacing.
+
+    ``phase`` is REQUIRED and keyword-only: the CONDUCTOR's own flow phase
+    (issue #1855) — NOT ``program.phase``. The two are different
+    vocabularies: every cloud position plays ``self._verify_program`` (see
+    ``_program_for_phase``), so ``program.phase`` is always "verify" for
+    PHASE_VERIFY, PHASE_CLOUD_MEASURE, and PHASE_CLOUD_VERIFY alike. A seam
+    that derives a retained capture's label from ``program.phase`` mislabels
+    every cloud position as "verify" — the exact bug #1855 fixed. No
+    default: a binder or a refactor that drops ``phase=phase`` must fail at
+    the call, not fall back silently to ``program.phase`` and reintroduce
+    the mislabel. A plain ``Callable[[...], R]`` can't express a required
+    keyword-only parameter, hence this Protocol — prior art in-package:
+    ``jasper.active_speaker.playback.TonePlaybackBackend`` and
+    ``jasper.active_speaker.commissioning_capture_producer.RegionCaptureOperation``.
+    """
+
+    def __call__(
+        self,
+        program: ExcitationProgram,
+        result: Any,
+        priors: MeasurementPriors,
+        geometry: MeasurementGeometry,
+        *,
+        phase: str,
+    ) -> ProgramAnalysis: ...
+
+
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
 ApplyGate = Callable[[], bool]
@@ -4409,7 +4436,13 @@ class CrossoverV2Conductor:
         # production analyze binding resolves the mic calibration from the
         # phone-reported setup/device, and the conductor's declared geometry
         # rides along so the parallax correction reaches the analysis.
-        analysis = self._seams.analyze(program, result, priors, self._geometry)
+        # ``phase=phase`` (issue #1855): the flow's OWN phase, threaded
+        # explicitly because ``program.phase`` is not a reliable stand-in —
+        # every cloud position plays ``self._verify_program`` and so always
+        # carries ``program.phase == "verify"`` (see ``_program_for_phase``).
+        analysis = self._seams.analyze(
+            program, result, priors, self._geometry, phase=phase,
+        )
         if phase == PHASE_CHECK:
             verdict = self._consume_check(analysis)
         elif phase == PHASE_MEASURE:

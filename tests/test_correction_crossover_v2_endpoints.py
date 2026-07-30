@@ -236,7 +236,10 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
             index=attempt - 1,
         )
 
-    def analyze(program: Any, result: Any, priors: Any, geometry: Any) -> Any:
+    def analyze(
+        program: Any, result: Any, priors: Any, geometry: Any,
+        *, phase: str | None = None,
+    ) -> Any:
         factory = analyses.get(program.phase) or {
             "check": _check_analysis,
             "measure": _measure_analysis,
@@ -3230,7 +3233,10 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     program = build_verify_program(FC_HZ, sweep_s=0.5)
     geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
     result = _FakeResult(setup={"calibration": {"mode": "serial"}}, device={"label": "UMIK-2"})
-    out = analyze(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry)
+    out = analyze(
+        program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry,
+        phase="verify",
+    )
 
     assert out == "analysis"
     # The resolver was invoked with the capture's setup/device.
@@ -3272,6 +3278,7 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
         analyze(
             program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
     # NOT silent: analysis ran uncalibrated, annotated as a stored fact + WARN.
     assert seen["calibration"] is None
@@ -3316,7 +3323,9 @@ def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypat
     program = build_verify_program(FC_HZ, sweep_s=0.5)
     result = _FakeResult(setup={"calibration": {"mode": "serial"}})
     incoming_priors = MeasurementPriors(crossover_fc_hz=FC_HZ)
-    analyze(program, result, incoming_priors, MeasurementGeometry())
+    analyze(
+        program, result, incoming_priors, MeasurementGeometry(), phase="verify",
+    )
 
     # The ORIGINAL priors object is untouched (dataclasses.replace returns a
     # new instance) — the mutated copy is what reaches analyze_program_capture.
@@ -3352,6 +3361,7 @@ def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resol
     analyze(
         program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
         MeasurementGeometry(),
+        phase="verify",
     )
     assert seen["priors"].mic_tier == "phone"
 
@@ -3386,6 +3396,7 @@ def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(mon
     analyze(
         program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
         MeasurementGeometry(),
+        phase="verify",
     )
     assert seen["priors"].mic_tier == "phone"
 
@@ -3419,6 +3430,7 @@ def test_capture_retention_marker_absent_writes_nothing(tmp_path, monkeypatch):
     out = analyze(
         program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
         MeasurementGeometry(),
+        phase="verify",
     )
     assert out == "analysis"
     assert not dump_dir.exists()
@@ -3465,6 +3477,7 @@ def test_capture_retention_marker_present_writes_wav_and_diagnostic_sidecar(
     out = analyze(
         program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
         MeasurementGeometry(),
+        phase="verify",
     )
     assert out is fake_analysis
 
@@ -3485,6 +3498,105 @@ def test_capture_retention_marker_present_writes_wav_and_diagnostic_sidecar(
     # — the analyze seam runs before the conductor's phase gate).
     assert sidecar["diagnostic"]["alignment_confidence"] == 0.9
     assert sidecar["diagnostic"]["delay_us"] == 12.0
+
+
+def test_capture_retention_labels_from_flow_phase_not_program_identity(
+    tmp_path, monkeypatch, caplog,
+):
+    """Issue #1855 (the byte-identity trap): every cloud position plays
+    ``self._verify_program`` — see ``CrossoverV2Conductor._program_for_phase``'s
+    ``SUMMED_SWEEP_PHASES`` branch — so the SAME program object/bytes is
+    retained during VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike, and
+    ``program.phase`` is always "verify" for all three. Before the fix,
+    retention read ``program.phase`` directly and mislabeled every cloud
+    position as "verify" (32 of 45 retained sidecars, per the 2026-07-29
+    WO-0 retrospective) — the issue's headline symptom being every
+    ``event=correction.crossover_v2_capture_retained`` line during
+    CLOUD_MEASURE carrying ``phase=verify``. The fix threads the conductor's
+    own flow phase through the ``analyze`` seam's ``phase=`` keyword instead.
+    Pin: the SAME byte-identical capture, retained once per flow phase, must
+    yield two sidecars AND two ``crossover_v2_capture_retained`` log lines
+    with two DIFFERENT, correct labels."""
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        AlignmentEstimate,
+        MeasurementGeometry,
+        MeasurementPriors,
+        ProgramAnalysis,
+    )
+
+    dump_dir = tmp_path / "xover-capture-dump"
+    dump_dir.mkdir()
+    (dump_dir / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).touch()
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
+
+    fake_analysis = ProgramAnalysis(
+        phase="verify", program_id="prog-1", locations=(),
+        alignment=AlignmentEstimate(
+            delay_us=12.0, raw_delay_us=12.0, parallax_us=0.0,
+            polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+            confidence=0.9,
+        ),
+    )
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: fake_analysis)
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={}
+    )
+    # ONE program — the conductor's real ``self._verify_program`` — reused
+    # across both calls, exactly as the real flow reuses it for VERIFY and
+    # every cloud position.
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    assert program.phase == "verify"  # the trap: identical for all three phases
+
+    verify_result = _FakeResult(device={"label": "UMIK-2"})
+    cloud_result = _FakeResult(device={"label": "UMIK-2"})
+    # _mono_wav_bytes() is deterministic — these two captures are genuinely
+    # byte-identical, matching the WO-0 retrospective's SHA-256 finding.
+    assert verify_result.wav == cloud_result.wav
+
+    def _retained_event_line(text: str) -> str:
+        # Isolate the retention event's OWN line — the resolver returns no
+        # calibration here, so a same-batch ``crossover_v2_uncalibrated_
+        # capture`` WARN also fires and legitimately says ``phase=verify``
+        # (it reports the PROGRAM's type, an unrelated, unchanged concern —
+        # see bind_production_analyze's docstring). A bare ``in caplog.text``
+        # check would false-collide with that line.
+        lines = [
+            line for line in text.splitlines()
+            if "event=correction.crossover_v2_capture_retained" in line
+        ]
+        assert len(lines) == 1, f"expected exactly one retained-event line, got {lines!r}"
+        return lines[0]
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        analyze(
+            program, verify_result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(), phase="verify",
+        )
+        assert "phase=verify" in _retained_event_line(caplog.text)
+        caplog.clear()
+
+        analyze(
+            program, cloud_result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(), phase="cloud_measure",
+        )
+        # The exact regression: this event must say cloud_measure, not the
+        # "verify" #1855 reported for every cloud position.
+        retained_line = _retained_event_line(caplog.text)
+        assert "phase=cloud_measure" in retained_line
+        assert "phase=verify" not in retained_line
+
+    jsons = sorted(dump_dir.glob("*.json"))
+    assert len(jsons) == 2
+    sidecars = {json.loads(p.read_text())["phase"]: p for p in jsons}
+    assert set(sidecars) == {"verify", "cloud_measure"}
+    # Both sidecars agree on the WAV hash (same bytes) — only the label
+    # differs, and it differs correctly.
+    verify_sidecar = json.loads(sidecars["verify"].read_text())
+    cloud_sidecar = json.loads(sidecars["cloud_measure"].read_text())
+    assert verify_sidecar["wav_sha256_12"] == cloud_sidecar["wav_sha256_12"]
 
 
 def test_capture_retention_prunes_oldest_past_the_file_count_cap(tmp_path, monkeypatch):
@@ -3515,6 +3627,7 @@ def test_capture_retention_prunes_oldest_past_the_file_count_cap(tmp_path, monke
         analyze(
             program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
         _time.sleep(0.02)  # distinct filenames/mtimes for oldest-first pruning
 
@@ -3565,6 +3678,7 @@ def test_capture_retention_write_failure_does_not_break_analysis(
         out = analyze(
             program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
     assert out == "analysis"
     assert "correction.crossover_v2_capture_retain_failed" in caplog.text
@@ -3609,6 +3723,7 @@ def test_capture_retention_prunes_oldest_past_the_byte_cap(tmp_path, monkeypatch
     analyze(
         program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
         MeasurementGeometry(),
+        phase="verify",
     )
     one_capture_bytes = sum(
         p.stat().st_size for p in probe_dir.iterdir()
@@ -3629,6 +3744,7 @@ def test_capture_retention_prunes_oldest_past_the_byte_cap(tmp_path, monkeypatch
         analyze(
             program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
         newest_files = [p for p in dump_dir.iterdir() if p.name not in before]
         _time.sleep(0.02)  # distinct filenames/mtimes for oldest-first pruning
@@ -3687,6 +3803,7 @@ def test_capture_retention_file_vanishing_mid_prune_does_not_break_analysis(
     analyze(
         program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
         MeasurementGeometry(),
+        phase="verify",
     )
     first_gen = [
         p for p in dump_dir.iterdir()
@@ -3728,6 +3845,7 @@ def test_capture_retention_file_vanishing_mid_prune_does_not_break_analysis(
         out = analyze(
             program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
     # The measurement itself is completely unaffected by the vanished file.
     assert out == "analysis"
@@ -3774,6 +3892,7 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
         analyze(
             program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
     assert "crossover_v2_uncalibrated_capture" in caplog.text
     assert "setup_mode=stored" in caplog.text
@@ -3956,6 +4075,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
         out = analyze(
             program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
 
     assert out == "analysis"
@@ -4012,6 +4132,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
         out = analyze(
             program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
             MeasurementGeometry(),
+            phase="verify",
         )
 
     assert out == "analysis"

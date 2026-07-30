@@ -1561,7 +1561,11 @@ Each retained capture is two files, `<timestamp>_<phase>_<device>.wav` +
 per-capture diag events above (keyed by each response's own role string
 rather than a hardcoded woofer/tweeter label, since this runs at the
 `analyze` seam, before the conductor's role mapping exists — so it has no
-`accepted`/`code`, only the analysis's own numbers).
+`accepted`/`code`, only the analysis's own numbers). `phase` (filename and
+sidecar) is the FLOW's own phase — `check`/`measure`/`verify`/
+`cloud_measure`/`cloud_verify` all appear post-#1855 — never the underlying
+`ExcitationProgram.phase`, which is only ever `check`/`measure`/`verify`
+since every cloud position plays the verify-shaped summed sweep.
 
 Ring-buffered by **both** file count (`XOVER_CAPTURE_DUMP_MAX_FILES = 90`)
 and total bytes (`XOVER_CAPTURE_DUMP_MAX_BYTES = 300 MB`), oldest-first
