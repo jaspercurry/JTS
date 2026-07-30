@@ -374,13 +374,15 @@ async def test_research_drain_never_speaks_while_measurement_active():
     flush jobs queued while busy) must also honor the flag, mirroring
     test_research_drain_never_speaks_while_session further below.
 
-    This isn't just defense in depth: _drain_pending_research's own
-    top-level guard must check the flag too, not only
-    _speak_research_job's internal one. Without it, this test hangs —
-    _speak_research_job re-queues the job, which refills
-    `_pending_research`, which the `while` loop here reads as "more
-    work" and retries with no sleep, forever, for as long as the window
-    stays open (a real bug this test caught while developing the fix)."""
+    Correction: this test arms the flag BEFORE calling
+    _drain_pending_research, so it only exercises the two top-level
+    guards (pre-lock and post-lock) — either one alone already keeps
+    THIS test from hanging, so it does not by itself pin the
+    per-iteration guard inside the for-loop. That guard is the one
+    whose regression actually wedges the daemon (a mid-batch busy-spin
+    with no sleep, for as long as the window stays open) — see
+    test_research_drain_mid_batch_measurement_active_returns_without_hang
+    below, which arms the flag mid-batch instead of before entry."""
     from jasper.voice_daemon import State
 
     wl = _wake_loop()
@@ -396,6 +398,89 @@ async def test_research_drain_never_speaks_while_measurement_active():
     await wl._drain_pending_research()
 
     assert [job.id for job in wl._pending_research] == ["job12345"]
+
+
+async def test_research_drain_mid_batch_measurement_active_returns_without_hang():
+    """issue #1786 (C-1 follow-up): the per-iteration guard inside
+    _drain_pending_research's for-loop — not just the two top-level
+    guards pinned above — is what stops a mid-batch busy-spin. This
+    test arms the flag as a side effect of speaking the FIRST job in a
+    two-job batch, so the SECOND job is still sitting in `batch` when
+    the per-iteration check runs: the only shape that actually
+    exercises that guard.
+
+    A regression here (removing the per-iteration check, or its
+    `self._measurement_active.is_set()` clause specifically) does not
+    raise on its own — it spins _drain_pending_research's `while` loop
+    forever with no sleep, because _speak_research_job's own
+    measurement guard re-queues the job it was just handed via
+    `_queue_pending_research`, and the `while` loop reads that refill
+    as "more work" and retries immediately.
+
+    Verified empirically while writing this test: wrapping the call in
+    `asyncio.wait_for(..., timeout=...)` (the repo's usual bounded-wait
+    convention, tests/test_async_wait_contract.py) does NOT catch this
+    shape. That spin never awaits anything that actually suspends —
+    `log_event` and `_queue_pending_research` are both plain sync calls
+    — so the event loop never gets scheduled back to check `wait_for`'s
+    own timeout; only pytest-timeout's OS-signal alarm can preempt a
+    fully synchronous busy loop like this one, and only after the full
+    300s backstop. So instead this test counts re-queues directly:
+    `_queue_pending_research` is wrapped to raise a plain, synchronous
+    AssertionError once a job has clearly been handed back with no
+    progress, which propagates immediately with no dependency on event-
+    loop scheduling. `asyncio.wait_for` is kept around it anyway as a
+    second, complementary net for a *different* regression shape (one
+    that hangs on a genuine unresolved await instead of busy-spinning).
+    """
+    from jasper.voice_daemon import State
+
+    wl = _wake_loop()
+    wl._state = State.WAKE
+    wl._pending_research = [
+        _job(id="first", result="First."),
+        _job(id="second", result="Second."),
+    ]
+    spoken: list[str] = []
+    requeue_count = 0
+    real_queue_pending_research = wl._queue_pending_research
+
+    def _counting_queue_pending_research(job: ResearchJob) -> None:
+        nonlocal requeue_count
+        requeue_count += 1
+        if requeue_count > 3:
+            raise AssertionError(
+                f"{job.id!r} was re-queued {requeue_count} times with no "
+                "progress — the per-iteration measurement guard in "
+                "_drain_pending_research likely regressed and is busy-"
+                "spinning instead of returning"
+            )
+        real_queue_pending_research(job)
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        # Simulate a measurement window opening the instant the first
+        # job's "ready?" prompt finishes, while job "second" is still
+        # queued in the batch _drain_pending_research is iterating.
+        wl._measurement_active.set()
+        return True
+
+    async def _open(_job: ResearchJob) -> None:
+        return None
+
+    wl._play_dynamic_text = _play
+    wl._open_confirmation_window = _open
+    wl._queue_pending_research = _counting_queue_pending_research
+
+    await asyncio.wait_for(wl._drain_pending_research(), timeout=5.0)
+
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert [job.id for job in wl._pending_research] == ["second"]
+    # The correct per-iteration guard puts "second" back via direct list
+    # concatenation (`batch[idx:] + self._pending_research`), never
+    # through _queue_pending_research — so a healthy run never even
+    # reaches the counting wrapper.
+    assert requeue_count == 0
 
 
 def test_record_research_delivery_clears_stale_pending_job():

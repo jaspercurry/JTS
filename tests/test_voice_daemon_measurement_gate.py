@@ -94,6 +94,27 @@ async def test_play_supervisor_cue_refuses_during_measurement(caplog) -> None:
     assert "reason=measurement_active" in caplog.text
 
 
+async def test_play_supervisor_cue_measurement_takes_priority_over_output_busy() -> None:
+    """issue #1786 (C-5): measurement and output-active CAN both be true
+    at once (measurement_pause() only refuses on an active session, not
+    on output), so the skip reason must name the more fundamental cause
+    — measurement, not output — when both hold. Checking measurement
+    first is what pins this; checking output first would misattribute
+    the skip to "output happened to be busy" in the journal."""
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
+    wl._cues = _RefusingCues()
+    wl._measurement_active.set()
+    turn = await wl._output_gate.begin_turn()
+    try:
+        result = await wl.play_supervisor_cue("cant_connect")
+    finally:
+        await wl._output_gate.end_turn(turn)
+
+    assert result == "skipped_measurement_active"
+
+
 async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
     from jasper.voice_daemon import WakeLoop
 

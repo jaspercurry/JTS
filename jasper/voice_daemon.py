@@ -1474,11 +1474,21 @@ class WakeLoop:
         Same safe-default suppression applies to an open room-
         correction measurement window (issue #1786): the next wake
         event (or reactive `cant_connect`) still handles a genuinely
-        wedged connection once the window closes."""
+        wedged connection once the window closes.
+
+        Measurement is checked before output-active (unlike the
+        session check above it, the two CAN be true at once —
+        `measurement_pause()` only refuses on an active session, not
+        on output) so the skip reason names the more fundamental cause
+        when both hold: a household reading the journal should see
+        "we're respecting the measurement window", not "output
+        happened to be busy". The fall-through to `play_cue()` below
+        double-checks measurement there too (its own independent gate
+        for direct CUE_PLAY callers) — harmless, since this function's
+        own check above already covers the supervisor-escalation path
+        and short-circuits before ever reaching it."""
         if self._state is State.SESSION:
             return "skipped_session_active"
-        if self._output_gate.is_active:
-            return "skipped_output_active"
         if self._measurement_active.is_set():
             log_event(
                 logger,
@@ -1488,6 +1498,8 @@ class WakeLoop:
                 mode="supervisor",
             )
             return "skipped_measurement_active"
+        if self._output_gate.is_active:
+            return "skipped_output_active"
         return await self.play_cue(slug)
 
     def set_research_scheduler(
@@ -1567,6 +1579,15 @@ class WakeLoop:
         turn cannot complete while `_measurement_active` is set), so
         the existing queue-then-drain machinery is already safe here —
         no new drain trigger is needed.
+
+        The drain itself only runs on the household's next COMPLETED
+        voice turn (_end_turn_inner → _drain_pending_research), not on
+        `measurement_resume()` — a queued result can sit for a while,
+        bounded only by `_research_pending_cap`. Draining eagerly on
+        resume was considered and rejected: that would fire right at
+        the sweep's trailing edge, the same in-flight-bleed window
+        tracked separately as issue #1898, reintroducing the class of
+        risk this fix closes rather than a fresh, unrelated one.
         """
         async with self._research_announce_lock:
             if self._measurement_active.is_set():
