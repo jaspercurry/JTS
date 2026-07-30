@@ -3676,6 +3676,86 @@ def test_rate_mismatch_is_rejected():
 L3_RUN5_BROKEN_TRIM_DB = -26.5088
 L3_RUN5_FIT_FRAME_GAP_DB = 13.4440
 
+# The run-5 session's own declared topology, which is also the shape #1870's
+# 2026-07-30 field session failed on: a woofer swept to 4000 Hz and a tweeter
+# swept from 2000, against a 2000 Hz LR4. The woofer's declared span therefore
+# reaches an octave into its own stopband — the #1929 premise, on real bytes.
+CDHORN_RUN5_FC_HZ = 2000.0
+CDHORN_RUN5_BANDS_HZ = {"woofer": (150.0, 4000.0), "tweeter": (2000.0, 20000.0)}
+CDHORN_RUN5_DRIVER_CLASS = {"woofer": "unknown", "tweeter": "compression_horn"}
+
+
+def _cdhorn_run5_analysis(monkeypatch):
+    """The archived run-5 MEASURE capture, analyzed era-exactly.
+
+    Extracted so the two corpus regressions below read ONE deconvolution
+    chain — the property tests/_flat_lin_corpus.py's docstring calls
+    load-bearing, applied to this module's own second reader.
+    """
+    import glob
+    import wave
+
+    from jasper.audio_measurement.calibration import parse_calibration_text
+
+    def load(path: str) -> np.ndarray:
+        with wave.open(path) as handle:
+            raw = handle.readframes(handle.getnframes())
+            channels = handle.getnchannels()
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
+        return samples[::2] if channels == 2 else samples
+
+    # Era-exact, like every other corpus reader: the pins here came from the
+    # analysis as PERFORMED, which read this UMIK-2 file on the parser's
+    # "correction" default. The file is really a RESPONSE curve (the product
+    # negates it since 2026-07-27); flipping the corpus to match is #1774, one
+    # edit at the constant. Stated rather than inherited so it reads as a
+    # decision — see tests/_flat_lin_corpus.py for the full cost.
+    calibration = parse_calibration_text(
+        CDHORN_CALIBRATION.read_text(),
+        sign_convention=CORPUS_CALIBRATION_SIGN_CONVENTION,
+    )
+    program = build_measure_program(
+        {"woofer": -6.0005, "tweeter": -15.0105},
+        [
+            RoleBand("woofer", 0, FrequencyBand(*CDHORN_RUN5_BANDS_HZ["woofer"])),
+            RoleBand("tweeter", 1, FrequencyBand(*CDHORN_RUN5_BANDS_HZ["tweeter"])),
+        ],
+        leading_pilot_gains_db=(-16.0006, -6.0005),
+        leading_pilot_role="woofer",
+        courtesy_prelude=True,
+    )
+    capture = load(sorted(glob.glob(f"{CDHORN_ROOT}/*run5_measure.wav"))[-1])
+    offset = sweep_anchored_global_offset(capture, program.segment("sweep_w"))
+    real_global_offset = program_analysis._global_offset
+    monkeypatch.setattr(
+        program_analysis,
+        "_global_offset",
+        lambda prog, cap, rate: (offset, *real_global_offset(prog, cap, rate)[1:]),
+    )
+    analysis = analyze_program_capture(
+        program, capture, SR,
+        calibration=calibration,
+        geometry=MeasurementGeometry(driver_spacing_m=0.254, mic_distance_m=1.0),
+        priors=MeasurementPriors(crossover_fc_hz=CDHORN_RUN5_FC_HZ),
+    )
+    return analysis, program, capture, offset, calibration
+
+
+def _cdhorn_run5_envelope(role, response):
+    """The shipped fit path's envelope for one archived run-5 driver."""
+    from jasper.active_speaker.linearization_envelope import compose_envelope
+
+    band = CDHORN_RUN5_BANDS_HZ[role]
+    seed = compose_envelope(
+        role, response, excited_band_hz=band, mic_tier="reference",
+        driver_class=CDHORN_RUN5_DRIVER_CLASS[role], sigma_db=None,
+    )
+    return compose_envelope(
+        role, response, excited_band_hz=band, mic_tier="reference",
+        driver_class=CDHORN_RUN5_DRIVER_CLASS[role],
+        sigma_db=np.full_like(seed.freqs_hz, 0.01),
+    )
+
 
 @requires_cdhorn
 def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypatch):
@@ -3696,55 +3776,9 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
     transfer functions — the "reference mismatch between the two paths"
     hypothesis was REFUTED, and no future change should quietly introduce
     one."""
-    import glob
-    import wave
-
-    from jasper.active_speaker.linearization_envelope import compose_envelope
     from jasper.active_speaker.linearization_fit import fit_driver_linearization
-    from jasper.audio_measurement.calibration import parse_calibration_text
 
-    def load(path: str) -> np.ndarray:
-        with wave.open(path) as handle:
-            raw = handle.readframes(handle.getnframes())
-            channels = handle.getnchannels()
-        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
-        return samples[::2] if channels == 2 else samples
-
-    fc_hz = 2000.0
-    # Era-exact, like every other corpus reader: the pins above came from the
-    # analysis as PERFORMED, which read this UMIK-2 file on the parser's
-    # "correction" default. The file is really a RESPONSE curve (the product
-    # negates it since 2026-07-27); flipping the corpus to match is #1774, one
-    # edit at the constant. Stated rather than inherited so it reads as a
-    # decision — see tests/_flat_lin_corpus.py for the full cost.
-    calibration = parse_calibration_text(
-        CDHORN_CALIBRATION.read_text(),
-        sign_convention=CORPUS_CALIBRATION_SIGN_CONVENTION,
-    )
-    program = build_measure_program(
-        {"woofer": -6.0005, "tweeter": -15.0105},
-        [
-            RoleBand("woofer", 0, FrequencyBand(150.0, 4000.0)),
-            RoleBand("tweeter", 1, FrequencyBand(2000.0, 20000.0)),
-        ],
-        leading_pilot_gains_db=(-16.0006, -6.0005),
-        leading_pilot_role="woofer",
-        courtesy_prelude=True,
-    )
-    capture = load(sorted(glob.glob(f"{CDHORN_ROOT}/*run5_measure.wav"))[-1])
-    offset = sweep_anchored_global_offset(capture, program.segment("sweep_w"))
-    real_global_offset = program_analysis._global_offset
-    monkeypatch.setattr(
-        program_analysis,
-        "_global_offset",
-        lambda prog, cap, rate: (offset, *real_global_offset(prog, cap, rate)[1:]),
-    )
-    analysis = analyze_program_capture(
-        program, capture, SR,
-        calibration=calibration,
-        geometry=MeasurementGeometry(driver_spacing_m=0.254, mic_distance_m=1.0),
-        priors=MeasurementPriors(crossover_fc_hz=fc_hz),
-    )
+    analysis, program, capture, offset, calibration = _cdhorn_run5_analysis(monkeypatch)
     candidate = analysis.candidate
     assert candidate is not None
     responses = {r.role: r for r in analysis.driver_responses}
@@ -3767,22 +3801,12 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
         assert np.array_equal(tf, responses[role].complex_tf)
 
     # The fit frame, from the shipped fit path on those same responses.
-    fit_levels = {}
-    for role, band, driver_class in (
-        ("woofer", (150.0, 4000.0), "unknown"),
-        ("tweeter", (2000.0, 20000.0), "compression_horn"),
-    ):
-        response = responses[role]
-        seed = compose_envelope(
-            role, response, excited_band_hz=band,
-            mic_tier="reference", driver_class=driver_class, sigma_db=None,
-        )
-        envelope = compose_envelope(
-            role, response, excited_band_hz=band,
-            mic_tier="reference", driver_class=driver_class,
-            sigma_db=np.full_like(seed.freqs_hz, 0.01),
-        )
-        fit_levels[role] = fit_driver_linearization(response, envelope).target_level_db
+    fit_levels = {
+        role: fit_driver_linearization(
+            responses[role], _cdhorn_run5_envelope(role, responses[role]),
+        ).target_level_db
+        for role in CDHORN_RUN5_BANDS_HZ
+    }
     fit_gap_db = fit_levels["tweeter"] - fit_levels["woofer"]
     assert fit_gap_db == pytest.approx(L3_RUN5_FIT_FRAME_GAP_DB, abs=0.01)
 
@@ -3813,3 +3837,89 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
     best = min(summed_spread_db(t) for t in np.arange(-40.0, 0.01, 0.5))
     assert summed_spread_db(candidate.trim_db["tweeter"]) <= best + 1.0
     assert summed_spread_db(L3_RUN5_BROKEN_TRIM_DB) > best + 10.0
+
+
+# What the two level estimators read on run 5 once the fit's median is taken
+# off the declared CAPTURE span and put on the driver's radiating band
+# (#1929). Both measured on the archived bytes by this test; the woofer's
+# +2.09 dB is the real-hardware size of the effect #1809's comment measured
+# at 1.66 dB on a synthetic and #1870's field session was refused over.
+L1929_RUN5_CORE_SHIFT_DB = {"woofer": 2.0931, "tweeter": 0.5066}
+L1929_RUN5_DISAGREEMENT_DB = {"declared_span": 1.0761, "radiating_band": 0.5104}
+
+
+@requires_cdhorn
+def test_the_radiating_band_core_level_converges_on_the_trim_frame(monkeypatch):
+    """**#1929 hardware regression.** The frame gate exists to ask whether two
+    INDEPENDENT measured estimates of one physical quantity — where these two
+    drivers sit relative to each other — agree. On real bytes, taking the
+    fit's median off the declared capture span and putting it on the driver's
+    radiating band makes them agree **better**: 1.076 dB to 0.510 dB.
+
+    That is the whole argument for the change, and it cannot be made on a
+    synthetic. The declared spans here are the ones #1870's field session ran
+    (woofer to 4000 Hz, tweeter from 2000, Fc 2000 LR4), so the woofer's own
+    LR4 stopband occupies ~28% of its core-mask bins and drags its median
+    2.09 dB below where the driver sits. The tweeter, declared FROM Fc, is
+    contaminated only by the knee and moves 0.51 dB — the asymmetry is why
+    the error does not cancel between the roles and lands on the gate.
+
+    Direction is asserted before magnitude: whatever the corpus era, the
+    radiating-band frame must not agree WORSE than the declared-span one.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, radiating_band_hz,
+    )
+    from jasper.active_speaker.linearization_fit import driver_core_level_db
+
+    analysis, _program, _capture, _offset, _cal = _cdhorn_run5_analysis(monkeypatch)
+    responses = {r.role: r for r in analysis.driver_responses}
+    envelopes = {
+        role: _cdhorn_run5_envelope(role, responses[role])
+        for role in CDHORN_RUN5_BANDS_HZ
+    }
+    bands = {
+        role: radiating_band_hz((
+            CrossoverSection(
+                fc_hz=CDHORN_RUN5_FC_HZ, order=4, highpass=(role == "tweeter"),
+            ),
+        ))
+        for role in CDHORN_RUN5_BANDS_HZ
+    }
+    # The premise: the woofer really was swept an octave past where it
+    # radiates, which is what a `measurement_band_hz` declaration is for.
+    assert bands["woofer"][1] < CDHORN_RUN5_BANDS_HZ["woofer"][1]
+
+    declared = {r: driver_core_level_db(responses[r], envelopes[r]) for r in envelopes}
+    radiating = {
+        r: driver_core_level_db(responses[r], envelopes[r], radiating_band_hz=bands[r])
+        for r in envelopes
+    }
+    for role in envelopes:
+        # Each driver reads HIGHER once its own stopband stops voting: the
+        # sign is structural, the size is this speaker's.
+        assert radiating[role] > declared[role], role
+        assert radiating[role] - declared[role] == pytest.approx(
+            L1929_RUN5_CORE_SHIFT_DB[role], abs=0.05
+        ), role
+
+    # ...and the two estimators converge. `trim_band_average_db` is the trim
+    # solve's mirrored ±1-octave power average — the other instrument, on the
+    # same bytes, which #1929 does not touch.
+    trims = analysis.candidate.trim_band_average_db
+    trim_gap_db = trims["tweeter"] - trims["woofer"]
+    disagreement = {
+        "declared_span": abs(
+            (declared["tweeter"] - declared["woofer"]) + trim_gap_db
+        ),
+        "radiating_band": abs(
+            (radiating["tweeter"] - radiating["woofer"]) + trim_gap_db
+        ),
+    }
+    assert disagreement["radiating_band"] < disagreement["declared_span"]
+    for frame, expected in L1929_RUN5_DISAGREEMENT_DB.items():
+        assert disagreement[frame] == pytest.approx(expected, abs=0.05), frame
+    # Both clear the gate on THIS session — it is a healthy capture, and the
+    # point is the margin, not a flipped verdict (the flip is pinned end to
+    # end on a synthetic in tests/test_crossover_v2_conductor.py).
+    assert disagreement["declared_span"] < REALIZED_LEVEL_MATCH_TOLERANCE_DB

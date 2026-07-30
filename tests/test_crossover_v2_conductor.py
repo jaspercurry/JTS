@@ -68,6 +68,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     GAIN_CAP_BACKOFF_DB,
     GEOMETRY_RETRY_OFFSET_CM,
     GEOMETRY_RETRY_POSITIONS,
+    LEVEL_FRAME_AGREEMENT_TOLERANCE_DB,
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     MAX_CLOUD_MEASURE_POSITIONS,
@@ -7609,15 +7610,44 @@ def test_prediction_gate_logs_the_improved_path_with_both_terms(caplog):
     gain inside each driver's own crossover stopband the corrected prediction
     is better, and at 3 dB it now clears the spec outright and takes the
     ``predicted_in_spec`` early return instead of reaching this branch.
+
+    **The peak moved onto Fc, and the trim is now solved, with #1929.** This
+    fixture was reaching the prediction gate only by cancellation. Its two
+    branches carry the IDENTICAL curve, whose two mirrored ±1-octave halves
+    about Fc genuinely sit 8.32 dB apart when the peak is an octave below Fc
+    (level_w 11.17, level_t 2.85) — but it inherited ``_FIXTURE_RAW_TRIM_DB``,
+    solved from the DEFAULT curves, which says 0.70 dB. That is exactly the "a
+    fixture field nobody derived from the fixture" defect
+    :func:`_solve_fixture_raw_trim`'s own docstring documents, and the shipped
+    whole-band core median happened to be wrong by the same amount and sign,
+    so the frame gate read 0.073 dB. Solving the trim from THESE branches and
+    leaving everything else alone makes the shipped code refuse the fixture at
+    **8.947 dB** — worse than #1929's 6.087 — so the cancellation, not the
+    band, was carrying it.
+
+    Recentring the peak on Fc is what makes the level well defined: a 12 dB
+    peak an octave below Fc lives inside the woofer's radiating band and
+    outside the tweeter's, so "where do these two drivers sit" has an 8 dB
+    band-dependent answer and no level instrument can reconcile it. On Fc both
+    estimators see it. The fit still takes the peak out and still cannot fix
+    the comb, which is all this test needs: 3.90 dB pooled residual to 0.605,
+    ``after_passed=false``.
     """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     freqs = _LINEARIZABLE_FREQS_HZ
-    peak_db = 12.0 * np.exp(-0.5 * ((np.log2(freqs / 900.0) / 0.6) ** 2))
+    peak_db = 12.0 * np.exp(-0.5 * ((np.log2(freqs / _FIXTURE_FC_HZ) / 0.4) ** 2))
     comb_db = 5.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 3.0)
     shape_db = peak_db + comb_db
+    shape_tf = (10.0 ** (shape_db / 20.0)).astype(complex)
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(
+        freqs, shape_tf, shape_tf, _FIXTURE_FC_HZ,
+    )
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(
         program, woofer_db=shape_db, tweeter_db=shape_db,
+        trim_db={
+            "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
+        },
     )
     c = _cloud_conductor(fakes)
     _walk_measure_cloud_to_close(c)
@@ -7764,6 +7794,125 @@ def test_a_role_with_no_crossover_region_is_credited_nothing_and_named(caplog):
     # The shared derivation is where that answer comes from — not a branch in
     # the conductor that the emitter would have to mirror.
     assert sections_by_role(()) == {}
+
+
+def _healthy_crossed_over_pair():
+    """Two HEALTHY drivers, each measured THROUGH its own side of a matched
+    LR4 pair at the fixture's Fc, each with one benign in-band dip.
+
+    "Healthy" is the load-bearing word and it is true by construction: the two
+    branches are the SAME flat driver behind mirrored halves of one crossover,
+    so they sit at the same level and a level gate has nothing to find. The
+    dips (400 Hz on the woofer, 6 kHz on the tweeter) are inside each driver's
+    own radiating band and give the fit something real to flatten, so the
+    session walks the whole journey instead of stopping at a later gate for a
+    reason that has nothing to do with the level frame.
+
+    The declared sweep spans (``_roles()``: woofer 150-6000, tweeter
+    300-20000) both cross the 1600 Hz Fc, which is the #1929 premise and the
+    ordinary case for a real declaration — the woofer radiates only below
+    1282 Hz and the tweeter only above 1996 Hz.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db,
+    )
+
+    freqs = _LINEARIZABLE_FREQS_HZ
+
+    def dip(center_hz: float) -> np.ndarray:
+        return -6.0 * np.exp(-0.5 * ((np.log2(freqs / center_hz) / 0.3) ** 2))
+
+    lowpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),)
+    highpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),)
+    woofer_db = crossover_response_db(freqs, lowpass) + dip(400.0)
+    tweeter_db = crossover_response_db(freqs, highpass) + dip(6000.0)
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(
+        freqs,
+        (10.0 ** (woofer_db / 20.0)).astype(complex),
+        (10.0 ** (tweeter_db / 20.0)).astype(complex),
+        _FIXTURE_FC_HZ,
+    )
+    return woofer_db, tweeter_db, {
+        "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
+    }
+
+
+def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
+    """**#1929, end to end.** A speaker with nothing wrong with it must not be
+    refused because its drivers were swept over spans that reach past Fc.
+
+    This is the 2026-07-30 JTS3 shape (#1870) in miniature: a clean session,
+    two matched drivers, and a frame gate that read each driver's level over
+    its declared CAPTURE span — which includes that driver's own crossover
+    stopband — and concluded they sat 3.395 dB further apart than the trim
+    solve's mirrored ±1-octave estimate of the same physical quantity, past
+    the 3.0 dB tolerance. Nothing about the speaker could fix it.
+
+    Both arms run the real production path on the identical session; the
+    pre-#1929 arm is produced by taking the radiating band away from the ONE
+    call that gained it, so what is compared is the band and nothing else.
+    """
+    import jasper.active_speaker.crossover_v2_flow as flow
+
+    woofer_db, tweeter_db, trim_db = _healthy_crossed_over_pair()
+
+    def session():
+        fakes = FakeSeams()
+        fakes.measure = lambda program: _eligible_measure_analysis(
+            program, woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
+        )
+        conductor = _conductor(fakes)
+        _run_phase(conductor, 1, 1)
+        return conductor
+
+    # --- pre-#1929: the whole declared span, and a healthy speaker refused ---
+    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    with pytest.MonkeyPatch.context() as mp:
+        whole_band = flow.driver_core_level_db
+        mp.setattr(
+            flow, "driver_core_level_db",
+            lambda resp, env, **_band: whole_band(resp, env),
+        )
+        before = session()
+        with pytest.raises(CaptureBeginRefused) as excinfo:
+            _run_phase(before, 2, 2)
+    assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
+    assert before._last_level_frame_disagreement_db == pytest.approx(6.53, abs=0.1)
+    assert "event=correction.crossover_v2_level_frame_refused" in caplog.text
+    assert before.candidate is None
+
+    # --- and with the radiating band: the same session completes -------------
+    after = session()
+    verdict = _run_phase(after, 2, 2)
+    assert verdict["accepted"] is True
+    assert after._last_level_frame_disagreement_db == pytest.approx(1.10, abs=0.1)
+    assert after._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+    # The other level instrument agrees — the frame did not buy its pass by
+    # mislevelling the pair (PR-L4 item 1, a different estimator on the
+    # committed trim).
+    assert after._last_realized_level_match.matched is True
+
+
+def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
+    """#1929 observability: the refusal that used to report only a
+    disagreement now carries the two inputs that produced it — each role's
+    core level and the radiating band it was read over — so a field diagnosis
+    does not have to re-derive which driver read what.
+    """
+    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, trim_db={"woofer": 0.0, "tweeter": -20.0},
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    with pytest.raises(CaptureBeginRefused):
+        _run_phase(c, 2, 2)
+
+    assert "event=correction.crossover_v2_level_frame_refused" in caplog.text
+    assert "core_level_db=" in caplog.text
+    assert "'level_db'" in caplog.text and "'radiating_band_hz'" in caplog.text
+    assert set(c._last_level_frame_cores) == {"woofer", "tweeter"}
 
 
 def test_no_boost_lands_in_a_drivers_own_crossover_stopband():

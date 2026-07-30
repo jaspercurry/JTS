@@ -1541,8 +1541,15 @@ def test_an_empty_frame_raises_rather_than_being_invented():
 
 
 def test_driver_core_level_matches_the_fits_own_target_exactly():
-    """Not a second estimator: the frame and the fit must not be able to
-    disagree about where a driver sits."""
+    """Not a second estimator: with no radiating band supplied, the frame's
+    level and the fit's target are the same resample → smooth → core-mask →
+    median chain, to the bit.
+
+    #1929 gave the frame a band the fit's target deliberately does not take,
+    so the two coincide only on this call shape — which is every caller that
+    does not pass one, and is what makes the default provably non-breaking.
+    The divergence when a band IS passed is pinned below.
+    """
     resp, envelope = _dip_response()
     fit = fit_driver_linearization(resp, envelope)
     assert driver_core_level_db(resp, envelope) == pytest.approx(
@@ -1820,11 +1827,13 @@ def test_an_unbounded_fit_is_byte_identical_to_before_the_bound_existed():
 
 
 def test_the_bound_does_not_move_the_target_level_or_the_give_back():
-    """Scoped to the SHAPE question. ``target_level_db`` (which the shared
-    level frame reconciles) and ``correction_giveback_db`` (which anchors the
-    trim) are level questions read over the envelope's own region, and #1809
-    must not move them — narrowing their band walks the frame straight into
-    PR-L5's disagreement refusal."""
+    """Scoped to the SHAPE question. ``target_level_db`` is the flat line every
+    stage in this fit grades against, so it is read over the whole region the
+    fit may place a filter on; ``correction_giveback_db`` anchors the trim and
+    is a power-domain average over the same region. #1809's bound must move
+    neither, and #1929 did not change that — it gave the FRAME's own median a
+    band (:func:`driver_core_level_db`), which is a different question.
+    """
     from jasper.active_speaker.branch_chain import radiating_band_hz
 
     resp, envelope, sections = _crossed_over_woofer()
@@ -1837,3 +1846,127 @@ def test_the_bound_does_not_move_the_target_level_or_the_give_back():
     )
     assert bounded.target_level_db == unbounded.target_level_db
     assert driver_core_level_db(resp, envelope) == unbounded.target_level_db
+
+
+# --------------------------------------------------------------------------- #
+# #1929 — the level frame's median runs over the RADIATING band
+# --------------------------------------------------------------------------- #
+
+
+def test_the_core_level_median_excludes_the_drivers_own_crossover_stopband():
+    """**The #1929 keystone, woofer side.**
+
+    A driver is measured THROUGH its own crossover, and the band it is swept
+    over is a CAPTURE-COVERAGE declaration (``measurement_band_hz``) that
+    routinely reaches past Fc — this fixture's woofer is declared to 8000 Hz
+    against a 2000 Hz LR4, which puts 36% of its core-mask bins in its own
+    stopband. The core level is a MEDIAN, in which a −40 dB stopband bin
+    counts exactly as much as a passband one, so those bins push the median
+    down the driver's own passband and the number stops describing where the
+    driver sits.
+
+    **The size of the error is the passband's own spread, not the skirt's
+    depth**, which is why it is pinned here on two shapes rather than one. A
+    perfectly flat driver barely moves (its passband has nothing to slide
+    down); give it the gentle fall a real cone has toward its crossover and
+    the same declaration costs 1.80 dB — the class of number #1809's comment
+    measured at 1.66 dB on the conductor fixture, the JTS3 corpus pays at
+    2.09 dB (``test_audio_measurement_program_analysis``), and #1870's field
+    session was refused 3.395 dB of frame disagreement over.
+    """
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    resp, envelope, sections = _crossed_over_woofer()
+    band = radiating_band_hz(sections)
+
+    # Flat driver: the mechanism is present and signed, and small.
+    flat_wide = driver_core_level_db(resp, envelope)
+    flat_radiating = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+    assert flat_radiating == pytest.approx(0.0, abs=0.1)
+    assert 0.0 < flat_radiating - flat_wide < 0.6
+
+    # ...and the same declaration on a driver with a real passband.
+    tilt_db = np.clip(-1.5 * np.log2(_NATIVE_FREQS_HZ / 300.0), -8.0, 4.0)
+    real = _driver_response("woofer", resp.magnitude_db + tilt_db)
+    real_envelope = _envelope("woofer", real, excited_band_hz=(150.0, 8000.0))
+    real_wide = driver_core_level_db(real, real_envelope)
+    real_radiating = driver_core_level_db(
+        real, real_envelope, radiating_band_hz=band,
+    )
+    assert real_radiating - real_wide == pytest.approx(1.80, abs=0.15)
+
+
+def test_the_core_level_band_mirrors_onto_the_tweeter():
+    """**The mirror case.** Nothing about #1929 is woofer-specific: a
+    silk-dome declared from well below its crossover — the overwhelmingly
+    common tweeter declaration — feeds its own HIGH-pass skirt into its median
+    by exactly the same mechanism, reflected about Fc. The tweeter side is if
+    anything worse, because a declaration reaching an octave below Fc puts
+    over half the core mask in the stopband: 2.70 dB here on a driver that is
+    otherwise perfectly flat.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    sections = (CrossoverSection(fc_hz=2000.0, order=4, highpass=True),)
+    resp = _driver_response(
+        "tweeter", crossover_response_db(_NATIVE_FREQS_HZ, sections),
+    )
+    # Declared from an octave below Fc — the shape a real tweeter declaration
+    # has, and the reason the mirror is not a hypothetical.
+    envelope = _envelope("tweeter", resp, excited_band_hz=(1000.0, 20000.0))
+    band = radiating_band_hz(sections)
+    assert band[0] > 2000.0  # radiates ABOVE Fc, so the declared bottom is skirt
+
+    whole_band = driver_core_level_db(resp, envelope)
+    radiating = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+    assert radiating - whole_band == pytest.approx(2.70, abs=0.15)
+    # The residue on the radiating side is the LR4 knee itself: the band's
+    # own edge is 3 dB down by definition, so a flat tweeter reads a little
+    # under unity there. That is the threshold's cost, not contamination.
+    assert -1.0 < radiating < 0.0
+
+
+def test_a_declared_band_inside_the_radiating_band_reads_bit_identical():
+    """**The no-crossing regression.** #1929 must be invisible to a driver
+    whose declared span never reaches its own handoff — the same float, not
+    merely a close one, so a future change cannot quietly re-band a session
+    the defect never touched.
+    """
+    from jasper.active_speaker.branch_chain import radiating_band_hz
+
+    resp, envelope, sections = _crossed_over_woofer()
+    band = radiating_band_hz(sections)
+    inside = _envelope("woofer", resp, excited_band_hz=(150.0, band[1] * 0.75))
+
+    assert driver_core_level_db(
+        resp, inside, radiating_band_hz=band,
+    ) == driver_core_level_db(resp, inside)
+
+
+def test_an_empty_radiating_band_falls_back_to_the_core_mask():
+    """A three-way mid squeezed between two crossovers closer together than
+    their own edges honestly has NO radiating band (``radiating_band_hz``
+    returns ``lo > hi``). Its level is still measured — over the whole core
+    mask, as before #1929 — rather than the role dropping out of the frame,
+    because a frame with one role missing stops grading every other one.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    squeezed = (
+        CrossoverSection(fc_hz=2000.0, order=4, highpass=True),
+        CrossoverSection(fc_hz=2200.0, order=4, highpass=False),
+    )
+    band = radiating_band_hz(squeezed)
+    assert band[0] > band[1], "the fixture must have an empty band to mean anything"
+
+    resp = _driver_response(
+        "midrange", crossover_response_db(_NATIVE_FREQS_HZ, squeezed),
+    )
+    envelope = _envelope("midrange", resp, excited_band_hz=(500.0, 8000.0))
+    level = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+    assert level is not None
+    assert level == driver_core_level_db(resp, envelope)

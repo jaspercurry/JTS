@@ -1044,17 +1044,44 @@ def _target_and_plateau_db(
 
 def driver_core_level_db(
     primary: DriverResponse, envelope: EnvelopeCurve,
+    *, radiating_band_hz: tuple[float, float] | None = None,
 ) -> float | None:
-    """One driver's own core-passband level — the number a
+    """One driver's own passband level — the number a
     :class:`SharedLevelFrame` reconciles across drivers (PR-L5).
 
-    Deliberately NOT a second estimator. It runs the identical resample →
-    ladder-smooth → core-mask → median chain :func:`fit_driver_linearization`
-    runs, and returns the same ``target_level_db`` that fit would have chosen
-    on its own, so a frame built from this and a fit built from that cannot
-    disagree about where a driver sits. It exists as a separate entry point
-    only because the frame has to be solved across ALL drivers before any one
-    of them is fitted.
+    It runs :func:`fit_driver_linearization`'s own resample → ladder-smooth →
+    core-mask → median chain, and exists as a separate entry point only
+    because the frame has to be solved across ALL drivers before any one of
+    them is fitted.
+
+    ``radiating_band_hz`` (#1929) narrows the median's band to where this
+    driver's own crossover leaves it radiating —
+    :func:`jasper.active_speaker.branch_chain.radiating_band_hz`, solved by
+    the composer, so nothing here knows what a crossover is. ``None`` (the
+    default, and every caller before #1929) is the pre-#1929 whole-core-mask
+    median, byte for byte, and is also the honest answer for a one-way box's
+    summed chain, which radiates wherever it measures.
+
+    **Why the band matters, and why only here.** The core mask is bounded by
+    the driver's declared ``measurement_band_hz`` — a CAPTURE-COVERAGE
+    declaration, "sweep me over this span", which routinely reaches well past
+    the session's Fc. A branch is measured THROUGH its own crossover, so every
+    declared bin past the handoff carries that crossover's stopband, and a
+    MEDIAN is a rank statistic: a −40 dB stopband bin counts exactly as much
+    as a passband one. On the 2026-07-30 JTS3 session (#1870) the woofer was
+    declared to 4000 Hz against a 2000 Hz LR4, putting ~28% of its core bins
+    an octave inside its own stopband and reading its level 3.4 dB away from
+    the trim solve's mirrored ±1-octave estimate of the same physical
+    quantity — past :data:`~jasper.active_speaker.crossover_v2_flow.
+    LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, refusing a healthy speaker. Two
+    identical flat drivers behind a matched LR4 pair reproduce it at 9.4 dB.
+
+    The contamination is specific to the rank statistic, so the fix is. The
+    give-back (:attr:`LinearizationFit.correction_giveback_db`) is a
+    POWER-domain band average over the same mask and is already effectively
+    immune — quiet stopband bins contribute almost nothing to a power mean —
+    and the fit's own ``target_level_db`` is a different question with a
+    different right answer (see :func:`fit_driver_linearization`).
 
     Returns ``None`` — not a number — when the envelope allows correction
     nowhere. That driver's level is UNKNOWN, and a frame is a claim about
@@ -1071,6 +1098,19 @@ def driver_core_level_db(
     if not envelope_mask.any():
         return None
     level_mask = _core_or_fallback_mask(envelope, envelope_mask)
+    if radiating_band_hz is not None:
+        lo_hz, hi_hz = radiating_band_hz
+        radiating = level_mask & (grid_hz >= lo_hz) & (grid_hz <= hi_hz)
+        # Empty intersection falls back to the whole core mask rather than to
+        # ``None`` — the same shape :func:`_core_or_fallback_mask` uses one
+        # line up. A three-way mid squeezed between two crossovers closer
+        # together than their own edges honestly has no radiating band
+        # (``radiating_band_hz`` documents that case), and a driver whose
+        # level is read over a wider-than-ideal band is still a measured
+        # level; dropping it from the frame instead would let one squeezed
+        # role stop grading every other one.
+        if radiating.any():
+            level_mask = radiating
     return _target_and_plateau_db(smoothed_db, level_mask)[0]
 
 
@@ -1843,15 +1883,27 @@ def fit_driver_linearization(
 
     It bounds the LIFT stage and deliberately nothing else. Cuts still run to
     the fit band's own edge — out-of-band leakage is real, reaches the summed
-    response, and removing it spends no headroom — and ``target_level_db``, the
-    core-band level :func:`driver_core_level_db` reconciles into the shared
-    frame, and ``correction_giveback_db`` are all still read over the
-    envelope's own region, because those are LEVEL questions and narrowing
-    their band would move the shared frame and the trim anchor as a side
-    effect of a SHAPE fix. What #1809 is about is a driver spending GAIN
+    response, and removing it spends no headroom — and ``target_level_db``,
+    ``plateau_level_db`` and ``correction_giveback_db`` are all still read over
+    the envelope's own region. What #1809 is about is a driver spending GAIN
     against its own crossover: the 2026-07-28 JTS3 woofer carried +11.6155 dB
     (Q 8) at 2747 Hz, above its own 2 kHz LR4 crossover, which arrived at
     +1.06 dB of net acoustic contribution and cost 11.6 dB of headroom.
+
+    ``target_level_db`` staying whole-region is a POSITIVE choice, not an
+    oversight. It is the flat line every stage here grades against — the
+    shelf's slope reference, the peaking loop's target array, the adaptive
+    band trim's floor, the give-back frame, the residual/verify/observe claims
+    — so it has to be derived from the bins the fit may place a filter on. A
+    target read over a sub-band would grade the bins outside it against a line
+    nothing outside it contributed to. The right fix for the crossover-shaped
+    curve the fit flattens toward a flat target is a crossover-shaped TARGET
+    (#1817), which is a change to what this number MEANS and not a band.
+    ``driver_core_level_db`` is a different question — where does this driver
+    SIT relative to its sibling — and since #1929 it reads its median over the
+    radiating band, because only the bins a driver radiates in carry that.
+    The two were the same number by construction until #1929 proved they were
+    never the same question.
 
     ``level_frame`` is the session's :class:`SharedLevelFrame`; when supplied,
     this driver's :attr:`~LinearizationFit.level_frame_offset_db` reports how
