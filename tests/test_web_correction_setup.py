@@ -649,7 +649,10 @@ def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
     monkeypatch.setattr(
         v2host_mod,
         "handle_v2_apply",
-        lambda raw, run_async, camilla_factory: {
+        # ``status`` is keyword-only and REQUIRED since PR-T3 (the apply runs
+        # the stage-2 openability preflight before committing), so a stub that
+        # does not accept it would no longer stand in for the real handler.
+        lambda raw, run_async, camilla_factory, *, status: {
             "status": "blocked",
             "profile": {"status": "blocked"},
             "apply": None,
@@ -689,7 +692,9 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     monkeypatch.setattr(
         v2host_mod,
         "handle_v2_apply",
-        lambda raw, run_async, camilla_factory: {"status": "applied", "profile": {}},
+        lambda raw, run_async, camilla_factory, *, status: {
+            "status": "applied", "profile": {},
+        },
     )
 
     resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")

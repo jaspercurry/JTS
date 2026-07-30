@@ -510,21 +510,24 @@ def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     ]
 
 
-def test_the_v2_dispatch_threads_the_idle_hold_into_both_background_owners(
+def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
     monkeypatch,
 ):
-    """One seam, both lifetimes a v2 session owns (#1854).
+    """The one background lifetime a v2 session still owns (#1854).
 
-    The relay runner is held by ``_run_relay_capture``; the auto-apply worker
-    thread it spawns can outlive that runner and is held by the preparer's
-    ``build_v2_run_and_consume``. A fix that reached only one of them would
-    still lose an apply to the idle exit.
+    RE-DERIVED by PR-T3: this used to assert BOTH lifetimes — the relay
+    runner, held by ``_run_relay_capture``, and the auto-apply worker thread
+    the preparer spawned, which could outlive it. The two-stage split removed
+    that worker: the apply is now a household POST served in-request, so the
+    idle tracker's ordinary in-flight-request accounting holds the process for
+    it and the preparers take no ``idle_hold`` at all. What remains is the
+    runner's hold, which is still the one #1854 was actually about.
     """
     idle_hold = _RecordingIdleHold()
     seen: dict[str, object] = {}
 
-    def _fake_prepare(raw, *, status, run_async, camilla_factory, idle_hold):
-        seen["prepare"] = idle_hold
+    def _fake_prepare(raw, *, status, run_async, camilla_factory):
+        seen["prepare_kwargs"] = {"status", "run_async", "camilla_factory"}
         return SimpleNamespace(
             label="crossover_v2:session",
             open=lambda *a, **kw: None,
@@ -553,7 +556,12 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_both_background_owners(
         None, verify_only=False, idle_hold=idle_hold,
     )
 
-    assert seen["prepare"] is idle_hold
+    # The preparer takes no hold any more — and cannot silently regrow one
+    # unnoticed, because a stub that accepted extra kwargs would still fail
+    # this signature check.
+    assert "idle_hold" not in seen["prepare_kwargs"]
+    assert "idle_hold" not in inspect.signature(v2host.prepare_v2_session).parameters
+    assert "idle_hold" not in inspect.signature(v2host.prepare_v2_verify).parameters
     assert seen["orchestrator"] is idle_hold
 
     # ...and the route reads it off the handler cfg make_server builds. That
