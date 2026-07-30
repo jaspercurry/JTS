@@ -785,6 +785,7 @@ title = "Room correction and calibration agent"
 safety = "audio-output-risk"
 code = [
   "jasper/active_speaker/**",
+  "jasper/attribution/**",
   "jasper/bass_extension/**",
   "jasper/correction/**",
   "jasper/measurement/**",

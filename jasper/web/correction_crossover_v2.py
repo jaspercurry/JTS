@@ -2236,6 +2236,12 @@ def bind_production_analyze(
         # ``_maybe_retain_capture``.
         _maybe_retain_capture(
             phase=phase, result=result, wav=wav, analysis=analysis,
+            # WO-1: the ring is the store WO-0 found carrying NEITHER the
+            # bundle id nor the relay session id — only an epoch-microsecond
+            # filename stamp, which is why the SHA-256 of the WAV bytes ended
+            # up as the corpus's only reliable join. ``meta`` is the evidence
+            # ``refs`` dict, which already holds the bundle session id.
+            bundle_session_id=str((meta or {}).get("bundle_session_id") or ""),
         )
         return analysis
 
@@ -2288,6 +2294,7 @@ def _prune_capture_dump(
 
 def _maybe_retain_capture(
     *, phase: str, result: Any, wav: bytes, analysis: Any,
+    bundle_session_id: str = "",
 ) -> None:
     """Operator-debug capture retention (Part 2 — off by default, bounded).
 
@@ -2339,15 +2346,35 @@ def _maybe_retain_capture(
         sidecar_path = XOVER_CAPTURE_DUMP_DIR / f"{basename}.json"
         wav_path.write_bytes(wav)
         setup_mode, setup_calibration_id = _setup_calibration_observation(setup)
+        digest = hashlib.sha256(wav).hexdigest()
         sidecar = {
             "phase": phase,
             "device_label": device_label,
             "wav_bytes": len(wav),
-            "wav_sha256_12": hashlib.sha256(wav).hexdigest()[:12],
+            "wav_sha256_12": digest[:12],
+            # WO-1 (attribution plan §6): the FULL digest, because a 12-char
+            # prefix is a browsing aid, not a verifier — and this ring is
+            # exactly where WO-0 had to fall back to content hashing for
+            # want of an index.
+            "wav_sha256": digest,
             "setup_mode": setup_mode,
             "setup_calibration_id": setup_calibration_id,
             "diagnostic": _pa.analysis_diagnostic_summary(analysis),
         }
+        if bundle_session_id:
+            # The index this store never had. With it, a pulled ring sidecar
+            # joins to its bundle by id instead of by directory mtime — which
+            # WO-0 measured actively misrouting (the ~08:27 session lives in
+            # one bundle while the bundle whose mtime IS 08:27 holds the
+            # previous evening's run).
+            from jasper.attribution.session_identity import (
+                SessionIdentity,
+                stamp_session_identity,
+            )
+
+            stamp_session_identity(
+                sidecar, SessionIdentity(session_id=bundle_session_id)
+            )
         sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
     except (OSError, ValueError, TypeError, AttributeError):
         log_event(
@@ -2513,6 +2540,7 @@ def bind_position_retention(
         # conductor's `group_position_takes` names which attempt survived.
         attempt = int(record.get("attempt") or 0)
         take_id = f"{position_id}_a{attempt:02d}"
+        wav_rel = ""
         if isinstance(wav, (bytes, bytearray)):
             wav_rel = capture_artifact_relpath("summed", take_id, None)
             wav_path = Path(store.bundle_dir) / wav_rel
@@ -2530,13 +2558,116 @@ def bind_position_retention(
             },
         )
         positions = refs.setdefault("position_artifacts", [])
+        # WO-1 (attribution plan §6): the per-position WAV path AND its
+        # SHA-256 ride the durable state, not only the bundle sidecar, "so
+        # the state alone is replayable". ``take_id`` rides with them because
+        # a geometry retake reuses the position id — without it the
+        # accepted-attempt <-> position mapping is recoverable only from
+        # skipped attempt indices in filenames, which is exactly the gap WO-0
+        # hit. The digest is the VERIFIER for those bytes; the session
+        # identity plus the take id is the index.
         positions.append({
             "position_id": position_id,
             "attempt": attempt,
+            "take_id": take_id,
             "artifact": artifact.fingerprint,
+            "wav_path": wav_rel,
+            "wav_sha256": str(record.get("wav_sha256") or ""),
         })
 
     return retain_position
+
+
+def v2_session_identity(store: Any, relay_session_id: str) -> Any:
+    """This v2 session's cross-store identity (attribution plan §6).
+
+    The **bundle** session id is canonical, because Q-C's bundle-lifetime
+    ruling makes the bundle the retention unit: identity and lifetime then
+    name the same thing, which is what keeps a finding from outliving its
+    evidence. The relay capture-session id is real and is minted *after* the
+    bundle — it is not derivable from it — so it rides as an alias rather
+    than as a second identity. Before this, the only join between the two
+    namespaces was one key in the durable state file, and the capture ring
+    carried neither.
+    """
+
+    from jasper.attribution.session_identity import (
+        ALIAS_RELAY_SESSION_ID,
+        SessionIdentity,
+    )
+
+    return SessionIdentity(
+        session_id=str(store.session_id),
+        aliases={ALIAS_RELAY_SESSION_ID: str(relay_session_id)},
+    )
+
+
+def _publish_findings(
+    store: Any,
+    relay_session_id: str,
+    phase: str,
+    result: Mapping[str, Any],
+    cloud_artifact: Any,
+    refs: dict[str, Any],
+) -> None:
+    """Promote this group's excluded-band records to findings and persist them.
+
+    WO-1's write half. The findings cite the cloud artifact **that was just
+    published** — the exact bytes the carve-out records were read from — so
+    the citation is verifiable and, being a bundle artifact, is bound to the
+    same lifetime the finding is (Q-C).
+
+    **Fail-soft, unlike its two sibling seams.** ``publish_cloud`` and
+    ``retain_position`` deliberately let the strict store's refusals surface
+    so the conductor's own boundary handles them. Findings are different:
+    plan §3.4 makes them *optional evidence artifacts* — "a session with no
+    findings behaves exactly as it does today" — so a findings failure must
+    not turn a successfully-published cloud group into a logged failure. The
+    cloud artifact above is already durable by the time this runs.
+    """
+
+    from jasper.attribution.findings import FindingSet
+    from jasper.attribution.promotion import PRODUCED_BY, promote_carve_outs
+    from jasper.attribution.storage import (
+        bundle_evidence_ref,
+        publish_finding_set,
+    )
+
+    try:
+        identity = v2_session_identity(store, relay_session_id)
+        findings = promote_carve_outs(
+            result.get("carve_outs"),
+            session=identity,
+            cites=(bundle_evidence_ref(cloud_artifact, identity),),
+        )
+        artifact = publish_finding_set(
+            store,
+            relay_session_id=relay_session_id,
+            phase=phase,
+            finding_set=FindingSet(
+                session=identity,
+                produced_by=PRODUCED_BY,
+                findings=findings,
+            ),
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        log_event(
+            logger,
+            "correction.crossover_v2_findings_publish_failed",
+            level=logging.WARNING,
+            relay_session_id=relay_session_id,
+            phase=phase,
+            exc_info=True,
+        )
+        return
+    refs.setdefault("finding_artifacts", {})[phase] = artifact.fingerprint
+    log_event(
+        logger,
+        "correction.crossover_v2_findings_published",
+        relay_session_id=relay_session_id,
+        phase=phase,
+        findings=len(findings),
+    )
 
 
 def bind_cloud_publisher(
@@ -2564,8 +2695,9 @@ def bind_cloud_publisher(
     """
 
     def publish_cloud(phase: str, result: Mapping[str, Any]) -> None:
-        artifact = store.publish_json_artifact(
-            f"crossover_v2/{relay_session_id}/{phase}.json",
+        from jasper.attribution.session_identity import stamp_session_identity
+
+        payload = stamp_session_identity(
             {
                 "schema_version": 1,
                 "kind": "jts_crossover_v2_cloud_evidence",
@@ -2573,9 +2705,14 @@ def bind_cloud_publisher(
                 "phase": phase,
                 **dict(result),
             },
+            v2_session_identity(store, relay_session_id),
+        )
+        artifact = store.publish_json_artifact(
+            f"crossover_v2/{relay_session_id}/{phase}.json", payload
         )
         cloud_artifacts = refs.setdefault("cloud_artifacts", {})
         cloud_artifacts[phase] = artifact.fingerprint
+        _publish_findings(store, relay_session_id, phase, result, artifact, refs)
 
     return publish_cloud
 

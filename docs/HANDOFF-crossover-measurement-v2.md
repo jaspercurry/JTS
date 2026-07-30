@@ -1001,6 +1001,38 @@ entry (3162 of 4056 JSON bytes on the S0 ten-position cloud, measured
 which also pins the copy discipline (no hardware nouns; the `position_invariant`
 wording names travels-with-the-speaker OR a fixed path, never one of the two).
 
+*The per-position members* (attribution plan WO-1, `positions` key). Everything
+above is an aggregate. The combiner has always computed each position's own
+analysed curve and echo diagnostic — `CombinedResponse.per_position_diag_db`
+and `.per_position_echo` — and `assemble_cloud_group_result` used to drop them,
+persisting one 512-point power-mean curve plus `n_confident` /
+`clustered_fraction`. That is why the 2026-07-29 corpus retrospective had to
+rebuild every feature-stability figure from raw WAVs pulled off the Pi, and why
+P2 (position-variance) was not the free probe the attribution plan's §5 calls
+it. `jasper.attribution.position_evidence.position_evidence_block` now
+serializes the members alongside the aggregate: per position, its curve on a
+shared **1/12-octave log grid from the group's validity floor up**, its echo
+scalars (τ, confidence, concentration, refusal), and — joined from the
+conductor's own retained metadata — the gate actually applied, the summed
+ripple, which attempt survived (`take_id`), and the capture's SHA-256. Cost
+measured on the S0 ten-position cloud, **per closed group, and it depends on
+which serialization you mean** — the two stores write the same block
+differently, so quoting one figure alone understates the other by ~13 KiB:
+
+| Store | Serialization | Before → after | Added |
+|---|---|---|---|
+| Bundle artifact (`cloud_<phase>.json`) | canonical JSON (`separators=(",",":")`) | 28,047 → 43,706 B | **+15,659 B (+15.3 KiB, +56 %)** |
+| Durable v2 state file | `json.dumps(..., indent=2, sort_keys=True)` | 38,420 → 67,209 B | **+28,789 B (+28.1 KiB, +75 %)** |
+
+That is ~1.57 kB per position canonical (89 grid points), of which ~1.6 kB per
+group is the inline `field_descriptions` the attribution plan's §6 requires so
+the artifact reads without code. Serialization only — no new signal, no
+threshold, no verdict —
+and it never raises, degrading to `{"available": false, "reason": …}` like the
+rest of this block. It deliberately does **not** ride `_compact_cloud_status`:
+`/state` stays the shape-scoped projection, pinned by
+`tests/test_attribution_persistence.py`.
+
 *The before/after chart and anomaly callouts* (flat-linearization plan PR-7).
 `jts.local`'s `/correction/` crossover page renders the gauge and the
 carve-outs above rather than only disclosing them in `expert_details` text:
@@ -1226,6 +1258,7 @@ most visible thing on the screen.
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. It no longer owns any flatness claim — flatness-verify (#1668 PR-D) was retired here by the flat-linearization plan's PR-5 and now lives on the cloud pipeline; see "Flatness" above. |
 | [`jasper/audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner + echo/geometry diagnostics (flat-linearization S1, #1741 offline core; wired into the live flow by PR-4, #1756): `combine_positions` → `CombinedResponse` (power-mean spec curve, per-position curves, exclusion mask, `.geometry`/`GeometryLock`), `detect_echo` → `EchoDiagnostic` (two-estimator echo detection; `effective_floor_us`, `earlier_dominant_arrival`/`band_below_passband` refusal hardening from PR-2, #1749), `assess_geometry`, `usable_echo_estimates`. Pure computation, numpy only, no I/O/logging/policy. |
 | [`jasper/audio_measurement/interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py) | The orthogonal interference-null identification gate (PR-1, #1751): `identify_interference_nulls` → `InterferenceNullReport` of `IdentifiedNull` records (τ/r/rung/depth/classification), fits a null ladder to the combined cloud's measured minima and corroborates against the cloud's arrival estimates; `position_invariant` / `position_dependent` / `insufficient_evidence`. Consumed by PR-4's `assemble_cloud_group_result` and PR-6b's (#1760) carve-out disclosure. Same purity contract as `spatial_combine`, zero production callers until PR-4. |
+| [`jasper/attribution/`](../jasper/attribution/__init__.py) | Mechanism attribution's schema + persistence half (attribution plan WO-1, issue #1866). `findings.py` — the `Finding` artifact (`{mechanism, band, evidence, confidence, fix_class, household_copy, probes_run, probes_recommended}` + its evidence citations) and its self-describing serialization; `mechanisms.py` — the pure-data declaration registry, the shipped `REASON_REGISTRY` shape; `vocabulary.py` — the closed fix-class / confidence-tier / probe sets; `promotion.py` — the excluded-band promotion path (carve-out records → findings); `position_evidence.py` — the per-position members serializer consumed by `assemble_cloud_group_result`; `session_identity.py` — the one identifier that survives every store hop; `storage.py` — bundle-lifetime persistence (Q-C). No detectors (WO-4), no UI (WO-6), no daemon. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |

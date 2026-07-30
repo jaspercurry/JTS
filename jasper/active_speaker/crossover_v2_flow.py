@@ -78,6 +78,7 @@ renders the template. A woofer-repeat level disagreement REUSES
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import threading
@@ -1878,6 +1879,21 @@ def _gate_window_ms(response: Any) -> float | None:
     return float(window) if isinstance(window, (int, float)) else None
 
 
+def _capture_wav_sha256(result: Any) -> str | None:
+    """SHA-256 of a capture's WAV bytes, or ``None`` when there are none.
+
+    The content **verifier** for a per-position take (attribution plan §6).
+    ``None`` for any caller or test double that carries no bytes — an absent
+    digest is honest, a fabricated one would not be, and nothing downstream
+    treats absence as a match.
+    """
+
+    wav = getattr(result, "wav", None)
+    if not isinstance(wav, (bytes, bytearray)):
+        return None
+    return hashlib.sha256(bytes(wav)).hexdigest()
+
+
 def _verify_evidence_from_tracking(
     tracking: Mapping[str, Any],
 ) -> dict[str, Any] | None:
@@ -3336,6 +3352,7 @@ def assemble_cloud_group_result(
     echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
     tier: str = "",
+    position_records: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
     consumes the exclusion mask, ``geometry.locked``, and the null registry
@@ -3491,6 +3508,7 @@ def assemble_cloud_group_result(
         from jasper.audio_measurement.interference_nulls import (
             identify_interference_nulls,
         )
+        from jasper.attribution.position_evidence import position_evidence_block
         from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
         null_report = identify_interference_nulls(combined, band_hz=echo_band_hz)
@@ -3561,6 +3579,20 @@ def assemble_cloud_group_result(
             "tier": str(tier) or None,
             "curve": _decimate_curve_for_json(
                 combined.freqs_hz, combined.power_mean_spec_db,
+            ),
+            # WO-1 (attribution plan §6, §11.1 A7): the MEMBERS behind every
+            # aggregate above. The combiner has computed each position's
+            # curve and echo diagnostic all along and this function used to
+            # drop them, which is why P2 — the position-variance classifier
+            # §5 calls a free probe — was not actually free, and why
+            # ``clustered_fraction`` was the summary of a distribution nobody
+            # could inspect. Serialization only: no new signal, no threshold,
+            # no verdict. Never raises (see ``position_evidence_block``), so
+            # it cannot turn a good group into a failed one.
+            "positions": position_evidence_block(
+                combined,
+                position_records=position_records,
+                validity_floor_hz=validity_floor_hz,
             ),
         }
     except (ValueError, TypeError, IndexError, AttributeError) as exc:
@@ -3849,6 +3881,23 @@ class CrossoverV2Conductor:
         # puts in it. Bounded by the plan's own entry count.
         self._group_positions: dict[str, list[_CloudPosition]] = {
             phase: [] for phase in self._group_indexes
+        }
+        # WO-1: the per-position evidence metadata handed to the retention
+        # seam, kept by position id so the group close can serialize the
+        # members alongside the aggregate (attribution plan §6 / §11.1 A7).
+        # Small and bounded — one flat dict of scalars per accepted position.
+        #
+        # It tracks ``_group_positions`` on REPLACEMENT (a retake overwrites
+        # its position id, so this never holds two records for one prompted
+        # spot) but NOT on REMOVAL: the geometry-retry branch drops a take
+        # from ``_group_positions`` and leaves its record here. That is
+        # harmless rather than merely tolerated — the serializer joins on
+        # ``combined.position_ids``, which is built from the retained
+        # positions, so an orphaned record is never read. Do not "fix" it by
+        # pruning in the retry branch without checking that: the retake
+        # normally arrives and overwrites the record anyway.
+        self._group_position_meta: dict[str, dict[str, dict[str, Any]]] = {
+            phase: {} for phase in self._group_indexes
         }
         # Geometry-locked retakes already spent, per group — the bound behind
         # "up to GEOMETRY_RETRY_POSITIONS extra positions, ONCE".
@@ -5048,19 +5097,47 @@ class CrossoverV2Conductor:
 
         Idempotent per index: a retaken position REPLACES the earlier take, so
         a group can never carry two curves for one prompted spot.
+
+        **WO-1 moved the ``retain_position is None`` early return BELOW the
+        metadata build**, so the metadata is now assembled whether or not a
+        retention seam is bound. That is deliberate, not an oversight: the
+        metadata has two consumers now. The seam is one; the group close is
+        the other — ``_run_cloud_pipeline`` reads
+        ``_group_position_meta`` to serialize the per-position members — and
+        the close happens on every session, including the offline/test
+        configurations that bind no retention seam at all. Building it only
+        when a storage seam existed would have made the per-position evidence
+        silently depend on operator retention being wired.
+
+        The added cost when no seam is bound is one small dict plus one
+        SHA-256 of the capture's WAV bytes (:func:`_capture_wav_sha256`) — a
+        few milliseconds per accepted position, ~10 times per session.
+
+        **That hash stays inside ``_close_lock`` on purpose.** ``_group_position_meta``
+        is written here and read by :meth:`_run_cloud_pipeline` at the group
+        close, and since the eager-fit rider that close can run on a
+        background thread. Both sides are already under ``_close_lock`` —
+        exactly the protection the rider's own comment claims for the
+        retained positions and the cloud pipeline result — so the members and
+        the aggregate a fit reads are always the same group's. Hoisting the
+        hash out of the lock to shave milliseconds would buy a torn read.
         """
         retained = self._group_positions[phase]
         retained[:] = [p for p in retained if p.index != position.index]
         retained.append(position)
         retained.sort(key=lambda p: p.index)
-        if self._seams.retain_position is None:
-            return
         gating = getattr(position.response, "gating", None) or {}
         metadata = {
             "position_id": position.position_id,
             "phase": phase,
             "index": position.index,
             "attempt": position.attempt,
+            # WO-1: the take id, minted HERE rather than only at the storage
+            # seam, so the conductor's own evidence and the bundle's sidecar
+            # path name the same take. A geometry retake reuses the position
+            # id, so the id alone does not identify a take (attribution plan
+            # §6's "accepted-attempt <-> position mapping").
+            "take_id": f"{position.position_id}_a{int(position.attempt):02d}",
             "prompt": position.prompt,
             "wide": position.wide,
             "captured_at": position.captured_at,
@@ -5072,7 +5149,18 @@ class CrossoverV2Conductor:
             "gating_applied": bool(gating.get("applied")),
             "summed_ripple_db": analysis.summed_ripple_db,
             "glitch_detected": bool(analysis.glitch_detected),
+            # WO-1: the capture's content digest. The VERIFIER for a replay,
+            # never the index — §6's rule that "content hashing stays the
+            # verifier; it must stop being the index". Recorded whether or
+            # not any store retained the bytes, because it is what lets a
+            # laptop-side WAV be matched back to this take at all.
+            "wav_sha256": _capture_wav_sha256(result),
         }
+        self._group_position_meta.setdefault(phase, {})[
+            position.position_id
+        ] = metadata
+        if self._seams.retain_position is None:
+            return
         try:
             self._seams.retain_position(position.position_id, result, metadata)
         except (OSError, RuntimeError, TypeError, ValueError):
@@ -6070,6 +6158,13 @@ class CrossoverV2Conductor:
         (:func:`cloud_validity_floor_hz`), which clamps the spec band's lower
         edge (plan PR-5).
 
+        WO-1 adds a second read of the same group — ``_group_position_meta``,
+        the per-position records the retention seam was already handed. They
+        carry what the combiner structurally cannot know because they are
+        properties of the CAPTURE, not of the combine: the gate actually
+        applied, the summed ripple, which attempt survived, and the WAV's
+        content digest.
+
         Never raises and never affects the accepted verdict already decided
         above — this is diagnostic/disclosure machinery, not a capture gate.
         """
@@ -6077,6 +6172,9 @@ class CrossoverV2Conductor:
             combined,
             echo_band_hz=self._cloud_echo_band.band_hz,
             echo_band_provenance=self._cloud_echo_band.disclosure(),
+            position_records=tuple(
+                self._group_position_meta.get(phase, {}).values()
+            ),
             validity_floor_hz=cloud_validity_floor_hz(positions),
             tier=self._tier,
         )
