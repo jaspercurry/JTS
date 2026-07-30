@@ -709,6 +709,13 @@ class WeatherClient:
                 try:
                     return r.json()
                 except ValueError as e:
+                    log_event(
+                        logger,
+                        "weather_response_error",
+                        endpoint=label,
+                        error=_exception_summary(e),
+                        level=logging.WARNING,
+                    )
                     raise WeatherResponseError(_exception_summary(e)) from e
             except httpx.HTTPError as e:
                 last_exc = e

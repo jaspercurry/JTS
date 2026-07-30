@@ -642,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
     print(summary)
     print(f"\n  manifest          : {output_dir / 'manifest.csv'}")
     print(f"  summary           : {output_dir / 'summary.txt'}")
-    return 0
+    return 0 if manifest else 1
 
 
 if __name__ == "__main__":

@@ -16,6 +16,11 @@ from jasper.tts_routing import (
     VOICE_TTS_SOCKET_ENV,
 )
 from tests.install_surface import installer_text
+from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
+    value_for as _value_for,
+    values_for as _values_for,
+)
 
 from ._voice_runtime_text import voice_runtime_text
 
@@ -28,19 +33,6 @@ ROLLBACK_SCRIPT_PATH = REPO / "scripts" / "disable-outputd-cutover.sh"
 
 def _read_unit() -> str:
     return UNIT_PATH.read_text()
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
 
 
 def test_outputd_unit_file_exists():
@@ -57,16 +49,16 @@ def test_outputd_unit_is_notify_and_watchdog_managed():
 
 def test_outputd_unit_is_mainline_default_not_flag_gated():
     unit = _read_unit()
-    assert _value_for(unit, "ConditionPathExists") is None
+    assert _values_for(unit, "ConditionPathExists") == ()
     assert _value_for(unit, "StartLimitAction") == "reboot"
 
 
 def test_outputd_starts_before_camilla_for_local_pipe_reader():
     unit = _read_unit()
 
-    assert "jasper-camilla.service" not in (_value_for(unit, "After") or "")
-    assert "jasper-fanin.service" not in (_value_for(unit, "After") or "")
-    assert "jasper-camilla.service" in (_value_for(unit, "Before") or "")
+    assert "jasper-camilla.service" not in _values_for(unit, "After")
+    assert "jasper-fanin.service" not in _values_for(unit, "After")
+    assert "jasper-camilla.service" in _values_for(unit, "Before")
 
 
 def test_outputd_unit_has_audio_realtime_shape():
@@ -85,10 +77,12 @@ def test_outputd_unit_has_audio_realtime_shape():
 
 def test_outputd_unit_runtime_and_exec_paths():
     unit = _read_unit()
-    assert _value_for(unit, "RuntimeDirectory") == "jasper-outputd"
-    assert _value_for(unit, "ExecStart") == "/opt/jasper/bin/jasper-outputd"
-    assert _value_for(unit, "ExecStopPost") == (
-        "-/usr/local/sbin/jasper-outputd-failure-reconcile"
+    assert _values_for(unit, "RuntimeDirectory") == ("jasper-outputd",)
+    assert _assignments_for(unit, "ExecStart") == (
+        "/opt/jasper/bin/jasper-outputd",
+    )
+    assert _assignments_for(unit, "ExecStopPost") == (
+        "-/usr/local/sbin/jasper-outputd-failure-reconcile",
     )
     assert OUTPUTD_TTS_SOCKET_ENV not in unit
     for expected in [
@@ -170,7 +164,7 @@ def test_install_reloads_audio_udev_rules_without_synthetic_hotplug():
 
 def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
     unit = VOICE_UNIT_PATH.read_text()
-    after = set((_value_for(unit, "After") or "").split())
+    after = set(_values_for(unit, "After"))
     assert {
         "jasper-fanin.service",
         "jasper-camilla.service",
@@ -178,9 +172,9 @@ def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
         "network-online.target",
         "jasper-accessory-reconcile.service",
     } <= after
-    assert "jasper-fanin.service" in _value_for(unit, "Wants")
-    assert "jasper-outputd.service" in _value_for(unit, "Wants")
-    assert "jasper-accessory-reconcile.service" in _value_for(unit, "Wants")
+    assert "jasper-fanin.service" in _values_for(unit, "Wants")
+    assert "jasper-outputd.service" in _values_for(unit, "Wants")
+    assert "jasper-accessory-reconcile.service" in _values_for(unit, "Wants")
     assert f'Environment="{TTS_TRANSPORT_ENV}=outputd"' in unit
     assert f'Environment="{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"' in unit
     assert f'Environment="{DUCK_TRANSPORT_ENV}=fanin"' in unit
@@ -194,8 +188,8 @@ def test_voice_unit_parks_cleanly_when_provider_is_unconfigured():
     # the same way and now shares these lists — the exact "66 78" set is
     # pinned by tests/test_voice_input_gate.py; here we only assert this
     # test's own concern, that 78 stays a clean-park code.
-    assert "78" in _value_for(unit, "SuccessExitStatus").split()
-    assert "78" in _value_for(unit, "RestartPreventExitStatus").split()
+    assert "78" in _values_for(unit, "SuccessExitStatus")
+    assert "78" in _values_for(unit, "RestartPreventExitStatus")
 
 
 def test_voice_daemon_maps_unconfigured_provider_to_ex_config():

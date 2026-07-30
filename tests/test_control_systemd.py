@@ -26,6 +26,12 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
+    value_for as _value_for,
+    values_for as _values_for,
+)
+
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-control.service"
@@ -47,22 +53,6 @@ def _read_unit() -> str:
     return UNIT_PATH.read_text()
 
 
-def _value_for(unit_text: str, key: str) -> str | None:
-    """Pull the value of a `Key=Value` directive. Returns None if
-    absent. Matches the systemd convention: case-sensitive key, no
-    whitespace around `=`, value is everything to end-of-line."""
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
-
-
 def test_unit_file_exists():
     assert UNIT_PATH.exists(), (
         f"jasper-control.service missing at {UNIT_PATH}."
@@ -74,15 +64,15 @@ def test_grouping_reconcile_trailing_service_runs_fixed_helper():
 
     unit = GROUPING_TRAILING_SERVICE_PATH.read_text()
     assert (
-        _value_for(unit, "ExecStart")
-        == "/usr/local/sbin/jasper-grouping-reconcile-trailing"
+        _assignments_for(unit, "ExecStart")
+        == ("/usr/local/sbin/jasper-grouping-reconcile-trailing",)
     )
-    assert _value_for(unit, "Environment") == (
-        '"JASPER_GROUPING_TRAILING_DELAY_FILE='
-        f"{control_server._GROUPING_RECONCILE_TRAILING_DELAY_FILE}\""
+    assert _values_for(unit, "Environment") == (
+        "JASPER_GROUPING_TRAILING_DELAY_FILE="
+        f"{control_server._GROUPING_RECONCILE_TRAILING_DELAY_FILE}",
     )
     assert _value_for(unit, "NoNewPrivileges") == "true"
-    assert _value_for(unit, "CapabilityBoundingSet") == ""
+    assert _values_for(unit, "CapabilityBoundingSet") == ()
 
 
 def test_install_installs_grouping_reconcile_trailing_helper():
@@ -166,21 +156,20 @@ def test_readwritepaths_pins_control_write_contracts():
     ProtectSystem=strict edit would silently break persistence and
     regress to the reboot-loop the rate-limit exists to prevent."""
     unit = _read_unit()
-    val = _value_for(unit, "ReadWritePaths")
-    assert val is not None, (
+    paths = _values_for(unit, "ReadWritePaths")
+    assert paths, (
         "jasper-control.service must declare ReadWritePaths to pin its "
         "state and peering advert write contracts."
     )
-    paths = val.split()
     assert "/var/lib/jasper" in paths, (
         "ReadWritePaths must include /var/lib/jasper; the T5.2 reboot "
         "rate-limit at /var/lib/jasper/system_supervisor_reboot.json depends "
-        f"on it. Got {val!r}"
+        f"on it. Got {paths!r}"
     )
     assert "/etc/avahi/services" in paths, (
         "ReadWritePaths must include /etc/avahi/services; wake-response "
         "peering renders /etc/avahi/services/jasper-peer.service from inside "
-        f"jasper-control under ProtectSystem=full. Got {val!r}"
+        f"jasper-control under ProtectSystem=full. Got {paths!r}"
     )
 
 

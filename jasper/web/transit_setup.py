@@ -1543,6 +1543,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             display = new.get(DISPLAY_NAME_ENV, "")
+            # Geocoded coordinates and display names reveal the household's
+            # location, so record only that a successful mutation landed.
+            log_event(logger, "transit.geocode", client=self.address_string())
             send_see_other(self, "./", flash=f"Found location: {display}")
 
         def _handle_save(self, form: dict[str, str]) -> None:

@@ -25,7 +25,12 @@ from ...source_intent import (
     source_intent_enabled,
 )
 from ._registry import doctor_check
-from ._shared import CheckResult, _parked_as_bonded_follower, _run
+from ._shared import (
+    CheckResult,
+    _parked_as_bonded_follower,
+    _parse_systemd_environment,
+    _run,
+)
 
 # ----------------------------------------------------------------------
 # Per-renderer health: each daemon's own surface (HTTP / DBus / system).
@@ -756,17 +761,7 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
         return device
     if r.returncode != 0:
         return device
-    # systemd's `Environment` output is a single line of
-    # space-separated KEY=VALUE pairs (after merging Environment=
-    # directives and any EnvironmentFile= files). Values that
-    # contain spaces are quoted, but ALSA PCM names never do, so
-    # naive splitting is safe for our use case.
-    env_map: dict[str, str] = {}
-    for token in r.stdout.split():
-        if "=" in token:
-            key, _, value = token.partition("=")
-            # Strip surrounding quotes systemd may add.
-            env_map[key] = value.strip().strip('"').strip("'")
+    env_map = _parse_systemd_environment(r.stdout)
 
     def _sub(match: re.Match[str]) -> str:
         name = match.group(1)

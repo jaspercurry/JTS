@@ -30,6 +30,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { RelayClient } from "../../capture-page/js/relay-client.js";
+import { runTestFunctions } from "./run_test_functions.mjs";
 
 // The EXACT rejection a real relay timeout raises, produced by driving the REAL
 // RelayClient against a spec-accurate fetch (one that rejects with the signal's
@@ -3438,20 +3439,4 @@ const tests = [
   testAutoBeginClearsTheCountdownCounter,
 ];
 
-let failure = null;
-for (const t of tests) {
-  try {
-    await t();
-  } catch (e) {
-    failure = { test: t.name, error: String(e && e.stack ? e.stack : e) };
-    break;
-  }
-}
-
-if (failure) {
-  console.error(failure.error);
-  console.log(JSON.stringify({ ok: false, ...failure }));
-  process.exit(1);
-} else {
-  console.log(JSON.stringify({ ok: true, passed }));
-}
+await runTestFunctions(tests, () => passed);

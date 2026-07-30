@@ -125,20 +125,6 @@ CONDITIONS = ("quiet", "music")
 # ---------------------------------------------------------------------------
 
 
-def quadrant_dirs(condition: str) -> tuple[str, str]:
-    """Return (aec_on_dir, aec_off_dir) for the given condition.
-
-    Two-leg variant kept for backward compat — most callers prefer
-    `all_quadrant_dirs()` which also returns the DTLN dir.
-    """
-    if condition not in CONDITIONS:
-        raise ValueError(
-            f"unknown condition {condition!r}; expected one of {CONDITIONS}"
-        )
-    state = "music" if condition == "music" else "nomusic"
-    return (f"aec_on_{state}", f"aec_off_{state}")
-
-
 def all_quadrant_dirs(condition: str) -> dict[str, str]:
     """Return `{leg_name: quadrant_dir}` for the given condition.
 
@@ -291,8 +277,7 @@ async def record_legs(
     every leg at the same `asyncio.timeout`, so per-leg lengths match
     within one packet (~80 ms).
 
-    This is the general API; `record_window` below is a 2-leg wrapper
-    kept for backward compat with the original tests + call sites.
+    This is the sole capture API; callers choose the exact leg set.
     """
     leg_names = list(captures.keys())
 
@@ -332,28 +317,6 @@ async def record_legs(
             mute_task.cancel()
             with suppress(asyncio.CancelledError):
                 await mute_task
-
-
-async def record_window(
-    udp_on,
-    udp_off,
-    duration_sec: float,
-    *,
-    mic_mute_path: Path | str = MIC_MUTE_STATE_PATH,
-    mute_poll_interval_sec: float = MUTE_POLL_INTERVAL_SEC,
-) -> tuple[bytes, bytes]:
-    """Two-leg convenience wrapper around `record_legs`.
-
-    Returns `(on_bytes, off_bytes)` for callers that pre-date the
-    triple-leg refactor. New code should use `record_legs` directly.
-    """
-    res = await record_legs(
-        {"on": udp_on, "off": udp_off},
-        duration_sec,
-        mic_mute_path=mic_mute_path,
-        mute_poll_interval_sec=mute_poll_interval_sec,
-    )
-    return res["on"], res["off"]
 
 
 # ---------------------------------------------------------------------------

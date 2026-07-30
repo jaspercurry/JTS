@@ -8,6 +8,7 @@ import {
   createTransportIntegrity,
   verifyAndParseCaptureSpec,
 } from "../../capture-page/js/transport-integrity.js";
+import { runTestFunctions } from "./run_test_functions.mjs";
 
 let passed = 0;
 function ok() { passed += 1; }
@@ -82,20 +83,4 @@ const tests = [
   testEveryCaptureSpecRequiresALinkMac,
 ];
 
-let failure = null;
-for (const test of tests) {
-  try {
-    await test();
-  } catch (error) {
-    failure = { test: test.name, error: String(error && error.stack ? error.stack : error) };
-    break;
-  }
-}
-
-if (failure) {
-  console.error(failure.error);
-  console.log(JSON.stringify({ ok: false, ...failure }));
-  process.exit(1);
-}
-console.log(JSON.stringify({ ok: true, passed }));
-
+await runTestFunctions(tests, () => passed);

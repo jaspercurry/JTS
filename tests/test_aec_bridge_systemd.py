@@ -7,35 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.systemd_unit_helpers import (
+    value_for as _value_for,
+    values_for as _values_for,
+)
+
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-aec-bridge.service"
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
-
-
-def _values_for(unit_text: str, key: str) -> set[str]:
-    values: set[str] = set()
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", "[")):
-            continue
-        k, separator, value = stripped.partition("=")
-        if separator and k.strip() == key:
-            values.update(value.split())
-    return values
-
 
 def test_bridge_camilla_dependency_is_startup_only_not_lifecycle_coupled() -> None:
     """Regression guard for #1264.

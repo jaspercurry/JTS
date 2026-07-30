@@ -687,9 +687,6 @@ class OpenAIRealtimeTurn:
     def mark_server_vad(self) -> None:
         self._server_vad_active = True
 
-    def _mark_server_vad(self) -> None:
-        self.mark_server_vad()
-
     def _on_speech_started(self) -> None:
         self._server_speech_started = True
         log_event(logger, "server_vad.speech_started")

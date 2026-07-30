@@ -228,6 +228,9 @@ async def test_run_retries_discovery_after_transient_mixer_miss():
             with pytest.raises(asyncio.CancelledError):
                 await task
 
+
+def test_discover_raises_on_amixer_timeout():
+    bridge = VolumeBridge(card_name="UAC2Gadget")
     with patch("subprocess.run") as run_mock:
         run_mock.side_effect = subprocess.TimeoutExpired(
             cmd="amixer", timeout=3.0,

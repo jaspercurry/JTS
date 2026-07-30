@@ -6,7 +6,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+
+
+def valid_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
+    """Return the suite's standard successful Camilla validation result."""
+    return CamillaConfigValidationResult(
+        status=ValidationStatus.VALID,
+        path=str(path),
+    )
 
 
 def mono_output_topology(

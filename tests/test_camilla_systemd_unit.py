@@ -22,6 +22,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
+    value_for as _value_for,
+    values_for as _values_for,
+)
+
 UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla.service"
@@ -39,24 +45,11 @@ INSTALL_SH = (
 )
 
 
-def _value_for(unit_text: str, key: str) -> str | None:
-    for line in unit_text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
-
-
 def test_unit_starts_after_outputd_and_fanin_for_pipe_rendezvous():
     body = UNIT_PATH.read_text()
 
-    after = _value_for(body, "After") or ""
-    wants = _value_for(body, "Wants") or ""
+    after = _values_for(body, "After")
+    wants = _values_for(body, "Wants")
     assert "jasper-outputd.service" in after
     assert "jasper-fanin.service" in after
     assert "jasper-outputd.service" in wants
@@ -164,7 +157,7 @@ def test_unit_uses_recovery_handler_instead_of_raw_reboot():
     graph restart, not an immediate blind reboot."""
     body = UNIT_PATH.read_text()
     assert _value_for(body, "StartLimitAction") == "none"
-    assert _value_for(body, "OnFailure") == "jasper-camilla-recover.service"
+    assert _values_for(body, "OnFailure") == ("jasper-camilla-recover.service",)
     assert "StartLimitIntervalSec=60" in body
     assert "StartLimitBurst=5" in body
 
@@ -172,8 +165,8 @@ def test_unit_uses_recovery_handler_instead_of_raw_reboot():
 def test_recovery_unit_points_at_installed_helper():
     body = RECOVER_UNIT_PATH.read_text()
     assert _value_for(body, "Type") == "oneshot"
-    assert _value_for(body, "ExecStart") == (
-        "/usr/local/sbin/jasper-camilla-recover --reason start-limit"
+    assert _assignments_for(body, "ExecStart") == (
+        "/usr/local/sbin/jasper-camilla-recover --reason start-limit",
     )
     assert _value_for(body, "TimeoutStartSec") == "45"
 

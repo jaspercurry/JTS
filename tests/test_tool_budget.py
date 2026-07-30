@@ -17,7 +17,7 @@ bounded.
 from __future__ import annotations
 
 from jasper.tools import ToolRegistry
-from tests._tool_pack_contract import full_registry
+from tests._tool_pack_contract import EXPECTED_TOOL_NAMES, full_registry
 
 # After the Phase 1.6 representative llm_description pass, the full tool
 # registry should stay around ~3.9k estimated description tokens. 6k leaves
@@ -46,7 +46,9 @@ def _full_registry() -> ToolRegistry:
 
 def test_model_facing_descriptions_stay_under_budget():
     reg = _full_registry()
-    assert len(reg.tools) == 32, "full registry should hold all 32 shipped tools"
+    assert set(reg.tools) == set(EXPECTED_TOOL_NAMES), (
+        "full registry should hold every shipped tool"
+    )
 
     total_chars = sum(len(t.model_facing_description()) for t in reg.tools.values())
     est_tokens = total_chars // 4

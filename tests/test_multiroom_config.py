@@ -741,37 +741,37 @@ def test_peer_roster_parse_and_validation_matrix():
 
 
 def test_roster_parse_round_trips_format():
-    """_parse_roster(_format_roster(members)) round-trips a list of members."""
+    """_parse_roster(format_roster(members)) round-trips a member list."""
     from jasper.multiroom.config import (
         BondMember,
-        _format_roster,
         _parse_roster,
+        format_roster,
     )
 
     members = (
         BondMember(addr="192.168.1.7", name="Living Right", channel="right"),
         BondMember(addr="192.168.1.8", name="Sub", channel="sub"),
     )
-    assert _parse_roster(_format_roster(members)) == members
+    assert _parse_roster(format_roster(members)) == members
     # Empty round-trips to empty.
-    assert _format_roster(()) == ""
+    assert format_roster(()) == ""
     assert _parse_roster("") == ()
 
 
 def test_format_roster_sanitizes_name_and_skips_empty_addr():
-    """_format_roster replaces "|"/","/control chars in the name with a space
+    """format_roster replaces "|"/","/control chars in the name with a space
     and skips members with an empty addr (a roster slot with no address is
     meaningless)."""
     from jasper.multiroom.config import (
         BondMember,
-        _format_roster,
         _parse_roster,
+        format_roster,
     )
 
     dirty = (
         BondMember(addr="10.0.0.5", name="a|b,c\nd", channel="sub"),
     )
-    serialized = _format_roster(dirty)
+    serialized = format_roster(dirty)
     # The "|"/","/newline in the name are gone — only the entry/field
     # delimiters survive, so the parser round-trips to a single clean member.
     parsed = _parse_roster(serialized)
@@ -781,7 +781,7 @@ def test_format_roster_sanitizes_name_and_skips_empty_addr():
     assert parsed[0].addr == "10.0.0.5" and parsed[0].channel == "sub"
 
     # Empty addr is skipped entirely.
-    assert _format_roster((BondMember(addr="", name="x", channel="sub"),)) == ""
+    assert format_roster((BondMember(addr="", name="x", channel="sub"),)) == ""
 
 
 def test_format_roster_sanitizes_addr_and_channel_no_inject_or_drop():

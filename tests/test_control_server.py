@@ -44,6 +44,16 @@ from jasper.control.server import (
 from jasper.volume_coordinator import VolumeState
 
 
+def _recording_popen(calls: list[list[str]]):
+    """Build the minimal Popen double used by command-dispatch route tests."""
+
+    class RecordingPopen:
+        def __init__(self, cmd):
+            calls.append(cmd)
+
+    return RecordingPopen
+
+
 @pytest.fixture(autouse=True)
 def _isolate_household_secret(monkeypatch, tmp_path):
     """Point household_credential at a throwaway path for every test here.
@@ -869,12 +879,8 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
             "options": [],
         }
 
-    class FakePopen:
-        def __init__(self, cmd):
-            popens.append(cmd)
-
     monkeypatch.setattr(srv_mod, "_apply_audio_quality", fake_apply)
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
         f"{base}/system/audio-quality",
@@ -987,11 +993,7 @@ def test_system_action_reboot_audits_and_invokes_systemctl(
     base, _ = server_with_coordinator
     popens: list[list[str]] = []
 
-    class FakePopen:
-        def __init__(self, cmd):
-            popens.append(cmd)
-
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     with caplog.at_level(logging.INFO, logger="jasper.control.server"):
         status, body = _post(f"{base}/system/reboot", {})
@@ -1019,10 +1021,6 @@ def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coord
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
     popens: list[list[str]] = []
 
-    class FakePopen:
-        def __init__(self, cmd):
-            popens.append(cmd)
-
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(srv_mod, "_aec_bridge_active", lambda: False)
     monkeypatch.setattr(
@@ -1030,7 +1028,7 @@ def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coord
         "_aec_full_status",
         lambda: {"software_aec3": {"bypassed": False}},
     )
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(f"{base}/aec/toggle", None)
 
@@ -1055,10 +1053,6 @@ def test_aec_toggle_refuses_to_disable_chip_aec_carrier(
     )
     popens: list[list[str]] = []
 
-    class FakePopen:
-        def __init__(self, cmd):
-            popens.append(cmd)
-
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(
         srv_mod,
@@ -1068,7 +1062,7 @@ def test_aec_toggle_refuses_to_disable_chip_aec_carrier(
             "software_aec3": {"bypassed": True},
         },
     )
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(f"{base}/aec/toggle", None)
 
@@ -1088,13 +1082,9 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
     popens: list[list[str]] = []
 
-    class FakePopen:
-        def __init__(self, cmd):
-            popens.append(cmd)
-
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"ok": True})
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
         f"{base}/aec/leg",
@@ -1134,13 +1124,9 @@ def test_aec_profile_restarts_reconciler(
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
     popens: list[list[str]] = []
 
-    class FakePopen:
-        def __init__(self, cmd):
-            popens.append(cmd)
-
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": profile})
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
 
     status, body = _post(
         f"{base}/aec/profile",
@@ -1798,12 +1784,8 @@ def _grouping_test_setup(monkeypatch, tmp_path):
     env = tmp_path / "grouping.env"
     popens: list[list[str]] = []
 
-    class FakePopen:
-        def __init__(self, cmd):
-            popens.append(cmd)
-
     monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
     srv_mod._reset_grouping_reconciler_kick_coalescer_for_tests()
     return env, popens
 

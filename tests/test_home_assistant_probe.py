@@ -400,6 +400,7 @@ def test_check_home_assistant_skip_when_not_enabled():
         ha_url = ""
         ha_token = ""
         ha_agent_id = ""
+        ha_verify_ssl = True
         hostname = "jts.local"
 
     result = check_home_assistant(_Cfg())
@@ -424,6 +425,7 @@ def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
         ha_url = "http://homeassistant.local:8123"
         ha_token = "test"
         ha_agent_id = ""
+        ha_verify_ssl = True
         hostname = "jts.local"
 
     result = doctor.check_home_assistant(_Cfg())
@@ -448,6 +450,7 @@ def test_check_home_assistant_fail_when_unreachable(monkeypatch):
         ha_url = "http://homeassistant.local:8123"
         ha_token = "test"
         ha_agent_id = ""
+        ha_verify_ssl = True
         hostname = "jts.local"
 
     result = doctor.check_home_assistant(_Cfg())
@@ -470,6 +473,7 @@ def test_check_home_assistant_fail_when_probe_raises(monkeypatch):
         ha_url = "http://homeassistant.local:8123"
         ha_token = "test"
         ha_agent_id = ""
+        ha_verify_ssl = True
         hostname = "jts.local"
 
     result = doctor.check_home_assistant(_Cfg())

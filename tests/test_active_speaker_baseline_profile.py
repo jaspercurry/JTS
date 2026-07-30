@@ -55,10 +55,13 @@ from jasper.active_speaker.measured_crossover_candidate import (
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUMMARY
-from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from jasper.dsp_apply import CamillaConfigValidationResult
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import (
+    mono_output_topology,
+    valid_camilla_config as _valid_config,
+)
 from tests.test_active_speaker_profile import _two_way_preset
 
 
@@ -317,13 +320,6 @@ def _measurements(topology: OutputTopology, tmp_path: Path) -> dict:
         },
         state_path=state_path,
         now="2026-06-14T12:03:00Z",
-    )
-
-
-def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
-    return CamillaConfigValidationResult(
-        status=ValidationStatus.VALID,
-        path=str(path),
     )
 
 

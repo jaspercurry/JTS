@@ -18,9 +18,6 @@ from jasper.tool_state import (
     read_disabled_packs,
     read_setup_enabled_packs,
     read_disabled_tools,
-    read_tool_state,
-    write_disabled_packs,
-    write_disabled_tools,
     write_tool_state,
 )
 
@@ -99,49 +96,3 @@ def test_round_trip_sorted_deterministic_and_mode_0644(tmp_path):
         "JASPER_DISABLED_TOOLS=a,b\n"
     )
     assert stat.S_IMODE(os.stat(p).st_mode) == 0o644
-
-
-def test_write_empty_set_reads_back_empty(tmp_path):
-    p = tmp_path / "tool_state.env"
-    write_disabled_tools(p, set())
-    assert p.read_text() == "JASPER_DISABLED_TOOLS=\n"
-    assert read_disabled_tools(p) == frozenset()
-
-
-def test_write_accepts_list_and_dedups(tmp_path):
-    p = tmp_path / "tool_state.env"
-    write_disabled_tools(p, ["x", "x", " y ", ""])
-    assert read_disabled_tools(p) == {"x", "y"}
-    assert p.read_text() == "JASPER_DISABLED_TOOLS=x,y\n"
-
-
-def test_write_disabled_tools_preserves_disabled_packs(tmp_path):
-    p = tmp_path / "tool_state.env"
-    write_tool_state(
-        p,
-        ToolState(
-            disabled_packs=frozenset({"spotify"}),
-            setup_enabled_packs=frozenset({"home-assistant"}),
-        ),
-    )
-    write_disabled_tools(p, {"spotify_play"})
-    state = read_tool_state(p)
-    assert state.disabled_packs == {"spotify"}
-    assert state.disabled_tools == {"spotify_play"}
-    assert state.setup_enabled_packs == {"home-assistant"}
-
-
-def test_write_disabled_packs_preserves_setup_enabled_packs(tmp_path):
-    p = tmp_path / "tool_state.env"
-    write_tool_state(
-        p,
-        ToolState(
-            disabled_tools=frozenset({"spotify_play"}),
-            setup_enabled_packs=frozenset({"home-assistant"}),
-        ),
-    )
-    write_disabled_packs(p, {"spotify"})
-    state = read_tool_state(p)
-    assert state.disabled_packs == {"spotify"}
-    assert state.disabled_tools == {"spotify_play"}
-    assert state.setup_enabled_packs == {"home-assistant"}

@@ -12,6 +12,7 @@ import pytest
 from jasper import audio_quality
 
 SCRIPT = Path(__file__).resolve().parent.parent / "deploy/bin/jasper-render-asound-conf"
+INSTALL = Path(__file__).resolve().parent.parent / "deploy/install.sh"
 
 
 def test_default_requested_converter_is_medium(tmp_path):
@@ -41,6 +42,24 @@ def test_read_active_converter_parses_rendered_asound(tmp_path):
     path = tmp_path / "asound.conf"
     path.write_text('defaults.pcm.rate_converter "samplerate_medium"\n')
     assert audio_quality.read_active_converter(path) == "samplerate_medium"
+
+
+def test_default_active_asound_paths_share_installed_symlink_contract(
+    monkeypatch,
+):
+    monkeypatch.delenv("JASPER_ASOUND_CONF", raising=False)
+    script = SCRIPT.read_text()
+    install = INSTALL.read_text()
+
+    assert audio_quality._asound_path() == Path("/etc/asound.conf")
+    assert (
+        'OUTPUT="${JASPER_ASOUND_CONF:-/var/lib/jasper-asound/asound.conf}"'
+        in script
+    )
+    assert (
+        "ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf"
+        in install
+    )
 
 
 def test_invalid_converter_rejected():

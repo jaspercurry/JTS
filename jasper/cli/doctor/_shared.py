@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,6 +153,24 @@ def _parse_env_file(path: str) -> dict[str, str]:
     """Back-compat wrapper for tests and external doctor consumers."""
 
     return _shared_parse_env_file(path)
+
+
+def _parse_systemd_environment(text: str) -> dict[str, str]:
+    """Parse ``systemctl show -p Environment`` output into key/value pairs."""
+    text = text.strip()
+    if text.startswith("Environment="):
+        text = text[len("Environment="):]
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    env: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, _, value = token.partition("=")
+        env[key] = value.strip().strip('"').strip("'")
+    return env
 
 
 def _camilla_block_field(text: str, block: str, key: str) -> str | None:

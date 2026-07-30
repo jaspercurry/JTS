@@ -149,7 +149,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
         result = _asyncio.run(probe_status(
             cfg.ha_url, cfg.ha_token,
             force=True,
-            verify_ssl=bool(getattr(cfg, "ha_verify_ssl", True)),
+            verify_ssl=cfg.ha_verify_ssl,
         ))
     except Exception as e:  # noqa: BLE001
         return CheckResult(label, "fail", f"probe raised: {e}")

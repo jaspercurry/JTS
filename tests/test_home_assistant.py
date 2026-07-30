@@ -869,6 +869,7 @@ def test_build_ha_client_returns_client_when_enabled():
         ha_url = "http://homeassistant.local:8123"
         ha_token = "abc"
         ha_agent_id = ""
+        ha_verify_ssl = True
 
     client = build_ha_client(_Cfg())
     assert client is not None

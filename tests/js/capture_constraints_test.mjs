@@ -17,6 +17,7 @@ import {
   verifyRealizedConstraints,
   constraintDecision,
 } from "../../capture-page/js/constraints.js";
+import { runTestFunctions } from "./run_test_functions.mjs";
 
 let passed = 0;
 function ok() {
@@ -180,20 +181,4 @@ const tests = [
   testMissingSettingsAreTolerated,
 ];
 
-let failure = null;
-for (const t of tests) {
-  try {
-    t();
-  } catch (e) {
-    failure = { test: t.name, error: String(e && e.stack ? e.stack : e) };
-    break;
-  }
-}
-
-if (failure) {
-  console.error(failure.error);
-  console.log(JSON.stringify({ ok: false, ...failure }));
-  process.exit(1);
-} else {
-  console.log(JSON.stringify({ ok: true, passed }));
-}
+await runTestFunctions(tests, () => passed);

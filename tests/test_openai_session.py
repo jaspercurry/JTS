@@ -2523,7 +2523,7 @@ async def test_end_input_noop_under_server_vad():
         sess = factory.conns[0]
         await conn.set_turn_detection({"type": "server_vad"})
         turn = await conn.acquire_turn()
-        turn._mark_server_vad()
+        turn.mark_server_vad()
         baseline = len(sess.sent)
         await turn.end_input()
         new_types = [e["type"] for e in sess.sent[baseline:]]
@@ -2545,7 +2545,7 @@ async def test_server_vad_speech_events_dispatch():
         sess = factory.conns[0]
         await conn.set_turn_detection({"type": "server_vad"})
         turn = await conn.acquire_turn()
-        turn._mark_server_vad()
+        turn.mark_server_vad()
 
         assert turn.server_speech_started() is False
         assert turn.server_speech_detected() is False
@@ -2613,7 +2613,7 @@ async def test_turn_release_restores_manual_vad():
         await conn.set_turn_detection({"type": "server_vad"})
         assert conn._server_vad_active is True
         turn = await conn.acquire_turn()
-        turn._mark_server_vad()
+        turn.mark_server_vad()
         await turn.release()
         await asyncio.sleep(0.05)
         assert conn._server_vad_active is False
@@ -2637,7 +2637,7 @@ async def test_committed_stops_send_audio():
         sess = factory.conns[0]
         await conn.set_turn_detection({"type": "server_vad"})
         turn = await conn.acquire_turn()
-        turn._mark_server_vad()
+        turn.mark_server_vad()
         await turn.send_audio(b"\x00\x00" * 1280)
         baseline = len(sess.sent)
         turn._on_server_committed()

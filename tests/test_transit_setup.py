@@ -719,17 +719,21 @@ def test_handler_get_cold_renders_address_input(wizard_server):
     assert 'name="address"' in body
 
 
-def test_handler_post_geocode_writes_state(wizard_server, monkeypatch):
+def test_handler_post_geocode_writes_state(wizard_server, monkeypatch, caplog):
     base_url, state_path, _ = wizard_server
     monkeypatch.setattr(geocode_mod, "geocode", lambda q, **kw: geocode_mod.GeocodeResult(
         lat=40.646, lon=-73.994, display_name="Sunset Park", source="nominatim",
     ))
+    caplog.set_level("INFO", logger=transit_setup.__name__)
     r = _post(f"{base_url}/geocode", {"address": "9 Av Brooklyn"})
     # 303 See Other with empty body — the wizard's redirect pattern.
     assert r.status in (200, 303)  # urllib follows by default
     state = _common.read_env_file(state_path)
     assert state[transit_setup.LAT_ENV] == "40.646"
     assert state[transit_setup.LON_ENV] == "-73.994"
+    assert "event=transit.geocode" in caplog.text
+    assert "9 Av Brooklyn" not in caplog.text
+    assert "Sunset Park" not in caplog.text
 
 
 def test_handler_post_save_restarts_voice(wizard_server):

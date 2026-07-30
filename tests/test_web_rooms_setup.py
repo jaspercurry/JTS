@@ -2678,20 +2678,40 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
             return (False, "connection refused")
         return (True, "HTTP 200")
 
-    h, posts = _post_swap(
-        monkeypatch=monkeypatch,
-        self_grouping={"enabled": True, "role": "leader", "channel": "left",
-                       "bond_id": "bond-1", "leader_addr": ""},
-        speakers=[{"address": "192.168.1.9"}],
-        peer_grouping={
-            "192.168.1.9": {"enabled": True, "role": "follower",
-                            "channel": "right", "bond_id": "bond-1",
-                            "leader_addr": "jts.local"},
-        },
-        member_results=None,
-    )
-    # Drive again with the flaky poster: patch directly for this variant.
     import jasper.web.rooms_setup as rooms_setup_mod
+    monkeypatch.setattr(
+        rooms_setup_mod, "guard_mutating_request", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        rooms_setup_mod,
+        "read_grouping_state",
+        lambda *a, **k: {
+            "enabled": True,
+            "role": "leader",
+            "channel": "left",
+            "bond_id": "bond-1",
+            "leader_addr": "",
+        },
+    )
+    monkeypatch.setattr(
+        rooms_setup_mod,
+        "discover_speakers_cached",
+        lambda: [{"address": "192.168.1.9"}],
+    )
+    monkeypatch.setattr(rooms_setup_mod, "self_addresses", lambda: set())
+    monkeypatch.setattr(
+        rooms_setup_mod,
+        "_get_member_grouping",
+        lambda addr, known=None: {
+            "enabled": True,
+            "role": "follower",
+            "channel": "right",
+            "bond_id": "bond-1",
+            "leader_addr": "jts.local",
+        }
+        if addr == "192.168.1.9"
+        else None,
+    )
     monkeypatch.setattr(rooms_setup_mod, "post_grouping_to_member", flaky_self)
     handler_cls = rooms_setup_mod._make_handler()
     h = FakeHandler("/swap", body=None)

@@ -140,6 +140,9 @@ dev = [
     "mypy>=2.1,<2.2",
 ]
 
+# Keep this dependency group identical to the ``dev`` optional extra above:
+# uv consumes the group, while pip users still install ``.[dev]``. The
+# cross-frontend contract is pinned by tests/test_dependency_groups.py.
 [dependency-groups]
 dev = [
     "pytest>=8",

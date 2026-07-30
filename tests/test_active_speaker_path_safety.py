@@ -23,9 +23,11 @@ from jasper.active_speaker import (
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.path_safety import _startup_muted_by_candidate
 from jasper.active_speaker.staging import stage_protected_startup_config
-from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_topology import OutputTopology
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import (
+    mono_output_topology,
+    valid_camilla_config as _valid_config,
+)
 
 
 def test_path_safety_writer_preserves_private_mode(tmp_path: Path) -> None:
@@ -58,13 +60,6 @@ def test_path_safety_writer_inherits_parent_group(monkeypatch) -> None:
 
 def _topology(*, identity_verified: bool = True) -> OutputTopology:
     return mono_output_topology(identity_verified=identity_verified)
-
-
-def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
-    return CamillaConfigValidationResult(
-        status=ValidationStatus.VALID,
-        path=str(path),
-    )
 
 
 def _staged(tmp_path: Path) -> dict:

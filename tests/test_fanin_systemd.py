@@ -19,6 +19,11 @@ import re
 from pathlib import Path
 
 from tests.install_surface import installer_text
+from tests.systemd_unit_helpers import (
+    assignments_for as _assignments_for,
+    value_for as _value_for,
+    values_for as _values_for,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -27,23 +32,6 @@ UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-fanin.service"
 
 def _read_unit() -> str:
     return UNIT_PATH.read_text()
-
-
-def _value_for(unit_text: str, key: str) -> str | None:
-    """Pull the value of a `Key=Value` directive. Returns None if
-    absent. Matches the systemd convention: case-sensitive key, no
-    whitespace around `=`, value is everything to end-of-line."""
-    for line in unit_text.splitlines():
-        # Skip section headers and comments.
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
-            continue
-        if "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
 
 
 def test_unit_file_exists():
@@ -181,10 +169,10 @@ def test_runtime_directory():
     across daemon-restart events and the bind would race against
     stale-socket cleanup."""
     unit = _read_unit()
-    val = _value_for(unit, "RuntimeDirectory")
-    assert val == "jasper-fanin", (
+    values = _values_for(unit, "RuntimeDirectory")
+    assert values == ("jasper-fanin",), (
         f"jasper-fanin.service must declare RuntimeDirectory=jasper-fanin "
-        f"so /run/jasper-fanin/ is auto-managed. Got {val!r}"
+        f"so /run/jasper-fanin/ is auto-managed. Got {values!r}"
     )
 
 
@@ -214,11 +202,11 @@ def test_exec_start_points_at_installed_binary():
     binary. A divergence between unit and install.sh would let
     systemd start a stale binary or fail with ENOENT."""
     unit = _read_unit()
-    val = _value_for(unit, "ExecStart")
-    assert val == "/opt/jasper/bin/jasper-fanin", (
+    commands = _assignments_for(unit, "ExecStart")
+    assert commands == ("/opt/jasper/bin/jasper-fanin",), (
         f"jasper-fanin.service ExecStart must be "
         f"/opt/jasper/bin/jasper-fanin (matches install.sh's "
-        f"build_install_jasper_fanin destination). Got {val!r}"
+        f"build_install_jasper_fanin destination). Got {commands!r}"
     )
 
 
@@ -236,11 +224,12 @@ def test_combo_gated_pitch_neutralize_exec_stop_post():
     the helper's own tests in tests/test_fanin_pitch_neutralize.py.
     """
     unit = _read_unit()
-    val = _value_for(unit, "ExecStopPost")
-    assert val is not None, (
+    commands = _assignments_for(unit, "ExecStopPost")
+    assert len(commands) == 1, (
         "jasper-fanin.service must carry an ExecStopPost pitch-neutralize belt "
         "for the combo-mode host-clock (C6)."
     )
+    val = commands[0]
     # Best-effort (leading `-`): a missing card / combo-off must not fail stop.
     assert val.startswith("-"), (
         "the ExecStopPost must be best-effort (leading `-`) so a missing gadget "
@@ -457,7 +446,7 @@ def test_no_state_directory_needed_for_host_compliance():
     (/var/lib/jasper-fanin/) and is not the posture this feature uses; if
     a future edit adds one, revisit whether the compliance path moved."""
     unit = _read_unit()
-    assert _value_for(unit, "StateDirectory") is None, (
+    assert _values_for(unit, "StateDirectory") == (), (
         "jasper-fanin.service intentionally has NO StateDirectory — the "
         "host-compliance record reuses the already-owned "
         "/var/lib/jasper/fanin/ dir (see the module docstring in "
@@ -469,16 +458,15 @@ def test_install_target_is_multi_user():
     """`WantedBy=multi-user.target` matches the conventions of
     other jasper-* daemons."""
     unit = _read_unit()
-    val = _value_for(unit, "WantedBy")
-    assert val == "multi-user.target"
+    assert _values_for(unit, "WantedBy") == ("multi-user.target",)
 
 
 def test_fanin_starts_before_hot_path_consumers():
     """Fan-in must be initialized before Camilla/renderer consumers try
     to open the summed-reference graph."""
     unit = _read_unit()
-    before = _value_for(unit, "Before")
-    assert before is not None
+    before = _values_for(unit, "Before")
+    assert before
     for dep in (
         "jasper-camilla.service",
         "shairport-sync.service",

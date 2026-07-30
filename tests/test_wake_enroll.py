@@ -27,24 +27,6 @@ def _write_mute(path: Path, muted: bool) -> None:
     path.write_text(f"JASPER_MIC_MUTED={1 if muted else 0}\n")
 
 
-# ---------------------------------------------------------------------------
-# quadrant_dirs
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("condition,expected", [
-    ("quiet", ("aec_on_nomusic", "aec_off_nomusic")),
-    ("music", ("aec_on_music", "aec_off_music")),
-])
-def test_quadrant_dirs(condition: str, expected: tuple[str, str]) -> None:
-    assert wake_enroll.quadrant_dirs(condition) == expected
-
-
-def test_quadrant_dirs_rejects_unknown_condition() -> None:
-    with pytest.raises(ValueError, match="unknown condition"):
-        wake_enroll.quadrant_dirs("loud")
-
-
 @pytest.mark.parametrize("condition,expected", [
     ("quiet", {"on": "aec_on_nomusic", "off": "aec_off_nomusic", "dtln": "aec_dtln_nomusic"}),
     ("music", {"on": "aec_on_music", "off": "aec_off_music", "dtln": "aec_dtln_music"}),
@@ -246,7 +228,7 @@ def test_session_stats_weak_count_only_when_both_below() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Async capture — _collect_for + record_window with a fake UDP source
+# Async capture — _collect_for + record_legs with a fake UDP source
 # ---------------------------------------------------------------------------
 
 
@@ -276,37 +258,6 @@ async def test_collect_for_returns_bytes_in_window() -> None:
     samples = np.frombuffer(pcm, dtype=np.int16)
     assert len(samples) > wake_enroll.FRAME_SAMPLES  # multiple frames
     assert (samples == 42).all()
-
-
-@pytest.mark.asyncio
-async def test_record_window_returns_paired_bytes() -> None:
-    on_cap = _FakeUdpCapture(sample_value=100)
-    off_cap = _FakeUdpCapture(sample_value=200)
-    on_pcm, off_pcm = await wake_enroll.record_window(
-        on_cap, off_cap, duration_sec=0.15,
-    )
-    on_samples = np.frombuffer(on_pcm, dtype=np.int16)
-    off_samples = np.frombuffer(off_pcm, dtype=np.int16)
-    assert (on_samples == 100).all()
-    assert (off_samples == 200).all()
-    # Both legs ran off the same asyncio.timeout; length should match
-    # within one packet of slack (5 ms = 80 samples at our fake rate).
-    assert abs(len(on_samples) - len(off_samples)) <= wake_enroll.FRAME_SAMPLES
-
-
-@pytest.mark.asyncio
-async def test_record_window_threads_mute_gate(tmp_path: Path) -> None:
-    mute_path = tmp_path / "mic_mute.env"
-    _write_mute(mute_path, True)
-
-    with pytest.raises(wake_enroll.MicMutedError, match="mic is muted"):
-        await wake_enroll.record_window(
-            _FakeUdpCapture(sample_value=100),
-            _FakeUdpCapture(sample_value=200),
-            duration_sec=0.15,
-            mic_mute_path=mute_path,
-            mute_poll_interval_sec=0.01,
-        )
 
 
 @pytest.mark.asyncio

@@ -12,11 +12,12 @@ The wizard's risky bits are:
      is checked, the right key prefix shows up masked.
 
 Driven through the pure-function seams (`_apply_save`,
-`_apply_clear`, `_index_html`, `_load_state`) plus a tempdir for
-env-file IO. The HTTP handler itself is exercised end-to-end by
-spinning up the actual ThreadingHTTPServer on a random port, hitting
-it with `urllib`, and inspecting the responses — same shape as the
-Spotify wizard would be tested if it had its own test file.
+`_apply_clear`, `_index_html`) plus the canonical env-file helpers
+and a tempdir for env-file IO. The HTTP handler itself is exercised
+end-to-end by spinning up the actual ThreadingHTTPServer on a random
+port, hitting it with `urllib`, and inspecting the responses — the
+same shape as the Spotify wizard would be tested if it had its own
+test file.
 """
 from __future__ import annotations
 
@@ -42,14 +43,14 @@ from jasper.web import _common, voice_setup
 # ---------- Pure helpers (no IO) -------------------------------------------
 
 
-def test_load_state_returns_empty_for_missing_file(tmp_path: Path):
-    assert voice_setup._load_state(str(tmp_path / "nope.env")) == {}
+def test_read_env_file_returns_empty_for_missing_file(tmp_path: Path):
+    assert _common.read_env_file(str(tmp_path / "nope.env")) == {}
 
 
-def test_load_state_round_trips_through_write_env_file(tmp_path: Path):
+def test_read_env_file_round_trips_through_write_env_file(tmp_path: Path):
     p = str(tmp_path / "v.env")
     _common.write_env_file(p, {"OPENAI_API_KEY": "sk-abc", "JASPER_VOICE_PROVIDER": "openai"})
-    assert voice_setup._load_state(p) == {
+    assert _common.read_env_file(p) == {
         "OPENAI_API_KEY": "sk-abc",
         "JASPER_VOICE_PROVIDER": "openai",
     }
@@ -83,7 +84,7 @@ def test_write_env_file_is_atomic_under_failure(tmp_path: Path):
     with pytest.raises(ValueError):
         _common.write_env_file(p, {"OK": "second", "BAD": "no\nline"})
     # File still has the original good content.
-    assert voice_setup._load_state(p) == {"OK": "first"}
+    assert _common.read_env_file(p) == {"OK": "first"}
 
 
 # ---------- Save logic -----------------------------------------------------
@@ -822,12 +823,12 @@ def test_e2e_save_writes_file_and_redirects(
         state_path = tmp_path / "voice_provider.env"
         assert state_path.exists()
         assert (os.stat(state_path).st_mode & 0o777) == 0o640
-        loaded = voice_setup._load_state(str(state_path))
+        loaded = _common.read_env_file(str(state_path))
         assert loaded["JASPER_VOICE_PROVIDER"] == "openai"
         # WS1 Phase 4a — the API key is SPLIT OUT into voice_keys.env; the broad
         # voice_provider.env must NOT carry it.
         assert "OPENAI_API_KEY" not in loaded
-        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        keys = _common.read_env_file(str(tmp_path / "voice_keys.env"))
         assert keys["OPENAI_API_KEY"] == "sk-fresh"
         # Restart was invoked.
         assert called == [True]
@@ -856,11 +857,11 @@ def test_e2e_spend_cap_save_writes_voice_env_and_restarts(
         })
         assert status == 303
         assert "Saved spend cap" in urllib.parse.unquote(location)
-        loaded = voice_setup._load_state(str(state_path))
+        loaded = _common.read_env_file(str(state_path))
         # WS1 Phase 4a — the key is preserved across a spend-cap save, but lives
         # in the split-out keys file, not the broad voice_provider.env.
         assert "OPENAI_API_KEY" not in loaded
-        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        keys = _common.read_env_file(str(tmp_path / "voice_keys.env"))
         assert keys["OPENAI_API_KEY"] == "sk-keep"
         assert loaded["JASPER_DAILY_SPEND_CAP_USD"] == "5.00"
         assert loaded["JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER"] == "1.1"
@@ -950,10 +951,10 @@ def test_e2e_save_and_test_runs_one_bounded_loudness_seed(
         assert "Saved and tested OpenAI" in urllib.parse.unquote(location)
         assert "sk-fresh" not in urllib.parse.unquote(location)
 
-        state = voice_setup._load_state(str(tmp_path / "voice_provider.env"))
+        state = _common.read_env_file(str(tmp_path / "voice_provider.env"))
         assert state["JASPER_VOICE_PROVIDER"] == "openai"
         assert "OPENAI_API_KEY" not in state  # split into voice_keys.env (4a)
-        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        keys = _common.read_env_file(str(tmp_path / "voice_keys.env"))
         assert keys["OPENAI_API_KEY"] == "sk-fresh"
         assert events == [
             (
@@ -995,9 +996,9 @@ def test_e2e_save_and_test_redacts_provider_error_and_still_saves(
         assert "sk-secret-tail9999" not in flash
         assert "sk-s" in flash and "9999" in flash
 
-        state = voice_setup._load_state(str(tmp_path / "voice_provider.env"))
+        state = _common.read_env_file(str(tmp_path / "voice_provider.env"))
         assert "OPENAI_API_KEY" not in state  # split into voice_keys.env (4a)
-        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        keys = _common.read_env_file(str(tmp_path / "voice_keys.env"))
         assert keys["OPENAI_API_KEY"] == "sk-secret-tail9999"
         assert restarted == [True]
     finally:
@@ -1023,7 +1024,7 @@ def test_e2e_save_and_test_handles_seed_skip_and_restarts(
         assert status == 303
         assert "Saved, but OpenAI Realtime voice test failed" in flash
         assert "incomplete" in flash
-        assert voice_setup._load_state(
+        assert _common.read_env_file(
             str(tmp_path / "voice_provider.env"),
         )["JASPER_VOICE_PROVIDER"] == "openai"
         assert restarted == [True]
@@ -1096,8 +1097,8 @@ def test_e2e_clear_credentials_removes_provider_keys(
         )
         assert status == 303
         assert "Cleared" in urllib.parse.unquote(location)
-        loaded = voice_setup._load_state(str(state_path))
-        keys = voice_setup._load_state(str(tmp_path / "voice_keys.env"))
+        loaded = _common.read_env_file(str(state_path))
+        keys = _common.read_env_file(str(tmp_path / "voice_keys.env"))
         # WS1 Phase 4a — OPENAI creds gone from BOTH files; the kept GEMINI key
         # lives in the split-out keys file; the non-secret model stays broad.
         assert "OPENAI_API_KEY" not in loaded and "OPENAI_API_KEY" not in keys

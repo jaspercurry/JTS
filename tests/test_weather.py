@@ -757,16 +757,19 @@ async def test_get_weather_timeout_error_includes_class_and_spoken_error():
 
 
 @pytest.mark.asyncio
-async def test_get_weather_bad_json_returns_spoken_error():
+async def test_get_weather_bad_json_returns_spoken_error(caplog):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"not json")
 
     http = httpx.AsyncClient(transport=_mock_transport(handler))
     weather = WeatherClient(default_lat=40.653, default_lon=-74.007, http=http)
     try:
+        caplog.set_level("WARNING", logger="jasper.weather")
         result = await weather.get_weather()
         assert result["error"].startswith("weather lookup failed: JSONDecodeError")
         assert result["spoken_error"] == USER_FACING_WEATHER_UNAVAILABLE
+        assert "event=weather_response_error" in caplog.text
+        assert "endpoint=forecast" in caplog.text
     finally:
         await http.aclose()
 

@@ -11,7 +11,6 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import json
-import shlex
 import shutil
 import socket
 import subprocess
@@ -19,7 +18,12 @@ from pathlib import Path
 
 from ...env_load import parse_env_text
 from ._registry import doctor_check
-from ._shared import CheckResult, _camilla_block_field, _run
+from ._shared import (
+    CheckResult,
+    _camilla_block_field,
+    _parse_systemd_environment,
+    _run,
+)
 
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
@@ -319,24 +323,6 @@ def check_grouping_leader_pipe() -> CheckResult:
 def _parse_env_file(text: str) -> dict[str, str]:
     """Parse reconciler-written env text through the canonical parser."""
     return parse_env_text(text)
-
-
-def _parse_systemd_environment(text: str) -> dict[str, str]:
-    """Parse ``systemctl show -p Environment`` output into a key/value map."""
-    text = text.strip()
-    if text.startswith("Environment="):
-        text = text[len("Environment="):]
-    try:
-        tokens = shlex.split(text)
-    except ValueError:
-        tokens = text.split()
-    env: dict[str, str] = {}
-    for token in tokens:
-        if "=" not in token:
-            continue
-        key, _, value = token.partition("=")
-        env[key] = value.strip().strip('"').strip("'")
-    return env
 
 
 def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:

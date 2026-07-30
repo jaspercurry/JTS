@@ -53,6 +53,13 @@ _ASSETS = Path(__file__).resolve().parents[1] / "deploy" / "assets" / "wake-corp
 _NODE = shutil.which("node")
 
 
+def _session_metadata(tmp_path: Path) -> tuple[Path, dict]:
+    """Return the one enrollment sidecar written by a single-session test."""
+    paths = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
+    assert len(paths) == 1
+    return paths[0], json.loads(paths[0].read_text())
+
+
 def _stub_xvf_runtime(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -442,11 +449,8 @@ def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     time.sleep(0.05)
     clip = backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    assert len(json_files) == 1
-    assert json_files[0].name.startswith("enroll_jasper_")
-
-    data = json.loads(json_files[0].read_text())
+    metadata_path, data = _session_metadata(tmp_path)
+    assert metadata_path.name.startswith("enroll_jasper_")
     assert data["member"] == "jasper"
     assert data["session_id"] == backend.session_id()
     assert len(data["clips"]) == 1
@@ -473,8 +477,7 @@ def test_metadata_capture_plan_persists_missing_bridge_outputs(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     missing = set(data["capture_plan"]["bridge"]["missing_outputs"])
     assert {"dtln", "ref", "usb"} <= missing
     assert any(
@@ -569,8 +572,7 @@ def test_metadata_records_audio_context_snapshot(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     assert (
         data["metadata_schema_version"]
         == wake_corpus_setup.METADATA_SCHEMA_VERSION
@@ -647,8 +649,8 @@ def test_audio_context_snapshot_uses_chip_aec_dac_gate(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    context = json.loads(json_files[0].read_text())["audio_context"]
+    _, data = _session_metadata(tmp_path)
+    context = data["audio_context"]
     profile = context["production_audio_profile"]
     assert profile["selection"] == "auto"
     assert profile["requested"] == "xvf_software_aec3"
@@ -692,8 +694,7 @@ def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     by_token = {leg["token"]: leg for leg in data["capture_plan"]["legs"]}
     assert by_token["on"]["label"] == "Chip AEC ASR 210 primary"
     assert by_token["on"]["processing"] == "hardware_aec"
@@ -745,8 +746,7 @@ def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
     clip = backend.stop_recording()
     backend.delete_clip(clip.clip_id)
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     # The clip is still in the metadata list, marked deleted (audit trail)
     matching = [c for c in data["clips"] if c["clip_id"] == clip.clip_id]
     assert len(matching) == 1
@@ -3019,8 +3019,7 @@ def test_metadata_persists_include_raw_mic_0_flag(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     assert data["include_raw_mic_0"] is True
     assert data["include_dtln"] is True
     assert data["enabled_legs"] == ["on", "off", "dtln", "raw0"]
@@ -3034,8 +3033,7 @@ def test_metadata_persists_include_usb_mic_flag(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     assert data["include_usb_mic"] is True
     assert data["include_usb_dtln"] is False
     assert data["enabled_legs"] == [
@@ -3053,8 +3051,7 @@ def test_metadata_persists_dtln_session_flags(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     assert data["include_dtln"] is False
     assert data["include_usb_dtln"] is True
     assert data["enabled_legs"] == ["on", "off", "ref", "usb_raw", "usb_dtln"]
@@ -3070,8 +3067,7 @@ def test_metadata_persists_aec3_sweep_flags(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
-    data = json.loads(json_files[0].read_text())
+    _, data = _session_metadata(tmp_path)
     assert data["include_aec3_sweep"] is True
     assert data["include_usb_mic"] is True
     assert data["aec3_sweep_source"] == "usb"

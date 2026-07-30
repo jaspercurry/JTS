@@ -22,11 +22,10 @@ from jasper.accounts import (
 )
 
 
-def _tmp_registry() -> str:
-    fd, path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    os.unlink(path)
-    return path
+def _tmp_registry(tmp_path: Path) -> str:
+    # Use a caller-owned directory. Registry.save intentionally preserves the
+    # parent group strictly, matching the production secrets compartment.
+    return str(tmp_path / "accounts.json")
 
 
 def _install_fake_spotipy_cache_handler(monkeypatch):
@@ -51,8 +50,8 @@ def test_registry_load_missing_returns_empty():
     assert r.default_name == ""
 
 
-def test_registry_round_trip():
-    path = _tmp_registry()
+def test_registry_round_trip(tmp_path):
+    path = _tmp_registry(tmp_path)
     try:
         r = Registry(path=path)
         r.add_or_update(Account(name="jasper"), make_default=True)
@@ -64,17 +63,18 @@ def test_registry_round_trip():
         assert r2.default_name == "jasper"
         assert r2.get("brittany") is not None
         assert r2.get("brittany").cache_path.endswith("brittany.json")
+        assert stat.S_IMODE(os.stat(path).st_mode) == SPOTIFY_CACHE_FILE_MODE
     finally:
         for f in (path, path + ".tmp"):
             if os.path.exists(f):
                 os.unlink(f)
 
 
-def test_registry_load_tolerates_legacy_pattern_field():
+def test_registry_load_tolerates_legacy_pattern_field(tmp_path):
     """Older registry files may have client_name_patterns. The new schema
     ignores it instead of choking — handles in-place upgrade without
     requiring the deploy script to rewrite accounts.json first."""
-    path = _tmp_registry()
+    path = _tmp_registry(tmp_path)
     try:
         Path(path).write_text(json.dumps({
             "version": 1,
@@ -114,11 +114,11 @@ def test_default_cache_path_blocks_traversal():
     assert p.endswith(".json")
 
 
-def test_legacy_migration_wraps_existing_cache():
+def test_legacy_migration_wraps_existing_cache(tmp_path):
     legacy_fd, legacy = tempfile.mkstemp(suffix=".cache")
     os.close(legacy_fd)
     Path(legacy).write_text('{"access_token": "xyz"}')
-    reg_path = _tmp_registry()
+    reg_path = _tmp_registry(tmp_path)
     new_cache_dir = tempfile.mkdtemp()
     try:
         from jasper import accounts as accounts_mod
@@ -142,8 +142,8 @@ def test_legacy_migration_wraps_existing_cache():
         shutil.rmtree(new_cache_dir, ignore_errors=True)
 
 
-def test_legacy_migration_skipped_when_no_legacy_cache():
-    reg_path = _tmp_registry()
+def test_legacy_migration_skipped_when_no_legacy_cache(tmp_path):
+    reg_path = _tmp_registry(tmp_path)
     try:
         r = Registry(path=reg_path)
         assert maybe_migrate_legacy(r, legacy_cache="/nonexistent") is False
@@ -156,9 +156,9 @@ def test_legacy_migration_skipped_when_no_legacy_cache():
 # ----- per-account playlist config (the web-UI map) -----
 
 
-def test_playlists_field_round_trip():
+def test_playlists_field_round_trip(tmp_path):
     """Account.playlists round-trips through save/load."""
-    path = _tmp_registry()
+    path = _tmp_registry(tmp_path)
     try:
         r = Registry(path=path)
         r.add_or_update(Account(name="jasper"), make_default=True)
@@ -179,11 +179,11 @@ def test_playlists_field_round_trip():
                 os.unlink(f)
 
 
-def test_load_tolerates_missing_playlists_field():
+def test_load_tolerates_missing_playlists_field(tmp_path):
     """Older registry JSON has no `playlists` key. Load must not choke
     — running installs upgraded in place shouldn't have to rewrite the
     JSON before they boot."""
-    path = _tmp_registry()
+    path = _tmp_registry(tmp_path)
     try:
         Path(path).write_text(json.dumps({
             "version": 1,
@@ -202,10 +202,10 @@ def test_load_tolerates_missing_playlists_field():
             os.unlink(path)
 
 
-def test_load_tolerates_garbage_playlist_entries():
+def test_load_tolerates_garbage_playlist_entries(tmp_path):
     """Defensive: hand-edited JSON with non-string keys/values is filtered
     out rather than crashing the registry load."""
-    path = _tmp_registry()
+    path = _tmp_registry(tmp_path)
     try:
         Path(path).write_text(json.dumps({
             "version": 1,

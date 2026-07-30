@@ -56,12 +56,12 @@ ssh_pi() { ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"; }
 
 cleanup() {
     set +e
-    # Kill the OAuth-mode librespot if it's still running.
-    if [[ -f /tmp/.last-claim-pid ]]; then
-        ssh_pi "sudo pkill -F ${CLAIM_PID_FILE} 2>/dev/null; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}"
-    else
-        ssh_pi "sudo pkill -f 'librespot --enable-oauth' 2>/dev/null; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}" 2>/dev/null
-    fi
+    # The PID file is unique to this invocation. Use it even on an early exit:
+    # the remote launch writes it before returning, and a missing file is a
+    # harmless no-op. Never kill by command pattern — another claim may be
+    # running concurrently.
+    ssh_pi "sudo pkill -F ${CLAIM_PID_FILE} 2>/dev/null || true; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}" \
+        >/dev/null 2>&1 || true
     # Ask systemd to restore according to CURRENT policy after an early exit.
     # The unit's source-aware ExecCondition is the final authority; a clean
     # skip is correct for household Off, invalid intent, or follower parking.
@@ -104,7 +104,6 @@ ssh_pi "sudo -u pi -g audio bash -c '
         > ${CLAIM_LOG} 2>&1 &
     echo \$! > ${CLAIM_PID_FILE}
 '"
-touch /tmp/.last-claim-pid
 
 echo "==> Waiting for librespot to print the OAuth URL..."
 URL=""

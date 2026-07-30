@@ -158,17 +158,6 @@ VOICE_PAGE_CSS_HREF = "/assets/voice/voice.css"
 _SECRET_KEY_ENVS = frozenset(p.key_env for p in PROVIDERS)
 
 
-def _load_state(path: str = PROVIDER_FILE) -> dict[str, str]:
-    """Read one wizard-managed env file into a {key: value} dict.
-
-    Empty values, missing file, blank file all resolve to {}. The
-    daemon's view of the env is this dict UNIONED with
-    /etc/jasper/jasper.env — but the wizard only reads/writes this
-    file. Most callers want :func:`_load_merged`, which also folds in the
-    split-out secret keys file."""
-    return read_env_file(path)
-
-
 def _load_merged(cfg: dict[str, Any]) -> dict[str, str]:
     """Wizard's full view: the non-secret selectors in ``state_path``
     UNIONED with the API keys in ``keys_path`` (the Phase-4a split). The

@@ -21,6 +21,10 @@ from jasper.control import aec_endpoints
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
+from tests.reconcile_fixtures import (
+    fake_systemctl as _fake_systemctl,
+    systemctl_log as _systemctl_log,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,18 +65,6 @@ def _shell_function_body(source: str, name: str) -> str:
     )
     assert match is not None, f"could not locate shell function {name}"
     return match.group(1)
-
-
-def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
-    log = tmp_path / "systemctl.log"
-    fake = tmp_path / "systemctl"
-    fake.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
-        "exit 0\n"
-    )
-    fake.chmod(0o755)
-    return fake, log
 
 
 def _fake_mixer_tools(tmp_path: Path) -> tuple[Path, Path]:
@@ -182,11 +174,6 @@ def _write_card(tmp_path: Path, card: str = "Array", channels: int = 6) -> None:
     (card_dir / "stream0").write_text(
         f"Playback:\n  Status: Stop\nCapture:\n  Channels: {channels}\n"
     )
-
-
-def _systemctl_log(tmp_path: Path) -> str:
-    log = tmp_path / "systemctl.log"
-    return log.read_text() if log.exists() else ""
 
 
 def _outputd_status_payload(

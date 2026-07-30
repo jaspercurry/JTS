@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import { handle, makeMemoryStore, sha256Hex } from "../../relay/src/worker.js";
+import { runTestFunctions } from "./run_test_functions.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKER_PATH = resolve(HERE, "../../relay/src/worker.js");
@@ -1168,20 +1169,4 @@ async function testV3HostEventPhasesRelayVerbatim() {
   ok("v3 host-event phases relay verbatim");
 }
 
-let failure = null;
-for (const t of tests) {
-  try {
-    await t();
-  } catch (e) {
-    failure = { test: t.name, error: String(e && e.stack ? e.stack : e) };
-    break;
-  }
-}
-
-if (failure) {
-  console.error(failure.error);
-  console.log(JSON.stringify({ ok: false, ...failure }));
-  process.exit(1);
-} else {
-  console.log(JSON.stringify({ ok: true, passed }));
-}
+await runTestFunctions(tests, () => passed);

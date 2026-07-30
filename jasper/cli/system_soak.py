@@ -264,7 +264,7 @@ def _sample_units(
     previous_cpu: dict[str, tuple[int, float]],
     now_mono: float,
 ) -> list[dict[str, Any]]:
-    states = SystemSampler._read_service_states(units)
+    states = SystemSampler.read_service_states(units)
     rows: list[dict[str, Any]] = []
     for unit in units:
         state = states.get(unit, {"unit": unit})
