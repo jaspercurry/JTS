@@ -474,8 +474,15 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 # jasper-voice and jasper-web at different points of a deploy, so an OLD
 # coordinator can be talking to a NEW daemon — the bound has to fit under
 # the timeout that coordinator already shipped with, not one we raise
-# here. 2.0 s leaves a full second of margin for connect/write/scheduling
-# on a loaded 1 GB Pi, and covers the typical remaining tail of a cue or
+# here. The coordinator's timeout bounds only its `reader.readline()`, so
+# the 1.0 s of margin is not transport overhead — it is the daemon-side
+# work that runs BEFORE the drain and is therefore inside the same reply:
+# `note_measurement_active` waits on the volume coordinator's
+# `_reconcile_write_lock` for an already-started reconciler write to land,
+# and `pause_content_meter` does an `asyncio.to_thread` socket write to
+# outputd with one retry. Both are milliseconds when healthy and neither
+# is hard-bounded, so the margin has to absorb their worst case on a
+# loaded 1 GB Pi. 2.0 s then covers the typical remaining tail of a cue or
 # timer announcement (registry cue texts run ~3-7 s of speech and PAUSE
 # lands mid-playout). Pinned against the coordinator's timeout by
 # tests/test_voice_daemon_measurement_inflight.py.
@@ -2397,8 +2404,13 @@ class WakeLoop:
         Ordering is load-bearing (issue #1898). The gate event is set,
         and the safety timer armed, BEFORE the in-flight drain, so that:
 
-        * no NEW cue, timer, or announcement can start during the drain
-          — the #1786 entry-point gates all read this flag;
+        * no NEW cue, timer, or announcement can start during the drain.
+          Two mechanisms, not one: the four #1786 entry points
+          (`play_cue`, `play_supervisor_cue`, `announce_timer`,
+          `announce_research_ready`) refuse by reading this flag, while
+          the internal `_play_cue` is blocked structurally — the episode
+          we are draining still owns the gate, so `begin_if_idle` returns
+          None to any caller that reaches it;
         * mic frames stop immediately, so a wake cannot fire into the
           drain window and open a reactive cue behind our back;
         * a crash mid-drain still auto-clears after 2 minutes.

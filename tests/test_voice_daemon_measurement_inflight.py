@@ -39,7 +39,10 @@ from jasper.correction.coordinator import (
     VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
     _voice_uds_command,
 )
+from jasper.voice.output_gate import AssistantOutputGate
 from jasper.voice_daemon import MEASUREMENT_INFLIGHT_DRAIN_SEC, State, WakeLoop
+
+from ._async_wait import wait_signalled
 
 
 class _IdleGate:
@@ -67,6 +70,23 @@ class _StuckGate:
     async def wait_idle(self, timeout: float) -> bool:
         self.waits.append(timeout)
         return False
+
+
+class _ObservedGate(AssistantOutputGate):
+    """The real gate, announcing when the drain starts waiting on it.
+
+    Lets a test tell "the reply is held INSIDE the drain" apart from
+    "the reply has not crossed the socket yet" — the two look identical
+    from the client side, and only the first is what #1898 fixed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.drain_entered = asyncio.Event()
+
+    async def wait_idle(self, timeout: float) -> bool:
+        self.drain_entered.set()
+        return await super().wait_idle(timeout)
 
 
 class _RefusingCues:
@@ -255,21 +275,32 @@ def test_drain_bound_fits_under_the_coordinator_read_timeout() -> None:
     )
 
 
-async def test_old_coordinator_wire_shape_survives_a_drain() -> None:
-    """Both directions on the wire. The reply gains no new required
-    field, so a NEW coordinator reading an OLD daemon's `{"result": "ok"}`
-    is unchanged; and an OLD coordinator's own read predicate still
-    matches when a NEW daemon answers late, from behind a drain."""
+async def test_old_coordinator_read_timeout_survives_a_held_reply() -> None:
+    """Both directions on the wire, end to end through the real socket.
+
+    An OLD coordinator, reading with the timeout it shipped with, still
+    gets its reply when a NEW daemon holds that reply through a drain —
+    so it still sets `voice_paused` and still sends MEASURE_RESUME. And
+    the reply gains no new required field, so a NEW coordinator reading
+    an OLD daemon's `{"result": "ok"}` is equally unchanged.
+
+    The pending-ness is pinned against the drain itself, not against
+    elapsed time: `_voice_uds_command` is in flight for a moment
+    regardless, so a plain "not done yet" would pass even with no drain
+    at all.
+    """
     from jasper.voice.daemon_main import _start_control_socket
 
     wl = WakeLoop.for_tests()
+    gate = _ObservedGate()
+    wl._output_gate = gate
     # Not tmp_path: AF_UNIX paths cap at ~104 bytes and a worktree-rooted
     # pytest tmpdir overruns it.
     sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-")
     socket_path = f"{sock_dir}/voice.sock"
     server = await _start_control_socket(wl, socket_path)
     try:
-        episode = await wl._output_gate.begin_if_idle("admin")
+        episode = await gate.begin_if_idle("admin")
         assert episode is not None
 
         request = asyncio.create_task(
@@ -279,12 +310,21 @@ async def test_old_coordinator_wire_shape_survives_a_drain() -> None:
                 timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
             )
         )
-        for _ in range(5):
-            await asyncio.sleep(0)
+        # The handler has reached the drain: the reply is being held
+        # there, not merely still in transit.
+        await wait_signalled(
+            gate.drain_entered,
+            "MEASURE_PAUSE drain start",
+            producer=request,
+        )
         assert not request.done()
 
-        await wl._output_gate.end(episode)
-        resp = await asyncio.wait_for(request, timeout=2.0)
+        await gate.end(episode)
+        # The inner read is bounded by the coordinator's own timeout, so
+        # a daemon that held too long fails here as that TimeoutError.
+        resp = await asyncio.wait_for(
+            request, timeout=VOICE_MEASURE_PAUSE_TIMEOUT_SEC + 1.0,
+        )
 
         # Exactly what the pre-#1898 coordinator branches on.
         assert resp.get("result") == "ok"
