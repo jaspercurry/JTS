@@ -3034,6 +3034,18 @@ commands. This is the contract for humans and LLM agents:
   Pi deploy checks. Run only when the touched subsystem requires it,
   with explicit cost/hardware scope.
 
+**Piping a lane truncates the exit code, not just the transcript.**
+`<lane> 2>&1 | tail -N` — the usual way to keep a long run's output
+short — makes the caller's shell see `tail`'s exit status, not the
+lane's: a failed lane still reports `$? == 0` unless the invoking
+shell has `set -o pipefail`. Prefer invoking a lane directly (no
+pipe) when the exit code matters; add `set -o pipefail` first if you
+must pipe one. Either way, check the actual last line rather than
+trusting a truncated transcript: both lanes print a terminal
+`==> <lane>: N passed` / `==> <lane>: FAILED` sentinel as their last
+stdout line specifically so it survives `tail -N` (issue #1850) —
+that line is the verdict, not whatever scrolled by above it.
+
 Pull-request CI is risk-proportional but deliberately narrow.
 [`scripts/ci-classify.py`](scripts/ci-classify.py) selects one of two
 narrow lanes, each of which requires a *subject* file to be present so a

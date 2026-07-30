@@ -88,3 +88,90 @@ resolve_lane_tool() {
   printf '==> %s: %s (%s)\n' "${tool}" "${resolved}" "${origin}" >&2
   printf '%s\n' "${resolved}"
 }
+
+# issue #1850: a caller piping a lane through `2>&1 | tail -N` (the common way
+# an agent keeps a long test transcript short) sees exit 0 from a failed lane
+# whenever the shell lacks `set -o pipefail` -- `tail`/`tee` is the last
+# command in the pipe, and its own exit status is what `$?` reports. Neither
+# lane can fix that at the caller's shell, but each CAN make the failure
+# unmissable in the text itself: the functions below let a lane accumulate a
+# real passed-test count across however many pytest invocations it makes, and
+# print a single `==> <lane>: N passed` / `==> <lane>: FAILED` line as the
+# provably LAST line of stdout, via an EXIT trap that fires on every exit path
+# -- normal completion, an explicit `exit`, or `set -e` aborting mid-script
+# (including inside resolve_lane_tool's FATAL block above). A truncating pipe
+# then always shows the verdict, never just whatever happened to be running
+# when the transcript got cut.
+#
+# N counts passing EXECUTIONS across phases, not distinct tests: test-fast
+# can run the same node id more than once (a changed test file matches both
+# the changed-file-selection phase and the always-on guards), and each
+# passing run adds to N. An honest count of what actually ran, not a claim
+# about how many distinct tests exist.
+
+# lane_pipe_pytest <output-file> <command...>
+#
+# Runs a pytest invocation (or a stand-in in tests) through `tee` so the
+# caller can read back its summary line afterwards, while still streaming it
+# live to whoever is watching. PYTHONUNBUFFERED matters here: the instant a
+# Python process's stdout is no longer a tty (which `tee` makes true), CPython
+# switches from line- to block-buffered writes, turning a live-scrolling
+# `test-fast` run into silence followed by a wall of dots. The exit status is
+# returned via `$?` using `PIPESTATUS[0]` rather than relying on `pipefail`
+# alone, so this helper behaves the same even if a future caller sources it
+# without `set -o pipefail`.
+#
+# PIPESTATUS[0] (pytest), not [1] (tee), is deliberate: pytest's own exit
+# code is the authoritative signal for whether the TESTS passed, and a `tee`
+# failure is a different failure mode (infrastructure, not test outcome).
+# That is not the same as swallowing a tee failure -- a dead/unresolvable
+# `tee` breaks the pipe pytest is writing to, so pytest itself then exits
+# nonzero too (observed directly while developing this: an unresolvable
+# `tee` produced a BrokenPipeError in the writing process, not a silent
+# pass). A failed tee SHOULD read FAILED, and in the realistic failure paths
+# it does, via that cascade rather than via [1].
+lane_pipe_pytest() {
+  local output_file="$1"
+  shift
+  PYTHONUNBUFFERED=1 "$@" | tee "${output_file}"
+  return "${PIPESTATUS[0]}"
+}
+
+# lane_extract_passed_count <output-file>
+#
+# Pulls the passed count off pytest's own `-q` summary line ("12 passed in
+# 1.2s", "3 passed, 1 skipped in 0.4s", ...). Echoes 0 when pytest reported no
+# passes at all (a bare failure/error summary, or nothing collected) rather
+# than erroring -- a phase that ran zero passing tests is not a lane failure
+# by itself, and the caller has already decided that from the exit status.
+lane_extract_passed_count() {
+  local output_file="$1"
+  grep -Eo '[0-9]+ passed' "${output_file}" 2>/dev/null | tail -1 | grep -Eo '[0-9]+' || echo 0
+}
+
+# lane_emit_verdict <lane-name> <exit-status>
+#
+# The tail of a lane's EXIT trap. Takes the pending exit status as an
+# EXPLICIT parameter rather than reading `$?` itself: this function is
+# called from a trap handler that also runs a cleanup `rm` first, and `$?`
+# only reflects the MOST RECENT command -- by the time a multi-statement trap
+# function reaches its last line, `$?` is whatever the cleanup step returned,
+# not the original failure that fired the trap. (Caught by running the
+# tests: an early version read `$?` in here and reported "0 passed" for a
+# lane that had actually failed, because `rm ... || true` had already reset
+# it to 0.) The caller must capture `$?` as ITS OWN first statement, before
+# running anything else, and pass that value through. The running total is
+# read from the fixed global `_lane_passed_total` rather than accepted as a
+# third parameter: bash 3.2 (macOS's shipped version, and this file's
+# portability floor) has no namerefs, so there is no portable way to pass a
+# variable BY REFERENCE into a function, and each lane script has only one
+# running total to report.
+lane_emit_verdict() {
+  local lane="$1"
+  local status="$2"
+  if [[ "${status}" -eq 0 ]]; then
+    printf '==> %s: %s passed\n' "${lane}" "${_lane_passed_total:-0}"
+  else
+    printf '==> %s: FAILED\n' "${lane}"
+  fi
+}

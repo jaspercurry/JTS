@@ -19,6 +19,20 @@ repo (so the lanes' ``cd`` lands somewhere with no ``.venv``) plus a sandboxed
 promises pinned are the ones the fix makes: refuse with a *named* error naming
 the tool, say plainly that nothing ran, exit nonzero, and on success announce
 the resolved interpreter on stderr without polluting stdout.
+
+Two related contracts share this file rather than growing their own:
+
+* **issue #1850** -- a caller piping a lane through ``2>&1 | tail -N`` sees
+  exit 0 from a failed lane whenever the shell lacks ``set -o pipefail``, so
+  each lane also prints an ``==> <lane>: N passed`` / ``==> <lane>: FAILED``
+  verdict sentinel as the actual last line of stdout, via an EXIT trap that
+  fires on every exit path -- including the FATAL block above, which this
+  file already guards separately.
+* **issue #1758** -- ``--last-failed --last-failed-no-failures none`` only
+  guards an EMPTY cache; a cached node id that no longer resolves (a renamed
+  or deleted test) makes pytest's own machinery silently fall back to
+  collecting and running everything in scope. ``test-fast`` validates cached
+  ids itself before ever handing them to pytest.
 """
 
 from __future__ import annotations
@@ -34,12 +48,17 @@ import pytest
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO / "scripts"
 
-# Externals the lanes invoke before (and during) tool resolution: `git` for the
-# `cd`, `dirname` for the sibling-resolver `source`, and `python3` for
-# test-fast's checked-in routing-policy target registry. The FATAL block itself
-# needs nothing -- it is printed with the `printf` builtin precisely so a
-# mangled $PATH cannot swallow it (see test_fatal_block_survives_an_empty_path).
-_SANDBOX_TOOLS = ("git", "dirname", "python3")
+# Externals the lanes invoke before, during, and after tool resolution: `git`
+# for the `cd`, `dirname` for the sibling-resolver `source`, `python3` for
+# test-fast's checked-in routing-policy target registry, and the coreutils a
+# FULL run to completion needs (temp files, the changed-file-selection
+# pipeline, the last-failed cache read/prune). The FATAL block itself needs
+# nothing -- it is printed with the `printf` builtin precisely so a mangled
+# $PATH cannot swallow it (see test_fatal_block_survives_an_empty_path).
+_SANDBOX_TOOLS = (
+    "git", "dirname", "python3", "mktemp", "rm", "awk", "sort", "sed", "find", "tee",
+    "grep", "tail",
+)
 
 _LANES = ("test-fast", "test-merge")
 
@@ -426,3 +445,319 @@ def test_lane_sources_the_shared_resolver_rather_than_reimplementing_it(
     assert "resolve_lane_tool" in body
     assert 'pytest_bin="pytest"' not in body
     assert 'ruff_bin="ruff"' not in body
+
+
+# --------------------------------------------------------------------------- #
+# issue #1850 -- terminal verdict sentinel
+# --------------------------------------------------------------------------- #
+
+
+def _fake_pytest_script(path: Path, *, fail_argv_substring: str | None = None) -> None:
+    """Write a pytest stand-in that prints a real-looking ``-q`` summary line.
+
+    Always reports "3 passed" and exits 0, UNLESS ``fail_argv_substring`` is
+    given and appears in some argv element, in which case it reports a
+    failure and exits 1. This drives ``lane_extract_passed_count`` with
+    realistic input without needing an actual pytest run.
+    """
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        f"FAIL_MARKER = {fail_argv_substring!r}\n"
+        "argv = sys.argv[1:]\n"
+        "if FAIL_MARKER is not None and any(FAIL_MARKER in a for a in argv):\n"
+        "    print('1 failed in 0.01s')\n"
+        "    raise SystemExit(1)\n"
+        "print('3 passed in 0.01s')\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_lane_prints_passed_sentinel_as_the_last_stdout_line_on_success(
+    lane: str, lane_sandbox: tuple[Path, dict[str, str]]
+) -> None:
+    """A clean run's last stdout line names the lane and a real passed count.
+
+    Not just silence a truncating caller could mistake for "nothing to
+    report" -- the count comes from actually parsing a phase's pytest
+    summary, not a hardcoded placeholder.
+    """
+    repo, env = lane_sandbox
+    stand_in = repo / "fake-pytest"
+    _fake_pytest_script(stand_in)
+    ruff_stand_in = shutil.which("true") or "/usr/bin/true"
+    result = _run(repo, {**env, "PYTEST": str(stand_in), "RUFF": ruff_stand_in}, lane)
+
+    assert result.returncode == 0, result
+    last_line = result.stdout.rstrip("\n").splitlines()[-1]
+    prefix, suffix = f"==> {lane}: ", " passed"
+    assert last_line.startswith(prefix) and last_line.endswith(suffix), result.stdout
+    count = last_line[len(prefix) : -len(suffix)]
+    assert count.isdigit(), result.stdout
+    # test-merge's one invocation, and test-fast's unconditional always-on
+    # guards phase, both always run in a fresh sandbox -- each reports 3.
+    assert int(count) >= 3, result.stdout
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_lane_prints_failed_sentinel_as_the_last_stdout_line_on_a_real_failure(
+    lane: str, lane_sandbox: tuple[Path, dict[str, str]]
+) -> None:
+    """A failure inside a real phase must ALSO end with the FAILED sentinel.
+
+    Distinct from the FATAL/resolution-path tests below: this failure comes
+    from `set -e` aborting mid-script on a pytest invocation's own nonzero
+    exit, which the EXIT trap has to catch just as reliably as an explicit
+    early `exit`.
+    """
+    repo, env = lane_sandbox
+    stand_in = repo / "fake-pytest"
+    # test-fast's always-on guards phase is the one call site every run of
+    # it reaches when nothing is stale/selected, so failing there exercises
+    # the LATEST point in the lane, not just the first gate. test-merge has
+    # one invocation; `--ignore=tests/voice_eval` is part of its hardcoded
+    # argv, so it fails that one call.
+    fail_marker = (
+        "test_dependency_groups.py"
+        if lane == "test-fast"
+        else "--ignore=tests/voice_eval"
+    )
+    _fake_pytest_script(stand_in, fail_argv_substring=fail_marker)
+    ruff_stand_in = shutil.which("true") or "/usr/bin/true"
+    result = _run(repo, {**env, "PYTEST": str(stand_in), "RUFF": ruff_stand_in}, lane)
+
+    assert result.returncode != 0, result
+    last_line = result.stdout.rstrip("\n").splitlines()[-1]
+    assert last_line == f"==> {lane}: FAILED", result.stdout
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_lane_prints_failed_sentinel_as_the_last_stdout_line_when_unresolvable(
+    lane: str, lane_sandbox: tuple[Path, dict[str, str]]
+) -> None:
+    """Composes with the #1846 FATAL block: still ends in the same sentinel.
+
+    The FATAL block's own last line (asserted separately in
+    ``test_fatal_headline_survives_tail_truncation``) is already an
+    unambiguous failure on stderr. This is the SEPARATE, uniform promise:
+    every exit path -- including this one -- also ends with the same
+    ``==> <lane>: FAILED`` shape on stdout, so a caller can check for one
+    fixed string regardless of which exit path fired.
+    """
+    repo, env = lane_sandbox
+    result = _run(repo, env, lane)
+
+    assert result.returncode != 0, result
+    last_line = result.stdout.rstrip("\n").splitlines()[-1]
+    assert last_line == f"==> {lane}: FAILED", result.stdout
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_lane_verdict_sentinel_survives_tail_truncation_when_unresolvable(
+    lane: str, lane_sandbox: tuple[Path, dict[str, str]]
+) -> None:
+    """The scenario issue #1850 is actually about: `<lane> 2>&1 | tail -3`.
+
+    Stderr is merged into stdout via ``stderr=subprocess.STDOUT`` (an OS-level
+    merge preserving real interleaving) rather than concatenating separately
+    captured streams afterwards, so this matches what a real piped caller
+    would see.
+    """
+    repo, env = lane_sandbox
+    result = subprocess.run(
+        [_BASH, f"scripts/{lane}"],
+        cwd=repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    assert result.returncode != 0, result
+    last_three = result.stdout.rstrip("\n").splitlines()[-3:]
+    assert f"==> {lane}: FAILED" in last_three, result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# issue #1758 -- a stale --last-failed id must not fall back to a full run
+# --------------------------------------------------------------------------- #
+
+
+def test_fast_lane_prunes_a_stale_last_failed_id_without_a_full_suite_fallback(
+    tmp_path: Path,
+) -> None:
+    """A renamed test's cached node id must not trigger a full-suite run.
+
+    Reproduced (not asserted from prose): pytest's own `--last-failed`
+    machinery, given a cache with a stale entry, prints "run-last-failure: N
+    known failures not in selected tests" and then runs every item in
+    whatever scope it was given -- `--last-failed-no-failures none` only
+    guards the case where the cache is EMPTY, not this one. The lane must
+    validate cached ids itself and never hand a stale one to `--last-failed`.
+
+    The stale id is seeded alongside a live one so pruning is proven
+    surgical (the live entry survives and gets run) rather than "wipe the
+    whole cache on any drift".
+    """
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    for name in ("test-fast", "_test_lane.sh"):
+        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
+    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "tests@example.invalid")
+    _git(repo, "config", "user.name", "JTS Tests")
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+
+    (repo / "test_still_here.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    stale_id = "test_renamed_away.py::test_old_name"
+    live_id = "test_still_here.py::test_ok"
+    cache_dir = repo / ".pytest_cache" / "v" / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "lastfailed").write_text(
+        json.dumps({stale_id: True, live_id: True}), encoding="utf-8"
+    )
+
+    calls = repo / "pytest-calls.jsonl"
+    recorder = repo / "recording-pytest"
+    # Mirrors real pytest's own observed behavior (verified against pytest
+    # 9.0.3): `--collect-only` on an explicit node id whose file does not
+    # exist fails with a usage error; on one that does exist, it succeeds.
+    recorder.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "argv = sys.argv[1:]\n"
+        "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(argv) + '\\n')\n"
+        "if '--collect-only' in argv:\n"
+        "    ids = [a for a in argv if '::' in a]\n"
+        "    missing = [i for i in ids if not Path(i.split('::')[0]).exists()]\n"
+        "    raise SystemExit(4 if missing else 0)\n"
+        "print('1 passed in 0.01s')\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+    stand_in = shutil.which("true") or "/usr/bin/true"
+
+    result = subprocess.run(
+        [_BASH, "scripts/test-fast"],
+        cwd=repo,
+        env={
+            **os.environ,
+            "PYTEST": str(recorder),
+            "PYTEST_CALLS": str(calls),
+            "RUFF": stand_in,
+            "TEST_BASE": "missing-base",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result
+    calls_made = [
+        json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()
+    ]
+
+    # The mechanism that falls back to a full run is the --last-failed FLAG
+    # itself -- the lane must never pass it once it does its own validation.
+    assert not any("--last-failed" in call for call in calls_made), calls_made
+
+    exec_calls = [c for c in calls_made if "--collect-only" not in c]
+    stale_in_exec = [c for c in exec_calls if any(stale_id in a for a in c)]
+    assert not stale_in_exec, calls_made
+    live_in_exec = [c for c in exec_calls if any(live_id in a for a in c)]
+    assert live_in_exec, calls_made
+
+    # Pruning is surgical: the stale id is gone, the live one survives.
+    pruned = json.loads((cache_dir / "lastfailed").read_text(encoding="utf-8"))
+    assert stale_id not in pruned, pruned
+    assert live_id in pruned, pruned
+
+
+def test_fast_lane_skips_last_failed_when_every_cached_id_is_stale(
+    tmp_path: Path,
+) -> None:
+    """All-stale is "nothing to run last-failed", not "run everything".
+
+    The degenerate case of the surgical-pruning test above: when every
+    cached id is stale, the phase must fall back to the empty-cache message
+    rather than either erroring or handing pytest a now-empty --last-failed
+    call.
+    """
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    for name in ("test-fast", "_test_lane.sh"):
+        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
+    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "tests@example.invalid")
+    _git(repo, "config", "user.name", "JTS Tests")
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+
+    stale_id = "test_renamed_away.py::test_old_name"
+    cache_dir = repo / ".pytest_cache" / "v" / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "lastfailed").write_text(
+        json.dumps({stale_id: True}), encoding="utf-8"
+    )
+
+    calls = repo / "pytest-calls.jsonl"
+    recorder = repo / "recording-pytest"
+    recorder.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "argv = sys.argv[1:]\n"
+        "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(argv) + '\\n')\n"
+        "if '--collect-only' in argv:\n"
+        "    ids = [a for a in argv if '::' in a]\n"
+        "    missing = [i for i in ids if not Path(i.split('::')[0]).exists()]\n"
+        "    raise SystemExit(4 if missing else 0)\n"
+        "print('1 passed in 0.01s')\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+    stand_in = shutil.which("true") or "/usr/bin/true"
+
+    result = subprocess.run(
+        [_BASH, "scripts/test-fast"],
+        cwd=repo,
+        env={
+            **os.environ,
+            "PYTEST": str(recorder),
+            "PYTEST_CALLS": str(calls),
+            "RUFF": stand_in,
+            "TEST_BASE": "missing-base",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result
+    assert "no last-failed tests recorded" in result.stdout
+
+    calls_made = [
+        json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()
+    ]
+    exec_calls = [c for c in calls_made if "--collect-only" not in c]
+    assert not any(stale_id in a for c in exec_calls for a in c), calls_made
+
+    pruned = json.loads((cache_dir / "lastfailed").read_text(encoding="utf-8"))
+    assert pruned == {}, pruned

@@ -49,6 +49,7 @@
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
 | Build or verify the first-party Pi ARM64 runtime bundle | [First-party ARM64 release artifact](#first-party-arm64-release-artifact) |
 | Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
+| Point a laptop-durable flat-linearization corpus at a non-default location, or re-derive a pinned reading after a detector/reading change | [`tests/_flat_lin_corpus.py`](../tests/_flat_lin_corpus.py) — `JTS_FLAT_LIN_S0` / `JTS_FLAT_LIN_CORPUS` env vars; re-derivation procedure lives in `tests/test_spatial_combine.py::test_band_deficit_separates_honest_captures_from_stopband_residue` |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
