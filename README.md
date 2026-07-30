@@ -1239,12 +1239,12 @@ wake legs. Software AEC3 remains the normal path for non-XVF microphones
 and an explicit custom/lab route.
 
 **Wake/input configuration is profile-first.** The `/wake/` page exposes
-the canonical choices (`auto`, `xvf_chip_aec`,
-`xvf_chip_aec_testing`, `xvf_software_aec3`, `direct_mic`) and keeps
-individual AEC/raw/DTLN/chip-leg toggles as advanced custom controls
-for corpus tests and nonstandard hardware. On a managed XVF, every named
-choice except explicit `custom` is intent only and still resolves through
-chip-or-park policy; `testing`, software, and direct labels grant no bypass.
+the household choices (`auto`, `xvf_chip_aec`, `xvf_software_aec3`,
+`direct_mic`) and keeps individual AEC/raw/DTLN/chip-leg toggles as advanced
+custom controls for corpus tests and nonstandard hardware.
+`xvf_chip_aec_testing` remains a hidden compatibility token, not a UI choice
+or safety bypass. On a managed XVF, every named choice except explicit
+`custom` is intent only and still resolves through chip-or-park policy.
 Changing a profile or custom layer runs `jasper-aec-reconcile`, which
 restarts the affected bridge/voice services and updates `/state`,
 doctor, and the dashboard.

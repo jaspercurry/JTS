@@ -250,7 +250,6 @@ _FUSION_LAYERS = (
 
 
 _ECHO_PROFILES = profile_choice_specs(section="echo")
-_ADVANCED_PROFILES = profile_choice_specs(section="advanced")
 
 
 def _profile_rows_html(rowspec: tuple[Any, ...]) -> str:
@@ -319,11 +318,10 @@ def _advanced_fusion_html() -> str:
     <div class="disclosure-body">
   <div class="info-card">
     <p class="info-card__note">
-      Expert controls for corpus tests, nonstandard hardware, and DAC validation.
+      Expert controls for corpus tests and nonstandard wake streams.
       Changes switch the input profile to custom.
     </p>
     <div class="fusion-summary" id="fusion-summary">checking…</div>
-    {_profile_rows_html(_ADVANCED_PROFILES)}
     {''.join(rows)}
   </div>
     </div>

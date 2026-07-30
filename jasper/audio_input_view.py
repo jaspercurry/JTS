@@ -109,17 +109,6 @@ _PROFILE_CHOICE_SPECS = (
         confirm_danger=True,
         danger=True,
     ),
-    ProfileChoiceSpec(
-        profile=PROFILE_XVF_CHIP_AEC_TESTING,
-        choice_id="hardware_aec_testing",
-        section="advanced",
-        label="Legacy hardware AEC test intent",
-        description="Legacy intent; managed-XVF safety and commissioning still apply.",
-        badge="Legacy",
-        confirm_title="Save the legacy hardware AEC test intent?",
-        confirm_body="No safety bypass: unapproved or uncommissioned XVFs stay parked.",
-        confirm_danger=True,
-    ),
 )
 
 
@@ -170,7 +159,7 @@ def build_microphone_settings_view(status: Mapping[str, Any]) -> dict[str, Any]:
             software=software,
             echo_mode=str(echo_view.get("mode") or ""),
         ),
-        "advanced": _advanced_view(profile=profile, gate=gate, mic_view=mic_view),
+        "advanced": {},
     }
 
 
@@ -286,7 +275,10 @@ def _echo_view(
         ),
         _profile_choice(
             _profile_spec(PROFILE_XVF_CHIP_AEC),
-            selected=selection == PROFILE_XVF_CHIP_AEC
+            selected=selection in {
+                PROFILE_XVF_CHIP_AEC,
+                PROFILE_XVF_CHIP_AEC_TESTING,
+            }
             or (managed_xvf and selection != PROFILE_AUTO),
             enabled=detected and chip_production_available,
             visible=bool(mic_view.get("kind") == "xvf3800" or chip_selected),
@@ -569,30 +561,3 @@ def _fusion_toggle(
     if confirm is not None:
         out["confirm"] = dict(confirm)
     return out
-
-
-def _advanced_view(
-    *,
-    profile: Mapping[str, Any],
-    gate: Mapping[str, Any],
-    mic_view: Mapping[str, Any],
-) -> dict[str, Any]:
-    selection = str(profile.get("selection") or "")
-    selected = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    testing_visible = bool(
-        mic_view.get("kind") == "xvf3800"
-        and gate.get("testing_available")
-    )
-    spec = _profile_spec(PROFILE_XVF_CHIP_AEC_TESTING)
-    status = "active" if selected else "available"
-    if selected and not testing_visible:
-        status = _gate_short_status(gate)
-    return {
-        "validation_profile": _profile_choice(
-            spec,
-            selected=selected,
-            enabled=testing_visible,
-            visible=testing_visible,
-            status=status,
-        )
-    }

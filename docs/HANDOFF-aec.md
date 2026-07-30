@@ -243,6 +243,8 @@ sudo systemctl start jasper-aec-reconcile
 `direct_mic` remains the ordinary no-AEC selector for non-XVF microphones.
 On a managed XVF, every selector except `custom` is deliberately resolved
 through chip-or-park policy, so `direct_mic` cannot bypass commissioning.
+The legacy `xvf_chip_aec_testing` token remains parser-compatible for stored
+state and automation, but `/wake/` does not render it as an operator choice.
 
 To return to auto mode:
 
