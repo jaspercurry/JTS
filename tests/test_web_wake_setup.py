@@ -110,7 +110,7 @@ def test_render_uses_canonical_toggle_for_each_layer():
     assert 'class="toggle"' in html
 
 
-def test_render_has_echo_choices_and_advanced_validation():
+def test_render_has_echo_choices_and_advanced_fusion():
     html = _render()
     assert "Echo cancellation" in html
     assert 'id="echo-status-action"' in html
@@ -122,8 +122,8 @@ def test_render_has_echo_choices_and_advanced_validation():
     ):
         assert f'id="profile-{profile}"' in html
     assert "Advanced wake fusion" in html
-    assert 'id="profile-xvf_chip_aec_testing"' in html
-    assert "managed-XVF safety and commissioning still apply" in html
+    assert 'id="profile-xvf_chip_aec_testing"' not in html
+    assert "Legacy hardware AEC test intent" not in html
 
 
 def test_render_has_server_hydrated_computer_microphone_source_select():

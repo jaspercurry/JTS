@@ -2198,9 +2198,9 @@ Full design, schema, queries:
 
 Normal operator path: use `http://jts.local/wake/`. Managed XVFs use `auto`
 or `xvf_chip_aec`; non-XVF microphones may use `xvf_software_aec3` or
-`direct_mic`. `xvf_chip_aec_testing` remains a compatibility profile name,
-not a policy bypass. Only use the advanced `raw`, `dtln`, and `chip_aec`
-layer switches for custom/corpus work. The page stamps
+`direct_mic`. The hidden `xvf_chip_aec_testing` compatibility profile name
+is not a UI choice or policy bypass. Only use the advanced `raw`, `dtln`,
+and `chip_aec` layer switches for custom/corpus work. The page stamps
 `JASPER_AUDIO_INPUT_PROFILE=custom` when a layer switch changes, then calls
 jasper-control. A managed XVF ignores every non-`custom` attempt to select
 software AEC3 or direct capture and remains on the chip-or-park path.

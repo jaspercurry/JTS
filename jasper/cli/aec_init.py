@@ -37,7 +37,7 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_statu
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
 _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
-_COUNTERS = (
+REFERENCE_WRITER_COUNTER_NAMES = (
     "open_error_count",
     "retry_count",
     "write_underrun_count",
@@ -130,7 +130,10 @@ def validate_reference_status(
         _integer(writer.get("snd_pcm_delay_frames"), "snd_pcm_delay_frames"),
         _integer(writer.get("frames_written"), "frames_written", positive=True),
         _integer(mix.get("reference_sequence"), "reference_sequence", positive=True),
-        tuple(_integer(writer.get(name), name) for name in _COUNTERS),
+        tuple(
+            _integer(writer.get(name), name)
+            for name in REFERENCE_WRITER_COUNTER_NAMES
+        ),
     )
 
 

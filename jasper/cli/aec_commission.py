@@ -121,18 +121,9 @@ def _final_timing(evidence: Sequence[MicTiming]) -> tuple[tuple[int, ...], float
 def _writer_counters(window: QueueWindow) -> tuple[int, ...]:
     refs = window.status["reference_outputs"]
     writer = refs["chip_ref_writer"]
-    names = (
-        "open_error_count",
-        "retry_count",
-        "write_underrun_count",
-        "write_xrun_count",
-        "write_error_count",
-        "write_recovery_count",
-        "dropped_periods_due_to_full_queue",
-        "dropped_periods_due_to_disconnected_writer",
-        "dropped_periods_while_unavailable",
+    return tuple(
+        int(writer[name]) for name in aec_init.REFERENCE_WRITER_COUNTER_NAMES
     )
-    return tuple(int(writer[name]) for name in names)
 
 
 def _commission(io, artifact_path: Path) -> tuple[AlignmentArtifact, dict[str, Any]]:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from jasper.audio_input_view import build_microphone_settings_view
+from jasper.audio_input_view import build_microphone_settings_view, valid_profile_ids
 
 
 def _base_status() -> dict:
@@ -162,7 +162,7 @@ def test_xvf_without_chip_plan_is_visibly_parked_without_software_fallback() -> 
     assert _choice(view, "xvf_software_aec3")["visible"] is False
     assert _choice(view, "auto")["selected"] is True
     assert view["echo"]["action"] == "Run sudo jasper-aec-commission"
-    assert view["advanced"]["validation_profile"]["visible"] is False
+    assert view["advanced"] == {}
 
 
 def test_direct_mic_view_keeps_no_aec_danger_choice_visible() -> None:
@@ -198,7 +198,7 @@ def test_direct_mic_view_keeps_no_aec_danger_choice_visible() -> None:
     } == {"Advanced wake streams require the AEC bridge."}
 
 
-def test_selected_testing_profile_stays_visible_when_gate_becomes_unavailable() -> None:
+def test_stored_testing_profile_maps_to_hardware_without_legacy_control() -> None:
     status = _base_status()
     status["audio_profile"] = {
         "selection": "xvf_chip_aec_testing",
@@ -216,9 +216,11 @@ def test_selected_testing_profile_stays_visible_when_gate_becomes_unavailable() 
     }
 
     view = build_microphone_settings_view(status)
-    validation = view["advanced"]["validation_profile"]
+    hardware = _choice(view, "xvf_chip_aec")
 
-    assert validation["selected"] is True
-    assert validation["visible"] is True
-    assert validation["enabled"] is False
-    assert validation["status"] == "needs calibration"
+    assert hardware["selected"] is True
+    assert hardware["visible"] is True
+    assert hardware["enabled"] is False
+    assert hardware["status"] == "needs calibration"
+    assert view["advanced"] == {}
+    assert "xvf_chip_aec_testing" not in valid_profile_ids()

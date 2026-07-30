@@ -478,7 +478,7 @@ def test_index_html_renders_echo_and_advanced_fusion_controls():
     assert 'id="firmware-update-card"' in html
     assert 'id="firmware-update-button"' in html
     assert "Advanced wake fusion" in html
-    assert 'id="profile-xvf_chip_aec_testing"' in html
+    assert 'id="profile-xvf_chip_aec_testing"' not in html
     assert 'id="layer-aec"' not in html
     assert 'id="layer-raw"' in html
     assert 'id="layer-dtln"' in html
@@ -511,13 +511,12 @@ def test_index_html_renders_microphone_status_card():
         assert f'id="{dom_id}"' in html
 
 
-def test_index_html_chip_aec_controls_are_advanced_not_primary():
-    """Chip beam scoring and validation stay available, but not as the
-    primary household-facing echo UX."""
+def test_index_html_chip_beam_controls_are_advanced_not_primary():
+    """Optional chip-beam scoring stays available without the legacy profile."""
     html = wake_setup._index_html({}).decode()
     assert "Extra chip beam 150" in html
     assert "Extra chip beam 210" in html
-    assert "Legacy hardware AEC test intent" in html
+    assert "Legacy hardware AEC test intent" not in html
     assert "Advanced wake fusion" in html
 
 
