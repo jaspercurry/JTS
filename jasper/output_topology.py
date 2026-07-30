@@ -915,20 +915,6 @@ class OutputTopology:
     def evaluation(self) -> dict[str, Any]:
         return evaluate_output_topology(self)
 
-    def output_layout(
-        self,
-        *,
-        playback_device: str | None = None,
-        env: Mapping[str, str] | None = None,
-    ) -> "OutputLayout":
-        """Resolve the active-output route for this topology (stable identity)."""
-
-        return resolve_output_layout(
-            self,
-            playback_device=playback_device,
-            env=env,
-        )
-
     def to_dict(self, *, include_evaluation: bool = False) -> dict[str, Any]:
         evaluation = self.evaluation()
         out: dict[str, Any] = {

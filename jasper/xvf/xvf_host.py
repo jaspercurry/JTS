@@ -121,10 +121,6 @@ COMMANDS: dict[str, Command] = {
     "LED_BRIGHTNESS": Command(20, 13, 1, "rw", "uint8"),
 }
 
-# Compatibility for callers that imported the previous module-level table.
-PARAMETERS = COMMANDS
-
-
 class XvfControlError(RuntimeError):
     """Raised when the XVF3800 rejects or cannot complete a control request."""
 

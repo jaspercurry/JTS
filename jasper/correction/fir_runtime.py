@@ -12,7 +12,6 @@ storage for imported FIR WAVs.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import shutil
 from pathlib import Path
@@ -299,5 +298,4 @@ def stage_fir_artifact(
         schema_version=SCHEMA_VERSION,
         file_mode=0o600,
     )
-    os.chmod(bundle / meta_rel, 0o600)
     return report

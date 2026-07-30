@@ -1169,13 +1169,18 @@ def _add_schedule_metadata_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--impulse-spacing-jittered", action="store_true", help="Declare jittered impulse spacing (required for p99 promotion certification).")
 
 
-def _add_analyze_args(parser: argparse.ArgumentParser) -> None:
+def _add_analyze_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_expected_impulse_count: bool = True,
+) -> None:
     parser.add_argument("--pairing-window-ms", type=float, default=DEFAULT_WINDOW_MS, help=f"Max plausible tap->mic latency window (default {DEFAULT_WINDOW_MS:g} ms).")
     parser.add_argument("--mic-distance-compensation-ms", type=float, default=DEFAULT_DISTANCE_COMPENSATION_MS, help="Subtract this fixed acoustic travel time (default 0). See --mic-distance-cm for a distance-based shortcut.")
     parser.add_argument("--mic-distance-cm", type=float, default=None, help=f"Alternative to --mic-distance-compensation-ms: mic-to-speaker distance in cm (~{SOUND_MS_PER_CM * 10:.3g} ms per 10 cm at room temperature).")
     parser.add_argument("--min-match-rate", type=float, default=MIN_MATCH_RATE_DEFAULT, help=f"Refuse to emit samples below this tap-side match rate (default {MIN_MATCH_RATE_DEFAULT * 100:g} pct).")
-    parser.add_argument("--expected-impulse-count", type=int, default=None, help="Scheduled impulse count (from the generate schedule). analyze warns if the tap detected far fewer — the tap-side-truncation catch (`run` sets this automatically).")
-    parser.add_argument("--min-tap-detect-rate", type=float, default=MIN_TAP_DETECT_RATE_DEFAULT, help=f"Warn (not fail) if detected tap events fall below this fraction of --expected-impulse-count (default {MIN_TAP_DETECT_RATE_DEFAULT * 100:g} pct); catches a truncated tap window that match-rate alone can hide.")
+    if include_expected_impulse_count:
+        parser.add_argument("--expected-impulse-count", type=int, default=None, help="Scheduled impulse count. analyze warns if the tap detected far fewer — the tap-side-truncation catch.")
+    parser.add_argument("--min-tap-detect-rate", type=float, default=MIN_TAP_DETECT_RATE_DEFAULT, help=f"Warn (not fail) if detected tap events fall below this fraction of the scheduled impulse count (default {MIN_TAP_DETECT_RATE_DEFAULT * 100:g} pct); catches a truncated tap window that match-rate alone can hide.")
     parser.add_argument("--measurement-id", default="", help="Optional run id, passed through to --invoke-artifact.")
     parser.add_argument("--invoke-artifact", action="store_true", help="Shell out to jasper-route-latency-artifact after writing samples.")
     parser.add_argument("--confirm-route-health-ok", action="store_true", help="Operator confirms the printed route-health deltas justify --route-health-ok on the artifact CLI. Never inferred automatically.")
@@ -1232,7 +1237,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_tap_connection_args(p_run)
     _add_tap_arm_args(p_run)
     _add_mic_detector_args(p_run)
-    _add_analyze_args(p_run)
+    _add_analyze_args(p_run, include_expected_impulse_count=False)
     p_run.set_defaults(func=_cmd_run)
 
     return parser

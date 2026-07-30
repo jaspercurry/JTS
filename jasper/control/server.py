@@ -521,7 +521,6 @@ class _SingleFlightTTLCache:
 
 VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
 VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
-SPOTIFY_OAUTH_CALLBACK_BASE = _volume_ops.SPOTIFY_OAUTH_CALLBACK_BASE
 _outputd_status = _state_aggregate._outputd_status
 _clamp_db = _volume_ops._clamp_db
 _db_to_percent = _volume_ops._db_to_percent

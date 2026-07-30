@@ -142,14 +142,13 @@ Settings the dashboard should expose — without SSHing in:
 - **Spotify Connect device name** (cosmetic — what shows in the
   Spotify app's device picker)
 - **Daily spend cap** in dollars
-- **Volume idle-reset behaviour** — a custom default startup volume
-  that the speaker uses if `last_used_at` in `speaker_volume.json`
-  is older than a configurable threshold. The persistence schema
-  already records `last_used_at` per user-initiated change; the
-  web UI work just plumbs through two env vars
-  (`JASPER_VOLUME_IDLE_THRESHOLD_SEC`, `JASPER_VOLUME_IDLE_DEFAULT_PCT`)
-  and a small read of `volume_persistence.regress_listening_level_if_stale`
-  arguments.
+- **Volume stale-reset controls** — expose the shipped boot-time stale-volume
+  clamp in the web UI. The runtime already reads
+  `JASPER_VOLUME_REGRESS_AFTER_SEC` and
+  `JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT`, using
+  `volume_persistence.regress_listening_level_if_stale`; the remaining work is
+  a settings surface for those existing controls, not a second idle-dimming
+  mechanism.
 - **AirPlay reset button** — a one-click action that runs
   `systemctl restart shairport-sync nqptp`. Fixes the recurring
   symptom where the Pi shows up in the Mac's AirPlay picker but

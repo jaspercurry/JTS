@@ -174,7 +174,6 @@ REF_CHANNELS = 2
 # cards by their card description, not by hw:CARD= syntax.
 # Default matches "Array: USB Audio (hw:N,0)" on the legacy square
 # firmware and "L16K6Ch: USB Audio (hw:N,0)" on the Flex linear firmware.
-MIC_DEVICE = _mic_profile.alsa_card_name()
 MIC_CHANNELS = _mic_profile.RECOMMENDED_FIRMWARE.capture_channels
 MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 
@@ -786,7 +785,6 @@ class LegEmitter:
     batch: bytearray
     stats_key: str
     frame_samples: int = OUT_FRAME_SAMPLES
-    engine_token: str | None = None
 
     def emit(self, pcm: bytes) -> None:
         emit_packet(
@@ -1972,7 +1970,6 @@ def _aec_loop(  # noqa: PLR0915
         leg: str,
         port: int,
         *,
-        engine_token: str | None = None,
         frame_samples: int = OUT_FRAME_SAMPLES,
         emitter_cls: type[LegEmitter] = LegEmitter,
     ) -> LegEmitter:
@@ -1982,7 +1979,6 @@ def _aec_loop(  # noqa: PLR0915
             batch=bytearray(),
             stats_key=leg,
             frame_samples=frame_samples,
-            engine_token=engine_token,
         )
         emitter.sock.setblocking(False)
         emitters[leg] = emitter

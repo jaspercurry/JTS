@@ -568,6 +568,9 @@ def build_startup_load_preflight(
         for issue in candidate.get("issues", [])
         if issue.get("severity") == "blocker"
     ]
+    physical_identity_verified = assigned > 0 and (
+        unverified == 0 if require_physical_identity else True
+    )
     gates = [
         _gate(
             "staged_config_ready",
@@ -612,14 +615,10 @@ def build_startup_load_preflight(
         _gate(
             "physical_identity_verified",
             label="Assigned physical outputs are verified",
-            passed=assigned > 0 and (
-                unverified == 0 if require_physical_identity else True
-            ),
+            passed=physical_identity_verified,
             message=(
                 "Physical output identity is verified"
-                if assigned > 0 and (
-                    unverified == 0 if require_physical_identity else True
-                )
+                if physical_identity_verified
                 else (
                     "Assign DAC outputs before loading active DSP"
                     if not require_physical_identity

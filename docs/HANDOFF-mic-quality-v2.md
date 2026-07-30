@@ -961,14 +961,11 @@ not a number.
    - `suppressor.dominant_nearend_detection.trigger_threshold` (float)
    - `suppressor.high_bands_suppression.max_gain_during_echo` (float)
 2. Expose to Python via the existing `Aec3(...)` kwargs.
-3. Add new env vars: `JASPER_AEC_RS_SNR_THRESHOLD`, `JASPER_AEC_RS_HOLD_MS`,
-   `JASPER_AEC_RS_SUBBAND_NEAREND`, `JASPER_AEC_RS_HIGH_BANDS_MAX_GAIN`.
-   (This phase later shipped as `JASPER_AEC_DND_SNR_THRESHOLD` and
-   `JASPER_AEC_DND_HOLD_DURATION`, plus the `JASPER_AEC_NEAREND_MASK_HF_*`
-   family for near-end subband suppression — see
-   `jasper/cli/aec_bridge.py`. No high-bands-max-gain env var shipped;
-   upstream webrtc hard-clamps that field to 1.0, so it was never
-   exposed.)
+3. The shipped controls are `JASPER_AEC_DND_SNR_THRESHOLD` and
+   `JASPER_AEC_DND_HOLD_DURATION`, plus the
+   `JASPER_AEC_NEAREND_MASK_HF_*` family for near-end subband suppression;
+   see `jasper/cli/aec_bridge.py`. No high-bands-max-gain env var shipped:
+   upstream WebRTC hard-clamps that field to 1.0.
 4. Re-run tearing analysis. Target: `hf_CV` delta vs AEC OFF drops below
    +0.05.
 

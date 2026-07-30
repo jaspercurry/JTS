@@ -37,6 +37,7 @@ envelope and per-step limit live here.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -198,8 +199,6 @@ def effective_confirmed_roles(
 def _record_ramp_state(
     payload: dict[str, Any], *, state_path: str | Path | None = None
 ) -> dict[str, Any]:
-    import json
-
     path = ramp_state_path(state_path)
     payload = dict(payload)
     payload["state_path"] = str(path)

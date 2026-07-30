@@ -290,11 +290,6 @@ def test_explicit_override_wins_over_profile() -> None:
     assert by_arg.playback_device == "hw:FromArg"
 
 
-def test_output_layout_method_delegates_to_resolver() -> None:
-    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
-    assert topo.output_layout() == resolve_output_layout(topo)
-
-
 def test_output_layout_to_dict_shape_for_missing_route() -> None:
     layout = resolve_output_layout(_topology(GENERIC_SINGLE_DAC, 8, card_id="DAC8"))
     out = layout.to_dict()

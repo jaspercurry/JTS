@@ -2348,7 +2348,7 @@ main() {
 
     echo "==> install.sh starting (profile: ${install_profile})"
     if install_profile_legacy_marker_migrating; then
-        echo "event=install_profile.migrate previous=$(read_raw_persisted_install_profile) profile=streambox source=marker"
+        echo "event=install_profile.migrate previous=$(read_raw_persisted_install_profile) profile=${install_profile} source=marker"
     fi
     hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
     if [[ "${install_profile}" == "streambox" ]]; then

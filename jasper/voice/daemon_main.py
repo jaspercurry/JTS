@@ -381,18 +381,15 @@ def _build_router(cfg: Config) -> Router | None:
 
 def _build_registry(
     cfg: Config,
-    camilla: CamillaController,
     renderer: RendererClient,
     weather: WeatherClient,
     transit_tools: list,
     volume_coordinator: "VolumeCoordinator",
-    volume_persistence: VolumePersistence | None = None,
     spotify_router: Router | None = None,
     timer_scheduler: TimerScheduler | None = None,
     research_scheduler: ResearchScheduler | None = None,
     spend_cap: SpendCap | None = None,
     research_delivery_recorder=None,
-    cues_manager: AudioCueManager | None = None,
     google_clients: GoogleClients | None = None,
     google_routes=None,
     ha: HAClient | None = None,
@@ -417,9 +414,6 @@ def _build_registry(
     # `is not None`, calendar/gmail's `list_account_names()`) are lifted
     # into each pack's `gate` predicate; the rest self-gate inside their
     # factory. The walk is fault-isolated per pack — see register_packs.
-    # `camilla`, `volume_persistence`, and `cues_manager` are
-    # accepted-but-unused here (kept in the signature for the re-export
-    # shim / call site); they are deliberately NOT in ToolDeps.
     deps = ToolDeps(
         volume_coordinator=volume_coordinator,
         renderer=renderer,
@@ -827,15 +821,13 @@ async def run() -> None:
             fn(job, assistant_text, decision)
 
     registry = _build_registry(
-        cfg, camilla, renderer, weather, transit_tools,
+        cfg, renderer, weather, transit_tools,
         volume_coordinator=volume_coordinator,
-        volume_persistence=volume_persistence,
         spotify_router=volume_spotify_router,
         timer_scheduler=timer_scheduler,
         research_scheduler=research_scheduler,
         spend_cap=spend_cap,
         research_delivery_recorder=_record_research_delivery,
-        cues_manager=cues_manager,
         google_clients=google_clients,
         google_routes=google_routes,
         ha=ha,

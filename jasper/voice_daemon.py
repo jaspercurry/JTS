@@ -85,7 +85,6 @@ from .voice.output_gate import (
 from .voice.turn_playback import (  # noqa: F401
     _idle_watchdog,
     _play_responses,
-    _turn_audio_chunks,
 )
 from .volume_coordinator import VolumeCoordinator
 from .mic_mute_persistence import read_mic_muted, write_mic_muted

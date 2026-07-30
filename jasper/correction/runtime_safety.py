@@ -38,7 +38,7 @@ def _issue_detail(raw: Any) -> str:
         message = raw.get("message") or raw.get("code")
         if message:
             return str(message)
-    return "no legal correction reset graph is available"
+    return "no legal correction graph is available"
 
 
 def _first_issue(issues: tuple[dict[str, str], ...] | list[dict[str, str]]) -> str:

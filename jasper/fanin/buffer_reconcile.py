@@ -90,7 +90,6 @@ from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES,
-    FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV,
     FANIN_OUTPUT_BUFFER_KEY,
     MIN_FANIN_OUTPUT_BUFFER_FRAMES,
     RuntimeEnvAction,
@@ -117,11 +116,6 @@ DEFAULT_OUTPUT_BUFFER_FRAMES = DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES
 # Production floor. Sub-1024 is deliberately kept out of defaults until a
 # hardware soak proves it is clean across the active DAC/Camilla paths.
 MIN_OUTPUT_BUFFER_FRAMES = MIN_FANIN_OUTPUT_BUFFER_FRAMES
-
-# Default shrunk target for the exclusive-wired-USB path. Env-overridable so the
-# on-device soak can sweep candidate values without a redeploy.
-_SHRUNK_FRAMES_ENV = FANIN_ADAPTIVE_SHRUNK_FRAMES_ENV
-
 
 def shrunk_target_frames() -> int:
     """The frame count the adaptive path shrinks the output buffer to.

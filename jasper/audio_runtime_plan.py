@@ -324,7 +324,6 @@ class FaninOutputBufferTarget:
 
     frames: int
     warning_event: str = ""
-    detail: str = ""
     raw_value: str = ""
 
 
@@ -1920,14 +1919,12 @@ def resolve_fanin_output_buffer_target(
         return FaninOutputBufferTarget(
             MIN_FANIN_OUTPUT_BUFFER_FRAMES,
             warning_event="fanin.adaptive_shrunk_frames_invalid",
-            detail="not an integer",
             raw_value=raw,
         )
     if value < MIN_FANIN_OUTPUT_BUFFER_FRAMES:
         return FaninOutputBufferTarget(
             MIN_FANIN_OUTPUT_BUFFER_FRAMES,
             warning_event="fanin.adaptive_shrunk_frames_below_floor",
-            detail=f"below floor {MIN_FANIN_OUTPUT_BUFFER_FRAMES}",
             raw_value=raw,
         )
     return FaninOutputBufferTarget(value, raw_value=raw)

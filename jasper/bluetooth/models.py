@@ -16,7 +16,6 @@ from typing import Any
 UUID_A2DP_SINK = "0000110b-"     # Audio Sink (Pi-as-speaker source)
 UUID_A2DP_SOURCE = "0000110a-"   # Audio Source (rare for us)
 UUID_HFP_HF = "0000111e-"        # Hands-Free
-UUID_AVRCP = "0000110e-"         # Audio/Video Remote Control
 UUID_HID = "00001124-"           # Human Interface Device (BR/EDR HID)
 UUID_HOGP = "00001812-"          # HID over GATT (BLE HID)
 UUID_BATTERY = "0000180f-"       # BLE Battery Service
@@ -57,21 +56,7 @@ def _icon_for(class_of_device: int, uuids: list[str], icon_hint: str) -> str:
     return "device"
 
 
-_MAC_ALIAS_RE = "".join((
-    "^",
-    "[0-9A-Fa-f]{2}",
-    "[-:]",
-    "[0-9A-Fa-f]{2}",
-    "[-:]",
-    "[0-9A-Fa-f]{2}",
-    "[-:]",
-    "[0-9A-Fa-f]{2}",
-    "[-:]",
-    "[0-9A-Fa-f]{2}",
-    "[-:]",
-    "[0-9A-Fa-f]{2}",
-    "$",
-))
+_MAC_ALIAS_RE = r"^[0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5}$"
 
 
 def _real_name(raw_name: str, raw_alias: str) -> str:

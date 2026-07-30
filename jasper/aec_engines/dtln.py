@@ -23,10 +23,9 @@ Input/output:
   128-sample hop, callers should pass multiples of 128 samples
   (256 bytes); but the engine buffers fractional remainders so any
   multiple-of-2-byte input works.
-- Output is the same length as input (delayed by the warmup pad
-  built into the first call — the offline runner handled this with
-  a pre/post pad; in streaming mode the first few hundred ms of
-  output is zero-padded warmup).
+- Output is emitted in complete 128-sample hops. A call containing only a
+  fractional hop returns no bytes; the remainder is buffered and included in
+  a later call.
 
 Cost on Pi 5 (extrapolated from Pi 3B+ published numbers):
 - 256-unit model: ~1.5 ms per 128-sample block, ~12% of one A76 core
@@ -132,7 +131,7 @@ class DTLNEngine:
         )
 
     def process(self, mic_bytes: bytes, ref_bytes: bytes) -> bytes:
-        """Process one chunk; return AEC'd mic bytes of the same length.
+        """Process one chunk; return AEC'd mic bytes for complete hops.
 
         Internally splits the input into 128-sample (256-byte) blocks
         and runs DTLN on each. Any trailing bytes that don't form a
@@ -155,8 +154,7 @@ class DTLNEngine:
         self._ref_spill = ref_bytes[consumed_bytes:]
 
         if n_blocks == 0:
-            # Not enough samples yet; emit zeros at the input size
-            # (callers expect equal-length output)
+            # Not enough samples for a complete hop yet.
             return bytes(len(mic_bytes) - len(self._mic_spill))
 
         mic = np.frombuffer(mic_bytes[:consumed_bytes], dtype=np.int16).astype(np.float32) / 32768.0

@@ -195,7 +195,6 @@ class SystemSampler:
         self._memory_cgroup_enabled: bool | None = None
         self._memory_cgroup_snapshot: dict[str, float] | None = None
         self._last_sample_at: float | None = None
-        self._stopped = False
         self._thread = threading.Thread(
             target=self._run, name="jasper-control-sampler", daemon=True,
         )
@@ -203,10 +202,6 @@ class SystemSampler:
     def start(self) -> None:
         if not self._thread.is_alive():
             self._thread.start()
-
-    def stop(self) -> None:
-        """For tests; production runs daemon thread to end of process."""
-        self._stopped = True
 
     def snapshot(self) -> dict[str, Any]:
         """Return current values + ring-buffer history. Copies arrays
@@ -297,7 +292,7 @@ class SystemSampler:
 
     def _run(self) -> None:
         last_vcgencmd_at = 0.0
-        while not self._stopped:
+        while True:
             sample_start = time.monotonic()
             try:
                 self._tick()

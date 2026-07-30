@@ -161,7 +161,6 @@ from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
     USB_CORPUS_LEGS,
     USB_DTLN_LEG,
     XVF_RAW0_DTLN_LEG,
-    XVF_RAW0_WEBRTC_AEC3_LEG,
     _enabled_legs_from_metadata,
     _parse_amixer_bool,
     _session_aec3_sweep_source,
