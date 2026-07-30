@@ -17,9 +17,8 @@ opens a reader for matched devices. "remove" is handled passively —
 the reader's `async_read_loop` raises OSError when the device
 disappears and the task exits cleanly.
 
-The dial (ESP32, WiFi) posts to jasper-control directly; this bridge
-is the analogous translation for HID devices that surface as kernel
-input nodes instead.
+The bridge is the translation boundary for supported HID devices that
+surface as kernel input nodes.
 """
 from __future__ import annotations
 
@@ -50,9 +49,8 @@ from .registry import (
 logger = logging.getLogger(__name__)
 
 
-# jasper-control on the same Pi. Stays localhost: the bridge is the
-# only host-side caller; the LAN-facing dial / satellites talk to
-# the same daemon over the LAN.
+# jasper-control on the same Pi. Stays localhost because the bridge is a
+# host-side caller.
 DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
 
 # Coalesce window for rotation events. At 20 Hz detents (the VK-01's

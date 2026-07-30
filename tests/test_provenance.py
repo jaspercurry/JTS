@@ -140,7 +140,6 @@ def test_binary_artifacts_have_sha256s() -> None:
         "source-archive",
         "python-source-archive",
         "onnx-model",
-        "platformio-platform-archive",
     }
     missing = [
         artifact["id"]
@@ -162,7 +161,6 @@ def test_source_artifacts_have_immutable_commits() -> None:
         "python-source-archive",
         "git-source",
         "python-direct-git",
-        "platformio-git-library",
     }
     missing = [
         artifact["id"]

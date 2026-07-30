@@ -23,7 +23,7 @@ APP_CSS = ROOT / "deploy" / "assets" / "app.css"
 LANDING_HTML = ROOT / "deploy" / "index.html"
 SPINNER_PAGE_CSS = tuple(
     ROOT / "deploy" / "assets" / page / f"{page}.css"
-    for page in ("bluetooth", "dial", "home-assistant", "wifi")
+    for page in ("bluetooth", "home-assistant", "wifi")
 )
 
 
@@ -100,7 +100,7 @@ def test_spinner_primitive_is_shared_without_page_local_copies():
     local_rule = re.compile(
         r"(?m)^\s*\.(?:spinner|btn-spinner|ha-spinner)\s*\{"
     )
-    local_keyframes = re.compile(r"@keyframes\s+(?:bt|dial|ha|wifi)-spin\b")
+    local_keyframes = re.compile(r"@keyframes\s+(?:bt|ha|wifi)-spin\b")
     offenders: list[str] = []
     for path in SPINNER_PAGE_CSS:
         page_css = _without_css_comments(path.read_text())

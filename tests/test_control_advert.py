@@ -10,13 +10,12 @@ speaker's friendly display name into a ``name=`` TXT record so the
 ``/rooms/`` directory shows the same name peers see on Spotify / AirPlay
 / Bluetooth / USB. The contract these tests pin:
 
-  - The advert is ALWAYS on and the rotary dial discovers the speaker
-    through it (``MDNS.queryService("jasper-control", "tcp")`` + read the
-    address). The change vs. the historical static
+  - The advert is ALWAYS on for room management and identity-aware LAN
+    automation. The change vs. the historical static
     ``deploy/avahi/jasper-control.service`` is therefore **purely
     additive**: the ``<service>``/``<type>``/``<port>`` block must stay
     byte-for-byte identical, with only the ``<txt-record>`` added. A
-    drift there could move/rename the service and break the dial.
+    drift there could move/rename the service and break discovery.
 
   - The ONLY structural hazard a free-form name introduces is malformed
     XML, which would make Avahi reject the whole ``<service-group>`` and
@@ -61,7 +60,7 @@ _REAL_RELOAD_AVAHI = avahi_service.reload_avahi
 # A name exercising every XML metacharacter at once: ampersand, angle
 # brackets, double quote, single quote. If escaping is wrong, minidom /
 # ElementTree parsing below raises and the whole service-group would be
-# rejected by Avahi at runtime (dial goes offline).
+# rejected by Avahi at runtime (room discovery goes offline).
 HOSTILE_NAME = 'A & <b> "x" \''
 
 
@@ -162,7 +161,7 @@ def test_hostile_name_yields_valid_xml_and_round_trips(template, tmp_path):
     """A name with `& < > " '` must render to WELL-FORMED XML (escaping
     works) and the un-escaped name must come back out of the parsed TXT
     value unchanged. This is the load-bearing safety test: a botched
-    escape would drop the whole <service-group> and take the dial offline.
+    escape would drop the whole <service-group> and take room discovery offline.
     """
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
@@ -301,8 +300,8 @@ def test_none_name_reader_failure_still_advertises_identity_default(template, tm
 def test_rendered_service_block_byte_equivalent_to_static(template, tmp_path):
     """The rendered <service>/<type>/<port> must be byte-for-byte identical
     to the historical static deploy/avahi/jasper-control.service — with ONLY
-    the <txt-record> line added. The dial keys off type + address; any other
-    drift in this block could rename/move the service and break discovery.
+    the <txt-record> line added. Any other drift in this block could
+    rename/move the service and break discovery.
     """
     out = tmp_path / "rendered.service"
     ca.render_control_advert(
@@ -425,7 +424,7 @@ def test_reload_false_does_not_shell_out(template, tmp_path, _mock_avahi_reload)
 
 def test_unchanged_render_skips_write_and_reload(template, tmp_path, _mock_avahi_reload):
     """A byte-identical re-render returns True but does NOT reload — critical
-    for the dial, since a needless write+reload tears down and re-adds the
+    because a needless write+reload tears down and re-adds the
     service-group, opening a discovery gap."""
     out = tmp_path / "rendered.service"
     ca.render_control_advert("Stable", template=str(template), out=str(out), reload=True)
@@ -478,8 +477,8 @@ def test_public_surface_is_stable():
 
 def test_default_peer_id_reads_identity(template, tmp_path, monkeypatch):
     """`render_control_advert()` with no peer_id reads the stable identity
-    through the single identity reader, so consumers (laptop deploy guard,
-    /rooms bond UI, accessory pinning) can address a SPECIFIC speaker and
+    through the single identity reader, so consumers (laptop deploy guard
+    and /rooms bond UI) can address a SPECIFIC speaker and
     treat the advertised hostname as transport, never identity."""
     from types import SimpleNamespace
 
@@ -496,8 +495,8 @@ def test_default_peer_id_reads_identity(template, tmp_path, monkeypatch):
 
 
 def test_peer_id_reader_failure_never_breaks_advertising(template, tmp_path, monkeypatch):
-    """A raising identity read must not take the advert down — the dial
-    depends on _jasper-control._tcp always existing. The peer_id TXT
+    """A raising identity read must not take the advert down — room
+    management depends on _jasper-control._tcp. The peer_id TXT
     degrades to an empty value; the service still renders + parses."""
     def _boom():
         raise RuntimeError("peer_id unreadable")

@@ -1,16 +1,16 @@
 [Unit]
-Description=Jasper external control surface (HTTP API for dial / automation)
+Description=Jasper external control surface (HTTP API for accessories / automation)
 After=jasper-camilla.service network-online.target
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the control daemon. Volume dispatch goes through best_effort=True
 # camilla calls — a write that hits the 2 s restart window logs a
-# warning and is dropped, but the dial keeps responding and the next
+# warning and is dropped, but the remote keeps responding and the next
 # write lands. After= still orders us behind camilla on cold boot.
 Wants=network-online.target jasper-camilla.service
 
 # Tier 4.5 — escalate to system reboot if the per-service restart
 # spiral exceeds 4 restarts in 5 minutes. jasper-control is the
-# recovery surface (HTTP API for the dial, /system/ dashboard);
+# recovery surface (HTTP API for the remote, /system/ dashboard);
 # if it's stuck in a restart loop while the rest of the system
 # looks OK, the operator can't reach the dashboard to diagnose
 # — exactly the case where clean system reboot beats waiting.
@@ -26,7 +26,7 @@ StartLimitAction=reboot
 # loop is actually spinning (ControlHTTPServer.service_actions bumps the
 # progress sentinel in jasper/watchdog.py from inside serve_forever's
 # poll loop). Before this a wedged loop was invisible to systemd — the
-# process looked alive while the dial / dashboard / /state surface was
+# process looked alive while the remote / dashboard / /state surface was
 # dead. Restart=on-failure below also covers watchdog expiry.
 Type=notify
 WatchdogSec=30s
@@ -38,7 +38,7 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # title-match path can build a Spotify Web API router. Without these
 # creds the router is None and the dispatcher falls straight through
 # to the DACP precheck — which on iOS 17+ AirPlay 2 returns false,
-# producing a 502 "doesn't accept remote control" on every dial click.
+# producing a 502 "doesn't accept remote control" on every remote click.
 # Leading `-` makes systemd skip if the file's missing (fresh install).
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Voice provider selection written by the wizard at https://jts.local/voice/.
@@ -84,10 +84,10 @@ RestartSec=2
 # policy). ProtectKernelLogs stays OMITTED and ProtectHome stays read-only
 # (below) for those same diagnostic subprocesses.
 #
-# SupplementaryGroups=systemd-journal: several /state cards read the journal
-# (airplay_health, dial, and wifi_guardian's last-action) — a non-root reader
-# needs the systemd-journal group. `jasper-intsecrets` grants fresh HA reads +
-# Spotify token-cache writes. (The full jasper-doctor runs as ROOT via the
+# SupplementaryGroups=systemd-journal: the airplay_health and wifi_guardian
+# last-action /state cards read the journal — a non-root reader needs the
+# systemd-journal group. `jasper-intsecrets` grants fresh HA reads + Spotify
+# token-cache writes. (The full jasper-doctor runs as ROOT via the
 # jasper-doctor-json.service oneshot, so it does NOT depend on systemd-journal.)
 User=jasper-control
 Group=jasper

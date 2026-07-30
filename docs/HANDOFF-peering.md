@@ -7,13 +7,9 @@ picks exactly one winner per wake event and suppresses the rest.
 
 This doc is the home base for the subsystem. Read it before
 modifying anything in `jasper/peering/` or the wake-handler
-integration in `jasper/voice_daemon.py`. The pre-existing design
-hub at [docs/satellites.md](satellites.md) "Microphone arbitration"
-covered the *multi-mic-around-one-Pi* case (one Pi, satellite mics
-contributing audio); this doc covers the *multi-Pi* case (N
-autonomous JTS speakers, each with its own mic and LLM session).
-The two share signal-priority intuition but diverge in nearly
-every other dimension.
+integration in `jasper/voice_daemon.py`. It covers the multi-Pi
+case: N autonomous JTS speakers, each with its own mic and LLM
+session.
 
 If you're a fresh context window: skim §1–§3, then go to §5 for the
 day-1 operational picture. The rest is rationale.
@@ -87,8 +83,9 @@ just work. A hub-and-spoke design with an arbitration server
 needs that server even when N=1. P2P with deterministic ranking
 (every peer applies the same pure function to the same multicast
 message set and reaches the same conclusion) means there's no
-leader to elect and no SPOF. Inspired by the Sonos / Apple
-patents documented in [satellites.md](satellites.md#what-everyone-else-ships).
+leader to elect and no SPOF. The design follows the same broad
+deterministic-selection pattern used by commercial multi-speaker
+systems while remaining LAN-local and hubless.
 
 ---
 
@@ -140,12 +137,11 @@ single survivor returns immediately; multiple survivors fall through.
 | 5 | RMS in dBFS (higher wins) | exact |
 | 6 | Lowest `peer_id` UUID lexicographically. Final deterministic tiebreaker. | — |
 
-**Why confidence as the primary signal, not raw audio energy:**
-documented at length in [satellites.md "What a naive first instinct
-gets wrong"](satellites.md#what-a-naive-first-instinct-gets-wrong).
-Short version: raw RMS varies by mic gain and is biased by
-reverberation; openWakeWord confidence is the closest thing to a
-gain-invariant proximity signal we have.
+**Why confidence as the primary signal, not raw audio energy:** raw
+RMS varies by microphone gain, room noise, and reverberation.
+openWakeWord confidence is the closest available gain-invariant
+proximity signal. SNR and RMS therefore remain lower-priority
+tiebreakers instead of overriding a clearly stronger detection.
 
 **Why a band (eps), not a sort:** detection-time jitter on identical
 audio is ~0.03; a strict sort would let microsecond-scale CPU
@@ -243,7 +239,7 @@ T+session_end
   `_peer_arbitrate` returns "WIN" by default. See
   [jasper/voice_daemon.py:_peering_send](../jasper/voice_daemon.py).
 - **Late-cancel after arbitration.** Between arb start and arb end
-  (up to 500 ms), the user could mute via dial or kick off a room-
+  (up to 500 ms), the user could mute via a remote or kick off a room-
   correction measurement. Both check again at `post_arb`.
 - **Losers stay silent.** No chirp on LOSE. The chirp moved from
   "fires immediately on wake" to "fires only on WIN" — the only
@@ -487,8 +483,8 @@ investigation).
 **TTS reply through the winner's speakers.** The user explicitly
 chose this UX. The alternative — route the LLM response audio
 through a designated primary speaker — would require streaming PCM
-between Pis, which is a much bigger architectural change
-(documented as out-of-scope in [satellites.md](satellites.md)).
+between Pis, which is a much bigger architectural change and remains
+out of scope.
 
 **Live mode toggle without restart.** Currently the wizard restarts
 both jasper-voice and jasper-control via `systemctl restart
@@ -564,11 +560,6 @@ surface. Either test would have caught PR #146's bug pre-merge.
 
 **Cross-references inside the codebase:**
 
-- [docs/satellites.md "Microphone arbitration"](satellites.md) —
-  the pre-peering design doc that covered the multi-mic-around-
-  one-Pi case. Multi-mic and multi-Pi share signal-priority
-  intuition but the implementation in this doc is the multi-Pi
-  variant.
 - [jasper/peering/__init__.py](../jasper/peering/__init__.py) —
   module overview docstring + public exports.
 - [jasper/voice_daemon.py:_arbitrate_acquire_drain](../jasper/voice_daemon.py)
@@ -617,10 +608,6 @@ If you are a fresh Claude or LLM landing here:
 6. To verify: `jasper-doctor` shows `peering: mode` + `peering:
    discovery` lines; `journalctl -u jasper-voice | grep peering`
    shows `event=peering.wake.won` / `event=peering.wake.lost`.
-7. The pre-existing `docs/satellites.md` was the design hub for
-   the multi-mic-around-one-Pi case. This doc is the multi-Pi
-   variant.
-
 Last verified: 2026-06-26 (JTS4 streambox peering enable re-verified:
 `/rooms/peering` writes `JASPER_PEERING=on`, `jasper-control` starts the
 peering daemon, the peering UDS lives under `/run/jasper-control` so the

@@ -354,7 +354,7 @@ def check_wifi_recover_timer() -> CheckResult:
 def check_avahi_daemon() -> CheckResult:
     """avahi-daemon is the mDNS *publisher* — without it the speaker
     is invisible to `<hostname>.local` resolution from other devices,
-    the dial can't auto-discover via `_jasper-control._tcp`, and any
+    control clients can't discover `_jasper-control._tcp`, and any
     user-facing mention of "visit http://jts.local/" silently fails.
 
     Pi OS Lite Trixie ships `libnss-mdns` (resolution-side) but does
@@ -378,8 +378,8 @@ def check_avahi_daemon() -> CheckResult:
             label, "fail",
             "avahi-daemon NOT installed. Re-run deploy/install.sh — "
             "it now installs the package (2026-05-24+). Without it, "
-            "`<hostname>.local` doesn't resolve and the dial can't "
-            "auto-discover this Pi.",
+            "`<hostname>.local` doesn't resolve and control clients can't "
+            "discover this Pi.",
         )
     return CheckResult(
         label, "fail",
@@ -452,8 +452,8 @@ def check_hostname_avahi_consistency() -> CheckResult:
 
 @doctor_check(order=66, group="network")
 def check_avahi_jasper_control() -> CheckResult:
-    """Verify avahi is advertising `_jasper-control._tcp` so the dial
-    can find us via mDNS-SD. avahi-browse with -t (terminate after a
+    """Verify avahi is advertising `_jasper-control._tcp` so supported
+    clients can find us via mDNS-SD. avahi-browse with -t (terminate after a
     few seconds) keeps this check fast even if no service is found."""
     label = "avahi: _jasper-control._tcp"
     bin_path = shutil.which("avahi-browse")
@@ -461,7 +461,7 @@ def check_avahi_jasper_control() -> CheckResult:
         return CheckResult(
             label, "warn",
             "avahi-browse missing (apt install avahi-utils) — can't "
-            "verify the service is being advertised. Dial may still "
+            "verify the service is being advertised. Clients may still "
             "find us if avahi-daemon is publishing it.",
         )
     try:
@@ -497,7 +497,7 @@ def check_avahi_jasper_control() -> CheckResult:
         )
     return CheckResult(
         label, "ok",
-        "advertised — dials can auto-discover via mDNS-SD",
+        "advertised — rooms and LAN automation can discover the control service",
     )
 
 

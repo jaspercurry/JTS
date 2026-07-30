@@ -20,8 +20,8 @@
 #
 # Side effects: stops shairport-sync and jasper-voice for the run
 # duration, restores at end. Plays loud-ish pink noise — main_volume
-# (the dial-controlled software volume) is left alone, so noise level
-# tracks whatever the dial is set to. Drop the dial first if you want
+# (the remote-controlled software volume) is left alone, so noise level
+# tracks whatever the remote is set to. Drop the remote first if you want
 # this quieter.
 
 set -euo pipefail

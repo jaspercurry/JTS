@@ -239,7 +239,7 @@ StateDirectoryMode=0770
 UMask=0007
 # RuntimeDirectory creates /run/jasper at service start (auto-cleaned
 # at stop). voice_daemon binds /run/jasper/voice.sock there for
-# jasper-control to send dial hold-to-talk triggers via. With Group=jasper
+# jasper-control to send remote hold-to-talk triggers via. With Group=jasper
 # the dir is jasper-voice:jasper 0750, so jasper-control (also group jasper)
 # can traverse it to reach voice.sock (chmod 0660 in the daemon).
 RuntimeDirectory=jasper

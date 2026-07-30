@@ -184,17 +184,12 @@ Two operational notes:
   --severity=warning`) — CI parses and lints the installer, deploy
   helpers, shell operator scripts that can mutate a live speaker, and
   maintainer build entry points. It selects the whole `deploy` tree
-  (plus `scripts`, `firmware`, and `capture-page`) by shebang/extension,
+  (plus `scripts` and `capture-page`) by shebang/extension,
   so a shell script added anywhere under `deploy/` is auto-covered.
 - **Supply-chain provenance** (`python3 scripts/check-provenance.py`) —
-  required when touching install/build fetches, firmware dependency
-  declarations, wake/DTLN model registries, or Python direct URL
+  required when touching install/build fetches, wake/DTLN model
+  registries, or Python direct URL
   dependencies. See [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md).
-- **Optional ESP32 firmware build check**
-  (`scripts/check-firmware-builds.sh`) — run when touching
-  `firmware/`, PlatformIO pins, or accessory onboarding. This is
-  explicit instead of always-on CI because most PRs do not affect
-  optional dial/satellite hardware and PlatformIO is a large download.
 - **Voice-eval suite** (`pytest tests/voice_eval/regression/`) —
   opens **paid** real-time LLM sessions; see
   [`tests/voice_eval/README.md`](tests/voice_eval/README.md) for the

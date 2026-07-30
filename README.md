@@ -31,8 +31,8 @@ voice-assistant pause scope, and the independent USB microphone export.
   install. ~30 minutes total.
 - **Prefer to read the steps yourself?** [QUICKSTART.md](QUICKSTART.md)
   is the same flow as a human-readable walkthrough.
-- **Doing the full long-form bringup** (hardware calibration, XVF
-  firmware flashing, satellite devices)? See [BRINGUP.md](BRINGUP.md).
+- **Doing the full long-form bringup** (hardware calibration and XVF
+  firmware flashing)? See [BRINGUP.md](BRINGUP.md).
 
 The setup docs default to the hostname `jts`, which becomes
 `jts.local` on your home network. If you choose another hostname in
@@ -50,12 +50,6 @@ later. Keep the Pi and your computer on the same Wi-Fi during setup.
 | TPA3255 class-D amp + 32V supply | Speaker power |
 | Speakers + speaker wire | (Whatever you have) |
 | Seeed ReSpeaker XVF3800 (USB UA variant) | 4-mic array with on-chip XMOS DSP |
-| ELECROW CrowPanel 1.28" HMI ESP32 Rotary Display (optional) | Wireless physical knob — volume, play/pause, hold-to-talk |
-| Waveshare ESP32-S3-Touch-AMOLED-1.8 (optional) | Touchscreen + mic satellite — distributed mic, push-to-talk, aux display |
-
-The optional ESP32 devices form a "satellite" family — see
-[docs/satellites.md](docs/satellites.md) for the cross-cutting
-design (shared protocols, multi-mic arbitration, roadmap per device).
 
 The XVF3800's onboard 3.5mm jack / AIC3104 codec is **not**
 connected — speakers go to the Apple dongle. This is the
@@ -310,8 +304,8 @@ the computer gets a mono USB input.
   resolved hardware role permits it, so the follower does not advertise itself
   as an independent audio input. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
-  drives JTS's canonical `listening_level` (feels like spinning the
-  dial). Joins the existing mux arbitration for latest-source-wins
+  drives JTS's canonical `listening_level` like any other volume
+  control. It joins the existing mux arbitration for latest-source-wins
   preemption. Zero resident-process RAM for the lifecycle marker; when on,
   fan-in captures the UAC2 device directly and the non-real-time host-volume
   helper remains bounded. See
@@ -367,23 +361,10 @@ the computer gets a mono USB input.
   [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
 - ✅ AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
-- ✅ Rotary dial — volume (with on-screen volume gauge), play/pause
-  short-press, hold-to-talk long-press all working on hardware.
-  Other LVGL scenes (clock / listening orb / speaking waveform /
-  now-playing) have firmware scaffold but aren't yet on-device
-  validated.
-- 🔄 AMOLED touchscreen + mic satellite
-  (Waveshare ESP32-S3-Touch-AMOLED-1.8) — Phase 0 (mic capture)
-  + Phase 1.1 (WiFi/Improv-over-Serial provisioning, mDNS-SD,
-  dlog) + Phase 1.2 (on-screen connection-status indicator on
-  the SH8601 AMOLED via Arduino_GFX) shipped. Phase 1.3+ (LVGL
-  "Tap to Talk", capacitive touch, UDP audio to Pi-side
-  receiver) is the next milestone. Both ESP32 firmware projects
-  (dial + satellite) on Arduino-ESP32 v3.x via pioarduino — one
-  toolchain across the satellite family. See
-  [docs/satellites.md](docs/satellites.md) for the family
-  overview, multi-mic arbitration design, and per-device
-  roadmap.
+- ✅ Bluetooth HID accessories — supported remotes can provide
+  transport, volume, and push-to-talk controls through
+  `jasper-input`; WiiM Remote 2 microphone support remains
+  profile-gated and optional.
 
 Current AEC behavior is profile-driven rather than a separate
 "marginal items" list: `JASPER_AUDIO_INPUT_PROFILE=auto` uses the
@@ -409,10 +390,10 @@ jasper/                         Python daemon source
                                   shared reconnect supervisor helpers
   tools/                        Tool registry + per-tool implementations
                                   (provider-aware schema serializers)
-  control/                      jasper-control: HTTP API for dial/automation
+  control/                      jasper-control: HTTP API for management,
+                                  accessories, and automation
   cli/                          jasper-doctor, jasper-spotify-auth,
-                                jasper-aec-{init,tune,bridge},
-                                jasper-dial-onboard
+                                jasper-aec-{init,tune,bridge}
   xvf/                          JTS-owned XVF3800 USB control helper
   mics/                         Per-mic-family profile registry — one
                                   module per supported mic (xvf3800.py
@@ -430,14 +411,6 @@ jasper/                         Python daemon source
   data/                         Static data (subway stops, etc.)
   ...                           accounts, spotify_router, vad,
                                 volume_persistence, etc.
-
-firmware/
-  dial/                         PlatformIO project for the ESP32-S3
-                                rotary dial (volume, play/pause,
-                                hold-to-talk; display scenes scaffolded)
-  satellite-amoled/             PlatformIO project for the Waveshare
-                                ESP32-S3 touchscreen/mic satellite
-  ...                           optional accessory firmware projects
 
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
@@ -465,7 +438,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-enhanced-aec.md       Optional vendored AEC3 v2 install/activation lifecycle
-  HANDOFF-hotplug-resilience.md  Runtime mic/DAC/satellite attach-detach convergence (no crash-loop)
+  HANDOFF-hotplug-resilience.md  Runtime mic/DAC attach-detach convergence (no crash-loop)
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
   HANDOFF-chip-aec-portability.md  DAC-portable chip-AEC: clock-recovery design + roadmap
   HANDOFF-wake-telemetry.md     Triple-stream wake + per-event SQLite + funnel
@@ -572,7 +545,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
 | [LICENSE-third-party.md](LICENSE-third-party.md) | Redistributors / maintainers | First-pass third-party software, asset, model, and data attribution inventory |
 | [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Raspberry Pi Imager password-SSH flow → boot → `scripts/onboard.sh --adopt` → working speaker in ~30 min. Carries the chosen hostname through every step. |
-| [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, dial, satellites, calibration |
+| [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, and calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/PLAN-usb-mic-export-latency-fix.md](docs/PLAN-usb-mic-export-latency-fix.md) | Audio architects / maintainers | **Verbatim point-in-time plan / execution record.** Preserves the original latency-fix instructions exactly; current operational truth remains in the linked HANDOFF docs. |
 | [docs/extensibility.md](docs/extensibility.md) | Maintainers / AI / extension contributors | **Start here before adding a modular subsystem.** The cross-cutting extensibility doctrine: the one invariant (host-mediated indirection), the five extension contracts (tools, sources, model providers, hardware profiles, features), the *what-kind → which-pattern* decision tree, and the build-now-vs-defer trust gradient. Frames the per-contract docs that follow. |
@@ -602,7 +575,6 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/HANDOFF-audio-graph-consolidation.md](docs/HANDOFF-audio-graph-consolidation.md) | Audio architects | **Campaign plan.** Consolidating the audio graph onto SHM rings + the `jts_ring` ioplug and deleting every duplicate/legacy path (snd-aloop, Python usbsink pump, lean lane, transport_pipe, rate_match): the file-level no-dupes audit, sequenced phase map with per-phase gates/rollbacks, renderer ring-ingress design, risk register, and campaign done criteria |
 | [docs/RESEARCH-pipewire-low-latency.md](docs/RESEARCH-pipewire-low-latency.md) | Audio architects | Research artifact: how PipeWire's *actual* source achieves low latency + clock resilience (the `spa_dll` delay-locked loop, driver/follower double-buffered quantum, timer/headroom ALSA model, xrun recovery, zero-copy), a JTS verdict per technique, and a principle-aligned adoption plan centered on lifting one shared DLL primitive. We do NOT use PipeWire — this mines its algorithms, not its architecture |
 | [docs/AEC-DIAG-*.md](docs/AEC-DIAG-06-xvf-format-level-profile.md) | Audio diagnostics | Dated AEC diagnostic notes and active probe runbooks for the outputd/chip-ref/XVF timing investigation. Current entry point: `AEC-DIAG-06-xvf-format-level-profile.md` |
-| [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up a Zero 2 W streambox | Lab runbook for cheap Zero-class JTS: the streambox install profile (local renderers, DSP, shared capability-gated UI) plus the planned `active_crossover` output topology. "Endpoint behaviour" is now the runtime multiroom follower role, not a separate install tier |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/HANDOFF-pi-image-delivery.md](docs/HANDOFF-pi-image-delivery.md) | Maintainers / release engineers | **Operational delivery plan.** The single source of truth for the stock-OS → bootstrap → hybrid-image gradient, fast-moving-main release boundary, first-boot transaction, redistribution scope, image-factory choice, and promotion gates for a future Raspberry Pi Imager `.img.xz`. |
@@ -645,11 +617,6 @@ reference. Currently:
   punch list. **Start here for any edit to `SYSTEM_INSTRUCTION` in
   `jasper/voice/prompt.py` or any tool description in
   `jasper/tools/`.** Refreshed against provider docs 2026-05-23.
-- [`satellites.md`](docs/satellites.md) — The home base for the
-  satellite-device family. Existing dial + planned AMOLED mic
-  satellite, shared protocols (Improv / mDNS-SD / control HTTP / UDP
-  logs), and the multi-mic-around-one-Pi arbitration design (with
-  prior-art survey across HA Assist, Sonos, Apple, Amazon ESP).
 - [`HANDOFF-peering.md`](docs/HANDOFF-peering.md) — Multi-Pi wake
   arbitration. When a household runs multiple JTS speakers on the
   same LAN, peering picks exactly one winner per wake event so they
@@ -815,12 +782,12 @@ reference. Currently:
   any service unit.
 - [`HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md) —
   Runtime hardware attach/detach convergence ("treat it like a
-  computer"): mic/XVF3800, output DAC/dongle, satellites can be
+  computer"): the mic/XVF3800 and output DAC/dongle can be
   plugged/unplugged while running and the speaker converges both
   directions with no redeploy, restart, or crash-loop. The mic
   presence-gate (`jasper-voice` `ConditionPathExists` on a reconciler-
-  written marker + a clean `66` exit), why the output owner and
-  satellites already converge, and the plug/unplug hardware-pass
+  written marker + a clean `66` exit), why the output owner converges,
+  and the plug/unplug hardware-pass
   checklist. Read before touching the no-mic/no-DAC park paths in
   `deploy/bin/jasper-aec-reconcile`, `jasper-voice.service`, or the
   `ConditionPathExists`/`ExecCondition` device gates.
@@ -924,9 +891,8 @@ reference. Currently:
   dmix failure mode.
 - [`HANDOFF-supply-chain.md`](docs/HANDOFF-supply-chain.md) —
   Deploy/build provenance: the canonical manifest, checksum policy,
-  install-time source archive pins, firmware dependency pins,
-  hash-checked model downloads, and accepted gaps for apt, Python,
-  and PlatformIO transitive resolution.
+  install-time source archive pins, hash-checked model downloads,
+  and accepted gaps for apt and Python transitive resolution.
 - [`HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md) — **Canonical**
   for the composite USB gadget: the hardware-conditional USB management network
   (`ncm.usb0`, NetworkManager keyfile, scoped dnsmasq, no IP
@@ -1328,7 +1294,7 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-wifi-guardian` (NM keyfile/profile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
 | `jasper-wifi-recover` (Wi-Fi periodic recovery nudge) | Active timer | ~0 resident; one-shot only | healthy tick is one NM read + narrow kernel-log check every ~3 min; repair path only for brcmfmac scan suppression or Wi-Fi down |
 | `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~12 MB | <1% |
-| `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
+| `jasper-control` (HTTP API for management, accessories, and automation) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~16 MB | ~0% idle |
 | `jasper-accessory-reconcile` (optional accessory mic profile gate) | Active oneshot | ~0 resident | boot/deploy and Bluetooth pair/connect/forget only |
 | `jasper-wiim-remote-mic` (WiiM Remote 2 BLE mic adapter) | Profile-gated; active only when paired WiiM Remote 2 is present | 0 MB off; ~15 MB on, bounded by MemoryMax=100M | ~0% idle; decode only while the remote mic streams |
@@ -1339,20 +1305,19 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms / Tools wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (HTTPS correction measurement hub) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
-| `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
 | `jasper-system-web` (system dashboard at `/system/`) | **Socket-activated** | ~0 idle, ~12 MB when open | n/a idle |
 | `jasper-chat-web` (conversation-history dashboard at `/chat/`) | **Socket-activated** | ~0 idle; not yet measured when open (same stdlib-server shape as `jasper-system-web`, bounded by `MemoryMax=90M`) | n/a idle |
 | Single-card snd-aloop (Loopback) | Loaded at boot | ~0 | ~0 |
 | dsnoop tap on music chain | Always present | ~0 | ~0 |
 
-The six web-wizard daemons are socket-activated — systemd holds
+The five web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
 its pages. `jasper-web` alone hosts fifteen URL surfaces (Spotify,
 voice, Google, AirPlay, Sources, Wake, Wi-Fi, Transit, Home
 Assistant, Weather, Sound, Wake-Corpus, Speaker, Rooms, Tools) on
-fifteen loopback ports; the other five daemons each host one. Four of
-the six (`jasper-web`, `jasper-bluetooth-web`, `jasper-correction-web`,
-`jasper-dial-web`) exit after 10 min of no requests; `jasper-system-web`
+fifteen loopback ports; the other four daemons each host one. Three of
+the five (`jasper-web`, `jasper-bluetooth-web`, `jasper-correction-web`)
+exit after 10 min of no requests; `jasper-system-web`
 and `jasper-chat-web` use a longer 30-min idle timeout since users may
 leave those read-only dashboards open in a tab. Either way the
 resident cost is zero between admin sessions. First request after
@@ -1449,7 +1414,7 @@ Raspberry Pi Imager through `scripts/onboard.sh --adopt` and the
 first setup pages in ~30 minutes.
 
 For the long-form operator runbook — hardware calibration, XVF
-firmware, dial, satellites, room correction — use
+firmware, and room correction — use
 [BRINGUP.md](BRINGUP.md).
 
 If the repo is already deployed and you're just pushing changes:
@@ -1533,10 +1498,10 @@ systemd unit with memory/runtime bounds so a bad diagnostic gets
 killed before it starves the speaker.
 `jasper-trace.sh` is the live-tail equivalent narrowed to the
 cross-daemon `event=` lines emitted by `jasper.camilla.Ducker`,
-the dial volume routes, etc. — useful when you want to see
+the volume routes, etc. — useful when you want to see
 duck/preempt/route timing without the rest of each daemon's
 chatter. `GET /state` on `jasper-control` returns one JSON
-snapshot of voice / audio / renderers / satellites, fail-soft
+snapshot of voice / audio / renderers, fail-soft
 per section.
 
 Common failure modes are documented at the bottom of

@@ -645,7 +645,7 @@ Six outcome buckets from `HAClient.process()`:
 | `agent_error` | HTTP 5xx                                      | Model: "Home Assistant had an internal error"|
 | `parse_error` | non-200 OR malformed body OR empty speech     | Model: "Home Assistant returned a response I couldn't understand" |
 
-`no_valid_targets` is NOT a hard error. In multi-satellite homes,
+`no_valid_targets` is NOT a hard error. In multi-speaker homes,
 another device may have answered the same utterance; HA's speech
 text ("I couldn't find a device matching that") is still useful to
 surface. We tag the outcome as `intent_miss` but the model gets the

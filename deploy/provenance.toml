@@ -115,24 +115,6 @@ sha256 = "d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087"
 verification = "pip direct URL embeds commit and sha256 fragment"
 
 [[artifact]]
-id = "pioarduino-espressif32-platform"
-kind = "platformio-platform-archive"
-consumer = "firmware/dial/platformio.ini and firmware/satellite-amoled/platformio.ini"
-url = "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip"
-version = "55.03.38-1"
-sha256 = "54ca527d9920815d8fef77319b9c35679cf71c0299a3a9bf4ad8ae33a6cd95c4"
-verification = "provenance record only; PlatformIO does not enforce this hash yet"
-
-[[artifact]]
-id = "improv-wifi-library"
-kind = "platformio-git-library"
-consumer = "firmware/dial/platformio.ini and firmware/satellite-amoled/platformio.ini"
-direct_url = "https://github.com/jnthas/Improv-WiFi-Library.git#e37c244e0080349e191252acf4bce146eca118e0"
-repository = "https://github.com/jnthas/Improv-WiFi-Library.git"
-commit = "e37c244e0080349e191252acf4bce146eca118e0"
-verification = "PlatformIO git dependency pinned to commit"
-
-[[artifact]]
 id = "jarvis-v2-wake-model"
 kind = "onnx-model"
 consumer = "jasper/wake_models.py and deploy/install.sh"
@@ -284,10 +266,3 @@ kind = "cargo-lockfile"
 consumer = "rust/jasper-outputd/Cargo.toml and rust/jasper-outputd/Cargo.lock"
 status = "pinned"
 notes = "Cargo.lock is committed for the jasper-outputd binary crate. install.sh builds from rust/jasper-outputd with cargo --locked, so lock drift fails deploy instead of resolving live."
-
-[[surface]]
-id = "platformio-registry-libraries"
-kind = "platformio-registry-resolution"
-consumer = "firmware/dial/platformio.ini and firmware/satellite-amoled/platformio.ini"
-status = "partially-pinned"
-notes = "Top-level registry dependencies are pinned to exact versions in platformio.ini. PlatformIO still resolves toolchain and transitive metadata from its registry."

@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
-from jasper.control import aec_endpoints, dial as dial_module, state_aggregate
+from jasper.control import aec_endpoints, state_aggregate
 from jasper.control.server import (
     VOLUME_MAX_DB,
     VOLUME_MIN_DB,
@@ -37,7 +37,6 @@ from jasper.control.server import (
     _clamp_db,
     _control_route_allowed_for_install_profile,
     _db_to_percent,
-    _delta_db_to_delta_percent,
     _make_handler,
     _percent_to_db,
 )
@@ -475,12 +474,6 @@ def test_db_to_percent_endpoints():
     assert _db_to_percent(VOLUME_MIN_DB) == 0
     assert _db_to_percent(VOLUME_MAX_DB) == 100
     assert _db_to_percent((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2) == 50
-
-
-def test_delta_db_to_delta_percent_5db_is_10pp():
-    assert _delta_db_to_delta_percent(5.0) == 10
-    assert _delta_db_to_delta_percent(-5.0) == -10
-    assert _delta_db_to_delta_percent(2.5) == 5
 
 
 # --- management request guardrails ---
@@ -2668,17 +2661,6 @@ def test_get_volume_uses_persistence_only_read_path(
     assert ("get", None) in fake.calls
 
 
-def test_volume_adjust_legacy_delta_db(server_with_coordinator):
-    """Dial firmware sends delta_db; control daemon converts to
-    listening_level percent points."""
-    base, fake = server_with_coordinator
-    status, body = _post(f"{base}/volume/adjust", {"delta_db": -2.5})
-    assert status == 200
-    # -2.5 dB on 50 dB span = -5 percent points; 60 - 5 = 55
-    assert body["percent"] == 55
-    assert ("adjust", -5) in fake.calls
-
-
 def test_volume_adjust_native_delta_percent(server_with_coordinator):
     """Newer clients send delta_percent directly."""
     base, fake = server_with_coordinator
@@ -2836,7 +2818,7 @@ def test_volume_set_with_unknown_source_falls_back_to_set(server_with_coordinato
 
 
 def test_volume_set_without_source_is_authoritative(server_with_coordinator):
-    """Existing dial / voice clients post without `source`; they
+    """Existing remote / voice clients post without `source`; they
     continue to hit the authoritative set path."""
     base, fake = server_with_coordinator
     status, body = _post(f"{base}/volume/set", {"percent": 80})
@@ -2913,7 +2895,7 @@ def _block_active_speaker_volume(monkeypatch):
 def test_volume_adjust_refused_when_active_speaker_not_safe(
     monkeypatch, server_with_coordinator,
 ):
-    # Pins the dial-path readiness gate (C3b-4): while the active speaker is
+    # Pins the remote-path readiness gate (C3b-4): while the active speaker is
     # unsafe for volume, /volume/adjust must refuse with 409 BEFORE dispatching
     # any coordinator op — full-range gain on a not-yet-validated crossover is a
     # tweeter-damage risk. Delete the `_active_speaker_volume_block()` guard in
@@ -2986,7 +2968,7 @@ def test_transport_toggle_dispatches_toggle(server_with_transport_stub):
 
 
 def test_transport_next_dispatches_next(server_with_transport_stub):
-    """Double-tap on the dial / VK-01 lands here."""
+    """Double-tap on the remote / VK-01 lands here."""
     base, calls = server_with_transport_stub
     status, body = _post(f"{base}/transport/next", {})
     assert status == 200
@@ -2995,7 +2977,7 @@ def test_transport_next_dispatches_next(server_with_transport_stub):
 
 
 def test_transport_previous_dispatches_previous(server_with_transport_stub):
-    """Triple-tap on the dial / VK-01 lands here."""
+    """Triple-tap on the remote / VK-01 lands here."""
     base, calls = server_with_transport_stub
     status, body = _post(f"{base}/transport/previous", {})
     assert status == 200
@@ -3031,7 +3013,8 @@ def test_transport_dispatcher_error_propagates_as_502(monkeypatch):
 def test_transport_dispatcher_error_field_propagates_as_502(monkeypatch):
     """If the dispatcher returns {"error": ...} (e.g. "no playing
     source"), the route surfaces it as 502 — same as the existing
-    toggle behaviour. Used today by the dial's LED to show red."""
+    toggle behaviour, so callers and the accessory bridge receive an
+    actionable non-2xx result."""
     async def fake_dispatch(action: str) -> dict:  # noqa: ARG001
         return {"error": "no playing source"}
 
@@ -3252,10 +3235,8 @@ def test_split_control_helpers_keep_state_at_owner_modules():
     import jasper.control.server as srv_mod
 
     mirrored_names = {
-        "DIAL_HEARTBEAT_PATH",
         "OUTPUTD_BASE_CAMILLA_CONFIG",
         "SOURCE_AVAILABILITY_TTL_SEC",
-        "_dial_heartbeat",
         "_source_availability_cache",
         "_source_availability_lock",
         "_AEC_MODE_FILE",
@@ -3274,7 +3255,6 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         "_sound_apply_target",
         "_sound_runtime_status",
         "_sync_aec_module",
-        "_sync_dial_module",
         "_sync_source_availability_module",
     }
     assert mirrored_names.isdisjoint(vars(srv_mod))
@@ -3285,7 +3265,6 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         "_aec_full_status",
         "_augment_source_payload",
         "_get_state",
-        "_probe_dial_reachable",
         "_safe_audio_quality_state",
     ):
         assert callable(getattr(srv_mod, name))
@@ -3435,7 +3414,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["aec"]["audio_profile"]["active"] == "xvf_software_aec3"
     assert body["aec"]["microphone"]["processing_mode"] == "Software AEC3"
     assert body["active_source"] in {"idle", "airplay"}
-    assert body["satellites"]["dial"]["online"] is False
+    assert "satellites" not in body
     # Transit city packs: a JSON-able {packs: [{id, label, enabled}]} block,
     # read fresh from the wizard-owned transit.env (absent file here -> the
     # legacy all-enabled default). Top-level shape guard.
@@ -4128,7 +4107,6 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
                 camilla_host="127.0.0.1",
                 camilla_port=1234,
                 voice_socket_path="/nonexistent.sock",
-                dial_heartbeat={},
                 ha_status_snapshot=_fast_ha,
             )
 
@@ -4368,7 +4346,7 @@ def test_duck_probe_prefers_explicit_camilla_lock_over_fanin_duck(monkeypatch):
 def test_duck_active_probe_returns_none_on_uds_missing(monkeypatch):
     """Voice daemon socket doesn't exist (jasper-voice crashed or
     never started). Probe must return None so the coordinator falls
-    open and the dial keeps working."""
+    open and the remote keeps working."""
     import asyncio
     import jasper.control.server as srv_mod
 
@@ -4382,7 +4360,7 @@ def test_duck_active_probe_returns_none_on_uds_missing(monkeypatch):
 
 def test_duck_active_probe_returns_none_on_timeout(monkeypatch):
     """Voice daemon is wedged and doesn't respond within 1s. Probe
-    fails open so the dial doesn't lock up waiting for it."""
+    fails open so the remote doesn't lock up waiting for it."""
     import asyncio
     import jasper.control.server as srv_mod
 
@@ -4420,300 +4398,6 @@ def test_duck_active_probe_returns_none_when_field_wrong_type(monkeypatch):
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
     probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
     assert asyncio.run(probe()) is None
-
-
-# --- /dial/status (heartbeat) ---
-
-
-def test_dial_status_empty_when_no_dial_seen(server_with_coordinator):
-    """Fresh daemon, no UDP datagrams yet → all heartbeat fields null."""
-    dial_module._dial_heartbeat["last_seen_at"] = None
-    dial_module._dial_heartbeat["last_seen_ip"] = None
-    dial_module._dial_heartbeat["last_message"] = None
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/dial/status")
-    assert status == 200
-    assert body["last_seen_at"] is None
-    assert body["last_seen_ip"] is None
-    assert body["age_seconds"] is None
-
-
-def test_dial_status_reports_recent_heartbeat(server_with_coordinator):
-    """Simulate a UDP datagram by mutating the module heartbeat dict
-    (the listener does the same on each datagram). /dial/status should
-    then report a recent age."""
-    import time
-    now = time.time()
-    dial_module._dial_heartbeat["last_seen_at"] = now - 12.0
-    dial_module._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
-    dial_module._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST 2.00 dB OK"
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/dial/status")
-    assert status == 200
-    assert body["last_seen_ip"] == "192.168.1.89"
-    assert body["age_seconds"] >= 12.0
-    assert body["age_seconds"] < 30.0   # generous slack for slow CI
-    assert "encoder" in body["last_message"]
-
-
-# --- Dial reachability probe (powers /state.satellites.dial.online) ---
-
-
-def test_probe_dial_reachable_returns_true_on_refused():
-    """Real-network test: connecting to localhost on a port nothing is
-    listening on gets RST → ConnectionRefusedError. The probe treats
-    that as "online" because a host has to be alive to send RST."""
-    import asyncio
-    from jasper.control.server import _probe_dial_reachable
-
-    # Port 1 is privileged and effectively guaranteed unbound on a
-    # normal system; ECONNREFUSED is immediate.
-    result = asyncio.run(_probe_dial_reachable("127.0.0.1", timeout=1.0))
-    assert result is True
-
-
-def test_probe_dial_reachable_returns_false_on_timeout():
-    """Black-hole IP (RFC 5737 TEST-NET-1, not routable) → timeout →
-    online=False. Uses a tight timeout so the test stays fast."""
-    import asyncio
-    from jasper.control.server import _probe_dial_reachable
-
-    result = asyncio.run(_probe_dial_reachable("192.0.2.1", timeout=0.2))
-    assert result is False
-
-
-def test_state_dial_online_true_when_probe_succeeds(
-    server_with_coordinator, monkeypatch,
-):
-    """/state.satellites.dial.online reflects TCP reachability, not
-    UDP-dlog freshness. With a recorded last_seen_ip and the probe
-    monkeypatched to succeed, the dial is correctly reported online
-    even when the last dlog was hours ago."""
-    import time
-    import jasper.control.server as srv_mod
-
-    # Ancient dlog activity (would have failed the old 30 s threshold).
-    dial_module._dial_heartbeat["last_seen_at"] = time.time() - 3600.0
-    dial_module._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
-    dial_module._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
-
-    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
-        return True
-    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
-
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    dial = body["satellites"]["dial"]
-    assert dial["online"] is True
-    # age_seconds still reflects the last dlog — useful for "has the
-    # user touched the dial lately?" UX, separate from liveness.
-    assert dial["age_seconds"] >= 3600.0
-
-
-def test_state_dial_online_false_when_probe_fails(
-    server_with_coordinator, monkeypatch,
-):
-    """Reachable IP recorded but probe times out (dial powered off /
-    out of range) → online=False. last_seen_at still surfaces so the
-    dashboard can show "last seen ago" even when unreachable."""
-    import time
-    import jasper.control.server as srv_mod
-
-    dial_module._dial_heartbeat["last_seen_at"] = time.time() - 10.0
-    dial_module._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
-    dial_module._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
-
-    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
-        return False
-    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
-
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    dial = body["satellites"]["dial"]
-    assert dial["online"] is False
-    assert dial["age_seconds"] is not None
-
-
-def test_state_dial_online_false_when_no_last_seen_ip(
-    server_with_coordinator, monkeypatch,
-):
-    """No dlog yet → no IP to probe → online=False without ever
-    calling the probe. Asserts the probe isn't called so a fresh
-    daemon doesn't add probe latency to /state."""
-    import jasper.control.server as srv_mod
-
-    dial_module._dial_heartbeat["last_seen_at"] = None
-    dial_module._dial_heartbeat["last_seen_ip"] = None
-    dial_module._dial_heartbeat["last_message"] = None
-
-    called = []
-    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
-        called.append(ip)
-        return True
-    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
-
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    assert body["satellites"]["dial"]["online"] is False
-    assert called == []
-
-
-# --- Dial heartbeat persistence (survives jasper-control restart) ---
-
-
-def test_load_dial_heartbeat_missing_file_returns_defaults(tmp_path, monkeypatch):
-    """No persisted file → the loader returns the empty defaults.
-    Daemon startup must not block on a missing heartbeat file."""
-    import jasper.control.server as srv_mod
-
-    monkeypatch.setattr(
-        dial_module, "DIAL_HEARTBEAT_PATH", str(tmp_path / "missing.json"),
-    )
-    out = srv_mod._load_dial_heartbeat()
-    assert out == {"last_seen_at": None, "last_seen_ip": None, "last_message": None}
-
-
-def test_load_dial_heartbeat_malformed_file_returns_defaults(tmp_path, monkeypatch):
-    """A corrupted persisted file (truncated, garbled, hand-edited
-    into invalid JSON) must not block startup — fall back to defaults
-    and let the next dlog refresh the state."""
-    import jasper.control.server as srv_mod
-
-    bad = tmp_path / "bad.json"
-    bad.write_text("{not valid json, last_seen_ip: ...")
-    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(bad))
-    out = srv_mod._load_dial_heartbeat()
-    assert out["last_seen_ip"] is None
-
-
-def test_load_dial_heartbeat_wrong_types_returns_defaults_per_field(
-    tmp_path, monkeypatch,
-):
-    """Defensive: if someone hand-edits the file and sets last_seen_at
-    to a string or last_seen_ip to a number, drop the bad value rather
-    than propagating it into /state.satellites.dial.
-
-    Other fields with valid types still come through — partial-bad
-    files aren't completely thrown away."""
-    import json
-    import jasper.control.server as srv_mod
-
-    path = tmp_path / "mixed.json"
-    path.write_text(json.dumps({
-        "last_seen_at": "not-a-float",   # wrong type
-        "last_seen_ip": "192.168.1.89",  # valid
-        "last_message": 42,              # wrong type
-    }))
-    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
-    out = srv_mod._load_dial_heartbeat()
-    assert out["last_seen_at"] is None
-    assert out["last_seen_ip"] == "192.168.1.89"
-    assert out["last_message"] is None
-
-
-def test_persist_then_load_roundtrip(tmp_path, monkeypatch):
-    """Write a heartbeat, read it back. The path must survive across
-    `jasper-control` lifetime — this is the actual gap-closer."""
-    import jasper.control.server as srv_mod
-
-    path = tmp_path / "round.json"
-    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
-    snapshot = {
-        "last_seen_at": 1779550000.0,
-        "last_seen_ip": "192.168.1.89",
-        "last_message": "[encoder] detent=1 → POST OK",
-    }
-    srv_mod._persist_dial_heartbeat(snapshot)
-    assert path.exists()
-    loaded = srv_mod._load_dial_heartbeat()
-    assert loaded == snapshot
-
-
-def test_persist_dial_heartbeat_is_atomic_via_tempfile(tmp_path, monkeypatch):
-    """Writes go through a `.tmp` file then `os.replace` — guarantees
-    a reader never sees a half-written file even if the daemon crashes
-    mid-write. We check the temp file is cleaned up after a normal
-    write (replace removes it)."""
-    import jasper.control.server as srv_mod
-
-    path = tmp_path / "atomic.json"
-    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
-    srv_mod._persist_dial_heartbeat({
-        "last_seen_at": 1.0, "last_seen_ip": "1.2.3.4", "last_message": "x",
-    })
-    assert path.exists()
-    # tempfile sibling shouldn't linger after a successful write.
-    assert not (tmp_path / "atomic.json.tmp").exists()
-
-
-def test_persist_dial_heartbeat_fails_soft_on_io_error(tmp_path, monkeypatch, caplog):
-    """An unwritable directory (e.g. read-only fs) must not crash the
-    UDP listener — log a warning and continue. Heartbeat is best-effort."""
-    import logging
-    import jasper.control.server as srv_mod
-
-    # Point at a path under a regular file (definitely can't mkdir
-    # there) so the makedirs call raises.
-    blocker = tmp_path / "not-a-dir"
-    blocker.write_text("")
-    monkeypatch.setattr(
-        dial_module,
-        "DIAL_HEARTBEAT_PATH",
-        str(blocker / "child" / "hb.json"),
-    )
-    with caplog.at_level(logging.WARNING, logger="jasper.dial"):
-        srv_mod._persist_dial_heartbeat({
-            "last_seen_at": 1.0, "last_seen_ip": "1.2.3.4", "last_message": "x",
-        })
-    # Did not raise; warning was logged.
-    assert any(
-        "dial heartbeat persistence" in rec.message for rec in caplog.records
-    )
-
-
-def test_state_dial_online_uses_persisted_ip_after_restart_simulation(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """End-to-end of the gap-closer: simulate a daemon restart by
-    writing a heartbeat file, clearing the in-memory dict, then
-    reloading. /state should then probe the persisted IP and return
-    online=true without anyone touching the dial.
-
-    This is the only scenario the persistence work exists to fix —
-    everything else is plumbing."""
-    import json
-    import jasper.control.server as srv_mod
-
-    # Simulate a previous daemon's persisted state.
-    path = tmp_path / "hb.json"
-    path.write_text(json.dumps({
-        "last_seen_at": 1779550000.0,
-        "last_seen_ip": "192.168.1.89",
-        "last_message": "[encoder] detent=1 → POST OK",
-    }))
-    monkeypatch.setattr(dial_module, "DIAL_HEARTBEAT_PATH", str(path))
-
-    # Simulate fresh-process startup: reload the heartbeat into the
-    # module-level dict.
-    fresh = srv_mod._load_dial_heartbeat()
-    for k, v in fresh.items():
-        dial_module._dial_heartbeat[k] = v
-
-    # Stub the TCP probe so the test doesn't touch the network.
-    probed = []
-    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
-        probed.append(ip)
-        return True
-    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
-
-    base, _ = server_with_coordinator
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    assert body["satellites"]["dial"]["online"] is True
-    assert probed == ["192.168.1.89"]
 
 
 # --- Regression tests for the BuildResult return-shape change ---
@@ -5309,7 +4993,7 @@ def test_follower_forward_relays_leader_http_verdict(
 
 
 def test_follower_transport_toggle_forwards_to_leader(follower_server):
-    """A dial paired to the follower sends play/pause here; with the
+    """A remote paired to the follower sends play/pause here; with the
     renderer stack parked the local mux has nothing to toggle — the
     leader owns playback, so transport forwards exactly like volume."""
     base, fake, seen = follower_server
@@ -6143,7 +5827,7 @@ def test_enabled_gate_does_not_affect_ungated_routes(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
     """With the gate enabled, an UNgated route (/volume/set, and the
-    /healthz read) works with no token — the dial's low-impact controls stay
+    /healthz read) works with no token — the remote's low-impact controls stay
     open by design."""
     base, fake = server_with_coordinator
     _enable_control_token(monkeypatch, tmp_path)

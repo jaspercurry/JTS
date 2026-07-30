@@ -10,8 +10,8 @@ same guarded machinery (``startup_load.load_driver_commissioning_config`` /
 need so neither hand-rolls it: the INLINE CamillaController seams, the
 saved-crossover-preview resolution, and fresh path-safety evidence. Living here
 in the ``active_speaker`` layer — not in ``cli/`` or ``web/`` — is what lets a
-third operator surface (a voice tool, a dial/satellite action) land
-declaration-only instead of copying the wiring a third time.
+third operator surface (for example, a voice tool) land declaration-only
+instead of copying the wiring a third time.
 """
 
 from __future__ import annotations

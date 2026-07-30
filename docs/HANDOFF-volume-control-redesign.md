@@ -81,7 +81,7 @@ one volume knob explains everything.
 | `jasper/volume_coordinator.py` | Owns `listening_level`, active-source selection, outbound volume dispatch, echo prevention, mute state, and Camilla handoff rules |
 | `jasper/volume_observers.py` | Polls AirPlay, Spotify, and Bluetooth volume surfaces at 1 Hz and feeds changes into the coordinator |
 | `jasper/volume_persistence.py` | Atomic persisted volume state, stale-volume regression, `percent <-> dB` mapping |
-| `jasper/control/server.py` | HTTP control surface for dial/LAN clients: `/volume`, `/volume/set`, `/volume/adjust`, `/volume/mute` |
+| `jasper/control/server.py` | HTTP control surface for accessory/LAN clients: `/volume`, `/volume/set`, `/volume/adjust`, `/volume/mute` |
 | `jasper/tools/audio.py` | Voice tools: `get_volume`, `set_volume`, `adjust_volume`, `mute`, `unmute` |
 | `jasper/renderer.py` / `jasper/source_state.py` | Active renderer detection: AirPlay MPRIS, Spotify state file, Bluetooth BlueALSA |
 | `jasper/camilla.py` | `CamillaController`, `Ducker`, and cue ducking around `main_volume` |
@@ -93,7 +93,7 @@ one volume knob explains everything.
 
 ### Current outbound model
 
-When the dial, voice tool, or LAN API changes volume:
+When a supported remote, voice tool, or LAN API changes volume:
 
 1. `VolumeCoordinator` refreshes `listening_level` from disk.
 2. It asks `RendererClient.active_renderers()` which renderer is active.
@@ -127,7 +127,7 @@ are echoes of our own recent outbound write.
 
 AirPlay observations are intentionally ignored. The current rationale is
 that AirPlay sender volume is upstream of CamillaDSP. If the phone is at
-30% and the dial controls Camilla, honoring the phone slider as canonical
+30% and JTS controls Camilla, honoring the phone slider as canonical
 would make the persisted level bounce around while Camilla still remains
 the real output attenuator.
 
@@ -245,7 +245,7 @@ The boring, correct experience:
 
 - Turn the physical knob during AirPlay: the iPhone/Mac AirPlay volume
   moves and the speaker loudness follows.
-- Move the iPhone/Mac AirPlay slider: the dial/web/voice-reported volume
+- Move the iPhone/Mac AirPlay slider: the remote/web/voice-reported volume
   reflects the same level.
 - Turn the knob during Spotify Connect: the Spotify app's JTS volume
   moves and the speaker loudness follows.

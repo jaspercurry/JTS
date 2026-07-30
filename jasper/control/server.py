@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""HTTP control surface for external clients (dial, future wall switches,
-home automation). Bound to LAN so an ESP32 dial on the household network
-can drive volume / transport / session.
+"""HTTP control surface for local and household-network clients.
+
+The same volume, transport, and session routes serve the management UI,
+supported HID/Bluetooth accessories, home automation, and future wall
+controls.
 
 Stack: stdlib http.server (bounded ThreadingHTTPServer), pycamilladsp
 client, VolumeCoordinator (source-aware dispatch).
@@ -13,15 +15,11 @@ The route table is in `_make_handler` below — `do_GET` and `do_POST`
 own the dispatch in one place rather than mirroring the list here
 (that mirror went stale several times). Highlights:
 
-- Volume + transport + session-bypass: dial-driven actions.
-- /state: cross-daemon JSON snapshot — voice / audio / renderers /
-  satellites; consumable from the /voice web UI, jasper-doctor, or
-  `curl`.
+- Volume + transport + session-bypass: external control actions.
+- /state: cross-daemon JSON snapshot — voice / audio / renderers;
+  consumable from the management UI, jasper-doctor, or `curl`.
 - /cue/play: proxy to voice_daemon's UDS so a cue plays through
   the daemon's already-correctly-gained TtsPlayout.
-- /dial/status: focused dial heartbeat (subset of /state.satellites.dial,
-  kept because jasper-doctor calls it directly).
-
 Volume dispatch: requests build a fresh VolumeCoordinator per call
 (matches the per-request _dispatch_transport pattern). The coordinator
 reads the canonical volume state from /var/lib/jasper/speaker_volume.json,
@@ -108,7 +106,6 @@ from . import aec_endpoints as _aec_endpoints
 from . import control_token
 from . import household_credential
 from . import restart_broker
-from . import dial as _dial
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
 from .uds import (
@@ -373,9 +370,9 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # The primitive remains fail-safe-open when no /var/lib/jasper/control_token file
 # exists, but jasper-control ensures one at startup so production installs are
 # gated automatically.
-# Deliberately NOT including /volume*, /transport*, /source* — the dial's
-# bread-and-butter low-impact controls stay open (the dial never calls
-# these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
+# Deliberately NOT including /volume*, /transport*, /source* — routine
+# low-impact accessory and automation controls stay open. poweroff/reboot =
+# power loop; mic/mute = defeats the privacy-mic
 # promise; grouping/set = hijacks output routing; restart/voice|audio =
 # disrupt playback + the assistant; usb-forensics can restart the composite
 # gadget; aec/firmware/update downloads and flashes microphone firmware;
@@ -525,7 +522,6 @@ _outputd_status = _state_aggregate._outputd_status
 _clamp_db = _volume_ops._clamp_db
 _db_to_percent = _volume_ops._db_to_percent
 _percent_to_db = _volume_ops._percent_to_db
-_delta_db_to_delta_percent = _volume_ops._delta_db_to_delta_percent
 _spotify_redirect_uri = _volume_ops._spotify_redirect_uri
 _read_volume_state = _volume_ops.read_volume_state
 
@@ -652,22 +648,6 @@ def _schedule_usb_gadget_recompose() -> bool:
     return True
 
 
-def _load_dial_heartbeat() -> dict[str, Any]:
-    return _dial._load_dial_heartbeat()
-
-
-def _persist_dial_heartbeat(snapshot: dict[str, Any]) -> None:
-    _dial._persist_dial_heartbeat(snapshot)
-
-
-async def _probe_dial_reachable(ip: str, *, timeout: float = 0.5) -> bool:
-    return await _dial._probe_dial_reachable(ip, timeout=timeout)
-
-
-def run_dial_log_listener(host: str, port: int) -> threading.Thread:
-    return _dial.run_dial_log_listener(host, port)
-
-
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return _state_aggregate._augment_source_payload(payload)
 
@@ -687,8 +667,6 @@ async def _get_state(
         mux_socket_command=_mux_socket_command,
         local_status_json=_local_status_json,
         aec_full_status=_aec_full_status,
-        dial_heartbeat=_dial._dial_heartbeat,
-        dial_probe=_probe_dial_reachable,
         read_transit_state_func=read_transit_state,
         ha_status_snapshot=ha_status_snapshot,
     )
@@ -1648,7 +1626,7 @@ def _make_handler(
 
             ``percent`` and ``db`` are always the currently effective values.
             A temporary mute therefore reports 0 while preserving its separate
-            restore target. Existing dial/USB clients can keep reading only
+            restore target. Existing accessory/USB clients can keep reading only
             ``percent``; richer clients no longer have to infer mute.
             """
             percent = int(state.effective_percent)
@@ -1670,7 +1648,7 @@ def _make_handler(
             its local volume knobs are INERT — bonded content bypasses the local
             CamillaDSP entirely (the leader's one Camilla bakes the
             program; HANDOFF-multiroom.md §2). Without this, the landing
-            page slider, a paired dial, and curl all "work" silently
+            page slider, a paired remote, and curl all "work" silently
             with no audible effect — the worst UX shape. So the four
             /volume endpoints forward verbatim to the leader's control
             API and relay its answer: every member's volume surface
@@ -1761,7 +1739,7 @@ def _make_handler(
                 return True
             if isinstance(payload, dict):
                 # Additive marker so UIs can label the slider "pair
-                # volume"; dial firmware reads only db/percent.
+                # volume"; older clients can keep reading db/percent.
                 payload.setdefault("pair_leader", leader)
             self._send_json(payload)
             return True
@@ -1893,8 +1871,8 @@ def _make_handler(
             self._send_json(debug_control.snapshot())
 
         def _get_state(self) -> None:
-            # Cross-daemon snapshot — voice / audio / renderers /
-            # satellites. Polled by the /voice web UI for live
+            # Cross-daemon snapshot — voice / audio / renderers.
+            # Polled by the management UI for live
             # status, used by jasper-doctor for one-shot health,
             # and consumable from `curl jts.local:8780/state | jq`
             # for ad-hoc debugging. ~200 ms typical (mostly the
@@ -1981,18 +1959,6 @@ def _make_handler(
                 grouping,
                 readiness=readiness,
             ))
-
-        def _get_dial_status(self) -> None:
-            # Heartbeat snapshot — used by jasper-doctor's
-            # "is the dial actually talking to us?" check.
-            snap = dict(_dial._dial_heartbeat)
-            if snap["last_seen_at"] is not None:
-                snap["age_seconds"] = round(
-                    time.time() - snap["last_seen_at"], 1,
-                )
-            else:
-                snap["age_seconds"] = None
-            self._send_json(snap)
 
         def _get_system_snapshot(self) -> None:
             # Snapshot for the /system dashboard. Current values +
@@ -2199,32 +2165,17 @@ def _make_handler(
                 )
                 return
             body = self._read_json()
-            # Support both legacy delta_db (dial firmware compat,
-            # interpreted on the 50 dB camilla scale) and the
-            # cleaner delta_percent for newer clients.
-            if "delta_percent" in body:
-                try:
-                    delta_pct = int(body["delta_percent"])
-                except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "delta_percent must be an integer"},
-                        status=400,
-                    )
-                    return
-            elif "delta_db" in body:
-                try:
-                    delta_pct = _delta_db_to_delta_percent(
-                        float(body["delta_db"]),
-                    )
-                except (TypeError, ValueError):
-                    self._send_json(
-                        {"error": "delta_db must be a number"},
-                        status=400,
-                    )
-                    return
-            else:
+            if "delta_percent" not in body:
                 self._send_json(
-                    {"error": "missing delta_db or delta_percent"},
+                    {"error": "missing delta_percent"},
+                    status=400,
+                )
+                return
+            try:
+                delta_pct = int(body["delta_percent"])
+            except (TypeError, ValueError):
+                self._send_json(
+                    {"error": "delta_percent must be an integer"},
                     status=400,
                 )
                 return
@@ -2257,9 +2208,8 @@ def _make_handler(
                 )
                 return
             body = self._read_json()
-            # Support both legacy `db` (dial / older clients) and
-            # the cleaner `percent`. Percent is the canonical unit
-            # for listening_level.
+            # Percent is the canonical listening-level unit. Keep absolute
+            # dB as a compatibility input for existing automation clients.
             if "percent" in body:
                 try:
                     target_pct = int(body["percent"])
@@ -2287,7 +2237,7 @@ def _make_handler(
             # observe_source_volume so the coordinator's echo
             # window and source-active gate apply. Without
             # `source`, the caller is treated as authoritative
-            # (dial twist, voice "louder", etc.).
+            # (management UI, HID accessory, voice "louder", etc.).
             source_name = body.get("source")
             observation_initial = body.get("observation_initial", False)
             if not isinstance(observation_initial, bool):
@@ -2592,7 +2542,7 @@ def _make_handler(
             return
 
         def _post_transport(self) -> None:
-            # Bonded-follower: transport targets the PAIR. A dial paired
+            # Bonded-follower: transport targets the PAIR. A remote paired
             # to the follower sends play/pause here; with the local
             # renderer stack parked (dumb-follower profile) the local
             # mux has nothing to toggle — the leader owns playback, so
@@ -2704,8 +2654,8 @@ def _make_handler(
             # Result codes from voice_daemon's manual_session_*:
             #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
             #   NO_SESSION / ALREADY_ENDED / UNKNOWN_SOURCE / ERROR
-            # Map non-OK outcomes to non-2xx so the dial's HTTP
-            # error path can show the right LED color.
+            # Map non-OK outcomes to non-2xx so remote and automation
+            # callers receive an actionable status.
             http_status = 200
             if result.get("result") not in ("OK", "ALREADY_ENDED", None):
                 if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING"):
@@ -3540,7 +3490,6 @@ def _make_handler(
             "/debug": "_get_debug",
             "/state": "_get_state",
             "/grouping": "_get_grouping",
-            "/dial/status": "_get_dial_status",
             "/system/snapshot": "_get_system_snapshot",
             "/system/diagnostics": "_get_system_diagnostics",
         }
@@ -3750,7 +3699,7 @@ def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-control",
-        description="HTTP control surface for the JTS speaker (dial, automation, etc.)",
+        description="HTTP control surface for the JTS speaker",
     )
     parser.add_argument(
         "--host", default=os.environ.get("JASPER_CONTROL_HOST", "0.0.0.0"),
@@ -3767,16 +3716,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--camilla-port", type=int,
         default=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
-    )
-    parser.add_argument(
-        "--dial-log-host",
-        default=os.environ.get("JASPER_DIAL_LOG_HOST", "0.0.0.0"),
-        help="bind host for the dial UDP log listener",
-    )
-    parser.add_argument(
-        "--dial-log-port", type=int,
-        default=int(os.environ.get("JASPER_DIAL_LOG_PORT", "5514")),
-        help="UDP port for dial log datagrams (default 5514)",
     )
     parser.add_argument(
         "--voice-socket",
@@ -3842,7 +3781,6 @@ def main(argv: list[str] | None = None) -> int:
     # service users. Bind failure is non-fatal (logged): the wizards fall back
     # to their existing fail-soft "restart didn't happen, logged" behaviour.
     restart_broker_server = restart_broker.start_broker()
-    run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     # Multi-device peering daemon. No-op (no thread, no asyncio loop,
     # no zeroconf import) when /var/lib/jasper/peering.env has
     # JASPER_PEERING=off — the default. The user enables it via the
@@ -3882,10 +3820,9 @@ def main(argv: list[str] | None = None) -> int:
     debug_control.reconcile_on_startup()
     logger.info(
         "jasper-control listening on http://%s:%d "
-        "(camilla=%s:%d, dial-log=%s:%d/udp, voice=%s)",
+        "(camilla=%s:%d, voice=%s)",
         args.host, args.port,
         args.camilla_host, args.camilla_port,
-        args.dial_log_host, args.dial_log_port,
         args.voice_socket,
     )
     # Tier 1 — systemd watchdog (Type=notify + WatchdogSec in the unit).

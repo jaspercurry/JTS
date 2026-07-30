@@ -969,7 +969,7 @@ Once that prerequisite exists, one runtime in jasper-voice owns every
    applies the same gate before restoring a persisted louder level. For
    a same/quieter change, move the carrier first and then converge
    best-effort; a failure leaves the already-safer level in place.
-   Eligible web/dial set, adjust, and unmute operations, plus any such
+   Eligible web/accessory set, adjust, and unmute operations, plus any such
    operation while a Wave 3 intent is pending, delegate their absolute
    target through the existing voice UDS to this same coordinator.
    jasper-control never constructs a bass runtime. Only an explicit

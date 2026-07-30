@@ -352,7 +352,8 @@ Only after the basic flow works:
 - Two-stage verifier/cascade for false-accept reduction.
 - Active learning from confirmed false accepts/rejects.
 - More realistic AEC residual/RIR simulation.
-- MCU/microWakeWord path for future satellite devices.
+- Lower-power wake-model variants only if a supported hardware profile
+  eventually requires them.
 
 ---
 

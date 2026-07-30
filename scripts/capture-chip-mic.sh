@@ -5,14 +5,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Record a clip from the Pi's chip mic (XVF3800 ReSpeaker) at 16 kHz
-# mono — same format the AMOLED satellite firmware emits, so the two
-# can be compared apples-to-apples in Audacity / sox.
+# mono — the native format consumed by the wake-word and speech paths.
 #
 # This is the *processed* (beamformed + AGC + NS) channel that
 # jasper-voice normally consumes; the chip's raw mic 0 is on a
 # different channel and only available in the 6-ch firmware variant.
-# For SNR comparison against the satellite, the conference channel is
-# what we want anyway — it represents what the speaker's chip actually
+# The conference channel represents what the speaker's chip actually
 # delivers to the wake-word detector.
 #
 # Usage:

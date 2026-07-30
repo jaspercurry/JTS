@@ -46,7 +46,7 @@ def _connect_host(bind_host: str) -> str:
     """Map ``JASPER_CONTROL_HOST`` to a host a *client* can connect to.
 
     That var is primarily the **server's bind address** — installs seeded
-    it as ``0.0.0.0`` so the rotary dial can reach port 8780 from the
+    it as ``0.0.0.0`` so supported LAN clients can reach port 8780 from the
     LAN. A client must never target the unspecified address: connecting
     to ``0.0.0.0`` happens to land on loopback on Linux, but the request
     goes out with ``Host: 0.0.0.0:8780``, which jasper-control's
@@ -196,14 +196,6 @@ def get_state(
     """The ``/state`` aggregate as a dict. Raises :class:`ControlError` if
     jasper-control is unreachable; returns ``{}`` for a non-dict body."""
     data = get("/state", base_url=base_url, timeout=timeout).json()
-    return data if isinstance(data, dict) else {}
-
-
-def get_dial_status(
-    *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
-) -> dict:
-    """The ``/dial/status`` payload as a dict. Raises on unreachable."""
-    data = get("/dial/status", base_url=base_url, timeout=timeout).json()
     return data if isinstance(data, dict) else {}
 
 

@@ -191,8 +191,8 @@ Consumers today:
 
 Planned consumers (sequenced in their own subsystems): multiroom
 leader pinning (the bond-forming UI stores `leader` as peer_id and
-resolves to an address at use time — see `docs/HANDOFF-multiroom.md`),
-accessory pinning for dial/satellites.
+resolves to an address at use time — see `docs/HANDOFF-multiroom.md`)
+and future pinning for supported Bluetooth accessories.
 
 ## Boundaries / non-goals
 

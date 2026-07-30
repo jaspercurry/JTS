@@ -98,7 +98,6 @@ All now render via `canonical_page()`:
 | google | `/google/` | OAuth (sibling of spotify) |
 | home-assistant | `/ha/` | 3-state URL/token/connected |
 | transit | `/transit/` | per-provider cards (subway/bus/citibike) |
-| dial | `/dial/` | USB-dial provision flow |
 | **wifi** | `/wifi/` | **HARDWARE-CRITICAL** — lockout rollback + radio-kill confirm preserved |
 | **bluetooth** | `/bluetooth/` | **HARDWARE-CRITICAL** — pairing flow |
 | **correction** | `/correction/` | **HW/BROWSER-CRITICAL** — getUserMedia + HTTPS + measurement sweep; JS relocated verbatim into one module |
@@ -215,8 +214,8 @@ at your request.
      on a `jts3.local` box), mic level meter moves (getUserMedia), a
      measurement sweep runs.
    - `/wake-corpus/` — "Begin a session" with capture-option toggles.
-   - `/dial/`, `/voice/`, `/sources/`, `/wake/` — provision, provider
-     save, source toggles, sensitivity slider.
+   - `/voice/`, `/sources/`, `/wake/` — provider save, source toggles,
+     sensitivity slider.
    - `sudo /opt/jasper/.venv/bin/jasper-doctor` — confirm
      `check_web_design_assets` reports OK.
 7. **PR** per the repo's PR-flow rule (no direct push to main).
@@ -233,10 +232,10 @@ at your request.
 `jasper/cli/doctor.py`, `jasper/web/_common.py`, and the 14 migrated
 `jasper/web/*_setup.py` (airplay, bluetooth, google, home_assistant,
 peering, sound, sources, speaker, spotify, transit, voice, wake,
-weather, wifi). (correction, dial, wake_corpus `*_setup.py` are also
+weather, wifi). (correction and wake_corpus `*_setup.py` are also
 modified — confirm all appear in your final diff.)
 
-**New asset dirs:** `deploy/assets/{airplay,bluetooth,correction,dial,
+**New asset dirs:** `deploy/assets/{airplay,bluetooth,correction,
 google,home-assistant,peering,sources,speaker,spotify,transit,voice,
 wake,wake-corpus,weather,wifi}/` (each `<page>.css` + `js/main.js`),
 plus `deploy/assets/shared/js/http.js`.

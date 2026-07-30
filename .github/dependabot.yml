@@ -2,7 +2,7 @@
 #
 # Why: JTS is a months-unattended appliance with a security-relevant
 # dependency surface (openai, google-genai, httpx, spotipy, onnxruntime,
-# pyusb, esptool, dbus-next, zeroconf) plus GitHub Actions and Rust crates.
+# pyusb, dbus-next, zeroconf) plus GitHub Actions and Rust crates.
 # Without this, CVEs in pinned deps age silently. Dependabot raises
 # review-able PRs that the existing pytest + provenance CI gate validates.
 #

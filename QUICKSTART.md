@@ -192,8 +192,8 @@ Visit these pages from any device on the same Wi-Fi. Replace
   appears in AirPlay, Spotify Connect, Bluetooth, and USB Audio pickers.
 - **`http://jts.local/bluetooth/`** — optional. Open a five-minute
   no-code pairing window for phones and Bluetooth accessories.
-- **`http://jts.local/system/`** — the dashboard. Status, dial
-  onboarding, mic-mute, software version, Wi-Fi.
+- **`http://jts.local/system/`** — the dashboard. Status, mic-mute,
+  software version, Wi-Fi.
 
 ---
 
@@ -481,5 +481,4 @@ hostname/cert identity, which may differ when you connect by IP. See
 When something breaks that isn't in the failure ladder, the
 [docs/](docs/) directory has subsystem deep-dives (look for files
 named `HANDOFF-*.md`). The full bringup walkthrough — including
-the XVF firmware DFU flash, dial onboarding, satellite mic setup —
-is in [BRINGUP.md](BRINGUP.md).
+the XVF firmware DFU flash — is in [BRINGUP.md](BRINGUP.md).

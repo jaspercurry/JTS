@@ -71,9 +71,9 @@ create_jasper_service_users() {
     # /var/lib/jasper + /etc/avahi/services — no /dev/snd or /dev/input. Its
     # privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group. The one supplementary
-    # group is `systemd-journal`: several /state cards (airplay_health, dial,
-    # wifi_guardian last-action) read the journal. The unit's User=jasper-control
-    # matches this exact name (the polkit rule keys on it).
+    # group is `systemd-journal`: the airplay_health and wifi_guardian
+    # last-action /state cards read the journal. The unit's
+    # User=jasper-control matches this exact name (the polkit rule keys on it).
     if ! getent passwd jasper-control >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-intsecrets jasper-control
     fi

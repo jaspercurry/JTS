@@ -86,7 +86,7 @@ async def test_restore_writes_target_db_absolutely():
 
 @pytest.mark.asyncio
 async def test_restore_uses_current_target_not_pre_duck_value():
-    """Regression for the dial-during-duck overshoot. If
+    """Regression for the remote-during-duck overshoot. If
     `listening_level` changes mid-session, restore lands at the new
     target — not at `pre_duck + duck_delta`. Reproduces the +25 dB
     bug from 2026-05-08: pre_duck=0, duck=-25 → camilla=-25,
@@ -110,7 +110,7 @@ async def test_restore_after_external_camilla_write_still_uses_target():
     cam = _FakeCamilla(db=-15.0)
     d = _ducker(cam, duck_db=-25.0, target=-15.0)
     await d.duck()
-    # Simulate an interloping write (e.g. dial pre-gate) during duck.
+    # Simulate an interloping write (e.g. remote pre-gate) during duck.
     await cam.set_volume_db(0.0)
     await d.restore()
     assert cam._db == -15.0
@@ -137,7 +137,7 @@ async def test_restore_without_duck_is_no_op():
 async def test_is_ducked_property_tracks_duck_state():
     """`is_ducked` is the public signal that jasper-control's
     VolumeCoordinator consults (via UDS session_status) to decide
-    whether to defer a dial/web-slider camilla write. Must reflect
+    whether to defer a remote/web-slider camilla write. Must reflect
     the actual ducker state, not just _ducked's last assignment."""
     cam = _FakeCamilla(db=-15.0)
     d = _ducker(cam, duck_db=-25.0, target=-15.0)
@@ -157,7 +157,7 @@ def test_camilla_ducker_declares_exclusive_volume_ownership():
 async def test_is_ducked_stays_false_when_duck_skipped_camilla_down():
     """Camilla restart blip during the duck attempt — the write
     didn't land, so we mustn't claim we're ducked (jasper-control
-    would defer dial writes against a phantom duck, freezing the
+    would defer remote writes against a phantom duck, freezing the
     knob until camilla recovers and the next duck() actually fires)."""
     cam = _FakeCamilla(db=0.0)
     cam.unavailable = True

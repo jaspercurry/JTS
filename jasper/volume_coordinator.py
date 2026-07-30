@@ -18,7 +18,7 @@ remaining 70% of perceived loudness — and feels disconnected from the
 This module owns the coordination. There is one canonical volume state,
 persisted in /var/lib/jasper/speaker_volume.json and interpreted by
 ``VolumeState`` as remembered ``listening_level`` plus temporary mute intent.
-Outbound commands (voice tool, dial, "louder") apply this level to the
+Outbound commands (voice tool, remote, "louder") apply this level to the
 current source's reliable volume surface. Spotify and Bluetooth are
 push-mode: their own protocol sliders carry `listening_level` and
 CamillaDSP normally stays at 0 dB. At 0%, CamillaDSP also asserts
@@ -39,7 +39,7 @@ This file is the dispatch layer (Phase 1, "Paradigm B"). The
 inbound observers live in `volume_observers.py` and are started by
 voice_daemon at boot. The control daemon imports this module too —
 both daemons read/write listening_level via the same persistence
-file, so dial-driven changes converge with voice-driven changes.
+file, so remote-driven changes converge with voice-driven changes.
 """
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 # Type alias for the cross-daemon Camilla-ownership probe. The constructor
 # parameter retains its older ``duck_active_probe`` spelling for call-site
 # compatibility. None fails open, so a wedged jasper-voice cannot freeze the
-# dial. See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
+# remote. See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
 CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
@@ -264,7 +264,7 @@ class VolumeCoordinator:
 
     Instances are async-first. Sync callers (control daemon HTTP
     handlers) wrap with asyncio.run(...). That spins a fresh event
-    loop per request — fine at dial-tick rate (~10/s peak), and
+    loop per request — fine at remote-tick rate (~10/s peak), and
     avoids cross-daemon coordination of a shared loop.
 
     Inbound observers are separate ``VolumeObserver`` instances owned by
@@ -310,7 +310,7 @@ class VolumeCoordinator:
         # Echo-prevention timestamps, per source.
         self._last_outbound: dict[Source, _OutboundStamp] = {}
         # One lock for all level mutations — coordinator is async-
-        # single-threaded but multiple consumers (voice tool, dial
+        # single-threaded but multiple consumers (voice tool, remote
         # via UDS, observer) can race.
         self._lock = asyncio.Lock()
 
@@ -534,8 +534,8 @@ class VolumeCoordinator:
     async def adjust_listening_level(self, delta: int) -> int:
         """Bump current level by `delta` (positive = louder), clamped.
         Returns the new level. Refreshes the in-memory level from disk
-        first so a recent dial/HTTP write from another process is
-        visible — without this, voice "louder" right after a dial
+        first so a recent remote/HTTP write from another process is
+        visible — without this, voice "louder" right after a remote
         click would compute from a stale baseline."""
         async with self._mutation():
             self._refresh_from_disk()
@@ -657,7 +657,7 @@ class VolumeCoordinator:
     def _refresh_from_disk(self) -> None:
         """Sync in-memory state with the persistence file. Cheap (~1ms
         sync read of a small JSON file) and called on every public
-        operation so cross-process writes (jasper-control via dial)
+        operation so cross-process writes (jasper-control via remote)
         don't leave voice_daemon's coordinator with stale state.
 
         Refreshes both `listening_level` and `pre_mute_level` — the
@@ -1467,10 +1467,10 @@ class VolumeCoordinator:
         curr_carries = await self._camilla_carries_level(current_source)
         async with self._mutation():
             # Pull the latest listening_level from disk before
-            # dispatching. The control daemon (dial / HTTP) writes
+            # dispatching. The control daemon (remote / HTTP) writes
             # the same file on every twist, but voice_daemon's in-
             # memory cache only re-syncs on its own set/adjust/mute
-            # calls. Without this refresh, a dial twist that lands
+            # calls. Without this refresh, a remote twist that lands
             # between voice operations would be silently ignored
             # when the next source-state transition fires.
             self._refresh_from_disk()
@@ -1828,9 +1828,9 @@ class VolumeCoordinator:
 
         Refreshes from disk before deriving the effective level. jasper-control
         and jasper-voice are separate processes that each cache
-        listening_level in memory; without a refresh here, a dial
+        listening_level in memory; without a refresh here, a remote
         twist that lands between this daemon's own set/adjust calls
-        leaves `_level` stale. Real symptom: dial spun to 100% via
+        leaves `_level` stale. Real symptom: remote spun to 100% via
         the control daemon, voice-daemon's stale `_level` still
         reflected the boot value, and `Ducker.restore()` after a
         failed turn raised camilla by tens of dB to satisfy the
@@ -1902,7 +1902,7 @@ class VolumeCoordinator:
             return
         if not await self._camilla_carries_level(source):
             return
-        # Refresh from disk so a dial twist that landed via
+        # Refresh from disk so a remote twist that landed via
         # jasper-control between our own set/adjust calls reflects
         # in `_level` before we compute the expected dB.
         self._refresh_from_disk()
@@ -2539,7 +2539,7 @@ class VolumeCoordinator:
             )
             logger.warning(
                 "spotify volume set: no Web API router configured; "
-                "voice/dial volume can't propagate to Spotify (set "
+                "voice/remote volume can't propagate to Spotify (set "
                 "SPOTIFY_CLIENT_ID/SECRET and authorize at least one "
                 "account via /spotify)",
             )
@@ -2693,7 +2693,7 @@ class VolumeCoordinator:
         #
         # Fail-open by design: probe returning None (UDS unreachable,
         # voice daemon wedged, timeout) means "unknown" → write
-        # camilla normally. The dial must never silently stop working
+        # camilla normally. The remote must never silently stop working
         # because of an inter-daemon problem; better to occasionally
         # un-duck music for a moment than to leave the user with a
         # dead knob.
@@ -2727,7 +2727,7 @@ class VolumeCoordinator:
                     },
                 )
                 return bool(mute_ok)
-        # best_effort: dial twist arriving during a 2s camilla restart
+        # best_effort: remote twist arriving during a 2s camilla restart
         # blip should still update listening_level on disk and persist
         # main_volume_db, even if the actual write didn't land. The
         # next set_volume call (or a source-transition) will re-apply

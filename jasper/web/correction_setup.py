@@ -13,7 +13,7 @@ apply path.
 
 Architecture (per docs/HANDOFF-correction.md):
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
-    spotify_setup, dial_setup. No FastAPI / ASGI dependency.
+    spotify_setup, bluetooth_setup. No FastAPI / ASGI dependency.
   - Single in-memory `MeasurementSession` (jasper.correction.session)
     drives the multi-step state machine.
   - Browser polls GET /status every 500 ms while work is active, the

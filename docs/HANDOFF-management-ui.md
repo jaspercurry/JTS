@@ -33,13 +33,14 @@ posts fixed toggle/capture/repair requests; the device-specific behavior and
 resource bounds remain canonical in
 [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
 
-On 2026-06-14 the Zero-class `streambox` and satellite-only `endpoint`
-install tiers use the same management UI instead of bespoke endpoint
-frontends: nginx serves [`deploy/index.html`](../deploy/index.html),
-`jasper-web` filters wizard routes by install role, and the landing page
-hides cards via `system_capabilities` (`local_sources`, `content_dsp`,
-`voice_brain`, `network_settings`, `speaker_settings`, `pair_management`,
-`developer_tools`).
+The Zero-class `streambox` and full-speaker profiles use the same management
+UI instead of bespoke endpoint frontends: nginx serves
+[`deploy/index.html`](../deploy/index.html), `jasper-web` filters wizard
+routes by install role, and the landing page hides cards via
+`system_capabilities` (`local_sources`, `content_dsp`, `voice_brain`,
+`network_settings`, `speaker_settings`, `pair_management`,
+`developer_tools`). The former `endpoint` / `satellite` install tier is
+gone; those legacy tokens normalize to `streambox`.
 The shared frontend rule does **not** mean every profile keeps the same
 systemd activation surface. Full speakers install
 [`jasper-web.service`](../deploy/jasper-web.service) plus
@@ -445,7 +446,6 @@ reordering better than the prior flat enumeration):
 | **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Microphone & wake → `/wake/` |
 | **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
 | **Network** | Wi-Fi → `/wifi/` · Speakers / peering → `/rooms/` |
-| **Accessories** | Dial → `/dial/` |
 | **System** | Status → `/system/` · Speaker name → `/speaker/` · Software → `/system/` · Developer tools (operator) → `/wake-corpus/` |
 
 ### 3.2 `/system/` status dashboard — System and Audio views
@@ -525,15 +525,14 @@ rather than a misleading numeric latency estimate.
 
 ### 3.3 Web surfaces under `jasper/web/`
 
-20 stdlib-`http.server` setup/debug surfaces, mostly socket-activated and
+19 stdlib-`http.server` setup/debug surfaces, mostly socket-activated and
 LAN-only. Some run inside the combined `jasper-web` process; older/heavier
-surfaces such as `/bluetooth/`, `/dial/`, `/system/`, `/chat/`, and
+surfaces such as `/bluetooth/`, `/system/`, `/chat/`, and
 `/correction/` still have their own service/socket wrappers.
 
 | Path | Module | Port | Purpose |
 |---|---|---|---|
 | `/spotify/` | `spotify_setup.py` | 8765 | Per-household OAuth |
-| `/dial/` | `dial_setup.py` | 8766 | ESP32 dial onboarding |
 | `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice + per-model pricing + spend cap |
 | `/google/` | `google_setup.py` | 8768 | Calendar + Gmail OAuth |
 | `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
@@ -620,10 +619,6 @@ Network
   Wi-Fi                   Verizon_4TQ9PN · strong
   Peering                 Off
 
-Accessories
-  Dial                    Online · last seen 2m ago
-  Satellites              Not paired
-
 System
   Status                  CPU 8% · 52 C · disk OK
   Software                a139580 · main
@@ -634,14 +629,13 @@ System
 
 ### 4.2 Why this shape
 
-- **Seven sections.** Sources / Sound / Assistant / Integrations / Network /
-  Accessories / System. Still inside Miller's 7±2 with proper chunking.
+- **Six sections.** Sources / Sound / Assistant / Integrations / Network /
+  System. Still inside Miller's 7±2 with proper chunking.
   Sources/Sound/Network/System is the universal audio-admin shape (Sonos,
   Roon, BluOS, WiiM, Plex, eero). **Assistant** is the JTS-specific core:
   how JTS listens and speaks. **Integrations** is the external-service layer:
-  weather, transit, Google, and Home Assistant. Accessories is its own
-  top-level because the dial and satellite are **input devices for the
-  speaker**, not network plumbing.
+  weather, transit, Google, and Home Assistant. Supported Bluetooth
+  accessories are managed from the Bluetooth row under Sources.
 
 - **Use Assistant, not "Voice & Skills."** "Voice & Skills" is a bucket name
   made from implementation pieces. "Skills" is also Alexa-specific language.
@@ -774,14 +768,13 @@ Conditional — only shown if the trigger fires:
 
   8. Google             Calendar + Gmail for assistant answers
   9. Home Assistant     Smart-home control
- 10. Accessories        Dial/satellite detected? Set it up.
- 11. Peering            Another JTS on the network? Pair them.
- 12. USB input          Hardware supports gadget mode? Offer it.
+ 10. Peering            Another JTS on the network? Pair them.
+ 11. USB input          Hardware supports gadget mode? Offer it.
 ```
 
 Three items remain the critical path. The rest are recommended or conditional,
 which keeps setup honest: the speaker is usable before room correction,
-Home Assistant, or a dial. Order matches HomePod's / Sonos's "critical path
+Home Assistant, or a remote. Order matches HomePod's / Sonos's "critical path
 then everything else" shape. Each step is an existing wizard where practical
 (`/voice/`, `/spotify/`, `/speaker/`, `/wake/`, `/sound/`) with a future
 `/location/` wrapper that coordinates the already-shipped `/weather/` and
@@ -806,7 +799,7 @@ then everything else" shape. Each step is an existing wizard where practical
   so dismissed users can come back.
 
 - **Re-prompt rule**: never re-show the whole banner after Hide. If a new
-  conditional item becomes relevant (USB dial plugged in, second speaker
+  conditional item becomes relevant (second speaker
   on LAN), surface that *one* item as a chip next to the relevant section
   — not by un-hiding the banner.
 
@@ -858,7 +851,6 @@ to teach; the destination does.
 | **Sources ›** — Turn each playback source (AirPlay, Bluetooth, Spotify Connect) on or off. | **Playback sources** · AirPlay · Spotify · Bluetooth |
 | **Transit ›** — Configure nearby subway and bus stops so you can ask "when's the next train?"... | **Transit** · 3 providers |
 | **Weather ›** — Set the default location and units for weather questions when you do not name a city. | **Weather** · Sunset Park · F |
-| **Accessories ›** — Onboard a wireless accessory — currently the ESP32 rotary dial; the AMOLED touch satellite is in progress. | **Dial** · Online |
 | **Wake-word corpus recorder ›** — Tooling / debug page... | **Wake corpus** · Developer tool *(under System, collapsed/advanced)* |
 
 ### 6.3 Action button labels
@@ -974,7 +966,7 @@ This delivers most of the visual win. Reversible if the grouping feels wrong.
 Each row renders a noun-phrase status. Prefer existing sources:
 `/source/state`, `jasper-control`'s `/state`, and `/system/data.json`.
 Most state already exists: source selection, speaker name, voice, sound, Home
-Assistant, dial presence, system/cloud metrics. Net new wiring should focus on
+Assistant, system/cloud metrics. Net new wiring should focus on
 weather/transit summaries and any missing wake/correction status.
 
 Add a `/location/` wrapper only if it truly reduces duplication between
@@ -987,7 +979,6 @@ Add a `/location/` wrapper only if it truly reduces duplication between
 - Each existing wizard's save handler appends to `completed`.
 
 ### Phase 4 — Conditional prompts (later, polish)
-- Detect newly-plugged dial → small chip under Accessories.
 - Detect second JTS on LAN → chip under Network.
 - Detect USB gadget-capable hardware → small chip under Sources.
 - These are nice-to-haves; ship 1-3 first.

@@ -142,12 +142,11 @@ know whether the build was contained.
 | 4 | jasper-outputd | `rust-daemons.sh` | `cargo build --release` | full + streambox | cargo `-j` + temporary build swap/runtime park on low-memory hosts | yes |
 | 5 | shairport-sync | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
 | 6 | nqptp | `renderers.sh install_renderers` | `make` C autotools | full + streambox | yes (`kb_per_job=0.4 GB`) | yes |
-| 7 | optional ESP32 firmware | `install.sh _build_firmware_if_stale` | PlatformIO | opt-in only | unchanged (opt-in) | **not yet** (see below) |
 
 Before the original Workstream-A slice, #1 was the only RAM-aware build,
 #3/#4 had a binary
 on/off low-memory cargo profile (now flipped at ~1.2 GB), #5/#6 were a
-hardcoded `make -j4`, and #2/#7 had nothing. None were contained.
+hardcoded `make -j4`, and #2 had nothing. None were contained.
 
 The per-toolchain `kb_per_job` budgets reflect real peak RAM per
 translation unit: C++ `-O3` ≈ 1.5 GB (webrtc's worst TU), C `-O2`

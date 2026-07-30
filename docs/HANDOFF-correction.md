@@ -1695,7 +1695,7 @@ them; design **with** them.
 | Voice-side Camilla ownership is explicit session state | [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) + [jasper/camilla.py](../jasper/camilla.py) | Normal fan-in speech leaves `main_volume` with `VolumeCoordinator`. Only the legacy Camilla `Ducker` asserts `camilla_volume_locked` and defers coordinator writes. Measurement still pauses WakeLoop before taking absolute sweep-level ownership. |
 | Existing settings pages on **plain HTTP port 80** | [deploy/nginx-jasper.conf](../deploy/nginx-jasper.conf) | We add HTTPS as an additive 443 server block. Existing routes stay HTTP. |
 | `getUserMedia` **requires HTTPS** (browser policy) | Web spec | Cannot avoid TLS for this one feature. Private CA + iOS trust profile is the path. |
-| Existing web wizards are **stdlib `ThreadingHTTPServer`** | [jasper/web/voice_setup.py](../jasper/web/voice_setup.py), [jasper/web/dial_setup.py](../jasper/web/dial_setup.py) | We mirror this — no FastAPI / aiohttp. Browser state uses polling today. |
+| Existing web wizards are **stdlib `ThreadingHTTPServer`** | [jasper/web/voice_setup.py](../jasper/web/voice_setup.py), [jasper/web/bluetooth_setup.py](../jasper/web/bluetooth_setup.py) | We mirror this — no FastAPI / aiohttp. Browser state uses polling today. |
 | Cross-daemon coordination is **UDS commands to voice_daemon** | [jasper/control/server.py](../jasper/control/server.py) + `_voice_socket_command` | We extend with `MEASURE_PAUSE` / `MEASURE_RESUME`, mirror the `/cue/play` shape. |
 
 ## Architecture decisions
@@ -1759,8 +1759,8 @@ loses the YouTube hook.
   No HSTS header is configured.
 
 **Out of scope:** redirecting HTTP → HTTPS for existing routes.
-The Spotify and dial flows do not benefit from being moved to
-HTTPS, and breaking them is a regression risk.
+The Spotify flow does not benefit from being moved to HTTPS, and
+breaking it is a regression risk.
 
 ### Decision 2 — Web framework: stdlib `ThreadingHTTPServer` + polling
 
@@ -2152,7 +2152,7 @@ need already exist:
 **Why scoped under `jasper/correction/` not top-level
 `jasper/coordinator/`?** The "pause everything for X" pattern is
 not currently reused anywhere else. Push-to-talk doesn't need it
-(the dial drives the WakeLoop directly). Snapcast (v5) is far
+(supported remotes drive the WakeLoop directly). Snapcast (v5) is far
 enough out that we'll know its requirements when we get there.
 Keep it scoped until we have a second caller. **YAGNI.**
 
@@ -2419,7 +2419,7 @@ tests/
 
 **Naming consistency check:** subpackage is `jasper.correction` (not
 `jasper.room`) per Decision 3. Web wizard module follows the existing
-suffix convention (`voice_setup`, `dial_setup` → `correction_setup`).
+suffix convention (`voice_setup`, `bluetooth_setup` → `correction_setup`).
 
 ## Phased build plan
 

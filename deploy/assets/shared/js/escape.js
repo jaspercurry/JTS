@@ -7,7 +7,7 @@
 // A migrated wizard imports these by absolute path
 // (`/assets/shared/js/escape.js`), the same shape as dialog.js / http.js, so
 // no page re-implements the five-character entity table it sprays through
-// innerHTML. These were copied near-verbatim across the wifi/bluetooth/dial/
+// innerHTML. These were copied near-verbatim across the wifi/bluetooth/
 // sound-profile/correction modules under two names (escapeHtml / escapeText)
 // before this module existed.
 //

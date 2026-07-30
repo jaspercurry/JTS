@@ -21,7 +21,6 @@ from ..volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
     db_to_percent,
-    delta_db_to_delta_percent,
     percent_to_db,
 )
 
@@ -59,14 +58,6 @@ def _db_to_percent(db: float) -> int:
 
 def _percent_to_db(percent: int) -> float:
     return percent_to_db(percent)
-
-
-def _delta_db_to_delta_percent(delta_db: float) -> int:
-    """Convert a legacy-scale dB delta to a listening-level percent
-    delta. The dial firmware sends fixed deltas like ±2.5 dB per
-    encoder tick; we map those onto the calibrated 1..100 percent span.
-    With the default 50 dB floor, ±5 dB remains about ±10pp."""
-    return delta_db_to_delta_percent(delta_db)
 
 
 def _spotify_redirect_uri() -> str:
@@ -108,7 +99,7 @@ def _spotify_account_cache_fingerprint(registry) -> tuple:
 
 
 def _build_spotify_router_or_none():
-    """Build a multi-account Spotify router for dial-driven volume.
+    """Build a multi-account Spotify router for accessory-driven volume.
     Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
     been authorized — _set_spotify in the coordinator treats None as
     "skip Spotify dispatch", logging a no-op."""
@@ -202,7 +193,7 @@ async def _with_coordinator(
     returning the per-request result (dict or scalar).
 
     `duck_active_probe` is forwarded into the coordinator. When set
-    (callers that write camilla via the dial/web path), the
+    (callers that write camilla via the accessory/web path), the
     coordinator defers its camilla write iff the probe returns True.
     See `_make_duck_active_probe` for the wire details and
     docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal" for the why."""
@@ -225,7 +216,7 @@ async def _with_coordinator(
             "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
         ),
     )
-    # Build a Spotify router per-request so dial volume can dispatch
+    # Build a Spotify router per-request so accessory volume can dispatch
     # to Spotify via Web API (librespot 0.8.0 has no local HTTP).
     # Best-effort: if env vars aren't set or no accounts authorized,
     # router is None and Spotify dispatch becomes a no-op.
@@ -262,16 +253,16 @@ def _make_duck_active_probe(
 
     The probe asks jasper-voice over UDS whether the Ducker is
     currently holding camilla below the canonical listening_level
-    target. True → defer the dial's camilla write (Ducker.restore
+    target. True → defer the accessory's camilla write (Ducker.restore
     will land it on session end). False → write camilla normally.
     None → unknown (UDS unreachable / voice wedged / response
     malformed); the coordinator treats this as fail-open and writes
-    camilla — the dial must never silently stop working because of
+    camilla — the accessory must never silently stop working because of
     an inter-daemon problem.
 
     Tight 1 s timeout: STATUS is a synchronous attribute read in
     voice_daemon (no I/O). If it doesn't return in 1 s the daemon
-    is wedged and we'd rather fail-open than block dial input. See
+    is wedged and we'd rather fail-open than block accessory input. See
     docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal"."""
     async def probe() -> Optional[bool]:
         try:
@@ -310,7 +301,7 @@ async def _dispatch_transport(
     loop, dispatch a transport action, then close. We rebuild per
     request because httpx's AsyncClient is loop-bound: a persistent
     instance would be tied to the first request's loop and error on
-    every subsequent one. The cost is small (~50 ms) and dial/remote
+    every subsequent one. The cost is small (~50 ms) and remote
     presses are rare.
 
     `action` must be one of "toggle", "next", "previous" — the

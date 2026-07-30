@@ -81,9 +81,9 @@ def test_vk01_rotate_actions_coalesce_and_target_volume_adjust():
 def test_vk01_click_is_tap_action_for_transport():
     """VK-01's click (KEY_MUTE keycode) maps to a TapAction so single
     tap toggles play/pause, double skips, triple goes back — same
-    semantics as the WiFi dial. The keycode happens to be KEY_MUTE
-    because that's what the VK-01's HID descriptor sends; we treat it
-    as an opaque button-id and dispatch by tap count."""
+    semantics as the other supported remotes. The keycode happens to be
+    KEY_MUTE because that's what the VK-01's HID descriptor sends; we
+    treat it as an opaque button-id and dispatch by tap count."""
     click = VK01.keymap[KEY_MUTE]
     assert isinstance(click, TapAction), (
         "VK-01 click should be TapAction, got %r" % type(click)

@@ -21,7 +21,7 @@ Routes (nginx strips /bluetooth/):
   POST /forget                 {"mac": "..."}
 
 Stack: stdlib http.server (ThreadingHTTPServer) — same shape as the
-sibling spotify_setup / voice_setup / dial_setup wizards. One thread
+sibling spotify_setup / voice_setup wizards. One thread
 per request; the engine itself owns one event loop in the dispatcher
 thread.
 """

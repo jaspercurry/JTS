@@ -2520,7 +2520,7 @@ Logged here as the calibration baseline.
   mode = no chip-side AGC/BF/NS in path)
 - WebRTC AEC3 via `libwebrtc-audio-processing-1` v1.3-3
 - Mic placement: free-floating on desk ~3 ft from speakers
-- `main_volume` at 0 dB (the dial's "100%")
+- `main_volume` at 0 dB (the control surface's "100%")
 
 **Measurements (baseline, REF_GAIN_DB=0):**
 
@@ -2778,9 +2778,9 @@ top of this section.)
    the right range and detection still misses, retraining the
    model to expect the residual is more transformative than
    squeezing another 3 dB out of the canceler. ~1 week.
-6. **Push-to-talk fallback** for residual cases. Already implemented
-   on the dial (long-press) and AMOLED satellite (in progress). ~30
-   LoC if extending to other surfaces.
+6. **Push-to-talk fallback** for residual cases. Supported Bluetooth
+   remotes can already trigger the voice path; additional remote
+   mappings stay within the HID accessory registry.
 
 ### What not to do (recorded so future sessions don't re-investigate)
 

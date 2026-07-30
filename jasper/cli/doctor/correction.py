@@ -92,8 +92,8 @@ def check_correction_idle_exit_holds() -> CheckResult:
     a leaked hold is a bug for its own layer, not something this check reaps.
 
     Scoped to ``jasper-correction-web.service`` — the only wizard that
-    threads a real hold anywhere today; the other five socket-activated
-    wizards (bluetooth/dial/sources/chat/system setup) pass
+    threads a real hold anywhere today; the other four socket-activated
+    wizards (bluetooth/sources/chat/system setup) pass
     ``_systemd.no_hold`` at every call site and structurally cannot produce
     this line. Skips when the service is not currently running (nothing to
     leak) or when journalctl is unavailable (dev host).

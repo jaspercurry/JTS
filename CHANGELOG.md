@@ -7,6 +7,15 @@ format. Release tags are cut manually by a maintainer.
 
 ## [Unreleased]
 
+### Removed
+
+- Retired the unsupported bespoke ESP32 OLED/AMOLED dial and satellite-mic
+  stack: embedded firmware, onboarding commands and UI, dial heartbeat/status
+  surfaces, satellite diagnostics/capture tooling, firmware-build dependencies,
+  and the dial-only relative-dB volume input. Upgrades remove its staged files,
+  services, environment keys, and Python dependency closure. Supported
+  Bluetooth HID rotary controls and the WiiM Remote 2 remain intact.
+
 ### Fixed
 
 - Restored omitted wording in the packaged Apache License 2.0 text so its

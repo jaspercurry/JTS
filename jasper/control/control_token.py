@@ -8,7 +8,7 @@ JTS runs on a trusted household LAN with no auth on ``jasper-control``
 (``0.0.0.0:8780``): the Host / Origin / Fetch-Metadata guard in
 ``jasper/http_security.py`` only blocks *cross-site browsers* — a plain
 ``curl`` with no Host/Origin header sails through. That is deliberate for
-the dial / Home Assistant / Shortcuts trusted-LAN posture, but it means
+supported accessories / Home Assistant / Shortcuts trusted-LAN posture, but it means
 any device already on the LAN can ``curl`` ``/system/poweroff`` (power
 loop), ``/mic/mute`` (defeat the privacy-mic promise), or
 ``/grouping/set`` (hijack output routing).

@@ -933,25 +933,20 @@ verification = [
 ]
 
 [[subsystem]]
-id = "peering-and-satellites"
-title = "Peering, satellites, and accessory devices"
+id = "peering-and-accessories"
+title = "Peering and supported accessory devices"
 safety = "hardware-risk"
 code = [
   "jasper/peering/**",
   "jasper/web/rooms_setup.py",
   "jasper/accessories/**",
-  "jasper/cli/dial_onboard.py",
-  "jasper/cli/satellite_onboard.py",
-  "jasper/cli/satellite_validation.py",
   "deploy/avahi/jasper-peer.service.template",
-  "firmware/**",
 ]
 docs = [
   "docs/HANDOFF-peering.md",
-  "docs/satellites.md",
 ]
 requires_docs_when = [
-  "Wake arbitration, peer discovery, satellite provisioning, firmware phase status, accessory roles, or multi-mic assumptions change.",
+  "Wake arbitration, peer discovery, supported accessory roles, or accessory microphone profiles change.",
 ]
 verification = [
   "pytest tests/test_peering_*.py tests/test_bluetooth_models.py",

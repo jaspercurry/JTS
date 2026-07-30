@@ -11,7 +11,7 @@ the bottom, each as a small scoped task.
 ## Operator program (in order)
 
 1. **Transition audibility re-check** on final code: repeat Wave-0
-   Spike 1 through the real scheduler (dial spins across anchors
+   Spike 1 through the real scheduler (remote changes across anchors
    while music plays; capture the reference tap; listen).
 2. **Sealed commission end-to-end** on the lab box: full wizard run,
    default mode. Then immediately run **deep mode** on the same

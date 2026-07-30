@@ -2048,7 +2048,7 @@ mod tests {
         mixer.mix_period(&mut sum);
         assert!(reference_rx.try_recv().is_err());
 
-        // A dial update after playout but before provider SEGMENT_END must not
+        // A remote update after playout but before provider SEGMENT_END must not
         // be combined with the old effective gain.
         tx.send(QueuedTtsCommand {
             epoch: 0,

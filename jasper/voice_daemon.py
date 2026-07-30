@@ -1091,7 +1091,7 @@ class WakeLoop:
         # SESSION_STARTED / SESSION_ENDED notifications back to the
         # specific wake event. Empty string means "no peer-tracked
         # session" — either peering is disabled, or this is a
-        # dial-driven session that didn't go through arbitration.
+        # remote-driven session that didn't go through arbitration.
         self._peering_current_epoch: str = ""
 
     @classmethod
@@ -2045,7 +2045,7 @@ class WakeLoop:
         cue is a brief, passive interruption: the user isn't
         actively adjusting volume mid-cue, so the predictable
         "music returns to exactly where it was" semantics matter
-        more than the dial-twist-wins behavior `Ducker` is designed
+        more than the remote-twist-wins behavior `Ducker` is designed
         for. See `jasper/camilla.py:CueDuck` for the rationale."""
         if self._cues is None:
             logger.warning("dynamic text play skipped: cues unavailable")
@@ -3312,7 +3312,7 @@ class WakeLoop:
         can tell which side of the peering arbitration await caught
         the late-cancel.
 
-        Mirrored by `manual_session_start` (dial long-press /
+        Mirrored by `manual_session_start` (remote long-press /
         POST /session/start) — the manual entry path bypasses wake
         detection, so it checks the same two gates itself. If you add a
         third stop-listening gate here, add it there too (or extract a
@@ -3723,7 +3723,7 @@ class WakeLoop:
             await self._end_turn()
 
     async def manual_session_start(self, source: str | None = None) -> str:
-        """Trigger a voice session from external IPC (dial hold-to-talk).
+        """Trigger a voice session from external IPC (remote hold-to-talk).
         Bypasses the openWakeWord trigger but honors the same gates
         wake does: the user-deliberate stop-listening signals
         (mic-mute, room-correction measurement window), spend cap, and
@@ -3745,7 +3745,7 @@ class WakeLoop:
         # path's _wake_late_cancelled. Mic-mute and an open room-
         # correction measurement window both mean the household has
         # asked the speaker not to listen; opening a paid LLM turn and
-        # ducking music from the dial long-press / POST /session/start
+        # ducking music from the remote long-press / POST /session/start
         # would bypass that. Refuse silently — like the wake path, no
         # cue and no duck (see _handle_wake_acquire Step 0).
         if self._mic_muted:
@@ -3812,7 +3812,7 @@ class WakeLoop:
                 self._acquiring = False
 
     async def manual_session_end(self) -> str:
-        """Finalize the input side of an in-progress session (dial
+        """Finalize the input side of an in-progress session (remote
         button release). This is the same operation the silence
         detector performs at end-of-utterance: send activity_end so
         Gemini stops listening and starts responding.
@@ -3831,11 +3831,11 @@ class WakeLoop:
 
     def session_status(self) -> dict:
         """Diagnostic snapshot — exposed via the control socket so
-        jasper-control / the dial can render correct UI without polling
+        jasper-control clients can render correct state without polling
         the spend-cap or connection state separately.
 
         ``camilla_volume_locked`` is the authoritative cross-daemon signal
-        for whether a dial/web-slider Camilla write must be deferred. Fan-in
+        for whether a remote/web-slider Camilla write must be deferred. Fan-in
         can duck program audio while leaving this false, so ``duck_active``
         remains user-facing session telemetry rather than a volume lock.
         """
@@ -3939,7 +3939,7 @@ class WakeLoop:
         # Anchor on the actual wake-fire moment (set in
         # _handle_wake_frame) so sched_lag captures the gap between
         # wake firing and this coroutine getting picked up by the
-        # event loop. Fall back to _time.monotonic() for dial paths
+        # event loop. Fall back to _time.monotonic() for remote paths
         # that bypass _handle_wake_frame.
         t_wake = self._wake_event_at_monotonic or _time.monotonic()
         t_begin = _time.monotonic()
@@ -4344,7 +4344,7 @@ class WakeLoop:
         # after any LLM-response tail still in the buffer means the
         # cue order is: response → chirp → music returns. Covers all
         # paths into _end_turn: VAD silence, hard cap (wake without
-        # speech), dial release, idle-watchdog turn-complete.
+        # speech), remote release, idle-watchdog turn-complete.
         await self._play_listening_chirp(going_on=False)
 
         await self._ducker.restore()

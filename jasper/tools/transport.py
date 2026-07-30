@@ -189,7 +189,7 @@ def make_transport_dispatcher(renderer, router):
     transport routing function. Both the voice-tool decorators
     (make_transport_tools) and external callers (jasper-control's
     HTTP toggle endpoint) share this implementation so that `pause`
-    behaves identically whether triggered by voice or by the dial.
+    behaves identically whether triggered by voice or by the remote.
 
     Routing logic for AirPlay (the interesting case):
 

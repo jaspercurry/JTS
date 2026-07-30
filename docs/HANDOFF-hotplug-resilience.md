@@ -1,7 +1,7 @@
 # Handoff: runtime hardware hot-plug / unplug resilience
 
 Treat the speaker like a computer: the microphone (XVF3800), the
-output DAC/dongle, the USB host, and satellites can be **attached or
+output DAC/dongle, USB host, and HID accessories can be **attached or
 detached while the speaker is running**, and the system must converge
 to a correct state on its own — in **both** directions, with no
 redeploy, no manual restart, and **no crash-loop**. On **unplug** the
@@ -42,7 +42,6 @@ For every hot-pluggable component, all four must hold:
 |---|---|---|---|---|
 | **Output DAC / Apple dongle** | `jasper-outputd` + `jasper-audio-hardware-reconcile` + `jasper-dongle-recover` | clean park / failure-triggered reconcile | udev → reconcile/recover restart | **Fixed 2026-06-22; tightened 2026-07-06.** ALSA control events plus Apple USB remove helper wake reconcile; outputd stages and validates buffer/period env before retry, and config exits get one bounded reconcile/retry before parking |
 | **Microphone (XVF3800 / USB)** | `jasper-voice` + `jasper-aec-reconcile`; optional output reference owned by `jasper-outputd` | voice clean park; outputd keeps DAC playback running and retries the chip-reference sink in the background | udev → reconcile restart; outputd reconnects its reference writer without a playback restart | **Fixed 2026-06-21; output/reference isolation tightened 2026-07-10.** A missing mic may park voice and degrade chip AEC, but cannot silence speaker output |
-| **Satellites (dial / AMOLED)** | `jasper-control` (network peers) | reported offline | re-probe online | **Already resilient** — Wi-Fi/HTTP clients, no device-bound unit |
 | **HID accessories** | `jasper-input` | in-process udev | in-process udev | **Already resilient** — pyudev monitor, no per-device unit |
 | **WiiM Remote 2 BLE mic** | `jasper-accessory-reconcile` + `jasper-wiim-remote-mic` + `jasper-voice` manual mic source | Bluetooth forget/boot reconcile removes the manual source and disables the adapter; voice keeps normal mic path | Bluetooth pair/connect reconcile writes `accessory-mics.env`, enables adapter, restarts active voice | **Fixed 2026-06-26.** Optional push-to-talk path; absent remote costs 0 resident RAM and is not a voice-daemon health failure |
 
@@ -252,13 +251,9 @@ commissioning actions. `jasper-doctor` uses the same split: "Output
 hardware state" reports the current reconciler-owned hardware, while
 "active speaker output hardware" owns saved-topology mismatch.
 
-## Why satellites needed no change
+## HID and Bluetooth accessories
 
-The rotary dial and AMOLED satellite are **Wi-Fi/HTTP clients of
-`jasper-control`**, not wired devices with their own systemd units. An
-absent satellite is reported "offline" by `jasper-control`'s TCP probe
-([`jasper/control/dial.py`](../jasper/control/dial.py)
-`_probe_dial_reachable`) — never a crash. The HID accessory bridge
+The HID accessory bridge
 [`jasper-input`](../deploy/systemd/jasper-input.service) runs a pyudev
 hot-plug monitor in-process and opens evdev fds as devices appear, so it
 already converges both directions without per-device units. The WiiM
@@ -290,9 +285,7 @@ paired-but-sleeping remote still self-heals:
 missing GATT report logs `event=wiim_remote_mic.not_ready` (throttled
 after the first visible event) and retries; `jasper-voice` keeps the
 normal primary mic path alive and only routes the manual source when
-`/session/start` names it. Adding a satellite-presence concern would
-only matter if a future satellite is a wired device whose daemon opens
-it directly; that daemon should adopt the same profile/reconciler gate.
+`/session/start` names it.
 
 ## Verified vs needs-hardware
 

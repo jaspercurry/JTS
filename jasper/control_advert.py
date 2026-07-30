@@ -16,26 +16,24 @@ jasper/avahi_service.py (`render_service`); this module owns only the
 control-advert specifics layered on top, which mirror
 jasper/peering/avahi.py's shape with three deliberate differences:
 
-  1. The advert is ALWAYS on. `_jasper-control._tcp` is the control-
-     plane service the rotary dial discovers via
-     ``MDNS.queryService("jasper-control", "tcp")`` (see
-     deploy/avahi/jasper-control.service for the dial contract). There
-     is no `uninstall()` — the rendered file must always exist or dial
-     discovery degrades to the dial's compile-time JASPER_HOST.
+  1. The advert is ALWAYS on. `_jasper-control._tcp` is the discovery
+     surface used by room management and LAN automation. There is no
+     `uninstall()` — the rendered file must
+     always exist.
 
   2. The substituted value is a FREE-FORM user name, so it is
      XML-escaped before substitution. Avahi parses each *.service file
      as a single <service-group>; one malformed character (`&`, `<`,
      `>`) would make Avahi reject the whole group, taking
-     `_jasper-control._tcp` offline and breaking the dial. The escaping
+     `_jasper-control._tcp` offline and breaking discovery. The escaping
      is done by ``render_service(..., escape=True)``. peering/avahi.py's
      values are constrained (UUID / controlled room/primary), so the
      escape is byte-identical there; the name is not.
 
   3. The change to the service file vs. the historical static one is
      purely additive — same <service>/<type>/<port>, plus the one
-     `name=` TXT record — so the dial (which keys off type + address)
-     is unaffected.
+     `name=` TXT record — existing type-and-address consumers are
+     unaffected.
 
 The template at `/etc/jasper/avahi-templates/jasper-control.service` is
 installed by `deploy/install.sh`. It lives OUTSIDE /etc/avahi/services
@@ -169,8 +167,8 @@ def render_control_advert(
     ``reload=reload`` and it reloads avahi-daemon only when it actually wrote
     the file (``RenderResult.WROTE``). The name is a free-form user value, so
     we substitute with ``escape=True`` (load-bearing: an unescaped
-    `&`/`<`/`>` would make Avahi drop the whole service-group and break the
-    dial). The dial-safety property is unchanged — a byte-stable re-render
+    `&`/`<`/`>` would make Avahi drop the whole service-group and break
+    discovery). The availability property is unchanged — a byte-stable re-render
     returns ``RenderResult.UNCHANGED`` and skips both the write and the
     reload (a needless write+reload tears down and re-adds the service-group,
     opening a discovery gap) — but because ``render_service`` reports

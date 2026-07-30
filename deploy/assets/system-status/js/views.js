@@ -48,7 +48,7 @@ export function buildSystemPanel(handlers) {
     variant: "default", onClick: handlers.restartAudio,
   });
   // Re-enabled from /system/snapshot capabilities on the first successful
-  // poll. This avoids a tiny cold-load window where a satellite endpoint
+  // poll. This avoids a tiny cold-load window where a streambox
   // could show full-speaker actions before its profile arrives.
   restartVoice.disabled = true;
   restartAudio.disabled = true;

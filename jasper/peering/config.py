@@ -54,10 +54,9 @@ MULTICAST_TTL = 1
 # Arbitration window — how long each peer waits after the first WAKE
 # message before applying the ranking function. The window absorbs
 # detection-time jitter across the fleet (typically 30-150 ms on Pi 5).
-# 150 ms is the canonical default from the Sonos/Apple literature
-# (see docs/satellites.md "Proposed approach for JTS"). Tunable per
-# install via JASPER_PEER_ARB_WINDOW_MS but most users should leave
-# it alone.
+# 150 ms is the canonical default from the commercial multi-speaker
+# literature summarized in docs/HANDOFF-peering.md. Tunable per install
+# via JASPER_PEER_ARB_WINDOW_MS but most users should leave it alone.
 DEFAULT_ARB_WINDOW_MS = 150
 
 # Safe clamp bounds for the arbitration window. A value outside this

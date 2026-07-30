@@ -257,7 +257,7 @@ the user through them, one at a time:
 3. **`http://<hostname>.local/spotify/`** — optional. Connect Spotify
    so "play Taylor Swift" works without phone interaction.
 4. **`http://<hostname>.local/system/`** — the dashboard. Show them
-   where status, dial onboarding, mic-mute live.
+   where status and mic-mute controls live.
 
 Tell them they're done after Step 1 (voice provider). The rest can
 happen anytime later.

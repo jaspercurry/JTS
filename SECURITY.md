@@ -55,7 +55,7 @@ Any device already on the trusted LAN can use the low-impact management
 APIs without authentication: changing volume (`POST /volume/set`,
 `/volume/adjust`, `/volume/mute`) and AEC mode/profile/threshold (`POST
 /aec/toggle`, `/aec/leg`, `/aec/profile`, `/aec/threshold`). This is
-deliberate: the dial, Home Assistant, Shortcuts-style automations, and
+deliberate: supported accessories, Home Assistant, Shortcuts-style automations, and
 other household integrations use the same trusted-LAN posture. The
 highest-impact mutations — reboot / poweroff, voice/audio restart, the
 voice-assistant pause, live USB microphone export, and multiroom rewiring —
@@ -124,7 +124,7 @@ automatically (embedded in each page behind the read guard, read by
 A gated request without a matching `X-JTS-Token` header gets a `403
 {"error":"control_token_required"}` (compared in constant time via
 `hmac.compare_digest`). **Volume, transport, source, and ordinary AEC tuning
-knobs stay ungated** — the dial's low-impact controls, which it relies on and
+knobs stay ungated** — low-impact accessory controls, which remotes rely on and
 which never call the gated routes. USB microphone export/source selection and
 the XVF3800 firmware-update route are the privacy/hardware-sensitive exceptions
 under `/aec`.

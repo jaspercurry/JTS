@@ -335,10 +335,6 @@ from .grouping import (
     check_grouping_tts_lane,
     check_grouping_rate_adjust,
 )
-from . import satellites as satellites
-from .satellites import (
-    check_dial_heartbeat,
-)
 from . import privsep as privsep
 from .privsep import (
     MANIFEST as PRIVSEP_MANIFEST,
@@ -362,7 +358,6 @@ _STREAMBOX_OMITTED_DOCTOR_GROUPS = frozenset({
     "wake",
     "integrations",
     "aec",
-    "satellites",
 })
 
 _STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
@@ -439,7 +434,6 @@ __all__ = [
     "research",
     "peering",
     "grouping",
-    "satellites",
     "privsep",
     "PRIVSEP_MANIFEST",
     "OUT_OF_SCOPE_NONROOT_UNITS",
@@ -645,7 +639,6 @@ __all__ = [
     "check_grouping_snapcast_installed",
     "check_grouping_tts_lane",
     "check_grouping_rate_adjust",
-    "check_dial_heartbeat",
     "_PROBE_REF_PASS_THRESHOLD",
     "_PROBE_SINE_PATH",
     "_PROBE_SINE_DURATION_S",
