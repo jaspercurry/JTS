@@ -7867,6 +7867,11 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
 
     # --- pre-#1929: the whole declared span, and a healthy speaker refused ---
     caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    # Both lambdas swallow **kwargs on purpose: they exist to drop the
+    # radiating band specifically, and dropping any FUTURE keyword the same way
+    # is the behaviour that keeps this arm a faithful pre-#1929 call rather
+    # than a half-updated one. If a later argument must survive into this arm,
+    # that is a deliberate edit here, not something to inherit silently.
     with pytest.MonkeyPatch.context() as mp:
         whole_band = flow.driver_core_level_db
         whole_band_span = flow.core_level_band_hz
@@ -7931,10 +7936,17 @@ def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():
     speaker contributes a single dB, so the headroom for genuine measurement
     spread is 2.09 dB, not 3.0 — and an ordinary −2 dB/oct woofer passband tilt
     is enough to refuse at 3.574 dB while the realized-level instrument reads
-    1.41 dB and passes. That is where the next field refusal comes from, and
-    the 2026-07-30 session in #1870 re-fits to 3.2307 dB offline — still
-    refused. A future change that narrows this gap should move this number;
-    one that widens it should have to argue with this test first.
+    1.41 dB and passes (both measured in this module). That is where the next
+    field refusal comes from. A future change that narrows this gap should move
+    this number; one that widens it should have to argue with this test first.
+
+    EXTERNAL corroboration, deliberately not asserted here: an offline re-fit
+    of the 2026-07-30 field bundle puts that session at 3.2307 dB under the
+    banded estimator — still refused. That is laptop-side gitignored evidence
+    recorded on #1870, with no in-repo replay path, so it is cited and not
+    tested; the numbers this test DOES assert are the synthetic ones above.
+    Completing that field session needs the frame-gate semantics change ruled
+    on #1866, not a further estimator fix.
 
     This fixture cannot complete the journey — two perfect branches give a
     correction nothing to improve, so it stops at the prediction gate — which

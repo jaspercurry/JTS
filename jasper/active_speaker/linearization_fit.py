@@ -1043,14 +1043,28 @@ def _core_or_fallback_mask(
 #:
 #: What it protects against is a DISCONTINUITY, not a wrong answer. A tweeter
 #: whose radiating band starts just inside its core mask's top edge gets a
-#: one-bin intersection; one-bin-narrower and the intersection is empty and the
-#: whole mask is used instead. Measured at reference tier on a flat tweeter
-#: declared 300 Hz-20 kHz: LR2 at Fc 3750 read −2.847 dB from a single bin and
-#: at Fc 3775 read −19.401 dB from the fallback — a 16.55 dB step across 25 Hz
-#: of crossover frequency, and over 40 dB on the same sweep at LR4, feeding a
-#: gate whose whole tolerance is 3.0 dB. The floor makes both sides take the
-#: fallback, which is what those configurations did before #1929, is
-#: continuous (0.107 dB across that same 25 Hz), and refuses as it did before.
+#: one-bin intersection, and one bin narrower it is empty. Measured at
+#: reference tier on a flat tweeter declared 300 Hz-20 kHz, the raw
+#: intersection alone read −2.847 dB from a single bin at LR2 Fc 3750 and
+#: −19.401 dB from the whole-mask fallback at Fc 3775 — 16.55 dB across 25 Hz
+#: of crossover frequency, into a gate whose whole tolerance is 3.0 dB.
+#:
+#: **How the floor is applied is the whole design, and DISCARDING is the wrong
+#: way.** A first cut treated a sub-floor intersection as unusable and fell
+#: back to the whole core mask. That does not remove the cliff, it MOVES it —
+#: to wherever the intersection crosses the floor width, which is lower and
+#: more common Fc: measured, LR2 2900→2920 Hz stepped −2.286 → −15.427
+#: (13.14 dB over 20 Hz) and LR4 3625→3650 stepped −1.803 → −35.642 (33.84 dB
+#: over 25 Hz), i.e. straight into ordinary two-way crossover territory.
+#:
+#: So a sub-floor intersection is WIDENED downward to exactly this width
+#: instead (anchored at its own top edge, clamped inside the core mask), never
+#: discarded. That is continuous by construction: an exact no-op at the
+#: boundary width, a constant-width band below it, and the shrinking
+#: intersection above it — and the estimate stays on the driver's radiating
+#: side rather than being replaced by a whole-mask number 13-35 dB away.
+#: Only a genuinely EMPTY intersection falls back to the whole mask, and
+#: :func:`core_level_band_hz` discloses that it did.
 _MIN_LEVEL_BAND_OCTAVES: float = 1.0 / 3.0
 
 
@@ -1060,20 +1074,28 @@ def _core_level_mask(
     radiating_band_hz: tuple[float, float] | None,
 ) -> np.ndarray:
     """The bins a core-level median runs over: the core mask, narrowed to
-    ``radiating_band_hz`` when that leaves a usable span.
+    ``radiating_band_hz``, widened back to :data:`_MIN_LEVEL_BAND_OCTAVES` if
+    that narrowing left less band than a median can be taken over.
 
     THE one implementation of that rule — :func:`driver_core_level_db` and
     :func:`core_level_band_hz` both bottom out here, so the level and the band
     disclosed beside it are always the same decision.
 
-    Falls back to the whole core mask, rather than to "no level", when the
-    bound leaves nothing usable — either no bins at all (a three-way mid
-    squeezed between two crossovers closer together than their own edges
-    honestly has no radiating band; :func:`~jasper.active_speaker.branch_chain.
-    radiating_band_hz` documents that case) or fewer than
-    :data:`_MIN_LEVEL_BAND_OCTAVES` of them. A driver whose level is read over
-    a wider-than-ideal band is still a measured level; dropping it from the
-    frame instead would let one squeezed role stop grading every other one.
+    Three outcomes, and the middle one is the design (see
+    :data:`_MIN_LEVEL_BAND_OCTAVES`):
+
+    * the intersection is at least a floor's width — use it;
+    * it is narrower — WIDEN it downward from its own top edge to exactly a
+      floor's width, clamped inside the core mask. Continuous by construction,
+      and the level stays a statement about the band this driver radiates in;
+    * it is EMPTY — fall back to the whole core mask. A three-way mid squeezed
+      between two crossovers closer together than their own edges honestly has
+      no radiating band at all (:func:`~jasper.active_speaker.branch_chain.
+      radiating_band_hz` documents that case), and a driver whose level is
+      read over a wider-than-ideal band is still a measured level; dropping it
+      from the frame instead would let one squeezed role stop grading every
+      other one. This is the one path that changes what the number MEANS, so
+      it is the one :func:`core_level_band_hz` exists to disclose.
     """
     core = _core_or_fallback_mask(envelope, envelope_mask)
     if radiating_band_hz is None:
@@ -1085,9 +1107,17 @@ def _core_level_mask(
         return core
     used = grid_hz[narrowed]
     lo_used, hi_used = float(used[0]), float(used[-1])
-    if lo_used <= 0.0 or math.log2(hi_used / lo_used) < _MIN_LEVEL_BAND_OCTAVES:
-        return core
-    return narrowed
+    if lo_used > 0.0 and math.log2(hi_used / lo_used) >= _MIN_LEVEL_BAND_OCTAVES:
+        return narrowed
+    # Sub-floor: widen DOWN from this intersection's own top edge. Anchoring on
+    # ``hi_used`` rather than on the crossover is what makes it continuous —
+    # at exactly the floor width the widened band is the intersection itself,
+    # and below it the band stops moving instead of being swapped for another.
+    widened = core & (
+        (grid_hz >= hi_used / (2.0 ** _MIN_LEVEL_BAND_OCTAVES))
+        & (grid_hz <= hi_used)
+    )
+    return widened if widened.any() else narrowed
 
 
 def _target_and_plateau_db(

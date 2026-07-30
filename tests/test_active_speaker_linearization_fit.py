@@ -15,6 +15,7 @@ description for the offline sanity numbers.
 """
 from __future__ import annotations
 
+import math
 import re
 
 import numpy as np
@@ -1993,82 +1994,130 @@ def _sub_floor_tweeter(fc_hz: float, order: int = 2):
     return resp, envelope, radiating_band_hz(sections)
 
 
-def test_a_sub_floor_radiating_band_is_not_used_and_the_cliff_is_gone():
-    """**The #1929 discontinuity, and why it is a floor and not a fallback.**
+def _core_level_sweep(order: int, fcs) -> list[float]:
+    """``driver_core_level_db`` across a sweep of crossover frequencies, on
+    the production defaults, so a test can grade CONTINUITY rather than pick
+    two points and hope."""
+    levels = []
+    for fc_hz in fcs:
+        resp, envelope, band = _sub_floor_tweeter(float(fc_hz), order=order)
+        level = driver_core_level_db(resp, envelope, radiating_band_hz=band)
+        assert level is not None
+        levels.append(level)
+    return levels
 
-    A valid (``lo <= hi``) radiating band can still intersect the core mask in
-    ONE bin, and one bin narrower it intersects in none. Before the floor those
-    two neighbouring configurations returned wildly different levels — a
-    one-bin "median" of the curve's top edge, then the whole contaminated mask
-    — and the step fed a gate whose entire tolerance is 3.0 dB.
 
-    Reference tier, ``driver_class`` unknown (both production defaults), a flat
-    tweeter declared 300 Hz-20 kHz: at LR2 Fc 3750 the intersection is one bin
-    whose median is −2.847 dB; 25 Hz of Fc later it is empty and the fallback
-    reads −19.401 dB. **16.55 dB of level, for 25 Hz of crossover frequency.**
+def _worst_adjacent_step_db(levels: list[float]) -> float:
+    return max(abs(b - a) for a, b in zip(levels, levels[1:]))
 
-    The floor makes both take the fallback, so the step is 0.107 dB — the curve
-    genuinely moving, nothing more.
 
-    **This is a should-fix, not a blocker, and the distinction is the point:**
-    these configurations were refused before #1929 too (the fallback level is
-    the pre-#1929 answer and it is 19 dB from where the driver sits). What
-    #1929 introduced was the DISCONTINUITY — a knife-edge in Fc that silently
-    decides which of two incompatible numbers the gate grades — plus a journal
-    that named the radiating band while the median had been taken over the
-    whole mask. Both are closed here; the underlying refusal is not, and is not
-    this issue's to close.
+@pytest.mark.parametrize(
+    "order, fcs, ceiling_db",
+    [
+        (2, np.arange(2700.0, 3101.0, 20.0), 0.10),
+        (4, np.arange(3450.0, 3801.0, 25.0), 0.10),
+    ],
+)
+def test_the_core_level_is_continuous_across_the_width_floor(order, fcs, ceiling_db):
+    """**The floor WIDENS a too-narrow bound; it does not discard it — and this
+    is the test that proves the difference.**
+
+    As Fc rises, a tweeter's radiating band eats into its own core mask from
+    below and the intersection narrows toward nothing. Somewhere in there it
+    crosses :data:`_MIN_LEVEL_BAND_OCTAVES`. The first cut of #1929's floor
+    treated that crossing as "unusable" and fell back to the whole core mask —
+    which does not remove a discontinuity, it MOVES one, from the 0↔1-bin edge
+    down to the 9↔10-bin edge at lower and much more ordinary Fc. Measured on
+    exactly this fixture with that version: **LR2 2900→2920 Hz stepped 13.14 dB
+    and LR4 3625→3650 stepped 33.84 dB**, into a gate whose whole tolerance is
+    3.0 dB. A two-point test at 3750/3775 called that "the cliff is gone",
+    because 3750/3775 is the one place the cliff had moved away FROM.
+
+    Widening instead — anchor on the intersection's own top edge, extend down
+    to exactly the floor width, stay inside the core mask — is continuous by
+    construction: an exact no-op at the boundary width, a constant band below
+    it, the shrinking intersection above it. Measured here, the worst adjacent
+    step across the whole boundary region is **0.033 dB (LR2)** and
+    **0.052 dB (LR4)**, so the ceiling asserted is 0.10 dB: comfortably above
+    the measurement, two orders below the tolerance it feeds, and nowhere near
+    loose enough to let either 13 dB or 34 dB back in.
+
+    Sweeping is the point. A pair of points can only ever prove the property at
+    the pair; the defect this replaces was invisible to exactly such a pair.
     """
-    resp_one_bin, env_one_bin, band_one_bin = _sub_floor_tweeter(3750.0)
-    resp_empty, env_empty, band_empty = _sub_floor_tweeter(3775.0)
+    levels = _core_level_sweep(order, fcs)
+    worst = _worst_adjacent_step_db(levels)
+    assert worst < ceiling_db, f"worst adjacent step {worst:.4f} dB"
+    # ...and the level stays where the driver radiates rather than collapsing
+    # to the contaminated whole-mask number (about −19 dB on this fixture).
+    assert all(level > -6.0 for level in levels)
 
-    grid = env_one_bin.freqs_hz
-    core = _core_or_fallback_mask(
-        env_one_bin, env_one_bin.allowed_depth_db > 0.0,
-    )
-    narrowed = core & (grid >= band_one_bin[0]) & (grid <= band_one_bin[1])
-    assert int(narrowed.sum()) == 1, "the fixture must be the one-bin case"
-    empty = core & (grid >= band_empty[0]) & (grid <= band_empty[1])
-    assert not empty.any(), "the neighbour fixture must be the empty case"
 
-    # Neither uses the bound; both read the core mask, so the cliff is gone.
-    one_bin = driver_core_level_db(
-        resp_one_bin, env_one_bin, radiating_band_hz=band_one_bin,
-    )
-    empty_level = driver_core_level_db(
-        resp_empty, env_empty, radiating_band_hz=band_empty,
-    )
-    assert one_bin == driver_core_level_db(resp_one_bin, env_one_bin)
-    assert empty_level == driver_core_level_db(resp_empty, env_empty)
-    assert abs(one_bin - empty_level) < 0.5
+@pytest.mark.parametrize(
+    "order, fcs, expected_step_db",
+    [
+        (2, np.arange(3650.0, 3901.0, 25.0), 15.91),
+        (4, np.arange(4500.0, 4801.0, 25.0), 40.62),
+    ],
+)
+def test_the_empty_intersection_step_is_the_one_residual_and_it_is_disclosed(
+    order, fcs, expected_step_db,
+):
+    """**The discontinuity that remains, measured and owned rather than hidden.**
 
-    # ...and the pre-floor step this replaces, computed from the same curve so
-    # the 16.55 dB is measured here rather than quoted from a comment.
-    smoothed = _ladder_smooth(
-        grid, np.interp(grid, resp_one_bin.freqs_hz, resp_one_bin.magnitude_db),
+    Widening needs a top edge to anchor on. When the radiating band clears the
+    core mask's top entirely there is no intersection at all — not "too narrow"
+    but *none* — and the level falls back to the whole core mask, which is the
+    pre-#1929 answer. That transition really is a step: **15.91 dB at LR2 and
+    40.62 dB at LR4** on this fixture.
+
+    It is kept, deliberately, because the alternative is worse. There is no
+    honest radiating-band estimate to widen toward — the driver's trusted
+    region and the band it radiates in do not overlap — so any number produced
+    there would be an invention. What #1929 owes such a session is not a
+    fabricated level but the truth about which band produced the one it has,
+    and that is what :func:`core_level_band_hz` reports and the refusal journal
+    now carries.
+
+    These configurations refused before #1929 and still refuse; the estimate is
+    ~19 dB (LR2) from where the driver sits either way. Closing THAT is the
+    comparator family's work, not this issue's.
+    """
+    levels = _core_level_sweep(order, fcs)
+    assert _worst_adjacent_step_db(levels) == pytest.approx(
+        expected_step_db, abs=0.05
     )
-    unfloored = float(np.median(smoothed[narrowed]))
-    assert unfloored == pytest.approx(-2.847, abs=0.01)
-    assert abs(unfloored - empty_level) == pytest.approx(16.55, abs=0.05)
 
 
 def test_the_disclosed_band_is_the_one_the_median_actually_used():
-    """#1929 observability, at the seam: when the bound is refused for being
-    too narrow, :func:`core_level_band_hz` reports the span the median was
-    really taken over — not the bound that was asked for. A refusal that names
-    a band the number was never computed over is worse than one that names
-    none, because it sends the reader to the wrong lever.
-    """
-    resp, envelope, band = _sub_floor_tweeter(3750.0)
-    disclosed = core_level_band_hz(envelope, radiating_band_hz=band)
-    assert disclosed is not None
-    # The bound was NOT used...
-    assert disclosed[0] < band[0]
-    # ...the whole core mask was, and that is what is disclosed.
-    assert disclosed == core_level_band_hz(envelope)
+    """#1929 observability, at the seam. Two things must be disclosable, and
+    :func:`core_level_band_hz` is the one place that decides both because it
+    shares :func:`_core_level_mask` with the level itself:
 
-    # On an ordinary tweeter the bound IS used, and then it is what is
-    # disclosed — the same function, both ways.
+    * a sub-floor bound that was WIDENED — the span used is wider than the
+      bound and still sits on the radiating side;
+    * an EMPTY intersection that fell back — the span used is the whole core
+      mask, and saying so is the difference between a reader reaching for the
+      right lever and the wrong one.
+    """
+    # Widened: the bound was too narrow, so the span used starts BELOW it —
+    # but nowhere near the bottom of the core mask.
+    resp, envelope, band = _sub_floor_tweeter(3750.0)
+    widened = core_level_band_hz(envelope, radiating_band_hz=band)
+    whole_mask = core_level_band_hz(envelope)
+    assert widened is not None and whole_mask is not None
+    assert widened[0] < band[0]
+    assert widened != whole_mask
+    assert widened[0] > whole_mask[0] * 4.0
+    assert math.log2(widened[1] / widened[0]) == pytest.approx(1 / 3, abs=0.05)
+
+    # Empty: nothing to widen toward, so the whole mask is used — and reported.
+    _r, empty_env, empty_band = _sub_floor_tweeter(3775.0)
+    assert core_level_band_hz(
+        empty_env, radiating_band_hz=empty_band,
+    ) == core_level_band_hz(empty_env)
+
+    # Ordinary tweeter: the bound is used as-is, and that is what is disclosed.
     ordinary_resp, ordinary_env, ordinary_band = _sub_floor_tweeter(2000.0, order=4)
     ordinary = core_level_band_hz(ordinary_env, radiating_band_hz=ordinary_band)
     assert ordinary is not None and ordinary[0] >= ordinary_band[0]

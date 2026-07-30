@@ -287,6 +287,16 @@ RIPPLE_TRIM_MIN_DB = -60.0
 #   (:func:`solve_branch_trims`' own N1 note). A tolerance near that floor would
 #   turn a normal session into a refusal, which is the one failure mode a
 #   safety assertion must not have.
+#
+#   That 1.08-1.30 dB is the PRE-#1929 measurement, taken with the fit's median
+#   over each driver's whole declared capture span. #1929 moved that median to
+#   the driver's radiating band and the range moved with it — archived run 5
+#   goes 1.076 -> 0.510 dB. The floor argument is unaffected in DIRECTION (the
+#   disagreement shrank, so 3.0 dB is if anything more generous than when it
+#   was derived), which is why the constant did not move; but the number a
+#   reader should quote today lives beside the importing gate, at
+#   ``jasper.active_speaker.crossover_v2_flow.LEVEL_FRAME_AGREEMENT_TOLERANCE_DB``,
+#   together with what #1929 did NOT close.
 # * CEILING — the level error at which the flat spec must fail anyway. An
 #   inter-branch level error of D dB appears in the summed response as a step
 #   across Fc; the spec's reference is a power mean spanning BOTH sides

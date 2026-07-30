@@ -2417,8 +2417,16 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 # passband tilt is the whole budget, because 0.910 dB is spent before the
 # speaker contributes anything. #1929 removed one structural bias; it did not
 # make the two estimators agree, and the next field refusal comes from what is
-# left (#1870's own session re-fits to 3.2307 dB offline — still refused).
-# Closing THAT is the comparator family's work (plan section 4 M7 / WO-4).
+# left. Closing THAT is the comparator family's work (plan section 4 M7 /
+# WO-4), and the frame-gate SEMANTICS ruling on #1866 is the next step of it.
+#
+# EXTERNAL FIELD EVIDENCE, not reproducible from this repo: an offline re-fit
+# of the 2026-07-30 field bundle puts that session at 3.2307 dB under this
+# banded estimator — still refused. Provenance and fidelity are recorded on
+# #1870; the bundle is laptop-side and gitignored, so no test replays it and
+# nothing here should be read as if one did. The archived-corpus numbers above
+# ARE in-repo and are a different session's bytes — both true, neither derived
+# from the other.
 LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 # How much the correction must improve ITS OWN two-branch model before a
