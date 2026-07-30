@@ -10,6 +10,7 @@ suppression debt is paid down over time.
 """
 from __future__ import annotations
 
+import ast
 import re
 import tomllib
 from io import StringIO
@@ -226,3 +227,138 @@ def test_noqa_debt_does_not_grow() -> None:
 
     assert text.count("# noqa") <= MAX_NOQA_MARKERS
     assert ble_markers <= MAX_BLE001_MARKERS
+
+
+def _unclosed_event_loops(source: str) -> list[str]:
+    """Loops in `source` created by `new_event_loop()` that nothing closes.
+
+    Parsed rather than pattern-matched. A text scan of this rule is a trap:
+    comments and docstrings naming the anti-pattern read as violations, and
+    Python 3.12 splits f-strings into sub-tokens so even a token filter leaks
+    prose back in. The AST sees only code.
+    """
+
+    def _is_new_loop(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            return func.attr == "new_event_loop"
+        return isinstance(func, ast.Name) and func.id == "new_event_loop"
+
+    bound: set[str] = set()
+    closed: set[str] = set()
+    unbound = 0
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign) and _is_new_loop(node.value):
+            bound.update(
+                t.id for t in node.targets if isinstance(t, ast.Name)
+            )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "close" and isinstance(node.func.value, ast.Name):
+                closed.add(node.func.value.id)
+            if _is_new_loop(node.func.value):
+                unbound += 1
+
+    problems = [f"`{name}` is created but never closed" for name in sorted(bound - closed)]
+    if unbound:
+        problems.append(
+            f"{unbound} loop(s) never bound to a name "
+            "(nothing can close them — use asyncio.run)"
+        )
+    return problems
+
+
+def test_test_event_loops_are_closed_not_just_stopped() -> None:
+    """A loop from `new_event_loop()` must be closed, not merely stopped.
+
+    `loop.stop()` ends `run_forever` but releases nothing: the selector
+    descriptor and the self-pipe pair stay open until the loop object happens
+    to be garbage-collected. A function-scoped fixture that stops without
+    closing therefore leaks 3 fds per test — invisible on a dev box (soft
+    limit ~1e6), and on a CI runner (soft limit 1024) the casualty would not
+    be the leaker but whichever unlucky test next tries to spawn a
+    subprocess.
+
+    Measured, not theorised: three fixtures held a monotonically climbing fd
+    count until this rule landed. Whether that ever actually exhausted a CI
+    runner is NOT established — the `errno=24` lines that made it look that
+    way turned out to be injected by two intentional negative tests in
+    `tests/test_wifi_guardian_script.py`, and the whole suite's fd high-water
+    is ~43. Close loops because leaking them is wrong, not because of a
+    specific incident.
+    """
+    offenders: list[str] = []
+    for path in sorted((REPO / "tests").glob("test_*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "new_event_loop" not in source:
+            continue
+        rel = path.relative_to(REPO)
+        offenders += [f"{rel}: {problem}" for problem in _unclosed_event_loops(source)]
+
+    assert not offenders, (
+        "Event loops created in tests must be closed, not just stopped — "
+        "stop() leaves the selector and self-pipe descriptors open until GC. "
+        "Let the thread that owns the loop close it: "
+        "`def _run(): try: loop.run_forever() finally: loop.close()`, the "
+        "shape jasper/control/supervisor_runtime.py already uses. A close() "
+        "in fixture teardown is skipped whenever teardown raises first:\n"
+        + "\n".join(offenders)
+    )
+
+
+_LEAKY_FIXTURE = """
+import asyncio
+
+
+def loop_thread():
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.stop()
+"""
+
+_CLOSED_FIXTURE = """
+import asyncio
+
+
+def loop_thread():
+    loop = asyncio.new_event_loop()
+    try:
+        yield loop
+    finally:
+        loop.close()
+"""
+
+_UNBOUND_LOOP = """
+import asyncio
+
+run = lambda coro: asyncio.new_event_loop().run_until_complete(coro)
+"""
+
+
+def test_loop_guard_detects_a_stopped_but_unclosed_loop() -> None:
+    """The guard must fail on what it exists to catch. Four earlier versions
+    of it were text-based and were fooled by comments, then docstrings, then
+    f-string sub-tokens; a fifth passed against the unfixed tree. Pin the
+    catching direction so a future simplification cannot go quietly vacuous.
+    """
+    assert _unclosed_event_loops(_LEAKY_FIXTURE) == [
+        "`loop` is created but never closed"
+    ]
+    assert _unclosed_event_loops(_UNBOUND_LOOP) == [
+        "1 loop(s) never bound to a name "
+        "(nothing can close them — use asyncio.run)"
+    ]
+
+
+def test_loop_guard_accepts_a_closed_loop_and_ignores_prose() -> None:
+    """And it must not cry wolf — including on prose that merely names the
+    anti-pattern, which is why it walks the AST rather than the text."""
+    assert _unclosed_event_loops(_CLOSED_FIXTURE) == []
+    prose = (
+        '"""Never write asyncio.new_event_loop().run_until_complete(x)."""\n'
+        "# and never leave a new_event_loop() unclosed\n"
+        'msg = f"{n} unbound new_event_loop().<call> is a leak"\n'
+        "x = 1\n"
+    )
+    assert _unclosed_event_loops(prose) == []

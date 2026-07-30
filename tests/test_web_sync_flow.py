@@ -69,7 +69,20 @@ class FakeProc:
 @pytest.fixture
 def loop_thread():
     loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever, daemon=True)
+
+    def _run() -> None:
+        # The thread that owns the loop also closes it. stop() frees nothing —
+        # the selector descriptor and self-pipe pair live until GC — and a
+        # close() in the fixture teardown is skipped whenever teardown raises
+        # before reaching it, which is exactly what a loaded box produces.
+        # This is the shape every production site uses; see
+        # jasper/control/supervisor_runtime.py's build_asyncio_thread.
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     yield loop
 
@@ -85,9 +98,16 @@ def loop_thread():
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-    asyncio.run_coroutine_threadsafe(_cancel_pending(), loop).result(timeout=2)
-    loop.call_soon_threadsafe(loop.stop)
-    thread.join(timeout=2)
+    # stop() must be delivered even if the cancel round trip times out: the
+    # thread's finally only runs once run_forever returns, so skipping stop()
+    # strands both the loop's fds and the thread itself.
+    try:
+        asyncio.run_coroutine_threadsafe(
+            _cancel_pending(), loop,
+        ).result(timeout=2)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
 
 
 @pytest.fixture(autouse=True)
