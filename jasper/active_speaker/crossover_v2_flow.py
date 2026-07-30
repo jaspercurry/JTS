@@ -2931,11 +2931,22 @@ def _decimate_curve_for_json(
     freqs_hz: np.ndarray, magnitude_db: np.ndarray,
 ) -> dict[str, list[float]]:
     """Stride-decimate one combined curve to at most
-    :data:`CLOUD_CURVE_MAX_JSON_POINTS`, for disclosure only -- mirrors
-    ``jasper.web.correction_crossover_v2._decimate_sum``'s exact shape
-    (floor-division stride, identity when already short enough) so the two
-    persisted curve payloads (VERIFY's predicted sum, the cloud's combined
-    spec curve) read the same way to a consumer.
+    :data:`CLOUD_CURVE_MAX_JSON_POINTS`, for disclosure only.
+
+    **No longer the same shape as ``_decimate_sum`` (issue #1858).** Before
+    that fix this mirrored ``jasper.web.correction_crossover_v2._decimate_sum``
+    exactly (floor-division stride, identity when already short enough) so
+    the two persisted curve payloads read the same way to a consumer.
+    ``_decimate_sum`` now block-averages instead, because its input
+    (``conductor.measure_predicted_sum``) is the RAW, unsmoothed prediction
+    and a stride over that aliases below ~500 Hz. This function's input,
+    ``combined.power_mean_spec_db``, has already been through
+    ``smooth_fractional_octave`` inside :func:`combine_positions` before it
+    ever reaches here, so a plain stride over an already-smoothed curve does
+    not reintroduce that failure mode -- the two callers start from
+    differently-prepared curves, which is why one still strides and the
+    other no longer does. ``freqs_hz`` and ``magnitude_db`` remain
+    identity-shaped (floor-division stride) either way.
     """
     n = len(freqs_hz)
     step = max(1, n // CLOUD_CURVE_MAX_JSON_POINTS)
@@ -4405,8 +4416,9 @@ class CrossoverV2Conductor:
 
         The report is graded against the full-resolution tuple, which is the
         whole point of stashing it: what SURVIVES to the durable state is
-        ``_decimate_sum``'s 512-point stride, and re-grading that would be a
-        different instrument from the one the accountability veto refused on.
+        ``_decimate_sum``'s 512-point block average (issue #1858 — a raw
+        stride before that fix), and re-grading that would be a different
+        instrument from the one the accountability veto refused on.
         """
         return (
             dict(self._measure_predicted_spec_report)
@@ -5968,9 +5980,10 @@ class CrossoverV2Conductor:
         #
         # **Graded ONCE, here** (two-stage commission D4). This is the last
         # place the FULL-RESOLUTION `(freqs, magnitudes)` tuple exists: what
-        # survives to the durable state is `_decimate_sum`'s 512-point stride,
-        # and re-grading that stride later would be a DIFFERENT instrument from
-        # the one this veto refuses on — the two can disagree on a narrow band,
+        # survives to the durable state is `_decimate_sum`'s 512-point block
+        # average (issue #1858 — a raw stride before that fix), and re-grading
+        # that later would be a DIFFERENT instrument from the one this veto
+        # refuses on — the two can disagree on a narrow band,
         # on the one screen whose entire purpose is the honest spec verdict. So
         # the report this gate computes is the report the host persists, and
         # the persisted curve stays what it is: a drawing, not the instrument.

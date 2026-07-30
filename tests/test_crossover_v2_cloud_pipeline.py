@@ -458,9 +458,13 @@ def test_assemble_cloud_group_result_reports_geometry_and_registry_for_a_locked_
     # Not stated by this caller -- "unknown", never "not clamped" (issue
     # #1763's own unknown-vs-zero rule, the one validity_floor_hz follows).
     assert result["echo_band_provenance"] is None
-    # Floor-division stride (mirrors _decimate_sum's exact shape): a grid
-    # size not evenly divisible by its own stride yields ceil(n/step), which
-    # can land one OVER the nominal cap — not <=, but never far past it.
+    # Floor-division stride (this curve goes through _decimate_curve_for_json,
+    # NOT _decimate_sum -- the two used to mirror each other's exact shape but
+    # no longer do since issue #1858 moved _decimate_sum to a block average;
+    # _decimate_curve_for_json's own input is already smoothed upstream by
+    # the combiner, so it still strides raw, deliberately): a grid size not
+    # evenly divisible by its own stride yields ceil(n/step), which can land
+    # one OVER the nominal cap — not <=, but never far past it.
     assert len(result["curve"]["freqs_hz"]) <= CLOUD_CURVE_MAX_JSON_POINTS + 1
     assert len(result["curve"]["freqs_hz"]) == len(result["curve"]["magnitude_db"])
     assert isinstance(result["spec"]["overall_passed"], bool)

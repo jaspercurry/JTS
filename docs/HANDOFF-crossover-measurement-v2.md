@@ -870,13 +870,17 @@ surface — the curve was persisted at `MAX_PERSISTED_SUM_POINTS`, and
 away.
 
 **The verdict is graded ONCE, at full resolution, and stored.** What survives
-to `verify_priors.predicted_sum` is a 512-point stride; re-grading that stride
-is a *different* instrument from the one the accountability veto refused on,
-and the two disagree (on the shipped conductor fixture, 180/617/823 graded bins
-against 45/155/205). So `_assert_accountable` stashes the report it computed,
-`verify_priors.predicted_spec` persists it verbatim, and `prepare_v2_verify`
-rehydrates it so a re-arm's own persist cannot blank it. The persisted curve is
-a drawing; the persisted report is the instrument. `None` throughout means
+to `verify_priors.predicted_sum` is a 512-point reduction (issue #1858: a
+block average through the same owner `spec_report_for_predicted_sum` itself
+uses, `spatial_combine.decimate_curve_to_analysis_grid`, at a smaller
+`max_bins` — a raw stride before that fix, which aliased below ~500 Hz);
+re-grading it is a *different* instrument from the one the accountability
+veto refused on, and the two disagree (on the shipped conductor fixture,
+180/617/823 graded bins against 45/154/206). So `_assert_accountable` stashes
+the report it computed, `verify_priors.predicted_spec` persists it verbatim,
+and `prepare_v2_verify` rehydrates it so a re-arm's own persist cannot blank
+it. The persisted curve is a drawing; the persisted report is the instrument.
+`None` throughout means
 ungradeable — **never a pass** — and an ungradeable prediction emits
 `event=correction.crossover_v2_prediction_ungradeable` with `why=no_prediction`
 (nothing was predicted) or `why=evaluator_refused` (the evaluator would not

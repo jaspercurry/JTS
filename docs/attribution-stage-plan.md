@@ -881,6 +881,11 @@ ship; the later owner inherits the record and may extend it.
   stride-decimated without pre-smoothing and is aliased below ~500 Hz. WO-5
   reads that prior. Either #1858 lands first, or WO-5 states in-PR which
   bands it refuses to draw conclusions from and pins that refusal.
+  (**Satisfied** — the fix landed on branch `claude/fix-1858-predicted-sum-aliasing`,
+  pending merge: `_decimate_sum` now block-averages instead of stride-picking,
+  through the same owner `spec_report_for_predicted_sum` already used to
+  grade this curve. WO-5 does not need its own refusal clause for this
+  precondition once that branch merges.)
   Acceptance: the 07-22 session replayed now surfaces the notch finding
   it silently passed — note it must be replayed from the laptop archive
   `captures/xover-e0-2026-07-21/capture-dump-archive-20260722/`, since it has

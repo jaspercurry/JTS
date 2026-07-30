@@ -77,7 +77,14 @@ V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 
 # Downsample ceiling for the persisted predicted-sum verify prior — enough
 # resolution for the ±1.5 dB [Fc/2, 2Fc] comparison at 1/6-octave smoothing
-# while keeping the durable state file small.
+# while keeping the durable state file small. Reduction to this ceiling is a
+# block average in linear power (see ``_decimate_sum``), never a raw stride
+# — issue #1858 found the prior stride picked one raw bin per output point,
+# which aliases below ~600 Hz, where the 46.875 Hz stride spacing leaves
+# fewer than 3 samples in a 1/3-octave band (below ~200 Hz the spacing
+# exceeds the band's own width outright — zero guaranteed samples), so the
+# "1/6-octave smoothing" this comment budgets resolution for was not
+# actually happening upstream of it.
 MAX_PERSISTED_SUM_POINTS = 512
 
 # --------------------------------------------------------------------------- #
@@ -1176,7 +1183,7 @@ CHART_CURVE_MAX_JSON_POINTS = 256
 
 
 def _decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
-    """Stride a stored curve down to :data:`CHART_CURVE_MAX_JSON_POINTS`.
+    """Stride a stored curve down to at most :data:`CHART_CURVE_MAX_JSON_POINTS`.
 
     THE chart feed's decimation — extracted from :func:`_chart_cloud_status`'s
     body (two-stage commission D4) when the predicted curve became a second
@@ -1186,6 +1193,30 @@ def _decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     two curves drawn in one frame at silently different densities is exactly
     the drift that costs. ``None`` for anything that is not a usable pair, so a
     caller never fabricates an empty curve out of malformed state.
+
+    **Ceiling-division stride, not floor (gate finding on #1858, SF-1).** The
+    original shape here was ``step = n // CAP`` — a *soft* ceiling, documented
+    (and pinned, before this fix) as capable of overshooting by up to one
+    stride: 1031 raw points strode by 4 and yielded 258, not 256. That was
+    tolerable while every caller's persisted length always landed at or above
+    ``CAP * 2`` (both ``_decimate_sum``'s old raw stride and
+    ``_decimate_curve_for_json``'s stride always overshoot to slightly above
+    their own 512-point cap). #1858's block-average fix to ``_decimate_sum``
+    changed that: block-averaging *undershoots* its cap instead of
+    overshooting it (a 32769-bin capture landed at 504, not 512-513), which
+    put the predicted curve's persisted length just BELOW ``CAP * 2`` — where
+    floor division gives ``step = 1``, i.e. no reduction at all (504 points
+    rendered, not ~252), breaking the soft-ceiling promise outright and
+    rendering the prediction at roughly double the cloud curves' density in
+    the same chart frame. Ceiling division (``-(-n // CAP)``, this module's
+    existing integer-ceiling idiom — see
+    :func:`~jasper.audio_measurement.spatial_combine._decimate_to_analysis_grid`)
+    makes ``len(rendered) <= CAP`` a TRUE hard bound for any input length,
+    closing the whole class rather than this one instance: it guarantees
+    ``step >= n / CAP`` by construction, so ``ceil(n / step) <= CAP`` always.
+    Both curve families now render through the identical formula, so neither
+    can silently outrun the other's density regardless of which side of any
+    boundary their own persisted length lands on.
 
     **One deliberate behaviour delta from the inlined version this replaced.**
     A zero-length pair used to yield ``{"freqs_hz": [], "magnitude_db": []}``;
@@ -1201,7 +1232,7 @@ def _decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     n = min(len(freqs), len(mags))
     if n == 0:
         return None
-    step = max(1, n // CHART_CURVE_MAX_JSON_POINTS)
+    step = max(1, -(-n // CHART_CURVE_MAX_JSON_POINTS))
     return {
         "freqs_hz": [_finite(f) for f in freqs[:n:step]],
         "magnitude_db": [_finite(m) for m in mags[:n:step]],
@@ -1496,16 +1527,62 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
+    """Persist-time reduction of the full-resolution predicted-sum curve to
+    at most :data:`MAX_PERSISTED_SUM_POINTS` (the ``verify_priors.
+    predicted_sum`` this module writes at :func:`persist_conductor_state`).
+
+    **Issue #1858 — was a raw ``freqs[::step]`` stride, which aliases.**
+    Picking one raw bin per output point keeps whichever bin the stride
+    happened to land on; below ~600 Hz the 46.875 Hz stride spacing leaves
+    fewer than 3 samples in a 1/3-octave band (below ~200 Hz it exceeds the
+    band's own width outright — zero guaranteed samples), so the persisted
+    LF shape was noise, not signal (point-to-point |Δ| median 0.39 dB vs.
+    the properly-decimated cloud curve's 0.06 dB). Fixed by routing through
+    the SAME block-average owner
+    :func:`~jasper.active_speaker.crossover_v2_flow.spec_report_for_predicted_sum`
+    already uses to grade this exact curve —
+    :func:`~jasper.audio_measurement.spatial_combine.decimate_curve_to_analysis_grid`
+    — at this module's own ceiling rather than the analysis-grid one. That
+    function block-averages in linear power (never subsamples), so every
+    persisted point is a genuine local mean instead of one raw bin —
+    generalizing the existing owner with a ``max_bins`` argument rather than
+    adding a second decimation path.
+
+    Era note: a state file persisted by a build before this fix carries
+    whatever its own stride wrote; this only changes what a NEW persist
+    writes; :func:`_predicted_spec_prior`'s stored verdict is untouched
+    either way, since D4 grades the full-resolution tuple, never this
+    decimated curve
+    (see ``test_the_persisted_prediction_verdict_is_the_veto_s_not_a_re_grade``).
+    **One path re-persists an old curve, not just new ones:** a verify-only
+    re-arm (:func:`prepare_v2_verify`) rehydrates ``predicted_sum`` from
+    whatever is on disk and feeds it straight back through this function at
+    its own persist step, so a pre-fix 513-point stride, encountered this
+    way, is itself now block-averaged again — 513 → 256 at 93.75 Hz spacing
+    (halved, not preserved) — where the old code would have left an
+    already-persisted curve untouched on that path. Still honest values,
+    just coarser than a fresh full-resolution persist would produce; the
+    household's next MEASURE naturally replaces it.
+    """
     if predicted_sum is None:
         return None
     freqs, mags = predicted_sum
     n = len(freqs)
     if n == 0:
         return None
-    step = max(1, n // MAX_PERSISTED_SUM_POINTS)
+    import numpy as np
+
+    from jasper.audio_measurement.spatial_combine import (
+        decimate_curve_to_analysis_grid,
+    )
+
+    grid, curve_db = decimate_curve_to_analysis_grid(
+        np.asarray(freqs, dtype=float), np.asarray(mags, dtype=float),
+        max_bins=MAX_PERSISTED_SUM_POINTS,
+    )
     return {
-        "freqs_hz": [float(f) for f in freqs[::step]],
-        "magnitude_db": [float(m) for m in mags[::step]],
+        "freqs_hz": [float(f) for f in grid],
+        "magnitude_db": [float(m) for m in curve_db],
     }
 
 
