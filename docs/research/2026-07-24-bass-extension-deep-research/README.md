@@ -73,3 +73,19 @@ tilt reasoning — the require-calibration policy itself proceeds); (3) report
 neither report is authority to **loosen** any shipped gate. Clean to cite
 as-is: report 01's excursion physics, report 02's SPL/ISO-226 verdict, the
 pooled 32/50 ABX threshold, and 05's composed scheduler Rules A–C.
+
+## Cross-reference: boundary-gain figures name their model (2026-07-29)
+
+The 2026-07-29 reference-library panel
+([attribution plan §11.3, X1](../../attribution-stage-plan.md)) surfaced a
+2× fork in boundary-gain figures that this directory sits on one side of:
+report 03's half-space / baffle-step "~6 dB" figures are
+**constant-velocity-model** numbers (the correct family for a small
+mass-controlled woofer — corroborated independently by the CLIO note's ≤6 dB
+half-space bound and by Dickason's twice-derived single-boundary +6 dB,
+7th ed. p. 207), while the Yamaha handbook's +3/+6/+9 dB
+boundary ladder is **constant-total-power** physics for a different source
+regime. Both are real; they answer different questions. **If any
+boundary-gain constant from these reports lands in a contract or adapter, it
+names its model in a comment** — this pair of numbers is exactly the kind of
+thing that gets silently miscopied. No code hard-codes either today.
