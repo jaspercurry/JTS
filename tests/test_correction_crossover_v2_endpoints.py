@@ -2850,14 +2850,29 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     different densities. Pinned by handing both projections the identical raw
     curve and requiring identical output.
 
-    **The ceiling is a SOFT one, and that is shipped behaviour rather than
-    something this rung introduced.** ``max(1, n // CAP)`` is an integer
-    stride, so a length that is not a multiple of it overshoots by up to one
-    stride — 1031 raw points stride by 4 and yield 258, not 256. The cloud
-    chart has always done this and the ~1% overshoot does not move its measured
-    byte-cost argument; the predicted curve inherits it precisely BECAUSE it
-    shares the owner. Tightening the stride would change the cloud chart's own
-    output and belongs to whoever wants that, not to a wire-plumbing rung."""
+    **The ceiling is now a HARD one (gate finding on #1858, SF-1) — re-derived,
+    not adjusted to match.** This used to read "the ceiling is a SOFT one":
+    ``max(1, n // CAP)`` floor-division stride, so a length not a multiple of
+    it overshot by up to one stride (1031 raw points strode by 4 and yielded
+    258, not 256). That was tolerable only because every persisted length that
+    ever reached this function historically overshot its OWN cap (both
+    ``_decimate_sum``'s old raw stride and ``_decimate_curve_for_json``'s
+    still land at/above 512-513 for a real capture). #1858's block-average fix
+    to ``_decimate_sum`` undershoots its cap instead (a 32769-bin capture
+    persists at 504, not 512-513) — landing the predicted curve's persisted
+    length just below ``CAP * 2``, where the OLD floor-division stride
+    computed ``step = 1`` (no reduction at all: 504 rendered, not ~252),
+    silently doubling the prediction's density against the cloud curves in
+    the same frame and breaking this function's own soft-ceiling promise.
+    Fixed at this owner with ceiling division (``-(-n // CAP)``), which
+    guarantees ``len(rendered) <= CAP`` unconditionally — re-derived here on
+    the SAME 1031-point fixture: ``ceil(1031 / 256) = 5`` (not floor's 4), so
+    1031 strode by 5 yields 207, not 258. Both curve families still ride the
+    identical function, so the "one owner" pin is unmoved; only the stride
+    arithmetic inside that one owner changed, verified by direct sweep (see
+    ``test_realized_chart_lengths_stay_within_cap_for_both_curve_families``)
+    over 1..5000 plus 2000 random larger lengths: max observed output was
+    exactly 256, never more, for any input."""
     n = v2host.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
     freqs = [100.0 + i for i in range(n)]
     mags = [float(i % 5) for i in range(n)]
@@ -2875,10 +2890,70 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     # THE pin: one owner, so identical input yields byte-identical output.
     assert predicted == block["cloud_chart"][PHASE_CLOUD_MEASURE]["curve"]
     assert len(predicted["freqs_hz"]) == len(predicted["magnitude_db"])
-    # Genuinely decimated, to exactly the shared owner's stride.
-    stride = n // v2host.CHART_CURVE_MAX_JSON_POINTS
-    assert len(predicted["freqs_hz"]) == -(-n // stride)
-    assert len(predicted["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS + stride
+    # Genuinely decimated, to exactly the shared owner's (now ceiling-division)
+    # stride -- re-derived: ceil(1031 / 256) = 5, not floor's 4.
+    stride = -(-n // v2host.CHART_CURVE_MAX_JSON_POINTS)
+    assert stride == 5
+    assert len(predicted["freqs_hz"]) == len(range(0, n, stride))
+    assert len(predicted["freqs_hz"]) == 207
+    # The hard ceiling itself: never CAP + stride (the old soft promise),
+    # always CAP outright.
+    assert len(predicted["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS
+
+
+def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
+    """Gate finding on #1858 (SF-1): the constants-only drift guard
+    (``test_cloud_curve_max_json_points_mirrors_the_verify_priors_
+    decimation_cap`` in ``tests/test_crossover_v2_cloud_pipeline.py``) pins
+    ``MAX_PERSISTED_SUM_POINTS == CLOUD_CURVE_MAX_JSON_POINTS`` (512 == 512),
+    never the REALIZED wire lengths downstream of them — so it stayed green
+    straight through the regression where the predicted curve rendered at
+    ~2x the cloud curves' density in the same chart frame (504 points,
+    undecimated, next to 257). This test drives both persist-time decimators
+    (``_decimate_sum`` for the prediction, ``_decimate_curve_for_json`` for
+    the cloud) through the SAME chart-time re-decimation
+    (``_decimate_curve_for_chart``) at real FFT-bin grid sizes, and asserts
+    what actually reaches the wire, not the constants that feed it.
+
+    Two sizes, both realistic ``np.fft.rfftfreq`` outputs (the shape
+    ``predicted_sum`` and the cloud's combined curve actually carry): the
+    65536-point FFT window's 32769-bin grid (matches the size
+    ``test_predicted_spec_report_is_graded_on_the_shared_analysis_grid``
+    already uses as its own "real capture" fixture) and a second, smaller
+    16384-point window's 8193-bin grid — so the bound is pinned as a
+    property of the functions, not of one fixture that happens to clear it.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _decimate_curve_for_json
+
+    for n_fft in (1 << 16, 1 << 14):
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / 48000.0)
+        mag_db = np.zeros(freqs.size)
+
+        persisted_pred = v2host._decimate_sum((freqs, mag_db))
+        rendered_pred = v2host._decimate_curve_for_chart(
+            persisted_pred["freqs_hz"], persisted_pred["magnitude_db"],
+        )
+        persisted_cloud = _decimate_curve_for_json(freqs, mag_db)
+        rendered_cloud = v2host._decimate_curve_for_chart(
+            persisted_cloud["freqs_hz"], persisted_cloud["magnitude_db"],
+        )
+
+        # The hard ceiling itself, for BOTH curve families -- this is what
+        # the constants-equality guard could never see.
+        assert len(rendered_pred["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS
+        assert len(rendered_cloud["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS
+
+        # Same-frame density parity: the bug's own signature was an
+        # UNBOUNDED mismatch (504 undecimated vs. 257, ~2x and growing with
+        # input size, since floor-division gave the prediction NO reduction
+        # at all). A generous 2x margin still catches that class outright
+        # while tolerating the two decimators' differing raw-stride vs.
+        # block-average characters (measured ~1.4-1.5x on these two grids).
+        len_pred = len(rendered_pred["freqs_hz"])
+        len_cloud = len(rendered_cloud["freqs_hz"])
+        assert max(len_pred, len_cloud) <= 2 * min(len_pred, len_cloud), (
+            n_fft, len_pred, len_cloud,
+        )
 
 
 def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
@@ -2889,9 +2964,11 @@ def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
     should track) plus a fast ripple whose ~10 Hz period is far shorter than
     the ~46.9 Hz output grid spacing (``24000 / MAX_PERSISTED_SUM_POINTS``)
     -- "ripple faster than the output grid" -- planted across the full
-    sweep including the sub-500 Hz region the issue calls out (where the
-    old stride spacing exceeded a 1/3-octave band width, so a single
-    stride-picked raw bin was noise, not shape).
+    sweep including the sub-500 Hz region the issue calls out. 500 Hz sits
+    inside the old stride's fewer-than-3-samples-per-1/3-octave-band zone
+    (below ~607 Hz; below ~202 Hz the stride spacing exceeds the band's own
+    width outright, zero guaranteed samples), so a single stride-picked raw
+    bin there was noise, not shape.
 
     Pinned against the regression it fixes, not just that new code runs: the
     naive floor-division stride this replaces is reproduced locally (it no

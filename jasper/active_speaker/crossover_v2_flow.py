@@ -4416,8 +4416,9 @@ class CrossoverV2Conductor:
 
         The report is graded against the full-resolution tuple, which is the
         whole point of stashing it: what SURVIVES to the durable state is
-        ``_decimate_sum``'s 512-point stride, and re-grading that would be a
-        different instrument from the one the accountability veto refused on.
+        ``_decimate_sum``'s 512-point block average (issue #1858 — a raw
+        stride before that fix), and re-grading that would be a different
+        instrument from the one the accountability veto refused on.
         """
         return (
             dict(self._measure_predicted_spec_report)
@@ -5979,9 +5980,10 @@ class CrossoverV2Conductor:
         #
         # **Graded ONCE, here** (two-stage commission D4). This is the last
         # place the FULL-RESOLUTION `(freqs, magnitudes)` tuple exists: what
-        # survives to the durable state is `_decimate_sum`'s 512-point stride,
-        # and re-grading that stride later would be a DIFFERENT instrument from
-        # the one this veto refuses on — the two can disagree on a narrow band,
+        # survives to the durable state is `_decimate_sum`'s 512-point block
+        # average (issue #1858 — a raw stride before that fix), and re-grading
+        # that later would be a DIFFERENT instrument from the one this veto
+        # refuses on — the two can disagree on a narrow band,
         # on the one screen whose entire purpose is the honest spec verdict. So
         # the report this gate computes is the report the host persists, and
         # the persisted curve stays what it is: a drawing, not the instrument.
