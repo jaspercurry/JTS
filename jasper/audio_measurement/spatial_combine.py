@@ -1399,15 +1399,22 @@ def _canonical_grid(grids: Sequence[np.ndarray]) -> np.ndarray:
 
 
 def _decimate_to_analysis_grid(
-    grid: np.ndarray, stacked: np.ndarray
+    grid: np.ndarray, stacked: np.ndarray, *, max_bins: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Block-average a too-fine analysis grid down to ``MAX_ANALYSIS_BINS``.
+    """Block-average a too-fine analysis grid down to ``max_bins``.
 
     Averaging is done in **linear power**, the same estimator the rest of
     this module uses, so decimation composes with the power mean instead of
     biasing it; subsampling would alias a combed curve onto whichever bins
     happened to land on peaks or nulls. See ``MAX_ANALYSIS_BINS`` for the
-    cost/resolution argument.
+    cost/resolution argument (``max_bins=None`` reads it fresh on every call
+    rather than baking it into a default value, so
+    ``monkeypatch.setattr(module, "MAX_ANALYSIS_BINS", ...)`` still works —
+    the same late-binding contract the module-level free-variable lookup
+    this replaced already had; issue #1858's persisted-prior caller passes
+    an explicit smaller ceiling for a durable-state payload rather than an
+    in-memory analysis pass, the same alias-free rule at a different target
+    density).
 
     Blocks are a fixed width, so the decimated grid stays exactly linear
     (block centres are spaced by ``block * step``) and remains a legal input
@@ -1419,10 +1426,12 @@ def _decimate_to_analysis_grid(
 
     Identity (same objects) when the grid is already within the bound.
     """
+    if max_bins is None:
+        max_bins = MAX_ANALYSIS_BINS
     n_bins = int(grid.size)
-    if n_bins <= MAX_ANALYSIS_BINS:
+    if n_bins <= max_bins:
         return grid, stacked
-    block = -(-n_bins // MAX_ANALYSIS_BINS)  # ceil division
+    block = -(-n_bins // max_bins)  # ceil division
     n_blocks = n_bins // block
     kept = n_blocks * block
     coarse_grid = grid[:kept].reshape(n_blocks, block).mean(axis=1)
@@ -1435,7 +1444,7 @@ def _decimate_to_analysis_grid(
 
 
 def decimate_curve_to_analysis_grid(
-    grid: np.ndarray, magnitude_db: np.ndarray
+    grid: np.ndarray, magnitude_db: np.ndarray, *, max_bins: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """The 1-D public face of :func:`_decimate_to_analysis_grid`.
 
@@ -1447,11 +1456,19 @@ def decimate_curve_to_analysis_grid(
     same reason :func:`merged_true_intervals` is: the alternative is a near-copy
     of a rule whose whole value is having one owner.
 
-    Identity (same objects) when the grid is already within
-    :data:`MAX_ANALYSIS_BINS`.
+    ``max_bins`` (``None`` reads :data:`MAX_ANALYSIS_BINS` fresh on every
+    call — see :func:`_decimate_to_analysis_grid`'s docstring for why not a
+    baked-in default) is the second caller this owner grew it for:
+    `jasper.web.correction_crossover_v2._decimate_sum` (issue #1858) needs
+    the same alias-free block average, but bounded at the persisted-state
+    ceiling (``MAX_PERSISTED_SUM_POINTS``, 512) rather than the in-memory
+    analysis ceiling — a smaller cap on the SAME owner, not a second
+    implementation.
+
+    Identity (same objects) when the grid is already within ``max_bins``.
     """
     coarse_grid, coarse_stacked = _decimate_to_analysis_grid(
-        grid, np.asarray(magnitude_db, dtype=float).reshape(1, -1)
+        grid, np.asarray(magnitude_db, dtype=float).reshape(1, -1), max_bins=max_bins,
     )
     return coarse_grid, coarse_stacked[0]
 

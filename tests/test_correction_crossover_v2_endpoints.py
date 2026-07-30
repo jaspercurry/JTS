@@ -2881,6 +2881,66 @@ def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
     assert len(predicted["freqs_hz"]) <= v2host.CHART_CURVE_MAX_JSON_POINTS + stride
 
 
+def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
+    """Issue #1858: ``_decimate_sum`` must anti-alias before reducing point
+    count, not stride-pick raw bins.
+
+    The synthetic curve is a slow, genuine trend (what a persisted prior
+    should track) plus a fast ripple whose ~10 Hz period is far shorter than
+    the ~46.9 Hz output grid spacing (``24000 / MAX_PERSISTED_SUM_POINTS``)
+    -- "ripple faster than the output grid" -- planted across the full
+    sweep including the sub-500 Hz region the issue calls out (where the
+    old stride spacing exceeded a 1/3-octave band width, so a single
+    stride-picked raw bin was noise, not shape).
+
+    Pinned against the regression it fixes, not just that new code runs: the
+    naive floor-division stride this replaces is reproduced locally (it no
+    longer exists in production after this fix) and demonstrably fails the
+    same tolerance the fixed function meets.
+    """
+    n = 1 << 16
+    fs = 48000.0
+    freqs = np.fft.rfftfreq(n, 1.0 / fs)
+    slow_true_db = 3.0 * np.sin(2.0 * np.pi * freqs / 400.0)
+    fast_ripple_db = 2.0 * np.sin(2.0 * np.pi * freqs / 10.0)
+    mag_db = slow_true_db + fast_ripple_db
+    mag_db[0] = slow_true_db[0]  # avoid the f=0 edge
+
+    decimated = v2host._decimate_sum((freqs, mag_db))
+    out_freqs = np.asarray(decimated["freqs_hz"])
+    out_mag = np.asarray(decimated["magnitude_db"])
+    assert len(out_freqs) <= v2host.MAX_PERSISTED_SUM_POINTS
+    assert len(out_freqs) < freqs.size  # genuinely decimated
+
+    below_500 = out_freqs < 500.0
+    assert below_500.sum() >= 5  # the region actually gets exercised
+    truth_below_500 = 3.0 * np.sin(2.0 * np.pi * out_freqs[below_500] / 400.0)
+    new_err = np.abs(out_mag[below_500] - truth_below_500)
+
+    def _old_removed_stride_decimate(freqs, mags, cap):
+        """The exact shape ``_decimate_sum`` used before #1858: a raw
+        floor-division stride. No longer in production; reproduced here so
+        the fix is pinned against the regression it replaces."""
+        n = len(freqs)
+        step = max(1, n // cap)
+        return freqs[::step], mags[::step]
+
+    old_freqs, old_mag = _old_removed_stride_decimate(
+        freqs, mag_db, v2host.MAX_PERSISTED_SUM_POINTS,
+    )
+    old_below_500 = old_freqs < 500.0
+    old_truth = 3.0 * np.sin(2.0 * np.pi * old_freqs[old_below_500] / 400.0)
+    old_err = np.abs(old_mag[old_below_500] - old_truth)
+
+    # The fix: honest tracking of the slow truth below 500 Hz, well inside
+    # the ripple's own 2.0 dB amplitude.
+    assert np.median(new_err) < 0.5
+    # The regression it fixes: the old stride does not track the truth --
+    # a stride-picked raw bin is dominated by whichever ripple phase it
+    # happened to land on, comparable to the ripple's own amplitude.
+    assert np.median(old_err) > 1.0
+
+
 def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     """``None`` is load-bearing on every field of this block.
 

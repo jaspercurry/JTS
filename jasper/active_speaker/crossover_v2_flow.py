@@ -2931,11 +2931,22 @@ def _decimate_curve_for_json(
     freqs_hz: np.ndarray, magnitude_db: np.ndarray,
 ) -> dict[str, list[float]]:
     """Stride-decimate one combined curve to at most
-    :data:`CLOUD_CURVE_MAX_JSON_POINTS`, for disclosure only -- mirrors
-    ``jasper.web.correction_crossover_v2._decimate_sum``'s exact shape
-    (floor-division stride, identity when already short enough) so the two
-    persisted curve payloads (VERIFY's predicted sum, the cloud's combined
-    spec curve) read the same way to a consumer.
+    :data:`CLOUD_CURVE_MAX_JSON_POINTS`, for disclosure only.
+
+    **No longer the same shape as ``_decimate_sum`` (issue #1858).** Before
+    that fix this mirrored ``jasper.web.correction_crossover_v2._decimate_sum``
+    exactly (floor-division stride, identity when already short enough) so
+    the two persisted curve payloads read the same way to a consumer.
+    ``_decimate_sum`` now block-averages instead, because its input
+    (``conductor.measure_predicted_sum``) is the RAW, unsmoothed prediction
+    and a stride over that aliases below ~500 Hz. This function's input,
+    ``combined.power_mean_spec_db``, has already been through
+    ``smooth_fractional_octave`` inside :func:`combine_positions` before it
+    ever reaches here, so a plain stride over an already-smoothed curve does
+    not reintroduce that failure mode -- the two callers start from
+    differently-prepared curves, which is why one still strides and the
+    other no longer does. ``freqs_hz`` and ``magnitude_db`` remain
+    identity-shaped (floor-division stride) either way.
     """
     n = len(freqs_hz)
     step = max(1, n // CLOUD_CURVE_MAX_JSON_POINTS)

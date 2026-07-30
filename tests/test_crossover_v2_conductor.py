@@ -6335,11 +6335,15 @@ def test_the_stashed_prediction_verdict_is_the_full_resolution_grade():
     of the FULL-RESOLUTION prediction — the same tuple the accountability veto
     refused on — and not a re-grade of what survives persistence. This asserts
     the identity AND that the identity is a real constraint: the 512-point
-    ``_decimate_sum`` stride is demonstrably a different instrument, grading
-    45/155/205 bins per band where the full 2048-point curve grades
-    180/617/823. Two reports built from those two inputs can disagree on a
-    narrow band, and the screen this feeds exists to state one honest spec
-    verdict."""
+    ``_decimate_sum`` reduction is demonstrably a different instrument, grading
+    45/154/206 bins per band where the full 2048-point curve grades
+    180/617/823 (re-derived post-#1858: before that fix's block-average,
+    ``_decimate_sum`` was a raw stride and graded 45/155/205 on this same
+    fixture — the two differ by one bin in two bands because a block-average
+    output point sits at its block's mean frequency rather than the block's
+    first raw bin, not because the instruments-differ claim below changed).
+    Two reports built from those two inputs can disagree on a narrow band,
+    and the screen this feeds exists to state one honest spec verdict."""
     from jasper.web.correction_crossover_v2 import _decimate_sum
 
     fakes = FakeSeams()

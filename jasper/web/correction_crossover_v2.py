@@ -77,7 +77,12 @@ V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 
 # Downsample ceiling for the persisted predicted-sum verify prior — enough
 # resolution for the ±1.5 dB [Fc/2, 2Fc] comparison at 1/6-octave smoothing
-# while keeping the durable state file small.
+# while keeping the durable state file small. Reduction to this ceiling is a
+# block average in linear power (see ``_decimate_sum``), never a raw stride
+# — issue #1858 found the prior stride picked one raw bin per output point,
+# which aliases below ~500 Hz where the stride spacing exceeds a 1/3-octave
+# band, so the "1/6-octave smoothing" this comment budgets resolution for
+# was not actually happening upstream of it.
 MAX_PERSISTED_SUM_POINTS = 512
 
 # --------------------------------------------------------------------------- #
@@ -1496,16 +1501,51 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
+    """Persist-time reduction of the full-resolution predicted-sum curve to
+    at most :data:`MAX_PERSISTED_SUM_POINTS` (the ``verify_priors.
+    predicted_sum`` this module writes at :func:`persist_conductor_state`).
+
+    **Issue #1858 — was a raw ``freqs[::step]`` stride, which aliases.**
+    Picking one raw bin per output point keeps whichever bin the stride
+    happened to land on; below ~500 Hz the stride spacing is wider than a
+    1/3-octave band, so the persisted LF shape was noise, not signal
+    (point-to-point |Δ| median 0.39 dB vs. the properly-decimated cloud
+    curve's 0.06 dB). Fixed by routing through the SAME block-average owner
+    :func:`~jasper.active_speaker.crossover_v2_flow.spec_report_for_predicted_sum`
+    already uses to grade this exact curve —
+    :func:`~jasper.audio_measurement.spatial_combine.decimate_curve_to_analysis_grid`
+    — at this module's own ceiling rather than the analysis-grid one. That
+    function block-averages in linear power (never subsamples), so every
+    persisted point is a genuine local mean instead of one raw bin —
+    generalizing the existing owner with a ``max_bins`` argument rather than
+    adding a second decimation path.
+
+    Era note: a state file persisted by a build before this fix carries
+    whatever its own stride wrote; this only changes what a NEW persist
+    writes; :func:`_predicted_spec_prior`'s stored verdict is untouched
+    either way, since D4 grades the full-resolution tuple, never this
+    decimated curve
+    (see ``test_the_persisted_prediction_verdict_is_the_veto_s_not_a_re_grade``).
+    """
     if predicted_sum is None:
         return None
     freqs, mags = predicted_sum
     n = len(freqs)
     if n == 0:
         return None
-    step = max(1, n // MAX_PERSISTED_SUM_POINTS)
+    import numpy as np
+
+    from jasper.audio_measurement.spatial_combine import (
+        decimate_curve_to_analysis_grid,
+    )
+
+    grid, curve_db = decimate_curve_to_analysis_grid(
+        np.asarray(freqs, dtype=float), np.asarray(mags, dtype=float),
+        max_bins=MAX_PERSISTED_SUM_POINTS,
+    )
     return {
-        "freqs_hz": [float(f) for f in freqs[::step]],
-        "magnitude_db": [float(m) for m in mags[::step]],
+        "freqs_hz": [float(f) for f in grid],
+        "magnitude_db": [float(m) for m in curve_db],
     }
 
 
