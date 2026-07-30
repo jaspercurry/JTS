@@ -233,6 +233,12 @@ inherits it from the repo instead of being told.
   [`.claude/agents/adversarial-gate.md`](.claude/agents/adversarial-gate.md)
   packages this as a launchable subagent type so any session can
   dispatch it directly instead of re-deriving the method ad hoc.
+  Safety-critical changes — audio/hearing safety, the CamillaDSP graph,
+  DSP math, or secrets — escalate from one reviewer to a
+  perspective-diverse panel (correctness, hearing-safety, and resilience
+  lenses), a practice already running in
+  [docs/HANDOFF-correction-revision-plan.md](docs/HANDOFF-correction-revision-plan.md)'s
+  "Execution model (orchestration)" section.
 - **The handoff rule.** Every session-handoff prompt
   (`captures/NEXT-SESSION-PROMPT-*.md` and any equivalent) MUST restate
   the conductor rule, the gate rule, and the values below. A handoff
@@ -3118,9 +3124,13 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
 
 3. **`main` is branch-protected.** The stable `ci` aggregate **must pass
    before any PR merges**, and every review conversation must be resolved.
-   There is no required reviewer (this is a solo-maintainer repository).
-   The rule is enforced for admins too; force-pushes and branch deletion
-   are blocked, and strict/up-to-date branches are off. You cannot merge a
+   There is no required reviewer *at the GitHub level* (this is a
+   solo-maintainer repository) — that is branch protection's mechanical
+   gate, separate from [the standing multi-agent
+   method](#the-standing-multi-agent-method)'s adversarial-gate rule, which
+   is a process obligation independent of what GitHub enforces. The rule
+   is enforced for admins too; force-pushes and branch deletion are
+   blocked, and strict/up-to-date branches are off. You cannot merge a
    red `main`; wait for green. (Emergency rollback + the exact rule live in
    [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection).)
 
