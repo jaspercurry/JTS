@@ -36,9 +36,24 @@ and P1 is precisely the probe §4 names as load-bearing for separating M1 from
 M3 — a separation **no measurement in the corpus has ever made**, which is why
 both rows currently read `model-derived`. So WO-3 adds M1 and M3 *with the
 evidence that fixes their tiers in hand*, and states the tier its own probe
-earned rather than inheriting a guess made here. WO-4 then seeds M4, M6, M7,
-and M8 alongside the detectors that make those reachable. Adding an entry is a
+earned rather than inheriting a guess made here. WO-4 then seeds M4, M6, and
+M8 alongside the detectors that make those reachable. Adding an entry is a
 one-tuple edit to :data:`_SEED`; the engine needs no change.
+
+**M7 arrived early, and the reason is worth stating rather than inferring.**
+The paragraph above once listed M7 among WO-4's four, on the sound assumption
+that a mechanism becomes reachable when its *detector* does. The owner's
+2026-07-30 frame-gate ruling (#1866) produced a second way to reach one: the
+shipped level-frame gate ALREADY computes the comparison M7 is about — two
+measured estimates of where the drivers sit — and the ruling banks that
+comparison as a finding when the estimators disagree while the independent
+realized-level check corroborates one of them. So M7 is registered here with
+**no detector**, because none is needed for that one site: the numbers come
+from a gate the flow already runs, exactly as the carve-out promotion path
+takes numbers from a pipeline that already ran. WO-4 still owns M7's
+*detector* — the general per-driver realized-passband comparator §4 names —
+and that work adds signature/confidence callables around this same id rather
+than a second entry.
 
 **The two required fields are the do-not, made structural.**
 :class:`MechanismSpec` cannot be constructed without both
@@ -63,7 +78,9 @@ from .vocabulary import (
     EVIDENCE_TIER_CORROBORATING,
     FIX_CLASSES,
     PROBES,
+    PROBE_DESIGN_AXIS,
     PROBE_POSITION_VARIANCE,
+    PROBE_REPEAT_VARIANCE,
     PROBE_ROTATION,
 )
 
@@ -71,6 +88,7 @@ from .vocabulary import (
 #: WO-1 path and a finding produced by a WO-4 detector name the same thing.
 MECHANISM_HF_REFLECTION = "M2"
 MECHANISM_BOUNDARY_SBIR = "M5"
+MECHANISM_LEVEL_FRAME = "M7"
 
 
 class MechanismError(ValueError):
@@ -173,6 +191,40 @@ _SEED: tuple[MechanismSpec, ...] = (
             "ground-plane leg); refuted for S0's 1.8 kHz dip"
         ),
     ),
+    MechanismSpec(
+        id=MECHANISM_LEVEL_FRAME,
+        title="Inter-driver level-frame error",
+        # Plan §4 M7: "`eq` (level) — and `refit` when the level error is
+        # upstream in the fit's own frame". Both are real and a finding picks
+        # one. The frame-gate site only ever produces the second: a
+        # disagreement BETWEEN two estimates of the frame is by construction
+        # upstream of any trim derived from them, so adding level cannot be
+        # the answer — re-solving the frame is. Pinned by test.
+        fix_classes=("eq", "refit"),
+        # **Not the probe §4's M7 row names.** That row's probe column is "per
+        # -driver passband comparison against a declared-sensitivity prior",
+        # which is not a member of §5's P1-P7 table — and PROBES is closed, so
+        # inventing an id for it here would be a scope change made silently in
+        # the wrong file. These two ARE in the table and both meet the
+        # schema's own bar for this field ("probes that would RAISE this
+        # finding's confidence", not "probes that decide it"): P5 reads the
+        # inter-driver balance on a second axis, so it separates a real level
+        # relationship from one that is a property of where the mic was; P7
+        # bounds how much of a disagreement could be measurement spread at
+        # all. Adding §4's own probe to §5's table is a plan change, and it
+        # belongs in the plan.
+        discriminating_probes=(PROBE_DESIGN_AXIS, PROBE_REPEAT_VARIANCE),
+        corpus_evidence_tier=EVIDENCE_TIER_ADJUDICATED,
+        corpus_citation=(
+            "plan §4 M7 — adjudicated under that section's stated extension "
+            "of the tier (a known intervention applied and the feature "
+            "responding), NOT by a probe from the §5 table: on a 7-11 dB dark "
+            "tweeter an independent hand correction moved every band "
+            "300 Hz-16 kHz to within +/-0.9 dB of the reference. Corpus's "
+            "largest measured defect and its only before/after listening "
+            "verdict; #1667's 1.7-6.3 dB trim bias is the same row"
+        ),
+    ),
 )
 
 #: The registry. Keyed by mechanism id; the engine iterates it with zero
@@ -200,6 +252,7 @@ def mechanism_spec(mechanism_id: str) -> MechanismSpec:
 __all__ = [
     "MECHANISM_BOUNDARY_SBIR",
     "MECHANISM_HF_REFLECTION",
+    "MECHANISM_LEVEL_FRAME",
     "MECHANISM_REGISTRY",
     "MechanismError",
     "MechanismSpec",

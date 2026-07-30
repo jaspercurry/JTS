@@ -864,6 +864,151 @@ def test_a_findings_failure_never_fails_the_cloud_publish(tmp_path: Path) -> Non
     assert empty is not None and empty.findings == ()
 
 
+# --------------------------------------------------------------------------- #
+# The level-frame finding's own publish seam (#1866, 2026-07-30)
+# --------------------------------------------------------------------------- #
+
+_LEVEL_FRAME_RECORD = {
+    "f_lo_hz": 150.0,
+    "f_hi_hz": 5844.7,
+    "disagreement_db": 3.276,
+    "tolerance_db": 3.0,
+    "reference_role": "woofer",
+    "system_level_db": 3.276,
+    "realized_difference_db": -0.828,
+    "realized_tolerance_db": 3.0,
+    "realized_level_w_db": 0.213,
+    "realized_level_t_db": -0.615,
+    "core_level_db_woofer": 3.276,
+    "core_band_lo_hz_woofer": 150.0,
+    "core_band_hi_hz_woofer": 1255.8,
+    "radiating_band_lo_hz_woofer": 0.0,
+    "radiating_band_hi_hz_woofer": 1282.3,
+    "trim_band_average_db_woofer": 0.0,
+    "core_level_db_tweeter": 0.0,
+    "core_band_lo_hz_tweeter": 2020.0,
+    "core_band_hi_hz_tweeter": 5844.7,
+    "radiating_band_lo_hz_tweeter": 1996.4,
+    "radiating_band_hi_hz_tweeter": None,
+    "trim_band_average_db_tweeter": 0.0,
+}
+
+
+def _publish_candidate_artifact(store: CommissioningEvidenceStore) -> None:
+    """The artifact the level-frame finding cites, as the real seam leaves it.
+
+    The finding is minted immediately after ``publish_candidate`` in
+    ``_commit_measure_candidate``, so a test of the findings seam has to stand
+    the same thing up: a citation into a bundle that does not hold the
+    artifact is exactly the failure ``read_finding_set`` exists to catch.
+    """
+    store.publish_json_artifact(
+        f"crossover_v2/{RELAY}/candidate.json",
+        {"kind": "jts_crossover_v2_candidate", "linearization": {}},
+    )
+
+
+def test_the_banked_frame_finding_lands_in_the_bundle_and_reopens(
+    tmp_path: Path,
+) -> None:
+    """The ruling's persistence half, end to end through the real seam: the
+    conductor's banked record becomes a durable M7 finding that reopens with
+    its evidence verified.
+
+    ``read_finding_set`` re-resolves and re-hashes every bundle citation by
+    default, so a successful read here is also the proof that the finding
+    cites something the bundle can still produce — the property that makes a
+    diagnosis checkable rather than merely believable.
+    """
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, _ = _open_store(tmp_path)
+    refs: dict = {}
+    _publish_candidate_artifact(store)
+    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+
+    findings = read_finding_set(store, relay_session_id=RELAY, phase="measure")
+    assert findings is not None
+    assert [f.mechanism for f in findings.findings] == ["M7"]
+    finding = findings.findings[0]
+    assert finding.fix_class == "refit"
+    assert finding.confidence == "unsure"
+    assert finding.band_hz == (150.0, 5844.7)
+    # All three level instruments survived the hop.
+    assert finding.evidence["core_level_db_woofer"] == 3.276
+    assert finding.evidence["trim_band_average_db_woofer"] == 0.0
+    assert finding.evidence["realized_difference_db"] == -0.828
+    # …and the citation is the candidate this finding is about.
+    cite = finding.cites[0]
+    assert cite.locator.endswith(f"crossover_v2/{RELAY}/candidate.json")
+    assert len(cite.sha256) == 64
+    assert refs["finding_artifacts"]["measure"]
+
+
+def test_the_frame_finding_takes_its_own_phase_so_the_cloud_set_survives(
+    tmp_path: Path,
+) -> None:
+    """Its own phase is FORCED, not chosen.
+
+    The store is write-once and the cloud group's finding set is published at
+    group CLOSE — seconds and one household tap before the fit this finding
+    comes out of even runs. Sharing a phase would be a ``PATH_CONFLICT`` on the
+    second write, not a merge. This pins that both sets exist afterwards and
+    neither overwrote the other.
+    """
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, _ = _open_store(tmp_path)
+    refs: dict = {}
+    v2host.bind_cloud_publisher(store, RELAY, refs)(
+        PHASE, {"available": True, "carve_outs": _carve_outs()}
+    )
+    _publish_candidate_artifact(store)
+    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+
+    cloud_set = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    frame_set = read_finding_set(store, relay_session_id=RELAY, phase="measure")
+    assert cloud_set is not None and frame_set is not None
+    assert [f.mechanism for f in cloud_set.findings] == ["M2"]
+    assert [f.mechanism for f in frame_set.findings] == ["M7"]
+    # One session, two sets, and the same identity on both — which is what
+    # lets a reader join them.
+    assert cloud_set.session == frame_set.session
+    assert cloud_set.produced_by != frame_set.produced_by
+
+
+def test_a_frame_finding_failure_never_costs_the_session(tmp_path: Path) -> None:
+    """§3.4 again, at the seam this time: a findings failure must not raise
+    into a conductor that has already published a candidate and already ruled
+    the session may proceed.
+
+    Two shapes. **The citation cannot be resolved** — the candidate artifact
+    is missing, which is a genuine store failure — and **the record is
+    unpromotable**. Neither raises, and neither writes an empty set: "attribution
+    ran and found nothing" is a different, false statement about a session whose
+    gate found something and said so in the journal.
+    """
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, _ = _open_store(tmp_path)
+    refs: dict = {}
+    # (a) no candidate artifact to cite.
+    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+    assert read_finding_set(store, relay_session_id=RELAY, phase="measure") is None
+    assert "finding_artifacts" not in refs
+
+    # (b) a record promotion cannot read.
+    _publish_candidate_artifact(store)
+    v2host.bind_findings_publisher(store, RELAY, refs)(
+        {**_LEVEL_FRAME_RECORD, "f_hi_hz": None}
+    )
+    assert read_finding_set(store, relay_session_id=RELAY, phase="measure") is None
+    assert "finding_artifacts" not in refs
+
+
 def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
     tmp_path: Path,
 ) -> None:

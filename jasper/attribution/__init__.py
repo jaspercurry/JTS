@@ -16,12 +16,14 @@ with evidence and confidence, *before* prescribing.
   (§3.3), confidence tiers (§3.2), probe ids (§5).
 * :mod:`~jasper.attribution.mechanisms` — the pure-data registry of
   declarations, the shipped ``REASON_REGISTRY`` shape (§2). Seeded with the
-  two mechanisms WO-1 can reach; WO-4 seeds the rest alongside its detectors.
+  mechanisms a shipped instrument can actually reach today; WO-4 seeds the
+  rest alongside its detectors.
 * :mod:`~jasper.attribution.findings` — §3.1's artifact, its validation, and
   its self-describing serialization.
-* :mod:`~jasper.attribution.promotion` — the excluded-band promotion path:
-  the carve-out records the pipeline already persists become findings with a
-  mechanism and a fix class attached.
+* :mod:`~jasper.attribution.promotion` — the promotion paths: records the
+  pipeline already persists (excluded-band carve-outs) and comparisons it
+  already computes (the level-frame gate's) become findings with a mechanism
+  and a fix class attached.
 * :mod:`~jasper.attribution.position_evidence` — the per-position cloud
   members the pipeline computed and discarded (§6).
 * :mod:`~jasper.attribution.session_identity` — the one identifier that
@@ -55,6 +57,7 @@ from .findings import (
 from .mechanisms import (
     MECHANISM_BOUNDARY_SBIR,
     MECHANISM_HF_REFLECTION,
+    MECHANISM_LEVEL_FRAME,
     MECHANISM_REGISTRY,
     MechanismError,
     MechanismSpec,
@@ -64,7 +67,7 @@ from .position_evidence import (
     POSITION_EVIDENCE_SCHEMA,
     position_evidence_block,
 )
-from .promotion import promote_carve_outs
+from .promotion import promote_carve_outs, promote_level_frame_disagreement
 from .session_identity import (
     SESSION_IDENTITY_KEY,
     SESSION_IDENTITY_SCHEME,
@@ -94,6 +97,7 @@ __all__ = [
     "FIX_CLASSES",
     "MECHANISM_BOUNDARY_SBIR",
     "MECHANISM_HF_REFLECTION",
+    "MECHANISM_LEVEL_FRAME",
     "MECHANISM_REGISTRY",
     "POSITION_EVIDENCE_SCHEMA",
     "PROBES",
@@ -114,6 +118,7 @@ __all__ = [
     "mechanism_spec",
     "position_evidence_block",
     "promote_carve_outs",
+    "promote_level_frame_disagreement",
     "publish_finding_set",
     "read_finding_set",
     "read_session_identity",

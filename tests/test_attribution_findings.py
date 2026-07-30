@@ -32,11 +32,17 @@ from jasper.attribution.findings import (
 from jasper.attribution.mechanisms import (
     MECHANISM_BOUNDARY_SBIR,
     MECHANISM_HF_REFLECTION,
+    MECHANISM_LEVEL_FRAME,
     MECHANISM_REGISTRY,
     MechanismError,
     mechanism_spec,
 )
-from jasper.attribution.promotion import PRODUCED_BY, promote_carve_outs
+from jasper.attribution.promotion import (
+    LEVEL_FRAME_HOUSEHOLD_COPY,
+    PRODUCED_BY,
+    promote_carve_outs,
+    promote_level_frame_disagreement,
+)
 from jasper.attribution.session_identity import (
     ALIAS_RELAY_SESSION_ID,
     SESSION_IDENTITY_KEY,
@@ -658,3 +664,242 @@ def test_a_set_may_not_hold_a_finding_from_another_session_s_bundle() -> None:
     )
     with pytest.raises(FindingError, match="own session"):
         FindingSet(session=_SESSION, produced_by=PRODUCED_BY, findings=(stray,))
+
+
+# --------------------------------------------------------------------------- #
+# The level-frame promotion path (#1866 frame-gate ruling, 2026-07-30)
+# --------------------------------------------------------------------------- #
+
+
+def _level_frame_record(**overrides: object) -> dict:
+    """A banked record in the shape ``_level_frame_finding_record`` emits.
+
+    Numbers are the conductor fixture's own, measured in
+    ``tests/test_crossover_v2_conductor.py`` on a woofer carrying an extra
+    -1.6 dB/octave of passband tilt — the synthetic stand-in for the
+    2026-07-30 field session (3.2307 dB frame, realized -0.247, both recorded
+    on #1870 and not replayable in-repo).
+    """
+
+    record = {
+        "f_lo_hz": 150.0,
+        "f_hi_hz": 5844.7,
+        "disagreement_db": 3.276,
+        "tolerance_db": 3.0,
+        "reference_role": "woofer",
+        "system_level_db": 3.276,
+        "realized_difference_db": -0.828,
+        "realized_tolerance_db": 3.0,
+        "realized_level_w_db": 0.213,
+        "realized_level_t_db": -0.615,
+        "core_level_db_woofer": 3.276,
+        "core_band_lo_hz_woofer": 150.0,
+        "core_band_hi_hz_woofer": 1255.8,
+        "radiating_band_lo_hz_woofer": 0.0,
+        "radiating_band_hi_hz_woofer": 1282.3,
+        "trim_band_average_db_woofer": 0.0,
+        "frame_offset_db_woofer": 0.0,
+        "core_level_db_tweeter": 0.0,
+        "core_band_lo_hz_tweeter": 2020.0,
+        "core_band_hi_hz_tweeter": 5844.7,
+        "radiating_band_lo_hz_tweeter": 1996.4,
+        "radiating_band_hi_hz_tweeter": None,
+        "trim_band_average_db_tweeter": 0.0,
+        "frame_offset_db_tweeter": 3.276,
+    }
+    record.update(overrides)
+    return record
+
+
+def _level_frame_finding(**overrides: object):
+    return promote_level_frame_disagreement(
+        _level_frame_record(**overrides), session=_SESSION, cites=(_CITE,)
+    )
+
+
+def test_a_banked_frame_disagreement_becomes_an_m7_finding() -> None:
+    """The owner's 2026-07-30 ruling on #1866, as an artifact: a frame
+    disagreement the realized-level check corroborates is banked rather than
+    refused, and what is banked is an M7-class finding carrying the numbers.
+
+    ``refit``, not ``eq``, and that is §4 M7's own split — ``eq`` when a
+    driver's level is genuinely low, ``refit`` "when the level error is
+    upstream in the fit's own frame". A disagreement BETWEEN two estimates of
+    the frame is upstream of every trim derived from them by construction.
+    """
+
+    finding = _level_frame_finding()
+    assert finding is not None
+    assert finding.mechanism == MECHANISM_LEVEL_FRAME
+    assert finding.fix_class == "refit"
+    assert finding.band_hz == (150.0, 5844.7)
+
+
+def test_the_banked_finding_carries_all_three_instruments() -> None:
+    """The evidence conventions the ruling names — "both estimator levels +
+    both bands" — plus the tiebreaker that decided the session.
+
+    A reader of this finding is being asked to believe a session proceeded
+    past a gate that would have stopped it, so all three level instruments
+    ride: the fit's per-driver median, the trim solve's per-driver
+    level-match term, and the realized check. Banking only the two that
+    disagreed would record the argument and drop the evidence that settled
+    it.
+    """
+
+    evidence = _level_frame_finding().evidence
+    # Estimator 1 (the fit's median) and estimator 2 (the trim solve's
+    # level-match term), per role.
+    assert evidence["core_level_db_woofer"] == 3.276
+    assert evidence["core_level_db_tweeter"] == 0.0
+    assert evidence["trim_band_average_db_woofer"] == 0.0
+    assert evidence["trim_band_average_db_tweeter"] == 0.0
+    # Both bands, per role: the span the median was actually taken over, and
+    # the radiating bound it was asked for (#1929's disclosure pair).
+    assert evidence["core_band_lo_hz_woofer"] == 150.0
+    assert evidence["core_band_hi_hz_woofer"] == 1255.8
+    assert evidence["radiating_band_lo_hz_woofer"] == 0.0
+    assert evidence["radiating_band_hi_hz_woofer"] == 1282.3
+    assert evidence["core_band_lo_hz_tweeter"] == 2020.0
+    assert evidence["core_band_hi_hz_tweeter"] == 5844.7
+    assert evidence["radiating_band_lo_hz_tweeter"] == 1996.4
+    # A high-pass branch radiates to infinity; ``None`` says so and survives
+    # JSON, where ``inf`` does not.
+    assert evidence["radiating_band_hi_hz_tweeter"] is None
+    # The disagreement, its tolerance, and the third instrument that
+    # corroborated the trim solve.
+    assert evidence["disagreement_db"] == 3.276
+    assert evidence["tolerance_db"] == 3.0
+    assert evidence["realized_difference_db"] == -0.828
+    assert evidence["realized_tolerance_db"] == 3.0
+
+
+def test_the_banked_finding_stays_unsure_and_claims_no_probe() -> None:
+    """Why ``unsure`` is the honest tier and not a cautious one.
+
+    THAT the two estimators disagreed is measured; that the disagreement is a
+    real inter-driver level error is not, because the shipped gate's own
+    residual produces this exact signature on a healthy speaker — a pair
+    identical by construction reads 0.910 dB apart, and ordinary woofer
+    passband tilt adds roughly 1.33 dB per dB/octave (both measured in
+    ``tests/test_crossover_v2_conductor.py``). A single session cannot
+    separate "the drivers really sit that far apart" from "these two
+    estimators read different spans of a curve that is not flat in the same
+    way over both".
+
+    ``probes_run`` is empty for the same reason: the evidence is the flow's
+    own instruments, none of which is a §5 primitive, and naming one would be
+    the cheapest possible way to launder a model-derived number into
+    probe-adjudicated standing.
+    """
+
+    finding = _level_frame_finding()
+    assert finding.confidence == "unsure"
+    assert finding.probes_run == ()
+    assert finding.probes_recommended == ("P5", "P7")
+    # §3.2's rule, which this finding must not be the exception to: an
+    # ``unsure`` finding always carries the probe that would raise it.
+    assert set(finding.probes_recommended) <= set(PROBES)
+
+
+def test_the_banked_finding_s_household_copy_obeys_the_conventions() -> None:
+    """§3.1's two-vocabularies contract, applied to the one sentence this
+    path mints.
+
+    It is minted rather than copied — unlike the carve-out path, the frame
+    gate has no shipped sentence for a session that PROCEEDS; its only
+    household copy is the refusal's, which is both wrong here and the copy
+    #1924's family is separately about. So the prohibition has to bite on a
+    new string, and it does: ``Finding`` itself rejects a hardware noun, an
+    internal slug, or a mechanism id, so a future edit reaching for "woofer"
+    fails at construction rather than in front of a household.
+    """
+
+    finding = _level_frame_finding()
+    assert finding.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
+    # The three checks, run against the shipped string rather than a fixture
+    # of it — this is the copy that will render.
+    assert Finding.from_mapping(finding.to_dict()).household_copy == (
+        LEVEL_FRAME_HOUSEHOLD_COPY
+    )
+    # It says what happened and no more. In particular it must NOT claim the
+    # tuning was applied: the candidate is a PROPOSAL at the moment this is
+    # minted, and the apply is a separate household action (two-stage split).
+    lowered = LEVEL_FRAME_HOUSEHOLD_COPY.lower()
+    assert "applied" not in lowered
+    assert "phone" not in lowered
+    for banned in ("was kept", "we have applied", "your speaker now"):
+        assert banned not in lowered
+    # Short enough to read on a review screen (IA over copy).
+    assert len(LEVEL_FRAME_HOUSEHOLD_COPY) < 260
+
+
+def test_the_banked_finding_re_decides_nothing() -> None:
+    """The flow owns the decision; this path owns the translation.
+
+    There is no threshold here, no comparison of the disagreement against the
+    tolerance, and no re-reading of the realized check — all three are the
+    gate's, and duplicating any of them would be the second computation of one
+    verdict §3.1 forbids. A record that says the estimators agreed, or that
+    the realized check failed, is still promoted verbatim: it could only have
+    arrived from a gate that decided to bank it, and second-guessing that here
+    would make two owners for one ruling.
+    """
+
+    contradictory = _level_frame_finding(
+        disagreement_db=0.1, realized_difference_db=99.0
+    )
+    assert contradictory is not None
+    assert contradictory.evidence["disagreement_db"] == 0.1
+    assert contradictory.evidence["realized_difference_db"] == 99.0
+
+
+def test_a_malformed_banked_record_is_refused_loudly_not_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A findings failure must not cost a session the gate already decided
+    may proceed (§3.4: findings are *optional* evidence artifacts). So the
+    promoter returns ``None`` rather than raising — but never silently: the
+    reason is named on its own event, because a diagnosis that vanished is
+    indistinguishable from one that was never attempted.
+    """
+
+    caplog.set_level(logging.WARNING, logger="jasper.attribution.promotion")
+    assert _level_frame_finding(f_hi_hz=None) is None
+    assert "event=attribution.level_frame_promotion_refused" in caplog.text
+    assert "no usable band" in caplog.text
+
+    caplog.clear()
+    # A non-finite evidence value is the other reachable shape: ``Finding``
+    # refuses it, and the refusal is reported rather than swallowed.
+    assert _level_frame_finding(disagreement_db=float("nan")) is None
+    assert "event=attribution.level_frame_promotion_refused" in caplog.text
+
+    # Not a mapping at all — the seam's own degenerate input.
+    assert promote_level_frame_disagreement(
+        None, session=_SESSION, cites=(_CITE,)
+    ) is None
+
+
+def test_m7_is_registered_with_no_detector_and_says_why() -> None:
+    """M7 arrived ahead of WO-4's detectors, and the registry has to be
+    honest about the two things that makes true.
+
+    The ruling produced a second way to reach a mechanism: the shipped
+    level-frame gate ALREADY computes the comparison M7 is about, so the
+    finding needs no signature function. What it does NOT do is earn M7 a
+    probe from §5's table — §4's own M7 probe ("per-driver passband comparison
+    against a declared-sensitivity prior") is not a P1-P7 primitive, and
+    inventing an id for it in the registry would be a plan change made
+    silently in the wrong file.
+    """
+
+    spec = mechanism_spec(MECHANISM_LEVEL_FRAME)
+    assert spec.title == "Inter-driver level-frame error"
+    assert set(spec.fix_classes) == {"eq", "refit"}
+    assert spec.corpus_evidence_tier == "adjudicated"
+    # The tier is the plan's stated EXTENSION (a known intervention applied
+    # and the feature responding), not a §5 probe, and the citation says so
+    # rather than letting a reader assume a probe was run.
+    assert "extension" in spec.corpus_citation
+    assert set(spec.discriminating_probes) <= set(PROBES)
