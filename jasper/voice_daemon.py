@@ -1419,7 +1419,11 @@ class WakeLoop:
         """Public wrapper for `_play_cue`, callable via the control
         socket so external clients (jasper-control HTTP, the
         `jasper-cues play` CLI) can play cues through the daemon's
-        fan-in-backed TtsPlayout."""
+        fan-in-backed TtsPlayout.
+
+        Refuses (returns `measurement_active`) while a room-correction
+        measurement window is open — assistant audio would corrupt
+        the in-progress capture (issue #1786)."""
         if not slug:
             return "missing_slug"
         if self._cues is None:
@@ -1427,6 +1431,14 @@ class WakeLoop:
         from .cues.registry import find as _find
         if _find(slug) is None:
             return "unknown_slug"
+        if self._measurement_active.is_set():
+            log_event(
+                logger,
+                "cue.skipped",
+                reason="measurement_active",
+                slug=slug,
+            )
+            return "measurement_active"
         if self._output_gate.is_active:
             log_event(
                 logger,
@@ -1457,9 +1469,35 @@ class WakeLoop:
         layering an escalation cue on top of an active TTS turn would
         garble both. Suppressing the cue mid-session is the safe
         default — if the connection is wedged, the next wake event
-        will fire `cant_connect` reactively anyway."""
+        will fire `cant_connect` reactively anyway.
+
+        Same safe-default suppression applies to an open room-
+        correction measurement window (issue #1786): the next wake
+        event (or reactive `cant_connect`) still handles a genuinely
+        wedged connection once the window closes.
+
+        Measurement is checked before output-active (unlike the
+        session check above it, the two CAN be true at once —
+        `measurement_pause()` only refuses on an active session, not
+        on output) so the skip reason names the more fundamental cause
+        when both hold: a household reading the journal should see
+        "we're respecting the measurement window", not "output
+        happened to be busy". The fall-through to `play_cue()` below
+        double-checks measurement there too (its own independent gate
+        for direct CUE_PLAY callers) — harmless, since this function's
+        own check above already covers the supervisor-escalation path
+        and short-circuits before ever reaching it."""
         if self._state is State.SESSION:
             return "skipped_session_active"
+        if self._measurement_active.is_set():
+            log_event(
+                logger,
+                "cue.skipped",
+                reason="measurement_active",
+                slug=slug,
+                mode="supervisor",
+            )
+            return "skipped_measurement_active"
         if self._output_gate.is_active:
             return "skipped_output_active"
         return await self.play_cue(slug)
@@ -1486,8 +1524,30 @@ class WakeLoop:
         skipped — the user is already engaged and a delayed timer
         chime would be more confusing than a missed one. The user
         can `list_timers` to recover state in either case.
+
+        Dropped immediately, with no grace wait, while a room-
+        correction measurement window is open: those windows commonly
+        outlast the 5 s grace period, and any assistant audio would
+        corrupt the in-progress capture (issue #1786). Re-checked once
+        more after the grace wait too, in case a measurement window
+        opens while the loop is waiting out a session/output-busy
+        condition.
         """
         text = announcement_text(timer)
+
+        def _measurement_suppressed() -> bool:
+            if not self._measurement_active.is_set():
+                return False
+            log_event(
+                logger,
+                "timer.announce_suppressed",
+                timer_id=timer.id,
+                reason="measurement_active",
+            )
+            return True
+
+        if _measurement_suppressed():
+            return
         deadline = asyncio.get_event_loop().time() + 5.0
         while self._state is State.SESSION or self._output_gate.is_active:
             if asyncio.get_event_loop().time() >= deadline:
@@ -1498,6 +1558,8 @@ class WakeLoop:
                 )
                 return
             await asyncio.sleep(0.5)
+        if _measurement_suppressed():
+            return
         logger.info(
             "timer announce: id=%s label=%r text=%r",
             timer.id, timer.label, text,
@@ -1510,8 +1572,34 @@ class WakeLoop:
         Research is a "tell me later" promise. Unlike timer chimes, a
         result that arrives mid-conversation is held until the wake loop
         returns to WAKE, then drained by _end_turn_inner.
+
+        Held the same way while a room-correction measurement window is
+        open (issue #1786): speaking would corrupt the sweep, and the
+        drain path cannot run until the window closes anyway (a voice
+        turn cannot complete while `_measurement_active` is set), so
+        the existing queue-then-drain machinery is already safe here —
+        no new drain trigger is needed.
+
+        The drain itself only runs on the household's next COMPLETED
+        voice turn (_end_turn_inner → _drain_pending_research), not on
+        `measurement_resume()` — a queued result can sit for a while,
+        bounded only by `_research_pending_cap`. Draining eagerly on
+        resume was considered and rejected: that would fire right at
+        the sweep's trailing edge, the same in-flight-bleed window
+        tracked separately as issue #1898, reintroducing the class of
+        risk this fix closes rather than a fresh, unrelated one.
         """
         async with self._research_announce_lock:
+            if self._measurement_active.is_set():
+                log_event(
+                    logger,
+                    "research.announce_suppressed",
+                    job_id=job.id,
+                    status=job.status,
+                    reason="measurement_active",
+                )
+                self._queue_pending_research(job)
+                return
             if self._state is State.SESSION or self._output_gate.is_active:
                 self._queue_pending_research(job)
                 return
@@ -1548,16 +1636,39 @@ class WakeLoop:
         )
 
     async def _drain_pending_research(self) -> None:
-        if self._state is State.SESSION or self._output_gate.is_active:
+        # measurement_active is bundled with session here (both mean "don't
+        # emit ANY audio right now" — issue #1786), including in the
+        # per-iteration re-check below. Without that per-iteration check, a
+        # measurement window opening mid-batch would loop this function
+        # forever: _speak_research_job's own measurement guard re-queues the
+        # job, which immediately re-fills `_pending_research`, which the
+        # `while` condition below sees as "more work" and retries — a tight
+        # busy-spin with no sleep, for as long as the window stays open
+        # (potentially minutes for a held crossover-v2 session, unlike the
+        # normally-brief `_output_gate.is_active`, which the pre-existing
+        # code deliberately leaves out of this per-iteration check and is
+        # out of scope for this fix).
+        if (
+            self._state is State.SESSION
+            or self._output_gate.is_active
+            or self._measurement_active.is_set()
+        ):
             return
         async with self._research_announce_lock:
-            if self._state is State.SESSION or self._output_gate.is_active:
+            if (
+                self._state is State.SESSION
+                or self._output_gate.is_active
+                or self._measurement_active.is_set()
+            ):
                 return
             while self._pending_research and self._state is State.WAKE:
                 batch = self._pending_research
                 self._pending_research = []
                 for idx, job in enumerate(batch):
-                    if self._state is State.SESSION:
+                    if (
+                        self._state is State.SESSION
+                        or self._measurement_active.is_set()
+                    ):
                         self._pending_research = (
                             batch[idx:] + self._pending_research
                         )
@@ -1565,6 +1676,16 @@ class WakeLoop:
                     await self._speak_research_job(job)
 
     async def _speak_research_job(self, job: ResearchJob) -> None:
+        if self._measurement_active.is_set():
+            log_event(
+                logger,
+                "research.announce_suppressed",
+                job_id=job.id,
+                status=job.status,
+                reason="measurement_active",
+            )
+            self._queue_pending_research(job)
+            return
         if self._state is State.SESSION or self._output_gate.is_active:
             self._queue_pending_research(job)
             return
@@ -1669,7 +1790,15 @@ class WakeLoop:
                 job_id=job.id,
                 reason=reason,
             )
-            if reason == "session_active":
+            # session_active and measurement_active both mean "don't
+            # emit ANY audio right now" — queue for the drain path
+            # instead. The other reasons (mic_muted, spend_cap_reached,
+            # connection_paused) mean "can't listen for a reply" but
+            # speaking is still safe, so those fall through to an
+            # immediate read (issue #1786 — measurement_active used to
+            # be lumped in with that bucket, which spoke the research
+            # result into a live measurement sweep).
+            if reason in ("session_active", "measurement_active"):
                 self._queue_pending_research(job)
                 return
             await self._read_research_job_immediately(job)
