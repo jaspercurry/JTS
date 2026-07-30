@@ -46,6 +46,31 @@ class AssistantOutputGate:
     def epoch(self) -> int:
         return self._epoch
 
+    async def wait_idle(self, timeout: float) -> bool:
+        """Wait until no episode owns output. Returns whether it went idle.
+
+        Event-driven off the same idle signal `begin_turn` waits on — no
+        polling, and no cost at all when the gate is already idle (the
+        loop body never runs, so this never yields to the event loop).
+
+        The re-check loop is deliberate: `asyncio.Event` wakes every
+        waiter the instant it is set, so a waiter can be resumed by an
+        episode that ended and be scheduled only after the next one has
+        begun. Re-reading `_active` after each wake makes the answer
+        true at return time rather than at wake time.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self._active is not None:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self._idle.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+        return True
+
     def is_current(self, episode: AssistantOutputEpisode) -> bool:
         active = self._active
         return (

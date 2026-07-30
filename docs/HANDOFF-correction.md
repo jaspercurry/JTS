@@ -2123,6 +2123,17 @@ in feedback (2026-05-09).
   drift reconciler so it cannot overwrite the quiet-start/ramp/restore
   transaction;
   return JSON `{"result": "ok"}`.
+- The reply is held while assistant audio that was **already in playout**
+  when `MEASURE_PAUSE` landed finishes (issue #1898). The window is armed
+  first — so no new cue/timer/announcement can start and mic frames stop
+  immediately (issue #1786) — and the drain then waits out only that tail,
+  deferring to it rather than cancelling it. Bounded by
+  `voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC`, which must stay under the
+  coordinator's `VOICE_MEASURE_PAUSE_TIMEOUT_SEC` read timeout: a
+  coordinator that gives up believes voice was never paused and skips
+  `MEASURE_RESUME`. On timeout the daemon proceeds with the window open
+  and logs `event=measurement.inflight_drain_timeout` at WARNING, naming
+  the first capture as possibly contaminated. Renewals do not drain.
 - While the measurement window remains open, the coordinator repeats
   idempotent `MEASURE_PAUSE` every 60 seconds to renew the voice daemon's
   120-second crash-recovery timer. A dead coordinator stops renewing, so the

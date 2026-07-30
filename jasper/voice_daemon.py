@@ -460,6 +460,34 @@ class State(Enum):
 CONTENT_ACTIVITY_POLL_SEC = 1.0
 CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 
+# Bounded wait for assistant audio that was ALREADY in playout when a
+# MEASURE_PAUSE landed (issue #1898). #1786 stops new cues, timers, and
+# announcements from *starting* once the window is open; this drains the
+# tail of one that started a moment earlier, so it cannot bleed into the
+# window's first capture.
+#
+# 2.0 s is a ceiling, not a preference. The coordinator awaits this
+# command's reply with a VOICE_MEASURE_PAUSE_TIMEOUT_SEC (3.0 s) read
+# timeout, and a coordinator that gives up believes voice was never
+# paused: it skips MEASURE_RESUME on the way out, and the speaker then
+# stays gated until the daemon's 2-minute auto-clear. install.sh restarts
+# jasper-voice and jasper-web at different points of a deploy, so an OLD
+# coordinator can be talking to a NEW daemon — the bound has to fit under
+# the timeout that coordinator already shipped with, not one we raise
+# here. The coordinator's timeout bounds only its `reader.readline()`, so
+# the 1.0 s of margin is not transport overhead — it is the daemon-side
+# work that runs BEFORE the drain and is therefore inside the same reply:
+# `note_measurement_active` waits on the volume coordinator's
+# `_reconcile_write_lock` for an already-started reconciler write to land,
+# and `pause_content_meter` does an `asyncio.to_thread` socket write to
+# outputd with one retry. Both are milliseconds when healthy and neither
+# is hard-bounded, so the margin has to absorb their worst case on a
+# loaded 1 GB Pi. 2.0 s then covers the typical remaining tail of a cue or
+# timer announcement (registry cue texts run ~3-7 s of speech and PAUSE
+# lands mid-playout). Pinned against the coordinator's timeout by
+# tests/test_voice_daemon_measurement_inflight.py.
+MEASUREMENT_INFLIGHT_DRAIN_SEC = 2.0
+
 
 class ContentActivityTracker:
     """Cheap observer for music/activity telemetry and server-VAD gating.
@@ -2365,19 +2393,45 @@ class WakeLoop:
 
     async def measurement_pause(self) -> str:
         """Open a measurement window. Set the gate event, pause content
-        activity observation, and arm a 2-minute auto-clear safety timer.
+        activity observation, arm a 2-minute auto-clear safety timer, and
+        wait (bounded) for in-flight assistant audio to finish.
 
         Refuses with `BUSY` when a voice session is currently active
         — yanking the session would orphan the user's turn. The
         coordinator (jasper.correction.coordinator) is expected to
         check STATUS first; this is defense-in-depth.
 
-        Idempotent — calling twice is harmless. Returns:
+        Ordering is load-bearing (issue #1898). The gate event is set,
+        and the safety timer armed, BEFORE the in-flight drain, so that:
+
+        * no NEW cue, timer, or announcement can start during the drain.
+          Two mechanisms, not one: the four #1786 entry points
+          (`play_cue`, `play_supervisor_cue`, `announce_timer`,
+          `announce_research_ready`) refuse by reading this flag, while
+          the internal `_play_cue` is blocked structurally — the episode
+          we are draining still owns the gate, so `begin_if_idle` returns
+          None to any caller that reaches it;
+        * mic frames stop immediately, so a wake cannot fire into the
+          drain window and open a reactive cue behind our back;
+        * a crash mid-drain still auto-clears after 2 minutes.
+
+        The drain therefore only ever waits out audio that was already
+        playing when PAUSE landed. It defers to that audio; it never
+        cancels it, so no wake-blocking cue is cut short or dropped.
+
+        Idempotent — calling twice is harmless. The drain runs only on
+        the opening transition: the coordinator's 60 s lease refresh
+        re-sends PAUSE into an already-open window, where the first
+        capture has long since begun and no new output can start, so
+        renewals stay latency-free.
+
+        Returns:
           - "ok" when the window is now open.
           - "BUSY" when refused due to an active session.
         """
         if self._state is State.SESSION:
             return "BUSY"
+        opening = not self._measurement_active.is_set()
         await self._set_measurement_active(True, trigger="pause")
         self._content_activity.pause()
         await self._tts.pause_content_meter()
@@ -2415,8 +2469,52 @@ class WakeLoop:
         # corrupt the turn lifecycle. Single-slot reference is enough;
         # we cancel via that slot on RESUME or repeated PAUSE.
         self._measurement_safety_task = loop.create_task(_safety())
+        if opening:
+            await self._drain_inflight_output()
         return "ok"
 
+    async def _drain_inflight_output(self) -> None:
+        """Wait out assistant audio that was already playing when PAUSE
+        landed, so its tail cannot enter the window's first capture.
+
+        Bounded by `MEASUREMENT_INFLIGHT_DRAIN_SEC`. On timeout the
+        window stays open and we say so at WARNING: blocking a
+        measurement behind a stuck output episode would be worse than
+        one contaminated capture the household can simply re-run, and
+        failing the window open silently would be worse than both.
+
+        Returns immediately — without yielding to the event loop — when
+        the gate is already idle, which is the overwhelmingly common
+        case.
+        """
+        if not self._output_gate.is_active:
+            return
+        active_kind = self._output_gate.active_kind or "unknown"
+        started = time.monotonic()
+        drained = await self._output_gate.wait_idle(
+            MEASUREMENT_INFLIGHT_DRAIN_SEC
+        )
+        waited_ms = int((time.monotonic() - started) * 1000)
+        if drained:
+            log_event(
+                logger,
+                "measurement.inflight_drained",
+                active_kind=active_kind,
+                waited_ms=waited_ms,
+            )
+            return
+        log_event(
+            logger,
+            "measurement.inflight_drain_timeout",
+            active_kind=self._output_gate.active_kind or active_kind,
+            waited_ms=waited_ms,
+            bound_sec=MEASUREMENT_INFLIGHT_DRAIN_SEC,
+            detail=(
+                "assistant audio still playing; the measurement window is "
+                "open anyway and its first capture may be contaminated"
+            ),
+            level=logging.WARNING,
+        )
 
     async def _play_mute_click(self, *, going_on: bool) -> None:
         """Best-effort. If the TTS stream isn't open or write fails,
