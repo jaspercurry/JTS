@@ -526,6 +526,7 @@ enable_usbgadget() {
 }
 
 install_grouping_unit_files() {
+    local distro_unit
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
         "${SYSTEMD_DIR}/jasper-snapserver.service"
@@ -738,6 +739,7 @@ park_streambox_brain_units() {
     # Both full and streambox profiles run the same renderer/fan-in graph and USB
     # Audio Input needs its direct lane on either profile, so coupling and its
     # bounded health timer deliberately remain outside this parking list.
+    local brain_unit
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
         jasper-aec-reconcile.service jasper-input.service \
@@ -816,6 +818,7 @@ PY
 }
 
 start_streambox_runtime_units() {
+    local unit
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
         jasper-control.service jasper-source-intent-reconcile.service
@@ -1117,6 +1120,7 @@ install_systemd_units() {
     # instead of the JTS leader). JTS owns jasper-snapserver /
     # jasper-snapclient; the distro units must never run. Idempotent and
     # safe when the packages are absent (no unit files → no-op).
+    local distro_unit
     for distro_unit in snapserver.service snapclient.service; do
         if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
                 | grep -q "^${distro_unit}"; then
@@ -1298,6 +1302,7 @@ install_systemd_units() {
     # topology enables the .socket instead, which pulls in the .service
     # on demand. Idempotent: re-running install.sh after migration is
     # already done is a no-op.
+    local unit
     for unit in "${WIZARD_UNITS[@]}"; do
         if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
             # First time through this socket-activation migration —

@@ -51,13 +51,14 @@ CLAIM_PID_FILE="/tmp/jts-claim-librespot-$$.pid"
 # re-reads canonical Spotify intent + role on every final start/restart, so an
 # Off or follower park landing during the long OAuth wait remains parked.
 RESTORE_COMPLETED=0
+CLAIM_STARTED=0
 
 ssh_pi() { ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"; }
 
 cleanup() {
     set +e
     # Kill the OAuth-mode librespot if it's still running.
-    if [[ -f /tmp/.last-claim-pid ]]; then
+    if [[ "${CLAIM_STARTED}" == "1" ]]; then
         ssh_pi "sudo pkill -F ${CLAIM_PID_FILE} 2>/dev/null; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}"
     else
         ssh_pi "sudo pkill -f 'librespot --enable-oauth' 2>/dev/null; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}" 2>/dev/null
@@ -104,7 +105,7 @@ ssh_pi "sudo -u pi -g audio bash -c '
         > ${CLAIM_LOG} 2>&1 &
     echo \$! > ${CLAIM_PID_FILE}
 '"
-touch /tmp/.last-claim-pid
+CLAIM_STARTED=1
 
 echo "==> Waiting for librespot to print the OAuth URL..."
 URL=""

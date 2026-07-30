@@ -42,13 +42,15 @@ import csv
 import json
 import math
 import sys
-import types as _types
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+from jasper.wake_training.feature_bank import (
+    install_openwakeword_custom_verifier_stub,
+)
 
 try:
     from scripts._wake_audio_metrics import rms_amplitude as _rms
@@ -58,9 +60,7 @@ except ModuleNotFoundError as exc:
     from _wake_audio_metrics import rms_amplitude as _rms
 
 
-_cvm_stub = _types.ModuleType("openwakeword.custom_verifier_model")
-_cvm_stub.train_custom_verifier = None
-sys.modules.setdefault("openwakeword.custom_verifier_model", _cvm_stub)
+install_openwakeword_custom_verifier_stub()
 
 SAMPLE_RATE_HZ = 16000
 SAMPLE_WIDTH_BYTES = 2

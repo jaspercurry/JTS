@@ -48,6 +48,8 @@ def test_claim_restore_rechecks_current_policy_instead_of_entry_snapshot():
         "--source spotify"
     ) in text
     assert "RESTORE_COMPLETED" in text
+    assert "CLAIM_STARTED" in text
+    assert "/tmp/.last-claim-pid" not in text
     assert (
         "ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed "
         "--source spotify"

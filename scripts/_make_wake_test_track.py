@@ -28,29 +28,20 @@ import sys
 import wave
 from pathlib import Path
 
+from jasper.env_load import load_env_files
+
 
 DEFAULT_OUT_DIR = Path("/tmp/wake-test-track")
+ENV_FILES = (
+    "/etc/jasper/jasper.env",
+    "/var/lib/jasper/voice_provider.env",
+    "/var/lib/jasper-secrets/voice_keys.env",
+)
 
 
 def _slug(phrase: str) -> str:
     """Filename-safe slug for a phrase. 'Hey Buddy' -> 'hey-buddy'."""
     return phrase.strip().lower().replace(" ", "-")
-
-
-def load_env(path: str = "/etc/jasper/jasper.env") -> None:
-    """Parse a simple KEY=VAL file into os.environ (does NOT overwrite)."""
-    if not os.path.exists(path):
-        return
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            v = v.strip().strip("'\"")
-            os.environ.setdefault(k.strip(), v)
 
 
 def main() -> int:
@@ -67,12 +58,10 @@ def main() -> int:
     OUT_DIR = args.out_dir
     SLUG = _slug(args.word)
 
-    load_env()
-    # Also load the wizard-written overlays if present (voice provider may be
-    # set in voice_provider.env; WS1 Phase 4a moved the OPENAI_API_KEY itself
-    # into the group-jasper-secrets voice_keys.env). Reading as root on the Pi.
-    load_env("/var/lib/jasper/voice_provider.env")
-    load_env("/var/lib/jasper-secrets/voice_keys.env")
+    # The wrapper runs this script as root on the Pi, so it can read the
+    # compartmented voice key file. Keep the narrow file set this tool needs,
+    # but use the canonical parser and systemd-compatible precedence.
+    load_env_files(ENV_FILES)
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:

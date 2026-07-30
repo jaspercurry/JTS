@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from jasper.wake_events import SAMPLE_RATE_HZ, WakeEventStore
+from jasper.cli.wake_score import LEGS as SCORE_LEGS
 
 # Import the script under test by absolute path since scripts/ isn't
 # a package on sys.path.
@@ -162,6 +163,10 @@ def test_quadrant_for(leg: str, music: int, expected: str) -> None:
 def test_quadrant_for_rejects_unknown_leg() -> None:
     with pytest.raises(ValueError, match="unknown leg"):
         extract.quadrant_for("bogus", 0)
+
+
+def test_extractor_and_scorer_share_leg_vocabulary() -> None:
+    assert extract.LEGS == SCORE_LEGS
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +445,9 @@ def test_force_refuses_case_variant_corpus_ancestor(tmp_path: Path) -> None:
     source_store.open()
     source_store.close()
     output = tmp_path / "OwnedOutput"
-    assert extract.main([str(source), str(output)]) == 0
+    # An empty corpus is a completed-but-unsuccessful extraction; it still
+    # writes the owned artifact shape needed to exercise the removal guard.
+    assert extract.main([str(source), str(output)]) == 1
 
     corpus = output / "Corpus"
     corpus_store = WakeEventStore(corpus)
@@ -472,6 +479,18 @@ def test_force_refuses_case_variant_corpus_ancestor(tmp_path: Path) -> None:
 def test_main_errors_on_missing_db(tmp_path: Path) -> None:
     rc = extract.main([str(tmp_path), str(tmp_path / "out")])
     assert rc == 2  # corpus_dir has no wake-events.sqlite3
+
+
+def test_main_returns_failure_when_no_clips_are_extracted(
+    corpus_dir: Path,
+) -> None:
+    output = corpus_dir / "out"
+
+    rc = extract.main([str(corpus_dir), str(output)])
+
+    assert rc == 1
+    assert _read_manifest(output) == []
+    assert "No clips extracted" in (output / "summary.txt").read_text()
 
 
 # ---------------------------------------------------------------------------
