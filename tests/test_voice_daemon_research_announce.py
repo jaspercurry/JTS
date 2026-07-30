@@ -247,9 +247,14 @@ async def test_failed_research_cue_failure_does_not_mark_announced():
 
 @pytest.mark.parametrize(
     "gate",
-    ["mic_muted", "measurement_active", "spend_cap", "connection_paused"],
+    ["mic_muted", "spend_cap", "connection_paused"],
 )
 async def test_confirmation_guard_ladder_reads_immediately(gate: str):
+    # measurement_active is NOT in this ladder (issue #1786): unlike these
+    # three "can't listen for a reply, but safe to speak" gates, an open
+    # measurement window means "don't emit ANY audio" — see
+    # test_confirmation_guard_measurement_active_holds_without_immediate_read
+    # below, which pins the opposite (queued, not read immediately).
     wl = _wake_loop()
     spoken: list[str] = []
 
@@ -259,8 +264,6 @@ async def test_confirmation_guard_ladder_reads_immediately(gate: str):
 
     if gate == "mic_muted":
         wl._mic_muted = True
-    elif gate == "measurement_active":
-        wl._measurement_active.set()
     elif gate == "spend_cap":
         wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
     elif gate == "connection_paused":
@@ -301,6 +304,98 @@ async def test_confirmation_guard_session_active_holds_without_immediate_read():
     assert [job.id for job in wl._pending_research] == ["job12345"]
     assert scheduler.announced == ["job12345"]
     assert scheduler.read == []
+
+
+async def test_confirmation_guard_measurement_active_holds_without_immediate_read():
+    """issue #1786: a measurement window opening between the "ready?"
+    prompt and the confirmation-window attempt must queue the job, not
+    read the research result aloud into the live sweep.
+
+    Before the fix, `_open_confirmation_window` treated
+    `_research_confirmation_guard_reason() == "measurement_active"` the
+    same as mic_muted/spend_cap/connection_paused (safe to speak) instead
+    of like session_active (must not speak) — this test pins the
+    corrected dispatch by flipping the flag as a side effect of the first
+    play, exactly as the sibling session_active test does above.
+    """
+    wl = _wake_loop()
+    spoken: list[str] = []
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        wl._measurement_active.set()
+        return True
+
+    scheduler = _MarkingScheduler()
+    wl._play_dynamic_text = _play
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+
+    await wl.announce_research_ready(_job())
+
+    assert spoken == ["Your research is ready — want me to read it now?"]
+    assert [job.id for job in wl._pending_research] == ["job12345"]
+    assert scheduler.announced == ["job12345"]
+    assert scheduler.read == []
+
+
+async def test_announce_research_ready_measurement_active_queues_without_speaking(
+    caplog,
+):
+    """issue #1786: measurement already active when the job finishes ⇒
+    nothing is spoken at all (not even the "ready?" prompt), the job is
+    queued for the post-window drain, and a structured event line names
+    the suppressed job and why."""
+    wl = _wake_loop()
+    wl._measurement_active.set()
+    spoken: list[str] = []
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        return True
+
+    scheduler = _MarkingScheduler()
+    wl._play_dynamic_text = _play
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        await wl.announce_research_ready(_job())
+
+    assert spoken == []
+    assert [job.id for job in wl._pending_research] == ["job12345"]
+    assert scheduler.announced == []
+    assert "event=research.announce_suppressed" in caplog.text
+    assert "reason=measurement_active" in caplog.text
+    assert "job_id=job12345" in caplog.text
+
+
+async def test_research_drain_never_speaks_while_measurement_active():
+    """issue #1786: _drain_pending_research (distinct from
+    announce_research_ready — this is the path _end_turn_inner uses to
+    flush jobs queued while busy) must also honor the flag, mirroring
+    test_research_drain_never_speaks_while_session further below.
+
+    This isn't just defense in depth: _drain_pending_research's own
+    top-level guard must check the flag too, not only
+    _speak_research_job's internal one. Without it, this test hangs —
+    _speak_research_job re-queues the job, which refills
+    `_pending_research`, which the `while` loop here reads as "more
+    work" and retries with no sleep, forever, for as long as the window
+    stays open (a real bug this test caught while developing the fix)."""
+    from jasper.voice_daemon import State
+
+    wl = _wake_loop()
+    wl._state = State.WAKE
+    wl._measurement_active.set()
+    wl._pending_research = [_job()]
+
+    async def _play(_text: str) -> bool:
+        raise AssertionError("research must not speak during a measurement window")
+
+    wl._play_dynamic_text = _play
+
+    await wl._drain_pending_research()
+
+    assert [job.id for job in wl._pending_research] == ["job12345"]
 
 
 def test_record_research_delivery_clears_stale_pending_job():
