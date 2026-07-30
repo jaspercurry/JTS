@@ -533,8 +533,8 @@ def test_usb_mic_leg_config_defaults_and_parses_env(monkeypatch):
     monkeypatch.delenv("JASPER_USB_MIC_LEG", raising=False)
     assert aec_bridge.BridgeConfig.from_env().usb_mic_leg == "primary"
 
-    monkeypatch.setenv("JASPER_USB_MIC_LEG", "chip_aec_210")
-    assert aec_bridge.BridgeConfig.from_env().usb_mic_leg == "chip_aec_210"
+    monkeypatch.setenv("JASPER_USB_MIC_LEG", "raw0")
+    assert aec_bridge.BridgeConfig.from_env().usb_mic_leg == "raw0"
 
 
 def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
@@ -573,6 +573,28 @@ def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
         "mode": "software_aec3",
         "leg": "clean",
         "fallback_active": True,
+    }
+    assert aec_bridge._resolve_usb_mic_source(
+        "raw0",
+        plan=plan,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+    ) == {
+        "selection": "raw0",
+        "mode": "raw",
+        "leg": "raw0",
+        "fallback_active": False,
+    }
+    assert aec_bridge._resolve_usb_mic_source(
+        "raw0",
+        plan=None,
+        production_chip_aec_enabled=False,
+        chip_aec_primary_leg="chip_aec_150",
+    ) == {
+        "selection": "primary",
+        "mode": "software_aec3",
+        "leg": "clean",
+        "fallback_active": False,
     }
 
 
@@ -1541,6 +1563,136 @@ def test_usb_host_mic_selects_plan_beam_without_changing_voice_gain(
         "leg": "chip_aec_210",
         "fallback_active": False,
     }
+
+
+def test_usb_host_mic_routes_existing_raw0_without_changing_managed_voice(
+    monkeypatch,
+):
+    """Raw comparison export reuses channel 2 and leaves :9876 on chip AEC."""
+
+    import socket as real_socket
+    from jasper.mics import xvf3800
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.setenv("JASPER_AEC_MIC_GAIN_DB", "6")
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(real_socket, "socket", MagicMock(side_effect=sockets))
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2, 3, 4)),
+    )
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+        usb_mic_leg="raw0",
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    raw0_frames = [
+        (np.full(FRAME_SAMPLES, 3000 + i, dtype=np.int16)).tobytes()
+        for i in range(4)
+    ]
+    chip_150_frames = [
+        (np.full(FRAME_SAMPLES, 1000 + i, dtype=np.int16)).tobytes()
+        for i in range(4)
+    ]
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        MagicMock(),
+        raw0_q=_ScriptedMicQ(raw0_frames),
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ(chip_150_frames),
+            "chip_aec_210": _AlwaysEmptyQ(),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+        config=config,
+    )
+
+    gain_lin = 10.0 ** (6.0 / 20.0)
+    expected_voice = b"".join(
+        aec_bridge._apply_mic_output_gain(frame, gain_lin)[0]
+        for frame in chip_150_frames
+    )
+    on_sock, usb_sock, _raw_sock, raw0_sock = sockets
+    on_sock.sendto.assert_called_once_with(
+        expected_voice,
+        (config.out_host, config.out_port),
+    )
+    assert [
+        call.args[0][USB_MIC_HEADER_BYTES:]
+        for call in usb_sock.sendto.call_args_list
+    ] == raw0_frames
+    raw0_sock.sendto.assert_called_once_with(
+        b"".join(raw0_frames),
+        (config.out_host, config.out_port_raw0),
+    )
+    stats = aec_bridge._bridge_stats.snapshot()
+    assert stats["active_capture_plan"]["usb_mic_source"] == {
+        "selection": "raw0",
+        "mode": "raw",
+        "leg": "raw0",
+        "fallback_active": False,
+    }
+    assert stats["active_capture_plan"]["beam_plan"]["primary_leg"] == (
+        "chip_aec_150"
+    )
+    assert stats["counters"]["usb_mic_source_fallback_frames"] == 0
+
+
+def test_usb_host_mic_raw0_never_falls_back_to_managed_voice(monkeypatch):
+    """A missing comparison frame is skipped, not relabeled clean audio."""
+
+    import socket as real_socket
+    from jasper.mics import xvf3800
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(real_socket, "socket", MagicMock(side_effect=sockets))
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+        usb_mic_leg="raw0",
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    primary_frames = [
+        bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        MagicMock(),
+        raw0_q=_AlwaysEmptyQ(),
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ(primary_frames),
+            "chip_aec_210": _AlwaysEmptyQ(),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+        config=config,
+    )
+
+    on_sock, usb_sock, _raw_sock, _raw0_sock = sockets
+    on_sock.sendto.assert_called_once_with(
+        b"".join(primary_frames),
+        (config.out_host, config.out_port),
+    )
+    usb_sock.sendto.assert_not_called()
+    stats = aec_bridge._bridge_stats.snapshot()
+    assert stats["active_capture_plan"]["usb_mic_source"] == {
+        "selection": "raw0",
+        "mode": "raw",
+        "leg": "raw0",
+        "fallback_active": False,
+    }
+    assert stats["counters"]["usb_mic_source_fallback_frames"] == 0
 
 
 def test_usb_host_mic_missing_selected_beam_falls_back_to_primary(monkeypatch):

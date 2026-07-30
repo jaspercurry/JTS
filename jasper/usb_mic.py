@@ -2,13 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Policy and status for exporting the cleaned JTS mic over USB.
+"""Policy and status for exporting a selected JTS mic source over USB.
 
 The first shipped slice deliberately reuses the existing UAC2 function: USB
 Audio Input must already be enabled, then this feature adds the reverse
 (Pi-to-host) mono direction.  ``jasper-usbgadget`` owns descriptor composition;
 ``jasper-usbmic`` owns the audio relay; this module owns only durable intent and
-the backend-facing view of desired versus observed state.
+the backend-facing view of desired versus observed state. Source selection is
+strictly downstream of JTS voice/wake routing.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ INTENT_PATH = "/var/lib/jasper/usb_mic.env"
 INTENT_KEY = "JASPER_USB_MIC"
 USB_MIC_LEG_KEY = "JASPER_USB_MIC_LEG"
 USB_MIC_PRIMARY_LEG = "primary"
+USB_MIC_RAW_XVF_LEG = "raw0"
 SOURCE_INTENT_PATH = "/var/lib/jasper/source_intent.env"
 GADGET_PATH = "/sys/kernel/config/usb_gadget/jts-usb-audio"
 RELAY_STATUS_PATH = "/run/jasper-usbmic/status.json"
@@ -167,8 +169,11 @@ def usb_mic_leg_choices(env: Mapping[str, str]) -> list[dict[str, Any]]:
     """Return user-selectable export sources for the active chip-beam plan.
 
     ``primary`` is feature vocabulary: it follows the stream JTS itself uses
-    for voice. Concrete beam tokens come only from the active hardware plan,
-    so a future geometry can add its own choices without changing this host.
+    for voice. The existing physical ``raw0`` capture is offered only when an
+    XVF chip-beam plan proves that six-channel capture is active; it remains a
+    USB-only comparison source and is never voice/wake fallback vocabulary.
+    Concrete beam tokens come only from the active hardware plan, so a future
+    geometry can add its own choices without changing this host.
     """
 
     choices: list[dict[str, Any]] = [{
@@ -181,6 +186,16 @@ def usb_mic_leg_choices(env: Mapping[str, str]) -> list[dict[str, Any]]:
     plan = xvf3800.chip_beam_plan_from_env(env)
     if plan is None:
         return choices
+    choices.append({
+        "value": USB_MIC_RAW_XVF_LEG,
+        "label": "Raw microphone (no echo cancellation)",
+        "description": (
+            "Comparison only — exports physical XVF microphone 0 without "
+            "chip or software echo cancellation or JTS voice gain. JTS "
+            "voice stays on its managed echo-cancelled source."
+        ),
+        "comparison_only": True,
+    })
     for leg in plan.legs:
         choices.append({
             "value": leg.token,
@@ -247,7 +262,7 @@ def relay_audio_issue(relay: Mapping[str, Any]) -> str:
     if not bool(relay.get("audio_stalled")):
         return ""
     if bool(relay.get("source_stalled")):
-        return "The cleaned microphone stream stopped before it reached USB."
+        return "The selected microphone stream stopped before it reached USB."
     if bool(relay.get("sustained_drops")):
         return "The USB microphone cannot keep up and is dropping audio continuously."
     return "The USB microphone audio path is stalled."

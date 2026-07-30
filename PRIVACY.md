@@ -87,6 +87,10 @@ switch is the sole end-user authority for the USB export and audio continues
 while the voice assistant is paused. The USB microphone preference is off by
 default; when it is on, live room audio leaves the Pi only across the physically
 connected USB cable and is consumed by whichever computer app opens that input.
+The adjacent source selector normally follows JTS voice but can explicitly
+export a supported XVF's raw physical microphone for comparison, without echo
+cancellation. That raw choice changes only the USB cable export; it does not
+change voice, wake, or cloud-provider routing.
 
 Voice-assistant pause also does not cover every operator-initiated measurement
 path. Room correction and active-speaker sweep flows are explicit

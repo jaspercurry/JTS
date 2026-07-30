@@ -1,5 +1,5 @@
 [Unit]
-Description=Export the JTS AEC-cleaned microphone to the connected USB host
+Description=Export the selected JTS microphone source to the connected USB host
 After=jasper-usbgadget.service jasper-aec-bridge.service sound.target
 PartOf=jasper-usbgadget.service jasper-aec-bridge.service
 

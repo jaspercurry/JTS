@@ -215,15 +215,21 @@ budget before scheduling its new desired state.
 
 The adjacent source selector writes `JASPER_USB_MIC_LEG`. `primary` is the
 default and follows the same production-clean stream JTS uses for voice;
-additional options are derived from the reconciler-applied `ChipBeamPlan`, not
-hard-coded into the cross-profile UI or persistence contract. The control
-endpoint fresh-reads that reconciler-owned plan (rather than trusting the
-long-lived control process environment) and rejects a choice it does not
-advertise. At the bridge's
-USB-only emit site, an explicit chip beam receives the same post-AEC gain and
-soft-limit as `primary`; if its frame is absent for an iteration (including in
-software-AEC mode), that iteration falls back to the final `clean` frame. The
-bridge publishes the effective physical leg plus
+the reconciler-applied `ChipBeamPlan` supplies both its fixed hardware beams and
+proof that the bridge is capturing the supported six-channel XVF shape. In that
+shape the UI also advertises the existing physical `raw0` capture as **Raw
+microphone (no echo cancellation)** with comparison-only copy. The bridge
+routes the already-captured channel-2 frame directly to `:9894`; it adds no
+capture stack, chip/software AEC, or JTS voice gain. The control endpoint
+fresh-reads the reconciler-owned plan (rather than trusting the long-lived
+control process environment) and rejects a choice it does not advertise.
+
+At the bridge's USB-only emit site, an explicit chip beam receives the same
+post-AEC gain and soft-limit as `primary`; if its frame is absent for an
+iteration (including in software-AEC mode), that iteration falls back to the
+final `clean` frame. An explicitly selected `raw0` frame never falls back: a
+missing frame is skipped and logged so comparison audio cannot silently change
+identity. The bridge publishes the effective physical leg plus
 `usb_mic_source_fallback_frames`, so UI/artifact evidence cannot label fallback
 audio as the requested beam. The normal `:9876` voice/session stream and all
 wake legs remain unchanged.
@@ -951,8 +957,9 @@ Last verified: 2026-07-22 (live Mac Studio total-audio wedge localized to the
 JTS composite DWC2 path and recovered by a gadget-only restart; pre-reset,
 post-start, and opt-in RAM-bounded rolling controller capture added and covered
 by focused tests; the active-plan-derived computer-microphone source
-selector, bridge-only restart-broker path, relay `PartOf=` convergence, and
-explicit no-gadget/no-descriptor/no-NCM boundary were rechecked against the
+selector, plan-gated raw0 comparison source, bridge-only restart-broker path,
+raw no-gain/no-fallback and voice/wake isolation contracts, relay `PartOf=`
+convergence, and explicit no-gadget/no-descriptor/no-NCM boundary were rechecked against the
 control, bridge, systemd, and `/wake/` paths; the USB-microphone switch's
 scheduler acknowledgement and bounded accepted-apply retry contract were
 rechecked against the control endpoint, systemd unit, README wording, and

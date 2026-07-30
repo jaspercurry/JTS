@@ -130,6 +130,7 @@ def test_render_has_server_hydrated_computer_microphone_source_select():
     html = _render()
     assert "Computer microphone source" in html
     assert 'id="usb-mic-leg-select"' in html
+    assert 'id="usb-mic-leg-description"' in html
     assert 'id="usb-mic-leg-status"' in html
     # Choice labels arrive in /aec; the initial page owns no beam allowlist.
     assert "Same as JTS voice" not in html

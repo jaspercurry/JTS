@@ -174,9 +174,11 @@ forwards the selected hardware-AEC chip beam over that carrier. It
 runs automatically only when the configured AEC mic is present with
 6-channel firmware — see § below.
 When USB Audio Input is enabled, an independent switch on `/wake/` can also
-export that same cleaned microphone to the connected computer. It uses a
-dedicated local carrier and relay, so voice keeps its normal mic stream while
-the computer gets a mono USB input.
+export a selected microphone source to the connected computer. The default
+follows JTS voice; a supported six-channel XVF also offers an explicit raw,
+no-echo-cancellation comparison source. It uses a dedicated local carrier and
+relay, so voice and wake keep their normal managed mic stream while the
+computer gets a mono USB input.
 
 ---
 
@@ -320,8 +322,12 @@ the computer gets a mono USB input.
   transient failures before remaining loudly failed for doctor/log diagnosis.
   The Voice assistant Pause control does not silence this explicitly enabled
   export; the `/wake/` switch is its sole end-user authority. Voice remains
-  available because the relay uses its own AEC-bridge carrier. Changing the
-  switch briefly reconnects USB audio and the USB management link. See
+  available because the relay uses its own AEC-bridge carrier. The adjacent
+  selector defaults to the managed JTS voice source and, on a supported
+  six-channel XVF, offers the existing physical raw microphone as an explicit
+  no-echo-cancellation comparison; that lab choice never changes voice or wake
+  routing. Changing the
+  On/Off switch briefly reconnects USB audio and the USB management link. See
   [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md).
 - ✅ **USB management network** — when the resolved hardware role permits
   gadget mode, the same USB-C data port carries a USB NCM network link

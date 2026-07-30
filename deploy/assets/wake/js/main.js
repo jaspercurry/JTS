@@ -47,6 +47,13 @@ function setText(id, value) {
   if (node) node.textContent = value || "—";
 }
 
+function setUsbMicSourceDescription(description, comparisonOnly = false) {
+  const node = el("usb-mic-leg-description");
+  if (!node) return;
+  node.textContent = description || "—";
+  node.classList.toggle("is-comparison", comparisonOnly);
+}
+
 function profileInputs() {
   return Array.from(document.querySelectorAll('input[name="profile-choice"]'));
 }
@@ -202,7 +209,11 @@ function applyUsbMicStatus(s) {
       const option = document.createElement("option");
       option.value = choice.value;
       option.textContent = choice.label || choice.value;
-      if (choice.description) option.title = choice.description;
+      if (choice.description) {
+        option.title = choice.description;
+        option.dataset.description = choice.description;
+      }
+      option.dataset.comparisonOnly = choice.comparison_only ? "true" : "false";
       select.appendChild(option);
     });
     if (requested && !choices.some((choice) => choice && choice.value === requested)) {
@@ -220,6 +231,14 @@ function applyUsbMicStatus(s) {
     (choice) => choice && choice.value === requested,
   );
   const requestedLabel = (requestedChoice && requestedChoice.label) || requested || "—";
+  setUsbMicSourceDescription(
+    requestedChoice
+      ? requestedChoice.description
+      : requested
+        ? "This saved source is unavailable. Reconnect the supported six-channel XVF microphone or choose another source."
+        : "Choose what the connected computer records as JTS Mic.",
+    !!(requestedChoice && requestedChoice.comparison_only),
+  );
   const applied = source.applied;
   setText(
     "usb-mic-leg-status",
@@ -325,6 +344,7 @@ async function pollDetection() {
     setText("usb-mic-status", "Disconnected");
     const usbMicLeg = el("usb-mic-leg-select");
     if (usbMicLeg) usbMicLeg.disabled = true;
+    setUsbMicSourceDescription("Disconnected");
     setText("usb-mic-leg-status", "Disconnected");
     const warning = el("mic-status-warning");
     if (warning) {
@@ -472,6 +492,11 @@ if (usbMicToggle) {
 const usbMicLegSelect = el("usb-mic-leg-select");
 if (usbMicLegSelect) {
   usbMicLegSelect.addEventListener("change", () => {
+    const option = usbMicLegSelect.selectedOptions[0];
+    setUsbMicSourceDescription(
+      option && option.dataset.description,
+      !!option && option.dataset.comparisonOnly === "true",
+    );
     postUsbMicLeg(usbMicLegSelect.value);
   });
 }

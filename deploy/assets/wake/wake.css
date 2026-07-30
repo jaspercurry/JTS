@@ -92,6 +92,17 @@
   font-size: 0.82rem;
   line-height: 1.4;
 }
+.usb-mic-source-description {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+  margin-top: 0.4rem;
+}
+.usb-mic-source-description.is-comparison {
+  padding-left: 0.65rem;
+  border-left: 2px solid var(--status-warn);
+  color: var(--foreground);
+}
 
 .echo-card .info-card {
   padding-bottom: 0.85rem;

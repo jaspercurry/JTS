@@ -146,7 +146,7 @@ aborted 30 seconds later.
 
 The optional computer microphone is a second consumer of that carrier, not a
 voice socket takeover. When `/var/lib/jasper/usb_mic.env` explicitly enables
-the feature, the bridge emits one cleaned 16 kHz mono source to localhost UDP
+the feature, the bridge emits one selected 16 kHz mono source to localhost UDP
 `:9894`; `jasper-usbmic` alone consumes that port and writes the UAC2 Pi-to-host
 direction. This consumer emits each native 320-sample AEC frame
 immediately (20 ms) with a 16-byte v2 `JM` header carrying a uint32 sequence and
@@ -179,16 +179,23 @@ USB-microphone latency artifact can bind its evidence without journal parsing.
 
 `JASPER_USB_MIC_LEG` independently selects that computer-only export. Its
 default, `primary`, preserves the production-clean carrier sent to `:9876`.
-Additional choices come from the reconciler-applied `ChipBeamPlan`; `/wake/`
-renders those server-provided choices and the control endpoint rejects a token
-the active plan does not publish. The persistence and UI contracts therefore do
-not hard-code today's `chip_aec_150` / `chip_aec_210` vocabulary.
+When the reconciler-applied `ChipBeamPlan` proves a supported six-channel XVF
+capture, `/wake/` also offers `raw0` as **Raw microphone (no echo
+cancellation)**. That comparison-only source reuses physical channel 2 already
+captured and emitted by the bridge; it adds no capture stack and receives
+neither chip/software AEC nor JTS voice gain. The plan's fixed chip beams remain
+additional choices. `/wake/` renders the server-provided list and the control
+endpoint rejects a token the active plan does not publish. The persistence and
+UI contracts therefore do not hard-code today's `chip_aec_150` /
+`chip_aec_210` vocabulary or advertise raw capture without validated geometry.
 
 Selection happens in-process immediately before the `usb_host_mic` emitter, so
 it adds no queue or frame latency. An explicitly selected chip frame receives
 the same post-AEC gain and soft-limit as `primary`. If that frame is absent for
 one iteration—including when software AEC3 is active—the export falls back to
-that iteration's final `clean` frame. Bridge stats publish the bridge-applied
+that iteration's final `clean` frame. `raw0` is intentionally different: a
+missing physical raw frame is skipped and logged, never replaced by clean or a
+beam, because comparison audio must not silently change identity. Bridge stats publish the bridge-applied
 selection separately from the resolved mode/physical leg so `/aec`, `/wake/`,
 and the latency artifact do not mistake saved intent for applied source. This
 branch is computer-microphone-only: it does not change the `:9876` session
@@ -2869,7 +2876,8 @@ Camilla-independent runtime inputs,
 soft `After=`/`Wants=` startup dependency, and reconciler-owned lifecycle were
 rechecked against the unit, bridge topology, and the #1264 hardware failure;
 the active-plan-derived computer-microphone source selector, `primary` default,
-shared gain/soft-limit, per-frame clean fallback,
+plan-gated physical `raw0` comparison source, raw no-gain/no-fallback contract,
+chip-beam shared gain/soft-limit and per-frame clean fallback,
 applied-source truth, and isolation from `:9876` / wake legs were rechecked;
 the optional USB-host-mic duplicate on dedicated `:9894`, v2-only timestamp
 header, one-way rollout compatibility, negotiated capture-latency log,

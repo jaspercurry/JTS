@@ -139,6 +139,7 @@ from jasper.usb_mic import (
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
     USB_MIC_PRIMARY_LEG,
+    USB_MIC_RAW_XVF_LEG,
     usb_mic_enabled,
 )
 from ..mics import xvf3800 as _mic_profile
@@ -937,6 +938,8 @@ def _resolve_usb_mic_source(
     """Resolve the configured selector to the physical stream being emitted."""
 
     allowed = {USB_MIC_PRIMARY_LEG, *(plan.leg_tokens if plan else ())}
+    if plan is not None:
+        allowed.add(USB_MIC_RAW_XVF_LEG)
     selection = requested if requested in allowed else USB_MIC_PRIMARY_LEG
     if selection != requested:
         log_event(
@@ -947,6 +950,13 @@ def _resolve_usb_mic_source(
             beam_plan=plan.plan_id if plan else "none",
             level=logging.WARNING,
         )
+    if selection == USB_MIC_RAW_XVF_LEG:
+        return {
+            "selection": selection,
+            "mode": "raw",
+            "leg": USB_MIC_RAW_XVF_LEG,
+            "fallback_active": False,
+        }
     if not production_chip_aec_enabled:
         fallback_active = selection != USB_MIC_PRIMARY_LEG
         if fallback_active:
@@ -2366,6 +2376,7 @@ def _aec_loop(  # noqa: PLR0915
     frames_processed = 0
     chip_primary_missing_log = _DropLogDebouncer()
     usb_mic_leg_missing_log = _DropLogDebouncer()
+    usb_mic_raw0_missing_log = _DropLogDebouncer()
     usb_mic_effective_leg = str(usb_mic_source["leg"])
     usb_mic_fallback_active = bool(usb_mic_source["fallback_active"])
 
@@ -2595,9 +2606,29 @@ def _aec_loop(  # noqa: PLR0915
             selected_usb_leg = str(usb_mic_source["leg"])
             effective_usb_leg = selected_usb_leg
             fallback_active = bool(usb_mic_source["fallback_active"])
+            if selected_usb_leg == USB_MIC_RAW_XVF_LEG:
+                # raw0_bytes is the physical XVF channel-2 frame already
+                # captured by this bridge. Reuse it directly: no parallel
+                # capture stack, no voice gain, and no clean/chip fallback.
+                usb_mic_aec_only = raw0_bytes
+                usb_mic_uses_clean = False
+                if not raw0_bytes:
+                    if outcome := usb_mic_raw0_missing_log.record(
+                        time.monotonic()
+                    ):
+                        drops, window_sec = outcome
+                        log_event(
+                            logger,
+                            "usb_mic.raw0_missing",
+                            action="skip_frame",
+                            frames=drops,
+                            window_sec=f"{window_sec:.1f}",
+                            level=logging.WARNING,
+                        )
             if (
                 production_chip_aec_enabled
                 and selected_usb_leg != chip_aec_primary_leg
+                and selected_usb_leg != USB_MIC_RAW_XVF_LEG
             ):
                 selected_usb_frame = chip_frames.get(selected_usb_leg, b"")
                 if selected_usb_frame:
@@ -2734,7 +2765,12 @@ def _aec_loop(  # noqa: PLR0915
             on_emitter.emit(clean)
             if usb_host_mic_emitter is not None:
                 usb_mic_clean = clean
-                if not usb_mic_uses_clean:
+                if selected_usb_leg == USB_MIC_RAW_XVF_LEG:
+                    # Missing raw frames remain missing. An explicit lab
+                    # source must never silently become production-clean
+                    # audio for even one USB-export frame.
+                    usb_mic_clean = usb_mic_aec_only
+                elif not usb_mic_uses_clean:
                     # USB beam selection is downstream-only, but it must keep
                     # the same output-level contract as the primary clean leg.
                     # Its clipping does not belong in voice's out_clip metric.
@@ -2742,7 +2778,8 @@ def _aec_loop(  # noqa: PLR0915
                         usb_mic_aec_only,
                         mic_gain_lin,
                     )
-                usb_host_mic_emitter.emit(usb_mic_clean)
+                if usb_mic_clean:
+                    usb_host_mic_emitter.emit(usb_mic_clean)
             frames_processed += 1
             _bridge_stats.inc("frames_processed")
             if heartbeat is not None:
