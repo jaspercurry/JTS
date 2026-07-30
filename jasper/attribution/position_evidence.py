@@ -91,6 +91,7 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "index",
     "attempt",
     "take_id",
+    "role",
     "gate_window_ms",
     "validity_floor_hz",
     "gating_applied",
@@ -131,6 +132,18 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "concentration and agreement between the two tau estimators."
     ),
     "concentration": "Cepstral concentration: the prominence behind confidence.",
+    "role": (
+        "The named question this position answers — onax (inside the "
+        "design-axis window), offax (out at the coverage edge), or xovr (a "
+        "vertical offset, the axis a two-way crossover lobes on). READ off "
+        "the position's own record, never re-derived from its prompt string: "
+        "the prompt is household copy and is rewritten by product rulings, "
+        "which is exactly what this label exists to survive. A cloud need not "
+        "carry every role — the Full tier's walk samples all three, Express's "
+        "shorter walk stops before the first vertical move and carries "
+        "{onax, offax} only, so an absent role is UNSAMPLED, not null "
+        "evidence."
+    ),
     "gate_window_ms": "The reflection gate actually applied to this capture.",
     "summed_ripple_db": "This capture's own summed-response ripple, dB.",
     "wav_sha256": (

@@ -404,14 +404,22 @@ def cloud_walk_placement_instruction(captures: int) -> str:
     stillness promise: this session prompts the household to move the mic
     between captures, so promising otherwise on the consent screen would be
     asking them to agree to something the flow immediately contradicts.
+
+    ``captures`` is THIS session's count. Since the two-stage split (work order
+    D7) that is stage 1's, and "come back to the mark" was stage 2's business —
+    the post-apply anchor — so this instruction stops promising a return the
+    session it consents to does not make. It states where the mark is, that
+    every prompted position is measured from it, and that the household is told
+    each position; it does not describe the second session, which has its own
+    consent screen.
     """
     return (
         "Start with the microphone capsule on the tweeter axis, exactly level "
         "with the centre of the tweeter or horn mouth, about 1 metre away when "
         "the room permits — that spot is your mark. Aim it according to its "
-        f"calibration file. Across about {int(captures)} measurements the "
-        "phone will ask you to move it a little between sweeps and to come "
-        "back to the mark; hold it still while each sweep is playing."
+        f"calibration file. Across about {int(captures)} measurements you will "
+        "be asked to move it to spots measured from that mark — each one named "
+        "with a distance — and to hold it still while each sweep is playing."
     )
 
 
@@ -425,9 +433,8 @@ def cloud_walk_acknowledgement_label(captures: int) -> str:
     """
     return (
         "The microphone starts on the tweeter axis, level with the centre of "
-        "the tweeter or horn mouth, and I will move it only when the phone "
-        f"asks me to, holding it still while each of the {int(captures)} "
-        "sweeps plays."
+        "the tweeter or horn mouth, and I will move it only when I am asked "
+        f"to, holding it still while each of the {int(captures)} sweeps plays."
     )
 
 

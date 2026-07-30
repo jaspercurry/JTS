@@ -3329,6 +3329,7 @@ def build_v2_run_and_consume(
             CaptureFailed,
             CaptureStopped,
             CaptureTimeout,
+            expired_time_budget,
             purge,
             run_capture_plan,
         )
@@ -3604,9 +3605,17 @@ def build_v2_run_and_consume(
                     "v2 terminal host-event post failed", exc_info=True
                 )
 
-        async def _post_session_over_host_event() -> None:
+        async def _post_session_over_host_event(budget: str = "") -> None:
             """Tell the phone the whole SESSION ended so its deferred-retry loop
             stops waiting (W6.10 blocker #3).
+
+            ``budget`` names WHICH clock ran out (work order D8, issue #1807),
+            or ``""`` when the death was not a timeout at all. Without it the
+            phone renders this event as ``renderPlanExhausted`` — "the speaker
+            reached its measurement attempt limit" — which is simply untrue of
+            an expiry: no attempt limit was reached, a clock ran out, and the
+            two want different things from the household. An older page ignores
+            the field and behaves exactly as it does today.
 
             A watchdog collapse during the "waiting for apply" REVIEW hold
             (``CaptureTimeout``) otherwise left the phone re-posting the same
@@ -3625,7 +3634,10 @@ def build_v2_run_and_consume(
                     client.post_host_event,
                     pi_session.session_id,
                     pi_session.pull_token,
-                    {"phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED},
+                    {
+                        "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
+                        **({"budget": budget} if budget else {}),
+                    },
                 )
             except (OSError, RuntimeError, ValueError):
                 logger.warning(
@@ -3756,7 +3768,29 @@ def build_v2_run_and_consume(
                 # envelope's applied-keyed override keys on durable
                 # ``applied``, not on this phase.
                 code = REASON_REVIEW_HOLD_TIMEOUT
-            await _post_session_over_host_event()
+            # WHICH clock ran out, named once and disclosed everywhere (work
+            # order D8, issue #1807). Both a step expiry and the relay TTL
+            # arrive in this arm and both persist as REASON_RELAY_TIMEOUT, so
+            # before this line the only surface that could tell them apart was
+            # the exception's own message — and the household saw "the speaker
+            # reached its measurement attempt limit", which is neither of them.
+            budget = expired_time_budget(exc)
+            if budget:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_time_budget_expired",
+                    level=logging.WARNING,
+                    budget=budget,
+                    phase=str(getattr(exc, "phase", "") or ""),
+                    conductor_phase=conductor.current_phase,
+                    # What the expiry PRESERVED: the phases whose captures were
+                    # accepted before the clock ran out. They are on disk as
+                    # evidence; they are not a set the next session resumes
+                    # from, and the phone's copy says so rather than implying a
+                    # resume that does not exist.
+                    accepted_phases=",".join(sorted(conductor.accepted_phases)),
+                )
+            await _post_session_over_host_event(budget)
             _persist_terminal_failure(conductor, code)
             await _abandon_best_effort()
             await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)

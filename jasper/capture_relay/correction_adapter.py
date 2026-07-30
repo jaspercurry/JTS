@@ -44,6 +44,8 @@ from typing import Any
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.health import relay_base_from_env
 from jasper.capture_relay.session import (
+    DEFAULT_TIMEOUT_S,
+    DEFAULT_TTL_S,
     CaptureResult,
     PiCaptureSession,
     mint_session,
@@ -98,7 +100,7 @@ def open_capture(
     relay_base: str,
     capture_origin: str,
     return_url: str = "",
-    ttl_s: int = 900,
+    ttl_s: int = DEFAULT_TTL_S,
 ) -> RelayCapture:
     """Mint + register a relay capture for any `capture_spec`, kind-agnostic.
 
@@ -109,6 +111,15 @@ def open_capture(
     """
     if return_url:
         spec = spec.with_return_url(return_url)
+    # Publish the two clocks this session will actually run under, so the phone
+    # can name which one is ticking and which one expired (work order D8, issue
+    # #1807). Set HERE rather than in a spec builder because ``ttl_s`` is
+    # decided at mint time and nowhere else — before this line the page had no
+    # honest source for it and could only have hard-coded a fourth copy of 900.
+    # ``DEFAULT_TIMEOUT_S`` is the runner's per-step phone-inactivity budget;
+    # no v2 caller overrides it (``run_capture_plan``'s own default), so it is
+    # the value the household is racing between taps.
+    spec = spec.with_time_budget(step_s=int(DEFAULT_TIMEOUT_S), session_s=int(ttl_s))
     pi_session = mint_session(
         spec, relay_base=relay_base, capture_origin=capture_origin, ttl_s=ttl_s
     )
@@ -124,7 +135,7 @@ def open_room_sweep_capture(
     relay_base: str,
     capture_origin: str,
     return_url: str = "",
-    ttl_s: int = 900,
+    ttl_s: int = DEFAULT_TTL_S,
     guided_setup: bool = True,
     setup_binding_id: str = "",
     presentation_variant: str = "",

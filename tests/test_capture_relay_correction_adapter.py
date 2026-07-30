@@ -453,6 +453,69 @@ def test_open_capture_is_kind_agnostic():
     assert rc.tap_link.startswith("https://capture.test/#")
 
 
+def test_every_minted_session_publishes_the_two_clocks_it_runs_under():
+    """The phone can only name the clock it is racing if the Pi tells it, and
+    the number has to be the one this session is ACTUALLY minted with (work
+    order D8, issue #1807).
+
+    Set at mint time rather than in a spec builder for exactly that reason: a
+    builder does not know which session its spec ends up in. The alternative —
+    the page hard-coding 900 — would have made the capture page a FOURTH
+    independent copy of a literal that already lives in relay/src/worker.js,
+    capture_relay/session.py and this module (the work order's relay-TTL trap).
+    This PR publishes that value; it does not change it.
+    """
+    from jasper.capture_relay.session import DEFAULT_TIMEOUT_S, DEFAULT_TTL_S
+    from jasper.capture_relay.spec import build_sync_marker_spec
+
+    backend = FakeRelayBackend()
+    client = RelayClient("https://relay.test", transport=backend)
+    rc = adapter.open_capture(
+        client,
+        build_sync_marker_spec(),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+    )
+    published = json.loads(backend.sessions[rc.pi_session.session_id]["capture_spec"])
+    assert published["time_budget"] == {
+        "step_s": int(DEFAULT_TIMEOUT_S),
+        "session_s": int(DEFAULT_TTL_S),
+    }
+    # …and a caller that asks for a different TTL publishes THAT one, which is
+    # what makes this a disclosure rather than a second constant.
+    other = adapter.open_capture(
+        client,
+        build_sync_marker_spec(),
+        relay_base="https://relay.test",
+        capture_origin="capture.test",
+        ttl_s=1200,
+    )
+    published = json.loads(backend.sessions[other.pi_session.session_id]["capture_spec"])
+    assert published["time_budget"]["session_s"] == 1200
+    # The registered session really does carry it — the disclosure and the
+    # enforced value are the same number by construction, not two arguments
+    # that happen to agree.
+    assert other.pi_session.ttl_s == 1200
+
+
+def test_the_adapters_ttl_default_is_the_sessions_own_constant():
+    """One fewer independent copy of 900. The adapter used to declare its own
+    literal default, which is the value the v2 path actually gets (no v2 caller
+    passes ``ttl_s``) — so the number the phone is now told and the number the
+    session is minted with had two sources that could drift."""
+    import inspect
+
+    from jasper.capture_relay import session as relay_session
+
+    for fn in (adapter.open_capture, adapter.open_room_sweep_capture):
+        default = inspect.signature(fn).parameters["ttl_s"].default
+        assert default is relay_session.DEFAULT_TTL_S
+    # worker.js keeps its OWN literal deliberately — it is a separate release
+    # that must bound whatever any Pi asks for — so this asserts the two PYTHON
+    # copies collapsed, not that the duplication is gone entirely.
+    assert relay_session.DEFAULT_TTL_S == 900
+
+
 def test_sync_relay_endpoint_gate_and_precheck(monkeypatch):
     import pytest
 

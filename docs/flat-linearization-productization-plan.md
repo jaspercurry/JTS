@@ -502,15 +502,18 @@ parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
   group**: N−1 additional summed sweeps at prompted positions (each
   `tap`) → fit → auto-apply (existing) → **CLOUD-VERIFY group**: M
   summed sweeps, first entry `on_apply`, rest `tap`.
-- **Prompt copy:** the S0 kit's hand-width language is the validated
+- **Prompt copy:** the S0 kit's hand-width language was the validated
   reference (`captures/flat-linearization-20260725/s0-kit/s0_capture.py`,
-  the `_prompt_position` table: "One hand-width LEFT of the mark",
-  "one hand-width HIGHER than tweeter height", …). Product copy is
-  plain-language, deliberately casual, never numeric-precision
-  ("~10 cm" allowed as a parenthetical). Spread guidance encodes the
-  plan's physics: ≥10 cm spread for HF decorrelation, at least two
-  wide (~30 cm+) offsets for the LF edge (the plan's "≥30 cm LF
-  spread is load-bearing" side-finding).
+  the `_prompt_position` table: "One hand-width LEFT of the mark", …).
+  **Superseded 2026-07-28/29** by two owner field rulings (issues #1805
+  and #1806, executed as the two-stage work order's D7): product copy is
+  numeric — inches with the metric value beside it — and every prompt is
+  an ABSOLUTE pose measured from the mark rather than a delta on the
+  previous one. Spread guidance still encodes the same physics, and now
+  encodes it as DATA rather than as prose: each row carries an
+  `offset_cm` and `wide` is computed from it (≥10 cm spread for HF
+  decorrelation, at least two wide ≥30 cm offsets for the LF edge — the
+  plan's "≥30 cm LF spread is load-bearing" side-finding).
 - **Defaults:** N = 9 cloud-measure positions (min 6 to proceed,
   max 12), M = 6 cloud-verify (`DEFAULT_CLOUD_MEASURE_POSITIONS` /
   `DEFAULT_CLOUD_VERIFY_POSITIONS`, `crossover_v2_flow.py` — N counts the

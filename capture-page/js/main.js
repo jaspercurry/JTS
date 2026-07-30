@@ -225,10 +225,13 @@ function planAnnouncementText(spec) {
   return specScreenSays(spec, sentence) ? "" : `${sentence}.`;
 }
 
-// …and never twice. A current speaker's consent copy opens with this same
-// derived sentence plus the tier name ("Quick tune: 7 measurements, about 5
-// minutes") — the phone has no field for the tier, so where both exist the
-// speaker's line is the better one and this page adds nothing. The needle is
+// …and never twice. A current speaker's consent copy CONTAINS this same
+// derived sentence, behind the tier name and a stage qualifier ("Quick tune,
+// this session: 6 measurements, about 5 minutes") — the phone has no field for
+// either, so where both exist the speaker's line is the better one and this
+// page adds nothing. The qualifier sits IN FRONT of the numbers precisely so
+// the needle below still finds them (jasper/capture_relay/spec.py's
+// `_guided_tier_step` says so on its own side). The needle is
 // the string the page JUST derived, not a guess at the speaker's wording:
 // both sides compute it from the same two plan numbers, so a match means the
 // household would otherwise read one sentence twice, two lines apart.
@@ -540,12 +543,21 @@ function renderStoppedScreen(ctx) {
 // with no retry affordance instead (run-19 defect).
 function renderSessionExpired(ctx) {
   const returnUrl = safeReturnUrl(ctx.spec);
+  // Name the clock (work order D8, issue #1807). A 401/403/404 from the relay
+  // means THIS link is gone — the one budget the relay itself enforces — so
+  // the page can say how long it lasted without guessing. The step budget is
+  // deliberately not mentioned here: it ends the session through the Pi's own
+  // session-over event (renderPlanExhausted's `budget`), not through a dead
+  // relay session, and naming the wrong clock is worse than naming none.
+  const budget = planTimeBudget(ctx.spec);
+  const message = budget
+    ? `This measurement link lasts ${approxMinutes(budget.sessionS)} from when` +
+      " it is created, and this one is past that — return to the speaker page" +
+      " to start again."
+    : "This measurement link expired — return to the speaker page to start again.";
   const children = [
     el("h1", { class: "cap-heading", text: "Link expired" }),
-    el("p", {
-      class: "cap-note",
-      text: "This measurement link expired — return to the speaker page to start again.",
-    }),
+    el("p", { class: "cap-note", text: message }),
   ];
   if (returnUrl) {
     children.push(linkButton("Back to speaker", returnUrl));
@@ -553,10 +565,7 @@ function renderSessionExpired(ctx) {
     children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
   }
   setScreen(ctx.screenEl, children);
-  setStatus(
-    "This measurement link expired — return to the speaker page to start again.",
-    "error",
-  );
+  setStatus(message, "error");
 }
 
 // The Stop button's one job: call whichever capture leg's own `abort(reason)`
@@ -1203,9 +1212,22 @@ function samplesRmsDbfs(samples) {
   return rmsToDbfs(Math.sqrt(sumSquares / samples.length));
 }
 
-async function captureAmbientNoise(recorder, spec) {
+// The PHONE's own pre-arm floor window — a sub-second reading taken before the
+// speaker plays anything, uploaded as `noise_floor` and read as the SNR
+// reference for this capture. It is not the speaker's ambient window
+// (waitForSweepComplete's `ambient_started`, whose quiet request is the
+// speaker's call because only the speaker knows which window is playing), and
+// it is not the session's room-noise measurement either.
+//
+// `note` lets the Pi override the request PER ENTRY (work order D8, issue
+// #1835): the default asks for quiet because on almost every capture a sweep
+// follows immediately, but CHECK's window is the session's room-noise
+// measurement and is deliberately taken BEFORE anyone is hushed — the gain
+// solve reads it, so a pre-hushed room makes it under-drive. THREE windows,
+// three purposes; this changes one of them and collapses none.
+async function captureAmbientNoise(recorder, spec, note = "") {
   const durationMs = Math.max(300, Math.min(2000, Number(spec.noise_floor_ms) || 800));
-  setStatus("Measuring room noise — stay quiet.", "recording");
+  setStatus(note || "Measuring room noise — stay quiet.", "recording");
   recorder.start();
   await delayMs(durationMs);
   const samples = await recorder.stop({ timeoutMs: 5000 });
@@ -1445,6 +1467,13 @@ const RELAY_RECONNECTING_RESULT_MESSAGE =
 // What the phone shows between the upload and the speaker's verdict; named so
 // the reconnect path above can put it back verbatim.
 const CAPTURE_CHECKING_MESSAGE = "Speaker is checking this measurement…";
+
+// The GROUP CLOSE is a different, longer job than one capture's verdict — the
+// combine plus the fit across every position — and saying "this measurement"
+// there named the wrong work at the exact moment the household is waiting
+// longest (the owner's 2026-07-29 field note: it "ran long … with no hint
+// whether it was stalled").
+const CAPTURE_CLOSING_MESSAGE = "Speaker is working out what it heard…";
 
 // How many times a single POST-ARM control request is re-sent after a relay
 // connectivity abort before the round is treated as lost. Four tries against
@@ -1718,6 +1747,18 @@ function entryForIndex(spec, index) {
   return entries.find((e) => e && Number(e.index) === index - 1) || null;
 }
 
+// This entry's own pre-arm floor-window copy, or "" for the page's default.
+// Read off the entry's `screen` map — an OPEN map by contract ("the schema
+// bounds size and value types, never the keys — the capture page decides what
+// to render"), so a Pi that does not send it leaves today's copy in place and
+// a page that does not know it ignores it. Both directions are safe, which is
+// why this key needs no release ordering of its own.
+function entryNoiseNote(spec, index) {
+  const entry = entryForIndex(spec, index);
+  const screen = (entry && entry.screen) || {};
+  return screen.noise_note ? String(screen.noise_note) : "";
+}
+
 // How long the phone should wait between a `capture_deferred` host event and
 // re-posting the SAME `begin_capture`. A deferral means the Pi is between
 // phases (e.g. parked awaiting the household's Apply tap), not a fast ledger
@@ -1733,6 +1774,114 @@ const CAPTURE_DEFERRED_RETRY_POLL_MS = 1500;
 // It is not a session time budget: nothing here changes how long any session
 // may live.
 const CAPTURE_SET_COMPLETE_TIMEOUT_MS = 120000;
+
+// ---------------------------------------------------------------------------
+// Time budgets (work order D8, issue #1807) — WHICH clock is running.
+//
+// A household mid-session wanted to move furniture and had no idea how long
+// the open page allowed; they found out by hitting an expiry. Two clocks are
+// running and neither was ever on screen: the per-step phone-inactivity budget
+// (the Pi's `DEFAULT_TIMEOUT_S`, refreshed on every tap) and the relay
+// session's TTL (`ttl_s`, from the moment the link was minted).
+//
+// THE PAGE INVENTS NEITHER NUMBER. Both arrive on `spec.time_budget`, set by
+// jasper/capture_relay/correction_adapter.py at mint time, so the page cannot
+// become one more copy of the 900 (see the work order's relay-TTL trap — this
+// PR publishes that value, it does not change it). Publishing it also
+// collapsed the two PYTHON copies onto `session.DEFAULT_TTL_S`; the
+// duplication is not gone entirely, because relay/src/worker.js keeps its own
+// deliberately — a separate release that must bound whatever any Pi asks for.
+// A spec without the field says nothing at all rather than guessing, which is
+// also what makes a new page safe against an older Pi.
+// ---------------------------------------------------------------------------
+
+function planTimeBudget(spec) {
+  const budget = spec && spec.time_budget;
+  if (!budget || typeof budget !== "object") return null;
+  const stepS = Number(budget.step_s);
+  const sessionS = Number(budget.session_s);
+  if (!(stepS > 0) || !(sessionS > 0)) return null;
+  return { stepS, sessionS };
+}
+
+// "about 2 minutes" — whole minutes, because a household reading "how long can
+// I pause?" is not timing itself to the second, and a to-the-second figure the
+// page cannot actually track would be false precision.
+function approxMinutes(seconds) {
+  const minutes = Math.max(1, Math.round(Number(seconds) / 60));
+  return `about ${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+// The one sentence every plan step screen carries, or "" when the Pi did not
+// say.
+//
+// Deliberately NOT a live countdown, and that is a PRODUCT CHOICE rather than
+// a capability gap — the page could render one. The relay publishes an
+// absolute `expires_at` on every phone-status poll (relay/src/worker.js's
+// `getPhoneStatus`, set at mint as `now + ttl * 1000`), so the link's deadline
+// is knowable to the millisecond. Two reasons not to spend it:
+//
+//   * It would count the WRONG CLOCK. What a household is actually racing
+//     between taps is the per-step budget, which the Pi refreshes on every tap
+//     and publishes no deadline for — a countdown of the 15-minute link would
+//     tick reassuringly through a step window that is about to end the
+//     session, which is worse than saying nothing.
+//   * A clock on a measuring screen is pressure applied to a task that wants a
+//     steady hand and a household willing to walk to the next spot. D8 asks
+//     the page to answer "how long can I pause?", not to hurry anyone.
+//
+// So it states both budgets, says which instant each runs from, and lets the
+// household do the arithmetic. `expires_at` stays available if a future rung
+// decides an expiry-imminent WARNING (not a countdown) earns its place.
+function timeBudgetLine(spec) {
+  const budget = planTimeBudget(spec);
+  if (!budget) return "";
+  return (
+    `You have ${approxMinutes(budget.stepS)} between taps, and this link ` +
+    `lasts ${approxMinutes(budget.sessionS)} from when it was created.`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// No dead air on a blind wait (work order D9, issue #1840 + the owner's
+// 2026-07-29 field note).
+//
+// Three of this page's waits are BLIND: the speaker is working and posts
+// nothing until it has an answer. Analysis alone ran 20-40 s per capture and
+// longer at the group close, under one static line — the owner did not know
+// whether to keep waiting or give up, which is the same complaint as a retry
+// that sits still until a 120 s watchdog fires. The fix is the same for both:
+// show the time spent AND the time this wait will actually allow, so a stall
+// is legible as a stall.
+//
+// Elapsed rather than remaining, deliberately: elapsed is a fact the page
+// owns, while "remaining" implies the speaker is on a schedule it never
+// promised. The limit is stated beside it so the number has a scale.
+// ---------------------------------------------------------------------------
+
+function _waitLimitLabel(seconds) {
+  if (seconds >= 90) {
+    const minutes = Math.round(seconds / 60);
+    return `${minutes} min`;
+  }
+  return `${Math.round(seconds)}s`;
+}
+
+// Returns a tick() to call from a poll loop. It repaints at most once a second
+// so a 250 ms poll cadence does not thrash the status channel, and the CALLER
+// decides when to tick — a loop that also renders reconnect lines simply skips
+// the tick while it is showing one, rather than the two fighting for the slot.
+function waitProgress(baseMessage, deadlineMs, { kind = "info" } = {}) {
+  const startedMs = Date.now();
+  const limit = _waitLimitLabel(Math.max(1, (deadlineMs - startedMs) / 1000));
+  let lastSecond = -1;
+  return function tick() {
+    const elapsed = Math.floor((Date.now() - startedMs) / 1000);
+    if (elapsed === lastSecond) return;
+    lastSecond = elapsed;
+    setStatus(`${baseMessage} ${elapsed}s so far, up to ${limit}.`, kind);
+  };
+}
 
 // Page-local danger confirm for the demoted Stop control (§2.1). The capture
 // page shares NOTHING with the Pi's /assets/shared/js/dialog.js — different
@@ -1981,11 +2130,15 @@ async function endPlanSession(ctx) {
 // ---------------------------------------------------------------------------
 // The step-screen grammar (flow-simplification §2.1)
 //
-//   [eyebrow]  Measurement 4 of 7          <- screen.progress; the ONLY counter
-//   [headline] A forearm's length LEFT     <- the instruction, prominent
+//   [eyebrow]  Measurement 4 of 6          <- screen.progress; the ONLY counter
+//   [headline] Move the microphone 16 in   <- the instruction, prominent; a
+//              (40 cm) to the LEFT of the     COMPLETE pose, never a delta
+//              mark, at mark height.          on the previous one
 //   [detail]   one short supporting clause <- may be empty
 //   [action]   I'm there — play the tone   <- ONE full-width primary
 //   [retake]   Retake this measurement     <- secondary, quieter (optional)
+//   [budget]   about 2 minutes between…    <- quieter still; only when the Pi
+//                                             published its budgets (D8)
 //   [stop]     Stop measuring              <- small text link -> danger confirm
 //
 // Every page-owned plan screen renders these in the same DOM slots, so the
@@ -2024,6 +2177,13 @@ function renderStepScreen(ctx, {
   for (const note of notes) if (note) children.push(note);
   const actions = [primary, secondary, ...extraActions].filter(Boolean);
   if (actions.length) children.push(el("div", { class: "cap-actions" }, actions));
+  // The budget line sits UNDER the action and above Stop (work order D8): it
+  // answers "how long can I pause?", which is a question about the control the
+  // household is looking at, and it must not compete with the instruction for
+  // the headline/detail slots the §2.1 grammar reserves. Absent when the Pi
+  // published no budget, so the grammar is unchanged on every older pairing.
+  const budget = timeBudgetLine(ctx.spec);
+  if (budget) children.push(el("p", { class: "cap-note cap-budget", text: budget }));
   children.push(stopLinkEl());
   setScreen(ctx.screenEl, children);
   ctx.captureRefs = {
@@ -2111,6 +2271,16 @@ function retakeControl(ctx, { index, attempt, onTap = null }) {
     clearAutoAdvance(ctx);
     if (onTap) onTap();
     retake.disabled = true;
+    // NAME THE STEP BEING RETAKEN (owner field note, 2026-07-29: "after
+    // pressing retry, the top-of-screen copy describes the next action rather
+    // than the step being retried"). Every screen that OFFERS a retake is
+    // about a different index than the retake itself — `renderPlanNext` shows
+    // the UPCOMING position's instruction, the group-close confirm shows the
+    // set — and `runPlanCapture` paints no screen of its own, so without this
+    // the household re-measured position 6 while reading position 7's
+    // instruction. Rendered here rather than inside `runPlanCapture` because a
+    // retake is the only entry into it whose caller's screen is wrong.
+    renderRetakeInProgress(ctx, { index });
     try {
       await runPlanCapture(ctx, { index, attempt: attempt + 1, retake: true });
     } finally {
@@ -2119,6 +2289,24 @@ function retakeControl(ctx, { index, attempt, onTap = null }) {
   }, true);
   ctx.retakeButtonEl = retake;
   return retake;
+}
+
+// The in-progress screen for a voluntary retake: THIS index's own copy, with
+// no affordance (the round is already running).
+//
+// Deliberately NOT `captureHeading` — that slot belongs to the deferred apply
+// hold, whose heading `advanceDeferredHoldHeading` advances to "Verifying…"
+// when the hold resolves. Handing it this heading would replace the very
+// instruction this screen exists to show.
+function renderRetakeInProgress(ctx, { index }) {
+  const entry = entryForIndex(ctx.spec, index);
+  const screenCopy = (entry && entry.screen) || {};
+  const { target } = planTargetAndAttempts(ctx.spec);
+  renderStepScreen(ctx, {
+    progress: `${String(screenCopy.progress || `Measurement ${index} of ${target}`)} — again`,
+    headline: String(screenCopy.title || "Measuring this spot again"),
+    detail: String(screenCopy.body || ""),
+  });
 }
 
 function renderPlanNext(ctx, { index, attempt, target }) {
@@ -2185,12 +2373,21 @@ function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
   renderStepScreen(ctx, {
     progress: String(screenCopy.progress || ""),
     headline: "All spots measured — ready to continue?",
-    // NOTE this detail line is FALSE for a measure-only (stage-1) plan: JTS
-    // tunes nothing next, the household decides next. The two-stage work
-    // order assigns this sentence — and `renderPlanAllDone`'s "the speaker
-    // continues automatically" fallback — to PR-T4, whose job is the phone's
-    // honesty layer; PR-T3 deliberately did not improvise replacement copy.
-    detail: "JTS tunes the speaker next. Retake this spot first if you want to.",
+    // THE LAST THING A HOUSEHOLD READS BEFORE THE INTERLUDE, so it is the
+    // sentence that has to set the interlude up (work order D10). On a
+    // measure-only plan JTS tunes nothing next — it works out what it heard
+    // and the HOUSEHOLD decides — and saying otherwise here was the false
+    // sentence PR-T3 deliberately left for this rung rather than improvising.
+    //
+    // Branched on the SAME predicate the tap itself branches on, so the page
+    // stays correct against both conductors (README's release-ordering
+    // contract: the page publishes first, so a new bundle legitimately meets
+    // an OLD conductor whose plan still carries VERIFY past this group — and
+    // there JTS really does tune next).
+    detail: entryForIndex(ctx.spec, index + 1)
+      ? "JTS tunes the speaker next. Retake this spot first if you want to."
+      : "JTS works out what it heard, then you decide what to do about it "
+        + "back on the speaker page. Retake this spot first if you want to.",
     primary: proceed,
     secondary: retakeControl(ctx, { index, attempt }),
   });
@@ -2211,7 +2408,7 @@ function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
 async function completePlanCaptureSet(ctx, { index, attempt, target }) {
   const controller = ctx.planController;
   try {
-    setStatus(CAPTURE_CHECKING_MESSAGE, "info");
+    setStatus(CAPTURE_CLOSING_MESSAGE, "info");
     await ctx.client.postEvent({ complete_capture_set: true });
     if (controller && controller.aborted) return;
     const verdict = await waitForCaptureSetComplete(
@@ -2221,7 +2418,7 @@ async function completePlanCaptureSet(ctx, { index, attempt, target }) {
     if (verdict.deadSession) {
       renderSessionExpired(ctx);
     } else if (verdict.setExhausted) {
-      renderPlanExhausted(ctx, { ...verdict, target });
+      renderPlanExhausted(ctx, { ...verdict, target, index });
     } else if (verdict.refused) {
       // TERMINAL. The Pi refused ON the confirmation — the pre-apply
       // accountability veto is the shipped case — and re-raised, so the
@@ -2256,9 +2453,13 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
   // session. Same budget the Pi gives the household's own between-step taps,
   // so neither side gives up while the other is still working.
   const deadline = Date.now() + CAPTURE_SET_COMPLETE_TIMEOUT_MS;
+  // The session's slowest analysis (the combine plus the fit) behind one static
+  // line was the worst dead-air window on the page — D9.
+  const tick = waitProgress(CAPTURE_CLOSING_MESSAGE, deadline);
   let reconnecting = null;
   while (Date.now() < deadline) {
     if (isAborted()) return { aborted: true };
+    if (!reconnecting) tick();
     let status;
     try {
       status = await client.fetchPhoneStatus();
@@ -2274,7 +2475,7 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
     }
     if (reconnecting) {
       reconnecting = null;
-      setStatus(CAPTURE_CHECKING_MESSAGE, "info");
+      tick();
     }
     const event = (status && status.host_event) || {};
     const phase = String(event.phase || "");
@@ -2284,6 +2485,11 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
         setExhausted: true,
         accepted: Number(event.accepted) || 0,
         attempts: Number(event.attempts) || 0,
+        // WHICH clock ran out, when the session ended on one (work order D8).
+        // Absent from the RUNNER's own exhaustion event — that really is the
+        // attempt limit — and absent from an older Pi, both of which keep the
+        // attempt-limit copy.
+        budget: event.budget ? String(event.budget) : "",
       };
     }
     // TERMINAL, both of them. `capture_refused` is always terminal for the
@@ -2328,9 +2534,9 @@ function renderPlanRetry(ctx, { index, attempt, target, reason, prompt, retake =
   const screenCopy = (current && current.screen) || {};
   const message = reason || "That measurement didn't pass the speaker's quality check.";
   // A server-supplied `prompt` is an INSTRUCTION, not a restatement: the
-  // position-group geometry retake sends "take this one from about two
-  // forearms' length to the LEFT", which the operator has to act on before
-  // tapping. Under the §2.4 grammar the instruction IS the headline (that is
+  // position-group geometry retake sends "move the microphone 30 in (75 cm)
+  // to the LEFT of the mark, at mark height", which the operator has to act on
+  // before tapping. Under the §2.4 grammar the instruction IS the headline (that is
   // the slot the household reads first) and the reason sentence becomes the
   // detail underneath — what to do over what happened, without losing either.
   const guidance = prompt ? String(prompt) : "";
@@ -2641,9 +2847,16 @@ function advanceAfterAccepted(ctx, { index, attempt, target }) {
 // the post-apply group's last position at Full, the anchor at Express (see
 // build_v2_verify_capture_plan). Stage 1's plan deliberately carries no done
 // copy at all: it is not the end of the journey, and the household's next step
-// is a decision on the speaker page. That makes the fallback below FALSE for a
-// stage-1 session — "the speaker continues automatically" is exactly what it
-// does not do — which is PR-T4's to fix, per the work order's D7 list.
+// is a decision on the speaker page.
+//
+// The fallback therefore states the ONE thing true of every flow that reaches
+// it — the measuring is over and the speaker page owns what happens next. It
+// used to promise "the speaker continues automatically", which was exactly
+// false for a stage-1 session: it deliberately does not continue, it waits for
+// a decision. Naming the speaker page instead is also true of the room sweep,
+// sync, and balance plans that share this screen, so no flow needs a branch
+// here to be told the truth (a flow that wants its own end copy still carries
+// `done_title`/`done_body` on its LAST entry, which wins over this).
 function renderPlanAllDone(ctx, { index } = {}) {
   const returnUrl = safeReturnUrl(ctx.spec);
   const entry = typeof index === "number" ? entryForIndex(ctx.spec, index) : null;
@@ -2651,7 +2864,7 @@ function renderPlanAllDone(ctx, { index } = {}) {
   const heading = String(screenCopy.done_title || "All measurements done");
   const body = String(
     screenCopy.done_body ||
-      "All measurements done — the speaker continues automatically.",
+      "All measurements done — the speaker page shows what happens next.",
   );
   const children = [
     el("h1", { class: "cap-heading", text: heading }),
@@ -2685,15 +2898,66 @@ function renderPlanRefused(ctx, admission) {
   setStatus(`Measurement refused — ${message}`, "error");
 }
 
+// WHICH clock ran out, and what an expiry preserved (work order D8, issue
+// #1807). The Pi tells the phone this on the session-over event's `budget`
+// field; an older Pi sends none and the attempt-limit copy below is unchanged.
+//
+// The counts are the page's OWN (the capture it was on, out of the plan's
+// target) rather than a new wire field: the phone already knows both, and the
+// honest claim is about progress, not about a resumable set — a new session
+// starts a fresh walk, so "you got N of T in" must not be dressed up as "N are
+// saved for next time".
+function expiredBudgetCopy(ctx, verdict) {
+  const budget = planTimeBudget(ctx.spec);
+  const reached =
+    Number(verdict.index) > 0 && Number(verdict.target) > 0
+      ? ` You got to measurement ${Number(verdict.index)} of ${Number(verdict.target)}.`
+      : "";
+  const restart =
+    " A tune needs the whole set in one session, so the speaker page will" +
+    " start you a fresh link.";
+  // With no published budget the clock is still NAMED — that is the part the
+  // household needs — but no duration is quoted, because the page would be
+  // inventing it. Same rule as everywhere else in this layer.
+  if (verdict.budget === "step") {
+    return {
+      heading: "That step timed out",
+      body:
+        (budget
+          ? `The speaker waits ${approxMinutes(budget.stepS)} between taps and` +
+            " that window passed, so it ended the session."
+          : "The speaker stopped waiting for your next tap, so it ended the" +
+            " session.") + `${reached}${restart}`,
+    };
+  }
+  if (verdict.budget === "link") {
+    return {
+      heading: "This link ran out",
+      body:
+        (budget
+          ? `A measurement link lasts ${approxMinutes(budget.sessionS)} from` +
+            " when it is created, and this one is past that."
+          : "This measurement link is past the time it lasts.") +
+        `${reached}${restart}`,
+    };
+  }
+  return null;
+}
+
 function renderPlanExhausted(ctx, verdict) {
   const returnUrl = safeReturnUrl(ctx.spec);
+  const expired = expiredBudgetCopy(ctx, verdict);
   const children = [
-    el("h1", { class: "cap-heading", text: "Reached the attempt limit" }),
+    el("h1", {
+      class: "cap-heading",
+      text: expired ? expired.heading : "Reached the attempt limit",
+    }),
     el("p", {
       class: "cap-note",
-      text:
-        `The speaker reached its measurement attempt limit (${verdict.accepted} of ` +
-        `${verdict.target} accepted). The speaker page shows what happens next.`,
+      text: expired
+        ? expired.body
+        : `The speaker reached its measurement attempt limit (${verdict.accepted} of ` +
+          `${verdict.target} accepted). The speaker page shows what happens next.`,
     }),
   ];
   if (returnUrl) {
@@ -2703,7 +2967,9 @@ function renderPlanExhausted(ctx, verdict) {
   }
   setScreen(ctx.screenEl, children);
   setStatus(
-    "Reached the measurement attempt limit. The speaker page shows what happens next.",
+    expired
+      ? expired.body
+      : "Reached the measurement attempt limit. The speaker page shows what happens next.",
     "error",
   );
 }
@@ -2817,11 +3083,15 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
   // (spec.duration_ms) like waitForSweepComplete's own timeout does, with a
   // floor comfortably above typical analysis time.
   const deadline = Date.now() + Math.max(30000, Number(spec.duration_ms) || 30000);
+  // 20-40 s of blind analysis per capture, under one static line, was the
+  // owner's "I did not know whether to wait or give up" (work order D9).
+  const tick = waitProgress(CAPTURE_CHECKING_MESSAGE, deadline);
   // The swallowed abort still in force, or null once the relay answers — same
   // role as waitForSweepComplete's, for the same reason (see its expiry).
   let reconnecting = null;
   while (Date.now() < deadline) {
     if (isAborted()) return { aborted: true };
+    if (!reconnecting) tick();
     let status;
     try {
       status = await client.fetchPhoneStatus();
@@ -2841,7 +3111,7 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
     }
     if (reconnecting) {
       reconnecting = null;
-      setStatus(CAPTURE_CHECKING_MESSAGE, "info");
+      tick();
     }
     const event = (status && status.host_event) || {};
     const phase = String(event.phase || "");
@@ -2861,6 +3131,7 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
         accepted: Number(event.accepted) || 0,
         target: Number(event.capture_target) || target,
         attempts: Number(event.attempts) || attempt,
+        budget: event.budget ? String(event.budget) : "",
       };
     }
     if (
@@ -2944,6 +3215,15 @@ async function beginAndAwaitAuthorization(ctx, { index, attempt, retake = false 
   const { spec, client } = ctx;
   const controller = ctx.planController;
   const { target } = planTargetAndAttempts(spec);
+  // The deferred hold is the page's one UNBOUNDED wait: it re-posts the same
+  // begin every 1.5 s until the Pi is ready, and before this it sat on one
+  // static line until the Pi's own step budget killed the session (work order
+  // D9 / issue #1840's page half). The page cannot shorten that budget, but it
+  // can say how long it has been waiting and what the budget is — built lazily
+  // so the clock starts at the FIRST deferral, which is when the household
+  // starts wondering.
+  const budget = planTimeBudget(spec);
+  let deferredTick = null;
   for (;;) {
     // No counter here any more (§2.1): the screen's eyebrow owns it, and this
     // line used to number the same walk differently.
@@ -2959,6 +3239,14 @@ async function beginAndAwaitAuthorization(ctx, { index, attempt, retake = false 
     if (controller.aborted || admission.aborted) return { aborted: true };
     if (admission.deferred) {
       renderPlanDeferred(ctx, { index, target, reason: admission.reason });
+      if (budget) {
+        if (!deferredTick) {
+          deferredTick = waitProgress(
+            "Waiting for the speaker —", Date.now() + budget.stepS * 1000,
+          );
+        }
+        deferredTick();
+      }
       await delayMs(CAPTURE_DEFERRED_RETRY_POLL_MS);
       if (controller.aborted) return { aborted: true };
       continue; // re-post the SAME begin_capture and try again
@@ -3000,13 +3288,44 @@ function planRetryAffordance(ctx) {
 //    IDENTICAL (index, attempt) pair, which the runner tolerates (an
 //    unadmitted pair is admitted; the in-flight pair is its own `current` and
 //    is a no-op), and name that control.
+//
+//    …and PUT THAT CONTROL BACK ON SCREEN. Re-arming the slot alone was
+//    sufficient only while a retake left the OFFERING screen up; since PR-T4 a
+//    retake renders its own affordance-free in-progress screen
+//    (`renderRetakeInProgress`, so the household reads the spot being
+//    re-measured rather than the next one), and a failure there left a screen
+//    with no controls at all under copy naming a button that was not on it —
+//    Stop the only remaining tap, mid-walk. Probed: this arm rendered
+//    `[]` where the pre-T4 build rendered both buttons. Re-rendering the
+//    offering screen restores that state exactly, including its forward
+//    primary; the copy still steers to the retake, which is the part that was
+//    always doing the safety work.
 //  - THE SCREEN HAS NO BEGIN AFFORDANCE AT ALL. A countdown's auto-begin is
 //    the forward path, so its screen renders none; the copy would otherwise
 //    name a button that does not exist. Drop back to the manual screen the
 //    countdown's own Cancel produces, which has one.
 function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {
   if (retake) {
-    armRetakeSlot(ctx, { index, attempt: attempt - 1 });
+    // `attempt - 1` throughout: this round is the retake, so the slot and the
+    // screen that offered it both belong to the ACCEPTED attempt before it —
+    // the same arithmetic `keepEarlierTakeControl` uses to return there.
+    // Arming precedes the render, or `retakeControl`'s own `canRetake` guard
+    // returns null and the screen comes back without the control this arm
+    // exists to name.
+    const restore = { index, attempt: attempt - 1, target };
+    armRetakeSlot(ctx, restore);
+    if (ctx.retakeAwaitingConfirm) {
+      // The retake was of the cloud's FINAL position, so the offering screen
+      // was the group-close confirm — the worst place to strand a household,
+      // since the whole apply decision sits behind its Continue.
+      renderPlanGroupConfirm(ctx, restore);
+    } else {
+      // `renderPlanNext` rather than `advanceAfterAccepted`: the latter routes
+      // by the UPCOMING entry's auto-advance policy, and a countdown there
+      // would auto-post the forward begin — precisely the out-of-order pair
+      // this arm exists to keep the household away from.
+      renderPlanNext(ctx, restore);
+    }
     return RETAKE_LABEL;
   }
   const hasBegin = ((ctx.captureRefs && ctx.captureRefs.buttons) || []).some(
@@ -3151,7 +3470,7 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       },
     );
 
-    const noise = await captureAmbientNoise(recorder, spec);
+    const noise = await captureAmbientNoise(recorder, spec, entryNoiseNote(spec, index));
     if (controller.aborted) return;
 
     recorder.start();
@@ -3265,7 +3584,7 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       return;
     }
     if (verdict.setExhausted) {
-      renderPlanExhausted(ctx, verdict);
+      renderPlanExhausted(ctx, { ...verdict, target, index });
       await endPlanSession(ctx);
       return;
     }
@@ -3883,4 +4202,13 @@ export {
   planAnnouncementText,
   planEstimatedMinutes,
   beginCapturePayload,
+  // The honesty layer's pure derivations (work order D8/D9). Exported for the
+  // same reason `entryForIndex` and `beginCapturePayload` are: each turns
+  // spec/verdict DATA into one sentence or one decision, and a harness that
+  // exercises them directly pins the absence cases — a spec with no budget, a
+  // verdict naming no clock — that a full-loop test only reaches by accident.
+  planTimeBudget,
+  timeBudgetLine,
+  entryNoiseNote,
+  expiredBudgetCopy,
 };

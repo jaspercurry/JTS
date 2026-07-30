@@ -26,6 +26,7 @@ import asyncio
 import dataclasses
 import logging
 import math
+import re
 import types
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -57,16 +58,22 @@ from jasper.active_speaker.crossover_v2_flow import (
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
     CLOUD_RETAKE_ALLOWANCE,
+    CLOUD_WALK_PREVIEW_LEAD,
+    CLOUD_WALK_PREVIEW_LEAD_POST_APPLY,
+    CLOUD_WALK_PREVIEW_TAIL,
+    CLOUD_WALK_PREVIEW_TAIL_POST_APPLY,
     COURTESY_PRELUDE_ENABLED,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
     DEFAULT_CLOUD_VERIFY_POSITIONS,
     GAIN_CAP_BACKOFF_DB,
+    GEOMETRY_RETRY_OFFSET_CM,
     GEOMETRY_RETRY_POSITIONS,
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     MAX_CLOUD_MEASURE_POSITIONS,
     MEASURE_PREDICTED_RIPPLE_CEILING_DB,
     MIN_CLOUD_MEASURE_POSITIONS,
+    MIN_CLOUD_OFFSET_CM,
     MIN_CLOUD_VERIFY_POSITIONS,
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -75,6 +82,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_DONE,
     PHASE_MEASURE,
     PHASE_VERIFY,
+    POSITION_ROLE_ONAX,
+    POSITION_ROLES,
     PILOT_LEVEL_DELTA_DB,
     PILOT_SNR_UNUSABLE_DB,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
@@ -89,6 +98,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     TEMPLATE_HARD_STOP,
     TIER_EXPRESS,
+    WIDE_OFFSET_MIN_CM,
     TIER_FULL,
     TRANSIENT_AUTO_RETRY_CODES,
     VERIFY_ANCHOR_HOLD_MESSAGE,
@@ -106,6 +116,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
     _min_positions_for_two_wide_offsets,
+    _pose,
     assert_cloud_plan_fits_relay_capacity,
     back_off_gain,
     build_v2_capture_plan,
@@ -116,7 +127,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_verify_session_spec,
     cloud_capture_target,
     cloud_plan_max_attempts,
+    cloud_walk_preview,
     express_cloud_measure_positions,
+    format_position_distance,
     open_measurement_volume,
     resolve_plan_shape,
     spec_report_for_predicted_sum,
@@ -2924,6 +2937,17 @@ def test_retain_position_seam_gets_every_accepted_position_with_its_prompt():
     prompts = [meta["prompt"] for _pid, meta in retained]
     assert prompts == [p.text for p in CLOUD_POSITION_PROMPTS[: len(retained)]]
     assert sum(1 for _pid, meta in retained if meta["wide"]) >= 2
+    # Each position's NAMED QUESTION rides its record, from the same table row
+    # the prompt came from (attribution-stage plan §5 promotion-queue item 1).
+    # The prompt string cannot be parsed back into a role, so the label is the
+    # only way the attribution stage sees a labelled sample rather than an
+    # anonymous member of an average — and it has to be the row's, not a guess.
+    roles = [meta["role"] for _pid, meta in retained]
+    assert roles == [p.role for p in CLOUD_POSITION_PROMPTS[: len(retained)]]
+    # …and the shipped walk really does sample all three questions, which is
+    # the point of labelling them at all: a walk that only ever produced one
+    # role would be the same average with extra words.
+    assert set(roles) == set(POSITION_ROLES)
     for _pid, meta in retained:
         assert meta["phase"] == PHASE_CLOUD_MEASURE
         assert meta["session_id"] == SESSION
@@ -2961,7 +2985,10 @@ def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):
     takes = [m for m in retained if m["index"] == last]
     assert len(takes) == 3
     # The original followed the table; both retakes followed their own rung, in
-    # order, and are marked wide (a two-forearm move is a wide offset).
+    # order, and are marked wide — the rungs ask for GEOMETRY_RETRY_OFFSET_CM,
+    # past the wide class by design, and `wide` is computed from that distance
+    # rather than hand-set (the body-part register this comment used to name
+    # was withdrawn by #1805's 2026-07-28 ruling).
     assert takes[0]["prompt"] == CLOUD_POSITION_PROMPTS[
         len(CLOUD_MEASURE_INDEXES) - 1
     ].text
@@ -3539,10 +3566,10 @@ def test_the_consent_tier_line_derives_its_counts_and_duration():
     # RE-DERIVED for the two-stage split. The consent screen belongs to ONE
     # session, so its counts are STAGE 1's — 10 at Full, 6 at Express — and
     # they are still derived from the plan the phone is about to walk, never
-    # hand-written. Reconciling this with the pre-session tier chooser (which
-    # correctly quotes the whole journey, 16 and 7) is PR-T4's: the work order
-    # assigns the stage-aware derivation and its wording there, and this pin
-    # exists so that change is a visible one rather than a silent drift.
+    # hand-written. PR-T4 finished the reconciliation the split opened: the line
+    # now SAYS "in this session", so it and the pre-session tier chooser (which
+    # correctly quotes the whole journey, 16 and 7) can no longer be read as
+    # contradicting each other.
     for tier, label, target in (
         (TIER_FULL, "Full measurement", 10),
         (TIER_EXPRESS, "Quick tune", 6),
@@ -3552,7 +3579,16 @@ def test_the_consent_tier_line_derives_its_counts_and_duration():
         )
         minutes = spec.capture_plan.estimated_minutes()
         steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
-        assert steps[0] == f"{label}: {target} measurements, about {minutes} minutes"
+        assert steps[0] == (
+            f"{label}, this session: {target} measurements, "
+            f"about {minutes} minutes"
+        )
+        # The stage qualifier sits IN FRONT of the numbers so the capture
+        # page's own de-dup needle ("{n} measurements, about {m} minutes")
+        # still finds it — otherwise the household reads the same numbers
+        # twice, two lines apart. Pinned here as well as in the page's own
+        # suite because this is the side that can move it.
+        assert f"{target} measurements, about {minutes} minutes" in steps[0]
     # Stage 1 alone is 7 minutes at Full and 5 at Express; the whole journey is
     # what tier_display_info sums, pinned in its own test below.
     assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 7
@@ -3602,6 +3638,98 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
             )
 
 
+def test_the_orientation_screen_previews_the_whole_walk_before_the_first_tone():
+    """Work order D7 (#1804 + #1805): the household reads every position up
+    front instead of discovering one prompt at a time.
+
+    The preview is not a second description of the walk — it enumerates the
+    SAME ``[:N - 1]`` slice of the SAME table the per-entry screens are built
+    from, which is why a plan-shape change moves both together or neither.
+    """
+    for tier, positions in (
+        (TIER_FULL, DEFAULT_CLOUD_MEASURE_POSITIONS),
+        (TIER_EXPRESS, express_cloud_measure_positions()),
+    ):
+        spec = build_v2_session_spec(
+            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
+        )
+        step_lists = [c["items"] for c in spec.screen if c["type"] == "steps"]
+        assert len(step_lists) == 2, "consent steps, then the walk preview"
+        preview = step_lists[1]
+        # Every prompted move, in order, bracketed by where to start and what
+        # happens after — the whole shape of the session.
+        walked = [p.text for p in CLOUD_POSITION_PROMPTS[: positions - 1]]
+        assert preview[1:-1] == walked
+        assert preview[0] == CLOUD_WALK_PREVIEW_LEAD
+        assert preview[-1] == CLOUD_WALK_PREVIEW_TAIL
+        # The tail sets up the INTERLUDE rather than promising a tune.
+        assert "decide" in preview[-1]
+
+        # …and the plan really does prompt exactly those, in that order.
+        prompted = [
+            e.screen["title"] for e in spec.capture_plan.entries
+            if e.kind_label == "cloud_measure"
+        ]
+        assert prompted == [p.headline for p in CLOUD_POSITION_PROMPTS[: positions - 1]]
+
+
+def test_the_post_apply_walk_is_previewed_with_its_own_bracketing_copy():
+    """Stage 2's walk is discovered one prompt at a time otherwise — the same
+    defect — and its bracketing sentences are NOT stage 1's: one anchor rather
+    than two on the mark, and the journey ends rather than pausing for a
+    decision. Express's 1-entry stage 2 is not a walk and gets no preview."""
+    full = build_v2_verify_session_spec(
+        FC_HZ, acknowledgement_binding="b" * 24, plan_shape=resolve_plan_shape(),
+    )
+    preview = [c["items"] for c in full.screen if c["type"] == "steps"][1]
+    assert preview[0] == CLOUD_WALK_PREVIEW_LEAD_POST_APPLY
+    assert preview[-1] == CLOUD_WALK_PREVIEW_TAIL_POST_APPLY
+    assert preview[1:-1] == [
+        p.text for p in CLOUD_POSITION_PROMPTS[: DEFAULT_CLOUD_VERIFY_POSITIONS - 1]
+    ]
+
+    express = build_v2_verify_session_spec(
+        FC_HZ,
+        acknowledgement_binding="b" * 24,
+        plan_shape=resolve_plan_shape(TIER_EXPRESS),
+    )
+    assert len([c for c in express.screen if c["type"] == "steps"]) == 1
+    assert cloud_walk_preview(1) == ()
+    assert cloud_walk_preview(1, post_apply=True) == ()
+
+
+def test_check_stops_hushing_the_room_before_it_measures_it():
+    """Work order D8 / issue #1835. CHECK's ambient window is the SESSION's
+    room-noise measurement and is deliberately composed to run BEFORE anyone is
+    asked to go quiet — the gain solve reads it, so a pre-hushed room reads
+    quieter than reality and the solve under-drives against the noise the later
+    sweeps actually face.
+
+    TWO windows are touched and a THIRD is deliberately not: CHECK's step copy
+    and the phone's own pre-arm floor note both stop asking for quiet on CHECK
+    only. The in-sweep ambient lines — a different measurement with a different
+    purpose — are the speaker's own call (``quiet_requested``) and this must not
+    collapse them into one string.
+    """
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding="b" * 24,
+    )
+    entries = {e.kind_label: e for e in spec.capture_plan.entries}
+    check = entries["check"].screen
+    assert "stay quiet" not in check["body"].lower()
+    assert "carry on" in check["body"].lower()
+    # …and the phone's own sub-second floor window gets its own honest request,
+    # because asking for quiet THERE hushes the room a moment before CHECK
+    # measures it.
+    assert "quiet" not in check["noise_note"].lower()
+    assert "carry on" in check["noise_note"].lower()
+    # Every OTHER entry supplies no override, so the page keeps its default —
+    # which is right for them, since a sweep follows immediately.
+    for label, entry in entries.items():
+        if label != "check":
+            assert "noise_note" not in entry.screen
+
+
 def test_cloud_prompts_front_load_the_wide_offsets():
     """Fundamental 1's physics, pinned: >=10 cm spread decorrelates HF nulls and
     ~30 cm+ offsets are what support the LF edge. Both groups walk the SAME
@@ -3646,12 +3774,89 @@ def test_a_verify_group_too_short_for_two_wide_offsets_is_refused(positions):
     group that never reaches a ~30 cm-class offset."""
     with pytest.raises(CrossoverV2FlowError):
         build_v2_capture_plan(_roles(), FC_HZ, cloud_verify_positions=positions)
-    # Every prompt is real household copy, and none of it leaks a measurement
-    # number into the operator's hands (the S0 owner ruling: hand-widths and
-    # forearms, never centimetres).
+
+
+def test_cloud_prompts_state_numeric_absolute_poses():
+    """Every prompt is real household copy, states its distance NUMERICALLY in
+    both units, and states a COMPLETE pose measured from the mark.
+
+    RE-DERIVED, not merely relaxed. The pin this replaces asserted the opposite
+    (`" cm" not in prompt.text`) under a comment citing "the S0 owner ruling:
+    hand-widths and forearms, never centimetres" — the 2026-07-25 studio
+    ruling. Two later owner rulings superseded it, and the assertion is now
+    what THEY require rather than what the old one banned:
+
+    * 2026-07-28 field session, issue #1805 — "drop body-part units — prompts
+      should use inches and/or meters". So numeric units must be PRESENT and
+      body-part units ABSENT; deleting the old assertion would have left the
+      new rule unpinned, and leaving it would have made the suite assert a rule
+      the owner has withdrawn.
+    * 2026-07-29 field session, issue #1806 — poses must be absolute, never a
+      delta on ambiguous prior state, and the actor is "the microphone" rather
+      than the phone (a household may measure with a laptop or a USB mic).
+    """
     for prompt in CLOUD_POSITION_PROMPTS:
         assert prompt.headline.strip()
-        assert " cm" not in prompt.text and "centimet" not in prompt.text.lower()
+        text = prompt.text
+        lowered = text.lower()
+        # #1805: numbers, in both units, on every prompted move.
+        assert " in (" in text and " cm)" in text, text
+        assert re.search(r"\d+ in \(\d+ cm\)", text), text
+        # …and no body-part unit anywhere in the copy.
+        for banned in ("hand-width", "hand width", "forearm", "arm's length"):
+            assert banned not in lowered, text
+        # #1806: an absolute pose names the mark it is measured from, and the
+        # microphone rather than the phone.
+        assert "mark" in lowered, text
+        assert "microphone" in lowered, text
+        assert "phone" not in lowered.replace("microphone", ""), text
+        # …and carries a role the attribution stage can read.
+        assert prompt.role in POSITION_ROLES
+
+
+def test_geometry_retry_prompts_carry_the_same_register():
+    """The RETAKE rungs are the other prompt constant carrying the register —
+    the work order names both, because a table converted alone would leave the
+    household reading inches all session and then "two forearms' length" at the
+    one moment the instruction has to be unambiguous."""
+    for rung in CLOUD_GEOMETRY_RETRY_PROMPTS:
+        lowered = rung.lower()
+        assert re.search(r"\d+ in \(\d+ cm\)", rung), rung
+        assert "forearm" not in lowered and "hand-width" not in lowered, rung
+        assert "microphone" in lowered, rung
+        assert "mark" in lowered, rung
+    # A rung must ask for a spread the walk itself never reaches, or "wider
+    # spot" is a request the household has already satisfied.
+    assert GEOMETRY_RETRY_OFFSET_CM > max(
+        p.offset_cm for p in CLOUD_POSITION_PROMPTS[:MIN_CLOUD_MEASURE_POSITIONS - 1]
+    )
+
+
+def test_wide_is_derived_from_the_offset_not_hand_set():
+    """The wide-offset guarantee survives a copy edit because ``wide`` is
+    COMPUTED from the row's distance.
+
+    Before the distances became data, a row could say "a forearm's length" and
+    carry ``wide=True`` independently — two facts that could disagree, on the
+    one flag ``MIN_CLOUD_VERIFY_POSITIONS`` and ``express_cloud_measure_
+    positions()`` are both derived from. Now narrowing the copy narrows the
+    flag, which moves the floors, which fails
+    ``test_cloud_prompts_front_load_the_wide_offsets`` loudly.
+    """
+    for prompt in CLOUD_POSITION_PROMPTS:
+        assert prompt.wide == (prompt.offset_cm >= WIDE_OFFSET_MIN_CM)
+        assert prompt.offset_cm >= MIN_CLOUD_OFFSET_CM
+        # The stated distance IS the carried distance — the copy is generated
+        # from the number, so these cannot drift.
+        assert format_position_distance(prompt.offset_cm) in prompt.headline
+    narrowed = replace(CLOUD_POSITION_PROMPTS[2], offset_cm=WIDE_OFFSET_MIN_CM - 1)
+    assert narrowed.wide is False
+    # …and the HF floor is ENFORCED at table-build time, not documented: a row
+    # too short to decorrelate anything is a session minute spent on nothing.
+    with pytest.raises(ValueError):
+        _pose("Move it {d}", MIN_CLOUD_OFFSET_CM - 1, POSITION_ROLE_ONAX)
+    with pytest.raises(ValueError):
+        _pose("Move it {d}", 40.0, "sideways")
 
 
 # --- courtesy-tone prelude (issue #1677): phone-contract duration ------------
@@ -4094,18 +4299,45 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # in this revision: work order D2 keeps that form exactly as it is, and an
 # identical digest is the proof that generalizing its builder over a plan shape
 # left its own output untouched.
+# RE-DERIVED 2026-07-30 (issue #1806, PR-T4 — the phone's honesty layer). COPY
+# ONLY: every target, attempt budget, entry count, screen key, and program
+# duration is byte-identical to the PR-T3 revision above. What moved is the
+# prompted-position copy and CHECK's, per work order D7/D8:
+#
+#   * the position prompts became numeric ABSOLUTE poses in inches AND
+#     centimetres, generated from each row's own ``offset_cm`` ("Move the
+#     microphone 16 in (40 cm) to the LEFT of the mark, at mark height.") —
+#     longer sentences than "A forearm's length LEFT of the mark", which is
+#     where nearly all of the added bytes are;
+#   * CHECK's entry stopped asking for quiet before the window that
+#     deliberately measures an un-hushed room and gained a ``noise_note`` for
+#     the phone's own pre-arm floor window (#1835);
+#   * the actor became "the microphone" rather than "the phone".
+#
+#   stage1-full     2301 B → 2918 B  (+617; 8 prompted positions + CHECK)
+#   stage1-express  1531 B → 1945 B  (+414; 4 prompted positions + CHECK)
+#   stage2-full     1612 B → 1939 B  (+327; 5 prompted positions, no CHECK)
+#   stage2-express   609 B →  609 B  (UNCHANGED — one anchor, no prompted move)
+#   1-entry          324 B →  324 B  (UNCHANGED)
+#
+# The two unchanged digests are the load-bearing check in this revision: both
+# are plans with no prompted position and no CHECK entry, so an identical
+# digest is the proof that a prompt-copy rewrite reached exactly the entries it
+# was about. Byte lengths grew and are pinned alongside the hashes because this
+# copy sits inside the relay's 4 KiB per-screen cap — see
+# ``test_cloud_plan_stays_inside_the_relay_spec_byte_budgets`` for the margin.
 _GOLDEN_V2_PLAN_BYTES = {
     "stage1-full": (
-        2301,
-        "89653f85b681e1a296bc4f95803f4373a0fc61f428c04c60673c742f98f987e6",
+        2918,
+        "b2c34282a518658d908acda6de53e69e777938c9480c415ed4e4649832e65949",
     ),
     "stage1-express": (
-        1531,
-        "eb8d9c342d786abe48b4d1acb66658bbd52f024b8f371e29f2620cb07fac5b7b",
+        1945,
+        "259c69948dc954b28a408335419336f312f9045aa9307820999f19db6a2b4ff7",
     ),
     "stage2-full": (
-        1612,
-        "076da2d8c7e57b020c3bb032c0e8831c2732c2a5fdee7fbdc136117f29483529",
+        1939,
+        "030d2e94158566a315c8792c24f558d909c2306c3ea357cca5b960fd2ba8f031",
     ),
     "stage2-express": (
         609,

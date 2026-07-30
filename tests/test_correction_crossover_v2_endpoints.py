@@ -44,6 +44,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
     DEFAULT_CLOUD_MEASURE_POSITIONS,
+    GEOMETRY_RETRY_OFFSET_CM,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -51,6 +52,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_DONE,
     PHASE_MEASURE,
     PHASE_VERIFY,
+    POSITION_ROLES,
     REASON_APPLY_FAILED,
     REASON_CLOUD_GEOMETRY_LOCKED,
     TIER_EXPRESS,
@@ -60,6 +62,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_session_spec,
     build_v2_verify_session_spec,
     cloud_capture_target,
+    format_position_distance,
     resolve_plan_shape,
 )
 from jasper.capture_relay.client import RelayClient
@@ -86,6 +89,13 @@ from tests.test_crossover_v2_conductor import (
 )
 
 _BINDING = "placement_abcdefghijklmnopqrstuv"
+
+# The distance the geometry-locked retake rungs ask for, DERIVED from the
+# constant the rungs are built from rather than pasted. PR-T4 replaced the
+# body-part register the old "forearms" marker keyed on (#1805's 2026-07-28
+# ruling); keying on the derived distance is what keeps this pin honest if the
+# rung's spread is ever re-tuned.
+_WIDER_SPOT_DISTANCE = format_position_distance(GEOMETRY_RETRY_OFFSET_CM)
 
 
 @pytest.fixture(autouse=True)
@@ -1078,9 +1088,15 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     assert [e["index"] for e in rejections] == [last_cloud_measure_index]
     # B2: the rejection carries its household copy AND the wider-spot
     # instruction onto the wire, which is what the phone now renders.
+    #
+    # RE-DERIVED for PR-T4's register change (#1805/#1806): the rung is a
+    # numeric ABSOLUTE pose now, so the marker is the wider-spot DISTANCE
+    # rather than the withdrawn "forearms". Asserting the distance is also
+    # strictly stronger — it names the spread the rung actually asks for, which
+    # a body-part unit never did.
     assert rejections[0]["code"] == REASON_CLOUD_GEOMETRY_LOCKED
     assert rejections[0]["reason"]
-    assert "forearms" in rejections[0]["prompt"]
+    assert _WIDER_SPOT_DISTANCE in rejections[0]["prompt"]
 
     # The pre-apply group closed with a geometry verdict on record; the
     # post-apply one belongs to stage 2 and this session never had it.
@@ -1108,9 +1124,14 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
         if t["position_id"] == retaken_id
     }
     assert surviving == {takes[1]["attempt"]}
-    assert "forearms" in takes[1]["prompt"]
+    assert _WIDER_SPOT_DISTANCE in takes[1]["prompt"]
     assert takes[1]["wide"] is True
-    assert "forearms" not in takes[0]["prompt"]
+    assert _WIDER_SPOT_DISTANCE not in takes[0]["prompt"]
+    # …and each take carries the named question its position answers, so the
+    # attribution stage reads a labelled sample rather than an anonymous member
+    # of an average (attribution-stage plan §5 promotion queue item 1).
+    assert takes[0]["role"] in POSITION_ROLES
+    assert takes[1]["role"] in POSITION_ROLES
 
     # §5.5 unchanged: exactly one volume open, exact restore on the done path.
     # A measure-only session that finishes IS done — every phase it ran is
@@ -1218,19 +1239,23 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     position_id = f"{PHASE_CLOUD_MEASURE}_10"
     base = {
         "position_id": position_id, "phase": PHASE_CLOUD_MEASURE, "index": 10,
-        "wide": False, "captured_at": 1.0, "session_id": "cap_retake_session",
+        "wide": False, "role": "onax", "captured_at": 1.0,
+        "session_id": "cap_retake_session",
         "gate_window_ms": 8.0, "validity_floor_hz": 140.0,
         "gating_applied": True, "summed_ripple_db": 1.0,
         "glitch_detected": False,
     }
     retain(
         position_id, CaptureResult(wav=b"first-take"),
-        {**base, "attempt": 10, "prompt": "Two hand-widths LEFT of the mark."},
+        {**base, "attempt": 10,
+         "prompt": "Move the microphone 10 in (25 cm) to the LEFT of the "
+                   "mark, at mark height."},
     )
     retain(
         position_id, CaptureResult(wav=b"wider-retake"),
-        {**base, "attempt": 11, "wide": True,
-         "prompt": "Same measurement, wider spot: two forearms' length LEFT."},
+        {**base, "attempt": 11, "wide": True, "role": "offax",
+         "prompt": "Same measurement, wider spot: move the microphone "
+                   "30 in (75 cm) to the LEFT of the mark."},
     )
 
     # Two artifacts, both published — the second is NOT a refused duplicate.
@@ -1248,8 +1273,11 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     first, second = (json.loads(p.read_text()) for p in sidecars)
     # Each sidecar describes ITS OWN take: its prompt, its wav.
     assert first["attempt"] == 10 and second["attempt"] == 11
-    assert "forearms" in second["prompt"] and "forearms" not in first["prompt"]
+    assert "wider spot" in second["prompt"]
+    assert "wider spot" not in first["prompt"]
     assert second["wide"] is True
+    # The role rides the sidecar — it is the durable half of the promotion.
+    assert first["role"] == "onax" and second["role"] == "offax"
     assert first["wav_path"] != second["wav_path"]
     for record in (first, second):
         wav = Path(info["bundle_dir"]) / record["wav_path"]
@@ -5490,6 +5518,58 @@ def test_watchdog_collapse_posts_session_over_then_grace_then_purge(monkeypatch)
     events = backend.host_events[session.session_id]
     assert events[-1]["phase"] == "capture_set_exhausted"
     assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
+    # …and it NAMES which clock ran out (work order D8, issue #1807). Without
+    # this the phone renders a session-over event as renderPlanExhausted — "the
+    # speaker reached its measurement attempt limit" — which is a third thing
+    # entirely: no attempt limit was reached, a step budget expired. Both a
+    # step timeout and a dead relay session persist as the same failure code,
+    # so this field is the only place the difference survives to the household.
+    assert events[-1]["budget"] == "step"
+
+
+def test_a_time_budget_expiry_logs_which_clock_ran_out_and_what_survived(
+    monkeypatch, caplog,
+):
+    """AGENTS.md's no-silent-failure rule, applied to D8's disclosure: a
+    user-visible expiry gets a NAMED line in the shipped
+    ``correction.crossover_v2_*`` namespace, carrying which budget expired and
+    what the expiry preserved. A disclosure nobody can grep for is not a
+    disclosure."""
+    import logging
+
+    from jasper.capture_relay import session as session_mod
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
+
+    class _NoPhone:
+        begun = (1, 1)
+
+    conductor = _conductor(backend, session, _NoPhone(), published=[])
+    monkeypatch.setattr(session_mod, "purge", lambda *a, **k: None)
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    runner = _build_runner(
+        conductor, VolumeRecorder(), poll_interval_s=0.01, timeout_s=0.2
+    )
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(CaptureTimeout):
+            _run(runner, client, session)
+
+    lines = [
+        r.getMessage() for r in caplog.records
+        if "correction.crossover_v2_time_budget_expired" in r.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    # WHICH clock, WHICH relay phase it died in, and what survived.
+    assert "budget=step" in lines[0]
+    assert "phase=" in lines[0]
+    assert "accepted_phases=" in lines[0]
 
 
 # --- W6 run-6 Blocker M + Finding N: apply's real fingerprint-vocabulary seam ---

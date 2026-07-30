@@ -702,6 +702,16 @@ class CaptureSpec:
     # driver's whole repeat SET. Presence — and ONLY presence — selects the
     # plan loop over the single-capture path, on both the Pi and the page.
     capture_plan: CapturePlan | None = None
+    # The two clocks a household can run out of, in seconds, so the phone can
+    # say which one is running and which one expired (work order D8, issue
+    # #1807). NOT a new budget and NOT enforced here: both numbers are owned
+    # elsewhere — ``session_s`` is the ``ttl_s`` this session is actually minted
+    # with and ``step_s`` is the runner's phone-inactivity budget
+    # (``DEFAULT_TIMEOUT_S``) — and this field only PUBLISHES them so the page
+    # stops being the one surface that cannot name the clock it is racing.
+    # ``None`` (every caller that does not set it, and every older Pi) renders
+    # nothing; the page must not invent a number it was not told.
+    time_budget: Mapping[str, int] | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
@@ -772,6 +782,11 @@ class CaptureSpec:
                 if self.capture_plan is not None
                 else {}
             ),
+            **(
+                {"time_budget": dict(self.time_budget)}
+                if self.time_budget is not None
+                else {}
+            ),
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
         }
@@ -821,6 +836,7 @@ class CaptureSpec:
                     calibration_raw
                 )
         capture_plan_raw = data.get("capture_plan")
+        time_budget_raw = data.get("time_budget")
         if capture_plan_raw is not None and not isinstance(capture_plan_raw, Mapping):
             raise CaptureSpecError("capture_plan must be an object or null")
         spec = cls(
@@ -879,6 +895,11 @@ class CaptureSpec:
             capture_plan=(
                 CapturePlan.from_dict(capture_plan_raw)
                 if isinstance(capture_plan_raw, Mapping)
+                else None
+            ),
+            time_budget=(
+                {str(k): _as_int(time_budget_raw, str(k)) for k in time_budget_raw}
+                if isinstance(time_budget_raw, Mapping)
                 else None
             ),
             # REQUIRED on the wire, with no default — a spec that states no
@@ -1020,6 +1041,7 @@ class CaptureSpec:
                 "acknowledgement requires a begin_capture button"
             )
         _validate_return_url(self.return_url)
+        _validate_time_budget(self.time_budget)
         return self
 
     def with_screen(self, *components: Mapping[str, Any]) -> CaptureSpec:
@@ -1030,8 +1052,42 @@ class CaptureSpec:
         """Return a copy carrying the local Pi URL the phone should return to."""
         return replace(self, return_url=str(return_url or "")).validate()
 
+    def with_time_budget(self, *, step_s: int, session_s: int) -> CaptureSpec:
+        """Return a copy publishing the two clocks this session actually runs.
+
+        Set by the relay adapter at MINT time rather than by a spec builder,
+        for the same reason :meth:`with_return_url` is: a builder does not know
+        which session its spec ends up in, and ``session_s`` has to be the
+        ``ttl_s`` the session is genuinely minted with or the phone would quote
+        a number nothing enforces.
+        """
+        return replace(
+            self, time_budget={"step_s": int(step_s), "session_s": int(session_s)}
+        ).validate()
+
 
 # --- Validation helpers -------------------------------------------------------
+
+# The clocks ``CaptureSpec.time_budget`` may name. A CLOSED set, like every
+# other spec vocabulary: the page renders these two and nothing else, so an
+# unknown key is drift to catch here rather than a sentence nobody wrote.
+TIME_BUDGET_KEYS = ("step_s", "session_s")
+
+
+def _validate_time_budget(time_budget: Mapping[str, int] | None) -> None:
+    if time_budget is None:
+        return
+    if not isinstance(time_budget, Mapping):
+        raise CaptureSpecError("time_budget must be an object or null")
+    extra = set(time_budget) - set(TIME_BUDGET_KEYS)
+    if extra:
+        raise CaptureSpecError(f"time_budget has unknown keys: {sorted(extra)}")
+    for key in TIME_BUDGET_KEYS:
+        if key not in time_budget:
+            raise CaptureSpecError(f"time_budget.{key} is required")
+        value = time_budget[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise CaptureSpecError(f"time_budget.{key} must be a positive integer")
 
 
 def _validate_validity(validity: CaptureValidity) -> None:
@@ -1615,6 +1671,24 @@ def _guided_tier_step(
     is about to walk, the duration from :meth:`CapturePlan.estimated_minutes`
     (the phone's own arithmetic). Nothing here is hand-written, so this line
     and the phone's wake-lock hint can never quote different sessions.
+
+    **Both numbers are THIS SESSION's, and since the two-stage split (work
+    order D7) that is one stage of two.** The line therefore says so: an
+    unqualified "Full measurement: 10 measurements, about 8 minutes" beside a
+    chooser that quoted 16 and 11 reads as a contradiction, when in fact it is
+    the honest half. The chooser (``_tier_action``) owns the whole-journey
+    figure; this owns the session in front of the household, and neither is
+    allowed to state the other's. It stays deliberately silent about WHICH
+    stage this is, because both stages render this same line.
+
+    **The stage qualifier goes in front of the numbers, not inside them**, and
+    that placement is load-bearing rather than stylistic: the capture page
+    derives the identical ``"{n} measurements, about {m} minutes"`` sentence
+    itself and suppresses its own copy when it finds that substring here
+    (``planAnnouncementText`` / ``specScreenSays`` in
+    capture-page/js/main.js). Splitting the phrase would leave a page that
+    cannot find its needle rendering the same numbers twice, two lines apart —
+    against a NEW page and an OLD one alike, since the page ships first.
     """
     label = _GUIDED_TIER_LABELS.get(str(guided_tier or "").strip().lower())
     if not label or not walk or capture_plan is None:
@@ -1622,7 +1696,9 @@ def _guided_tier_step(
     minutes = capture_plan.estimated_minutes()
     if not minutes:
         return ""
-    return f"{label}: {walk} measurements, about {minutes} minutes"
+    return (
+        f"{label}, this session: {walk} measurements, about {minutes} minutes"
+    )
 
 
 def build_crossover_sweep_spec(
@@ -1642,6 +1718,7 @@ def build_crossover_sweep_spec(
     capture_plan: CapturePlan | None = None,
     guided_captures: int = 0,
     guided_tier: str = "",
+    walk_preview: Sequence[str] = (),
     reverify_lead: str = "",
     default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
@@ -1712,6 +1789,18 @@ def build_crossover_sweep_spec(
     before the first tone rather than by counting prompts afterwards. Only
     meaningful alongside ``guided_captures``; ignored otherwise, and omitting
     it keeps the pre-tier copy byte-identical.
+
+    ``walk_preview`` is the ORIENTATION half of the guided consent screen (work
+    order D7, issues #1804 + #1805): the whole walk, position by position,
+    rendered before the first tone so a household reads it up front instead of
+    discovering one prompt at a time. Supplied by the caller that owns the plan
+    — :func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_preview`, the
+    same table the per-entry screens are built from — because this builder must
+    not grow a second description of a walk it does not own. Empty (every
+    non-cloud caller, and Express's 1-entry stage 2) renders nothing and is
+    byte-identical to the pre-preview screen. Only meaningful alongside
+    ``guided_captures``; ignored otherwise, for the same reason as
+    ``guided_tier``.
 
     ``reverify_lead`` is an OPT-IN first step for the 1-entry re-verify re-arm
     (§2.4): the recovery is one sweep back at the mark, and the 2026-07-27
@@ -1852,13 +1941,34 @@ def build_crossover_sweep_spec(
             # wording adds what happens between sweeps so the household
             # is not surprised by the first move prompt.
             (
-                "Keep the phone still until each sweep finishes, then "
+                "Keep the microphone still until each sweep finishes, then "
                 "follow the on-screen prompt to move it"
                 if walk
-                else "Keep the phone still until the sweep finishes"
+                else "Keep the microphone still until the sweep finishes"
             ),
         ]
     )
+    if walk:
+        # What the SPEAKER does, said before the first tone (work order D7 /
+        # issue #1804). The household has been told where to stand and how long
+        # it takes; this is the third thing an orientation screen owes them —
+        # what they are about to hear — because an unexplained burst of beeps
+        # at measurement level is the moment a first-time household stops the
+        # session.
+        #
+        # Deliberately states no duration of its own: ``seconds`` is the
+        # LONGEST plan entry's whole capture window (quiet window + beeps +
+        # tone), which the step above already quotes honestly as the time to
+        # stay quiet. Reusing it here would advertise a 40-second "tone" that
+        # is nothing of the kind. "three" mirrors
+        # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT`` the way
+        # the capture page's own prelude line does — spelled out because a
+        # household counts beeps, and pinned by the same test.
+        steps.append(
+            "Each measurement is three short beeps, a pause, and then a rising "
+            "tone — loud, but no louder than JTS needs to hear itself over the "
+            "room"
+        )
     return CaptureSpec(
         kind="crossover_sweep",
         duration_ms=duration_ms,
@@ -1886,6 +1996,23 @@ def build_crossover_sweep_spec(
                 f"Crossover — {driver_label}" if is_driver else "Tune your speaker"
             ),
             ui_steps(steps),
+            # The walk, all of it, before step 1 (work order D7). A second
+            # ``steps`` list rather than a new component type: the renderer's
+            # vocabulary is a SECURITY BOUNDARY (capture-page/js/render.js), and
+            # a preview is an ordered list of instructions — exactly what
+            # ``steps`` already is. Absent for every caller that passes no
+            # preview, so no screen grows an empty section.
+            *(
+                (
+                    ui_note(
+                        "Here is the whole walk, so you can see it before you "
+                        "start:"
+                    ),
+                    ui_steps([str(line) for line in walk_preview]),
+                )
+                if walk and walk_preview
+                else ()
+            ),
             # (``ui_level_meter("mic")`` used to sit here. It was dead on
             # EVERY crossover consent screen — the v2 cloud, the legacy
             # per-driver sweeps, and the 1-entry re-verify alike — because the

@@ -276,6 +276,49 @@ def test_return_url_round_trips_for_phone_done_cta():
     )
 
 
+def test_time_budget_round_trips_and_is_omitted_when_absent():
+    """The two clocks a household can run out of (work order D8, issue #1807).
+
+    ABSENCE IS THE DEFAULT AND STAYS MEANINGFUL: every builder omits the key,
+    so a page that finds nothing says nothing about time rather than inventing
+    a number. That is also what makes a new capture page safe against a Pi that
+    predates the field — see capture-page/README.md's "additive field that
+    degrades on its own" class.
+    """
+    bare = build_room_sweep_spec()
+    assert bare.time_budget is None
+    assert "time_budget" not in bare.to_dict()
+    assert CaptureSpec.from_dict(bare.to_dict()).time_budget is None
+
+    published = bare.with_time_budget(step_s=120, session_s=900)
+    assert published.to_dict()["time_budget"] == {"step_s": 120, "session_s": 900}
+    assert CaptureSpec.from_dict(published.to_dict()).time_budget == {
+        "step_s": 120,
+        "session_s": 900,
+    }
+
+
+@pytest.mark.parametrize(
+    "budget",
+    [
+        {"step_s": 120},                       # a half-stated pair
+        {"session_s": 900},
+        {"step_s": 0, "session_s": 900},       # "0 minutes" is not a budget
+        {"step_s": 120, "session_s": -1},
+        {"step_s": "two", "session_s": 900},   # not a number at all
+        {"step_s": 120, "session_s": 900, "wall_clock_s": 3360},  # unknown clock
+    ],
+)
+def test_time_budget_is_a_closed_two_key_vocabulary(budget):
+    """A CLOSED set, like every other spec vocabulary: the page renders exactly
+    these two clocks, so an unknown or half-stated one is drift to catch here
+    rather than a sentence nobody wrote."""
+    from dataclasses import replace
+
+    with pytest.raises(CaptureSpecError):
+        replace(build_room_sweep_spec(), time_budget=budget).validate()
+
+
 def test_from_dict_validates_and_reconstructs_sub_records():
     payload = build_room_sweep_spec().to_dict()
     s = CaptureSpec.from_dict(payload)
@@ -947,10 +990,17 @@ def test_max_capacity_plan_with_product_sized_prompt_copy_fits_the_worker_spec_c
 
     # Copy at the upper end of what the shipped v2 entries carry (the longest
     # live `body` is ~150 chars; allow generous headroom for a position prompt).
+    #
+    # RE-DERIVED for PR-T4 (#1805/#1806): the representative body is now a
+    # numeric ABSOLUTE pose with "the microphone" as the actor, matching the
+    # register the shipped prompts moved to. Keeping the withdrawn hand-width
+    # phrasing here would have left the size check measuring copy the flow no
+    # longer emits — and the new register is LONGER, which is exactly why the
+    # sample has to track it rather than stay frozen.
     body = (
-        "Move the phone one hand-width to the LEFT of the last spot, keeping "
-        "it at about tweeter height, then tap Start. Stay quiet while JTS "
-        "measures — this one takes about twenty seconds."
+        "Move the microphone 16 in (40 cm) to the LEFT of the mark, at mark "
+        "height, then tap Start. Step a little toward the speaker as you go "
+        "out, and stay quiet while JTS measures — about twenty seconds."
     )
     entries = tuple(
         CapturePlanEntry(

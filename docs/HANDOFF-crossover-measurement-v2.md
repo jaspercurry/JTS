@@ -697,8 +697,19 @@ together. Design rationale:
   `ValueError` so the dispatcher's refusal arm answers it), and
   `jasper-doctor`'s `check_capture_relay` reports the advertised ceiling
   so an operator finds it before a household taps Start.
-- **Prompt copy** is `CLOUD_POSITION_PROMPTS` — hand-widths and
-  forearms, never centimetres (owner ruling, S0 studio session). The
+- **Prompt copy** is `CLOUD_POSITION_PROMPTS` — numeric ABSOLUTE poses in
+  inches and centimetres, each stating a complete target (distance, bearing,
+  and height) measured from the mark, with "the microphone" as the actor.
+  Two owner rulings landed on top of the S0 studio session's body-part
+  register: the 2026-07-28 field session (#1805) withdrew hand-widths and
+  forearms in favour of numbers, and the 2026-07-29 one (#1806) withdrew
+  relative deltas in favour of absolute poses. Distances live on the row as
+  `offset_cm` and the sentence is GENERATED from them, so a row cannot state
+  a distance it does not carry; `wide` is likewise derived
+  (`offset_cm >= WIDE_OFFSET_MIN_CM`), which is what makes narrowing a wide
+  move move the group floors instead of quietly voiding the LF guarantee.
+  Each row also carries a `role` (`onax` / `offax` / `xovr`), persisted with
+  the position for the attribution stage. The
   ORDER is load-bearing: both groups walk the same table from the front,
   so two wide (~forearm) offsets must sit inside the first
   `MIN_CLOUD_MEASURE_POSITIONS − 1` entries or the LF half of the
@@ -2448,4 +2459,4 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-07-28
+Last verified: 2026-07-30

@@ -1109,8 +1109,14 @@ _TIER_CLAIMS = {
     # past what the post-apply cloud actually samples — a handful of prompted
     # spots around the mark, never the room at large. "at several spots
     # around the mark" is the honest description of the same cloud.
-    TIER_FULL: "re-checks the result at several spots around the mark",
-    TIER_EXPRESS: "confirms the result at the mark",
+    #
+    # Two-stage work order D7: the post-apply claim now describes a session the
+    # household STARTS SEPARATELY, after deciding to apply, so it reads as the
+    # PURPOSE of a second walk rather than as something this first session goes
+    # on to do. The claim's content is unchanged; only what it is grammatically
+    # attached to moved, which is exactly what the split changed.
+    TIER_FULL: "re-check the result at several spots around the mark",
+    TIER_EXPRESS: "confirm the result at the mark",
 }
 
 
@@ -1155,9 +1161,19 @@ def _tier_action(
         "label": _TIER_LABELS[tier],
         # One-line claims difference (§1.3/§3), derived from the plan shape —
         # never a hand-written prettier figure (§1.1).
+        #
+        # STAGE-AWARE since the two-stage split (work order D7). The old line
+        # quoted ONE number of measurements against ONE duration, which stopped
+        # being a session the moment stage 1 and stage 2 became separate ones:
+        # a household choosing a tier is choosing both, with its own decision in
+        # between, and a chooser that hid the interlude would sell a 16-capture
+        # Full as one uninterrupted sitting. Every number here is still derived
+        # from the plans themselves (``tier_display_info``), never written down.
         "description": (
-            f"About {detail['estimated_minutes']} min — {detail['capture_target']} "
-            f"measurements; {_TIER_CLAIMS[tier]}."
+            f"About {detail['estimated_minutes']} min — "
+            f"{detail['stage1_captures']} measurements now. You decide whether "
+            f"to apply, then {detail['stage2_captures']} more to "
+            f"{_TIER_CLAIMS[tier]}."
         ),
         "recommended": recommended,
         "endpoint": "/correction/crossover/v2/session",
