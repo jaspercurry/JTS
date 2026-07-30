@@ -72,9 +72,12 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
-# Refresh the voice-side 120 s crash-recovery timer while a valid measurement
-# window remains open. A relay setup may wait up to eight minutes for a human;
+# Refresh the voice-side crash-recovery timer
+# (voice_daemon.MEASUREMENT_AUTOCLEAR_SEC) while a valid measurement window
+# remains open. A relay setup may wait up to eight minutes for a human;
 # renewal preserves that legitimate window without weakening crash recovery.
+# Must stay under the daemon's auto-clear with room for a retry; a test pins
+# the pair.
 MEASUREMENT_LEASE_REFRESH_SEC = 60.0
 MEASUREMENT_LEASE_RETRY_SEC = 5.0
 # How long we wait for the daemon's MEASURE_PAUSE reply. Named because it

@@ -36,11 +36,18 @@ import shutil
 import tempfile
 
 from jasper.correction.coordinator import (
+    MEASUREMENT_LEASE_REFRESH_SEC,
+    MEASUREMENT_LEASE_RETRY_SEC,
     VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
     _voice_uds_command,
 )
 from jasper.voice.output_gate import AssistantOutputGate
-from jasper.voice_daemon import MEASUREMENT_INFLIGHT_DRAIN_SEC, State, WakeLoop
+from jasper.voice_daemon import (
+    MEASUREMENT_AUTOCLEAR_SEC,
+    MEASUREMENT_INFLIGHT_DRAIN_SEC,
+    State,
+    WakeLoop,
+)
 
 from ._async_wait import wait_signalled
 
@@ -272,6 +279,22 @@ def test_drain_bound_fits_under_the_coordinator_read_timeout() -> None:
     assert MEASUREMENT_INFLIGHT_DRAIN_SEC < VOICE_MEASURE_PAUSE_TIMEOUT_SEC
     assert (
         VOICE_MEASURE_PAUSE_TIMEOUT_SEC - MEASUREMENT_INFLIGHT_DRAIN_SEC >= 1.0
+    )
+
+
+def test_lease_refresh_fits_under_the_daemon_measurement_auto_clear() -> None:
+    """The other half of the same window's timing contract. The daemon
+    auto-clears a measurement window it has not heard about in
+    MEASUREMENT_AUTOCLEAR_SEC, which is the crash backstop; the coordinator
+    keeps a legitimate long window alive by re-sending MEASURE_PAUSE every
+    MEASUREMENT_LEASE_REFRESH_SEC. Invert that order and a healthy sweep
+    un-gates itself mid-capture and lets household music back in. The margin
+    is one retry interval, so a single failed renewal still has a chance to
+    land before the backstop fires."""
+    assert 0 < MEASUREMENT_LEASE_REFRESH_SEC < MEASUREMENT_AUTOCLEAR_SEC
+    assert (
+        MEASUREMENT_AUTOCLEAR_SEC - MEASUREMENT_LEASE_REFRESH_SEC
+        >= MEASUREMENT_LEASE_RETRY_SEC
     )
 
 

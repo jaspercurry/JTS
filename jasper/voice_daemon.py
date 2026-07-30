@@ -488,6 +488,19 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 # tests/test_voice_daemon_measurement_inflight.py.
 MEASUREMENT_INFLIGHT_DRAIN_SEC = 2.0
 
+# How long a measurement window stays gated with no word from the
+# coordinator before the daemon clears it itself. This is the crash
+# backstop: a coordinator killed mid-sweep never sends MEASURE_RESUME, and
+# without this the speaker would stay silent forever. Named because it is a
+# contract, not a local timeout — a legitimate window can outlive it (a
+# relay setup may wait minutes for a human), so the coordinator renews the
+# lease every `correction.coordinator.MEASUREMENT_LEASE_REFRESH_SEC`. That
+# interval must stay under this one with room for a retry, or a healthy
+# long window would un-gate mid-sweep and let household music back into the
+# capture. Pinned against the refresh interval by
+# tests/test_voice_daemon_measurement_inflight.py.
+MEASUREMENT_AUTOCLEAR_SEC = 120.0
+
 
 class ContentActivityTracker:
     """Cheap observer for music/activity telemetry and server-VAD gating.
@@ -2449,14 +2462,15 @@ class WakeLoop:
 
         async def _safety() -> None:
             try:
-                await asyncio.sleep(120.0)
+                await asyncio.sleep(MEASUREMENT_AUTOCLEAR_SEC)
             except asyncio.CancelledError:
                 return
             if self._measurement_active.is_set():
                 logger.warning(
-                    "measurement window auto-clearing after 2 min — "
+                    "measurement window auto-clearing after %.0f s — "
                     "coordinator likely crashed without sending "
-                    "MEASURE_RESUME"
+                    "MEASURE_RESUME",
+                    MEASUREMENT_AUTOCLEAR_SEC,
                 )
                 await self._set_measurement_active(False, trigger="auto_clear")
                 self._content_activity.resume()
