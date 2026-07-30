@@ -643,7 +643,19 @@ def test_discontinuity_reaches_the_durable_diagnostic_summary():
     assert summary["discontinuity_after_segment"] == "sweep_w"
 
 
-def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity():
+@pytest.mark.parametrize(
+    "confidence,expect_unresolved",
+    [
+        pytest.param(0.0298, True, id="real-incident-0.0298"),
+        # D-3: the boundary itself, not just "somewhere below 0.3" — pins
+        # the gate's exact comparison operator.
+        pytest.param(0.3, False, id="at-floor-0.3-is-trusted"),
+        pytest.param(0.2999, True, id="just-below-floor-0.2999-is-not"),
+    ],
+)
+def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
+    confidence, expect_unresolved,
+):
     """#1839: `_locate_discontinuity` must not turn an untrustworthy sweep
     location into a confident-looking number. Real incident (session
     cap_-Us10xORVNlFa_dgi-sP7g): sweeps located at confidence 0.0298 against
@@ -654,10 +666,17 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity():
     Reuses the EXACT located sweeps the pinned splice fixture above
     (``test_midcapture_splice_is_attributed_to_a_discontinuity_not_drift``)
     resolves to a confident +64.00-sample step — only ``confidence`` is
-    overridden to below the floor, isolating the new precondition from the
-    fit math it guards. Trusted, this input resolves +64.00 (that pinned
-    test); untrusted, it must report the sentinel instead of ANY number,
-    right or wrong.
+    overridden, isolating the new precondition from the fit math it guards.
+    Trusted, this input resolves +64.00 (that pinned test); untrusted, it
+    must report the sentinel instead of ANY number, right or wrong.
+
+    The 0.3 / 0.2999 cases pin that the gate is a strict ``confidence <
+    FLOOR`` — the floor value ITSELF is trusted, not merely "somewhere
+    below 0.3" — matching `crossover_v2_flow._sweep_locate_confidence_ok`'s
+    exact negation (``confidence >= FLOOR``) at the same threshold. See
+    `test_discontinuity_and_sweep_locate_confidence_floors_agree` in
+    tests/test_discontinuity_locate_confidence_floor_contract.py for the
+    cross-module value pin these two gates share.
     """
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),
@@ -681,13 +700,17 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity():
     assert res.drift.discontinuity_samples == pytest.approx(64.0, abs=2.0)
 
     sweep_locs = [
-        dataclasses.replace(loc, confidence=0.0298)
+        dataclasses.replace(loc, confidence=confidence)
         for loc in res.locations
         if loc.kind == KIND_SWEEP
     ]
     step, after = program_analysis._locate_discontinuity(prog, sweep_locs)
-    assert step == program_analysis.DISCONTINUITY_UNRESOLVED
-    assert after == ""
+    if expect_unresolved:
+        assert step == program_analysis.DISCONTINUITY_UNRESOLVED
+        assert after == ""
+    else:
+        assert step == pytest.approx(64.0, abs=2.0)
+        assert after == "sweep_w"
 
 
 def test_discontinuity_unresolved_survives_the_durable_diagnostic_summary():
