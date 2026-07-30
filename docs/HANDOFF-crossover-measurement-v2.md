@@ -1461,8 +1461,11 @@ number than re-emitting it would charge today — ~22.5 dB vs ~5 on the
 Before this, `event=correction.crossover_v2_result` carried only
 `accepted`/`code` — a failed hardware run left no numbers to look at, and
 only a *glitch* MEASURE capture got a partial view via
-`event=program_analysis.glitch` (epsilon/residual/repeat-level only, WARN
-level, glitch captures only). `CrossoverV2Conductor` now emits one
+`event=program_analysis.glitch` (WARN level, glitch captures only). That
+separate event carries `epsilon_ppm`, `max_residual_samples`,
+`repeat_level_delta_db`, `glitch_inputs`, `discontinuity_samples`, and
+`discontinuity_after_segment`; the last three are not fields on the
+per-capture event below. `CrossoverV2Conductor` now emits one
 additional `log_event` per consumed capture, **on the accepted path AND
 every rejection**, carrying that phase's full numeric diagnostics (pure
 additive observability — none of these calls choose a verdict). The two
@@ -1478,17 +1481,20 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `pilot_snr_ok`, plus per-role (`woofer_`/`tweeter_`) `snr_db`,
   `captured_delta_db`, `programmed_delta_db`,
   `channel_map_target_rise_db`, `channel_map_cross_rise_db`.
-- `correction.crossover_v2_measure_diag` — `accepted`, `code`,
+- `correction.crossover_v2_measure_diag` — `session_id`, `accepted`, `code`,
   `alignment_confidence`, `alignment_confidence_source`,
   `alignment_seed_delay_us`, `alignment_refinement_delta_us`,
-  `alignment_seed_ripple_db`, `flatness_improvement_db`,
-  `anchor_delay_us`, `snap_delta_us`, `snap_found`,
   `gate_window_ms`, `validity_floor_hz`,
   `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
-  `glitch_inputs`, `discontinuity_samples`, `discontinuity_after_segment`,
-  `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`, plus
+  `woofer_repeat_epsilon_ppm`, `tweeter_repeat_epsilon_ppm`,
+  `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`,
+  `trim_ripple_gain_db`, `alignment_seed_ripple_db`,
+  `flatness_improvement_db`, `anchor_delay_us`, `snap_delta_us`,
+  `snap_found`, plus
   per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
-  `tweeter_snr_verdict`. (A `linearization` field rode this line until the
+  `tweeter_snr_verdict`, `sweep_residual_ms_worst`,
+  `sweep_locate_confidence_min`, `guard`, `pilot_snr_ok`, and `pilot_snr_db`.
+  (A `linearization` field rode this line until the
   2026-07-27 timing move. The fit now runs eight captures later, so this line
   could only ever have reported `""` — the field moved to
   `..._candidate_built` below rather than being kept as a permanently-empty
