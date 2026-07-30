@@ -144,7 +144,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260729.1",
+        "capture_page_build": "20260729.2",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -152,7 +152,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260729-1" in index_html
+    assert "main.js?v=20260729-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -185,7 +185,26 @@ def test_capture_page_existing_field_rollout_order_is_pinned():
     assert "Reinterpreting an existing spec field (Pi first)" in readme
     assert "**Forward rollout → Pi first, page second.**" in readme
     assert "**Rollback → page first, Pi second.**" in readme
-    assert "build `20260729.1` starts rendering Room" in readme
+    assert "build `20260729.1` starts\nrendering Room" in readme
+
+
+def test_capture_page_new_phone_event_rollout_order_is_pinned():
+    """The sharper class the two-stage split introduced: the page starts
+    SENDING something the Pi requires, on a plan shape only the new Pi emits.
+    Neither the protocol list nor the build stamp detects it, so the ordering
+    (page first) and the tolerance requirement it rests on are documented and
+    pinned — and the tolerance itself is a branch in the page, not a hope
+    about timing."""
+    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "A new phone event both sides need (page first)" in readme
+    assert "**Page first, Pi second**" in readme
+    assert "build `20260729.2` is the fixture" in readme.lower()
+    # The branch the ordering rests on: an entry past the group means the
+    # confirmation still rides that next begin (an older conductor's plan).
+    assert "if (entryForIndex(ctx.spec, index + 1)) {" in main_js
+    assert "complete_capture_set: true" in main_js
 
 
 def test_capture_page_beep_copy_matches_the_composed_beep_count():

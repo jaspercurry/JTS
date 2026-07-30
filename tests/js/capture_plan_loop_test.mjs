@@ -2430,12 +2430,16 @@ async function testRetakeRepeatsTheJustAcceptedSlotWithTheMarker() {
 }
 
 // ============================================================================
-// 30 (§2.6, review finding N4; re-derived for the two-stage split). THE RETAKE
-// WINDOW. The runner shuts its own window the moment work moves on — the next
-// entry's begin, or (work order D1) the household's set-completion signal —
-// and refuses a later retake as `begin_out_of_order`, killing the session. So
-// the page must never offer (or honour) a retake past that point: the control
-// disappears with the screen, and a tap on a node captured beforehand is inert.
+// 30 (§2.6, review finding N4). THE RETAKE WINDOW. The runner shuts its own
+// window the moment work moves on — the next entry's begin, or (work order D1)
+// the household's set-completion signal — and refuses a later retake as
+// `begin_out_of_order`, killing the session. So the page must never offer (or
+// honour) a retake past that point: the control disappears with the screen,
+// and a tap on a node captured beforehand is inert.
+//
+// Driven on a plan that HAS an entry past the group, so this is also the
+// legacy-conductor half of the release-ordering contract: the confirmation
+// rides the next begin there. Test 55 below drives the measure-only half.
 // ============================================================================
 async function testRetakeWindowShutsOnceTheNextBeginIsPosted() {
   statusHistory.length = 0;
@@ -2465,14 +2469,14 @@ async function testRetakeWindowShutsOnceTheNextBeginIsPosted() {
   assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
   const staleRetake = actionButtons(ctx.screenEl)[1];
 
-  await fire(primaryButton(ctx)); // Continue -> the set-completion signal
+  await fire(primaryButton(ctx)); // Continue -> the next entry's begin
   await waitFor(
-    () => posted.some((e) => e.complete_capture_set === true),
-    "the set-completion signal",
+    () => posted.some((e) => e.begin_capture && !e.armed && e.begin_capture.index === 3),
+    "the confirming begin",
   );
   assert.ok(
-    !posted.some((e) => e.begin_capture && e.begin_capture.index === 3),
-    "a held set has no next entry to begin — the signal is the whole move",
+    !posted.some((e) => e.complete_capture_set === true),
+    "a plan WITH a next entry confirms through that begin, not the new signal",
   );
   assert.equal(ctx.retakeSlot, null, "the window shuts the moment work moves on");
 
@@ -2519,13 +2523,13 @@ async function testRetakeIsNotOfferedWhenTheAttemptBudgetIsSpent() {
 }
 
 // ============================================================================
-// 32 (§2.6, re-derived — two-stage work order D1). The group-close confirm's
-// Continue posts the SET-COMPLETION SIGNAL, which is what the Pi's fit waits
-// behind. It used to post a begin for the next entry and let the Pi infer the
-// confirmation from that index; a measure-only plan has no next entry, so the
-// meaning had to become its own event.
+// 32 (§2.6). The group-close confirm's Continue is what moves work on — the
+// tap the Pi's fit waits behind. On a plan that carries an entry PAST the
+// group (an older conductor's 16-entry shape) that move is still the next
+// begin, which is the compatibility half of the release-ordering contract:
+// the page publishes before the Pi and must be correct against both.
 // ============================================================================
-async function testGroupConfirmContinueSignalsTheSetComplete() {
+async function testGroupConfirmContinueAdvancesWhenTheresAnEntryPastTheGroup() {
   statusHistory.length = 0;
   const { onPlanStart } = await loadModule();
   globalThis.__recorder = makeRecorder();
@@ -2550,13 +2554,12 @@ async function testGroupConfirmContinueSignalsTheSetComplete() {
   );
   await fire(primaryButton(ctx));
   await waitFor(
-    () => posted.some((e) => e.complete_capture_set === true),
-    "the set-completion signal",
+    () => posted.some((e) => e.begin_capture && !e.armed && e.begin_capture.index === 3),
+    "the confirming begin",
   );
-  // …and NEVER a forward begin, which the runner would refuse on a held set.
   assert.ok(
-    !posted.some((e) => e.begin_capture && e.begin_capture.index === 3),
-    "Continue signals completion rather than beginning an entry that does not exist",
+    !posted.some((e) => e.complete_capture_set === true),
+    "an entry past the group means the begin still carries the confirmation",
   );
   ok();
 }
@@ -2822,19 +2825,22 @@ async function testARejectedRetakeCanKeepTheEarlierTakeAndContinue() {
   assert.equal(headingText(ctx.screenEl), "All spots measured — ready to continue?");
   assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
 
-  // …and the session still completes: Continue signals the set complete
-  // (work order D1 — a held set has no next entry to begin).
+  // …and the session still completes: Continue posts the confirming begin,
+  // VERIFY confirms, done. (This plan carries an entry past the group; the
+  // measure-only shape's completion path is tests 55-57.)
   await fire(primaryButton(ctx));
   await waitFor(
-    () => posted.some((e) => e.complete_capture_set === true),
-    "the set-completion signal",
+    () => headingText(ctx.screenEl) === VERIFY_CONFIRM_HEADLINE,
+    "the post-apply confirmation",
   );
+  await fire(primaryButton(ctx));
+  await waitFor(() => headingText(ctx.screenEl) === "Your speaker is tuned", "the done screen");
 
   const begins = posted.filter((e) => e.begin_capture && !e.armed);
   assert.deepEqual(
     begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
-    [[1, 1, undefined], [2, 2, undefined], [2, 3, true]],
-    "the rejected retake left accepted_count unchanged and posted no forward begin",
+    [[1, 1, undefined], [2, 2, undefined], [2, 3, true], [3, 4, undefined]],
+    "the forward begin after the rejected retake is (accepted+1, attempts+1)",
   );
   ok();
 }
@@ -3625,7 +3631,7 @@ const tests = [
   testRetakeRepeatsTheJustAcceptedSlotWithTheMarker,
   testRetakeWindowShutsOnceTheNextBeginIsPosted,
   testRetakeIsNotOfferedWhenTheAttemptBudgetIsSpent,
-  testGroupConfirmContinueSignalsTheSetComplete,
+  testGroupConfirmContinueAdvancesWhenTheresAnEntryPastTheGroup,
   testVerifyArmsOnlyAfterTheHouseholdConfirms,
   testAnEntryWithoutConfirmCopyStillAutoArms,
   testARejectedRetakeKeepsItsMarkerOnTheRetry,

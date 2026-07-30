@@ -2167,6 +2167,19 @@ function renderPlanGroupConfirm(ctx, { index, attempt, target }) {
     // way (the completion wait, then the end screen or a failure), so the
     // button is disabled rather than re-enabled in a finally.
     proceed.disabled = true;
+    // WHICH move "Continue" is, read off the PLAN rather than assumed
+    // (release-ordering contract, README "A new phone event both sides
+    // need"). The page publishes before the Pi, so a new bundle legitimately
+    // meets an OLD conductor whose plan still carries VERIFY past this group;
+    // there the confirmation rides that next begin exactly as it always did.
+    // On a measure-only plan there IS no next entry — its final position is
+    // the capture target — so the confirmation is its own event. One
+    // condition, derived from the spec in hand, and the page is correct
+    // against both conductors instead of only the newer one.
+    if (entryForIndex(ctx.spec, index + 1)) {
+      advanceAfterAccepted(ctx, { index, attempt, target });
+      return;
+    }
     await completePlanCaptureSet(ctx, { index, attempt, target });
   });
   renderStepScreen(ctx, {

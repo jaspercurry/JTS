@@ -58,7 +58,6 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequen
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
-
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
 

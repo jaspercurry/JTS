@@ -116,8 +116,31 @@ class:
 - **Rollback → page first, Pi second.** Restore the old tolerant page before
   rolling back the Pi producer.
 
-DA-0005 is the fixture for this rule: build `20260729.1` starts rendering Room
-position/trust-repeat copy from the existing `ui.screen`. An old page safely
+#### A new phone event both sides need (page first)
+
+The sharpest class: the page starts *sending* something the Pi requires, on a
+plan shape only the new Pi emits. Neither the protocol list nor the build stamp
+detects it — `validate_capture_page` checks the stamp's FORMAT, never a minimum
+— so a mismatched pair fails at the last capture of a session the household has
+already spent ten minutes on.
+
+- **Page first, Pi second**, so no phone is left on a bundle that cannot send
+  the event when the new conductor arrives.
+- **The new page must therefore be TOLERANT of the old conductor**, and
+  tolerance is read off the plan in hand rather than assumed. That is a
+  requirement on the page, not a hope about timing.
+
+Build `20260729.2` is the fixture: the group-close confirm's "Continue" posts
+`complete_capture_set` on a measure-only plan (two-stage commission D1 — its
+final position IS the capture target, so there is no next entry whose begin
+could carry the confirmation), and still posts the next entry's begin on a plan
+that has one. `renderPlanGroupConfirm` branches on `entryForIndex(spec,
+index + 1)`; both halves are pinned in `tests/js/capture_plan_loop_test.mjs`
+(tests 30/32 the legacy path, 55-57 the measure-only one). Roll back in the
+inverse order.
+
+DA-0005 is the fixture for the rule above it: build `20260729.1` starts
+rendering Room position/trust-repeat copy from the existing `ui.screen`. An old page safely
 ignores the newer Pi copy and retains its embedded presentation, but the new
 page against an old Pi would render the older generic v3 screen. Therefore
 deploy the Pi commit first, verify its capture spec, and only then publish
