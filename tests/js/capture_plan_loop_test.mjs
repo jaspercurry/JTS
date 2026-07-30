@@ -470,6 +470,7 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
   let attemptsUsed = 0;
   let nextBeginSeen = false;
   let currentRetake = false;
+  let completions = 0;
   const client = {
     async postEvent(event) {
       posted.push(event);
@@ -505,6 +506,17 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
           if (!admittedRetake) nextBeginSeen = true;
           queuedAdmission = { phase: "capture_authorized", index, attempt };
         }
+      } else if (event.complete_capture_set === true) {
+        // FIDELITY (two-stage work order D1): the household's explicit
+        // set-completion signal. A HELD set — one whose last accepted verdict
+        // carried `awaiting_confirm` — ends here and nowhere else; the Pi
+        // closes the group, fits, and only then posts capture_set_complete.
+        completions += 1;
+        queuedAdmission = {
+          phase: "capture_set_complete",
+          accepted: acceptedCount,
+          capture_target: target,
+        };
       } else if (event.armed) {
         const { index, attempt } = event.begin_capture;
         last = { phase: "sweep_complete" };
@@ -552,7 +564,13 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
           accepted,
           ...verdictFields,
         };
-        if (verdict.accepted && acceptedCount >= target) {
+        if (verdict.accepted && verdict.awaiting_confirm) {
+          // HELD (work order D1): the Pi posts NOTHING further and stays in
+          // awaiting_begin, so the last-write-wins slot keeps this verdict and
+          // the phone's confirm screen is what the household reads. The set
+          // ends on their signal, handled in postEvent above.
+          last = resultEvent;
+        } else if (verdict.accepted && acceptedCount >= target) {
           last = resultEvent;
           // The Pi posts capture_result THEN capture_set_complete in
           // immediate succession; the phone's next poll sees whichever
@@ -578,7 +596,11 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
       return { ok: true, capture_index: captureIndex };
     },
   };
-  return { client, posted, blobPuts, acceptedCount: () => acceptedCount };
+  return {
+    client, posted, blobPuts,
+    acceptedCount: () => acceptedCount,
+    completions: () => completions,
+  };
 }
 
 function planSpec({ target = 3, maxAttempts = 4, entries = null } = {}) {
@@ -2408,12 +2430,12 @@ async function testRetakeRepeatsTheJustAcceptedSlotWithTheMarker() {
 }
 
 // ============================================================================
-// 30 (§2.6, review finding N4). THE RETAKE WINDOW. The runner shuts its own
-// window the moment the next entry's begin is seen — admitted OR merely
-// deferred, which includes the VERIFY hold's auto-posted one — and refuses a
-// later retake as `begin_out_of_order`, killing the session. So the page must
-// never offer (or honour) a retake past that point: the control disappears
-// with the screen, and a tap on a node captured beforehand is inert.
+// 30 (§2.6, review finding N4; re-derived for the two-stage split). THE RETAKE
+// WINDOW. The runner shuts its own window the moment work moves on — the next
+// entry's begin, or (work order D1) the household's set-completion signal —
+// and refuses a later retake as `begin_out_of_order`, killing the session. So
+// the page must never offer (or honour) a retake past that point: the control
+// disappears with the screen, and a tap on a node captured beforehand is inert.
 // ============================================================================
 async function testRetakeWindowShutsOnceTheNextBeginIsPosted() {
   statusHistory.length = 0;
@@ -2443,12 +2465,16 @@ async function testRetakeWindowShutsOnceTheNextBeginIsPosted() {
   assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
   const staleRetake = actionButtons(ctx.screenEl)[1];
 
-  await fire(primaryButton(ctx)); // Continue -> the VERIFY hold posts its begin
+  await fire(primaryButton(ctx)); // Continue -> the set-completion signal
   await waitFor(
-    () => posted.some((e) => e.begin_capture && !e.armed && e.begin_capture.index === 3),
-    "the VERIFY begin",
+    () => posted.some((e) => e.complete_capture_set === true),
+    "the set-completion signal",
   );
-  assert.equal(ctx.retakeSlot, null, "the window shuts the moment a later begin is posted");
+  assert.ok(
+    !posted.some((e) => e.begin_capture && e.begin_capture.index === 3),
+    "a held set has no next entry to begin — the signal is the whole move",
+  );
+  assert.equal(ctx.retakeSlot, null, "the window shuts the moment work moves on");
 
   const before = posted.length;
   await fire(staleRetake);
@@ -2493,10 +2519,13 @@ async function testRetakeIsNotOfferedWhenTheAttemptBudgetIsSpent() {
 }
 
 // ============================================================================
-// 32 (§2.6). The group-close confirm's Continue is what posts the begin PAST
-// the group — the tap the Pi's fit + auto-apply now waits behind.
+// 32 (§2.6, re-derived — two-stage work order D1). The group-close confirm's
+// Continue posts the SET-COMPLETION SIGNAL, which is what the Pi's fit waits
+// behind. It used to post a begin for the next entry and let the Pi infer the
+// confirmation from that index; a measure-only plan has no next entry, so the
+// meaning had to become its own event.
 // ============================================================================
-async function testGroupConfirmContinueAdvancesIntoTheApplyHold() {
+async function testGroupConfirmContinueSignalsTheSetComplete() {
   statusHistory.length = 0;
   const { onPlanStart } = await loadModule();
   globalThis.__recorder = makeRecorder();
@@ -2517,12 +2546,17 @@ async function testGroupConfirmContinueAdvancesIntoTheApplyHold() {
   // Nothing has been posted for the next entry yet — the confirm is the gate.
   assert.ok(
     !posted.some((e) => e.begin_capture && e.begin_capture.index === 3),
-    "the group stays open until the household confirms past it",
+    "the group stays open until the household confirms",
   );
   await fire(primaryButton(ctx));
   await waitFor(
-    () => posted.some((e) => e.begin_capture && !e.armed && e.begin_capture.index === 3),
-    "the confirming begin",
+    () => posted.some((e) => e.complete_capture_set === true),
+    "the set-completion signal",
+  );
+  // …and NEVER a forward begin, which the runner would refuse on a held set.
+  assert.ok(
+    !posted.some((e) => e.begin_capture && e.begin_capture.index === 3),
+    "Continue signals completion rather than beginning an entry that does not exist",
   );
   ok();
 }
@@ -2788,21 +2822,19 @@ async function testARejectedRetakeCanKeepTheEarlierTakeAndContinue() {
   assert.equal(headingText(ctx.screenEl), "All spots measured — ready to continue?");
   assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
 
-  // …and the session still completes: Continue posts the confirming begin,
-  // VERIFY confirms, done.
+  // …and the session still completes: Continue signals the set complete
+  // (work order D1 — a held set has no next entry to begin).
   await fire(primaryButton(ctx));
   await waitFor(
-    () => headingText(ctx.screenEl) === VERIFY_CONFIRM_HEADLINE,
-    "the post-apply confirmation",
+    () => posted.some((e) => e.complete_capture_set === true),
+    "the set-completion signal",
   );
-  await fire(primaryButton(ctx));
-  await waitFor(() => headingText(ctx.screenEl) === "Your speaker is tuned", "the done screen");
 
   const begins = posted.filter((e) => e.begin_capture && !e.armed);
   assert.deepEqual(
     begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
-    [[1, 1, undefined], [2, 2, undefined], [2, 3, true], [3, 4, undefined]],
-    "the forward begin after the rejected retake is (accepted+1, attempts+1)",
+    [[1, 1, undefined], [2, 2, undefined], [2, 3, true]],
+    "the rejected retake left accepted_count unchanged and posted no forward begin",
   );
   ok();
 }
@@ -3382,6 +3414,180 @@ async function testAutoBeginClearsTheCountdownCounter() {
   ok();
 }
 
+// ============================================================================
+// 55 (two-stage work order D1). **THE ORDERING PIN.** In a MEASURE-ONLY plan
+// the final cloud position IS `capture_target`, so `verdict.accepted && index
+// >= target` is true on the very capture whose verdict says the group is still
+// open. If the completion branch is tested first — as it was before PR-T3 —
+// the household reads "All measurements done" instead of the confirm screen
+// the whole apply decision rests on. `awaitingConfirm` must win.
+// ============================================================================
+function measureOnlyPlanSpec({ target = 3, maxAttempts = 6 } = {}) {
+  // A stage-1 shape in miniature: CHECK, cloud positions, and NOTHING after —
+  // the last entry is a cloud position and carries no done copy, exactly as
+  // build_v2_capture_plan emits it.
+  const entries = [
+    {
+      index: 0,
+      kind_label: "check",
+      duration_ms: 25000,
+      screen: {
+        progress: `Measurement 1 of ${target}`,
+        title: "Stand the phone about 1 m in front of the speaker.",
+        body: "Stay quiet — JTS listens to the room first.",
+        auto_advance: "tap",
+      },
+    },
+  ];
+  for (let i = 1; i < target; i += 1) {
+    entries.push({
+      index: i,
+      kind_label: "cloud_measure",
+      duration_ms: 16000,
+      screen: {
+        progress: `Measurement ${i + 1} of ${target}`,
+        title: CLOUD_HEADLINE,
+        body: "Same height, still pointed at the speaker.",
+        auto_advance: "tap",
+      },
+    });
+  }
+  return planSpec({ target, maxAttempts, entries });
+}
+
+async function testTheFinalHeldCaptureRendersTheConfirmNotAllDone() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = measureOnlyPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    // The LAST index of the plan — which is also its target — closes the group
+    // and holds it open for the household.
+    resultFor: (index) =>
+      index === 3
+        ? { accepted: true, group_complete: "cloud_measure", awaiting_confirm: true }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+
+  assert.equal(
+    headingText(ctx.screenEl),
+    "All spots measured — ready to continue?",
+    "the confirm screen wins over the completion branch on the target capture",
+  );
+  assert.notEqual(headingText(ctx.screenEl), "All measurements done");
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
+  // Nothing has been signalled yet: the decision is the household's.
+  assert.ok(!posted.some((e) => e.complete_capture_set === true));
+  ok();
+}
+
+// ============================================================================
+// 56 (D1). Continue posts the signal, the page waits for the Pi to actually
+// close the set, and only THEN shows the end screen. Waiting matters: the Pi
+// runs the session's slowest analysis (the group combine plus the fit) inside
+// that window, and a page that claimed "done" immediately would be claiming a
+// candidate exists before one does.
+// ============================================================================
+async function testContinueSignalsThenWaitsForTheSetToClose() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = measureOnlyPlanSpec();
+  const { client, posted, completions } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) =>
+      index === 3 ? { accepted: true, awaiting_confirm: true } : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx)); // Continue
+
+  await waitFor(
+    () => headingText(ctx.screenEl) === "All measurements done",
+    "the end screen",
+  );
+  assert.equal(completions(), 1, "signalled exactly once");
+  assert.ok(
+    !posted.some((e) => e.begin_capture && e.begin_capture.index === 4),
+    "no begin past the target — the runner would refuse one",
+  );
+  ok();
+}
+
+// ============================================================================
+// 57 (D1). A REFUSED group close reaches the household as the refusal, not as
+// a silent hang or a false "done". The pre-apply accountability veto raises
+// CaptureBeginRefused on the confirmation, which the runner publishes as
+// `capture_refused` exactly like an admission refusal.
+// ============================================================================
+async function testARefusedGroupCloseSurfacesRatherThanHanging() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const spec = measureOnlyPlanSpec();
+  const { client } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) =>
+      index === 3 ? { accepted: true, awaiting_confirm: true } : { accepted: true },
+  });
+  const realPost = client.postEvent;
+  client.postEvent = async function (event) {
+    const out = await realPost.call(this, event);
+    if (event.complete_capture_set === true) {
+      // The Pi refused ON the confirmation instead of closing the set.
+      this.__refuse = true;
+    }
+    return out;
+  };
+  const realStatus = client.fetchPhoneStatus;
+  client.fetchPhoneStatus = async function () {
+    if (this.__refuse) {
+      return {
+        host_event: {
+          phase: "capture_refused",
+          code: "correction_unaccountable",
+          error: "JTS could not stand behind this correction.",
+        },
+      };
+    }
+    return realStatus.call(this);
+  };
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx)); // Continue
+
+  await waitFor(
+    () => headingText(ctx.screenEl) !== "All spots measured — ready to continue?",
+    "the refusal to render",
+  );
+  assert.notEqual(
+    headingText(ctx.screenEl), "All measurements done",
+    "a refused close never reads as a finished measurement",
+  );
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -3419,7 +3625,7 @@ const tests = [
   testRetakeRepeatsTheJustAcceptedSlotWithTheMarker,
   testRetakeWindowShutsOnceTheNextBeginIsPosted,
   testRetakeIsNotOfferedWhenTheAttemptBudgetIsSpent,
-  testGroupConfirmContinueAdvancesIntoTheApplyHold,
+  testGroupConfirmContinueSignalsTheSetComplete,
   testVerifyArmsOnlyAfterTheHouseholdConfirms,
   testAnEntryWithoutConfirmCopyStillAutoArms,
   testARejectedRetakeKeepsItsMarkerOnTheRetry,
@@ -3437,6 +3643,9 @@ const tests = [
   testTerminalCaptureResultMidSweepNamesTheReason,
   testStaleRejectedVerdictMidSweepIsIgnored,
   testAutoBeginClearsTheCountdownCounter,
+  testTheFinalHeldCaptureRendersTheConfirmNotAllDone,
+  testContinueSignalsThenWaitsForTheSetToClose,
+  testARefusedGroupCloseSurfacesRatherThanHanging,
 ];
 
 await runTestFunctions(tests, () => passed);

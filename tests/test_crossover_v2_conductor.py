@@ -52,8 +52,10 @@ from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
     CAPTURE_ENTRY_MARGIN_MS,
+    CAPTURE_PLAN_MAX_ATTEMPTS,
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
+    CLOUD_RETAKE_ALLOWANCE,
     COURTESY_PRELUDE_ENABLED,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
     DEFAULT_CLOUD_VERIFY_POSITIONS,
@@ -109,6 +111,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_capture_plan,
+    build_v2_verify_index_phase_map,
     build_v2_verify_session_spec,
     cloud_capture_target,
     cloud_plan_max_attempts,
@@ -435,25 +438,25 @@ def _capture() -> CaptureResult:
 
 def _run_phase(conductor, index, attempt) -> dict:
     # Mirrors the production host's own authorize wrapper
-    # (``correction_crossover_v2.build_v2_run_and_consume``): the household's
-    # confirmation past a walked pre-apply cloud rides the NEXT entry's begin,
-    # and THAT is what fits the correction (flow-simplification §2.6). A begin
-    # with nothing to confirm is a no-op, so every non-cloud walk is unchanged.
-    conductor.confirm_cloud_measure_group(index)
+    # (``correction_crossover_v2.build_v2_run_and_consume``): admission, and
+    # ONLY admission. It used to call ``confirm_cloud_measure_group(index)``
+    # first, because the household's confirmation was inferred from a begin
+    # past the cloud group; since the two-stage split (work order D1) the
+    # confirmation is its own explicit signal and rides no begin at all.
     conductor.authorize_begin(index, attempt)
     conductor.on_armed()
     return conductor.consume_capture(index, attempt, _capture())
 
 
-def _confirm_cloud(conductor, index) -> dict:
-    """The confirm seam's own payload — ``{candidate_fingerprint, auto_apply}``.
+def _confirm_cloud(conductor) -> dict:
+    """The confirm seam's own payload — ``{candidate_fingerprint,
+    headroom_cost_db}``.
 
-    Same call ``_run_phase`` makes; used directly by tests that assert on what
-    the confirm produces rather than merely that the walk continues. One-shot
-    by construction, so calling it here and again inside a later
-    ``_run_phase`` is safe.
+    The explicit close the host calls on the phone's set-completion signal. One
+    shot by construction (``self._candidate`` is the guard), so a second call
+    returns ``None`` rather than re-fitting.
     """
-    return conductor.confirm_cloud_measure_group(index) or {}
+    return conductor.confirm_cloud_measure_group() or {}
 
 
 # --- happy path -----------------------------------------------------------------
@@ -473,9 +476,10 @@ def test_happy_path_walks_check_measure_apply_verify():
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert verdict["candidate_fingerprint"]
-    # Owner ruling (2026-07-20): a trusted candidate tells the HOST to fire
-    # the auto-apply immediately — no human review step in between.
-    assert verdict["auto_apply"] is True
+    # Two-stage commission D1 (PR-T3): the candidate is a PROPOSAL. Nothing
+    # in this payload tells anything to apply it — the ``auto_apply: True``
+    # literal that used to sit here is gone, and its absence is the pin.
+    assert "auto_apply" not in verdict
     assert fakes.played[1][0] == PHASE_MEASURE
     assert len(fakes.published_candidates) == 1
     candidate = fakes.published_candidates[0]
@@ -577,7 +581,7 @@ def test_alignment_confidence_at_the_trust_floor_is_trusted():
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
 
 
 def test_no_alignment_estimate_skips_the_confidence_gate():
@@ -599,7 +603,7 @@ def test_no_alignment_estimate_skips_the_confidence_gate():
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert fakes.published_candidates[0].alignment == MeasuredCrossoverAlignment()
 
 
@@ -1758,18 +1762,29 @@ def test_session_death_abandons_volume():
 # dispatch branch.
 
 
+# Stage 1 (measure) and stage 2 (verify) are separate SESSIONS since the
+# two-stage split (work order D1/D2), so they are separate maps and separate
+# conductors — there is no single index space spanning the whole journey any
+# more.
 CLOUD_MAP = build_v2_cloud_index_phase_map()
 CLOUD_MEASURE_INDEXES = tuple(
     i for i, p in sorted(CLOUD_MAP.items()) if p == PHASE_CLOUD_MEASURE
 )
+STAGE2_SHAPE = resolve_plan_shape()
+STAGE2_MAP = build_v2_verify_index_phase_map(plan_shape=STAGE2_SHAPE)
+VERIFY_INDEX = next(i for i, p in STAGE2_MAP.items() if p == PHASE_VERIFY)
 CLOUD_VERIFY_INDEXES = tuple(
-    i for i, p in sorted(CLOUD_MAP.items()) if p == PHASE_CLOUD_VERIFY
+    i for i, p in sorted(STAGE2_MAP.items()) if p == PHASE_CLOUD_VERIFY
 )
-VERIFY_INDEX = next(i for i, p in CLOUD_MAP.items() if p == PHASE_VERIFY)
 
 
 def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
     kwargs.setdefault("index_phase_map", CLOUD_MAP)
+    # What ``prepare_v2_session`` declares: this measuring session has no
+    # VERIFY entry of its own, and the correction it proposes is verified by
+    # stage 2 (work order D2). Without it the fit would be refused boost, which
+    # is the shape of the regression the declaration exists to prevent.
+    kwargs.setdefault("post_apply_verifies", True)
     return _conductor(fakes, **kwargs)
 
 
@@ -1817,12 +1832,19 @@ def test_cloud_measure_group_closes_only_after_its_last_position():
     assert verdict["awaiting_confirm"] is True
     assert c.candidate is None
     assert c.cloud_measure_group_awaiting_confirm() is True
-    # The confirm — the next entry's begin — is what builds the candidate.
-    assert _confirm_cloud(c, VERIFY_INDEX)["auto_apply"] is True
+    # The household's explicit confirmation is what builds the candidate — it
+    # used to ride the next entry's begin, which a measure-only plan does not
+    # have (two-stage work order D1).
+    assert _confirm_cloud(c)["candidate_fingerprint"]
     assert c.candidate is not None
     assert c.cloud_measure_group_awaiting_confirm() is False
-    # Next is the apply hold, exactly as before the cloud existed.
-    assert c.current_phase == PHASE_APPLYING
+    # …and the measuring SESSION is over: it has no VERIFY entry to hold for,
+    # and nothing was applied. What comes next is the review interlude on
+    # jts.local, which the wizard's own phase resolution owns (a measure-only
+    # `session_phases` with `applied` false resolves to `review`, never
+    # `done` — see tests/test_correction_crossover_v2_endpoints.py).
+    assert c.current_phase == PHASE_DONE
+    assert PHASE_VERIFY not in c.session_phases
 
 
 # --- the timing move + the cloud→fit wiring (flat-linearization PR-6b) -------
@@ -1911,7 +1933,7 @@ def _walk_measure_cloud_to_close(c, *, start_attempt: int = 1) -> dict:
         verdict = _run_phase(c, last, attempt)
         attempt += 1
         if verdict["accepted"]:
-            return {**verdict, **_confirm_cloud(c, VERIFY_INDEX)}
+            return {**verdict, **_confirm_cloud(c)}
     raise AssertionError("the cloud-measure group never closed")
 
 
@@ -1957,53 +1979,68 @@ def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
     assert c.candidate is None
     assert fakes.published_candidates == []
 
-    confirmed = _confirm_cloud(c, VERIFY_INDEX)
-    assert confirmed["auto_apply"] is True
+    confirmed = _confirm_cloud(c)
     assert confirmed["candidate_fingerprint"] == c.candidate.fingerprint
+    # …and it carries no apply trigger (D1).
+    assert "auto_apply" not in confirmed
     assert len(fakes.published_candidates) == 1
     # A second confirm is a no-op — the fit fires exactly once per session.
-    assert c.confirm_cloud_measure_group(VERIFY_INDEX) is None
+    assert c.confirm_cloud_measure_group() is None
     assert len(fakes.published_candidates) == 1
-    # And the apply hold is next, exactly as it was when this fired at MEASURE.
-    assert c.current_phase == PHASE_APPLYING
+    # And the measuring session ends here — nothing applied, nothing held.
+    assert c.current_phase == PHASE_DONE
 
 
 def test_only_the_pre_apply_group_close_fires_a_candidate_across_a_whole_session():
     """The `phase == PHASE_CLOUD_MEASURE` guard in ``_close_cloud_group`` is
     load-bearing and gets its own pin: ``_close_cloud_group`` is shared by BOTH
     position groups, so without it the POST-apply cloud's close would build a
-    second candidate and fire a second auto-apply — re-applying over an
-    already-applied speaker, on evidence gathered through the correction it
-    would be re-deriving.
+    second candidate — over an already-applied speaker, on evidence gathered
+    through the correction it would be re-deriving.
 
-    Walks all 16 captures and asserts ``auto_apply`` appears exactly once for
-    the whole session — on the CONFIRM that follows the pre-apply cloud
-    (flow-simplification §2.6), never on a capture verdict and never again on
-    the post-apply group's own close — with exactly one publish.
+    Re-derived for the two-stage world (work order D1/D2): the journey is two
+    SESSIONS now, so this walks both — stage 1's ten captures plus its explicit
+    confirmation, then stage 2's six against a fresh applied conductor — and
+    asserts exactly one candidate across the pair, built by the confirmation
+    and never by any capture verdict. The old single-conductor version could
+    not express this at all once the index spaces split.
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
-    c = _cloud_conductor(fakes)
+    stage1 = _cloud_conductor(fakes)
 
-    auto_apply_at: list[int] = []
     attempt = 1
     for index in sorted(CLOUD_MAP):
-        if index == VERIFY_INDEX:
-            fakes.apply_done = True  # the host's auto-apply landed
-        # The confirm rides each begin, exactly as the host wires it.
-        if c.confirm_cloud_measure_group(index):
-            auto_apply_at.append(index)
-        verdict = _run_phase(c, index, attempt)
+        verdict = _run_phase(stage1, index, attempt)
+        attempt += 1
+        assert verdict["accepted"] is True, index
+        assert "auto_apply" not in verdict, index
+        assert stage1.candidate is None, index
+    assert _confirm_cloud(stage1)["candidate_fingerprint"]
+    assert len(fakes.published_candidates) == 1
+
+    # STAGE 2, on its own conductor: applied, its own index space, its own
+    # post-apply group. It must close that group and publish NOTHING.
+    fakes.apply_done = True
+    stage2 = _conductor(
+        fakes,
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    attempt = 1
+    for index in sorted(STAGE2_MAP):
+        verdict = _run_phase(stage2, index, attempt)
         attempt += 1
         assert verdict["accepted"] is True, index
         assert "auto_apply" not in verdict, index
 
-    assert auto_apply_at == [VERIFY_INDEX] == [11]
     assert len(fakes.published_candidates) == 1
+    assert stage2.candidate is None
     # The post-apply group DID close — this is not a vacuous pass.
-    assert PHASE_CLOUD_VERIFY in c.accepted_phases
-    assert c.group_geometry(PHASE_CLOUD_VERIFY) is not None
-    assert c.current_phase == PHASE_DONE
+    assert PHASE_CLOUD_VERIFY in stage2.accepted_phases
+    assert stage2.group_geometry(PHASE_CLOUD_VERIFY) is not None
+    assert stage2.current_phase == PHASE_DONE
 
 
 def test_a_session_with_no_cloud_group_still_builds_the_candidate_at_measure():
@@ -2018,7 +2055,7 @@ def test_a_session_with_no_cloud_group_still_builds_the_candidate_at_measure():
     verdict = _run_phase(c, 2, 2)
 
     assert verdict["accepted"] is True
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert verdict["candidate_fingerprint"] == c.candidate.fingerprint
     assert len(fakes.published_candidates) == 1
     # No cloud exists, so no cloud evidence can ride the candidate — the
@@ -2044,7 +2081,7 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
     fakes.verify = _comb_cloud_analysis_factory()
     c = _cloud_conductor(fakes)
     verdict = _walk_measure_cloud_to_close(c)
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
 
     pipeline = c.group_cloud_result(PHASE_CLOUD_MEASURE)
     assert pipeline["available"] is True
@@ -2281,7 +2318,7 @@ def test_a_group_close_with_no_retained_measure_analysis_fails_honestly():
     attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], 1)
     assert _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)["accepted"] is True
     with pytest.raises(CrossoverV2FlowError, match="no retained MEASURE analysis"):
-        c.confirm_cloud_measure_group(VERIFY_INDEX)
+        c.confirm_cloud_measure_group()
 
 
 def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(caplog):
@@ -2311,7 +2348,7 @@ def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(ca
 
     assert _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)["accepted"] is True
     with pytest.raises(RuntimeError, match="synthetic publish-seam failure"):
-        c.confirm_cloud_measure_group(VERIFY_INDEX)
+        c.confirm_cloud_measure_group()
 
     assert "event=correction.crossover_v2_cloud_group_complete" in caplog.text
     assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
@@ -2351,7 +2388,7 @@ def test_a_failed_cloud_pipeline_fits_without_cloud_terms_and_says_so(
     verdict = _walk_measure_cloud_to_close(c)
 
     assert verdict["accepted"] is True
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert c.candidate is not None
     assert c.candidate.exclusion_evidence == {}
     assert "event=correction.crossover_v2_fit_without_cloud" in caplog.text
@@ -2780,9 +2817,12 @@ def test_cloud_session_phases_and_resume_within_the_same_session():
     reader can tell a cloud session from a verify-only re-arm."""
     fakes = FakeSeams()
     c = _cloud_conductor(fakes)
+    # A STAGE-1 session's phases (work order D1): CHECK, MEASURE, the
+    # pre-apply cloud — and deliberately no VERIFY, because the post-apply
+    # sweep is stage 2's own session. This tuple is exactly what the wizard's
+    # ``_phase_from_state`` reads to resolve the review interlude.
     assert c.session_phases == (
         PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
-        PHASE_VERIFY, PHASE_CLOUD_VERIFY,
     )
     attempt = _walk(c, (1, 2), 1)
     _walk(c, CLOUD_MEASURE_INDEXES, attempt)
@@ -2796,7 +2836,9 @@ def test_cloud_session_phases_and_resume_within_the_same_session():
         seams=fakes.seams(), index_phase_map=CLOUD_MAP,
     )
     assert PHASE_CLOUD_MEASURE in resumed.accepted_phases
-    assert resumed.current_phase == PHASE_APPLYING
+    # Every phase this session runs is accepted; the journey continues in the
+    # browser, not in another capture.
+    assert resumed.current_phase == PHASE_DONE
 
 
 def test_a_new_relay_session_invalidates_the_whole_cloud():
@@ -2868,23 +2910,25 @@ def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
 def test_capture_plan_entries_carry_auto_advance_policy():
     plan = build_v2_capture_plan(_roles(), FC_HZ)
     assert plan.schema_version == 2
-    # The shipped plan is the CLOUD plan (flat-linearization PR-3b): CHECK,
-    # MEASURE, N-1 prompted pre-apply positions, VERIFY, M-1 post-apply ones.
-    assert plan.capture_target == cloud_capture_target() == 16
+    # RE-DERIVED for the two-stage split (work order D1/D2). The shipped
+    # STAGE-1 plan is CHECK + MEASURE + N-1 prompted pre-apply positions:
+    # 1 + 1 + 8 = 10 at the Full tier's DEFAULT_CLOUD_MEASURE_POSITIONS = 9.
+    # It carries no VERIFY and no post-apply group — those are stage 2's plan,
+    # pinned in test_the_stage_2_plan_walks_the_tiers_own_verify_shape.
+    # ``cloud_capture_target()`` is unchanged at 16 because it still names the
+    # WHOLE journey (10 + 6), which is what the tier chooser promises.
+    assert plan.capture_target == 10
+    assert cloud_capture_target() == 16
     kinds = [entry.kind_label for entry in plan.entries]
     assert kinds == (
         ["check", "measure"]
         + ["cloud_measure"] * (DEFAULT_CLOUD_MEASURE_POSITIONS - 1)
-        + ["verify"]
-        + ["cloud_verify"] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
     )
-    assert [entry.index for entry in plan.entries] == list(range(16))
+    assert [entry.index for entry in plan.entries] == list(range(10))
     check, measure = plan.entries[0], plan.entries[1]
-    verify = plan.entries[DEFAULT_CLOUD_MEASURE_POSITIONS + 1]
-    assert verify.kind_label == "verify"
-    # CHECK and MEASURE each take a tap; VERIFY arms on apply. Every prompted
-    # cloud position needs its own tap, because the operator has to physically
-    # move the mic between them.
+    # CHECK and MEASURE each take a tap. Every prompted cloud position needs
+    # its own tap, because the operator has to physically move the mic
+    # between them.
     assert check.screen["auto_advance"] == AUTO_ADVANCE_TAP
     # MEASURE used to auto-advance behind a 5 s cancelable countdown (same
     # spot, no movement needed). Issue #1823: it is also the session's longest
@@ -2910,7 +2954,6 @@ def test_capture_plan_entries_carry_auto_advance_policy():
         entry.screen.get("auto_advance") != AUTO_ADVANCE_COUNTDOWN
         for entry in plan.entries
     )
-    assert verify.screen["auto_advance"] == AUTO_ADVANCE_ON_APPLY
     for entry in plan.entries:
         if entry.kind_label.startswith("cloud_"):
             assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
@@ -2918,9 +2961,16 @@ def test_capture_plan_entries_carry_auto_advance_policy():
             # supporting clause is the body and may legitimately be empty.
             assert entry.screen["title"]
             assert "body" in entry.screen
-    # The END screen rides the LAST entry, which the cloud moved off VERIFY.
-    assert plan.entries[-1].screen["done_title"] == "Your speaker is tuned"
-    assert "done_title" not in verify.screen
+    # No entry of a STAGE-1 plan arms on an apply — there is no apply in this
+    # session to arm on (work order D1/D10).
+    assert all(
+        entry.screen.get("auto_advance") != AUTO_ADVANCE_ON_APPLY
+        for entry in plan.entries
+    )
+    # …and the END screen is stage 2's, not stage 1's: nothing here may claim
+    # the speaker is tuned. (The generic page fallback a stage-1 plan therefore
+    # falls back to is PR-T4's; see the work order's D7 list.)
+    assert all("done_title" not in entry.screen for entry in plan.entries)
     # Durations are per-entry (heterogeneous) and positive.
     assert all(entry.duration_ms > 0 for entry in plan.entries)
     assert len({entry.duration_ms for entry in plan.entries}) > 1
@@ -3003,41 +3053,92 @@ def test_one_resolved_shape_feeds_both_the_spec_and_the_index_phase_map():
     )
     index_phase = build_v2_cloud_index_phase_map(plan_shape=shape)
     plan = spec.capture_plan
-    assert plan.capture_target == len(index_phase) == shape.capture_target
+    # Stage 1's own target since the split — the whole-journey
+    # ``shape.capture_target`` spans two sessions and no plan emits it.
+    assert plan.capture_target == len(index_phase) == shape.measure_capture_target
     assert sorted(index_phase) == [e.index + 1 for e in plan.entries]
     # Handing over two sources of truth at once is refused outright.
     with pytest.raises(CrossoverV2FlowError):
         build_v2_cloud_index_phase_map(plan_shape=shape, cloud_measure_positions=9)
 
 
-def test_an_express_plan_emits_no_cloud_verify_and_ends_on_verify():
-    """§1.1/§1.2: an ``M = 1`` plan has no post-apply group, so the phone's END
-    screen must ride the VERIFY entry — ``renderPlanAllDone`` reads the FINAL
-    wire index's entry, and a done screen left on a group that does not exist
-    would leave the household on the generic "All measurements done" copy.
+def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
+    """Work order D2, owner-confirmed 2026-07-29 — and the re-derivation of
+    ``test_an_express_plan_emits_no_cloud_verify_and_ends_on_verify``, whose
+    subject (the ``M = 1`` done-screen placement rule) moved out of stage 1's
+    builder and into stage 2's along with the post-apply group itself.
 
-    The done copy is also HONEST about what express verified: at the mark, not
-    across the room, with the upgrade path named (§1.3).
+    Full's stage 2 is the six-position spatial walk; Express's is the single
+    anchor at the mark. The phone's END screen rides the LAST entry either way
+    (``renderPlanAllDone`` reads the final wire index), and Express's copy
+    claims LESS because it verified less (§1.3).
     """
-    plan = build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS)
-    kinds = [entry.kind_label for entry in plan.entries]
-    assert kinds == ["check", "measure"] + ["cloud_measure"] * 4 + ["verify"]
-    assert "cloud_verify" not in kinds
-    last = plan.entries[-1]
-    assert last.kind_label == "verify"
+    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+
+    full = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
+    assert full.capture_target == DEFAULT_CLOUD_VERIFY_POSITIONS == 6
+    assert [e.kind_label for e in full.entries] == (
+        ["verify"] + ["cloud_verify"] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
+    )
+    assert [e.index for e in full.entries] == list(range(6))
+    assert full.entries[-1].screen["done_title"] == "Your speaker is tuned"
+    assert "Run a Full measurement" not in full.entries[-1].screen["done_body"]
+    # Stage 1's own plan claims nothing about the result any more.
+    assert all(
+        "done_title" not in e.screen
+        for e in build_v2_capture_plan(_roles(), FC_HZ).entries
+    )
+
+    express = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
+    )
+    assert express.capture_target == 1
+    assert [e.kind_label for e in express.entries] == ["verify"]
+    last = express.entries[-1]
     assert last.screen["done_title"] == "Your speaker is tuned"
     assert "Run a Full measurement" in last.screen["done_body"]
     assert "verified-everywhere" in last.screen["done_body"]
-    # The full plan's done copy stays where it was, and claims more.
-    full_last = build_v2_capture_plan(_roles(), FC_HZ).entries[-1]
-    assert full_last.kind_label == "cloud_verify"
-    assert "Run a Full measurement" not in full_last.screen["done_body"]
-    # An express session is a strictly smaller draw on the relay's ceiling.
-    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
-    assert plan.max_attempts == 14 <= MAX_CAPTURE_PLAN_ATTEMPTS
-    # …and on the walked-away volume ceiling: 1800 + (7-3)*120.
-    assert session_wall_clock_ceiling_s(plan) == 2280.0
+    # RE-DERIVED budgets. Stage 2 draws its own, from its own target:
+    # Full 6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE, Express 1 + …
+    assert full.max_attempts == (
+        6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
+    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
+    assert express.max_attempts == (
+        1 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
+    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
+    # …and its own walked-away ceiling: 1800 + (6-3)*120 / the plain baseline.
+    assert session_wall_clock_ceiling_s(full) == 2160.0
+    assert session_wall_clock_ceiling_s(express) == 1800.0
+
+    # An express STAGE 1 is a strictly smaller draw than Full's.
+    express_stage1 = build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS)
+    assert express_stage1.capture_target == 6
+    assert [e.kind_label for e in express_stage1.entries] == (
+        ["check", "measure"] + ["cloud_measure"] * 4
+    )
+    assert express_stage1.max_attempts == (
+        6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
+    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
+    assert session_wall_clock_ceiling_s(express_stage1) == 2160.0
+
+
+def test_the_recovery_re_verify_plan_is_unchanged_by_the_split():
+    """The 1-entry recovery re-arm is byte-identical to what it always was
+    (work order D2: "the 1-entry form remains what it is today"), so a failed
+    stage 2 still offers one cheap sweep and says so.
+    """
+    plan = build_v2_verify_capture_plan(FC_HZ)
+    assert plan.capture_target == 1
+    assert plan.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
+    (entry,) = plan.entries
+    assert entry.kind_label == "verify"
+    assert entry.screen["title"] == REVERIFY_NO_REWALK_HEADLINE
+    assert entry.screen["body"] == "Put the phone back on the mark and hold it still."
+    assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
+    # It is a recovery, not the end of a journey: no done copy, no confirm tap.
+    assert "done_title" not in entry.screen
+    assert "confirm_title" not in entry.screen
 
 
 def test_every_entry_carries_the_one_server_derived_counter():
@@ -3055,27 +3156,46 @@ def test_every_entry_carries_the_one_server_derived_counter():
             assert "hold still" not in entry.screen.get("title", "")
 
 
-def test_the_verify_entry_keeps_its_hold_copy_and_adds_confirm_keys():
-    """§2.2's fallback-safety rule, made executable.
+def test_the_verify_anchor_keeps_its_confirm_tap_on_stage_2s_own_begin():
+    """§2.2's confirm-then-tone tap, RE-ANCHORED (work order D10).
 
-    ``validate_capture_page`` admits a phone carrying a cached pre-redesign
-    bundle, and that page renders the VERIFY entry's ``title``/``body`` as the
-    apply-hold heading. So the confirmation instruction rides NEW keys it
-    ignores, and the entry KEEPS ``auto_advance=on_apply`` so the runner's own
-    hold budget stays live.
+    §2.2 established begin-first-then-confirm and is SHIPPED; what the split
+    supersedes is only its ordering premise — that the confirm follows an
+    in-session apply. There is no in-session apply any more, so the tap moves
+    with the anchor to stage 2's own begin, keeping the same two strings the
+    page renders and gates the arm on.
+
+    §2.2's fallback-safety rule is re-derived rather than dropped.
+    ``validate_capture_page`` still admits a phone carrying a cached
+    pre-redesign bundle, which ignores ``confirm_title``/``confirm_body`` and
+    renders ``title``/``body`` instead. Those two used to have to stay the
+    apply-hold copy because that page would show them AS the hold heading;
+    stage 2 has no hold, so they become the plain pre-arm instruction — which
+    is exactly what that page needs them to be, and is true for it.
     """
-    verify = next(
-        e
-        for e in build_v2_capture_plan(_roles(), FC_HZ).entries
-        if e.kind_label == "verify"
-    )
-    assert verify.screen["auto_advance"] == AUTO_ADVANCE_ON_APPLY
-    assert verify.screen["title"] == "Applying"
-    assert verify.screen["body"] == VERIFY_ANCHOR_HOLD_MESSAGE
+    verify = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=resolve_plan_shape(),
+    ).entries[0]
+    assert verify.kind_label == "verify"
     assert verify.screen["confirm_title"] == "Back on the mark, holding still?"
-    assert verify.screen["confirm_body"]
-    # The confirmation copy is NOT reachable through the old page's keys.
-    assert "mark" not in verify.screen["title"]
+    assert verify.screen["confirm_body"] == (
+        "Same spot, same height, pointed at the speaker."
+    )
+    # No apply to arm on, so no on_apply policy anywhere in either stage.
+    assert verify.screen["auto_advance"] == AUTO_ADVANCE_TAP
+    assert all(
+        e.screen.get("auto_advance") != AUTO_ADVANCE_ON_APPLY
+        for e in build_v2_capture_plan(_roles(), FC_HZ).entries
+    )
+    # An older cached page reads title/body — and reads something TRUE.
+    assert "mark" in verify.screen["title"]
+    assert verify.screen["body"]
+    assert verify.screen["title"] != "Applying"
+    assert verify.screen["body"] != VERIFY_ANCHOR_HOLD_MESSAGE
+    # …and the hold copy itself is retained, not deleted (D10): the deferral
+    # that carries it is unreachable in a shipped session but still the honest
+    # answer for any conductor built without a prior apply.
+    assert VERIFY_ANCHOR_HOLD_MESSAGE
 
 
 def test_a_voluntary_retake_replaces_the_take_and_never_loses_the_original():
@@ -3207,9 +3327,16 @@ def test_the_consent_tier_line_derives_its_counts_and_duration():
     derived from the plan — never hand-written. The duration is the phone's
     OWN estimate (``CapturePlan.estimated_minutes``), so the consent screen and
     the wake-lock hint cannot quote different sessions."""
+    # RE-DERIVED for the two-stage split. The consent screen belongs to ONE
+    # session, so its counts are STAGE 1's — 10 at Full, 6 at Express — and
+    # they are still derived from the plan the phone is about to walk, never
+    # hand-written. Reconciling this with the pre-session tier chooser (which
+    # correctly quotes the whole journey, 16 and 7) is PR-T4's: the work order
+    # assigns the stage-aware derivation and its wording there, and this pin
+    # exists so that change is a visible one rather than a silent drift.
     for tier, label, target in (
-        (TIER_FULL, "Full measurement", 16),
-        (TIER_EXPRESS, "Quick tune", 7),
+        (TIER_FULL, "Full measurement", 10),
+        (TIER_EXPRESS, "Quick tune", 6),
     ):
         spec = build_v2_session_spec(
             _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
@@ -3217,8 +3344,9 @@ def test_the_consent_tier_line_derives_its_counts_and_duration():
         minutes = spec.capture_plan.estimated_minutes()
         steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
         assert steps[0] == f"{label}: {target} measurements, about {minutes} minutes"
-    # The two tiers really are the 11/5 the plan doc quotes.
-    assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 11
+    # Stage 1 alone is 7 minutes at Full and 5 at Express; the whole journey is
+    # what tier_display_info sums, pinned in its own test below.
+    assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 7
     assert (
         build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS).estimated_minutes()
         == 5
@@ -3250,12 +3378,19 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
             RoleBand("tweeter", 1, tweeter_band),
         ]
         for tier in (TIER_FULL, TIER_EXPRESS):
-            plan = build_v2_capture_plan(roles, fc_hz, tier=tier)
-            assert plan.estimated_minutes() == info[tier]["estimated_minutes"], (
+            shape = resolve_plan_shape(tier)
+            # BOTH stages, because the chooser quotes the whole journey (D2).
+            stage1 = build_v2_capture_plan(roles, fc_hz, plan_shape=shape)
+            stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
+            minutes = stage1.estimated_minutes() + stage2.estimated_minutes()
+            assert minutes == info[tier]["estimated_minutes"], (
                 f"tier={tier} woofer={woofer_band} tweeter={tweeter_band} "
                 f"fc={fc_hz}: displayed minutes drifted from tier_display_info()"
             )
-            assert plan.capture_target == info[tier]["capture_target"]
+            assert (
+                stage1.capture_target + stage2.capture_target
+                == info[tier]["capture_target"]
+            )
 
 
 def test_cloud_prompts_front_load_the_wide_offsets():
@@ -3325,7 +3460,12 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
     assert COURTESY_PRELUDE_ENABLED is True
     plan = build_v2_capture_plan(_roles(), FC_HZ)
     check, measure = plan.entries[0], plan.entries[1]
-    verify = plan.entries[DEFAULT_CLOUD_MEASURE_POSITIONS + 1]
+    # The VERIFY-shaped program's duration now rides STAGE 2's anchor (the
+    # split moved the phase, not the arithmetic) — and stage 1's cloud entries,
+    # which play the same program, are checked against it below.
+    verify = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=resolve_plan_shape(),
+    ).entries[0]
     assert verify.kind_label == "verify"
 
     from jasper.audio_measurement.program import (
@@ -3498,7 +3638,8 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert spec.kind == "crossover_sweep"
     assert spec.capture_protocol_version == 3
     assert spec.capture_plan is not None
-    assert spec.capture_plan.capture_target == cloud_capture_target()
+    # Stage 1's own target; ``cloud_capture_target()`` names the whole journey.
+    assert spec.capture_plan.capture_target == resolve_plan_shape().measure_capture_target
     # Round-trips through the strict boundary validation.
     from jasper.capture_relay.spec import CaptureSpec
 
@@ -3531,8 +3672,17 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
 
     cloud = build_v2_capture_plan(_roles(), FC_HZ)
     one_entry = build_v2_verify_capture_plan(FC_HZ)
-    assert cloud.capture_target == cloud_capture_target() == 16
-    assert cloud.max_attempts == cloud_plan_max_attempts() == 23
+    # RE-DERIVED for the two-stage split: no single session carries the whole
+    # journey any more. Stage 1 is 1 + N = 10 captures with
+    # 10 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE = 17 attempts;
+    # ``cloud_capture_target()``/``cloud_plan_max_attempts()`` keep their
+    # whole-journey meaning (16 / 23), which is what the relay-capacity guard
+    # and jasper-doctor read as the conservative bound.
+    assert cloud.capture_target == 10
+    assert cloud.max_attempts == 17
+    assert cloud_capture_target() == 16
+    assert cloud_plan_max_attempts() == 23
+    assert cloud.max_attempts < cloud_plan_max_attempts()
     assert one_entry.capture_target == 1
     assert one_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
     # The re-verify re-arm stays at or below the legacy ceiling, so it never
@@ -3593,15 +3743,28 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     )
 
     shipped = build_v2_capture_plan(_roles(), FC_HZ)
-    # 1800 + (16 - 3) * 120 = 3360 s for the shipped cloud.
-    assert session_wall_clock_ceiling_s(shipped) == 3360.0
+    # RE-DERIVED (work order D2): each STAGE arms its own ceiling from its own
+    # plan. Stage 1 is 10 captures ⇒ 1800 + (10 - 3) * 120 = 2640 s, down from
+    # the single session's 3360 s. Neither number fits inside the 900 s relay
+    # TTL and this test must not be read as claiming otherwise; what the split
+    # buys is a lower worst case and a fresh TTL per stage.
+    assert session_wall_clock_ceiling_s(shipped) == 2640.0
+    assert session_wall_clock_ceiling_s(
+        build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
+    ) == 2160.0
     biggest = build_v2_capture_plan(
         _roles(), FC_HZ,
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
-    # 1800 + (19 - 3) * 120 = 3720 s unclamped, so the hard cap binds.
-    assert session_wall_clock_ceiling_s(biggest) == MAX_WALL_CLOCK_CEILING_S == 3600.0
+    # 1800 + (13 - 3) * 120 = 3000 s: the biggest stage-1 plan no longer
+    # reaches the hard cap, so the cap is exercised on a plan long enough to
+    # need it rather than left unpinned.
+    assert session_wall_clock_ceiling_s(biggest) == 3000.0
+    assert MAX_WALL_CLOCK_CEILING_S == 3600.0
+    assert session_wall_clock_ceiling_s(
+        types.SimpleNamespace(capture_target=100)
+    ) == MAX_WALL_CLOCK_CEILING_S
     # The 1-entry re-verify never widens the baseline.
     assert (
         session_wall_clock_ceiling_s(build_v2_verify_capture_plan(FC_HZ))
@@ -3686,14 +3849,58 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # pins are re-derived against the tree they ship on, never copied forward. The
 # 1-entry re-verify plan has no MEASURE entry and its digest is byte-for-byte
 # unchanged, which is the check that this edit touched only what it meant to.
+#
+# RE-DERIVED 2026-07-29 (issue #1806, PR-T3 — the two-stage split). This is the
+# largest movement these pins have ever taken, because the SHAPE moved rather
+# than the copy: one 16-entry session became a 10-entry measuring session and a
+# separate 6-entry post-apply one (work order D1/D2). The keys are renamed to
+# say which stage each is, and two NEW shipped shapes earn pins of their own —
+# stage 2 is a shipped plan now, not a hypothetical.
+#
+#   cloud     → stage1-full    16 entries, 3929 B → 10 entries, 2301 B
+#                              (target 16 → 10, max_attempts 23 → 17)
+#   express   → stage1-express  7 entries, 2139 B →  6 entries, 1531 B
+#                              (target 7 → 6, max_attempts 14 → 13)
+#   (new)       stage2-full     6 entries, 1612 B  (target 6, max_attempts 13)
+#   (new)       stage2-express  1 entry,    609 B  (target 1, max_attempts 8)
+#
+# Every attempt budget is the same derivation as before —
+# ``target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE`` — applied to
+# each stage's own target rather than to the sum of both.
+#
+# What moved BESIDES the entry count, deliberately, and nothing else did:
+#   * every ``progress`` counter, because "Measurement N of T" is per-session
+#     and T is now 10 (or 6, or 6, or 1) rather than 16;
+#   * the done copy moved off stage 1 entirely and onto stage 2's last entry —
+#     the ``M = 1`` placement rule moved WITH the post-apply group it is about;
+#   * stage 2's anchor carries a truthful pre-arm instruction plus §2.2's
+#     unchanged ``confirm_title``/``confirm_body``, where the single-session
+#     VERIFY entry carried the apply-hold copy and ``auto_advance: on_apply``.
+#     There is no apply inside either session to hold for.
+# Program DURATIONS did not move: the same three composed programs at the same
+# lengths, redistributed across two plans.
+#
+# **The 1-entry recovery re-verify is byte-for-byte unchanged — 324 B and the
+# same digest it has carried since 2026-07-28.** That is the load-bearing check
+# in this revision: work order D2 keeps that form exactly as it is, and an
+# identical digest is the proof that generalizing its builder over a plan shape
+# left its own output untouched.
 _GOLDEN_V2_PLAN_BYTES = {
-    "cloud": (
-        3929,
-        "4c9deaf3064d6e67f1c12645a099eced6548284cd74b9175bca999efe10e974b",
+    "stage1-full": (
+        2301,
+        "89653f85b681e1a296bc4f95803f4373a0fc61f428c04c60673c742f98f987e6",
     ),
-    "express": (
-        2139,
-        "dfe0f6be42340b272e3c7770aac0b5c6c7dce9a8f25e3a7f2505a21dc0a9df76",
+    "stage1-express": (
+        1531,
+        "eb8d9c342d786abe48b4d1acb66658bbd52f024b8f371e29f2620cb07fac5b7b",
+    ),
+    "stage2-full": (
+        1612,
+        "076da2d8c7e57b020c3bb032c0e8831c2732c2a5fdee7fbdc136117f29483529",
+    ),
+    "stage2-express": (
+        609,
+        "c8d6a5a908f6edc9c08ec2f9d5e3d31261f9579d2411de0d741d6c669e3ee1c6",
     ),
     "1-entry": (
         324,
@@ -3714,10 +3921,17 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
     )
 
     plans = {
-        "cloud": build_v2_capture_plan(_roles(), FC_HZ),
-        "express": build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS),
+        "stage1-full": build_v2_capture_plan(_roles(), FC_HZ),
+        "stage1-express": build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS),
+        "stage2-full": build_v2_verify_capture_plan(
+            FC_HZ, plan_shape=resolve_plan_shape(),
+        ),
+        "stage2-express": build_v2_verify_capture_plan(
+            FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
+        ),
         "1-entry": build_v2_verify_capture_plan(FC_HZ),
     }
+    assert set(plans) == set(_GOLDEN_V2_PLAN_BYTES)
     for label, plan in plans.items():
         raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
         expected_len, expected_sha = _GOLDEN_V2_PLAN_BYTES[label]
@@ -5719,7 +5933,7 @@ def test_prediction_gate_allows_a_materially_better_correction():
     c = _cloud_conductor(fakes)
     verdict = _walk_measure_cloud_to_close(c)
 
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert c.candidate is not None
 
     before_rms_db, after_rms_db = _gate_residuals(c)
@@ -5745,7 +5959,7 @@ def test_prediction_gate_verdict_does_not_depend_on_the_room(pre_apply_scale):
     c = _cloud_conductor(fakes)
 
     verdict = _walk_measure_cloud_to_close(c)
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert c.candidate is not None
     # ...and the room really did move, so this is not a no-op fixture.
     measured_rms_db = c.group_cloud_result(PHASE_CLOUD_MEASURE)["flatness"]["rms_db"]
@@ -5839,7 +6053,7 @@ def test_prediction_gate_is_silent_when_the_prediction_meets_the_spec(monkeypatc
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _cloud_conductor(fakes)
-    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+    assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
 
 def test_prediction_gate_treats_an_ungradeable_prediction_as_unknown(monkeypatch):
@@ -5854,7 +6068,7 @@ def test_prediction_gate_treats_an_ungradeable_prediction_as_unknown(monkeypatch
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _cloud_conductor(fakes)
-    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+    assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
 
 def test_prediction_gate_abstains_when_no_fit_ran(caplog, monkeypatch):
@@ -5875,7 +6089,7 @@ def test_prediction_gate_abstains_when_no_fit_ran(caplog, monkeypatch):
     )
     c = _cloud_conductor(fakes)
     verdict = _walk_measure_cloud_to_close(c)
-    assert verdict["auto_apply"] is True
+    assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
     assert c.candidate.linearization == {}
     assert "reason=no_linearization" in caplog.text
 
@@ -5889,7 +6103,7 @@ def test_prediction_gate_logs_a_ledger_line_on_every_path(caplog):
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _cloud_conductor(fakes)
-    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+    assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
     assert "event=correction.crossover_v2_prediction_gate" in caplog.text
     # PR-L5 moved this fixture's OUTCOME, not the ledger's contract: the shared
@@ -5922,7 +6136,7 @@ def test_the_stashed_prediction_verdict_is_the_full_resolution_grade():
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _cloud_conductor(fakes)
-    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+    assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
     stashed = c.measure_predicted_spec_report
     assert stashed is not None
@@ -5958,7 +6172,7 @@ def test_the_prediction_verdict_is_stashed_on_the_trims_only_lane_too():
         program, mic_tier="consumer",  # ineligible ⇒ no fit ⇒ no linearized sum
     )
     c = _cloud_conductor(fakes)
-    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+    assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
     assert c.candidate.linearization == {}
     stashed = c.measure_predicted_spec_report
@@ -6008,7 +6222,7 @@ def test_an_ungradeable_prediction_stashes_none_and_names_itself(caplog, monkeyp
     c = _cloud_conductor(fakes)
     # Unknown is not a refusal: the session still completes (the gate has no
     # evidence to refuse on), it just carries no verdict.
-    assert _walk_measure_cloud_to_close(c)["auto_apply"] is True
+    assert _walk_measure_cloud_to_close(c)["candidate_fingerprint"]
 
     assert c.measure_predicted_spec_report is None
     assert "event=correction.crossover_v2_prediction_ungradeable" in caplog.text
@@ -6701,11 +6915,18 @@ def _boost_vocabulary_spy(seen: list[bool]):
     return _spy
 
 
-def test_boost_is_granted_only_to_a_session_that_will_verify():
-    """Boost permission is EVIDENCE-gated on the post-apply sweep. Today every
-    plan shape runs VERIFY, so this reads as always-on — but it is the correct
-    CONDITION rather than a constant, so a future plan that drops the sweep
-    drops boost with it instead of silently shipping an unverified one."""
+def test_boost_is_granted_only_to_a_journey_that_will_verify():
+    """Boost permission is EVIDENCE-gated on the post-apply sweep.
+
+    **Re-derived for the two-stage split (work order D2).** The gate used to
+    read ``PHASE_VERIFY in self.session_phases``, which was exact while one
+    session carried both the fit and the post-apply sweep. Stage 1 has no
+    VERIFY entry at all — the sweep is stage 2's session — so that reading
+    would silently demote every two-stage correction to cut-only. The measuring
+    host now DECLARES the answer from the plan shape it resolved, and the gate
+    reads the declaration. It is still a condition rather than a constant: a
+    session told the journey will not verify is refused the vocabulary.
+    """
     fakes = FakeSeams()
     seen: list[bool] = []
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -6714,15 +6935,25 @@ def test_boost_is_granted_only_to_a_session_that_will_verify():
         c = _cloud_conductor(fakes)
         _walk_measure_cloud_to_close(c)
     assert seen and all(seen)
-    assert PHASE_VERIFY in c.session_phases
+    # …on a session that does NOT itself run VERIFY — the point of the change.
+    assert PHASE_VERIFY not in c.session_phases
 
-    # …and a session whose phases exclude VERIFY is refused the vocabulary.
+    # A session told its journey will not verify is refused the vocabulary…
     seen.clear()
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(flow, "fit_driver_linearization", _boost_vocabulary_spy(seen))
-        c2 = _conductor(fakes, index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE})
-        _run_phase(c2, 1, 1)
-        _run_phase(c2, 2, 2)
+        c2 = _cloud_conductor(fakes, post_apply_verifies=False)
+        _walk_measure_cloud_to_close(c2)
+    assert seen and not any(seen)
+
+    # …and so is one that declares nothing and runs no VERIFY of its own, so
+    # the undeclared default stays the conservative phase-derived reading.
+    seen.clear()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "fit_driver_linearization", _boost_vocabulary_spy(seen))
+        c3 = _conductor(fakes, index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE})
+        _run_phase(c3, 1, 1)
+        _run_phase(c3, 2, 2)
     assert seen and not any(seen)
 
 

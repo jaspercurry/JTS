@@ -305,33 +305,68 @@ The conductor is I/O-free: all side effects cross an injected
 `V2FlowSeams` boundary (`play`, `analyze`, `publish_check`,
 `publish_candidate`, `apply_complete`, `apply_failed`). The web host
 ([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
-binds the real seams — including firing the auto-apply itself on a
-background thread once the candidate-carrying verdict lands (gotcha #18;
-that is the **pre-apply cloud group's close** since the 2026-07-27 timing
-move, MEASURE's own accept on the pre-cloud 3-entry shape — see "When the
-fit runs" below) — and tests inject fakes.
+binds the real seams and tests inject fakes.
 
-### The capture flow
+> **AUTO-APPLY IS GONE (two-stage commission work order D1, PR-T3,
+> 2026-07-29).** Everything below that describes the host "firing the
+> auto-apply on a background thread once the candidate-carrying verdict
+> lands", VERIFY being "soft-held until the auto-apply completes", or an
+> "auto-apply failure" draining the volume, is **history, not current
+> behaviour**. No session applies anything: the pre-apply cloud's close is
+> now the household's explicit `complete_capture_set` signal, it produces a
+> PROPOSAL, and the only path that applies is their own POST to
+> `/crossover/v2/apply` from the `review` screen. `_fire_auto_apply`, its
+> thread, and its idle-exit hold are deleted; the `awaiting_apply` deferral
+> and `REVIEW_HOLD_BUDGET_S` are RETAINED but unreached (D10). The
+> accountability veto (`_assert_accountable`) is untouched and now refuses
+> on the confirmation instead.
 
-One relay session (`crossover_v2:session`) spans **16 captures** at the
-**Full tier's** shipped defaults (`TIER_FULL`). The conductor hands
+### The capture flow — TWO sessions since the two-stage split
+
+The journey is **two relay sessions** with an untimed household decision
+between them (two-stage commission work order D1/D2, PR-T3). Both use
+`crossover_v2:session` / `crossover_v2:verify`; the conductor hands
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
-(`jasper/capture_relay/session.py`):
+(`jasper/capture_relay/session.py`) in each.
+
+**Stage 1 — measure (`POST /crossover/v2/session`), 10 captures at Full:**
 
 | index | phase | gate | what it is |
 |---|---|---|---|
 | 1 | `check` | tap | microphone check |
 | 2 | `measure` | tap | design-axis anchor, per-driver |
 | 3–10 | `cloud_measure` | tap each | 8 prompted pre-apply positions |
-| 11 | `verify` | on apply | design-axis anchor, summed |
-| 12–16 | `cloud_verify` | tap each | 5 prompted post-apply positions |
+
+Index 10 is also `capture_target`, so the runner would ordinarily end the
+set on its acceptance. It does not: the host **holds** the set open
+(`completion_signal_required` / `on_completion_signal`) until the phone
+posts `complete_capture_set` — the household's "Continue" on the "all
+spots measured" screen. That signal is what closes the group, runs the
+fit, and publishes the candidate; until it arrives the final position is
+still retakeable, and no `capture_set_complete` is posted (which is what
+keeps the phone on the confirm screen rather than an end screen).
+**Nothing is applied inside this session.** The household returns to
+jts.local and lands on the `review` screen.
+
+**Stage 2 — verify (`POST /crossover/v2/verify` with
+`{"stage": "post_apply"}`), 6 captures at Full:**
+
+| index | phase | gate | what it is |
+|---|---|---|---|
+| 1 | `verify` | tap (confirm-then-tone) | design-axis anchor, summed |
+| 2–6 | `cloud_verify` | tap each | 5 prompted post-apply positions |
+
+The same endpoint with no `stage` (every shipped caller, including
+`verify_retry` on a failed screen) is the **1-entry recovery re-verify**,
+byte-identical to what it has always been.
 
 **Express tier (`TIER_EXPRESS`, flow-simplification PR-U1)** is the same
-layout at a smaller shape — 7 captures, (N=5, M=1): index 1 `check`,
-index 2 `measure` anchor, indexes 3–6 (4 prompted `cloud_measure`
-positions), index 7 `verify` anchor. `M=1` means **no `cloud_verify`
-phase at all** — the done screen rides the VERIFY entry itself, and there
-is no post-apply cross-position claim (see
+layout at a smaller shape — (N=5, M=1), so stage 1 is 6 captures (index 1
+`check`, index 2 `measure` anchor, indexes 3–6 four prompted
+`cloud_measure` positions) and stage 2 is 1 (the anchor at the mark).
+`M=1` means **no `cloud_verify`
+phase at all** — the done screen rides stage 2's VERIFY entry itself, and
+there is no post-apply cross-position claim (see
 [`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
 §1.3's degraded-claims table). `resolve_plan_shape` in
 `crossover_v2_flow.py` is the single place both counts are resolved from
@@ -597,13 +632,13 @@ together. Design rationale:
    position — never a question); otherwise it fires the SAME apply
    transaction a household's tap used to trigger
    (`jasper.web.correction_crossover_v2.handle_v2_apply`) on its own
-   background thread. VERIFY is soft-held (`CaptureBeginDeferred`, screen
-   `awaiting_apply`) exactly as before — the phone now sees "Applying to
-   your speaker…" instead of "waiting for the household to apply", and the
-   release is the auto-apply completing, never a human. An auto-apply
-   failure (blocked or errored) persists `apply_failed` and the deferred
-   hold is refused with the honest reason instead of holding toward a
-   dishonest `relay_timeout`. See gotcha #18 for the full rationale.
+   background thread. **Superseded 2026-07-29 (PR-T3):** stage 1 ends at
+   the household's `complete_capture_set` signal, which closes the group
+   and publishes a proposal; the apply is their own POST from the `review`
+   screen, and stage 2 is a separate session. VERIFY's soft hold
+   (`CaptureBeginDeferred`, screen `awaiting_apply`) is retained machinery
+   that no shipped session reaches — stage 1 has no VERIFY index and stage
+   2 is constructed `applied=True`. See gotcha #18 for the history.
 5. **VERIFY** (~15 s, auto-arms on the apply-complete host event). A mono
    summed sweep through the **applied production graph** + a pilot pair,
    captured back at the mark (the apply hold's copy is where the
@@ -875,22 +910,31 @@ web layer because `jasper.active_speaker` never imports from `jasper.web`, and
 gated to one phase because the predicate is not cheap and
 `ensure_crossover_preview_ready()` can rewrite the preview.
 
-**Today that costs nothing at all, structurally.** `PHASE_REVIEW` is
-unreachable until PR-T3 lands the first measure-only plan: the only two
-`index_phase_map` constructions in the tree are
-`build_v2_cloud_index_phase_map`, which sets `mapping[n + 2] = PHASE_VERIFY`
-unconditionally for every tier and shape, and `prepare_v2_verify`'s
-`{1: PHASE_VERIFY}` — so every shipped session records a VERIFY, and the review
-branch keys on its absence. The corrupt-state fallback walks
-`PRE_CLOUD_CAPTURE_PHASES`, which also contains VERIFY. So
-`attach_stage2_preflight` early-returns on every envelope GET a shipped box can
-produce: zero reads, zero writes, zero log lines. Pinned by
-`test_every_shipped_index_phase_map_contains_verify`, which is also the tripwire
-— **when T3 makes that assertion fail, re-read the preflight's cost paragraph.**
+**What it costs now that PR-T3 has made the screen reachable.** T2 wrote that
+this cost nothing because no `index_phase_map` could omit VERIFY; stage 1's map
+now omits it by design, so the preflight runs — once per envelope GET while the
+review interlude is on screen. One call is roughly six JSON reads, a
+canonical-JSON profile fingerprint, and a preset compile, and it is not free of
+side effects: `ensure_crossover_preview_ready()` can rewrite the preview file
+and the topology file, though only when the preview is absent, stale or blocked.
+Two things bound it, both structural rather than a cache: it runs ONLY on the
+review phase, and **the interlude is not a polled screen** — the wizard polls
+only while a relay is in flight (`schedulePoll(relayIsActive(env.relay) ? …)`)
+and stage 1's session has ENDED by the time this renders, so the calls stop
+within seconds of the relay winding down and a household sitting on the decision
+costs nothing. T2 named that second bound as T3's to re-check; it holds.
+Pinned by `test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does`, the
+re-derivation of T2's tripwire.
 
-**The pre-POST half of that preflight is PR-T3's**, deliberately not here:
-`handle_v2_apply` is also today's auto-apply path, so gating it before T3
-removes auto-apply would newly refuse a shipped automatic path.
+**The pre-POST half of that preflight is PR-T3's and has landed**:
+`handle_v2_apply` runs `_assert_stage_2_can_open(status)` immediately before
+the transaction commits — after the freshness gates, so a stale candidate still
+gets its own specific refusal — and fails closed on an unexpected error as well
+as on a refusal (`event=correction.crossover_v2_apply_stage2_preflight_refused`
+/ `…_failed`). A disabled control is not a security boundary: a stale page, a
+second tab, or a direct POST all reach the endpoint, so the screen's honesty
+layer and this refusal are two halves of one guarantee. `status` is a REQUIRED
+keyword-only argument, so no caller can quietly skip it.
 
 *The carve-out disclosure* (flat-linearization plan PR-6b, owner decision 1 of
 2026-07-25). The gauge says how flat the speaker measured and how many
@@ -1227,18 +1271,16 @@ most visible thing on the screen.
    `WALL_CLOCK_CEILING_PER_ENTRY_S` (120 s) per capture beyond the
    3-entry baseline, hard-capped at `MAX_WALL_CLOCK_CEILING_S`
    (3600 s) — so the Full tier's 16-capture cloud gets 3360 s, Express's
-   7-capture cloud gets 2280 s, and the 1-entry re-verify gets the bare
-   1800 s. **The number moves with the plan; the
+   6-capture Express stage 1 gets 2160 s, and the 1-entry re-verify gets
+   the bare 1800 s (each STAGE arms its own, from its own plan). **The number moves with the plan; the
    cap is what makes the guarantee.** A user who walks away can never
    leave the speaker pinned at measurement volume. The voice-daemon measurement pause is held for
    the *whole* session (acquired before the first volume set) so the
-   idle reconciler can't revert it. A **failed auto-apply** drains the
-   plan proactively too (#1811): that failure is terminal — the
-   `apply_failed` seam turns VERIFY's hold into a refusal — so the level
-   is restored the moment the apply dies rather than at the phone's next
-   begin, which is what every other enforcement here waits for (the
-   wall-clock ceiling and the stale-active reconcile are both
-   lazy-on-read).
+   idle reconciler can't revert it. (#1811's **failed auto-apply** drain is
+   history since PR-T3: the apply left the session entirely, so no apply
+   can die inside one. A measure-only session that finishes takes the
+   ordinary CLOSE path — exact restore — and every other enforcement here
+   is unchanged.)
 10. **CamillaDSP safety ceiling stays.** As everywhere in the DSP
     graph, `devices.volume_limit = 0.0` and positive writes clamp to
     0 dB. The program graph adds no headroom beyond the main volume.
@@ -1350,10 +1392,13 @@ source, no drift.
 | `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
 | `correction_rollback_failed` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the probe found one of the three defects above AND the automatic rollback could not run (no binding, a refused restore, or a seam that raised). The correction is therefore **still applied**, and this row exists so the copy says so instead of promising a restore that did not happen. Names Undo as the manual action |
 
-**Auto-apply is no longer unconditional at the confirm seam.** PR-6b's
+**The accountability veto guards the confirm seam.** PR-6b's
 `_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
 MEASURE's trust gates had already decided — true about the CAPTURE, silent
-about the CORRECTION built from it. `_assert_accountable` runs its three pre-apply gates — PR-L5's level-frame
+about the CORRECTION built from it. (That key is DELETED since PR-T3: nothing
+auto-applies, so a flag named for an automatic trigger would name a path that
+no longer exists. The veto below is unchanged and now refuses on the
+household's confirmation.) `_assert_accountable` runs its three pre-apply gates — PR-L5's level-frame
 agreement, then PR-L4's items 1 and 2, most-specific-first — between the
 candidate build and the publish, so a refusal leaves no candidate for anything
 downstream to apply. (The four `correction_*` rows are different: they fire

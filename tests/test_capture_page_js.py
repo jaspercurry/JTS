@@ -19,6 +19,7 @@ page covered by the existing Python CI matrix with no extra CI wiring.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -56,6 +57,18 @@ _HARNESSES = [
 @pytest.mark.parametrize("harness", _HARNESSES)
 def test_capture_page_harness(harness: str):
     if _NODE is None:
+        # A developer without node gets a skip; CI does not. Mirrors
+        # ``tests/test_crossover_wizard_js.py`` verbatim, and for the same
+        # reason: this lane is the ONLY place these harnesses execute (the
+        # workflow's `js` job runs an explicit list that includes just one of
+        # them), so "node disappeared from the runner" would silently turn the
+        # whole family from covered into uncovered and still report green.
+        if os.environ.get("CI"):
+            pytest.fail(
+                "node is not on PATH in CI — these harnesses are the only "
+                "automated execution of capture-page/js/*, and skipping them "
+                "would report a green build over an untested capture page"
+            )
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_JS_DIR / harness)],
@@ -330,8 +343,14 @@ def test_capture_page_rejected_retake_can_keep_the_earlier_take():
         in main_js
     )
     # It returns to the screen the acceptance belonged on: the group-close
-    # confirm keeps the fit + apply behind the same tap they were behind.
-    assert "ctx.retakeAwaitingConfirm = Boolean(verdict.awaitingConfirm);" in main_js
+    # confirm keeps the fit behind the same tap it was behind. Since the
+    # two-stage split (work order D1) the awaiting-confirm branch is FIRST in
+    # the completion ladder rather than a nested else, so the flag is set from
+    # inside it — the ordering itself is pinned by
+    # tests/js/capture_plan_loop_test.mjs's
+    # testTheFinalHeldCaptureRendersTheConfirmNotAllDone.
+    assert "if (verdict.accepted && verdict.awaitingConfirm) {" in main_js
+    assert "ctx.retakeAwaitingConfirm = true;" in main_js
     assert "if (ctx.retakeAwaitingConfirm) {" in main_js
 
 

@@ -1928,17 +1928,28 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
                              crossover; a bonded speaker fails safe to solo on its
                              next re-prove — see "Scoped crossover reset" below
 POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
-                             open ONE relay session spanning CHECK→MEASURE→the
-                             pre-apply cloud→VERIFY→the post-apply cloud
-                             (16-entry capture plan at the Full tier's shipped
-                             defaults, 7 on Express — an allowlisted `tier`
-                             body field, flow-simplification PR-U1; absent =
-                             Full)
-POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session after
-                             apply (§5.2 re-verify)
+                             open STAGE 1's relay session — CHECK→MEASURE→the
+                             pre-apply cloud, and nothing after (10-entry
+                             capture plan at the Full tier's shipped defaults,
+                             6 on Express — an allowlisted `tier` body field,
+                             flow-simplification PR-U1; absent = Full). The set
+                             is HELD past its target until the phone posts
+                             `complete_capture_set`; that signal fits the
+                             candidate. Applies nothing (two-stage D1)
+POST /crossover/v2/verify    v2 conductor: open the post-apply session. With
+                             `{"stage": "post_apply"}` this is STAGE 2, the
+                             tier's own verify walk (6 entries at Full, 1 on
+                             Express — the tier comes from durable state). With
+                             no `stage` (every pre-two-stage caller, including
+                             `verify_retry`) it is the shipped 1-entry §5.2
+                             recovery re-verify, unchanged
 POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
                              through the existing atomic apply transaction (W4
-                             measured_candidate seam); arms the deferred VERIFY
+                             measured_candidate seam). **The ONLY path that
+                             applies, and only on an explicit household POST**;
+                             runs the stage-2 openability preflight immediately
+                             before committing and refuses fail-closed if the
+                             speaker could not then verify the result
 POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
                              pre-candidate applied profile handle_v2_apply
                              stashed at apply time and clear the durable v2
