@@ -1,18 +1,15 @@
 # Handoff: Chip-AEC DAC portability
 
-> **Status: design-of-record (living draft).** This is the canonical
-> plan for making XVF3800 chip-AEC work across *any* output DAC. It
-> supersedes an earlier dynamic-aligner mechanism from a
-> production-design draft that never landed as a checked-in doc (a
-> per-period `snd_pcm_delay` delay line) — see
-> [Design decision](#design-decision), which summarizes that mechanism
-> inline and explains why it's wrong. Engine internals live in
-> [HANDOFF-aec.md](HANDOFF-aec.md); the chip itself in
-> [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md); the lab evidence in
-> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and
-> [AEC-DIAG-01-baseline.md](AEC-DIAG-01-baseline.md). This doc does not
-> restate them — it owns the *clock-domain* design, the *DAC test
-> matrix*, and the *layered roadmap*.
+> **Status: historical.** Snapshot from 2026-06-25, before measured
+> per-installation `SYS_DELAY` commissioning replaced this draft's dynamic
+> authorization and software-fallback policy. Preserved for primary-source
+> archaeology about clock-domain measurement and the rejected rate-matcher
+> design; its live-SRO gate, `xvf_chip_aec_testing`, and managed-XVF AEC3
+> fallback claims are not current product behavior. Read this for the design
+> history, not operational truth. Current XVF chip-or-park lifecycle,
+> fixed-profile commissioning, and output qualification live in
+> [HANDOFF-aec.md](HANDOFF-aec.md); hardware truth lives in
+> [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md).
 
 ## TL;DR — current state
 
@@ -345,4 +342,5 @@ often "just works" means *chip-AEC* vs *fell back to software*.
 - Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md)
 - DAC registry: [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
 
-Last verified: 2026-06-25
+Last verified: 2026-07-30 (historical status and current-truth pointers
+checked; snapshot body intentionally not revalidated)

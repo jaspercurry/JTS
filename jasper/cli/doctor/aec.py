@@ -217,6 +217,10 @@ def _assess_audio_profile(status: dict) -> CheckResult:
         )
     if warnings:
         detail += "; " + " ".join(str(w) for w in warnings)
+    if profile.get("reason"):
+        detail += f"; reason={profile['reason']}"
+    if profile.get("action"):
+        detail += f"; action={profile['action']}"
 
     if state in {"active", "disabled"} and not warnings:
         result = "ok"
@@ -492,6 +496,18 @@ def check_aec_bridge_running() -> CheckResult:
             f"(need {xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch). "
             "DFU-flash per BRINGUP.md Phase 2A.5, then: "
             "sudo systemctl start jasper-aec-reconcile",
+        )
+
+    profile = _audio_profile_status_for_doctor(bridge_active=False).get(
+        "audio_profile", {}
+    )
+    if isinstance(profile, dict) and profile.get("state") == "commission_required":
+        detail = str(profile.get("reason") or "chip-AEC commissioning required")
+        action = str(profile.get("action") or "Run sudo jasper-aec-commission")
+        return CheckResult(
+            "AEC bridge service",
+            "warn",
+            f"intentionally parked — {detail}; {action}",
         )
 
     return CheckResult(

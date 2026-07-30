@@ -65,15 +65,16 @@ def test_explicit_testing_arms_unapproved_dac_without_auto_promotion():
     assert gate.recommended_action == ACTION_RUN_TESTING_AND_VALIDATE
 
 
-def test_live_coherent_outputd_clock_promotes_future_dac_to_approved():
+def test_live_coherent_outputd_clock_is_diagnostic_not_authorization():
     gate = resolve_chip_aec_dac_gate(
         "mystery_usb_audio",
         outputd_status=_outputd_status("coherent"),
     )
 
-    assert gate.status == STATUS_APPROVED
-    assert gate.permitted is True
-    assert gate.source == "outputd_aec_clock"
+    assert gate.status == STATUS_NEEDS_CALIBRATION
+    assert gate.permitted is False
+    assert gate.source == "static"
+    assert "verdict=coherent" in gate.detail
 
 
 def test_compensable_outputd_clock_does_not_auto_arm():

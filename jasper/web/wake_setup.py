@@ -281,6 +281,7 @@ def _echo_card_html() -> str:
     <div class="echo-status">
       <div class="echo-status__title" id="echo-status-title">checking…</div>
       <div class="echo-status__detail" id="echo-status-detail">—</div>
+      <div class="echo-status__action" id="echo-status-action" hidden></div>
     </div>
     <div class="firmware-update" id="firmware-update-card" hidden>
       <div class="firmware-update__copy">

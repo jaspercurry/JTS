@@ -43,7 +43,6 @@ BLOCKER_DAC = "dac"
 CHIP_AEC_BLOCKER_CODES = frozenset({BLOCKER_MIC, BLOCKER_DAC})
 
 SOURCE_STATIC = "static"
-SOURCE_OUTPUTD_AEC_CLOCK = "outputd_aec_clock"
 SOURCE_OPERATOR_TESTING = "explicit_testing"
 SOURCE_RUNTIME_ENV = "runtime_env"
 
@@ -274,17 +273,6 @@ def resolve_chip_aec_dac_gate(
         )
 
     outputd_clock = _outputd_clock_evidence(outputd_status, outputd_error)
-    if outputd_clock is not None and outputd_clock.ok:
-        return ChipAecGate(
-            dac_id=static.dac_id,
-            status=STATUS_APPROVED,
-            source=SOURCE_OUTPUTD_AEC_CLOCK,
-            detail=outputd_clock.detail,
-            auto_allowed=True,
-            arm_allowed=True,
-            trial_allowed=True,
-        )
-
     outputd_detail = ""
     if outputd_clock is not None and outputd_clock.detail:
         outputd_detail = f"; {outputd_clock.detail}"

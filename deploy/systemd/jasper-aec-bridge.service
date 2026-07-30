@@ -29,8 +29,9 @@ Description=AEC bridge — carries XVF mic audio via software AEC3 or chip-AEC
 After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service sound.target
 # `Wants=` so init runs whenever bridge starts (init is a one-shot
 # that applies XVF tuning; bridge depends on chip being initialised).
-# Soft dep — bridge still tries to start even if init failed; AEC
-# quality degrades but the daemon is operational.
+# The dependency remains soft for explicit custom/software routes. For a
+# managed XVF, ExecCondition additionally requires the reconciler's ready
+# state and a successful active init, so the bridge fails closed.
 # Camilla is also a SOFT startup dependency. The current bridge reads
 # the XVF mic directly and consumes outputd's final-reference UDP stream
 # (or the pre-Camilla jasper_ref diagnostic fallback), so it has no

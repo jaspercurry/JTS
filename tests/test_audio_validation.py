@@ -882,6 +882,7 @@ def _active_chip_inputs() -> dict:
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "ready",
             "JASPER_XVF_VARIANT": "xvf3800_legacy_square_6ch",
             "JASPER_XVF_GEOMETRY": "square",
             "JASPER_XVF_CHIP_BEAM_PLAN": "xvf_square_fixed_150_210",
@@ -914,10 +915,11 @@ def _active_chip_inputs() -> dict:
                 "speaker_reference_active": True,
                 "speaker_reference_sample_rate": 48000,
                 "speaker_reference_channels": 2,
-                "chip_ref_pcm": "plughw:CARD=Array,DEV=0",
+                "chip_ref_pcm": "hw:CARD=Array,DEV=0",
                 "chip_ref_sample_rate": 16000,
-                "chip_ref_period_frames": 320,
-                "chip_ref_buffer_frames": 1280,
+                "chip_ref_period_frames": 128,
+                "chip_ref_buffer_frames": 256,
+                "chip_ref_transform": "stereo_mean_boxcar_decimate_dual_mono_v1",
                 "udp_target": "127.0.0.1:9891",
             },
         },
@@ -1434,9 +1436,12 @@ def test_run_chip_aec_hardware_validation_refuses_inactive_without_force(monkeyp
     inputs = _active_chip_inputs()
     mode_env = dict(inputs["mode_env"])
     mode_env["JASPER_WAKE_LEG_CHIP_AEC"] = "0"
+    system_env = dict(inputs["system_env"])
+    system_env["JASPER_AEC_CHIP_AEC_ENABLED"] = "0"
+    system_env["JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS"] = "commission_required"
 
     monkeypatch.setattr(audio_validation, "_read_mode_env", lambda: mode_env)
-    monkeypatch.setattr(audio_validation, "_read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(audio_validation, "_read_system_env", lambda: system_env)
     monkeypatch.setattr(audio_validation, "_probe_xvf_mic", lambda: inputs["mic_probe"])
     monkeypatch.setattr(
         audio_validation,

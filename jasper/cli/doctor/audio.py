@@ -185,7 +185,8 @@ def check_microphone() -> CheckResult:
     independently re-probing ALSA, so a missing mic is one yellow advisory —
     not a scatter of contradicting red failures. Absent is ``warn`` (never
     ``fail``): the reconciler parked voice and it auto-starts when a mic is
-    reconnected, so it's noteworthy, not broken."""
+    reconnected or an actionable profile condition is resolved, so it's
+    noteworthy, not broken."""
     mp = read_mic_presence()
     status = "warn" if mp.absent_confirmed else "ok"
     return CheckResult("microphone", status, mp.summary)
@@ -218,8 +219,8 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     if read_mic_presence().absent_confirmed:
         return CheckResult(
             "mic ALSA card", "ok",
-            "no microphone present — see the `microphone` check "
-            "(voice parked, auto-starts when a mic is reconnected)",
+            "no usable microphone input — see the `microphone` check "
+            "(voice is intentionally parked until its condition is resolved)",
         )
     # UDP transport has no ALSA card to validate; just say so. The
     # `jasper-aec-bridge` running check covers transport liveness.
@@ -354,8 +355,8 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     if read_mic_presence().absent_confirmed:
         return CheckResult(
             "mic capture", "ok",
-            "no microphone present (expected) — see the `microphone` check; "
-            "voice auto-starts when a mic is reconnected",
+            "no usable microphone input (expected) — see the `microphone` "
+            "check; voice is intentionally parked until its condition is resolved",
         )
     # UDP transport: no PortAudio probe possible. The bridge's
     # heartbeat (Tier 1) and `check_aec_bridge_running` already cover
@@ -676,9 +677,9 @@ def check_dac_usb_sync_mode() -> CheckResult:
     observation for chip-AEC (Stage 6 of the audio-latency foundation work).
 
     This is NOT the chip-AEC gate. USB sync mode is *one* clock-coherence
-    signal; the binding chip-AEC gate is DAC-profile qualification plus the
-    outputd SRO clock verdict (`resolve_chip_aec_dac_gate` in
-    jasper/chip_aec_policy.py), which never reads endpoint_sync. A
+    signal; the binding production chip-AEC gate is the fixed DAC-profile
+    qualification (`resolve_chip_aec_dac_gate` in jasper/chip_aec_policy.py).
+    The SRO clock verdict is diagnostic only. A
     synchronous/adaptive endpoint and an approved DAC happen to agree on
     today's Apple dongle, but that agreement is incidental — an
     async-but-approved DAC would still pass the binding gate. Read this check
@@ -749,21 +750,21 @@ def check_dac_usb_sync_mode() -> CheckResult:
     ]
     if async_cards:
         # Advisory only: an async endpoint is a weak clock-coherence signal,
-        # but the binding chip-AEC gate is DAC qualification + the outputd SRO
-        # verdict (resolve_chip_aec_dac_gate), not this tag. WARN so a
+        # but the binding chip-AEC gate is fixed DAC qualification, not this
+        # tag or the diagnostic SRO verdict. WARN so a
         # maintainer notices the drift risk; software AEC3 keeps echo cancelled
         # either way.
         return CheckResult(
             "DAC USB sync mode", "warn",
             "async USB playback endpoint — weak clock coherence; chip-AEC is "
-            "still gated by DAC qualification + the outputd SRO verdict "
+            "still gated by fixed DAC-profile qualification "
             f"(async on {','.join(async_cards)}; profile={dac_id})",
         )
     return CheckResult(
         "DAC USB sync mode", "ok",
         f"synchronous USB playback endpoint ({', '.join(coherent)}); "
-        "clock-coherence observation only — the binding chip-AEC gate is "
-        f"DAC qualification + the outputd SRO verdict (profile={dac_id})",
+        "clock-coherence observation only — production chip-AEC is gated by "
+        f"fixed DAC-profile qualification (profile={dac_id})",
     )
 
 

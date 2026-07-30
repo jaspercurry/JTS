@@ -261,6 +261,17 @@ class ReSpeaker:
     def __init__(self, dev) -> None:
         self.dev = dev
 
+    def factory_serial(self) -> str:
+        """Return the stable USB iSerial assigned to this physical XVF."""
+
+        try:
+            value = self.dev.serial_number
+        except Exception as exc:  # noqa: BLE001 - PyUSB backend errors vary
+            raise XvfControlError(f"XVF3800 USB iSerial read failed: {exc}") from exc
+        if not isinstance(value, str) or not value.strip():
+            raise XvfControlError("XVF3800 USB iSerial is unavailable")
+        return value.strip()
+
     def write(self, name: str, data_list: list[int | float | str]) -> None:
         command = _command(name)
         if command.access == "ro":
@@ -272,6 +283,24 @@ class ReSpeaker:
             command.cmdid,
             command.resid,
             payload,
+            self.TIMEOUT,
+        )
+
+    def reboot_once(self) -> None:
+        """Issue exactly one volatile reboot OUT transfer, without readback.
+
+        A successful reboot immediately removes the USB device, so ordinary
+        write/readback or retry semantics are unsafe here.  Only the explicit
+        foreground commissioner calls this method.
+        """
+
+        command = _command("REBOOT")
+        self.dev.ctrl_transfer(
+            _CTRL_OUT_VENDOR_DEVICE,
+            0,
+            command.cmdid,
+            command.resid,
+            _pack_values(command, [1]),
             self.TIMEOUT,
         )
 

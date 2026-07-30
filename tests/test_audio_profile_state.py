@@ -32,6 +32,7 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
         RuntimeAecEnv(
             primary_device="udp:9876",
             chip_enabled=True,
+            chip_aec_alignment_status="ready",
         ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
@@ -46,6 +47,7 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
         "state": "active",
         "reason": "Chip-AEC runtime env is applied.",
         "validation_profile": "xvf_chip_aec",
+        "action": "",
     }
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
     assert status["microphone"]["wake_legs"] == ["Primary chip beam"]
@@ -63,6 +65,7 @@ def test_chip_aec_active_reports_explicit_extra_wake_beams():
         RuntimeAecEnv(
             primary_device="udp:9876",
             chip_enabled=True,
+            chip_aec_alignment_status="ready",
             chip_aec_150_device="udp:9887",
             chip_aec_210_device="udp:9888",
         ),
@@ -89,6 +92,7 @@ def test_chip_aec_extra_wake_beams_are_runtime_owned():
         RuntimeAecEnv(
             primary_device="udp:9876",
             chip_enabled=True,
+            chip_aec_alignment_status="ready",
         ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
@@ -98,20 +102,27 @@ def test_chip_aec_extra_wake_beams_are_runtime_owned():
     assert status["microphone"]["wake_legs"] == ["Primary chip beam"]
 
 
-def test_chip_aec_request_reports_runtime_software_until_chip_applied():
+def test_managed_xvf_parks_instead_of_reporting_software_fallback():
     status = build_audio_profile_status(
         AecIntent(mode="auto", chip_aec_enabled=True),
-        RuntimeAecEnv(primary_device="udp:9876", chip_enabled=False),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=False,
+            chip_aec_alignment_status="commission_required",
+            chip_aec_alignment_reason="alignment is absent",
+            chip_aec_alignment_action="Run sudo jasper-aec-commission",
+        ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
         chip_available=True,
     )
 
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
-    assert status["audio_profile"]["active"] == "xvf_software_aec3"
-    assert status["audio_profile"]["state"] == "pending"
-    assert status["microphone"]["processing_mode"] == "Software AEC3"
-    assert "not applied" in " ".join(status["microphone"]["warnings"])
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "commission_required"
+    assert status["audio_profile"]["action"] == "Run sudo jasper-aec-commission"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC parked"
+    assert "AEC3" not in status["microphone"]["processing_mode"]
 
 
 def test_profile_status_warns_when_saved_aec_card_is_stale():
@@ -151,6 +162,7 @@ def test_chip_aec_active_requires_detected_aec_card_match():
             primary_device="udp:9876",
             aec_device="L16K6Ch",
             chip_enabled=True,
+            chip_aec_alignment_status="ready",
             chip_aec_150_device="udp:9887",
             chip_aec_210_device="udp:9888",
         ),
@@ -259,6 +271,7 @@ def test_testing_profile_uses_chip_aec_runtime_but_same_validation_profile():
         RuntimeAecEnv(
             primary_device="udp:9876",
             chip_enabled=True,
+            chip_aec_alignment_status="ready",
             chip_aec_150_device="udp:9887",
             chip_aec_210_device="udp:9888",
         ),
@@ -274,7 +287,7 @@ def test_testing_profile_uses_chip_aec_runtime_but_same_validation_profile():
     )
 
     assert status["audio_profile"]["selection"] == "xvf_chip_aec_testing"
-    assert status["audio_profile"]["requested"] == "xvf_chip_aec_testing"
-    assert status["audio_profile"]["active"] == "xvf_chip_aec_testing"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec"
+    assert status["audio_profile"]["active"] == "xvf_chip_aec"
     assert status["audio_profile"]["validation_profile"] == "xvf_chip_aec"
-    assert status["microphone"]["processing_mode"] == "Chip-AEC testing"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC"

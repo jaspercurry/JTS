@@ -2,403 +2,435 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Boot-time XVF3800 chip init — `jasper-aec-init`.
+"""Silently restore and verify the volatile XVF3800 chip-AEC profile.
 
-Runs as a one-shot systemd unit before jasper-aec-bridge starts.
-Three jobs:
-
-  1. Restore the software-AEC fallback profile (`SHF_BYPASS=1`) when
-     chip-AEC is not requested.
-     The chip's AEC was designed for the topology where the chip
-     drives the speaker via its own codec; in our external-DAC
-     topology, the chip's AEC reference path is sabotaged (see
-     docs/HANDOFF-aec.md). With SHF_BYPASS=1, the chip's AEC
-     adaptive filter is removed from channels 0/1's signal path.
-     Empirically, this bypasses the SHF post-processing path too, so
-     channels 0/1 become raw-ish mic feeds rather than beamformed /
-     NS / AGC outputs. In the `xvf_software_aec3` fallback profile,
-     software AEC3 (jasper-aec-bridge) handles echo cancellation
-     host-side using the music chain as ref.
-     Chip-AEC mode is the narrow exception: the wake toggle sets
-     `JASPER_AEC_CHIP_AEC_ENABLED=1` for production, while the recorder
-     sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` for labeled corpus
-     comparison. In either mode this init unit applies and read-back
-     verifies a volatile 150/210 fixed-beam chip profile. Production
-     init explicitly restores the normal bypassed mux/profile switches
-     whenever those flags are absent so exit does not depend on
-     rebooting the XVF.
-  2. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
-     the mic signals before any chip-side DSP. The mic feeds
-     openWakeWord (fmin = 60 Hz per Google's speech_embedding
-     model) and real-time speech LLMs — no human listens, so
-     cutting sub-speech LF rumble is a free win. XMOS's shipped
-     smart-speaker default is 125 Hz (option 2); we match that.
-     Configurable via JASPER_AEC_CHIP_HPF_HZ.
-  3. Bring the chip's UAC2 PCM playback level to 0 dB unity.
-     The chip's default for these mixer controls is ~-20 dB,
-     which would attenuate any audio the host sent to the chip's
-     USB-IN. We don't currently route audio that way (software
-     AEC ignores the chip's USB-IN entirely), but the convention
-     is still cleaner with PCM at unity in case future tuning
-     experiments use the chip's USB-IN as a reference path.
-
-We do NOT call SAVE_CONFIGURATION — firmware 2.0.6 had a brick
-hazard on that op (respeaker repo issue #8). 2.0.8 may have fixed
-it but we don't need persistence on the chip side, so we skip.
-
-We also do NOT call REBOOT, even though some XVF reference designs
-(e.g. Reachy Mini #389) recommend it on host boot. In our pipeline
-the chip's AEC adaptive filter is disabled for production
-(SHF_BYPASS=1 above), so "clear adaptive-filter state" — REBOOT's
-only documented benefit in that recipe — is normally moot. Corpus
-chip-AEC comparison mode still avoids REBOOT because the profile is
-volatile, idempotent, and should not create a USB re-enumeration event
-mid-session. Calling REBOOT was also
-the root cause of the 2026-05-16 USB-renumerate feedback loop:
-every REBOOT triggered a USB disconnect, which fired the
-`controlC*` udev rule, which restarted aec-init, which called
-REBOOT again. See docs/HANDOFF-aec.md "Lessons learned" #9.
-
-The historical boot-time `AUDIO_MGR_SYS_DELAY` calibration job is gone.
-Chip-AEC production/corpus modes set their own volatile delay/profile
-from env. The 6-ch firmware exposes raw mics on channels 2-5; in the
-software-AEC fallback profile the bridge captures channel 1 as a raw-ish
-chip feed and runs WebRTC AEC3 host-side. In chip-AEC mode, the bridge
-captures channels 0/1 as chip ASR beams and forwards them directly.
+Production boot/reconcile samples the live native-reference queue, resolves
+``SYS_DELAY = commissioned K - median(queue)``, applies the one fixed profile,
+and verifies every chip write.  It never plays audio, resets the chip, searches
+parameters, writes flash, or changes the commissioning artifact.
 """
+
 from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
+from jasper import output_hardware
+from jasper.audio_hardware import dac as dac_registry
+from jasper.chip_aec_alignment import (
+    AlignmentIdentity,
+    load_artifact,
+    median_samples,
+    runtime_sys_delay,
+)
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
+from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
 
 logger = logging.getLogger("jasper.aec_init")
-
-# AEC_HPFONOFF parameter: 0=off, 1=70 Hz, 2=125 Hz, 3=150 Hz, 4=180 Hz.
-# All four are 4th-order Butterworth applied at mic ingress before AEC,
-# BF, NS in the chip pipeline. Higher cutoff = more aggressive LF
-# rejection but nulls more openWakeWord mel bins (model's fmin = 60 Hz,
-# so 125 Hz nulls ~2-3 of 32 bins, 180 Hz nulls ~4-5). 125 Hz matches
-# XMOS's shipping smart-speaker default and is the production choice
-# here; override via JASPER_AEC_CHIP_HPF_HZ in /etc/jasper/jasper.env
-# if you want to A/B different cutoffs.
-_CHIP_HPF_MAP = {
-    "0": 0, "off": 0,
-    "70": 1,
-    "125": 2,
-    "150": 3,
-    "180": 4,
-}
-_DEFAULT_CHIP_HPF_HZ = "125"
-
-
-def _chip_beam_plan() -> xvf3800.ChipBeamPlan | None:
-    return xvf3800.chip_beam_plan_from_env(os.environ)
-
-
-def _chip_corpus_profile(
-    plan: xvf3800.ChipBeamPlan,
-) -> tuple[tuple[str, list[int | float]], ...]:
-    return (
-        ("SHF_BYPASS", [0]),
-        ("AUDIO_MGR_SYS_DELAY", [12]),
-        ("AEC_ASROUTONOFF", [1]),
-        ("AEC_ASROUTGAIN", [1.0]),
-        ("AEC_FIXEDBEAMSONOFF", [1]),
-        ("AEC_FIXEDBEAMSGATING", [1]),
-        ("AEC_FIXEDBEAMSAZIMUTH_VALUES", [leg.azimuth_rad for leg in plan.legs]),
-        ("AEC_FIXEDBEAMSELEVATION_VALUES", [leg.elevation_rad for leg in plan.legs]),
-        ("AEC_AECEMPHASISONOFF", [2]),
-        ("AEC_FAR_EXTGAIN", [0.0]),
-        ("AUDIO_MGR_OP_L", [7, 0]),
-        ("AUDIO_MGR_OP_R", [7, 1]),
-    )
-
-
-_CHIP_PRODUCTION_PROFILE: tuple[tuple[str, list[int | float]], ...] = (
-    ("SHF_BYPASS", [1]),
-    ("AEC_ASROUTONOFF", [0]),
-    ("AEC_FIXEDBEAMSONOFF", [0]),
-    ("AEC_FIXEDBEAMSGATING", [0]),
-    ("AEC_AECEMPHASISONOFF", [0]),
-    ("AEC_FAR_EXTGAIN", [0.0]),
-    ("AUDIO_MGR_OP_L", [8, 0]),
-    # The bridge consumes XVF capture channel 1 in production. The
-    # firmware default for the right USB channel is silence, so restore
-    # it to the same non-silent user-chosen beam route as channel 0.
-    ("AUDIO_MGR_OP_R", [8, 0]),
+COMMISSION_REQUIRED_EXIT = 2
+_MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
+_COUNTERS = (
+    "open_error_count",
+    "retry_count",
+    "write_underrun_count",
+    "write_xrun_count",
+    "write_error_count",
+    "write_recovery_count",
+    "dropped_periods_due_to_full_queue",
+    "dropped_periods_due_to_disconnected_writer",
+    "dropped_periods_while_unavailable",
 )
-_VERIFY_FLOAT_TOLERANCE = 1e-4
 
 
-class ChipProfileError(RuntimeError):
-    """Raised when a required volatile XVF profile write did not stick."""
+class ChipInitError(RuntimeError):
+    pass
 
 
-def _env_truthy(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+class CommissionRequired(ChipInitError):
+    pass
 
 
-def _values_match(expected: Sequence[int | float], actual: object) -> bool:
-    if actual is None:
-        return False
-    if not isinstance(actual, Sequence) or isinstance(actual, str | bytes):
-        actual_values: Sequence[object] = (actual,)
-    else:
-        actual_values = actual
-    if len(actual_values) != len(expected):
-        return False
-    for want, got in zip(expected, actual_values, strict=True):
-        if isinstance(want, float):
-            if abs(float(got) - want) > _VERIFY_FLOAT_TOLERANCE:
-                return False
-        elif int(got) != want:
-            return False
-    return True
+class ChipProfileError(ChipInitError):
+    pass
 
 
-def _write_required(dev, param: str, values: list[int | float]) -> None:
-    try:
-        dev.write(param, values)
-        actual = dev.read(param)
-    except Exception as e:  # noqa: BLE001
-        raise ChipProfileError(f"{param}={values} failed: {e}") from e
-    if not _values_match(values, actual):
-        raise ChipProfileError(
-            f"{param} readback mismatch: wrote {values}, read {actual}"
-        )
-    log_event(
-        logger,
-        "chip_profile_write",
-        param=param,
-        values=values,
-        verified=1,
+@dataclass(frozen=True)
+class ReferenceSample:
+    delay: int
+    frames: int
+    sequence: int
+    counters: tuple[int, ...]
+
+
+def _truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def native_reference_pcm(card: str) -> str:
+    return (
+        f"{xvf3800.CHIP_AEC_REFERENCE_PCM_ACCESS}:CARD={card},"
+        f"DEV={xvf3800.CHIP_AEC_REFERENCE_DEVICE_INDEX}"
     )
 
 
-def _write_best_effort(dev, param: str, values: list[int | float]) -> None:
+def _mapping(value: object, name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ChipInitError(f"outputd STATUS missing {name}")
+    return value
+
+
+def _integer(value: object, name: str, *, positive: bool = False) -> int:
+    if type(value) is not int or value < (1 if positive else 0):
+        raise ChipInitError(f"outputd STATUS {name} is invalid")
+    return value
+
+
+def validate_reference_status(
+    status: Mapping[str, Any], *, expected_pcm: str
+) -> ReferenceSample:
+    if status.get("backend") != "alsa":
+        raise ChipInitError("outputd ALSA backend is not active")
+    refs = _mapping(status.get("reference_outputs"), "reference_outputs")
+    expected = {
+        "speaker_reference_source": "outputd_final_electrical",
+        "speaker_reference_is_fallback": False,
+        "speaker_reference_channels": xvf3800.CHIP_AEC_REFERENCE_CHANNELS,
+        "chip_ref_pcm": expected_pcm,
+        "chip_ref_sample_rate": xvf3800.CHIP_AEC_REFERENCE_SAMPLE_RATE_HZ,
+        "chip_ref_period_frames": xvf3800.CHIP_AEC_REFERENCE_PERIOD_FRAMES,
+        "chip_ref_buffer_frames": xvf3800.CHIP_AEC_REFERENCE_BUFFER_FRAMES,
+        "chip_ref_transform": xvf3800.CHIP_AEC_REFERENCE_TRANSFORM,
+    }
+    for name, wanted in expected.items():
+        if refs.get(name) != wanted:
+            raise ChipInitError(
+                f"outputd reference {name}={refs.get(name)!r}; expected {wanted!r}"
+            )
+    writer = _mapping(refs.get("chip_ref_writer"), "chip_ref_writer")
+    if (
+        writer.get("desired") is not True
+        or writer.get("active") is not True
+        or writer.get("status") != "active"
+        or writer.get("reference_sequence_lag") != 0
+    ):
+        raise ChipInitError("native chip-reference writer is not current and active")
+    for name in ("snd_pcm_delay_sample_age_ms", "last_write_age_ms"):
+        if _integer(writer.get(name), name) > 250:
+            raise ChipInitError(f"native chip-reference writer {name} is stale")
+    mix = _mapping(status.get("mix"), "mix")
+    return ReferenceSample(
+        _integer(writer.get("snd_pcm_delay_frames"), "snd_pcm_delay_frames"),
+        _integer(writer.get("frames_written"), "frames_written", positive=True),
+        _integer(mix.get("reference_sequence"), "reference_sequence", positive=True),
+        tuple(_integer(writer.get(name), name) for name in _COUNTERS),
+    )
+
+
+def collect_reference_queue(
+    expected_pcm: str,
+    *,
+    socket_path: str = OUTPUTD_STATUS_SOCKET,
+    interval: float = 0.25,
+    timeout: float = 30.0,
+) -> tuple[dict[str, Any], tuple[int, ...]]:
+    """Collect eight progressing samples with stable counters and queue."""
+
+    deadline = time.monotonic() + timeout
+    accepted: list[ReferenceSample] = []
+    last_error = "no STATUS response"
+    while time.monotonic() < deadline:
+        try:
+            status = read_status_socket(socket_path)
+            sample = validate_reference_status(status, expected_pcm=expected_pcm)
+            if accepted and (
+                sample.frames <= accepted[-1].frames
+                or sample.sequence <= accepted[-1].sequence
+                or sample.counters != accepted[0].counters
+            ):
+                raise ChipInitError("chip-reference writer did not progress cleanly")
+        except (OSError, ValueError, ChipInitError) as exc:
+            accepted.clear()
+            last_error = str(exc)
+        else:
+            accepted.append(sample)
+            if len(accepted) == 8:
+                delays = tuple(item.delay for item in accepted)
+                if max(delays) - min(delays) <= 16:
+                    return status, delays
+                accepted.clear()
+                last_error = "chip-reference queue is unstable"
+        time.sleep(interval)
+    raise ChipInitError(f"native chip-reference writer not ready: {last_error}")
+
+
+def _chip_text(dev, name: str) -> str:
+    values = dev.read(name)
+    text = "".join(str(value) for value in values).replace("\x00", "").strip()
+    if not text:
+        raise ChipInitError(f"XVF {name} is empty")
+    return text
+
+
+def xvf_factory_serial(dev) -> str:
     try:
-        dev.write(param, values)
-        log_event(
-            logger,
-            "chip_profile_write",
-            param=param,
-            values=values,
-            verified=0,
-        )
-    except Exception as e:  # noqa: BLE001
-        log_event(
-            logger,
-            "chip_profile_write_failed",
-            param=param,
-            error=e,
-            level=logging.WARNING,
-        )
+        serial = dev.factory_serial()
+    except Exception as exc:  # noqa: BLE001 - normalize the host-wrapper failure
+        raise ChipInitError(f"XVF factory identity is unavailable: {exc}") from exc
+    if not isinstance(serial, str) or not serial.strip():
+        raise ChipInitError("XVF factory identity is unavailable")
+    return serial.strip()
 
 
-def _apply_required_profile(
+def output_hardware_key(
+    source: Mapping[str, str],
+    state: output_hardware.OutputHardwareState | None = None,
+) -> str:
+    output_id = source.get("JASPER_AUDIO_DAC_ID", "").strip()
+    profile = dac_registry.by_id(output_id)
+    snapshot = (
+        output_hardware.load_state(
+            source.get("JASPER_OUTPUT_HARDWARE_STATE_PATH") or None
+        )
+        if state is None
+        else state
+    )
+    if profile is None:
+        raise ChipInitError("output profile identity is unknown")
+    if snapshot is None:
+        raise ChipInitError("output hardware identity is unavailable")
+    if snapshot.status != "ready" or snapshot.profile_id != output_id:
+        raise ChipInitError("output hardware identity does not match the active profile")
+    if not snapshot.selected_card_id:
+        raise ChipInitError("output hardware card identity is unavailable")
+    if profile.connection == "i2s":
+        return f"i2s:{output_id}:{snapshot.selected_card_id}"
+
+    selected = tuple(
+        child
+        for child in snapshot.child_devices
+        if child.card_id == snapshot.selected_card_id
+    )
+    if len(selected) != 1 or not selected[0].serial:
+        raise ChipInitError("USB output factory identity is unavailable")
+    return f"usb-serial:{selected[0].serial}"
+
+
+def build_identity(
     dev,
-    profile: Sequence[tuple[str, list[int | float]]],
-) -> None:
-    for param, values in profile:
-        _write_required(dev, param, values)
+    plan: xvf3800.ChipBeamPlan,
+    status: Mapping[str, Any],
+    *,
+    env: Mapping[str, str] | None = None,
+    output_state: output_hardware.OutputHardwareState | None = None,
+) -> AlignmentIdentity:
+    source = os.environ if env is None else env
+    dac = _mapping(status.get("dac"), "dac")
+    sink = status.get("sink_mode")
+    pcm = dac.get("pcm")
+    if not isinstance(sink, str) or not isinstance(pcm, str):
+        raise ChipInitError("outputd output identity is incomplete")
+    try:
+        return AlignmentIdentity(
+            xvf_variant=source.get("JASPER_XVF_VARIANT", ""),
+            xvf_serial=xvf_factory_serial(dev),
+            xvf_firmware=_chip_text(dev, "BLD_REPO_HASH"),
+            beam_plan=plan.plan_id,
+            fixed_profile=xvf3800.chip_aec_fixed_profile_fingerprint(plan),
+            output_id=source.get("JASPER_AUDIO_DAC_ID", ""),
+            output_hardware_key=output_hardware_key(source, output_state),
+            output_pcm=f"{sink}:{pcm}",
+            output_rate=_integer(dac.get("sample_rate"), "dac.sample_rate", positive=True),
+            # outputd treats an unset or blank active width as the ordinary
+            # two-channel sink; preserve that identity contract here.
+            output_channels=int(
+                source.get("JASPER_OUTPUTD_ACTIVE_CHANNELS", "").strip() or "2"
+            ),
+            output_period=_integer(dac.get("period_frames"), "dac.period_frames", positive=True),
+            output_buffer=_integer(dac.get("buffer_frames"), "dac.buffer_frames", positive=True),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ChipInitError(f"live alignment identity is invalid: {exc}") from exc
 
 
-def _corpus_profile_with_delay(
+def _matches(expected: Sequence[int | float], actual: object) -> bool:
+    if not isinstance(actual, Sequence) or isinstance(actual, str | bytes):
+        actual = (actual,)
+    return len(expected) == len(actual) and all(
+        abs(float(want) - float(got)) <= (1e-4 if isinstance(want, float) else 0)
+        for want, got in zip(expected, actual, strict=True)
+    )
+
+
+def write_required(dev, name: str, values: list[int | float]) -> None:
+    try:
+        dev.write(name, values)
+        actual = dev.read(name)
+    except Exception as exc:  # noqa: BLE001
+        raise ChipProfileError(f"{name}={values} failed: {exc}") from exc
+    if not _matches(values, actual):
+        raise ChipProfileError(f"{name} readback mismatch: {actual!r}")
+
+
+def set_uac_unity(card: str) -> None:
+    for control in ("PCM,0", "PCM,1"):
+        result = subprocess.run(
+            ["amixer", "-c", card, "sset", control, "60", "unmute"],
+            capture_output=True,
+            text=True,
+        )
+        readback = subprocess.run(
+            ["amixer", "-c", card, "sget", control],
+            capture_output=True,
+            text=True,
+        )
+        lines = [
+            line
+            for line in readback.stdout.splitlines()
+            if "Playback " in line and "[" in line
+        ]
+        if result.returncode or readback.returncode or not lines or any(
+            _MIXER_UNITY.search(line) is None for line in lines
+        ):
+            raise ChipProfileError(f"{control} did not verify at 0 dB/unmuted")
+
+
+def apply_profile(
+    dev,
     plan: xvf3800.ChipBeamPlan,
     sys_delay: int,
-) -> tuple[tuple[str, list[int | float]], ...]:
-    return tuple(
-        (param, [sys_delay] if param == "AUDIO_MGR_SYS_DELAY" else values)
-        for param, values in _chip_corpus_profile(plan)
-    )
+    *,
+    card: str,
+    arm: bool = True,
+) -> None:
+    profile = xvf3800.chip_aec_profile_commands(plan, sys_delay=sys_delay)
+    if profile[0] != ("SHF_BYPASS", [1]) or profile[-1] != ("SHF_BYPASS", [0]):
+        raise ChipProfileError("canonical profile is not SHF-bracketed")
+    for name, values in profile[:-1]:
+        write_required(dev, name, values)
+    set_uac_unity(card)
+    if arm:
+        write_required(dev, *profile[-1])
+
+
+def _safe_bypass(dev) -> None:
+    try:
+        write_required(dev, "SHF_BYPASS", [1])
+    except ChipProfileError:
+        pass
+
+
+def apply_bypass_profile(dev, *, card: str) -> None:
+    for name, values in xvf3800.CHIP_AEC_BYPASS_PROFILE_COMMANDS:
+        write_required(dev, name, values)
+    set_uac_unity(card)
+
+
+def _find_device(xvf_host):
+    for _ in range(10):
+        device = xvf_host.find()
+        if device is not None:
+            return device
+        time.sleep(1)
+    raise ChipInitError("XVF3800 did not enumerate")
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s aec-init %(levelname)s %(message)s",
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s aec-init %(levelname)s %(message)s")
+    corpus = _truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")
+    mode = (
+        "corpus"
+        if corpus
+        else "chip_aec"
+        if _truthy("JASPER_AEC_CHIP_AEC_ENABLED")
+        else "lab_bypass"
     )
-
-    # Lazy import — pyusb pulls in libusb at module load. If the
-    # XVF isn't plugged in, we want to log a clean error, not crash
-    # the systemd unit on import.
-    try:
-        from ..xvf import xvf_host
-    except Exception as e:  # noqa: BLE001
-        logger.error("xvf_host import failed: %s", e)
-        return 1
-
-    # The chip can take a few seconds to enumerate after boot. Retry
-    # the find() up to 10 times with 1 sec backoff.
     dev = None
-    for attempt in range(10):
-        try:
-            dev = xvf_host.find()
-        except xvf_host.XvfControlError as e:
-            log_event(
-                logger,
-                "xvf_control_unavailable",
-                error=e,
-                level=logging.ERROR,
-            )
-            return 1
-        if dev is not None:
-            break
-        logger.info("XVF3800 not yet on USB, retrying (%d/10)", attempt + 1)
-        time.sleep(1)
-    if dev is None:
-        logger.error(
-            "XVF3800 (VID:PID %s) not found after 10 sec",
-            "/".join(xvf3800.USB_VID_PIDS),
-        )
-        return 1
-
     try:
-        version = dev.read("VERSION")
-        logger.info("XVF3800 firmware version: %s", ".".join(str(v) for v in version))
+        from jasper.xvf import xvf_host
 
-        # NB: no REBOOT here. The writes below are idempotent and
-        # overwrite the chip's current state directly; the prior
-        # REBOOT step is removed because it triggered a USB
-        # renumeration feedback loop with the controlC* udev rule.
-        # See docs/HANDOFF-aec.md "Lessons learned" #9.
-
-        corpus_chip_aec = _env_truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")
-        production_chip_aec = _env_truthy("JASPER_AEC_CHIP_AEC_ENABLED")
-        if corpus_chip_aec or production_chip_aec:
-            beam_plan = _chip_beam_plan()
-            if beam_plan is None:
-                log_event(
-                    logger,
-                    "chip_profile_failed",
-                    mode="corpus" if corpus_chip_aec else "chip_aec",
-                    error="no validated chip beam plan for detected XVF geometry",
-                    level=logging.ERROR,
+        dev = _find_device(xvf_host)
+        card = xvf3800.alsa_card_name()
+        if mode == "chip_aec":
+            plan = xvf3800.chip_beam_plan_from_env(os.environ)
+            if plan is None:
+                raise ChipInitError(
+                    "detected XVF has no validated production beam plan"
                 )
-                return 1
-            mode = "corpus" if corpus_chip_aec else "chip_aec"
-            delay_env = (
-                "JASPER_AEC_CORPUS_CHIP_SYS_DELAY"
-                if corpus_chip_aec else "JASPER_AEC_CHIP_SYS_DELAY"
-            )
-            sys_delay = int(os.environ.get(delay_env, "12"))
-            logger.info(
-                "applying chip-AEC %s profile "
-                "(beam_plan=%s, sys_delay=%d)",
-                mode, beam_plan.plan_id, sys_delay,
-            )
             try:
-                _apply_required_profile(
-                    dev,
-                    _corpus_profile_with_delay(beam_plan, sys_delay),
-                )
-            except ChipProfileError as e:
-                log_event(
-                    logger,
-                    "chip_profile_failed",
-                    mode=mode,
-                    error=e,
-                    level=logging.ERROR,
-                )
-                return 1
+                artifact = load_artifact()
+            except (OSError, ValueError) as exc:
+                raise CommissionRequired(str(exc)) from exc
+            status, queue = collect_reference_queue(native_reference_pcm(card))
+            identity = build_identity(dev, plan, status)
+            if artifact.identity != identity:
+                raise CommissionRequired("artifact identity does not match live hardware")
+            try:
+                delay = runtime_sys_delay(artifact.k_samples, queue)
+            except ValueError as exc:
+                raise ChipInitError(str(exc)) from exc
+            apply_profile(dev, plan, delay, card=card)
             log_event(
                 logger,
-                "chip_profile_applied",
-                mode=mode,
-                shf_bypass=0,
-                sys_delay=sys_delay,
-                op_l="7,0",
-                op_r="7,1",
+                "chip_aec_init",
+                outcome="ready",
+                sys_delay=delay,
+                k_samples=artifact.k_samples,
+                queue_median=median_samples(queue),
+                queue_spread=max(queue) - min(queue),
+            )
+        elif mode == "corpus":
+            plan = xvf3800.chip_beam_plan_from_env(os.environ)
+            if plan is None:
+                raise ChipInitError(
+                    "detected XVF has no validated lab beam plan"
+                )
+            delay = int(os.environ.get("JASPER_AEC_CORPUS_CHIP_SYS_DELAY", "12"))
+            apply_profile(dev, plan, delay, card=card)
+            log_event(
+                logger,
+                "chip_aec_init",
+                outcome="ready",
+                mode="corpus",
+                sys_delay=delay,
             )
         else:
-            # Restore the software-AEC fallback profile. SHF_BYPASS=1
-            # removes the AEC adaptive filter from the signal path on
-            # channels 0/1. Empirically this bypasses the SHF
-            # post-processing path too, so channels 0/1 are raw-ish chip
-            # feeds; software AEC3 in jasper-aec-bridge handles fallback
-            # cancellation when chip-AEC is unavailable or disabled.
-            # Also restore the output mux and corpus-only beam/AEC
-            # switches that wake-corpus mode writes. These commands are
-            # volatile, but "exit corpus mode" must be deterministic
-            # without requiring a reboot.
-            try:
-                _apply_required_profile(dev, _CHIP_PRODUCTION_PROFILE)
-            except ChipProfileError as e:
-                log_event(
-                    logger,
-                    "chip_profile_failed",
-                    mode="production",
-                    error=e,
-                    level=logging.ERROR,
-                )
-                return 1
-            log_event(
-                logger,
-                "chip_profile_applied",
-                mode="production",
-                shf_bypass=1,
-                op_l="8,0",
-                op_r="8,0",
-            )
-
-        # Apply chip-side HPF on the mic signal. Lives at mic ingress
-        # in the chip pipeline (before AEC, BF, NS). The HPF affects
-        # the processed output channels (0/1) — which is now what
-        # the bridge captures (see jasper/mics/xvf3800.py
-        # MIC_CHANNEL_INDEX=1). XMOS default for smart-speaker
-        # presets is on125 (125 Hz, 4th-order Butterworth).
-        hpf_hz = os.environ.get("JASPER_AEC_CHIP_HPF_HZ", _DEFAULT_CHIP_HPF_HZ).strip()
-        hpf_value = _CHIP_HPF_MAP.get(hpf_hz.lower())
-        if hpf_value is None:
-            logger.warning(
-                "JASPER_AEC_CHIP_HPF_HZ=%r is not one of %s; "
-                "falling back to default %s Hz",
-                hpf_hz, sorted(_CHIP_HPF_MAP.keys()), _DEFAULT_CHIP_HPF_HZ,
-            )
-            hpf_value = _CHIP_HPF_MAP[_DEFAULT_CHIP_HPF_HZ]
-            hpf_hz = _DEFAULT_CHIP_HPF_HZ
-        try:
-            dev.write("AEC_HPFONOFF", [hpf_value])
-            logger.info(
-                "XVF AEC_HPFONOFF set to %s (%s)",
-                hpf_value, "off" if hpf_value == 0 else f"{hpf_hz} Hz",
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "AEC_HPFONOFF write failed: %s; chip will use its default", e,
-            )
-
-        # Set chip's UAC2 PCM playback to 0 dB unity. The chip's
-        # default for these mixer controls is ~-20 dB. The XVF
-        # firmware auto-mirrors the host's UAC volume into
-        # AEC_FAR_EXTGAIN which used to matter when we relied on
-        # chip AEC. Now software AEC ignores the chip's USB-IN, but
-        # the convention is still cleaner with PCM at unity.
-        card = xvf3800.alsa_card_name()
-        for ctl in ("PCM,0", "PCM,1"):
-            r = subprocess.run(
-                ["amixer", "-c", card, "sset", ctl, "60", "unmute"],
-                capture_output=True, text=True,
-            )
-            if r.returncode != 0:
-                logger.warning("amixer set %s failed: %s", ctl, r.stderr.strip())
-        logger.info("XVF UAC2 PCM volume set to 0 dB unity")
+            # Only explicit custom/lab routing reaches this path.
+            apply_bypass_profile(dev, card=card)
+            log_event(logger, "chip_aec_init", outcome="bypassed", mode=mode)
+        return 0
+    except CommissionRequired as exc:
+        if dev is not None:
+            _safe_bypass(dev)
+        log_event(
+            logger, "chip_aec_init", outcome="parked",
+            reason=str(exc), action="run jasper-aec-commission", level=logging.ERROR,
+        )
+        return COMMISSION_REQUIRED_EXIT
+    except Exception as exc:  # noqa: BLE001
+        if dev is not None:
+            _safe_bypass(dev)
+        log_event(
+            logger, "chip_aec_init", outcome="failed", reason=str(exc),
+            action="inspect jasper-aec-init and outputd", level=logging.ERROR,
+        )
+        return 1
     finally:
-        try:
-            dev.dev.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-    return 0
+        if dev is not None:
+            try:
+                if hasattr(dev, "close"):
+                    dev.close()
+                else:
+                    dev.dev.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 if __name__ == "__main__":

@@ -104,8 +104,8 @@ def test_marker_present_is_absent(paths: tuple[Path, Path]) -> None:
     assert mp.parked is True
     assert mp.absent_confirmed is True
     assert mp.reason == "no candidate microphone present"
-    assert "not detected" in mp.summary
-    assert "auto-starts" in mp.summary
+    assert "input unavailable" in mp.summary
+    assert "reconciles automatically" in mp.summary
 
 
 def test_marker_wins_over_stale_xvf_json(paths: tuple[Path, Path]) -> None:

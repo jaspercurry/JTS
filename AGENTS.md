@@ -1926,17 +1926,19 @@ JASPER_WAKE_LEG_DTLN=0
 JASPER_WAKE_LEG_CHIP_AEC=0
 ```
 
-`auto` resolves to the XVF3800 chip-AEC profile when the configured
-AEC mic is present with 6-channel firmware and the active output DAC's
-chip-AEC gate is approved. In that profile the bridge forwards the
-chip-AEC beam to `:9876`, emits fixed 150°/210° chip beams on
-`:9887`/`:9888`, and does **not** stack software raw/DTLN wake legs.
-When chip-AEC is unavailable, `auto` falls back to `xvf_software_aec3`
-(AEC3 on `:9876`, raw wake fallback on `:9877`, DTLN off).
-`xvf_chip_aec_testing` is the explicit operator path for validating an
-unapproved DAC with chip-AEC; `auto` never selects testing. `direct_mic`
-disables the bridge. `custom` preserves the low-level leg booleans
-exactly for corpus tests and nonstandard hardware.
+When a managed XVF3800 is present, every ordinary profile selection resolves
+to the one canonical chip-AEC profile. It is armed only when 6-channel
+firmware, the output gate, and the persisted alignment artifact all verify.
+Otherwise the reconciler parks the microphone with a reason and operator
+action; it never silently selects AEC3 or direct microphone capture. In the
+active profile the bridge forwards the primary chip-AEC beam to `:9876`,
+emits fixed 150°/210° beams on `:9887`/`:9888` only when explicitly enabled,
+and does **not** stack software raw/DTLN wake legs.
+
+For non-XVF microphones, `auto` can still resolve to software AEC3 and
+`direct_mic` disables the bridge. `custom` is the sole explicit low-level
+lab/corpus escape hatch, preserves the leg booleans exactly, and is the only
+profile allowed to bypass managed-XVF chip-or-park policy.
 
 ### Wake-detection legs — custom sub-toggles
 
@@ -1985,7 +1987,7 @@ picker, which preserves the threshold on model save). Edit point is
 - `GET /aec` → profile selection, resolved/active audio profile,
   bridge state, effective legs, raw legacy intent, threshold, mic
   status, and validation summary.
-- `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_chip_aec_testing"|"xvf_software_aec3"|"direct_mic"}` → set canonical profile.
+- `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_chip_aec_testing"|"xvf_software_aec3"|"direct_mic"}` → save profile intent. On a managed XVF, every non-`custom` intent still resolves through chip-or-park policy.
 - `POST /aec/toggle` → custom software-AEC3/direct-mic flip; rejected while
   chip-AEC is using the bridge as its carrier
 - `POST /aec/leg` body `{leg: "raw"|"dtln"|"chip_aec", enabled: bool}` → flip one custom leg
@@ -2024,10 +2026,10 @@ HTTP endpoints write the config file and kick
 
 ### Engine architecture — do not re-architect
 
- README's
-"Acoustic echo cancellation" section covers the engines: XVF3800
-chip-AEC for the recommended profile, and WebRTC AEC3 via the
-`jasper_aec3` pybind11 binding as fallback/custom software profile
+[README.md](README.md)'s "Acoustic echo cancellation" section covers the
+engines: XVF3800
+chip-AEC for the managed profile, and WebRTC AEC3 via the
+`jasper_aec3` pybind11 binding for non-XVF/custom software profiles
 (BEST_A tuning since 2026-05, with prior REF_GAIN/MIC_GAIN
 measurements showing −15 to −18 dB on music). The WebRTC path costs
 ~+85 MB Pss and ~+3% of one Pi 5 core (per the resource table at the
@@ -2052,31 +2054,17 @@ Targeted single-knob OS-layer fixes (a specific ALSA
 acceptable when measurement has localized the root cause to that
 layer — what's rejected is speculative re-architecture.
 
-**One scoped carve-out: chip-AEC with USB-IN reference (Option D) —
-now being promoted to a wake leg.** The "no chip AEC" rejection above
-was for the variants we *tested* — none of which fed music to the
-chip's USB-IN as the AEC reference. That specific variant (mono music →
-chip USB-IN → chip HW AEC → mic via chip USB-OUT, with mic and reference
-clocks sharing the chip's USB Adaptive Mode PLL) was measured in a
-2026-05-29 lab pass and works. Its infrastructure lives at
-[`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) +
-`scripts/chip-aec-*.sh` + `jasper/chip_aec_experiment.py`. **The chip's
-fixed 150°/210° ASR beams (`chip_aec_150`/`chip_aec_210`) are now the
-recommended 6-channel XVF3800 production profile and remain
-hardware-conditional scored wake legs** — see
-[`docs/HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
-§2.4 and the `JASPER_AUDIO_INPUT_PROFILE` policy above. The leg
-registry/config/telemetry, production `jasper-aec-init` chip profile,
-bridge Option-A `:9876` repoint, and profile selector have landed.
-The carve-out
-stays **narrow**: it does not re-open PipeWire, dual-USB-sink, or custom
-firmware, and the "architecture is fixed; swap the engine, not the
-topology" rule still binds everywhere else — the chip-AEC profile rides
-the existing reference→engine→UDP→voice topology (it adds scored beam legs and
-forwards the chip beam into the existing `:9876` carrier; it does not
-re-architect the bridge).
+**The scoped chip-AEC path is now production.** The successful Option D
+variant feeds the final speaker buffer to the chip's native USB-IN reference.
+Managed XVFs use one fixed, commissioned profile with the primary chip beam on
+`:9876`; 150°/210° beam outputs remain conditional diagnostic/corpus legs.
+The current lifecycle and evidence contract lives in
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md); the dated experiment is
+historical archaeology only. This does not re-open PipeWire, dual-USB-sink,
+custom firmware, or an alternate managed-XVF engine.
 
-**Three layered bridge bugs were fixed on 2026-05-19.** Together
+**Software-AEC3 history (non-XVF and explicit `custom` routes).** Three
+layered bridge bugs were fixed on 2026-05-19. Together
 they had been silently corrupting AEC's reference signal since
 the bridge shipped: (1) ALSA's linear resampler dropping HF
 content in the 44.1→48 plug; (2) `_aec_loop` falling back to
@@ -2115,12 +2103,11 @@ Knobs (env-controllable, `/etc/jasper/jasper.env`):
 - `JASPER_AEC_AGC2` documented as no-op on this libwebrtc;
   recommended off
 
-Bridge startup log confirms the live config:
+Software-AEC3 bridge startup logs confirm the live config:
 `engine=aec3 ns=on/low agc1=on(target=9,max=18dB) agc2=off ...`
 
-**Prerequisite**: the XVF chip must be on the 6-channel firmware
-variant — the bridge opens the 6-channel USB capture endpoint and
-reads the ASR beam on channel 1. The known-good
+**Managed-XVF prerequisite**: the chip must be on the supported 6-channel
+firmware variant. The known-good
 filename + repo hash are tracked in
 [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py); as of
 2026-05-15 that's `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin`,
@@ -2143,21 +2130,19 @@ The reconciler also self-heals the post-flash ALSA mixer mute trap
 reboot via `alsactl restore`); `jasper-doctor` flags drift under
 "XVF mixer state".
 
-To enable on the Pi (assumes 6-ch firmware already flashed):
+To reconcile a managed XVF (after flashing supported firmware), run:
 
 ```sh
-printf 'JASPER_AEC_MODE=auto\n' | sudo tee /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
 ```
 
-`install.sh` enables and runs `jasper-aec-reconcile` automatically.
-The reconciler is the source of truth for AEC mode: in `auto`, it
-selects `JASPER_MIC_DEVICE=udp:9876` only when the configured AEC mic
-(`JASPER_AEC_MIC_DEVICE`, default `Array`) is present with 6-channel
-firmware. If the Array is absent after a previous AEC-enabled boot, it
-clears stale UDP back to a direct mic candidate and stops voice rather
-than letting it watchdog-loop on an unfed socket. Future direct mics can
-be added to `JASPER_MIC_DEVICE_CANDIDATES` without changing this logic.
+`install.sh` enables and runs the reconciler automatically. It selects
+`JASPER_MIC_DEVICE=udp:9876` only when the managed XVF, fixed profile,
+output reference, and commissioned alignment all verify. Otherwise it parks
+voice with an actionable status. A missing managed mic never leaves voice
+watchdog-looping on stale UDP; a present-but-unsupported managed XVF never
+falls through to a direct candidate. Non-XVF microphones retain their
+software-AEC3/direct resolution.
 
 **No-mic park is gated, not just stopped.** The reconciler is also the
 single writer of a persistent **negative** marker
@@ -2183,23 +2168,18 @@ May 2026; the prior snd-aloop `LoopbackAEC` topology was retired
 for resilience reasons — see
 [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md).
 
-To disable:
+The managed product route is not disabled by selecting a software/direct or
+testing-labeled profile: every non-`custom` intent still resolves through
+chip-or-park policy. The sole low-level lab/corpus escape is explicit
+`JASPER_AUDIO_INPUT_PROFILE=custom`.
 
-```sh
-printf 'JASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
-sudo systemctl start jasper-aec-reconcile
-```
-
-Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.
-
-These commands are duplicated in
-[`BRINGUP.md` "Optional: Software AEC bridge"](BRINGUP.md#optional-software-aec-bridge)
-— keep both in sync.
+Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor`.
 
 The chip control library (`jasper.xvf.xvf_host`) is useful for
-diagnostics regardless of bridge state. **Never call
-`SAVE_CONFIGURATION`** — brick hazard on certain firmware
-versions (respeaker repo issue #8).
+read-only diagnostics regardless of bridge state. Runtime profile writes and
+the one volatile reset belong to `jasper-aec-init` and the foreground
+commissioner respectively. **Never call `SAVE_CONFIGURATION`** — brick hazard
+on certain firmware versions (respeaker repo issue #8).
 
 ---
 
@@ -2216,12 +2196,14 @@ Full design, schema, queries:
 
 ### Enable multi-leg wake OR-gate
 
-Normal operator path: use `http://jts.local/wake/`. Pick a profile
-(`auto`, `xvf_chip_aec`, `xvf_chip_aec_testing`,
-`xvf_software_aec3`, `direct_mic`) first;
-only use the advanced `raw`, `dtln`, and `chip_aec` layer switches for
-custom/corpus work. The page stamps `JASPER_AUDIO_INPUT_PROFILE=custom`
-when a layer switch changes, then calls jasper-control.
+Normal operator path: use `http://jts.local/wake/`. Managed XVFs use `auto`
+or `xvf_chip_aec`; non-XVF microphones may use `xvf_software_aec3` or
+`direct_mic`. `xvf_chip_aec_testing` remains a compatibility profile name,
+not a policy bypass. Only use the advanced `raw`, `dtln`, and `chip_aec`
+layer switches for custom/corpus work. The page stamps
+`JASPER_AUDIO_INPUT_PROFILE=custom` when a layer switch changes, then calls
+jasper-control. A managed XVF ignores every non-`custom` attempt to select
+software AEC3 or direct capture and remains on the chip-or-park path.
 
 Automation path: call `POST /aec/leg` on jasper-control, for example:
 

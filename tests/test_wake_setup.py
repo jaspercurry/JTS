@@ -517,7 +517,7 @@ def test_index_html_chip_aec_controls_are_advanced_not_primary():
     html = wake_setup._index_html({}).decode()
     assert "Extra chip beam 150" in html
     assert "Extra chip beam 210" in html
-    assert "Hardware AEC validation mode" in html
+    assert "Legacy hardware AEC test intent" in html
     assert "Advanced wake fusion" in html
 
 

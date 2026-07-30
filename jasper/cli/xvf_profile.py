@@ -47,6 +47,19 @@ def _env_lines(payload: dict[str, object]) -> str:
         ),
         "JASPER_XVF_RECOMMENDED_PROFILE": str(payload["recommended_profile"] or ""),
         "JASPER_XVF_REASON": str(payload["reason"] or ""),
+        "JASPER_XVF_CHIP_REF_PCM_ACCESS": xvf3800.CHIP_AEC_REFERENCE_PCM_ACCESS,
+        "JASPER_XVF_CHIP_REF_DEVICE": str(
+            xvf3800.CHIP_AEC_REFERENCE_DEVICE_INDEX
+        ),
+        "JASPER_XVF_CHIP_REF_RATE": str(
+            xvf3800.CHIP_AEC_REFERENCE_SAMPLE_RATE_HZ
+        ),
+        "JASPER_XVF_CHIP_REF_PERIOD": str(
+            xvf3800.CHIP_AEC_REFERENCE_PERIOD_FRAMES
+        ),
+        "JASPER_XVF_CHIP_REF_BUFFER": str(
+            xvf3800.CHIP_AEC_REFERENCE_BUFFER_FRAMES
+        ),
     }
     return "".join(
         f"{key}={shlex.quote(value)}\n"

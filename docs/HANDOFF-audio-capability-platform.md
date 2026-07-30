@@ -49,10 +49,12 @@ and the wake-corpus recorder.
 
 The product direction:
 
-1. **Different DACs should be usable.** JTS should detect or validate
-   whether a DAC can support chip-AEC. If yes, use chip-AEC where it
-   wins. If no, fall back cleanly to software AEC3 without leaving the
-   user in a half-enabled state. DAC role detection is event-driven:
+1. **Different DACs should be usable.** JTS should detect and commission
+   whether a DAC can support chip-AEC. With a managed XVF, success selects
+   the fixed chip profile and failure parks with an action; a DAC label,
+   testing profile, or software/direct intent never bypasses that gate.
+   Software AEC3/direct fallback remains available when the detected
+   microphone is not a managed XVF. DAC role detection is event-driven:
    install and boot run one reconcile pass, and udev `controlC*`
    add/remove/change events trigger the same output-hardware reconciler
    for USB DAC changes. Apple USB-C DAC removal also has a USB-device
@@ -85,9 +87,10 @@ The foundation is partly built:
 - `jasper-aec-reconcile` is the hardware/state policy layer. It maps
   user intent from `/var/lib/jasper/aec_mode.env` into runtime env
   for voice, bridge, init, and outputd.
-- `jasper-aec-init` owns volatile XVF3800 profile writes and read-back
-  verification. It must never persist chip writes with
-  `SAVE_CONFIGURATION` / `REBOOT` during normal tuning.
+- `jasper-aec-init` owns volatile XVF3800 fixed-profile writes and read-back
+  verification. It never resets the chip or persists writes. The explicit
+  foreground commissioner owns the single volatile reset; nothing calls
+  `SAVE_CONFIGURATION`.
 - `jasper-aec-bridge` owns mic capture, WebRTC AEC3, optional DTLN,
   chip-AEC beam forwarding, UDP leg emission, and corpus-only streams.
 - `jasper-outputd` owns final DAC playback and, in chip-AEC mode,
@@ -110,10 +113,10 @@ The foundation is partly built:
   reboot requirement). `/state`,
   `/sound/output-topology`, and `jasper-doctor` consume that artifact
   instead of each reconstructing DAC semantics from raw env/card names.
-- `jasper/chip_aec_policy.py` is the shared chip-AEC gate: static DAC
-  qualification from the DAC registry, optional live outputd
-  `aec_clock` evidence, and explicit testing-profile intent collapse into
-  one `approved` / `testing` / `needs_calibration` answer. The AEC
+- `jasper/chip_aec_policy.py` classifies static DAC qualification and
+  optional live outputd `aec_clock` evidence. Its legacy testing vocabulary
+  is status only: for a managed XVF, neither a testing label nor a software/
+  direct profile request bypasses commissioned chip-or-park policy. The AEC
   reconciler writes that answer into `/etc/jasper/jasper.env`; `/aec`,
   `/state`, `jasper-doctor`, and audio-validation checks consume it.
 - `jasper/voice/input_policy.py` is the first provider-facing consumer
@@ -123,6 +126,8 @@ The foundation is partly built:
   preprocessing such as OpenAI `noise_reduction=auto` from that contract.
   This keeps provider adapters from hard-coding mic/DAC special cases:
   they receive a resolved provider policy, not raw hardware guesses.
+  `xvf_software_aec3` is retained as compatibility vocabulary; ordinary
+  managed-XVF resolution cannot activate it.
 - `jasper/audio_validation.py` owns schema-v1 audio-validation
   artifacts at `/var/lib/jasper/audio-validation/`. Artifacts are
   immutable timestamped JSON files keyed by mic/DAC/profile/status;
@@ -203,13 +208,15 @@ The gaps are exactly where future hardware support would hurt:
    yet, `bridge_role=pending` is the honest answer; a live bridge
    process alone is not proof that WebRTC AEC3 is running on the
    detected mic.
-3. **Validation artifacts are product state.** DAC drift checks,
-   chip-profile read-backs, outputd reference health, and mic level
-   sanity should persist as small timestamped JSON artifacts, not just
-   scroll by in journald.
-4. **Fallback is a first-class path.** Unsupported or unvalidated
-   chip-AEC should deliberately land on WebRTC AEC3 or direct mic
-   capture, not a silent half-mode.
+3. **Persist only the state needed to reproduce a product decision.**
+   Managed-XVF activation uses one compact identity + timing artifact;
+   commissioning evidence is reported to the operator but is not a generic
+   evidence database or a second activation authority. Broader timestamped
+   audio-validation reports remain diagnostic evidence for other hardware.
+4. **Disposition is first-class.** A managed XVF either activates its
+   commissioned fixed chip profile or parks with a reason and action.
+   WebRTC AEC3/direct fallback remains first-class for non-XVF microphones;
+   explicit `custom` is the only managed-XVF lab escape.
 5. **Profiles are declarations, not imperative scripts.** A profile
    should say "use chip-AEC 150/210, session carrier on :9876, no raw
    or DTLN" and the reconciler/producers make it true.
@@ -241,7 +248,8 @@ Facts about a mic family or detected mic instance:
 - whether it needs software reference for AEC3
 - whether it has hardware AEC and what profile writes enable it
 - known resource implications
-- safe fallback mode if preferred mode fails
+- safe disposition if the preferred mode fails (managed XVF:
+  actionable park; non-XVF: declared software/direct fallback)
 
 For XVF3800 this starts as additions around `jasper/mics/xvf3800.py`,
 not a new generic base class.
@@ -258,7 +266,8 @@ Facts about the output device relevant to AEC:
 - chip-AEC viability: `unknown`, `validated`, `failed`, or
   `not_applicable`
 - validation artifact path and timestamp
-- fallback recommendation
+- failure disposition (managed XVF: actionable park; non-XVF: fallback
+  recommendation)
 
 For USB DACs, descriptors and `/proc/asound/*/stream0` are hints. The
 decisive gate is still measured drift/delay stability, as documented in
@@ -270,12 +279,12 @@ A declarative runtime profile:
 
 | Profile | Purpose |
 |---|---|
-| `auto` | Fresh-install default. Resolves to `xvf_chip_aec` when 6-channel XVF3800 chip-AEC is available; otherwise falls back to `xvf_software_aec3` / direct mic as the reconciler can support. |
-| `xvf_chip_aec` | Recommended XVF3800 hardware-AEC path: chip ASR beams, outputd USB-IN reference, no double-AEC/raw/DTLN stacking. |
-| `xvf_chip_aec_testing` | Explicit operator validation path for running chip-AEC on an unapproved DAC. Same physical mic/reference path as `xvf_chip_aec`, but surfaces gate status as `testing` and never affects `auto` approval. Validation artifacts still use the physical `xvf_chip_aec` profile key. |
-| `xvf_software_aec3` | XVF fallback path: raw-ish/ASR mic into WebRTC AEC3 with raw wake fallback, DTLN off by default. |
-| `direct_mic` | Basic custom-hardware path with the AEC bridge disabled. |
-| `custom` | Expert/corpus mode. Low-level `JASPER_WAKE_LEG_*` booleans own the leg set directly. |
+| `auto` | Fresh-install default. A managed XVF resolves to the commissioned fixed `xvf_chip_aec` path or actionable park. Non-XVF microphones may resolve to software AEC3/direct capture. |
+| `xvf_chip_aec` | Managed XVF3800 product path: fixed chip ASR beams, native outputd USB-IN reference, no double-AEC/raw/DTLN stacking. Requires supported hardware and commissioned alignment. |
+| `xvf_chip_aec_testing` | Legacy compatibility/testing label. It is not authority to run an uncommissioned or unapproved managed XVF; ordinary resolution remains chip-or-park. |
+| `xvf_software_aec3` | Compatibility/software profile for non-XVF use. A managed XVF cannot select it outside explicit `custom`. |
+| `direct_mic` | Basic non-XVF path with the AEC bridge disabled. A managed XVF cannot select it outside explicit `custom`. |
+| `custom` | Sole expert/lab/corpus escape. Low-level `JASPER_WAKE_LEG_*` booleans own the leg set directly. |
 | `generic_usb_software_aec3` | Generic mic path: mono mic + outputd/reference into WebRTC AEC3. |
 | `corpus_comparison` | Test-only profile that records many legs from the same utterance. |
 | `dac_validation` | Test-only profile for drift/delay/reference health measurement. |
@@ -428,9 +437,9 @@ that reports:
 
 - requested intent (`auto`, raw, DTLN, chip-AEC);
 - detected mic and firmware;
-- selected/applied profile (`xvf_software_aec3`, `xvf_chip_aec`,
-  `xvf_chip_aec_testing`,
-  `direct_mic`, `degraded`, etc.);
+- selected/applied profile and disposition (`xvf_chip_aec` or parked for a
+  managed XVF; software/direct/testing compatibility labels remain visible as
+  requested intent rather than bypassing policy);
 - active wake legs expected vs observed;
 - outputd reference outputs and health;
 - latest validation artifact status, if any.
@@ -455,7 +464,8 @@ Goal: make the current truth explicit without changing runtime behavior.
   - wake leg tokens/ports remain stable;
   - chip writes remain volatile and read-back-verified;
   - chip-AEC and raw/DTLN remain mutually exclusive on XVF;
-  - WebRTC AEC3 remains the fallback path.
+  - WebRTC AEC3 remains a non-XVF or explicit-`custom` path; managed XVF
+    remains chip-or-park.
 
 ### Phase 1 — Read-Only Runtime State
 
@@ -499,7 +509,8 @@ Goal: make mode transitions predictable.
   chosen profile.
 - Bridge/init/outputd consume profile-derived env, not independent
   ad-hoc flags.
-- `/wake/` shows profile intent, chosen profile, fallbacks, and why.
+- `/wake/` shows profile intent, chosen profile/disposition, and why; a
+  testing/software/direct label cannot bypass a managed-XVF park.
 
 ### Phase 4 — Corpus And Onboarding Reuse Profiles
 
@@ -515,7 +526,8 @@ Goal: make evidence collection match production.
   - say wake word several times;
   - JTS plays quiet/medium/loud noise or music;
   - score candidate profiles;
-  - recommend chip-AEC, software AEC3, or fallback.
+  - recommend chip-AEC or actionable park for a managed XVF; software
+    AEC3/direct fallback remains available for non-XVF hardware.
 
 ### Phase 5 — Second Mic / Second DAC Expansion
 
@@ -526,8 +538,9 @@ Goal: only now extract broader interfaces.
   need.
 - Add DAC-specific validation notes only where measurement proves they
   differ.
-- Keep unsupported hardware graceful: "works as direct mic",
-  "software AEC only", or "chip-AEC not validated."
+- Keep unsupported non-XVF hardware graceful: "works as direct mic" or
+  "software AEC only." A managed XVF without a supported, commissioned chip
+  profile is parked with a remediation action.
 
 ---
 
@@ -535,10 +548,10 @@ Goal: only now extract broader interfaces.
 
 ### Chip-AEC DAC Gate
 
-Use before recommending chip-AEC with a new or otherwise unproven DAC.
-The known XVF3800 + HiFiBerry DAC8x path already has passive production
-evidence and does not need to block normal operation on this optional
-advanced probe.
+Use before commissioning chip-AEC with a new or otherwise unproven DAC.
+Every managed-XVF installation still needs the foreground commissioner and
+its compact alignment artifact; a known DAC label or passive readiness result
+does not authorize activation.
 
 Pass criteria:
 
@@ -549,11 +562,12 @@ Pass criteria:
 - wake tests show chip beams add recall without unacceptable false
   accepts.
 
-Fail behavior:
+Fail behavior for a managed XVF:
 
-- keep or return to `xvf_software_aec3`;
-- mark chip-AEC unavailable for `auto` and surface the fallback reason;
-- preserve the validation artifact explaining why.
+- park voice and surface the exact commissioning/hardware action;
+- do not select `xvf_software_aec3`, `direct_mic`, or a testing-labeled
+  bypass;
+- preserve the compact alignment/hardware evidence explaining why.
 
 ### Generic Mic Software-AEC Gate
 
@@ -609,7 +623,7 @@ Doctor should distinguish:
 - configured but unvalidated
 - configured but failed validation
 - configured but hardware absent
-- degraded fallback active
+- degraded fallback active (non-XVF only; managed XVF reports parked)
 
 ---
 
@@ -622,8 +636,8 @@ user learn the architecture:
   capture profile, wake legs, and whether hardware AEC is available.
 - **Output/DAC card:** detected DAC, sample rate, chip-AEC validation
   state, last validation time.
-- **Mode card:** production / corpus test / validation / degraded
-  fallback.
+- **Mode card:** production / corpus test / validation / parked managed
+  XVF / degraded non-XVF fallback.
 - **Action buttons:** validate DAC, validate mic, enter corpus mode,
   return to production mode.
 
@@ -647,10 +661,11 @@ against clear metrics.
    configured outputd PCM today; a future DAC capability pass should
    persist stable USB/ALSA descriptor facts without trusting browser or
    hotplug labels blindly.
-3. **Teach profile selection to consume validation.** Missing/stale
-   chip-AEC validation remains advisory today. The current `auto` profile
-   uses live hardware readiness; a later selector should fold validation
-   freshness into recommendation text and fallback warnings.
+3. **Keep commissioning evidence authoritative.** Managed-XVF `auto`
+   already requires supported hardware plus the persisted alignment
+   artifact and parks on missing/invalid/unstable evidence. Future
+   capability work may enrich recommendation text for new hardware but
+   must not add a testing/software/direct bypass.
 4. **Extend wake-event parity.** Corpus metadata now carries validation
    status; wake-event rows should eventually include the same artifact id
    or timestamp for production telemetry analysis.
@@ -668,12 +683,17 @@ against clear metrics.
   budget.
 - No production mode that depends on corpus-only legs.
 - No persistent XVF chip writes during routine tuning or validation.
+- No XVF volatile reset outside the explicit foreground commissioner.
 
 ---
 
-Last verified: 2026-07-15 (DAC8x-only automatic crossover-commissioning
-capability and its two-way product gate checked hardware-free; output hardware
-`usb_data_role` boundary rechecked;
+Last verified: 2026-07-30 (managed-XVF chip-or-actionable-park policy,
+testing-label non-authority, custom-only lab escape, and commissioner-only
+volatile reset checked against `deploy/bin/jasper-aec-reconcile`,
+`jasper/cli/aec_init.py`, and `jasper/cli/aec_commission.py`. Prior
+2026-07-15: DAC8x-only automatic crossover-commissioning capability and its
+two-way product gate checked hardware-free; output hardware `usb_data_role`
+boundary rechecked;
 prior 2026-06-26 `/aec` applied-runtime status contract rechecked
 against `jasper/audio_profile_state.py`, `jasper/control/aec_endpoints.py`,
 and `tests/test_control_aec_state.py`. Prior pass 2026-06-25: chip-AEC gate

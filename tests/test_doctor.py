@@ -6733,6 +6733,7 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "ready",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
         },
@@ -6782,6 +6783,40 @@ def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
     assert "software AEC enabled" not in result.detail
 
 
+def test_aec_bridge_reports_expected_commissioning_park(monkeypatch):
+    from jasper.mics import xvf3800
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
+        if cmd == ["systemctl", "is-enabled", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(xvf3800, "capture_channels", lambda: 6)
+    monkeypatch.setattr(
+        doctor.aec,
+        "_audio_profile_status_for_doctor",
+        lambda *, bridge_active=None: {
+            "audio_profile": {
+                "state": "commission_required",
+                "reason": "alignment artifact is missing",
+                "action": "Run sudo jasper-aec-commission",
+            },
+        },
+    )
+
+    result = doctor.aec.check_aec_bridge_running()
+
+    assert result.status == "warn"
+    assert "intentionally parked" in result.detail
+    assert "alignment artifact is missing" in result.detail
+    assert "Run sudo jasper-aec-commission" in result.detail
+
+
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {
@@ -6802,6 +6837,9 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "commission_required",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON": "alignment artifact is missing",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION": "Run sudo jasper-aec-commission",
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
         },
@@ -6817,8 +6855,9 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     result = doctor._assess_audio_profile(status)
 
     assert result.status == "warn"
-    assert "active=xvf_software_aec3" in result.detail
-    assert "not applied" in result.detail
+    assert "active=none" in result.detail
+    assert "alignment artifact is missing" in result.detail
+    assert "action=Run sudo jasper-aec-commission" in result.detail
 
 
 def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
@@ -7664,7 +7703,7 @@ def test_dac_sync_mode_ok_for_sync_apple_dongle(monkeypatch):
     assert "synchronous USB playback endpoint" in result.detail
     # Advisory clock-coherence wording, not an enable/disable gate.
     assert "clock-coherence observation only" in result.detail
-    assert "binding chip-AEC gate" in result.detail
+    assert "fixed DAC-profile qualification" in result.detail
 
 
 def test_dac_sync_mode_ok_for_adaptive_endpoint(monkeypatch):
@@ -7687,8 +7726,9 @@ def test_dac_sync_mode_warns_fail_closed_for_async(monkeypatch):
     result = doctor.check_dac_usb_sync_mode()
     assert result.status == "warn"
     assert "async USB playback endpoint" in result.detail
-    # Reframed as advisory: the binding gate is DAC qual + outputd SRO verdict.
-    assert "outputd SRO verdict" in result.detail
+    # Advisory only: neither endpoint sync nor the diagnostic SRO verdict
+    # authorizes production; the fixed DAC profile does.
+    assert "fixed DAC-profile qualification" in result.detail
 
 
 def test_dac_sync_mode_na_for_i2s_dac(monkeypatch):

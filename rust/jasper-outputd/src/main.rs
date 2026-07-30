@@ -1253,8 +1253,12 @@ fn open_chip_ref_pcm(config: &ChipRefWriterConfig<'_>, state: &OutputdState) -> 
         config.buffer_frames,
     )?;
     eprintln!(
-        "event=outputd.chip_ref.opened pcm={} sample_rate={} period_frames={} buffer_frames={}",
-        config.pcm_name, negotiated.sample_rate, negotiated.period_frames, negotiated.buffer_frames
+        "event=outputd.chip_ref.opened pcm={} access=RWInterleaved channels={} format=S16_LE sample_rate={} period_frames={} buffer_frames={}",
+        config.pcm_name,
+        CHANNELS,
+        negotiated.sample_rate,
+        negotiated.period_frames,
+        negotiated.buffer_frames
     );
     let zero = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
     let mut report = PlaybackWriteReport::default();

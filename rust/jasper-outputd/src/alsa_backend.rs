@@ -796,6 +796,16 @@ struct PcmConfig<'a> {
     manual_start: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PcmGeometry {
+    sample_rate: u32,
+    channels: u32,
+    format: Format,
+    access: Access,
+    period_frames: u32,
+    buffer_frames: u32,
+}
+
 fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     let PcmConfig {
         role,
@@ -829,6 +839,34 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         };
         pcm.hw_params(&hwp).context("installing HwParams")?;
     }
+    if role == "chip_ref" {
+        let current = pcm
+            .hw_params_current()
+            .context("reading installed outputd chip_ref HwParams")?;
+        validate_chip_ref_geometry(
+            pcm_name,
+            PcmGeometry {
+                sample_rate: current.get_rate().context("get installed chip_ref rate")?,
+                channels: current
+                    .get_channels()
+                    .context("get installed chip_ref channels")?,
+                format: current
+                    .get_format()
+                    .context("get installed chip_ref format")?,
+                access: current
+                    .get_access()
+                    .context("get installed chip_ref access")?,
+                period_frames: current
+                    .get_period_size()
+                    .context("get installed chip_ref period size")?
+                    as u32,
+                buffer_frames: current
+                    .get_buffer_size()
+                    .context("get installed chip_ref buffer size")?
+                    as u32,
+            },
+        )?;
+    }
     if manual_start {
         let swp = pcm
             .sw_params_current()
@@ -840,6 +878,25 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     }
     validate_negotiated(role, pcm_name, negotiated, sample_rate, period_frames)?;
     Ok(negotiated)
+}
+
+fn validate_chip_ref_geometry(pcm_name: &str, actual: PcmGeometry) -> Result<()> {
+    let required = PcmGeometry {
+        sample_rate: 16_000,
+        channels: 2,
+        format: Format::S16LE,
+        access: Access::RWInterleaved,
+        period_frames: 128,
+        buffer_frames: 256,
+    };
+    if actual != required {
+        anyhow::bail!(
+            "outputd chip_ref PCM {pcm_name} installed geometry {:?} but requires exact {:?}",
+            actual,
+            required
+        );
+    }
+    Ok(())
 }
 
 fn validate_negotiated(
@@ -1023,6 +1080,36 @@ mod tests {
 
         let err = validate_negotiated("dac", "outputd_dac", negotiated, 48_000, 1024).unwrap_err();
         assert!(err.to_string().contains("buffer_frames=1024"));
+    }
+
+    #[test]
+    fn chip_ref_geometry_accepts_exact_native_contract() {
+        let actual = PcmGeometry {
+            sample_rate: 16_000,
+            channels: 2,
+            format: Format::S16LE,
+            access: Access::RWInterleaved,
+            period_frames: 128,
+            buffer_frames: 256,
+        };
+
+        validate_chip_ref_geometry("hw:CARD=Array,DEV=0", actual).unwrap();
+    }
+
+    #[test]
+    fn chip_ref_geometry_rejects_installed_buffer_mismatch() {
+        let actual = PcmGeometry {
+            sample_rate: 16_000,
+            channels: 2,
+            format: Format::S16LE,
+            access: Access::RWInterleaved,
+            period_frames: 128,
+            buffer_frames: 512,
+        };
+
+        let err = validate_chip_ref_geometry("hw:CARD=Array,DEV=0", actual).unwrap_err();
+        assert!(err.to_string().contains("buffer_frames: 512"));
+        assert!(err.to_string().contains("buffer_frames: 256"));
     }
 
     #[test]

@@ -30,7 +30,7 @@ VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice
 VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/voice-input-absent}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
-DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K6Ch"
+DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K2Ch,L16K6Ch,C16K2Ch,C16K6Ch"
 DEFAULT_MIC_PROFILE_PYTHON="python3"
 if [[ -x /opt/jasper/.venv/bin/python ]]; then
     DEFAULT_MIC_PROFILE_PYTHON="/opt/jasper/.venv/bin/python"
@@ -38,16 +38,15 @@ fi
 MIC_PROFILE_PYTHON="${JASPER_MIC_PROFILE_PYTHON:-$DEFAULT_MIC_PROFILE_PYTHON}"
 MIC_PROFILE_STATE_PATH="${JASPER_MIC_PROFILE_STATE_PATH:-/run/jasper-mic-profile/xvf3800.json}"
 OUTPUTD_CONTROL_SOCKET="${JASPER_OUTPUTD_CONTROL_SOCKET:-/run/jasper-outputd/control.sock}"
+COMMISSION_MARKER="${JASPER_AEC_COMMISSION_MARKER:-/run/jasper-chip-aec-commission/active}"
+PROC_ROOT="${JASPER_PROC_ROOT:-/proc}"
 REASON="manual"
 CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
-# Opt-in chip-ref observe mode (default 0). When set, the software-AEC3
-# path additionally arms outputd's chip-ref writer FOR MEASUREMENT ONLY,
-# so the Layer-0 SRO drift estimator gets fed real DAC-vs-XVF counters on
-# DACs the reconciler will not trust for production chip-AEC until live
-# measurement evidence is present. Set from the mode file near the bottom
-# (mirrors the LEG_* globals).
+# Opt-in lab observation only. Production DAC authorization is fixed profile
+# data and never depends on this short live clock sample.
 CHIP_REF_OBSERVE=0
+MIC_PROFILE_RESOLUTION_STATUS="unavailable"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 
@@ -124,6 +123,26 @@ log() {
     echo "jasper-aec-reconcile[$REASON]: $*" >&2
 }
 
+commission_marker_live() {
+    local line pid
+    [[ -f "$COMMISSION_MARKER" ]] || return 1
+    IFS= read -r line < "$COMMISSION_MARKER" || return 1
+    pid="${line#pid=}"
+    [[ "$line" == "pid=${pid}" && "$pid" =~ ^[1-9][0-9]*$ && -d "$PROC_ROOT/$pid" ]]
+}
+
+# The foreground commissioner owns every lifecycle mutation while its process
+# is alive. Its one volatile USB reset fires hotplug; that reconcile must be a
+# no-op, and the bridge ExecCondition must stay closed.
+if commission_marker_live; then
+    log "commissioning marker present; foreground commissioner owns AEC lifecycle"
+    [[ "$CHECK_ONLY" == "1" ]] && exit 1
+    exit 0
+elif [[ -e "$COMMISSION_MARKER" ]]; then
+    log "removing stale commissioning marker"
+    [[ "$CHECK_ONLY" == "1" ]] || rm -f "$COMMISSION_MARKER"
+fi
+
 clear_mic_profile_state() {
     JASPER_XVF_PRESENT=0
     JASPER_XVF_VARIANT=""
@@ -135,6 +154,11 @@ clear_mic_profile_state() {
     JASPER_XVF_CHIP_AEC_SUPPORTED=0
     JASPER_XVF_RECOMMENDED_PROFILE=""
     JASPER_XVF_REASON="$1"
+    JASPER_XVF_CHIP_REF_PCM_ACCESS="hw"
+    JASPER_XVF_CHIP_REF_DEVICE="0"
+    JASPER_XVF_CHIP_REF_RATE="16000"
+    JASPER_XVF_CHIP_REF_PERIOD="128"
+    JASPER_XVF_CHIP_REF_BUFFER="256"
 }
 
 observe_mic_profile_state() {
@@ -144,17 +168,20 @@ observe_mic_profile_state() {
         args+=(--state-path "$MIC_PROFILE_STATE_PATH" --write-state)
     fi
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
-        log "mic profile resolver unavailable at ${MIC_PROFILE_PYTHON}; using legacy XVF defaults"
+        log "mic profile resolver unavailable at ${MIC_PROFILE_PYTHON}; non-custom routing will fail closed"
         clear_mic_profile_state "mic profile resolver unavailable"
+        MIC_PROFILE_RESOLUTION_STATUS="unavailable"
         return 0
     fi
     if payload="$("$MIC_PROFILE_PYTHON" "${args[@]}")"; then
         # Output is produced by jasper.cli.xvf_profile with shlex.quote.
         eval "$payload"
+        MIC_PROFILE_RESOLUTION_STATUS="resolved"
         log "mic_profile variant=${JASPER_XVF_VARIANT:-unknown} geometry=${JASPER_XVF_GEOMETRY:-unknown} card=${JASPER_XVF_ALSA_CARD:-unknown} chip_beam_plan=${JASPER_XVF_CHIP_BEAM_PLAN:-none} chip_aec_supported=${JASPER_XVF_CHIP_AEC_SUPPORTED:-0}"
     else
-        log "mic profile resolver failed; using legacy XVF defaults"
+        log "mic profile resolver failed; non-custom routing will fail closed"
         clear_mic_profile_state "mic profile resolver failed"
+        MIC_PROFILE_RESOLUTION_STATUS="failed"
     fi
 }
 
@@ -459,6 +486,31 @@ infer_audio_input_profile_from_mode_file() {
 
 apply_audio_input_profile() {
     local detail
+    MANAGED_XVF_PARK_REASON=""
+    if managed_xvf_policy_applies; then
+        AEC_MODE="auto"
+        LEG_RAW="0"
+        LEG_DTLN="0"
+        LEG_CHIP_AEC="0"
+        LEG_CHIP_AEC_150="0"
+        LEG_CHIP_AEC_210="0"
+        if aec_ready "$AEC_MIC_DEVICE" \
+            && chip_aec_mic_supported \
+            && chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
+            LEG_CHIP_AEC="1"
+            log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "0"
+        elif ! aec_ready "$AEC_MIC_DEVICE"; then
+            MANAGED_XVF_PARK_REASON="managed XVF requires supported 6-channel firmware"
+        elif ! chip_aec_mic_supported; then
+            MANAGED_XVF_PARK_REASON="$(chip_aec_mic_detail)"
+        else
+            MANAGED_XVF_PARK_REASON="$(chip_aec_dac_detail "$AUDIO_DAC_ID" "0")"
+        fi
+        if [[ -n "$MANAGED_XVF_PARK_REASON" ]]; then
+            log "managed XVF parked: ${MANAGED_XVF_PARK_REASON}; no AEC3/direct fallback"
+        fi
+        return
+    fi
     case "$AUDIO_INPUT_PROFILE" in
         auto)
             AEC_MODE="auto"
@@ -622,6 +674,23 @@ write_leg_env() {
         outputd_chip_ref_rate="${OUTPUTD_CHIP_REF_SAMPLE_RATE}"
         outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
         outputd_chip_ref_buffer="${OUTPUTD_CHIP_REF_BUFFER_FRAMES}"
+    elif [[ "$bridge_running" == "reference" ]]; then
+        raw_udp=""
+        dtln_udp=""
+        dtln_flag="0"
+        chip_150_udp=""
+        chip_210_udp=""
+        # Init needs the production flag while bridge/voice remain parked.
+        chip_flag="1"
+        observe_flag="0"
+        ref_source="alsa"
+        bridge_ref_host="127.0.0.1"
+        bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
+        outputd_chip_ref_pcm="${OUTPUTD_CHIP_REF_PCM}"
+        outputd_ref_target=""
+        outputd_chip_ref_rate="${OUTPUTD_CHIP_REF_SAMPLE_RATE}"
+        outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
+        outputd_chip_ref_buffer="${OUTPUTD_CHIP_REF_BUFFER_FRAMES}"
     elif [[ "$bridge_running" == "1" ]]; then
         # Software-leg mode: raw/DTLN as configured, chip beams cleared.
         # The far-end reference still comes from outputd's final speaker
@@ -645,15 +714,8 @@ write_leg_env() {
         ref_source="outputd_udp"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
-        # Chip-ref observe mode (opt-in, default off): arm outputd's
-        # chip-ref writer FOR MEASUREMENT ONLY so the Layer-0 SRO drift
-        # estimator reads real DAC-vs-XVF counters. The mic path stays
-        # software AEC3 (chip_flag=0, raw/DTLN as configured above) — this
-        # ONLY adds the chip-ref producer, breaking the bootstrap deadlock
-        # where the reconciler will not arm chip-AEC until drift is
-        # measured, but drift can only be measured while the writer runs.
-        # Gated on the XVF USB-IN PCM being known (OUTPUTD_CHIP_REF_PCM
-        # non-empty); otherwise observe no-ops and the writer stays off.
+        # Explicit custom/lab observation only; this never authorizes a
+        # production DAC or changes the software-AEC3 mic path.
         if [[ "$CHIP_REF_OBSERVE" == "1" && -n "${OUTPUTD_CHIP_REF_PCM}" ]]; then
             outputd_chip_ref_pcm="${OUTPUTD_CHIP_REF_PCM}"
             observe_flag="1"
@@ -710,6 +772,9 @@ write_leg_env() {
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE "$outputd_chip_ref_rate"
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES "$outputd_chip_ref_period"
     set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES "$outputd_chip_ref_buffer"
+    # Keep producer detection for repeated transitions aligned with the env file.
+    JASPER_OUTPUTD_CHIP_REF_PCM="$outputd_chip_ref_pcm"
+    JASPER_OUTPUTD_REFERENCE_UDP_TARGET="$outputd_ref_target"
 }
 
 card_id_from_spec() {
@@ -757,6 +822,18 @@ mic_channels() {
 aec_ready() {
     local mic="$1"
     [[ "$(mic_channels "$mic")" == "6" ]]
+}
+
+managed_xvf_card_present() {
+    [[ "$MIC_PROFILE_RESOLUTION_STATUS" == "resolved" ]] \
+        && [[ "${JASPER_XVF_PRESENT:-0}" == "1" ]] \
+        && [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]
+}
+
+managed_xvf_policy_applies() {
+    [[ "${AUDIO_INPUT_PROFILE:-custom}" != "custom" ]] \
+        && { managed_xvf_card_present \
+            || [[ "$MIC_PROFILE_RESOLUTION_STATUS" != "resolved" ]]; }
 }
 
 # When the chip is flashed from the 2-ch firmware to the 6-ch firmware
@@ -957,6 +1034,74 @@ restart_voice() {
     run_systemctl --no-block restart jasper-voice.service
 }
 
+park_managed_xvf() {
+    local reason="$1"
+    mark_voice_input_absent "$reason"
+    run_systemctl stop jasper-voice.service jasper-aec-bridge.service
+    reset_failed_units jasper-voice.service jasper-aec-bridge.service
+    log "managed XVF parked: ${reason}"
+}
+
+write_alignment_env() {
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS "$1"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON "$2"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION "$3"
+}
+
+activate_managed_chip_aec() {
+    local init_status
+    write_alignment_env "checking" "validating commissioned alignment" ""
+    mark_voice_input_absent "validating commissioned chip-AEC alignment"
+    run_systemctl stop jasper-voice.service jasper-aec-bridge.service
+    reset_failed_units jasper-voice.service jasper-aec-bridge.service
+    # Init must sample outputd's final writer; bridge/voice stay parked.
+    write_leg_env "1" "0" "0" "1" "0" "0"
+    if ! restart_outputd_if_needed "strict"; then
+        write_alignment_env \
+            "fault" \
+            "final chip-reference producer failed to start" \
+            "Inspect jasper-outputd, then run the reconciler"
+        write_leg_env "reference" "0" "0" "1" "0" "0"
+        restart_outputd_if_needed
+        park_managed_xvf "chip-reference producer failed; inspect jasper-outputd"
+        return 1
+    fi
+    run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
+    reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
+    if "$SYSTEMCTL" restart jasper-aec-init.service; then
+        write_alignment_env "ready" "commissioned alignment applied and verified" ""
+        if ! "$SYSTEMCTL" restart jasper-aec-bridge.service; then
+            write_alignment_env \
+                "fault" \
+                "chip-AEC bridge failed after alignment reapply" \
+                "Inspect jasper-aec-bridge, then run the reconciler"
+            write_leg_env "reference" "0" "0" "1" "0" "0"
+            restart_outputd_if_needed
+            park_managed_xvf "chip-AEC bridge failed; inspect jasper-aec-bridge"
+            return 1
+        fi
+        restart_voice
+        return 0
+    fi
+    init_status="$("$SYSTEMCTL" show -p ExecMainStatus --value jasper-aec-init.service 2>/dev/null || true)"
+    write_leg_env "reference" "0" "0" "1" "0" "0"
+    restart_outputd_if_needed
+    if [[ "$init_status" == "2" ]]; then
+        write_alignment_env \
+            "commission_required" \
+            "alignment is absent or does not match this hardware/output identity" \
+            "Run sudo jasper-aec-commission"
+        park_managed_xvf "chip-AEC commissioning required; run sudo jasper-aec-commission"
+    else
+        write_alignment_env \
+            "fault" \
+            "silent chip-AEC alignment reapply failed" \
+            "Inspect jasper-aec-init and jasper-outputd, then run the reconciler"
+        park_managed_xvf "chip-AEC alignment reapply failed; inspect jasper-aec-init"
+    fi
+    return 1
+}
+
 # Dumb-follower profile (HANDOFF-multiroom Increment 5): an ACTIVE
 # bonded FOLLOWER parks jasper-voice AND the AEC stack — the leader owns
 # the mic/wake/AI session, and the parked daemons free ~310 MB on a 1 GB
@@ -993,9 +1138,17 @@ valid_voice_provider() {
 }
 
 restart_outputd_if_needed() {
+    local require_success="${1:-}"
     if [[ "$OUTPUTD_RESTART_NEEDED" == "1" ]]; then
         reset_failed_units jasper-outputd.service
-        run_systemctl restart jasper-outputd.service
+        if "$SYSTEMCTL" restart jasper-outputd.service; then
+            OUTPUTD_RESTART_NEEDED=0
+        elif [[ "$require_success" == "strict" ]]; then
+            log "failed to restart jasper-outputd with final chip-reference configuration"
+            return 1
+        else
+            OUTPUTD_RESTART_NEEDED=0
+        fi
     fi
 }
 
@@ -1025,9 +1178,9 @@ AEC_UDP_PORT_DTLN="${JASPER_AEC_UDP_PORT_DTLN:-9878}"
 AEC_UDP_PORT_CHIP_AEC_150="${JASPER_AEC_UDP_PORT_CHIP_AEC_150:-9887}"
 AEC_UDP_PORT_CHIP_AEC_210="${JASPER_AEC_UDP_PORT_CHIP_AEC_210:-9888}"
 AEC_OUTPUTD_REF_UDP_PORT="${JASPER_AEC_OUTPUTD_REF_UDP_PORT:-9891}"
-OUTPUTD_CHIP_REF_SAMPLE_RATE="${JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE:-16000}"
-OUTPUTD_CHIP_REF_PERIOD_FRAMES="${JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES:-320}"
-OUTPUTD_CHIP_REF_BUFFER_FRAMES="${JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES:-1280}"
+OUTPUTD_CHIP_REF_SAMPLE_RATE="${JASPER_XVF_CHIP_REF_RATE:-16000}"
+OUTPUTD_CHIP_REF_PERIOD_FRAMES="${JASPER_XVF_CHIP_REF_PERIOD:-128}"
+OUTPUTD_CHIP_REF_BUFFER_FRAMES="${JASPER_XVF_CHIP_REF_BUFFER:-256}"
 UDP_DEVICE="udp:${AEC_UDP_PORT}"
 MIC_DEVICE_CANDIDATES_DEFAULT="$DEFAULT_MIC_DEVICE_CANDIDATES"
 if [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
@@ -1045,9 +1198,9 @@ if [[ -z "$AEC_MIC_DEVICE" ]]; then
     fi
 fi
 if profile_managed_mic_resolution && [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
-    OUTPUTD_CHIP_REF_PCM="plughw:CARD=${AEC_MIC_DEVICE},DEV=0"
+    OUTPUTD_CHIP_REF_PCM="${JASPER_XVF_CHIP_REF_PCM_ACCESS:-hw}:CARD=${AEC_MIC_DEVICE},DEV=${JASPER_XVF_CHIP_REF_DEVICE:-0}"
 else
-    OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-plughw:CARD=${AEC_MIC_DEVICE},DEV=0}"
+    OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-hw:CARD=${AEC_MIC_DEVICE},DEV=0}"
 fi
 CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
 # Additive wake-detection legs (see write_leg_env for the mapping).
@@ -1089,6 +1242,12 @@ fi
 refresh_chip_aec_dac_gate "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
 
 if [[ "$CHECK_ONLY" == "1" ]]; then
+    if managed_xvf_policy_applies; then
+        [[ "$LEG_CHIP_AEC" == "1" \
+            && "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "ready" ]] \
+            && "$SYSTEMCTL" is-active --quiet jasper-aec-init.service
+        exit
+    fi
     if [[ "$AEC_MODE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
         exit 0
     fi
@@ -1109,6 +1268,15 @@ if profile_managed_mic_resolution; then
     set_env_var "$ENV_FILE" JASPER_AEC_MIC_DEVICE "$AEC_MIC_DEVICE"
 fi
 write_chip_aec_gate_env
+if [[ "$MIC_PROFILE_RESOLUTION_STATUS" == "resolved" \
+    && "$AUDIO_INPUT_PROFILE" != "custom" \
+    && "$AUDIO_INPUT_PROFILE" == xvf_* ]] \
+    && ! managed_xvf_card_present; then
+    write_alignment_env \
+        "unavailable" \
+        "managed XVF is not present" \
+        "Reconnect the managed XVF3800 microphone"
+fi
 
 if grouping_voice_parked; then
     # Role park wins over every profile/mic shape below — including the
@@ -1125,6 +1293,26 @@ if grouping_voice_parked; then
     stop_disable_aec
     write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
     restart_outputd_if_needed
+    exit 0
+fi
+
+if managed_xvf_policy_applies; then
+    if aec_ready "$AEC_MIC_DEVICE"; then
+        ensure_capture_mixer_open "$AEC_MIC_DEVICE"
+    fi
+    if [[ "$LEG_CHIP_AEC" != "1" ]]; then
+        write_alignment_env \
+            "unavailable" \
+            "${MANAGED_XVF_PARK_REASON:-managed XVF chip-AEC is unavailable}" \
+            "Connect supported XVF firmware and an approved output profile"
+        stop_disable_aec
+        write_leg_env "0" "0" "0" "0" "0" "0"
+        restart_outputd_if_needed
+        park_managed_xvf "${MANAGED_XVF_PARK_REASON:-managed XVF chip-AEC is unavailable}"
+        exit 0
+    fi
+    set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"
+    activate_managed_chip_aec || true
     exit 0
 fi
 

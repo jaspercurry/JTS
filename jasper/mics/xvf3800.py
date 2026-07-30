@@ -17,6 +17,8 @@ so geometry/channel truth stays in this module.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from math import pi
 from pathlib import Path
@@ -146,8 +148,11 @@ class RuntimeProfile:
 
     @property
     def recommended_profile(self) -> str:
-        if self.present and self.capture_channels == RECOMMENDED_CAPTURE_CHANNELS:
-            return "xvf_chip_aec" if self.chip_aec_supported else "xvf_software_aec3"
+        # A managed XVF is a chip-AEC product.  Unsupported firmware or
+        # geometry is an actionable parked state, never an invitation to
+        # silently route the same hardware through AEC3/direct-mic.
+        if self.present:
+            return "xvf_chip_aec"
         return "direct_mic"
 
     def as_dict(self) -> dict[str, Any]:
@@ -240,6 +245,97 @@ SQUARE_FIXED_150_210_PLAN = ChipBeamPlan(
                     label="Chip AEC ASR 210"),
     ),
 )
+
+
+# Canonical production chip-AEC profile and native reference transport
+
+CHIP_AEC_SYS_DELAY_DEFAULT = -37
+CHIP_AEC_SYS_DELAY_MIN = -64
+CHIP_AEC_SYS_DELAY_MAX = 256
+CHIP_AEC_FIRST_PEAK_HARD_MIN = 1
+CHIP_AEC_FIRST_PEAK_HARD_MAX = 40
+
+CHIP_AEC_REFERENCE_PCM_ACCESS = "hw"
+CHIP_AEC_REFERENCE_DEVICE_INDEX = 0
+CHIP_AEC_REFERENCE_SAMPLE_RATE_HZ = 16_000
+CHIP_AEC_REFERENCE_CHANNELS = 2
+CHIP_AEC_REFERENCE_SAMPLE_FORMAT = "S16_LE"
+CHIP_AEC_REFERENCE_PERIOD_FRAMES = 128
+CHIP_AEC_REFERENCE_BUFFER_FRAMES = 256
+CHIP_AEC_REFERENCE_TRANSFORM = "stereo_mean_boxcar_decimate_dual_mono_v1"
+
+CHIP_AEC_BYPASS_PROFILE_COMMANDS: tuple[tuple[str, list[int | float]], ...] = (
+    ("SHF_BYPASS", [1]),
+    ("AEC_ASROUTONOFF", [0]),
+    ("AEC_FIXEDBEAMSONOFF", [0]),
+    ("AEC_FIXEDBEAMSGATING", [0]),
+    ("AEC_AECEMPHASISONOFF", [0]),
+    ("AEC_FAR_EXTGAIN", [0.0]),
+    ("AUDIO_MGR_OP_L", [8, 0]),
+    ("AUDIO_MGR_OP_R", [8, 0]),
+)
+
+
+def chip_aec_profile_commands(
+    plan: ChipBeamPlan,
+    *,
+    sys_delay: int = CHIP_AEC_SYS_DELAY_DEFAULT,
+) -> tuple[tuple[str, list[int | float]], ...]:
+    """Return the one production XVF profile, safely bracketed by bypass.
+
+    Commissioning varies only ``AUDIO_MGR_SYS_DELAY``. Gains, filters, beam
+    geometry, muxing, and the SHF arm sequence are fixed product policy here.
+    """
+
+    if len(plan.legs) != 2:
+        raise ValueError("production chip-AEC requires exactly two beam legs")
+    if not CHIP_AEC_SYS_DELAY_MIN <= sys_delay <= CHIP_AEC_SYS_DELAY_MAX:
+        bounds = f"{CHIP_AEC_SYS_DELAY_MIN}..{CHIP_AEC_SYS_DELAY_MAX}"
+        raise ValueError(f"SYS_DELAY must be {bounds}")
+    return (
+        ("SHF_BYPASS", [1]),
+        ("AUDIO_MGR_SYS_DELAY", [sys_delay]),
+        ("AUDIO_MGR_MIC_GAIN", [90.0]),
+        ("AUDIO_MGR_REF_GAIN", [8.0]),
+        ("AEC_HPFONOFF", [2]),
+        ("AEC_ASROUTONOFF", [1]),
+        ("AEC_ASROUTGAIN", [1.0]),
+        ("AEC_FIXEDBEAMSONOFF", [1]),
+        ("AEC_FIXEDBEAMSGATING", [1]),
+        ("AEC_FIXEDBEAMSAZIMUTH_VALUES", [leg.azimuth_rad for leg in plan.legs]),
+        (
+            "AEC_FIXEDBEAMSELEVATION_VALUES",
+            [leg.elevation_rad for leg in plan.legs],
+        ),
+        ("AEC_AECEMPHASISONOFF", [2]),
+        ("AEC_FAR_EXTGAIN", [0.0]),
+        ("AUDIO_MGR_OP_L", [7, 0]),
+        ("AUDIO_MGR_OP_R", [7, 1]),
+        ("SHF_BYPASS", [0]),
+    )
+
+
+def chip_aec_fixed_profile_fingerprint(plan: ChipBeamPlan) -> str:
+    """Fingerprint fixed profile + reference facts while excluding SYS_DELAY."""
+
+    commands: list[list[object]] = []
+    for name, values in chip_aec_profile_commands(plan, sys_delay=0):
+        commands.append([name, ["runtime"]] if name == "AUDIO_MGR_SYS_DELAY" else [name, values])
+    payload = {
+        "commands": commands,
+        "reference": {
+            "access": CHIP_AEC_REFERENCE_PCM_ACCESS,
+            "device": CHIP_AEC_REFERENCE_DEVICE_INDEX,
+            "rate": CHIP_AEC_REFERENCE_SAMPLE_RATE_HZ,
+            "channels": CHIP_AEC_REFERENCE_CHANNELS,
+            "format": CHIP_AEC_REFERENCE_SAMPLE_FORMAT,
+            "period": CHIP_AEC_REFERENCE_PERIOD_FRAMES,
+            "buffer": CHIP_AEC_REFERENCE_BUFFER_FRAMES,
+            "transform": CHIP_AEC_REFERENCE_TRANSFORM,
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 CHIP_BEAM_PLANS: dict[str, ChipBeamPlan] = {
     SQUARE_FIXED_150_210_PLAN.plan_id: SQUARE_FIXED_150_210_PLAN,
 }

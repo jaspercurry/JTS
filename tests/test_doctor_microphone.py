@@ -54,7 +54,7 @@ def test_headline_absent_is_one_yellow_flag(monkeypatch: pytest.MonkeyPatch) -> 
     r = audio.check_microphone()
     assert r.name == "microphone"
     assert r.status == "warn"  # the single flag — never a red fail
-    assert "not detected" in r.detail
+    assert "input unavailable" in r.detail
     assert "No supported XVF3800 ALSA card detected" in r.detail
 
 

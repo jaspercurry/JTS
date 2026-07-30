@@ -109,6 +109,11 @@ def _run_reconcile(
                 tmp_path / "grouping-voice.env"
             ),
             "JASPER_ASOUND_ROOT": str(tmp_path / "asound"),
+            "JASPER_MIC_PROFILE_STATE_PATH": str(tmp_path / "xvf3800.json"),
+            "JASPER_AEC_COMMISSION_MARKER": str(
+                tmp_path / "chip-aec-commission-active"
+            ),
+            "JASPER_PROC_ROOT": str(tmp_path / "proc"),
             # Redirect the voice-input-absent marker into tmp so the no-mic
             # paths (mark_voice_input_absent) never touch the real
             # /var/lib/jasper on the test host. Per-test overrides via
@@ -147,6 +152,7 @@ def _write_env(
     env_file.write_text(
         f"JASPER_MIC_DEVICE={mic_device}\n"
         "JASPER_AEC_UDP_PORT=9876\n"
+        "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
         f"{extra}"
     )
     if voice_provider:
@@ -176,6 +182,33 @@ def _write_card(tmp_path: Path, card: str = "Array", channels: int = 6) -> None:
     )
 
 
+def _write_synthetic_xvf_resolver(tmp_path: Path, card: str) -> Path:
+    resolver = tmp_path / "synthetic-xvf-resolver"
+    resolver.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == *'jasper.cli.xvf_profile'* ]]; then\n"
+        "  printf '%s\\n' \\\n"
+        "    'JASPER_XVF_PRESENT=1' \\\n"
+        "    'JASPER_XVF_VARIANT=xvf3800_future_variant' \\\n"
+        "    'JASPER_XVF_DISPLAY_NAME=Future_XVF3800' \\\n"
+        "    'JASPER_XVF_GEOMETRY=future' \\\n"
+        f"    'JASPER_XVF_ALSA_CARD={card}' \\\n"
+        "    'JASPER_XVF_CAPTURE_CHANNELS=6' \\\n"
+        "    'JASPER_XVF_CHIP_BEAM_PLAN=' \\\n"
+        "    'JASPER_XVF_CHIP_AEC_SUPPORTED=0' \\\n"
+        "    'JASPER_XVF_RECOMMENDED_PROFILE=xvf_chip_aec' \\\n"
+        "    \"JASPER_XVF_REASON='future XVF needs a validated beam plan'\" \\\n"
+        "    'JASPER_XVF_CHIP_REF_PCM_ACCESS=hw' \\\n"
+        "    'JASPER_XVF_CHIP_REF_DEVICE=0' \\\n"
+        "    'JASPER_XVF_CHIP_REF_RATE=16000' \\\n"
+        "    'JASPER_XVF_CHIP_REF_PERIOD=128' \\\n"
+        "    'JASPER_XVF_CHIP_REF_BUFFER=256'\n"
+        "fi\n"
+    )
+    resolver.chmod(0o755)
+    return resolver
+
+
 def _outputd_status_payload(
     *,
     verdict: str,
@@ -185,7 +218,7 @@ def _outputd_status_payload(
 ) -> dict:
     return {
         "reference_outputs": {
-            "chip_ref_pcm": "plughw:CARD=Array,DEV=0",
+            "chip_ref_pcm": "hw:CARD=Array,DEV=0",
             "chip_ref_writer": {"enabled": writer_enabled},
             "aec_clock": {
                 "chip_ref_sro_ppm": 3.2 if verdict == "coherent" else 42.0,
@@ -276,16 +309,128 @@ def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> No
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
+    body = env_file.read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=ready" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES=128" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES=256" in body
     commands = _systemctl_log(tmp_path)
     assert "enable jasper-aec-init.service jasper-aec-bridge.service" in commands
     assert "reset-failed jasper-aec-init.service" in commands
     assert "reset-failed jasper-aec-bridge.service" in commands
     assert "is-failed --quiet" not in commands
-    assert "start jasper-aec-init.service" in commands
+    assert "restart jasper-aec-init.service" in commands
     assert "restart jasper-aec-bridge.service" in commands
     assert "enable jasper-voice.service" in commands
     assert VOICE_RESTART_CMD in commands
+    lines = commands.splitlines()
+    assert lines.count("restart jasper-outputd.service") == 1
+    assert lines.index("restart jasper-outputd.service") < lines.index(
+        "restart jasper-aec-init.service"
+    )
+    assert lines.index("restart jasper-aec-init.service") < lines.index(
+        "restart jasper-aec-bridge.service"
+    )
+    assert lines.index("restart jasper-aec-bridge.service") < lines.index(
+        VOICE_RESTART_CMD
+    )
+
+
+def test_reconcile_parks_when_final_outputd_restart_fails(
+    tmp_path: Path,
+) -> None:
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    fake = tmp_path / "outputd-failure-systemctl"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
+        "[[ \"$*\" == 'restart jasper-outputd.service' ]] && exit 1\n"
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_SYSTEMCTL": str(fake)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=fault" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
+    assert _marker(tmp_path).exists()
+    commands = _systemctl_log(tmp_path)
+    assert "restart jasper-aec-init.service" not in commands
+    assert "restart jasper-aec-bridge.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
+
+
+def test_reconcile_keeps_native_writer_and_parks_when_commissioning_is_required(
+    tmp_path: Path,
+) -> None:
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    fake = tmp_path / "commission-required-systemctl"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
+        "[[ \"$*\" == 'restart jasper-aec-init.service' ]] && exit 1\n"
+        "[[ \"$1\" == 'show' ]] && { printf '2\\n'; exit 0; }\n"
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_SYSTEMCTL": str(fake)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=commission_required" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Run sudo jasper-aec-commission'" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
+    assert _marker(tmp_path).exists()
+    commands = _systemctl_log(tmp_path)
+    assert "restart jasper-aec-bridge.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
+
+
+def test_reconcile_parks_if_bridge_fails_after_alignment_reapply(
+    tmp_path: Path,
+) -> None:
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    fake = tmp_path / "bridge-failure-systemctl"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
+        "[[ \"$*\" == 'restart jasper-aec-bridge.service' ]] && exit 1\n"
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path, "--reason", "test",
+        extra_env={"JASPER_SYSTEMCTL": str(fake)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=fault" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
+    assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
 def test_reconcile_repairs_capture_mixer_before_arming_six_channel_aec(
@@ -401,7 +546,7 @@ def test_reconcile_parks_voice_when_provider_not_in_manifest(tmp_path: Path) -> 
     assert VOICE_RESTART_CMD not in commands
 
 
-def test_reconcile_uses_direct_mic_when_array_is_not_6_channel(tmp_path: Path) -> None:
+def test_reconcile_parks_managed_xvf_when_array_is_not_6_channel(tmp_path: Path) -> None:
     env_file = _write_env(tmp_path, "udp:9876")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=2)
@@ -409,10 +554,13 @@ def test_reconcile_uses_direct_mic_when_array_is_not_6_channel(tmp_path: Path) -
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert "JASPER_MIC_DEVICE=Array" in env_file.read_text()
+    body = env_file.read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
     commands = _systemctl_log(tmp_path)
     assert "disable jasper-aec-bridge.service jasper-aec-init.service" in commands
-    assert VOICE_RESTART_CMD in commands
+    assert "stop jasper-voice.service jasper-aec-bridge.service" in commands
+    assert VOICE_RESTART_CMD not in commands
 
 
 def test_reconcile_respects_custom_mic_device(tmp_path: Path) -> None:
@@ -430,10 +578,26 @@ def test_reconcile_respects_custom_mic_device(tmp_path: Path) -> None:
 
 
 def test_check_aec_ready_reflects_mode_and_firmware(tmp_path: Path) -> None:
-    _write_env(tmp_path, "Array")
-    _write_mode(tmp_path)
+    _write_env(
+        tmp_path,
+        "Array",
+        extra="JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=ready\n",
+    )
+    _write_profile_mode(tmp_path, "auto")
     _write_card(tmp_path, channels=6)
     assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 0
+
+    failed_init = tmp_path / "failed-init-systemctl"
+    failed_init.write_text(
+        "#!/usr/bin/env bash\n"
+        "[[ \"$*\" == 'is-active --quiet jasper-aec-init.service' ]] && exit 1\n"
+        "exit 0\n"
+    )
+    failed_init.chmod(0o755)
+    assert _run_reconcile(
+        tmp_path, "--check-aec-ready",
+        extra_env={"JASPER_SYSTEMCTL": str(failed_init)},
+    ).returncode == 1
 
     (tmp_path / "aec_mode.env").write_text("JASPER_AEC_MODE=disabled\n")
     assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
@@ -460,6 +624,7 @@ def _write_mode_with_legs(
     chip_ref_observe: str | None = None,
 ) -> None:
     body = (
+        "JASPER_AUDIO_INPUT_PROFILE=custom\n"
         f"JASPER_AEC_MODE={mode}\n"
         f"JASPER_WAKE_LEG_RAW={raw}\n"
         f"JASPER_WAKE_LEG_DTLN={dtln}\n"
@@ -638,8 +803,9 @@ def test_mic_profile_resolver_failure_clears_stale_chip_support(
     assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
     assert "JASPER_XVF_CHIP_BEAM_PLAN=''" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
-    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "no AEC3/direct fallback" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -649,14 +815,14 @@ def test_mic_profile_resolver_failure_clears_stale_chip_support(
         ("mystery_usb_audio", "has no codified chip-AEC calibration"),
     ],
 )
-def test_auto_profile_falls_back_when_output_dac_needs_calibration(
+def test_auto_profile_parks_when_output_dac_needs_calibration(
     tmp_path: Path,
     dac_id: str,
     stderr_phrase: str,
 ) -> None:
     """Chip-AEC is gated by both XVF firmware and output DAC timing support.
-    Calibration-required and future DAC profiles stay on the software AEC path
-    instead of inheriting the Apple baseline by accident."""
+    Calibration-required and future DAC profiles visibly park; a managed XVF
+    never inherits an AEC3/direct fallback."""
     _write_env(tmp_path, "Array", extra=f"JASPER_AUDIO_DAC_ID={dac_id}\n")
     _write_card(tmp_path, channels=6)
 
@@ -665,15 +831,16 @@ def test_auto_profile_falls_back_when_output_dac_needs_calibration(
     assert result.returncode == 0, result.stderr
     assert stderr_phrase in result.stderr
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_MIC_DEVICE=udp:9876" in body
-    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
-    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
+    assert "JASPER_MIC_DEVICE=Array" in body
+    assert "no AEC3/direct fallback" in result.stderr
 
 
-def test_explicit_chip_profile_falls_back_for_uncalibrated_output_dac(
+def test_explicit_chip_profile_parks_for_uncalibrated_output_dac(
     tmp_path: Path,
 ) -> None:
     """Even an explicit xvf_chip_aec profile is fail-closed for output
@@ -689,19 +856,18 @@ def test_explicit_chip_profile_falls_back_for_uncalibrated_output_dac(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert "requested xvf_chip_aec" in result.stderr
     assert "measured-sync contract" in result.stderr
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_MIC_DEVICE=udp:9876" in body
-    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
 
 
-def test_testing_chip_profile_arms_uncalibrated_output_dac_as_testing(
+def test_testing_profile_cannot_bypass_managed_xvf_product_policy(
     tmp_path: Path,
 ) -> None:
-    """Testing profile is an explicit operator opt-in, not auto approval."""
+    """The managed UI testing alias is not the low-level custom escape hatch."""
     _write_env(
         tmp_path,
         "Array",
@@ -713,17 +879,75 @@ def test_testing_chip_profile_arms_uncalibrated_output_dac_as_testing(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert "status=testing source=explicit_testing" in result.stderr
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_MIC_DEVICE=udp:9876" in body
-    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
-    assert "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED=1" in body
-    assert "JASPER_AEC_CHIP_AEC_DAC_ID=mystery_usb_audio" in body
-    assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=testing" in body
-    assert "JASPER_AEC_CHIP_AEC_DAC_SOURCE=explicit_testing" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
+    assert "no AEC3/direct fallback" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "auto",
+        "xvf_chip_aec",
+        "xvf_chip_aec_testing",
+        "xvf_software_aec3",
+        "direct_mic",
+    ],
+)
+def test_present_managed_xvf_overrides_stale_non_owned_mic_device_for_every_profile(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    """A stale custom-looking device must not bypass managed chip-or-park."""
+    env_file = _write_env(
+        tmp_path,
+        "UMIK-2",
+        extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n",
+    )
+    _write_profile_mode(tmp_path, profile)
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "custom JASPER_MIC_DEVICE=UMIK-2" not in result.stderr
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+
+
+def test_resolver_discovered_future_xvf_reaches_managed_policy(
+    tmp_path: Path,
+) -> None:
+    """A new resolver-known card needs no matching shell registry edit."""
+    env_file = _write_env(tmp_path, "operator-mic")
+    _write_profile_mode(tmp_path, "auto")
+    _write_card(tmp_path, card="FutureXvf", channels=6)
+    resolver = _write_synthetic_xvf_resolver(tmp_path, "FutureXvf")
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(resolver)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "custom JASPER_MIC_DEVICE=operator-mic" not in result.stderr
+    assert "JASPER_XVF_PRESENT=1" in body
+    assert "JASPER_XVF_ALSA_CARD=FutureXvf" in body
+    assert "JASPER_AEC_MIC_DEVICE=FutureXvf" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "future XVF needs a validated beam plan" in result.stderr
+    assert (tmp_path / "voice-input-absent").exists()
 
 
 def test_explicit_chip_profile_uses_static_hifiberry_known_good(
@@ -753,7 +977,7 @@ def test_explicit_chip_profile_uses_static_hifiberry_known_good(
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
     assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=0" in body
 
 
@@ -787,10 +1011,10 @@ def test_custom_chip_leg_cannot_bypass_unapproved_dac_gate(
     assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=needs_calibration" in body
 
 
-def test_auto_profile_uses_outputd_coherent_verdict_for_uncodified_dac(
+def test_auto_profile_does_not_promote_uncodified_dac_from_short_clock_sample(
     tmp_path: Path,
 ) -> None:
-    """Future DACs can still promote through live outputd calibration evidence."""
+    """Clock telemetry stays diagnostic; the fixed DAC registry authorizes."""
     _write_env(
         tmp_path,
         "udp:9876",
@@ -810,16 +1034,17 @@ def test_auto_profile_uses_outputd_coherent_verdict_for_uncodified_dac(
 
     assert result.returncode == 0, result.stderr
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
 
 
-def test_explicit_chip_profile_still_falls_back_for_compensable_verdict(
+def test_explicit_chip_profile_parks_for_compensable_verdict(
     tmp_path: Path,
 ) -> None:
     """A measured but drifting DAC needs the deferred rate-match layer, so
-    `compensable` remains on the software-AEC3 floor."""
+    `compensable` remains parked pending a supported product path."""
     _write_env(
         tmp_path,
         "udp:9876",
@@ -842,7 +1067,7 @@ def test_explicit_chip_profile_still_falls_back_for_compensable_verdict(
     assert "verdict=compensable" in result.stderr
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
-    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
 
 
@@ -873,20 +1098,20 @@ def test_explicit_chip_profile_still_falls_back_for_compensable_verdict(
             "xvf_software_aec3", 6,
             {
                 "mic": "udp:9876",
-                "raw_udp": True,
+                "raw_udp": False,
                 "dtln_udp": False,
-                "chip_enabled": "0",
+                "chip_enabled": "1",
                 "ref_source": "outputd_udp",
             },
         ),
         (
             "direct_mic", 6,
             {
-                "mic": "Array",
+                "mic": "udp:9876",
                 "raw_udp": False,
                 "dtln_udp": False,
-                "chip_enabled": "0",
-                "ref_source": "alsa",
+                "chip_enabled": "1",
+                "ref_source": "outputd_udp",
             },
         ),
         (
@@ -1084,11 +1309,11 @@ def test_chip_aec_on_sets_carrier_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_AEC_OUTPUTD_REF_UDP_HOST=127.0.0.1" in body
     assert "JASPER_AEC_OUTPUTD_REF_UDP_PORT=9891" in body
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
     assert "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE=16000" in body
-    assert "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES=320" in body
-    assert "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES=1280" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES=128" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES=256" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
     assert "JASPER_AEC_DTLN_ENABLED=1" not in body
@@ -1131,19 +1356,19 @@ def test_flex_linear_auto_discovers_card_but_does_not_arm_square_chip_beams(
     explicit JASPER_AEC_MIC_DEVICE pinned, the reconciler should select
     the present Flex card but refuse the legacy square 150/210 chip plan."""
     _write_env(tmp_path, "udp:9876", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n")
-    _write_mode_with_legs(tmp_path, mode="auto", raw="0", dtln="0", chip_aec="1")
+    _write_profile_mode(tmp_path, "auto")
     _write_card(tmp_path, card="L16K6Ch", channels=6)
 
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
     assert "JASPER_XVF_VARIANT=xvf3800_flex_linear_6ch" in body
     assert "JASPER_XVF_GEOMETRY=linear" in body
     assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
-    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
     assert "aec_mic=L16K6Ch" in result.stderr
     assert "no validated production chip beam plan" in result.stderr
@@ -1171,11 +1396,11 @@ def test_flex_linear_profile_managed_mode_rederives_stale_array_card(
     assert "old=Array new=L16K6Ch" in result.stderr
     body = env_file.read_text()
     assert "JASPER_AEC_MIC_DEVICE=L16K6Ch" in body
-    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=unavailable" in body
     assert "JASPER_XVF_VARIANT=xvf3800_flex_linear_6ch" in body
     assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
-    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
 
 
 def test_profile_managed_mic_swap_rederives_stale_aec_card(
@@ -1193,7 +1418,7 @@ def test_profile_managed_mic_swap_rederives_stale_aec_card(
         extra=(
             "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
             "JASPER_AEC_MIC_DEVICE=L16K6Ch\n"
-            "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0\n"
+            "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=L16K6Ch,DEV=0\n"
         ),
     )
     _write_profile_mode(tmp_path, "xvf_chip_aec")
@@ -1209,8 +1434,8 @@ def test_profile_managed_mic_swap_rederives_stale_aec_card(
     assert "JASPER_MIC_DEVICE=udp:9876" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
-    assert "plughw:CARD=L16K6Ch,DEV=0" not in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
+    assert "hw:CARD=L16K6Ch,DEV=0" not in body
 
 
 def test_check_only_does_not_mask_stale_profile_managed_aec_card(
@@ -1251,7 +1476,7 @@ def test_custom_profile_preserves_hand_pinned_aec_card_and_chip_ref(
         extra=(
             "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
             "JASPER_AEC_MIC_DEVICE=L16K6Ch\n"
-            "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0\n"
+            "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=L16K6Ch,DEV=0\n"
         ),
     )
     _write_mode_with_legs(
@@ -1274,7 +1499,7 @@ def test_custom_profile_preserves_hand_pinned_aec_card_and_chip_ref(
     assert "aec_mic=L16K6Ch" in result.stderr
     body = env_file.read_text()
     assert "JASPER_AEC_MIC_DEVICE=L16K6Ch" in body
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=L16K6Ch,DEV=0" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=L16K6Ch,DEV=0" in body
     assert "JASPER_MIC_DEVICE=udp:9876" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
 
@@ -1282,7 +1507,7 @@ def test_custom_profile_preserves_hand_pinned_aec_card_and_chip_ref(
 def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:
     """Regression for the `printf %q` comma-corruption bug (PR #534's
     bug class, in this script): bash 5.2 %q-escapes commas, turning
-    plughw:CARD=Array,DEV=0 into plughw:CARD=Array\\,DEV=0 — which
+    hw:CARD=Array,DEV=0 into hw:CARD=Array\\,DEV=0 — which
     systemd EnvironmentFile= reads literally AND which breaks the
     reconciler's own read-back, marking outputd for a restart on every
     pass (restart churn). Two consecutive runs must converge: identical
@@ -1294,7 +1519,7 @@ def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:
     result = _run_reconcile(tmp_path, "--reason", "test")
     assert result.returncode == 0, result.stderr
     first_body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in first_body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in first_body
     assert "restart jasper-outputd.service" in _systemctl_log(tmp_path)
 
     (tmp_path / "systemctl.log").unlink()
@@ -1337,7 +1562,7 @@ def test_chip_aec_off_clears_chip_usb_reference_but_keeps_outputd_monitor(
         "udp:9876",
         extra=(
             "JASPER_AEC_REF_SOURCE=outputd_udp\n"
-            "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0\n"
+            "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0\n"
             "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891\n"
         ),
     )
@@ -1442,7 +1667,7 @@ def test_chip_ref_observe_arms_writer_but_keeps_software_aec3_mic_path(
     assert result.returncode == 0, result.stderr
     body = (tmp_path / "jasper.env").read_text()
     # Writer armed for measurement.
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
     assert "JASPER_OUTPUTD_CHIP_REF_OBSERVE=1" in body
     # Mic path is UNCHANGED: software AEC3 with the raw leg, chip-AEC OFF.
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
@@ -1556,6 +1781,24 @@ def _marker(tmp_path: Path) -> Path:
     return tmp_path / "voice-input-absent"
 
 
+def test_reconcile_is_noop_while_foreground_commissioner_owns_lifecycle(
+    tmp_path: Path,
+) -> None:
+    env_file = _write_env(tmp_path, "Array")
+    before = env_file.read_bytes()
+    (tmp_path / "chip-aec-commission-active").write_text("pid=123\n")
+    (tmp_path / "proc" / "123").mkdir(parents=True)
+
+    result = _run_reconcile(tmp_path, "--reason", "hotplug")
+
+    assert result.returncode == 0, result.stderr
+    assert "foreground commissioner owns AEC lifecycle" in result.stderr
+    assert env_file.read_bytes() == before
+    assert not (tmp_path / "aec_mode.env").exists()
+    assert _systemctl_log(tmp_path) == ""
+    assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
+
+
 def test_reconcile_marks_voice_input_absent_when_no_mic(tmp_path: Path) -> None:
     # No card present at all + a stale udp device -> the no-candidate-mic
     # park path. Voice must be gated off so it can't boot-start and
@@ -1598,9 +1841,7 @@ def test_reconcile_clears_marker_when_6ch_present(tmp_path: Path) -> None:
     assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
 
 
-def test_reconcile_clears_marker_when_direct_mic_present(tmp_path: Path) -> None:
-    # 2-channel Array -> direct-mic (no AEC) path still (re)starts voice, so
-    # the marker must clear here too.
+def test_reconcile_keeps_marker_when_managed_xvf_needs_firmware(tmp_path: Path) -> None:
     _write_env(tmp_path, "udp:9876")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=2)
@@ -1609,8 +1850,9 @@ def test_reconcile_clears_marker_when_direct_mic_present(tmp_path: Path) -> None
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert not _marker(tmp_path).exists(), result.stderr
-    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
+    assert _marker(tmp_path).exists(), result.stderr
+    assert "supported 6-channel firmware" in _marker(tmp_path).read_text()
+    assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
 def test_reconcile_clears_marker_for_custom_mic(tmp_path: Path) -> None:

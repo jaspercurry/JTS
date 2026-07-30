@@ -5,12 +5,12 @@
 """Single source of truth for *is a usable microphone present?* — mic-agnostic.
 
 The AEC reconciler (``jasper-aec-reconcile``) is the sole authority on mic
-presence, and it is **not XVF-specific**: it selects whatever mic is present —
-the XVF3800 ``Array``, the ``L16K6Ch`` variant, or a custom ``JASPER_MIC_DEVICE``
-such as a UMIK-2 — and maintains one generic gate marker accordingly
-(``/var/lib/jasper/voice-input-absent``: created on "no usable mic", cleared on
-any mic present, including custom; see ``jasper.voice.input_presence`` and
-``deploy/bin/jasper-aec-reconcile``).
+availability, and it is **not XVF-specific**: it selects whatever input is
+usable — the XVF3800 ``Array``, the ``L16K6Ch`` variant, or a custom
+``JASPER_MIC_DEVICE`` such as a UMIK-2 — and maintains one generic gate marker
+accordingly (``/var/lib/jasper/voice-input-absent``: created when no safe,
+usable input exists, including a managed XVF parked for commissioning; see
+``jasper.voice.input_presence`` and ``deploy/bin/jasper-aec-reconcile``).
 
 This module is the single *reader* of that verdict. Every status surface — the
 doctor, ``/state``, the ``/system`` dashboard — should call
@@ -20,9 +20,9 @@ coherent fact instead of a scatter of contradicting checks.
 
 Two layers, kept strictly separate so the next microphone needs no change here:
 
-* **Presence is generic** — driven by the gate marker. ``present`` is true
-  whenever the reconciler has *not* parked voice for a missing mic, regardless
-  of mic type. (Driving presence off the XVF profile would report a working
+* **Usable-input availability is generic** — driven by the gate marker.
+  ``present`` is true whenever the reconciler has *not* parked voice, regardless
+  of mic type. (Driving availability off the XVF profile would report a working
   non-XVF mic as "absent" — the bug this separation exists to prevent.)
 * **XVF detail is enrichment** — the reconciler also publishes an XVF-specific
   runtime profile to ``/run/jasper-mic-profile/xvf3800.json`` (schema:
@@ -94,8 +94,8 @@ class MicPresence:
         if not self.present:
             detail = self.reason or "no usable microphone detected"
             return (
-                f"not detected — {detail}; jasper-voice is parked and "
-                "auto-starts when a mic is reconnected"
+                f"input unavailable — {detail}; jasper-voice is parked and "
+                "reconciles automatically when the condition is resolved"
             )
         if self.is_xvf:
             bits = [self.alsa_card or "XVF3800"]
@@ -154,8 +154,8 @@ def read_mic_presence(state_path: str | None = None) -> MicPresence:
     detail" when a mic is up.
     """
     if voice_parked_no_mic():
-        # The reconciler positively determined there is no usable mic of ANY
-        # type. One generic absent verdict.
+        # The reconciler positively determined there is no safe, usable input
+        # of any type. One generic unavailable verdict.
         return MicPresence(
             present=False,
             reason=_marker_reason() or "no usable microphone present",

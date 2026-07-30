@@ -48,8 +48,30 @@ def test_flex_linear_6ch_variant_has_no_production_beam_plan(
     assert profile.geometry == "linear"
     assert profile.chip_beam_plan is None
     assert profile.chip_aec_supported is False
-    assert profile.recommended_profile == "xvf_software_aec3"
+    assert profile.recommended_profile == "xvf_chip_aec"
     assert "no validated production chip beam plan" in profile.reason
+
+
+def test_fixed_profile_and_native_reference_are_single_source_of_truth() -> None:
+    assert xvf3800.CHIP_AEC_SYS_DELAY_DEFAULT == -37
+    profile = xvf3800.chip_aec_profile_commands(
+        xvf3800.SQUARE_FIXED_150_210_PLAN,
+        sys_delay=-38,
+    )
+
+    assert profile[0] == ("SHF_BYPASS", [1])
+    assert profile[-1] == ("SHF_BYPASS", [0])
+    assert dict(profile[1:-1])["AUDIO_MGR_SYS_DELAY"] == [-38]
+    assert dict(profile[1:-1])["AUDIO_MGR_OP_L"] == [7, 0]
+    assert dict(profile[1:-1])["AUDIO_MGR_OP_R"] == [7, 1]
+    assert (
+        xvf3800.CHIP_AEC_REFERENCE_PCM_ACCESS,
+        xvf3800.CHIP_AEC_REFERENCE_SAMPLE_RATE_HZ,
+        xvf3800.CHIP_AEC_REFERENCE_CHANNELS,
+        xvf3800.CHIP_AEC_REFERENCE_SAMPLE_FORMAT,
+        xvf3800.CHIP_AEC_REFERENCE_PERIOD_FRAMES,
+        xvf3800.CHIP_AEC_REFERENCE_BUFFER_FRAMES,
+    ) == ("hw", 16_000, 2, "S16_LE", 128, 256)
 
 
 def test_2ch_square_firmware_has_safe_update_manifest(tmp_path: Path) -> None:
