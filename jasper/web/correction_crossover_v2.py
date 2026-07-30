@@ -54,12 +54,15 @@ import time
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 from ._systemd import no_hold
+
+if TYPE_CHECKING:
+    from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
 
 logger = logging.getLogger(__name__)
 
@@ -2086,7 +2089,7 @@ def bind_production_analyze(
     *,
     resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
     meta: dict[str, Any] | None = None,
-) -> Callable[..., Any]:
+) -> "AnalyzeCapture":
     """The real ``analyze`` seam: CaptureResult → ``analyze_program_capture``.
 
     Design §5.6.4 applies the mic cal to every gated response, so this binding
@@ -2099,23 +2102,21 @@ def bind_production_analyze(
     (persisted with the session's evidence refs) records the per-phase
     ``{"applied": False}`` annotation.
 
-    ``phase`` (keyword-only, issue #1855) is the conductor's own flow phase —
-    ``crossover_v2_flow.CrossoverV2Conductor.consume_capture`` always passes
-    it. It is NOT the same value as ``program.phase``: every cloud position
-    plays the verify-shaped summed sweep, so ``program.phase == "verify"``
-    even during PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. Retention (below)
-    must label a capture with the flow's phase, never the program's, or
-    every cloud position gets retained as "verify" (the bug this fixes —
-    32 of 45 retained sidecars, per the 2026-07-29 WO-0 retrospective).
-    Defaults to ``None`` (falling back to ``program.phase`` — see
-    ``_maybe_retain_capture``) only so the unit tests below that exercise
-    this seam directly, independent of the conductor, don't all need an
-    unrelated ``phase=`` argument; production always supplies it.
+    ``phase`` (required, keyword-only, issue #1855) is the conductor's own
+    flow phase — ``crossover_v2_flow.CrossoverV2Conductor.consume_capture``
+    always passes it. It is NOT the same value as ``program.phase``: every
+    cloud position plays the verify-shaped summed sweep, so
+    ``program.phase == "verify"`` even during
+    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. Retention (below) must label a
+    capture with the flow's phase, never the program's, or every cloud
+    position gets retained as "verify" (the bug this fixes — 32 of 45
+    retained sidecars, per the 2026-07-29 WO-0 retrospective). No default:
+    see ``crossover_v2_flow.AnalyzeCapture``'s docstring for why a silent
+    fallback to ``program.phase`` is exactly the defect class being fixed.
     """
 
     def _analyze(
-        program: Any, result: Any, priors: Any, geometry: Any,
-        *, phase: str | None = None,
+        program: Any, result: Any, priors: Any, geometry: Any, *, phase: str,
     ) -> Any:
         from jasper.audio_measurement import program_analysis as _pa
         from jasper.audio_measurement.calibration import mic_tier_for_model
@@ -2192,12 +2193,12 @@ def bind_production_analyze(
             geometry=geometry,
             priors=priors,
         )
-        # #1855: retention labels the capture from the FLOW's phase, never
-        # from ``program.phase`` — see the docstring above and
+        # #1855: retention labels the capture from the FLOW's phase (this
+        # function's own required ``phase`` argument), never from
+        # ``program.phase`` — see the docstring above and
         # ``_maybe_retain_capture``.
-        retain_phase = phase if phase is not None else getattr(program, "phase", "unknown")
         _maybe_retain_capture(
-            phase=retain_phase, result=result, wav=wav, analysis=analysis,
+            phase=phase, result=result, wav=wav, analysis=analysis,
         )
         return analysis
 
