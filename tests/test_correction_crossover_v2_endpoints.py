@@ -236,7 +236,10 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
             index=attempt - 1,
         )
 
-    def analyze(program: Any, result: Any, priors: Any, geometry: Any) -> Any:
+    def analyze(
+        program: Any, result: Any, priors: Any, geometry: Any,
+        *, phase: str | None = None,
+    ) -> Any:
         factory = analyses.get(program.phase) or {
             "check": _check_analysis,
             "measure": _measure_analysis,
@@ -3485,6 +3488,79 @@ def test_capture_retention_marker_present_writes_wav_and_diagnostic_sidecar(
     # — the analyze seam runs before the conductor's phase gate).
     assert sidecar["diagnostic"]["alignment_confidence"] == 0.9
     assert sidecar["diagnostic"]["delay_us"] == 12.0
+
+
+def test_capture_retention_labels_from_flow_phase_not_program_identity(
+    tmp_path, monkeypatch,
+):
+    """Issue #1855 (the byte-identity trap): every cloud position plays
+    ``self._verify_program`` — see ``CrossoverV2Conductor._program_for_phase``'s
+    ``SUMMED_SWEEP_PHASES`` branch — so the SAME program object/bytes is
+    retained during VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike, and
+    ``program.phase`` is always "verify" for all three. Before the fix,
+    retention read ``program.phase`` directly and mislabeled every cloud
+    position as "verify" (32 of 45 retained sidecars, per the 2026-07-29
+    WO-0 retrospective). The fix threads the conductor's own flow phase
+    through the ``analyze`` seam's ``phase=`` keyword instead. Pin: the
+    SAME byte-identical capture, retained once per flow phase, must yield
+    two sidecars with two DIFFERENT, correct labels."""
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        AlignmentEstimate,
+        MeasurementGeometry,
+        MeasurementPriors,
+        ProgramAnalysis,
+    )
+
+    dump_dir = tmp_path / "xover-capture-dump"
+    dump_dir.mkdir()
+    (dump_dir / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).touch()
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
+
+    fake_analysis = ProgramAnalysis(
+        phase="verify", program_id="prog-1", locations=(),
+        alignment=AlignmentEstimate(
+            delay_us=12.0, raw_delay_us=12.0, parallax_us=0.0,
+            polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+            confidence=0.9,
+        ),
+    )
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: fake_analysis)
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={}
+    )
+    # ONE program — the conductor's real ``self._verify_program`` — reused
+    # across both calls, exactly as the real flow reuses it for VERIFY and
+    # every cloud position.
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    assert program.phase == "verify"  # the trap: identical for all three phases
+
+    verify_result = _FakeResult(device={"label": "UMIK-2"})
+    cloud_result = _FakeResult(device={"label": "UMIK-2"})
+    # _mono_wav_bytes() is deterministic — these two captures are genuinely
+    # byte-identical, matching the WO-0 retrospective's SHA-256 finding.
+    assert verify_result.wav == cloud_result.wav
+
+    analyze(
+        program, verify_result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(), phase="verify",
+    )
+    analyze(
+        program, cloud_result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(), phase="cloud_measure",
+    )
+
+    jsons = sorted(dump_dir.glob("*.json"))
+    assert len(jsons) == 2
+    sidecars = {json.loads(p.read_text())["phase"]: p for p in jsons}
+    assert set(sidecars) == {"verify", "cloud_measure"}
+    # Both sidecars agree on the WAV hash (same bytes) — only the label
+    # differs, and it differs correctly.
+    verify_sidecar = json.loads(sidecars["verify"].read_text())
+    cloud_sidecar = json.loads(sidecars["cloud_measure"].read_text())
+    assert verify_sidecar["wav_sha256_12"] == cloud_sidecar["wav_sha256_12"]
 
 
 def test_capture_retention_prunes_oldest_past_the_file_count_cap(tmp_path, monkeypatch):

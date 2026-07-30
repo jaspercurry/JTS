@@ -2086,7 +2086,7 @@ def bind_production_analyze(
     *,
     resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
     meta: dict[str, Any] | None = None,
-) -> Callable[[Any, Any, Any, Any], Any]:
+) -> Callable[..., Any]:
     """The real ``analyze`` seam: CaptureResult → ``analyze_program_capture``.
 
     Design §5.6.4 applies the mic cal to every gated response, so this binding
@@ -2098,9 +2098,25 @@ def bind_production_analyze(
     but the fact is never silent: a WARN ``event=`` fires and ``meta``
     (persisted with the session's evidence refs) records the per-phase
     ``{"applied": False}`` annotation.
+
+    ``phase`` (keyword-only, issue #1855) is the conductor's own flow phase —
+    ``crossover_v2_flow.CrossoverV2Conductor.consume_capture`` always passes
+    it. It is NOT the same value as ``program.phase``: every cloud position
+    plays the verify-shaped summed sweep, so ``program.phase == "verify"``
+    even during PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. Retention (below)
+    must label a capture with the flow's phase, never the program's, or
+    every cloud position gets retained as "verify" (the bug this fixes —
+    32 of 45 retained sidecars, per the 2026-07-29 WO-0 retrospective).
+    Defaults to ``None`` (falling back to ``program.phase`` — see
+    ``_maybe_retain_capture``) only so the unit tests below that exercise
+    this seam directly, independent of the conductor, don't all need an
+    unrelated ``phase=`` argument; production always supplies it.
     """
 
-    def _analyze(program: Any, result: Any, priors: Any, geometry: Any) -> Any:
+    def _analyze(
+        program: Any, result: Any, priors: Any, geometry: Any,
+        *, phase: str | None = None,
+    ) -> Any:
         from jasper.audio_measurement import program_analysis as _pa
         from jasper.audio_measurement.calibration import mic_tier_for_model
 
@@ -2176,7 +2192,13 @@ def bind_production_analyze(
             geometry=geometry,
             priors=priors,
         )
-        _maybe_retain_capture(program=program, result=result, wav=wav, analysis=analysis)
+        # #1855: retention labels the capture from the FLOW's phase, never
+        # from ``program.phase`` — see the docstring above and
+        # ``_maybe_retain_capture``.
+        retain_phase = phase if phase is not None else getattr(program, "phase", "unknown")
+        _maybe_retain_capture(
+            phase=retain_phase, result=result, wav=wav, analysis=analysis,
+        )
         return analysis
 
     return _analyze
@@ -2227,7 +2249,7 @@ def _prune_capture_dump(
 
 
 def _maybe_retain_capture(
-    *, program: Any, result: Any, wav: bytes, analysis: Any,
+    *, phase: str, result: Any, wav: bytes, analysis: Any,
 ) -> None:
     """Operator-debug capture retention (Part 2 — off by default, bounded).
 
@@ -2242,6 +2264,15 @@ def _maybe_retain_capture(
     self-describing without replaying the analysis, then ring-buffer prunes
     the directory.
 
+    ``phase`` is the caller's resolved label (the flow's own phase — see
+    ``_analyze``'s docstring), not derived here. Before the #1855 fix this
+    function read ``program.phase`` directly, which mislabeled every cloud
+    position as "verify" (every cloud position plays the verify-shaped
+    summed sweep, so ``program.phase`` can't distinguish them) — 32 of 45
+    retained sidecars, per the 2026-07-29 WO-0 retrospective. Existing
+    on-disk sidecars from before the fix are NOT rewritten; they are
+    historical artifacts of the bug, not corrected in place.
+
     Fully best-effort: this runs inside the real ``analyze`` seam, so ANY
     failure here must never affect the measurement itself. Every failure
     mode (disk full, permission, a non-``ProgramAnalysis`` double reaching
@@ -2252,7 +2283,6 @@ def _maybe_retain_capture(
     """
     if not (XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER).exists():
         return
-    phase = getattr(program, "phase", "unknown")
     try:
         from jasper.audio_measurement import program_analysis as _pa
 

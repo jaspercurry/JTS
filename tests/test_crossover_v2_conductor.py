@@ -391,8 +391,14 @@ class FakeSeams:
     rollback: Any = None
 
     def seams(self) -> V2FlowSeams:
-        def analyze(program, result, priors, geometry):
-            self.analyzed.append((program.phase, result, priors, geometry))
+        def analyze(program, result, priors, geometry, *, phase=None):
+            # ``phase`` is the conductor's OWN flow phase (issue #1855) —
+            # recorded separately from ``program.phase`` since the two
+            # diverge for cloud positions (every cloud position plays the
+            # verify-shaped summed sweep, so ``program.phase`` is always
+            # "verify" there; see test_cloud_positions_play_the_summed_
+            # program_and_get_no_tracking_prior).
+            self.analyzed.append((phase, program.phase, result, priors, geometry))
             factory = {
                 "check": self.check, "measure": self.measure, "verify": self.verify,
             }[program.phase]
@@ -766,7 +772,7 @@ def test_conductor_threads_geometry_and_result_to_analyze():
     c.on_armed()
     c.consume_capture(1, 1, result)
     assert len(fakes.analyzed) == 1
-    phase, seen_result, _priors, geometry = fakes.analyzed[0]
+    phase, _prog_phase, seen_result, _priors, geometry = fakes.analyzed[0]
     assert phase == PHASE_CHECK
     assert seen_result is result  # the CaptureResult itself, not just bytes
     assert isinstance(geometry, MeasurementGeometry)
@@ -2845,7 +2851,13 @@ def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
     # the program is the VERIFY-shaped summed sweep, which is exactly why
     # `analyze_program_capture` needed no new dispatch branch.
     assert played_program.phase == PHASE_VERIFY
-    _prog_phase, _result, priors, _geometry = fakes.analyzed[-1]
+    analyzed_phase, prog_phase, _result, priors, _geometry = fakes.analyzed[-1]
+    # Issue #1855: the analyze seam must receive the FLOW's phase
+    # (cloud_measure), not the program's own phase (verify) — a retention
+    # seam that read ``program.phase`` instead mislabeled every cloud
+    # position as "verify" because the program is byte-identical to VERIFY's.
+    assert analyzed_phase == PHASE_CLOUD_MEASURE
+    assert prog_phase == PHASE_VERIFY
     assert priors.predicted_sum is None
     assert priors.crossover_fc_hz == FC_HZ
 
@@ -4168,7 +4180,7 @@ def test_check_priors_carry_fc_for_the_measure_level_solve():
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    phase, _result, priors, _geometry = fakes.analyzed[0]
+    phase, _prog_phase, _result, priors, _geometry = fakes.analyzed[0]
     assert phase == "check"
     assert priors.crossover_fc_hz == pytest.approx(FC_HZ)
 
