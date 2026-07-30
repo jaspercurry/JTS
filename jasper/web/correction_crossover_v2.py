@@ -1884,6 +1884,29 @@ def persist_conductor_state(
         "failure": (
             {
                 "code": failure_code,
+                # WHEN this failure happened (issue #1942). Without it the
+                # envelope could not tell a failure the household is looking
+                # at right now from one a previous day's session left behind,
+                # so it re-rendered the terminal screen — with that session's
+                # verify numbers — on every later page load, forever.
+                #
+                # The file-level ``updated_at`` cannot answer this: it is
+                # last-write-of-ANYTHING, so it moves for reasons that have
+                # nothing to do with the failure. This is the failure's own
+                # clock, and it belongs on the failure's own record.
+                #
+                # Epoch float, deliberately the same type and clock as
+                # ``save_v2_state``'s ``updated_at`` one level up — an age is
+                # then a subtraction, with no format to parse and no second
+                # time representation in one file.
+                #
+                # Stamped at write, not carried forward, because every writer
+                # is an in-session capture-loop event: a failing session may
+                # persist the same code twice (the rejecting capture, then the
+                # plan-finished write) seconds apart, and NO read path
+                # persists — ``handle_status`` never writes — so nothing can
+                # refresh this while a household stares at the screen.
+                "at": time.time(),
                 **(
                     {"refusals": [str(slug) for slug in failure_refusals]}
                     if failure_refusals else {}

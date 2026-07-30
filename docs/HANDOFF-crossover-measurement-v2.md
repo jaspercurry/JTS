@@ -1453,6 +1453,60 @@ four templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
 conductor decides the code; the envelope renders the copy — one copy
 source, no drift.
 
+**A failure screen has a lifetime (#1942).** The persisted `failure`
+record carries its own `at` stamp (epoch float, written by
+`persist_conductor_state`), and `build_crossover_envelope_v2` renders the
+terminal screen only while that stamp is inside
+`crossover_envelope_v2.FAILURE_FRESH_WINDOW_S` (30 min). Older than that,
+the household gets the ordinary entry screen plus ONE dated `info` nudge
+— "Your last measurement ended yesterday — the check didn't pass." — and
+Undo whenever `applied` is true. Before this, any persisted failure
+re-rendered its terminal screen on every build forever, so a fresh page
+load the next day was answered with a dead session's screen *and* that
+session's numbers presented as the live verdict (the owner's 2026-07-30
+"level error 3.82 dB" greeting). The discriminator is the record's own
+age because nothing structural distinguishes the two cases: `session_id`
+/ `accepted_phases` / `applied` are frozen by the terminal persist and
+read identically a second later and a week later, and relay liveness
+moves the wrong way (a terminal failure purges its own relay within 3 s).
+A record with **no** `at` — anything written before #1942 — reads as
+aged; the state file's `STATE_SCHEMA_VERSION` is deliberately NOT bumped
+for the new key, because a bump makes `load_v2_state` reject every
+deployed Pi's file and would take `pre_apply_profile` (and with it Undo)
+down with it.
+
+**There are TWO numbers surfaces, and the aged path suppresses both.**
+`expert_details` is the obvious one. The other is the before/after chart
+card: `_envelope` copies `cloud` / `cloud_chart` / `tier` through from
+`status` on *every* screen, `persist_conductor_state` writes `cloud`
+beside `failure` in the same state file, and `crossover/main.js` calls
+`renderCloud` with no screen switch — so a resume rendered the dead
+session's curve, its spec-band numbers, and the caption "the
+after-correction curve appears once the second measurement pass
+finishes", a live-progress claim about a session that ended yesterday.
+`_aged_failure_envelope` nulls those three keys, which is simply the
+honest value for a screen with no session (`tier`'s own contract already
+reads `None` as unknown). Note that `cloud[<phase>]["session_id"]` cannot
+substitute for this: on a resume that stamp *equals* the state's own
+`session_id` — it is the same dead session — so provenance filtering
+downstream would not have caught it. The aged branch declaring "no
+session" is what does.
+
+**One reason code is exempt from the generic aged copy.** Most reason
+copy describes a session outcome, which stops being actionable when the
+session ends. `correction_rollback_failed` does not: it says the delta
+probe found the correction faulty, failed to roll it back, and the
+speaker is *still playing it* until somebody presses Undo. That is true
+tomorrow too, so `_DURABLE_STATE_FACTS` keeps its fact and its
+instruction inside the dated history line (gated on `applied`, so the
+claim is never printed over a state that no longer corroborates it). The
+registry was audited in full for this; the line is "a change JTS itself
+made and did not undo". Notably the `program_profile_*` family is *not*
+exempt — that copy states configuration JTS re-checks every session, so
+replaying it as current would be the #1942 defect itself, and the live
+`_setup_ready` gate above the failure branch already catches a genuinely
+unready setup.
+
 | Code | Phase | Budget | Meaning |
 |---|---|---|---|
 | `agc_behavioral_fail` | CHECK / MEASURE / VERIFY | 1 | the captured two-pilot level delta did not match the programmed one, at an SNR where it should have. The phone's input chain riding gain OR the speaker's own output compressing — the copy names the observation, not a cause it never measures (#1810) |
@@ -1735,7 +1789,9 @@ Session state on the Pi (both mode 0640, atomic writes):
   `/var/lib/jasper/active_speaker_crossover_v2_state.json` — phase,
   candidate, verify, failure, `apply_blocked`, `pre_apply_profile`,
   `applied`, evidence refs, `session_id`. Threaded into the envelope as
-  `status["crossover_v2"]`.
+  `status["crossover_v2"]`. The `failure` record carries `code`, its own
+  `at` stamp (see "a failure screen has a lifetime" above), and — for the
+  program family — `refusals`.
 - **Session volume state:**
   `/var/lib/jasper/active_speaker_crossover_session_volume.json` —
   `status`, `opened_at`, `measurement_volume_db`,

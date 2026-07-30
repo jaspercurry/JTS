@@ -388,6 +388,23 @@ def _run(runner, client, session):
     return asyncio.run(runner(client, session))
 
 
+def _persisted_failure(state) -> dict:
+    """The persisted failure record minus its ``at`` stamp.
+
+    #1942 gave the record its own clock so the envelope can tell a failure the
+    household is looking at now from one a previous session left behind. The
+    stamp is a ``time.time()`` read, so it cannot be compared by equality —
+    but its PRESENCE can, and asserting it here means every call site below
+    (each of which already pins the record's exact shape) additionally proves
+    its own write path stamps the record. A write that forgot to would render
+    as permanently-aged history, which is the failure mode worth catching.
+    """
+    failure = dict(state["failure"])
+    at = failure.pop("at", None)
+    assert isinstance(at, float), "every persisted failure carries its own clock"
+    return failure
+
+
 def _build_runner(conductor, volume, **kwargs):
     kwargs.setdefault("poll_interval_s", 0.01)  # fast polling for tests
     kwargs.setdefault("timeout_s", 20.0)
@@ -805,7 +822,7 @@ def test_abandoning_before_the_confirm_leaves_the_speaker_untouched(monkeypatch)
     state = v2host.load_v2_state()
     assert state.get("applied") is not True
     assert state.get("candidate") is None
-    assert state["failure"] == {"code": "user_stopped"}
+    assert _persisted_failure(state) == {"code": "user_stopped"}
 
 
 # --- relay-session death: timeout + abort (S1c) ---------------------------------
@@ -841,7 +858,7 @@ def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume(monkeypatch):
 
     assert volume.events == ["open", "abandon"]
     state = v2host.load_v2_state()
-    assert state["failure"] == {"code": "relay_timeout"}
+    assert _persisted_failure(state) == {"code": "relay_timeout"}
     # Pre-apply session death invalidates capture evidence (§5.6).
     assert state["accepted_phases"] == []
     # Blocker #3: the phone gets a session-level terminal before the purge 404,
@@ -855,10 +872,14 @@ def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume(monkeypatch):
         build_crossover_envelope_v2,
     )
 
+    # Rendered from the record the REAL persist path just wrote, not a
+    # hand-built one — which is also what proves that path stamps a failure
+    # freshly enough to still be the live screen (#1942). A write that
+    # dropped the stamp would render history here instead.
     env = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {"phase": "check", "failure": {"code": "relay_timeout"}},
+        "crossover_v2": {"phase": "check", "failure": state["failure"]},
     })
     assert env["screen"] == "session_restart"
 
@@ -906,7 +927,7 @@ def test_phone_abort_is_session_death_abandon_and_invalidation(monkeypatch):
 
     assert volume.events == ["open", "abandon"]
     state = v2host.load_v2_state()
-    assert state["failure"] == {"code": "relay_timeout"}
+    assert _persisted_failure(state) == {"code": "relay_timeout"}
     assert state["accepted_phases"] == []  # CHECK evidence died with the session
 
 
@@ -937,7 +958,7 @@ def test_deliberate_phone_stop_gets_its_own_honest_reason_not_relay_timeout(monk
     assert excinfo.value.reason == "stopped"
     assert volume.events == ["open", "abandon"]
     state = v2host.load_v2_state()
-    assert state["failure"] == {"code": "user_stopped"}
+    assert _persisted_failure(state) == {"code": "user_stopped"}
     assert state["accepted_phases"] == []
 
 
@@ -2609,7 +2630,9 @@ def test_the_failed_screens_re_verify_still_asks_for_the_recovery():
         "crossover_v2": {
             "phase": PHASE_VERIFY,
             "applied": True,
-            "failure": {"code": "verify_out_of_tolerance"},
+            # Stamped now: this is the screen a household is on, which is the
+            # only state that renders the live verify_fail actions (#1942).
+            "failure": {"code": "verify_out_of_tolerance", "at": time.time()},
         },
     })
     retry = env["next_action"]
@@ -4746,7 +4769,7 @@ def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
     # orderings): the transaction genuinely landed AND the stop is honestly
     # on record — even though accepted_phases never got a chance to recover.
     assert state["applied"] is True
-    assert state["failure"] == {"code": "user_stopped"}
+    assert _persisted_failure(state) == {"code": "user_stopped"}
     assert state["accepted_phases"] == []
 
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
@@ -4821,7 +4844,7 @@ def test_playback_refusal_persists_failure_abandons_volume_and_tells_phone():
     # refusal slug rode out with it (issue #1820: the old collapse erased which
     # of program_unplayable's several causes actually fired).
     state = v2host.load_v2_state()
-    assert state["failure"] == {
+    assert _persisted_failure(state) == {
         "code": "program_unplayable",
         "refusals": ["program_channel_peak_over_cap"],
     }
@@ -5118,7 +5141,7 @@ def _assert_full_cleanup(plan, cam, log, backend, session, *, code, refusals=Non
     expected = {"code": code}
     if refusals:
         expected["refusals"] = list(refusals)
-    assert state["failure"] == expected
+    assert _persisted_failure(state) == expected
 
 
 def test_camilla_unavailable_from_play_seam_full_cleanup(monkeypatch):
@@ -5407,7 +5430,7 @@ def test_transport_oserror_still_classifies_as_relay_timeout(monkeypatch):
 
     assert volume.events == ["open", "abandon"]
     state = v2host.load_v2_state()
-    assert state["failure"] == {"code": "relay_timeout"}
+    assert _persisted_failure(state) == {"code": "relay_timeout"}
 
 
 # --- W6 hardware run 3, finding H: terminal-failure purge races the phone -------

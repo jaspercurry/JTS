@@ -33,6 +33,7 @@ The ``/sound/`` half of defect 3 (the buried confirm control) is pinned in
 from __future__ import annotations
 
 import re
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -317,7 +318,9 @@ def test_hard_stop_screen_renders_the_reasons_own_action():
         return {
             "active": True,
             "setup": {"active": True, "status": "ready"},
-            "crossover_v2": {"failure": {"code": code}},
+            # Stamped now: only a failure the household is currently looking
+            # at renders its terminal screen (#1942).
+            "crossover_v2": {"failure": {"code": code, "at": time.time()}},
         }
 
     env = build_crossover_envelope_v2(_status(REASON_PROGRAM_PROFILE_NOT_CONFIRMED))
@@ -580,7 +583,12 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
             "applied": True,
-            "failure": {"code": REASON_PROGRAM_PROFILE_NOT_CONFIRMED},
+            # Stamped now: only a failure the household is currently looking
+            # at renders its terminal screen (#1942).
+            "failure": {
+                "code": REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+                "at": time.time(),
+            },
         },
     })
     assert env["screen"] == "verify_fail"

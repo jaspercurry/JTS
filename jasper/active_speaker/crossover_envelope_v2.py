@@ -37,6 +37,7 @@ the shared :data:`~jasper.active_speaker.crossover_v2_flow.REASON_REGISTRY`.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Mapping
 
 from ..log_event import log_event
@@ -51,6 +52,7 @@ from .crossover_v2_flow import (
     PHASE_CLOSING,
     PHASE_REVIEW,
     PHASE_VERIFY,
+    REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_REGISTRY,
     TEMPLATE_HARD_STOP,
     TEMPLATE_SESSION_RESTART,
@@ -1293,6 +1295,321 @@ def _envelope(
     }
 
 
+def _entry_envelope(
+    status: Mapping[str, Any],
+    *,
+    next_action: dict[str, Any],
+    alternate_actions: list[dict[str, Any]],
+    nudges: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """The journey's entry screen — the ONE place its copy lives.
+
+    Two callers reach it: the ordinary ``PHASE_CHECK`` start, and the
+    aged-failure resume (#1942), which must land a returning household on
+    exactly this screen rather than on a dead session's terminal one. Sharing
+    the function is what makes "exactly this screen" true by construction —
+    the resume differs from a clean start only by the actions handed in and
+    one quiet history nudge, and cannot drift into a second entry copy.
+    """
+    return _envelope(
+        screen="microphone_check", active_step="microphone_check",
+        # The journey-opening promise. Before the spatial cloud this said
+        # "keep it in that one spot for the whole measurement" — false as
+        # of PR-3b, and false on the FIRST screen the household reads,
+        # which is the worst place for it. The mark is still where the
+        # session starts and returns to; the moving is now named up front
+        # rather than sprung on them at the third capture.
+        #
+        # Flow-simplification §3: the tier choice is the household's,
+        # explicitly, every session — the two actions below are BOTH
+        # first-class (never a silent default); which one is primary is
+        # only history's Recommended badge (_tier_choice_actions).
+        verdict=(
+            "Place the microphone about 1 m in front of the speaker, at "
+            "tweeter height and pointing at it — about where you'd sit to "
+            "listen (see the picture). That spot is your mark. JTS runs a "
+            "quick microphone check first, then measures from the mark and "
+            "from a few nearby spots your phone will guide you to — that "
+            "is what lets it tell the speaker apart from the room. Choose "
+            "how thorough a measurement to run below."
+        ),
+        next_action=next_action,
+        alternate_actions=alternate_actions,
+        nudges=nudges,
+        status=status,
+    )
+
+
+# The Undo affordance, in ONE place (issue #1942). Two screens owe it to the
+# household — the live VERIFY-fail screen and the aged-failure entry screen —
+# and W6.7 ruling 3 is that Undo is owed *the moment something is live on the
+# speaker*, so the two must never drift into offering different routes out.
+#
+# Rides the v2-aware restore path (jasper.web.correction_crossover_v2.
+# handle_v2_restore), which reloads the pre-candidate applied profile
+# ``handle_v2_apply`` stashed at apply time and clears the durable v2
+# applied/candidate/failure state on success — the legacy
+# ``/crossover/restore`` expects a PENDING commissioning-run candidate apply
+# that a v2 apply never creates, and 500s here instead (W6 run-8 Blocker Q).
+#
+# OPEN CHECKLIST ITEM (W6.7 gate N2), unchanged by #1942 and deliberately not
+# widened by it: a session reset that clears durable v2 state while the applied
+# graph is still live still loses this affordance, because no failure record
+# survives for either screen to render from. #1942 keeps Undo reachable on both
+# of ITS paths; closing N2 means offering Undo on a clean-state entry screen,
+# which is a different decision about a screen this issue leaves untouched.
+# A FACTORY, not a shared constant: the action carries a mutable ``body`` and
+# every caller hands its result to an envelope a caller may edit. A module-level
+# dict copied with ``dict(...)`` would share that one ``body`` by reference
+# across every envelope this process ever serves, so a single mutation would
+# poison the module for the life of the daemon. Cheap to build; never shared.
+def _undo_action() -> dict[str, Any]:
+    return {
+        "id": "verify_undo",
+        "label": "Undo (restore previous sound)",
+        "endpoint": "/correction/crossover/v2/restore",
+        "body": {},
+        "show_during_relay": True,
+    }
+
+# --- failure recency (issue #1942) -------------------------------------------
+
+#: How long a persisted terminal failure keeps rendering as the LIVE screen.
+#:
+#: **Why a clock at all, when a structural signal is usually better.** The
+#: question this branch has to answer is "is the household still in the moment
+#: this failure happened?", and it is asked on a plain GET. Every structural
+#: fact in the durable state — ``session_id``, ``accepted_phases``,
+#: ``applied``, ``verify`` — is frozen by the terminal persist and then reads
+#: IDENTICALLY one second later and one week later, so none of them can
+#: discriminate. The one structural fact that does change, relay liveness,
+#: changes the WRONG WAY: a terminal failure purges its own relay within
+#: ``TERMINAL_FAILURE_PURGE_GRACE_S`` (3 s), so keying on it would age out a
+#: failure the household is actively reading. That leaves the record's own
+#: age, which is why #1942's fix is a timestamp rather than a session binding.
+#:
+#: **Why 30 minutes.** A terminal failure screen is read with a microphone in
+#: hand and acted on in seconds to minutes; the defect this guards against is
+#: measured in hours to days. Thirty minutes sits an order of magnitude clear
+#: of both. Erring long is the conservative direction on purpose: every
+#: realistic in-session case keeps the shipped screen byte-for-byte, and only
+#: an unambiguously-returning household takes the new path.
+#:
+#: Not borrowed from the relay's ``DEFAULT_TTL_S``: that is TIME_BUDGET_LINK,
+#: the lifetime of a link which is already dead by the time this is asked, and
+#: ``jasper.web._systemd`` already documents that a cloud session legitimately
+#: outlasts it. Reusing it would import a caveat rather than a meaning.
+FAILURE_FRESH_WINDOW_S = 30 * 60.0
+
+# The one-line history note's reason clause, keyed on the reason's TEMPLATE
+# rather than its code: a resume needs the SHAPE of what happened, and the
+# registry's own ``message`` is a full instruction written for the live screen
+# ("Start over from this page to measure again — the quick microphone check
+# runs first"), which on a resume would be both a wall of text and stale
+# advice. Keying on the template also means #1942 adds no field to
+# REASON_REGISTRY — that registry's copy is explicitly out of scope.
+_FAILURE_HISTORY_REASONS = {
+    TEMPLATE_VERIFY_FAIL: "the check didn't pass",
+    TEMPLATE_SESSION_RESTART: "it stopped before finishing",
+    TEMPLATE_HARD_STOP: "it couldn't continue",
+}
+# Covers fix_and_retry, silent_auto_retry, the volume template, and any code
+# this build does not know. Deliberately the weakest true statement rather
+# than a guess: all of them ended a measurement that did not finish.
+_FAILURE_HISTORY_REASON_DEFAULT = "it didn't finish"
+
+# EXEMPT from the generic reason clause above: codes whose copy states a
+# durable fact about the speaker RIGHT NOW rather than an outcome of a session
+# that is over. Aging one of these into "it didn't finish" would delete a fact
+# that is still true and an instruction the household still has to act on.
+#
+# The line, and why only one row is on it (registry audited in full, 2026-07-30
+# — the audit is in the PR body): the fact must describe a change **JTS itself
+# made and did not undo**, so it cannot silently become false while nobody is
+# looking. `correction_rollback_failed` qualifies — the delta probe found the
+# correction faulty, failed to roll it back, and the speaker is STILL playing
+# it until somebody presses Undo (which clears this state).
+#
+# Three shapes deliberately NOT on this list:
+#   * the sibling rollback rows (`correction_model_error`,
+#     `correction_level_shortfall`, `correction_spatially_costly`) say "the
+#     previous sound has been put back" — durable and still true, but it
+#     reports a COMPLETED restoration with no action pending, so the generic
+#     note loses a reassurance, not a remedy;
+#   * the `program_profile_*` family states configuration JTS RE-CHECKS every
+#     session, so it can silently become false — replaying it as current is
+#     the #1942 defect itself, and the live `_setup_ready` gate above the
+#     failure branch already catches a genuinely unready setup;
+#   * `volume_unresolved` is already exempt STRUCTURALLY and by the better
+#     mechanism — the `needs_recovery` branch outranks the failure branch
+#     entirely, so a live state fact wins over the stale record without any
+#     help from this list.
+_DURABLE_STATE_FACTS = {
+    REASON_CORRECTION_ROLLBACK_FAILED: (
+        "JTS could not put the previous sound back, so the newer tuning is "
+        "still applied — Undo restores it"
+    ),
+}
+
+
+def _failure_is_fresh(failure: Mapping[str, Any]) -> bool:
+    """Is this persisted failure the screen the household is on RIGHT NOW?
+
+    A record with no ``at`` — every record written before #1942 — answers
+    False. That is the migration story and it is the fail-honest direction:
+    the state file's schema version is deliberately NOT bumped for this key
+    (a bump makes ``load_v2_state`` reject every deployed Pi's file, which
+    would discard ``pre_apply_profile`` and take Undo with it), so legacy
+    records simply arrive undated. Undated means "we cannot say this is
+    current", and the flow must never assert currency it cannot support.
+
+    A clock that has stepped BACKWARD since the write yields a negative age
+    and reads as fresh, which is the safe direction: the worst case is the
+    screen that ships today.
+    """
+    at = _finite(failure.get("at"))
+    if at is None:
+        return False
+    return time.time() - at <= FAILURE_FRESH_WINDOW_S
+
+
+def _failure_when_phrase(failure: Mapping[str, Any]) -> str:
+    """"yesterday" / "earlier today" / "on July 29" / "on July 29, 2025".
+
+    Follows ``jasper.tools._format_relative_date``'s shape (the household-date
+    precedent already in the tree): a bare "on July 30" when today IS July 30
+    reads as a date the household has to decode into "oh, this morning", and
+    with a 30-minute freshness window a same-day aged failure is ordinary.
+
+    Answers ``"earlier"`` — no date claim at all — for a record this build
+    cannot place on a calendar. That covers the undated pre-#1942 record AND
+    a stamp so far out of range that rendering it would either raise (glibc
+    ``localtime`` rejects roughly ≲ -1e16, and an uncaught ``OSError`` here is
+    a 500 on the wizard's main GET) or print a nonsense year. Both resolve the
+    same way, because "we cannot say when" is the honest answer to both.
+    """
+    at = _finite(failure.get("at"))
+    # A negative stamp is not a clock reading this project ever produced; it
+    # is a corrupt/garbage field, and the year it would render is nonsense.
+    if at is None or at < 0:
+        return "earlier"
+    try:
+        stamp = time.localtime(at)
+        now = time.localtime()
+        if (stamp.tm_year, stamp.tm_yday) == (now.tm_year, now.tm_yday):
+            return "earlier today"
+        yesterday = time.localtime(time.time() - 24 * 60 * 60)
+        if (stamp.tm_year, stamp.tm_yday) == (yesterday.tm_year, yesterday.tm_yday):
+            return "yesterday"
+        fmt = "%B %-d" if stamp.tm_year == now.tm_year else "%B %-d, %Y"
+        return f"on {time.strftime(fmt, stamp)}"
+    except (OSError, OverflowError, ValueError):
+        # Platform-dependent range limits. Never let a corrupt byte on disk
+        # turn the wizard's own entry screen into a 500.
+        return "earlier"
+
+
+def _failure_history_note(
+    code: str, failure: Mapping[str, Any], *, applied: bool,
+) -> str:
+    """The aged failure's ONE quiet line: what happened, and when.
+
+    Dated because an undated outcome presented on a resume is exactly the
+    defect (#1942: last session's numbers read as this session's verdict).
+
+    A ``_DURABLE_STATE_FACTS`` code keeps its own fact and instruction instead
+    of the generic reason clause — those sentences are still true, and the
+    household still has to act on them. The exemption is additionally gated on
+    ``applied``, because every fact on that list is a statement that something
+    JTS applied is still live: if the durable state no longer says so, the
+    claim is not corroborated and this falls back to the generic note rather
+    than asserting a change the state cannot confirm.
+    """
+    when = _failure_when_phrase(failure)
+    durable = _DURABLE_STATE_FACTS.get(code)
+    if durable is not None and applied:
+        # Two sentences, not a third em-dash clause: the fact is the point
+        # here, so it gets its own sentence rather than a subordinate one.
+        return f"Your last measurement ended {when}. {durable[0].upper()}{durable[1:]}."
+    spec = REASON_REGISTRY.get(code)
+    reason = (
+        _FAILURE_HISTORY_REASONS.get(spec.template, _FAILURE_HISTORY_REASON_DEFAULT)
+        if spec is not None
+        else _FAILURE_HISTORY_REASON_DEFAULT
+    )
+    return f"Your last measurement ended {when} — {reason}."
+
+
+def _aged_failure_envelope(
+    code: str, failure: Mapping[str, Any], status: Mapping[str, Any], *,
+    applied: bool,
+) -> dict[str, Any]:
+    """A failure that outlived its session: the ENTRY screen plus history.
+
+    Requirement R11 of #1941, owned by #1942. A returning household must not
+    be greeted by a terminal screen from a session that is over — least of all
+    one carrying the previous session's ``verify.evidence`` numbers as if they
+    were a live verdict. So the aged path renders the ordinary entry screen,
+    unchanged, and reports the prior outcome as ONE quiet ``info`` line.
+
+    Three properties this shape buys, all of them the point:
+
+    * **The entry screen's DATA contract, not just its copy.** There are TWO
+      numbers surfaces on this flow, and an earlier revision of this fix only
+      closed one of them. ``expert_details`` is empty on the entry screen and
+      so needs nothing done to it — but ``_envelope`` copies ``cloud`` /
+      ``cloud_chart`` / ``tier`` through from ``status`` on EVERY screen, the
+      persisted ``cloud`` sits beside ``failure`` in the same state file, and
+      ``crossover/main.js`` calls ``renderCloud`` with no screen switch. So a
+      resume rendered the dead session's before/after chart card — its curve,
+      its spec-band numbers, and a caption promising "the after-correction
+      curve appears once the second measurement pass finishes", a live-
+      progress claim about a session that ended yesterday. Those three keys
+      are nulled below. ``None`` is not a special aged-only value: it is what
+      the ``tier`` key's own contract already calls unknown, and this screen
+      genuinely HAS no session.
+    * **Undo survives.** ``applied`` is the state fact that says something is
+      live on the speaker, and W6.7 ruling 3 says the household is entitled to
+      Undo whenever that is true. The live path offers it; so does this one.
+    * **Uniform across templates, except where the copy is durable.** A stale
+      ``hard_stop`` gets the same treatment as a stale ``verify_fail``,
+      because "act on this now" is equally untrue of both. If the blocking
+      condition still holds, the next session refuses again and the household
+      reads a FRESH verdict — strictly better than acting on a day-old one
+      that may already be fixed. The exception is a reason whose copy states
+      a durable fact rather than a session outcome; see
+      ``_DURABLE_STATE_FACTS``.
+    """
+    next_action, alternate_actions = _tier_choice_actions(status)
+    env = _entry_envelope(
+        status,
+        next_action=next_action,
+        alternate_actions=(
+            [*alternate_actions, _undo_action()] if applied
+            else alternate_actions
+        ),
+        nudges=[{
+            "code": code,
+            # ``info``, never ``warn``: this is history, not a problem the
+            # household has to solve. The wizard's nudge renderer already
+            # styles the two differently (crossover/main.js renderNudges), so
+            # the quiet presentation needs no page change.
+            "severity": "info",
+            "text": _failure_history_note(code, failure, applied=applied),
+        }],
+    )
+    # The dead session's measurement payloads. Nulled AFTER the build rather
+    # than by sanitising ``status`` first, because the same ``tier`` value has
+    # a second, legitimate reader: ``_recommended_tier`` uses it to decide
+    # which tier carries the Recommended badge, which is durable history about
+    # the speaker (has a Full commission ever completed here?) and stays
+    # exactly as true on a resume as on a clean start. What must not survive
+    # is the CHART's copy of it. Pinned by the full-envelope guard test.
+    for dead_session_key in ("cloud", "cloud_chart", "tier"):
+        env[dead_session_key] = None
+    return env
+
+
 def _verify_fail_envelope(
     code: str, message: str, status: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1330,27 +1647,9 @@ def _verify_fail_envelope(
             "body": {},
         },
         alternate_actions=[
-            {
-                "id": "verify_undo",
-                "label": "Undo (restore previous sound)",
-                # W6 run-8 Blocker Q fix: rides the v2-aware restore path
-                # (jasper.web.correction_crossover_v2.handle_v2_restore),
-                # which reloads the pre-candidate applied profile
-                # ``handle_v2_apply`` stashed at apply time and clears the
-                # durable v2 applied/candidate/failure state on success — the
-                # legacy ``/crossover/restore`` expects a PENDING
-                # commissioning-run candidate apply that a v2 apply never
-                # creates, and 500s here instead.
-                # OPEN CHECKLIST ITEM (W6.7 gate N2): a session reset that
-                # clears the durable v2 state while the applied graph is
-                # still live loses this Undo affordance (no verify-phase
-                # state remains to render verify_fail from) — a future fix
-                # should keep an Undo path reachable whenever an applied
-                # candidate is in force, independent of a reset elsewhere.
-                "endpoint": "/correction/crossover/v2/restore",
-                "body": {},
-                "show_during_relay": True,
-            },
+            # Shared with the aged-failure entry screen — see ``_undo_action``
+            # for the restore-path rationale and the open W6.7 N2 item.
+            _undo_action(),
             {
                 "id": "verify_remeasure",
                 "label": "Re-measure",
@@ -1586,9 +1885,30 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # Pass the RAW state fact — never derive "was this applied" from
         # phase/active_step (see _failure_envelope's docstring for why that
         # derivation can itself be wrong).
-        env = _failure_envelope(
-            failure_code, status, active_step, applied=bool(v2.get("applied")),
-        )
+        applied = bool(v2.get("applied"))
+        # #1942: a persisted failure used to render its terminal screen here
+        # unconditionally, on every build, forever — so a plain page load the
+        # next day was answered with a dead session's screen AND that
+        # session's verify numbers, presented as the live verdict. Only a
+        # failure that is still the household's current moment gets the
+        # terminal screen; an older one is history on the entry screen. See
+        # ``FAILURE_FRESH_WINDOW_S`` for why the discriminator is the
+        # record's own age and not a session binding.
+        #
+        # Note the aged branch does NOT fall through into the phase chain
+        # below: post-apply, ``_persist_terminal_failure`` keeps
+        # ``accepted_phases``, so the stale state resolves to PHASE_VERIFY and
+        # a fall-through would invite the household to "confirm the result" of
+        # a session that ended yesterday. Landing them on the entry screen is
+        # the deliberate destination, not a side effect of where they were.
+        if _failure_is_fresh(failure):
+            env = _failure_envelope(
+                failure_code, status, active_step, applied=applied,
+            )
+        else:
+            env = _aged_failure_envelope(
+                failure_code, failure, status, applied=applied,
+            )
         log_event(
             logger, "correction.crossover_v2_envelope_serve",
             screen=env["screen"], phase=phase, failure=failure_code,
@@ -1597,31 +1917,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
 
     if phase == PHASE_CHECK:
         next_action, alternate_actions = _tier_choice_actions(status)
-        env = _envelope(
-            screen="microphone_check", active_step="microphone_check",
-            # The journey-opening promise. Before the spatial cloud this said
-            # "keep it in that one spot for the whole measurement" — false as
-            # of PR-3b, and false on the FIRST screen the household reads,
-            # which is the worst place for it. The mark is still where the
-            # session starts and returns to; the moving is now named up front
-            # rather than sprung on them at the third capture.
-            #
-            # Flow-simplification §3: the tier choice is the household's,
-            # explicitly, every session — the two actions below are BOTH
-            # first-class (never a silent default); which one is primary is
-            # only history's Recommended badge (_tier_choice_actions).
-            verdict=(
-                "Place the microphone about 1 m in front of the speaker, at "
-                "tweeter height and pointing at it — about where you'd sit to "
-                "listen (see the picture). That spot is your mark. JTS runs a "
-                "quick microphone check first, then measures from the mark and "
-                "from a few nearby spots your phone will guide you to — that "
-                "is what lets it tell the speaker apart from the room. Choose "
-                "how thorough a measurement to run below."
-            ),
-            next_action=next_action,
-            alternate_actions=alternate_actions,
-            status=status,
+        env = _entry_envelope(
+            status, next_action=next_action, alternate_actions=alternate_actions,
         )
     elif phase == PHASE_MEASURE:
         env = _envelope(
