@@ -444,10 +444,8 @@ if [[ "$IS_IP" == "0" ]]; then
 else
     SSH_HOWTO="ssh ${PI_USER}@${HOST}"
 fi
-if [[ "$HOST" == "$SPEAKER_HOSTNAME" ]]; then
-    URL_HOST="$HOST"
-else
-    URL_HOST="$HOST"
+URL_HOST="$HOST"
+if [[ "$HOST" != "$SPEAKER_HOSTNAME" ]]; then
     ALT_URL_NOTE="  Speaker hostname: ${SPEAKER_HOSTNAME} (identity/cert; use http://${SPEAKER_HOSTNAME}/ once mDNS resolves)"
 fi
 

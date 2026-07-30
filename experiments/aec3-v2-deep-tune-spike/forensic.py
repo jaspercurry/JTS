@@ -19,7 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
-BASELINE = Path("/Users/jaspercurry/Code/JTS/.claude/worktrees/hardcore-herschel-c614a3/reference-conditions")
+REPO = Path(__file__).resolve().parents[2]
+BASELINE = REPO / "reference-conditions"
 SR = 16000
 
 # Cells to scrutinize — failure cells first

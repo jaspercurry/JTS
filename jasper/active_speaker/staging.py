@@ -1853,7 +1853,7 @@ def stage_protected_startup_config(
             # real path: this same config is what later freezes as the durable
             # profile. Per-driver unmute is a transient runtime load, never the
             # frozen boot config — so the staged candidate is fully muted.
-            yaml = emit_active_speaker_commissioning_config(
+            emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
                 audible_outputs=frozenset(),
@@ -1861,7 +1861,7 @@ def stage_protected_startup_config(
                 baseline_id=f"staged-{_safe_stem(topology.topology_id)}",
             )
             classification = _record_generated_config_classification(
-                yaml,
+                emitted_config,
                 candidate_gate_id="generated_active_startup_candidate",
                 gates=gates,
                 issues=issues,
@@ -1869,7 +1869,9 @@ def stage_protected_startup_config(
             # Crash-recovery invariant: the staged boot config must start with
             # every active output muted. A reboot partway through commissioning
             # has to come up everything-muted, never a tweeter unmuted at level.
-            fully_muted = _all_commission_mutes_engaged(yaml, preset=bound_preset)
+            fully_muted = _all_commission_mutes_engaged(
+                emitted_config, preset=bound_preset
+            )
             gates.append(_gate(
                 "staged_candidate_fully_muted",
                 label="Staged boot config starts with every output muted",
@@ -1888,7 +1890,9 @@ def stage_protected_startup_config(
                     "output muted",
                 ))
             if software_guard_requested:
-                software_guard = _software_guard_evidence(yaml, preset=bound_preset)
+                software_guard = _software_guard_evidence(
+                    emitted_config, preset=bound_preset
+                )
                 gates.append(_gate(
                     "software_tweeter_guard_evidence",
                     label="Software compression-driver guard is present in generated config",
@@ -2153,7 +2157,7 @@ def prepare_driver_commissioning_config(
     ):
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml = emit_active_speaker_commissioning_config(
+            emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
                 audible_outputs=audible_outputs,
@@ -2165,7 +2169,7 @@ def prepare_driver_commissioning_config(
                 filter_mode=filter_mode,
             )
             classification = _record_generated_config_classification(
-                yaml,
+                emitted_config,
                 candidate_gate_id="generated_active_commissioning_candidate",
                 gates=gates,
                 issues=issues,
@@ -2173,7 +2177,7 @@ def prepare_driver_commissioning_config(
             # The per-driver protection-while-audible gate (the config-level
             # form of the Stage-5 "HP present before the tweeter is unmuted").
             audible_evidence = driver_commission_audible_evidence(
-                yaml,
+                emitted_config,
                 preset=bound_preset,
                 audible_outputs=audible_outputs,
                 expected_headroom_db=COMMISSIONING_HEADROOM_DB,

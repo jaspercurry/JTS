@@ -19,6 +19,8 @@ For each cell, the reference numbers:
 """
 from __future__ import annotations
 
+import importlib
+import os
 import sys
 import time
 import wave
@@ -26,14 +28,17 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, "/tmp/aec3v2-spike")
-import importlib, _aec3_v2_spike
+REPO = Path(__file__).resolve().parents[2]
+BUILD_DIR = Path(os.environ.get("JASPER_AEC3_V2_SPIKE_BUILD_DIR", "/tmp/aec3v2-spike"))
+sys.path.insert(0, str(BUILD_DIR))
+import _aec3_v2_spike  # noqa: E402
+
 importlib.reload(_aec3_v2_spike)
-from _aec3_v2_spike import Aec3V2
+from _aec3_v2_spike import Aec3V2  # noqa: E402
 
 from openwakeword.model import Model
 
-BASELINE = Path("/Users/jaspercurry/Code/JTS/.claude/worktrees/hardcore-herschel-c614a3/reference-conditions")
+BASELINE = REPO / "reference-conditions"
 MODEL_PATH = "/tmp/jts-wake-models/jarvis_v2.onnx"
 
 # V2FIXED config as the campaign baseline
@@ -198,7 +203,7 @@ for label, delta in SWEEPS:
     cfg.update(delta)
     try:
         result = run_config(cfg)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - one failed lab configuration must not abort the sweep
         print(f"{label:<38s}  ERROR: {e}")
         continue
     results_log[label] = result

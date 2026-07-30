@@ -86,10 +86,6 @@ SOURCE_TO_ACTIVE_KEY: dict[Source, str] = {
 }
 
 
-def is_music_source(source: Source) -> bool:
-    return source in SOURCE_SPECS
-
-
 def volume_mode(source: Source) -> VolumeMode:
     if source == Source.IDLE:
         return VolumeMode.CAMILLA_MASTER

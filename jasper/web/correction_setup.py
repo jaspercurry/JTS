@@ -2700,7 +2700,6 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             "current_correction_at_start"
         )
 
-        reservation_transferred = False
         try:
             _run_async(sess.begin_noise_capture(), timeout=3.0)
             state_started = sess.state == SessionState.NEEDS_NOISE_CAPTURE
@@ -2745,8 +2744,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             ),
         }
     except Exception:  # noqa: BLE001
-        if not locals().get("reservation_transferred", False):
-            _clear_start_slot()
+        _clear_start_slot()
         raise
 
 

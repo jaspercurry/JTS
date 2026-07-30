@@ -158,7 +158,6 @@ RAW0_LEG = "raw0"
 USB_CORPUS_LEGS = ("ref", "usb_raw", "usb_webrtc")
 USB_DTLN_LEG = "usb_dtln"
 CHIP_AEC_LEGS = ("chip_aec_150", "chip_aec_210")
-XVF_RAW0_WEBRTC_AEC3_LEG = "xvf_raw0_webrtc_aec3"
 XVF_RAW0_DTLN_LEG = "xvf_raw0_dtln"
 CHIP_AEC_PROFILE_BASE_LEGS = (
     "chip_aec_150",

@@ -30,7 +30,6 @@ DEFAULT_PATH = "/run/jasper/volume_policy.json"
 PUSH_GUARD_EPSILON_DB = 1.0
 
 PUSH_OK = "ok"
-PUSH_UNSUPPORTED = "unsupported"
 PUSH_MISSING_ROUTER = "missing_router"
 PUSH_NO_ACTIVE_DEVICE = "no_active_device"
 PUSH_NO_ACTIVE_TRANSPORT = "no_active_transport"

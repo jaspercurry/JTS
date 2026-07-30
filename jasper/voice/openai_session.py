@@ -246,7 +246,6 @@ class OpenAIRealtimeTurn:
         # See `last_chunk_played_at()` docstring on LiveTurn for why.
         self._last_chunk_dequeued_at: float = 0.0
         self._first_chunk_logged = False
-        self._started_at = started_at
         self._started_at_monotonic: float = _time.monotonic()
         self._bytes_sent: int = 0
         self._chunks_received: int = 0

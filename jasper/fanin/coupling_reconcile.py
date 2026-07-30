@@ -587,14 +587,7 @@ def reconcile_coupling(
             do_kick_hardware=do_kick_hardware,
         )
 
-    if action is None:
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="error",
-            detail=support.detail or "unsupported coupling action",
-        )
+    assert action is not None, "supported coupling must resolve an env action"
     fanin_new_text, coupling_changed = _apply_action(fanin_snapshot.text, action)
     # ``coupling_changed`` is the COUPLING line moving alone — it (with
     # ``outputd_changed``) drives the arm/disarm-vs-confirm decision below. A
@@ -1578,15 +1571,6 @@ def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolut
             raw=raw,
             error=str(e),
         )
-
-
-def _resolved_fanin_ring_slots(fanin_text: str) -> int | None:
-    """fan-in's effective Ring-A slot count, or ``None`` when invalid."""
-
-    resolution = resolve_effective_fanin_ring_slots(fanin_text)
-    if resolution.error:
-        return None
-    return resolution.value
 
 
 def ring_slot_geometry_ready(fanin_text: str) -> tuple[bool, str]:

@@ -574,10 +574,3 @@ class CitiBikeClient:
             returned=len(out),
         )
         return out
-
-    def resolve_label(self, station_id: str) -> str | None:
-        """Look up a saved station's label by id (None if not saved)."""
-        for sid, label in self._saved:
-            if sid == station_id:
-                return label
-        return None

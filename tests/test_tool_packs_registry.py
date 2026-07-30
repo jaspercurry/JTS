@@ -405,7 +405,6 @@ def test_real_build_registry_wrapper_produces_full_set():
     cfg = types.SimpleNamespace(spotify_device_name="JTS", spotify_setup_url="")
     reg = _build_registry(
         cfg,
-        None,                     # camilla (accepted-but-unused)
         None,                     # renderer
         None,                     # weather
         transit_tool_stubs(),     # transit_tools

@@ -100,7 +100,6 @@ COMMISSION_TONE_STARTUP_CHECK_S = 0.08
 COMMISSION_TONE_SAMPLE_RATE = 48000
 COMMISSION_TONE_SOURCE_DBFS = 0.0
 COMMISSION_TONE_BACKEND = "correction_substream_continuous_tone"
-SUMMED_COMMISSION_TONE_BACKEND = "correction_substream_summed_tone"
 SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
 DRIVER_CAPTURE_SWEEP_BACKEND = "correction_substream_driver_sweep"
 SUMMED_CAPTURE_SWEEP_BACKEND = "correction_substream_summed_sweep"
@@ -400,10 +399,8 @@ async def _ensure_commission_startup_anchor(
     from jasper.active_speaker.path_safety import evaluate_path_safety_evidence
 
     try:
-        import json as _json
-
         report = evaluate_path_safety_evidence(
-            _json.loads(Path(evidence_path).read_text(encoding="utf-8"))
+            json.loads(Path(evidence_path).read_text(encoding="utf-8"))
         )
     except _EVIDENCE_READ_ERRORS as exc:
         report = {"status": "blocked", "load_gate": "blocked", "error": str(exc)}

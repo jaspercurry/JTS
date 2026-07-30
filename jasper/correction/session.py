@@ -623,14 +623,8 @@ class MeasurementSession:
     # for callers, while SessionArtifacts owns the file-system work.
     # ------------------------------------------------------------------
 
-    def _ensure_bundle_dir(self) -> Path | None:
-        return self.artifacts.ensure_bundle_dir()
-
     def _bundle_relative_path(self, path: Path) -> str | None:
         return self.artifacts.bundle_relative_path(path)
-
-    def _existing_bundle_dependencies(self, *paths: str) -> list[str]:
-        return self.artifacts.existing_bundle_dependencies(*paths)
 
     def _write_capture_replay_artifacts(
         self,

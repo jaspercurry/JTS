@@ -466,8 +466,6 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         return await router.refresh_if_empty()
 
     async def _resolve_for_play() -> "tuple[object, str | None, list[str], str, dict[str, str]] | None":
-        if not await _ensure_clients():
-            return None
         """Pick the active account and decide where to start_playback.
         Returns (sp, device_id, stop_renderers, account_name,
         configured_playlists) or None if no account / device combination
@@ -483,6 +481,8 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         visible to that account. resolve_target's heuristics (which
         re-derive the AirPlay→Spotify match from the renderer's
         currentsong) only run for cold-start cases."""
+        if not await _ensure_clients():
+            return None
         renderers = await renderer.active_renderers()
         airplay_active = bool(
             renderers.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY])

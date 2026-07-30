@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
@@ -556,9 +557,8 @@ def _find_controller(path: Path) -> str | None:
     current = path.resolve()
     for item in (current, *current.parents):
         name = item.name
-        if name.startswith("xhci-hcd.") or name.startswith("usb"):
-            if name.startswith("xhci-hcd."):
-                return name
+        if name.startswith("xhci-hcd."):
+            return name
     return None
 
 
@@ -912,4 +912,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(os.sys.argv[1:]))
+    raise SystemExit(main(sys.argv[1:]))

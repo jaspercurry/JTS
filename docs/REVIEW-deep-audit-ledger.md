@@ -4,17 +4,17 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`9dd25b514`), including this branch:
+Last reconciled against `origin/main` (`ebebce112`), including this branch:
 2026-07-29.
 
 ## Status counts
 
-- **open**: 271 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 214 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 393
+- **fixed**: 443
 - **in-progress**: 0
-- **mooted**: 13
+- **mooted**: 20
 - **deferred**: 0
 
 ## Ledger
@@ -209,7 +209,7 @@ Last reconciled against `origin/main` (`9dd25b514`), including this branch:
 | DA-0265 | `tests/test_tools_spotify.py` :: spotify_queue | should-fix | W4 | **fixed** | Spotify queue success dispatch and bounded failure behavior directly covered — #1426 |
 | DA-0266 | `tests/test_web_correction_setup.py` :: test_known_post_routes_reach_csrf_guard | should-fix | W4 | **fixed** | exact 45-route runtime/HANDOFF inventory equality plus route-before-CSRF coverage — #1427 |
 | DA-0267 | `jasper/route_latency/tap_client.py` :: TapClient.status | nit | W5 | **open** | — |
-| DA-0268 | `PLAN.md` :: 150 | nit | W5 | **open** | — |
+| DA-0268 | `PLAN.md` :: 150 | nit | W5 | **fixed** | roadmap now points at the shipped stale-volume clamp controls |
 | DA-0269 | `capture-page/js/main.js` :: renderCalibration():247-351 | nit | W5 | **open** | — |
 | DA-0270 | `capture-page/js/render.js` :: :118 | nit | W5 | **fixed** | unused capture renderer test export removed |
 | DA-0271 | `deploy/assets/app.css` :: .ico--lg:207 | nit | W5 | **fixed** | unused icon-size variant removed |
@@ -220,120 +220,120 @@ Last reconciled against `origin/main` (`9dd25b514`), including this branch:
 | DA-0276 | `deploy/assets/sound-profile/js/main.js` :: patchActiveSpeaker call sites, e.g. :5242, : | nit | W5 | **fixed** | redundant active-speaker state self-assignments removed |
 | DA-0277 | `deploy/assets/tools/js/render.js` :: toolCard | nit | W5 | **fixed** | dead tool-card adapter removed; tests exercise the production row renderer directly |
 | DA-0278 | `deploy/assets/wake-corpus/js/main.js` :: refreshSessions | nit | W5 | **fixed** | session metadata is escaped before HTML/attribute insertion |
-| DA-0279 | `deploy/install.sh` :: main() / install_profile_legacy_marker_migra | nit | W5 | **open** | — |
+| DA-0279 | `deploy/install.sh` :: main() / install_profile_legacy_marker_migra | nit | W5 | **fixed** | migration event reports the resolved install profile |
 | DA-0280 | `deploy/lib/install/systemd-units.sh` :: install_grouping_unit_files | nit | W5 | **open** | — |
 | DA-0281 | `deploy/lib/install/systemd-units.sh` :: install_systemd_units | nit | W5 | **open** | — |
 | DA-0282 | `deploy/systemd/jts-mic.slice` :: :32 | nit | W5 | **open** | — |
-| DA-0283 | `deploy/udev/99-jasper-audio-hardware-reconcile.rules` :: ENV{PRODUCT}=="05ac/110a/*" | nit | W5 | **open** | — |
-| DA-0284 | `docs/HANDOFF-audio-graph-consolidation.md` :: 48 | nit | W5 | **open** | — |
-| DA-0285 | `docs/HANDOFF-calibration-agent.md` :: 790,817,1192 | nit | W5 | **open** | — |
-| DA-0286 | `docs/HANDOFF-fan-in-daemon.md` :: 1037 | nit | W5 | **open** | — |
-| DA-0287 | `docs/HANDOFF-mic-quality-v2.md` :: 950-951 | nit | W5 | **open** | — |
-| DA-0288 | `docs/HANDOFF-usb-low-latency.md` :: 84-87 | nit | W5 | **open** | — |
-| DA-0289 | `experiments/aec3-v2-deep-tune-spike/sweep.py` :: :29,36-37 | nit | W5 | **open** | — |
+| DA-0283 | `deploy/udev/99-jasper-audio-hardware-reconcile.rules` :: ENV{PRODUCT}=="05ac/110a/*" | nit | W5 | **mooted** | zero-padded variant is an intentional hot-unplug compatibility guard, pinned alongside the observed unpadded udev form |
+| DA-0284 | `docs/HANDOFF-audio-graph-consolidation.md` :: 48 | nit | W5 | **fixed** | obsolete lean-FIFO path reference was removed with the owning lane |
+| DA-0285 | `docs/HANDOFF-calibration-agent.md` :: 790,817,1192 | nit | W5 | **fixed** | cost/provider prose reconciled with shipped advisor names and household cap |
+| DA-0286 | `docs/HANDOFF-fan-in-daemon.md` :: 1037 | nit | W5 | **fixed** | retired topology switch is explicitly historical |
+| DA-0287 | `docs/HANDOFF-mic-quality-v2.md` :: 950-951 | nit | W5 | **fixed** | residual-suppressor section names only shipped controls |
+| DA-0288 | `docs/HANDOFF-usb-low-latency.md` :: 84-87 | nit | W5 | **fixed** | current handoff uses canonical `INPUT_RESAMPLER` family |
+| DA-0289 | `experiments/aec3-v2-deep-tune-spike/sweep.py` :: :29,36-37 | nit | W5 | **fixed** | experiment paths derive from checkout with an overridable build dir |
 | DA-0290 | `firmware/dial/src/display.cpp` :: display_init | nit | W5 | **open** | — |
 | DA-0291 | `firmware/satellite-amoled/src/display.cpp` :: displayShowStatus | nit | W5 | **open** | — |
 | DA-0292 | `firmware/satellite-amoled/src/main.cpp` :: :38-40 | nit | W5 | **open** | — |
-| DA-0293 | `jasper/active_speaker/commission_ramp.py` :: _record_ramp_state:201 | nit | W5 | **open** | — |
+| DA-0293 | `jasper/active_speaker/commission_ramp.py` :: _record_ramp_state:201 | nit | W5 | **fixed** | standard-library import moved to module scope |
 | DA-0294 | `jasper/active_speaker/commissioning_coordinator.py` :: _combined_group_view | nit | W5 | **open** | — |
-| DA-0295 | `jasper/active_speaker/graph_evidence.py` :: driver_mute_name | nit | W5 | **open** | — |
+| DA-0295 | `jasper/active_speaker/graph_evidence.py` :: driver_mute_name | nit | W5 | **fixed** | unused verification-vocabulary re-export removed |
 | DA-0296 | `jasper/active_speaker/playback.py` :: start_tone_playback / TonePlaybackBackend | nit | W5 | **open** | — |
 | DA-0297 | `jasper/active_speaker/playback_route.py` :: active_playback_route_capability / _route_ca | nit | W5 | **open** | — |
 | DA-0298 | `jasper/active_speaker/staging.py` :: _passive_mains_with_sub_preset:1119 | nit | W5 | **open** | — |
 | DA-0299 | `jasper/active_speaker/staging.py` :: lines 463-822 (safety-evidence functions) vs | nit | W5 | **open** | — |
-| DA-0300 | `jasper/active_speaker/staging.py` :: stage_protected_startup_config:1715 / prepar | nit | W5 | **open** | — |
+| DA-0300 | `jasper/active_speaker/staging.py` :: stage_protected_startup_config:1715 / prepar | nit | W5 | **fixed** | emitted config no longer shadows the YAML module |
 | DA-0301 | `jasper/active_speaker/startup_load.py` :: build_startup_load_preflight / stop_control_ | nit | W5 | **open** | — |
-| DA-0302 | `jasper/active_speaker/startup_load.py` :: build_startup_load_preflight, physical_ident | nit | W5 | **open** | — |
-| DA-0303 | `jasper/active_speaker/web_commissioning.py` :: SUMMED_COMMISSION_TONE_BACKEND | nit | W5 | **open** | — |
+| DA-0302 | `jasper/active_speaker/startup_load.py` :: build_startup_load_preflight, physical_ident | nit | W5 | **fixed** | physical-identity gate result computed once |
+| DA-0303 | `jasper/active_speaker/web_commissioning.py` :: SUMMED_COMMISSION_TONE_BACKEND | nit | W5 | **fixed** | unused backend constant removed |
 | DA-0304 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_mux_command | nit | W5 | **open** | — |
-| DA-0305 | `jasper/active_speaker/web_commissioning.py` :: _ensure_commission_startup_anchor | nit | W5 | **open** | — |
-| DA-0306 | `jasper/aec_engines/dtln.py` :: DTLNEngine.process | nit | W5 | **open** | — |
+| DA-0305 | `jasper/active_speaker/web_commissioning.py` :: _ensure_commission_startup_anchor | nit | W5 | **fixed** | redundant local JSON import removed |
+| DA-0306 | `jasper/aec_engines/dtln.py` :: DTLNEngine.process | nit | W5 | **fixed** | streaming contract now documents complete-hop emission truthfully |
 | DA-0307 | `jasper/assistant_loudness.py` :: AssistantLoudnessProfile.phrase_hash | nit | W5 | **open** | — |
-| DA-0308 | `jasper/audio_runtime_plan.py` :: FaninOutputBufferTarget.detail | nit | W5 | **open** | — |
-| DA-0309 | `jasper/audio_validation.py` :: HardwareValidationRun.latest_path:182 | nit | W5 | **open** | — |
-| DA-0310 | `jasper/audio_validation.py` :: SCHEMA_VERSION:57 / CHIP_AEC_CALIBRATION_REQ | nit | W5 | **open** | — |
+| DA-0308 | `jasper/audio_runtime_plan.py` :: FaninOutputBufferTarget.detail | nit | W5 | **fixed** | unread detail field removed from resolution DTO |
+| DA-0309 | `jasper/audio_validation.py` :: HardwareValidationRun.latest_path:182 | nit | W5 | **fixed** | unread latest-pointer field removed from run result |
+| DA-0310 | `jasper/audio_validation.py` :: SCHEMA_VERSION:57 / CHIP_AEC_CALIBRATION_REQ | nit | W5 | **fixed** | dead compatibility constants removed |
 | DA-0311 | `jasper/audio_validation.py` :: lines 213-599 vs 888-2992 | nit | W5 | **open** | — |
 | DA-0312 | `jasper/audio_validation.py` :: route_latency_gate_status:287,310 | nit | W5 | **open** | — |
 | DA-0313 | `jasper/bluetooth/adapter.py` :: _close_pairing_window | nit | W5 | **fixed** | pairing shutdown attempts every BlueZ admission knob before re-raising |
-| DA-0314 | `jasper/bluetooth/models.py` :: UUID_AVRCP | nit | W5 | **open** | — |
-| DA-0315 | `jasper/bluetooth/models.py` :: _MAC_ALIAS_RE | nit | W5 | **open** | — |
+| DA-0314 | `jasper/bluetooth/models.py` :: UUID_AVRCP | nit | W5 | **fixed** | unused UUID constant removed |
+| DA-0315 | `jasper/bluetooth/models.py` :: _MAC_ALIAS_RE | nit | W5 | **fixed** | static MAC pattern simplified to one readable regex |
 | DA-0316 | `jasper/calibration_agent/actions.py` :: _run_one_action | nit | W5 | **open** | — |
 | DA-0317 | `jasper/calibration_agent/response.py` :: _policy_allows | nit | W5 | **open** | — |
 | DA-0318 | `jasper/capture_relay/alignment.py` :: cross_correlation_alignment | nit | W5 | **fixed** | pathological captures are truncated before float64 normalization |
-| DA-0319 | `jasper/citibike.py` :: CitiBikeClient.resolve_label | nit | W5 | **open** | — |
-| DA-0320 | `jasper/cli/aec_bridge.py` :: LegEmitter.engine_token :581, add_emitter(.. | nit | W5 | **open** | — |
-| DA-0321 | `jasper/cli/aec_bridge.py` :: MIC_DEVICE :157 | nit | W5 | **open** | — |
+| DA-0319 | `jasper/citibike.py` :: CitiBikeClient.resolve_label | nit | W5 | **fixed** | unused client method and test removed |
+| DA-0320 | `jasper/cli/aec_bridge.py` :: LegEmitter.engine_token :581, add_emitter(.. | nit | W5 | **fixed** | never-populated emitter field and parameter removed |
+| DA-0321 | `jasper/cli/aec_bridge.py` :: MIC_DEVICE :157 | nit | W5 | **fixed** | unused import-time mic constant removed |
 | DA-0322 | `jasper/cli/aec_bridge.py` :: _aec_loop setup preamble (~1592-1906) vs loo | nit | W5 | **open** | — |
 | DA-0323 | `jasper/cli/doctor/__init__.py` :: probe_aec_ref_path | nit | W5 | **open** | — |
 | DA-0324 | `jasper/cli/doctor/audio.py` :: check_fanin_binary_installed..check_aec_cloc | nit | W5 | **open** | — |
 | DA-0325 | `jasper/cli/doctor/audio.py` :: check_outputd_service:2311 | nit | W5 | **open** | — |
 | DA-0326 | `jasper/cli/doctor/privsep.py` :: MANIFEST (jasper-wiim-remote-mic) | nit | W5 | **open** | — |
-| DA-0327 | `jasper/cli/route_latency_harness.py` :: _cmd_run / _add_analyze_args / _add_schedule | nit | W5 | **open** | — |
+| DA-0327 | `jasper/cli/route_latency_harness.py` :: _cmd_run / _add_analyze_args / _add_schedule | nit | W5 | **fixed** | run CLI no longer accepts an option it always overwrites |
 | DA-0328 | `jasper/cli/system_soak.py` :: :253 | nit | W5 | **open** | — |
 | DA-0329 | `jasper/cli/wake_enroll.py` :: record_window / quadrant_dirs | nit | W5 | **open** | — |
 | DA-0330 | `jasper/config.py` :: 255-257,684-689 | nit | W5 | **open** | — |
 | DA-0331 | `jasper/config.py` :: 318-319,330-331 | nit | W5 | **open** | — |
 | DA-0332 | `jasper/config.py` :: Config.camilla2_host / camilla2_port / camil | nit | W5 | **open** | — |
 | DA-0333 | `jasper/control/aec_endpoints.py` :: _atomic_rewrite_env | nit | W5 | **open** | — |
-| DA-0334 | `jasper/control/server.py` :: :484, :487, :490, :496, :497, :506 | nit | W5 | **open** | — |
+| DA-0334 | `jasper/control/server.py` :: :484, :487, :490, :496, :497, :506 | nit | W5 | **fixed** | extracted-domain re-export aliases, including the final Spotify remnant, removed |
 | DA-0335 | `jasper/control/server.py` :: _aec_full_status | nit | W5 | **open** | — |
 | DA-0336 | `jasper/control/state_aggregate.py` :: _camilla_status | nit | W5 | **fixed** | fail-soft Camilla probe failures emit a structured debug event |
-| DA-0337 | `jasper/control/system_metrics.py` :: SystemSampler.stop | nit | W5 | **open** | — |
+| DA-0337 | `jasper/control/system_metrics.py` :: SystemSampler.stop | nit | W5 | **fixed** | unused test-only stop seam and dormant flag removed |
 | DA-0338 | `jasper/control/volume_ops.py` :: _build_spotify_router_or_none / _spotify_emp | nit | W5 | **open** | — |
 | DA-0339 | `jasper/control/wifi_guardian_state.py` :: snapshot / _active_ssid / _last_guardian_eve | nit | W5 | **open** | — |
 | DA-0340 | `jasper/correction/acoustic_quality.py` :: _capture_summary / build_acoustic_quality_re | nit | W5 | **open** | — |
-| DA-0341 | `jasper/correction/fir_runtime.py` :: stage_fir_artifact | nit | W5 | **open** | — |
-| DA-0342 | `jasper/correction/runtime_safety.py` :: _issue_detail | nit | W5 | **open** | — |
+| DA-0341 | `jasper/correction/fir_runtime.py` :: stage_fir_artifact | nit | W5 | **fixed** | redundant post-write chmod removed |
+| DA-0342 | `jasper/correction/runtime_safety.py` :: _issue_detail | nit | W5 | **fixed** | shared fallback wording is operation-neutral |
 | DA-0343 | `jasper/correction/session.py` :: SessionEvent / self._events / _emit | nit | W5 | **open** | — |
-| DA-0344 | `jasper/correction/session.py` :: _ensure_bundle_dir / _existing_bundle_depend | nit | W5 | **open** | — |
+| DA-0344 | `jasper/correction/session.py` :: _ensure_bundle_dir / _existing_bundle_depend | nit | W5 | **fixed** | unused SessionArtifacts forwarding wrappers removed |
 | DA-0345 | `jasper/cues/manager.py` :: AudioCueManager.status :168 | nit | W5 | **open** | — |
-| DA-0346 | `jasper/fanin/buffer_reconcile.py` :: :112 | nit | W5 | **open** | — |
-| DA-0347 | `jasper/fanin/coupling_reconcile.py` :: _resolved_fanin_ring_slots | nit | W5 | **open** | — |
+| DA-0346 | `jasper/fanin/buffer_reconcile.py` :: :112 | nit | W5 | **fixed** | dead env alias and import removed |
+| DA-0347 | `jasper/fanin/coupling_reconcile.py` :: _resolved_fanin_ring_slots | nit | W5 | **fixed** | unused resolver wrapper removed |
 | DA-0348 | `jasper/fanin/coupling_reconcile.py` :: reconcile_auto | nit | W5 | **open** | — |
-| DA-0349 | `jasper/fanin/coupling_reconcile.py` :: reconcile_coupling | nit | W5 | **open** | — |
+| DA-0349 | `jasper/fanin/coupling_reconcile.py` :: reconcile_coupling | nit | W5 | **fixed** | unreachable null-action branch removed |
 | DA-0350 | `jasper/flight_recorder.py` :: RingFlushHandler.flush_buffer | nit | W5 | **fixed** | direct and signal-driven flight-recorder flushes hold the handler lock |
 | DA-0351 | `jasper/google_creds.py` :: GoogleRegistry.save | nit | W5 | **fixed** | Google account registry uses canonical atomic publication and cleanup |
 | DA-0352 | `jasper/mics/__init__.py` :: PROFILES | nit | W5 | **open** | — |
 | DA-0353 | `jasper/mics/xvf3800.py` :: is_recommended_firmware | nit | W5 | **fixed** | independently dead firmware predicate removed alongside unreachable mixer mutator — #1322 |
 | DA-0354 | `jasper/multiroom/config.py` :: _format_roster | nit | W5 | **open** | — |
 | DA-0355 | `jasper/multiroom/reconcile.py` :: _write_outputd_env:1066-1101 | nit | W5 | **open** | — |
-| DA-0356 | `jasper/music_sources.py` :: is_music_source | nit | W5 | **open** | — |
-| DA-0357 | `jasper/mux.py` :: :1020 | nit | W5 | **open** | — |
-| DA-0358 | `jasper/output_hardware.py` :: _find_controller | nit | W5 | **open** | — |
-| DA-0359 | `jasper/output_hardware.py` :: main | nit | W5 | **open** | — |
-| DA-0360 | `jasper/output_topology.py` :: OutputTopology.output_layout | nit | W5 | **open** | — |
+| DA-0356 | `jasper/music_sources.py` :: is_music_source | nit | W5 | **fixed** | unused predicate removed |
+| DA-0357 | `jasper/mux.py` :: :1020 | nit | W5 | **mooted** | later mux refactor removed the review-tool artifact comment |
+| DA-0358 | `jasper/output_hardware.py` :: _find_controller | nit | W5 | **fixed** | redundant outer USB-name condition removed |
+| DA-0359 | `jasper/output_hardware.py` :: main | nit | W5 | **fixed** | CLI uses the standard `sys.argv` surface |
+| DA-0360 | `jasper/output_topology.py` :: OutputTopology.output_layout | nit | W5 | **fixed** | unused convenience method and test removed |
 | DA-0361 | `jasper/output_topology.py` :: SpeakerChannel / channel_identity_report | nit | W5 | **open** | — |
 | DA-0362 | `jasper/peering/daemon.py` :: _spawn_send | nit | W5 | **open** | — |
 | DA-0363 | `jasper/research/providers/openai_research.py` :: import reconnect_backoff_delay | nit | W5 | **open** | — |
 | DA-0364 | `jasper/ring_negotiation.py` :: accept | nit | W5 | **open** | — |
 | DA-0365 | `jasper/sound/profile.py` :: ProfileLibraryEntry.to_dict | nit | W5 | **fixed** | profile descriptions survive serialization, overwrite, and rename |
 | DA-0366 | `jasper/tools/packs.py` :: register_packs | nit | W5 | **fixed** | raising pack gates are isolated like build/registration failures |
-| DA-0367 | `jasper/tools/spotify.py` :: _resolve_for_play :470 | nit | W5 | **open** | — |
-| DA-0369 | `jasper/voice/daemon_main.py` :: _build_registry | nit | W5 | **open** | — |
-| DA-0370 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn.__init__:248 | nit | W5 | **open** | — |
+| DA-0367 | `jasper/tools/spotify.py` :: _resolve_for_play :470 | nit | W5 | **fixed** | function documentation restored as the actual docstring |
+| DA-0369 | `jasper/voice/daemon_main.py` :: _build_registry | nit | W5 | **fixed** | three accepted-but-unused dependencies removed |
+| DA-0370 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn.__init__:248 | nit | W5 | **fixed** | unread wall-clock start field removed |
 | DA-0371 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn.send_text_context | nit | W5 | **open** | — |
 | DA-0372 | `jasper/voice_daemon.py` :: :4198-4245 | nit | W5 | **open** | — |
-| DA-0373 | `jasper/voice_daemon.py` :: :84 | nit | W5 | **open** | — |
-| DA-0374 | `jasper/volume_diagnostics.py` :: PUSH_UNSUPPORTED | nit | W5 | **open** | — |
+| DA-0373 | `jasper/voice_daemon.py` :: :84 | nit | W5 | **fixed** | unused compatibility import removed |
+| DA-0374 | `jasper/volume_diagnostics.py` :: PUSH_UNSUPPORTED | nit | W5 | **fixed** | dead reason-code constant removed |
 | DA-0375 | `jasper/wake_corpus/bridge_session.py` :: :1237 | nit | W5 | **open** | — |
-| DA-0376 | `jasper/wake_corpus/bridge_session.py` :: :153 | nit | W5 | **open** | — |
+| DA-0376 | `jasper/wake_corpus/bridge_session.py` :: :153 | nit | W5 | **fixed** | unused leg-name re-export removed |
 | DA-0377 | `jasper/wake_corpus/bridge_session.py` :: _enabled_legs_from_metadata:1552 | nit | W5 | **open** | — |
 | DA-0378 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2109 | nit | W5 | **fixed** | redundant function-local subprocess import removed — #1304 |
 | DA-0379 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend._write_active_session_marke | nit | W5 | **open** | — |
 | DA-0380 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend.begin_session | nit | W5 | **open** | — |
 | DA-0381 | `jasper/weather.py` :: WeatherClient._get_json | nit | W5 | **open** | — |
 | DA-0382 | `jasper/web/correction_setup.py` :: _handle_interpret / _handle_propose tuning-s | nit | W5 | **open** | — |
-| DA-0383 | `jasper/web/correction_setup.py` :: _handle_start :1345,1385 | nit | W5 | **open** | — |
+| DA-0383 | `jasper/web/correction_setup.py` :: _handle_start :1345,1385 | nit | W5 | **fixed** | vestigial reservation-transfer flag removed |
 | DA-0384 | `jasper/web/correction_setup.py` :: log_event event names :1246,1358,1886,1919 | nit | W5 | **open** | — |
 | DA-0385 | `jasper/web/sound_setup.py` :: _live_draft_profile | nit | W5 | **open** | — |
 | DA-0386 | `jasper/web/tools_setup.py` :: _handle_toggle_pack | nit | W5 | **open** | — |
 | DA-0387 | `jasper/web/transit_setup.py` :: _apply_save | should-fix | W5 | **fixed** | duplicate of DA-0035; BusTime key scrubbed from the same broad-except surface — #1236 |
 | DA-0388 | `jasper/web/transit_setup.py` :: _handle_geocode | nit | W5 | **open** | — |
 | DA-0389 | `jasper/web/voice_setup.py` :: _load_state | nit | W5 | **open** | — |
-| DA-0390 | `jasper/web/weather_setup.py` :: main | nit | W5 | **open** | — |
+| DA-0390 | `jasper/web/weather_setup.py` :: main | nit | W5 | **fixed** | wizard CLI accepts an explicit argv like its siblings |
 | DA-0391 | `jasper/web/wifi_setup.py` :: connect_new | nit | W5 | **open** | — |
-| DA-0392 | `jasper/wifi_guardian_persistence.py` :: _parse_env_line | nit | W5 | **open** | — |
-| DA-0393 | `jasper/xvf/xvf_host.py` :: PARAMETERS | nit | W5 | **open** | — |
+| DA-0392 | `jasper/wifi_guardian_persistence.py` :: _parse_env_line | nit | W5 | **fixed** | unreachable newline stripping removed |
+| DA-0393 | `jasper/xvf/xvf_host.py` :: PARAMETERS | nit | W5 | **fixed** | unused compatibility alias removed |
 | DA-0394 | `jasper_aec3/setup.py` :: module | nit | W5 | **open** | — |
 | DA-0395 | `rust/jasper-clock/src/htimestamp.rs` :: HtimestampGuard (re-exported lib.rs:73-75) | nit | W5 | **open** | — |
 | DA-0396 | `rust/jasper-clock/src/lib.rs` :: Dll::update_lock | nit | W5 | **fixed** | unused lock-update parameter removed |
@@ -355,15 +355,15 @@ Last reconciled against `origin/main` (`9dd25b514`), including this branch:
 | DA-0412 | `rust/jasper-tts-protocol/src/lib.rs` :: read_command (GAIN branch) | nit | W5 | **fixed** | non-finite GAIN commands are rejected |
 | DA-0413 | `rust/jasper-tts-protocol/src/loudness.rs` :: AssistantLoudness::decide_gain | nit | W5 | **open** | — |
 | DA-0414 | `rust/jasper-tts-protocol/src/loudness.rs` :: KWeightedWindow::short_lufs / window_lufs | nit | W5 | **fixed** | unreachable duplicate loudness fallback removed |
-| DA-0416 | `rust/jasper-usbsink-audio/src/main.rs` :: TapPublisher::poll (lines 1306-1347) | nit | W5 | **open** | — |
-| DA-0417 | `rust/jasper-usbsink-audio/src/main.rs` :: handle_preempt_request (lines 1050-1060) | nit | W5 | **open** | — |
-| DA-0418 | `rust/jasper-usbsink-audio/src/main.rs` :: write_http_json (line 1186) | nit | W5 | **open** | — |
+| DA-0416 | `rust/jasper-usbsink-audio/src/main.rs` :: TapPublisher::poll (lines 1306-1347) | nit | W5 | **mooted** | owning aloop-solo Rust daemon was deleted by #1209 |
+| DA-0417 | `rust/jasper-usbsink-audio/src/main.rs` :: handle_preempt_request (lines 1050-1060) | nit | W5 | **mooted** | owning aloop-solo Rust daemon was deleted by #1209 |
+| DA-0418 | `rust/jasper-usbsink-audio/src/main.rs` :: write_http_json (line 1186) | nit | W5 | **mooted** | owning aloop-solo Rust daemon was deleted by #1209 |
 | DA-0419 | `scripts/_audit_baseline_events.py` :: module | nit | W5 | **open** | — |
 | DA-0420 | `scripts/_extract_wake_corpus.py` :: main():556-575 | nit | W5 | **open** | — |
-| DA-0421 | `scripts/aec-probe-pinknoise.sh` :: :53 | nit | W5 | **open** | — |
+| DA-0421 | `scripts/aec-probe-pinknoise.sh` :: :53 | nit | W5 | **fixed** | removed retired AEC engine environment override |
 | DA-0422 | `scripts/claim-librespot.sh` :: cleanup, :52-59 and :98 | nit | W5 | **open** | — |
-| DA-0423 | `scripts/onboard.sh` :: :447-452 | nit | W5 | **open** | — |
-| DA-0424 | `scripts/rename-speaker.sh` :: :1 | nit | W5 | **open** | — |
+| DA-0423 | `scripts/onboard.sh` :: :447-452 | nit | W5 | **fixed** | identical URL-host branches collapsed |
+| DA-0424 | `scripts/rename-speaker.sh` :: :1 | nit | W5 | **fixed** | operator script is executable |
 | DA-0425 | `scripts/wake-rate-test.sh` :: OUT_REMOTE:75 | nit | W5 | **open** | — |
 | DA-0426 | `scripts/xvf-interrogate.sh` :: usage:43-47 | nit | W5 | **fixed** | usage extraction now includes the complete final state-restoration text — #1306 |
 | DA-0497 | `capture-page/index.html` :: :187 | nit | W3 | **open** | — |
@@ -462,7 +462,7 @@ Last reconciled against `origin/main` (`9dd25b514`), including this branch:
 | DA-0591 | `rust/jasper-ring/src/lib.rs` :: TestRingWriter::create_or_attach / try_publi | nit | W3 | **open** | — |
 | DA-0592 | `rust/jasper-ring/src/lib.rs` :: TestRingWriter::drop | nit | W3 | **fixed** | test writer clears ownership only when it still owns the ring |
 | DA-0593 | `rust/jasper-tts-protocol/src/loudness.rs` :: KWeightingChannel::new / lufs_from_energy | nit | W3 | **open** | — |
-| DA-0596 | `rust/jasper-usbsink-audio/src/main.rs` :: HostClockActuator::open (line 1521) | nit | W3 | **open** | — |
+| DA-0596 | `rust/jasper-usbsink-audio/src/main.rs` :: HostClockActuator::open (line 1521) | nit | W3 | **mooted** | owning aloop-solo Rust daemon was deleted by #1209 |
 | DA-0597 | `scripts/_extract_wake_corpus.py` :: LEGS:99 | nit | W3 | **open** | — |
 | DA-0598 | `scripts/_make_wake_test_track.py` :: load_env():40-53 | nit | W3 | **open** | — |
 | DA-0599 | `scripts/_prepare_wake_training_workdir.py` :: _safe_to_remove_output:105 | nit | W3 | **open** | — |
@@ -489,7 +489,7 @@ Last reconciled against `origin/main` (`9dd25b514`), including this branch:
 | DA-0620 | `tests/test_doctor.py` :: _patch_asound_conf | nit | W3 | **open** | — |
 | DA-0621 | `tests/test_doctor_memory_resilience.py` :: _make_oom_run / _make_start_limit_action_run | nit | W3 | **open** | — |
 | DA-0622 | `tests/test_doctor_secrets_manifest.py` :: _supp_groups / _user (vs test_doctor_privsep | nit | W3 | **open** | — |
-| DA-0623 | `tests/test_doctor_usbsink.py` :: test_usbsink_state_active_no_state_file (rep | nit | W3 | **open** | — |
+| DA-0623 | `tests/test_doctor_usbsink.py` :: test_usbsink_state_active_no_state_file (rep | nit | W3 | **mooted** | usbsink doctor tests were rewritten; audited repeated path block no longer exists |
 | DA-0624 | `tests/test_gemini_session.py` :: _SC / _Resp | nit | W3 | **open** | — |
 | DA-0625 | `tests/test_install_outputd_ready_nonfatal.py` :: _install_text | nit | W3 | **open** | — |
 | DA-0627 | `tests/test_peering_uds.py` :: _short_socket_path | nit | W3 | **open** | — |
@@ -536,7 +536,7 @@ Last reconciled against `origin/main` (`9dd25b514`), including this branch:
 | DA-0668 | `tests/test_sound_setup.py` :: :1 | nit | W4 | **open** | — |
 | DA-0669 | `tests/test_sound_setup.py` :: test_apply_profile_rolls_back_when_reload_fa | nit | W4 | **open** | — |
 | DA-0670 | `tests/test_sound_setup.py` :: test_reconcile_current_dsp_skips_unknown_con | nit | W4 | **open** | — |
-| DA-0671 | `tests/test_sources_setup_usbsink.py` :: _patch_config | nit | W4 | **open** | — |
+| DA-0671 | `tests/test_sources_setup_usbsink.py` :: _patch_config | nit | W4 | **fixed** | later source-wizard test refactor removed the unused helper |
 | DA-0672 | `tests/test_tools_spotify.py` :: test_revoked_then_relinked_recovers_without_ | nit | W4 | **fixed** | real same-clock 30-second router refresh cooldown exercised without force-resetting state — #1426 |
 | DA-0673 | `tests/test_usbsink_volume_bridge.py` :: test_run_retries_discovery_after_transient_m | nit | W4 | **open** | — |
 | DA-0674 | `tests/test_volume_diagnostics.py` :: build_volume_policy_snapshot | nit | W4 | **open** | — |

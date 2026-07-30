@@ -566,7 +566,7 @@ def test_capture_path_for_position_uses_per_session_dir(tmp_path: Path):
     assert p0 == sess.bundle_dir / "captures" / "p0.wav"
     p1 = sess.capture_path_for_position(1)
     assert p1 == sess.bundle_dir / "captures" / "p1.wav"
-    # Parent dir is created lazily by _ensure_bundle_dir.
+    # Parent dir is created lazily by SessionArtifacts.
     assert p0.parent.exists()
     p0.parent.mkdir(parents=True, exist_ok=True)
     p0.write_bytes(b"riff stub")

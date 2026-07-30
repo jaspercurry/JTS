@@ -50,7 +50,7 @@ with wave.open('/tmp/aec-probe-pink.wav', 'wb') as w:
     w.writeframes(stereo.tobytes())
 EOF
 echo '---bridge in bg, aplay pink noise ${DURATION}s, ref gain=${REF_GAIN_DB} dB---'
-sudo JASPER_AEC_ENGINE=webrtc3 JASPER_AEC_REF_GAIN_DB=${REF_GAIN_DB} \\
+sudo JASPER_AEC_REF_GAIN_DB=${REF_GAIN_DB} \\
     timeout \$((${DURATION} + 6)) /opt/jasper/.venv/bin/jasper-aec-bridge \\
     > /tmp/aec-probe-bridge.log 2>&1 &
 BG=\$!

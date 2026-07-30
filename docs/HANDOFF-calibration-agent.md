@@ -818,12 +818,11 @@ Realistic per-session cost ranges (15–30 turns, ~5K–20K context):
 | OpenAI | GPT-5 (assumed text-side flagship) | $0.20 – $0.60 |
 | Google | Gemini 2.5 / 3.x Pro | $0.05 – $0.15 |
 
-Add a `JASPER_CALIBRATION_AGENT_MAX_USD_PER_SESSION` cap (default
-~$2.00, soft warning at $1.00). The agent's tool-call loop checks
-the running session cost before each model call; refuses to continue
-when capped, posts an audible cue / chat message ("we've spent $X on
-this calibration session, raise the cap to continue"). Same pattern
-as the voice-eval harness, just per-session instead of per-test-run.
+Paid tuning calls use the shipped household cap,
+`JASPER_DAILY_SPEND_CAP_USD`. The correction path checks the combined voice
+and tuning ledgers before each call and returns HTTP 429 with bounded
+homeowner copy when the cap is reached. There is no separate per-calibration
+session cap.
 
 There's no provider lock-in: switch provider mid-session is
 **permitted but starts a fresh chat** (different model = different
@@ -1189,12 +1188,9 @@ Things that are still worth tracking after the Phase 0a substrate:
    agent was running against? My instinct: include the corpus
    git-SHA in `agent_transcript.json`, so a later reader knows what
    the agent was reading when it gave the advice.
-8. **Cost cap UX.** When the cap is hit mid-session, do we (a)
-   refuse to continue, (b) auto-fall-back to a cheaper provider, or
-   (c) just warn? My instinct: (a) refuse + post a chat message
-   ("we've spent $X, the cap is $Y, raise it at
-   `JASPER_CALIBRATION_AGENT_MAX_USD_PER_SESSION` to continue").
-   No silent provider switch — the user picked Opus for a reason.
+8. **Cost cap UX (resolved).** A reached
+   `JASPER_DAILY_SPEND_CAP_USD` refuses the paid call with bounded rollover
+   guidance. There is no silent provider switch.
 9. **Preference tuning scope.** How much should "make it brighter" or
    "more bass" live inside `/correction/` versus a separate
    `/tuning/` surface? My instinct: same underlying artifacts and

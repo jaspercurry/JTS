@@ -548,13 +548,6 @@ def test_get_status_classic_bikes_never_negative():
     assert c.get_status()[0].classic_bikes == 0
 
 
-def test_resolve_label_round_trips():
-    c = CitiBikeClient(saved_stations=[("abc", "9 Av"), ("def", "Atlantic")])
-    assert c.resolve_label("abc") == "9 Av"
-    assert c.resolve_label("def") == "Atlantic"
-    assert c.resolve_label("ghost") is None
-
-
 # --- StationStatus.as_dict --------------------------------------------
 
 

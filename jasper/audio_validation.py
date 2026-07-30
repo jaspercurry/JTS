@@ -39,7 +39,6 @@ from .audio_profile_state import (
 from .chip_aec_policy import (
     APPROVED_DAC_IDS,
     HIFIBERRY_DAC8X_DAC_ID,
-    KNOWN_CALIBRATION_REQUIRED_DAC_IDS,
     STATUS_APPROVED,
     resolve_chip_aec_dac_gate,
 )
@@ -55,7 +54,6 @@ from .log_event import log_event
 
 
 CURRENT_SCHEMA_VERSION = 1
-SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 DEFAULT_ARTIFACT_DIR = Path("/var/lib/jasper/audio-validation")
 LATEST_POINTER_NAME = "latest.json"
 ROUTE_LATENCY_POINTER_NAME = "latest-route-latency.json"
@@ -66,7 +64,6 @@ CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
 DAC8X_DAC_ID = HIFIBERRY_DAC8X_DAC_ID
 CHIP_AEC_SUPPORTED_DAC_IDS = APPROVED_DAC_IDS
-CHIP_AEC_CALIBRATION_REQUIRED_DAC_IDS = KNOWN_CALIBRATION_REQUIRED_DAC_IDS
 HARDWARE_VALIDATION_PROFILES = (
     CHIP_AEC_PROFILE,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
@@ -181,7 +178,6 @@ class HardwareValidationRun:
     refused: bool = False
     refusal_reason: str = ""
     path: Path | None = None
-    latest_path: Path | None = None
 
 
 def make_artifact(
@@ -2839,7 +2835,7 @@ def _complete_hardware_validation_result(
         path=path,
         latest=latest_path,
     )
-    return HardwareValidationRun(artifact=artifact, path=path, latest_path=latest_path)
+    return HardwareValidationRun(artifact=artifact, path=path)
 
 
 def run_audio_hardware_validation(
