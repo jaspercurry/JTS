@@ -53,6 +53,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_TAP,
     CAPTURE_ENTRY_MARGIN_MS,
     CAPTURE_PLAN_MAX_ATTEMPTS,
+    CLOUD_CLOSE_AWAITING_CONFIRM,
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
     CLOUD_RETAKE_ALLOWANCE,
@@ -1989,6 +1990,214 @@ def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
     assert len(fakes.published_candidates) == 1
     # And the measuring session ends here — nothing applied, nothing held.
     assert c.current_phase == PHASE_DONE
+
+
+# --- the eager fit (owner UX direction, 2026-07-30) ------------------------------
+
+
+def _walk_measure_cloud_to_accept(c, *, start_attempt: int = 1) -> int:
+    """CHECK → MEASURE → the whole pre-apply cloud, stopping at the ACCEPT.
+
+    The HELD WINDOW itself — walked, unconfirmed, the phone still offering
+    Retake — which is where the eager fit lives and which
+    ``_walk_measure_cloud_to_close`` walks straight past. Returns the next
+    unused attempt number, so a caller can drive a voluntary retake of the
+    final position from exactly where the household would.
+    """
+    attempt = _walk(c, (1, 2), start_attempt)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    for _ in range(GEOMETRY_RETRY_POSITIONS + 1):
+        verdict = _run_phase(c, last, attempt)
+        attempt += 1
+        if verdict["accepted"]:
+            assert verdict["awaiting_confirm"] is True
+            return attempt
+    raise AssertionError("the cloud-measure group never closed")
+
+
+def _count_builds(c) -> list:
+    """Record every FIT this conductor runs, so a test can tell a commit from
+    a re-fit. The eager rider's whole claim is about which of the two the
+    household's confirmation pays for."""
+    builds: list = []
+    real_build = c._build_candidate
+
+    def _counting_build(analysis, cloud):
+        builds.append(1)
+        return real_build(analysis, cloud)
+
+    c._build_candidate = _counting_build
+    return builds
+
+
+def test_a_speculative_candidate_does_not_release_the_held_set():
+    """**The load-bearing pin of the eager-fit rider.**
+
+    Both seams that resolve the held set carried a comment warning that
+    ``cloud_measure_group_awaiting_confirm`` answered "has the household
+    confirmed?" with ``self._candidate is None`` — which is also the group
+    close's fire-once guard. An eagerly-built candidate would therefore have
+    flipped the predicate to False and un-held the runner's set, shutting the
+    voluntary-retake window in the same instant it opened, silently, at the one
+    moment the design exists to keep it open.
+
+    So: fit early, and the window must not move. The predicate now reads
+    ``_group_confirmed``, and an eager build parks somewhere nothing else
+    looks.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_accept(c)
+
+    assert c.cloud_measure_group_awaiting_confirm() is True
+    assert c.run_speculative_group_close() is True
+
+    # THE PIN: a candidate now exists, fitted and gated, and the household's
+    # window is exactly as open as it was a line ago.
+    assert c.cloud_measure_group_awaiting_confirm() is True
+    # …because none of the three things that make a candidate real happened.
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+    # And the speaker page still says what is TRUE — the household has
+    # something to do and it is on their phone. The eager fit is deliberately
+    # invisible: "running" is reserved for work the household has asked for,
+    # and a retake would otherwise have to walk that state backwards.
+    assert c.cloud_close_state == CLOUD_CLOSE_AWAITING_CONFIRM
+
+    # Only the household's own confirmation moves any of it.
+    assert _confirm_cloud(c)["candidate_fingerprint"]
+    assert c.cloud_measure_group_awaiting_confirm() is False
+    assert len(fakes.published_candidates) == 1
+
+
+def test_the_confirm_commits_the_eager_fit_rather_than_refitting():
+    """The payoff: the household's Continue costs a COMMIT, not a fit.
+
+    The whole point of the rider — the fit is the slowest thing in the session
+    (a measured 2.7-6 s combine plus the fit itself, worse on a Pi 5) and it
+    used to start only once the household had walked back to a browser and
+    tapped. Here it has already run, so the tap publishes a finished candidate
+    and the review screen is up immediately.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_accept(c)
+    builds = _count_builds(c)
+
+    assert c.run_speculative_group_close() is True
+    assert len(builds) == 1
+    banked = c._speculative_close.candidate
+    # Idempotent: the host fires the trigger on every accept that leaves a
+    # walked, unconfirmed cloud, and a retake makes that more than once. A
+    # second eager fit while one is already banked must be a no-op, not a
+    # second fit racing the first for the bank.
+    assert c.run_speculative_group_close() is False
+    assert len(builds) == 1
+
+    confirmed = _confirm_cloud(c)
+
+    # No second fit — the confirm consumed the banked build…
+    assert len(builds) == 1
+    # …and it is the SAME candidate, not merely an equal one: the eager fit
+    # buys latency, never a different product.
+    assert c.candidate is banked
+    assert confirmed["candidate_fingerprint"] == banked.fingerprint
+    assert fakes.published_candidates == [banked]
+    # The bank is spent, so a re-delivered signal still cannot fit twice.
+    assert c._speculative_close is None
+    assert c.confirm_cloud_measure_group() is None
+    assert len(builds) == 1
+
+
+def test_a_retake_discards_the_eager_fit_and_the_confirm_refits_the_new_cloud():
+    """The retake contract, preserved through the rider (owner requirement).
+
+    A voluntary retake of the final position (§2.6) means the cloud CHANGED,
+    so anything fitted from the old one is answering a question nobody asked
+    any more. The discard is atomic with the re-stash of the combine, which is
+    what lets the confirm trust a bank without a generation counter to check
+    it against — and it is what keeps T3's data contract true: the fit consumes
+    exactly the accepted cloud as of the close.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    attempt = _walk_measure_cloud_to_accept(c)
+    builds = _count_builds(c)
+
+    assert c.run_speculative_group_close() is True
+    stale = c._speculative_close.candidate
+    assert len(builds) == 1
+
+    # The household redoes the final spot rather than continuing.
+    retake = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+    assert retake["accepted"] is True
+    # Still held, still theirs to end — a retake is not a confirmation.
+    assert retake["awaiting_confirm"] is True
+    assert c.cloud_measure_group_awaiting_confirm() is True
+    # THE DISCARD: the stale build is gone, dropped in the same locked region
+    # that re-stashed the new combine.
+    assert c._speculative_close is None
+
+    confirmed = _confirm_cloud(c)
+
+    # The confirm REFITTED — it did not smuggle the pre-retake build through.
+    assert len(builds) == 2
+    assert c.candidate is not stale
+    assert confirmed["candidate_fingerprint"] == c.candidate.fingerprint
+    assert fakes.published_candidates == [c.candidate]
+
+
+def test_an_eager_fit_failure_surfaces_on_the_confirm_not_before():
+    """A speculative failure must not corrupt the confirm flow.
+
+    The household has not asked for this computation yet and may still retake,
+    which would moot it entirely — so a failure here renders NOTHING. The bank
+    stays empty, the held window stays open, and the confirm refits and raises
+    the identical error from the identical place it always did, where the host
+    maps it to a real terminal screen.
+
+    The cost is one wasted fit on a session that is already ending; the
+    alternative — re-raising a stored exception across a thread boundary —
+    buys seconds on a terminal path in exchange for a second failure route.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_accept(c)
+
+    def _boom(_analysis, _cloud):
+        raise RuntimeError("synthetic fit failure")
+
+    c._build_candidate = _boom
+
+    assert c.run_speculative_group_close() is False
+
+    # NOTHING moved: no candidate, no publish, no failure screen, and the
+    # household's retake window is exactly as open as before.
+    assert c._speculative_close is None
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+    assert c.cloud_measure_group_awaiting_confirm() is True
+    assert c.cloud_close_state == CLOUD_CLOSE_AWAITING_CONFIRM
+
+    # It surfaces where it always did — on the household's own confirmation.
+    with pytest.raises(RuntimeError, match="synthetic fit failure"):
+        c.confirm_cloud_measure_group()
+
+    # **THE DISCRIMINATOR for the decoupling itself**, and the only assertion
+    # in the suite that can tell the two predicates apart. A close that RAISED
+    # leaves ``_candidate`` unset — that is T3's retryability contract, still
+    # intact below — so the pre-rider predicate (``self._candidate is None``)
+    # would report this set as still awaiting confirmation and re-hold a
+    # runner whose household already tapped Continue. Only a predicate that
+    # asks "has the household confirmed?" gets it right: the window shuts on
+    # the TAP, not on whether the fit behind it succeeded.
+    assert c.cloud_measure_group_awaiting_confirm() is False
+    assert c.candidate is None
 
 
 def test_only_the_pre_apply_group_close_fires_a_candidate_across_a_whole_session():

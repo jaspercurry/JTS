@@ -2988,6 +2988,54 @@ class V2VolumeHooks:
 TERMINAL_FAILURE_PURGE_GRACE_S = 3.0
 
 
+def _start_speculative_group_close(conductor: Any) -> threading.Thread | None:
+    """Start the eager fit for a just-walked pre-apply cloud (owner, 2026-07-30).
+
+    Called from ``consume`` the moment the final stage-1 position is ACCEPTED,
+    which is the moment the phone starts showing the group-close confirm. The
+    household is now walking back to a browser; the combine + fit are the
+    slowest thing in the session, and until this rider they did not start until
+    that walk finished and they tapped Continue — several seconds of dead air on
+    a screen that looked stalled.
+
+    **This is the ONLY background thread stage 1 starts, and it cannot apply.**
+    Its target computes a candidate and banks it on the conductor; making that
+    candidate real still needs the household's own confirmation, and applying it
+    still needs their separate POST from the review screen (work order D1). The
+    ``handle_v2_apply``-on-a-thread this file used to run is gone and is not
+    coming back through here — pinned by
+    ``test_no_session_path_applies_anything``, which reads this function's
+    source as well as the runner's.
+
+    Fire-and-forget by design: every reason not to run is checked inside
+    ``run_speculative_group_close`` under the conductor's own lock, and the
+    result is an optimisation the confirm path never depends on. A thread that
+    cannot be started is therefore a logged non-event — the confirm fits
+    exactly as it did before this rider — and never a capture failure.
+
+    Daemonised so a session torn down mid-fit (Stop, a wizard restart) cannot
+    hold the process open waiting for work whose answer nobody will read.
+    """
+    try:
+        thread = threading.Thread(
+            target=conductor.run_speculative_group_close,
+            name="jts-v2-eager-fit",
+            daemon=True,
+        )
+        thread.start()
+    except RuntimeError:
+        # Thread exhaustion on a loaded Pi. The fit still happens, just on the
+        # confirm where it always used to.
+        log_event(
+            logger,
+            "correction.crossover_v2_speculative_close_unstarted",
+            level=logging.WARNING,
+            session_id=getattr(conductor, "session_id", ""),
+        )
+        return None
+    return thread
+
+
 def build_v2_run_and_consume(
     conductor: Any,
     *,
@@ -3149,16 +3197,23 @@ def build_v2_run_and_consume(
             always False there and the runner ends those sets exactly as it
             always has.
 
-            **The constraint an eager/speculative fit has to respect** (owner
-            rider on #1806 — not implemented, deliberately not foreclosed):
-            this predicate resolves through ``self._candidate is None``, which
-            is ALSO the group close's fire-once guard. Building a candidate
-            before the household confirms would therefore flip this to False
-            and un-hold the runner's set — shutting the retake window in the
-            same instant, silently. The rider must decouple the two first: the
-            held-set question is "has the household confirmed?", not "does a
-            candidate exist?". See the predicate's own docstring on the
-            conductor.
+            **This is decoupled from the candidate, and has to stay that way**
+            (eager-fit rider on #1806, shipped 2026-07-30). The predicate used
+            to resolve through ``self._candidate is None``, which is ALSO the
+            group close's fire-once guard — so the rider, which fits a
+            candidate BEFORE the household confirms, would have flipped this to
+            False and un-held the runner's set, shutting the retake window in
+            the same instant, silently. It now resolves through
+            ``_group_confirmed``: the held-set question is "has the household
+            confirmed?", never "does a candidate exist?". An eagerly-fitted
+            candidate parks in ``_speculative_close`` and is invisible here.
+
+            The two must not be re-merged. If you are tempted, the discriminator
+            is ``test_an_eager_fit_failure_surfaces_on_the_confirm_not_before``:
+            after a close that RAISED, ``_candidate`` is unset (T3's
+            retryability) but the household has confirmed, so this must read
+            False. Only the decoupled predicate gets that right. See the
+            predicate's own docstring on the conductor.
             """
             return bool(conductor.cloud_measure_group_awaiting_confirm())
 
@@ -3265,6 +3320,17 @@ def build_v2_run_and_consume(
             # comment-that-lies: ``authorize`` above is now the only place that
             # fires ``_fire_auto_apply``, which is the whole point of putting
             # the confirm seam at the host boundary.)
+            #
+            # The EAGER FIT trigger (owner UX direction, 2026-07-30). This
+            # verdict flag marks the one accept that leaves a walked, unconfirmed
+            # pre-apply cloud — the group close — and a voluntary retake raises
+            # it again on ITS accept, which is exactly when a re-fit is wanted:
+            # the retake dropped the previous bank when it re-stashed the
+            # combine. Started after the persist so the durable state the wizard
+            # renders is already the held-window state, and the fit is racing the
+            # household's walk rather than the write.
+            if verdict.get("awaiting_confirm"):
+                _start_speculative_group_close(conductor)
             return verdict
 
         async def _purge_best_effort() -> None:

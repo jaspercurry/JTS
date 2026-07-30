@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -3674,6 +3675,35 @@ def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
     return grid, delta
 
 
+@dataclass(frozen=True)
+class _SpeculativeClose:
+    """A group close that already RAN, waiting for the household to want it.
+
+    The eager-fit rider's one carried value (owner UX direction, 2026-07-30).
+    The household's last stage-1 position lands, the phone shows the confirm,
+    and the several seconds the fit costs used to start only when they walked
+    back to a browser and tapped Continue — dead air that read as a stalled
+    screen. The fit now starts on the ACCEPT and parks its product here.
+
+    **Why the built candidate cannot simply be stashed on the conductor.**
+    ``_candidate`` is :meth:`CrossoverV2Conductor.confirm_cloud_measure_group`'s
+    fire-once guard AND, until this rider, the held-set predicate; writing a
+    speculative build into it would have closed the retake window in the same
+    instant it opened (both seams carried a comment saying exactly that). So a
+    speculative build lands HERE, where nothing else reads it, and reaches
+    ``_candidate`` only through the household's own confirmation.
+
+    Everything :meth:`CrossoverV2Conductor._commit_measure_candidate` needs and
+    nothing else: ``analysis`` rides along for the raw ``predicted_sum`` the
+    commanded-delta diff needs, and ``cloud`` for the build's log line.
+    """
+
+    candidate: Any
+    predicted_sum: Any
+    analysis: Any
+    cloud: "_CloudFitEvidence | None"
+
+
 # --------------------------------------------------------------------------- #
 # the conductor
 # --------------------------------------------------------------------------- #
@@ -3943,6 +3973,48 @@ class CrossoverV2Conductor:
         # ``hydrate`` — see that method for why production cannot.
         self._measure_analysis: Any = None
         self._candidate: Any = None
+        # HAS THE HOUSEHOLD CONFIRMED? — the held-set predicate, decoupled from
+        # the fire-once guard above by the eager-fit rider (owner UX direction,
+        # 2026-07-30). ``cloud_measure_group_awaiting_confirm`` used to answer
+        # it with ``_candidate is None``, which conflated two different
+        # questions and made a candidate built EARLY indistinguishable from a
+        # household that had moved on — see that method's docstring for the
+        # window that conflation would have silently shut.
+        self._group_confirmed = False
+        # A group close that already ran speculatively, parked until the
+        # household confirms (see :class:`_SpeculativeClose`). ``None`` means
+        # no eager fit is banked: none was started, one was discarded by a
+        # retake, or one already committed.
+        self._speculative_close: _SpeculativeClose | None = None
+        # Serializes the group-close critical section against the eager fit,
+        # which is the ONE piece of this conductor that runs off the relay
+        # thread. Three entry points take it — ``_cloud_verdict``'s retain +
+        # close, ``run_speculative_group_close``, and
+        # ``confirm_cloud_measure_group`` — and none nests inside another, so a
+        # plain ``Lock`` is correct AND enforces that: the confirm path reaches
+        # ``_close_measure_cloud_candidate``, never the lock-taking
+        # ``_close_cloud_group``. A future edit that makes one call another
+        # deadlocks loudly here rather than quietly growing a second locking
+        # discipline.
+        #
+        # **What it actually covers**, stated honestly: the two fit inputs the
+        # eager path can race — ``_group_combined`` and the
+        # ``_group_cloud_result`` its ``_cloud_fit_evidence`` reads, both
+        # written by the cloud pipeline inside the same locked region. It does
+        # NOT cover ``_measure_analysis``, the fit's first argument, which is
+        # written at MEASURE's accept and released by the close. That one is
+        # safe by PHASE ORDERING rather than by this lock: it is written on the
+        # relay thread eight captures before any cloud group can close, and the
+        # only writer after that is the close itself, which holds this lock.
+        #
+        # **The invariant it buys, stated once.** The combine and the
+        # speculative stash are written TOGETHER under this lock, so a banked
+        # fit can never outlive the cloud it was fitted from: the only thing
+        # that re-stashes the combine is a retake, and it drops the stash in
+        # the same locked region. That is why no generation counter is needed
+        # to tell a stale bank from a current one — there is no window in
+        # which the two can disagree.
+        self._close_lock = threading.Lock()
         # Set the instant the household's set-completion signal is admitted,
         # so the seconds the combine + fit spend are a NAMED state rather than
         # indistinguishable from "still waiting for the tap". Never cleared: a
@@ -4950,10 +5022,20 @@ class CrossoverV2Conductor:
             echo_band_hz=self._cloud_echo_band.band_hz,
             signal_band_hz=self._cloud_signal_band_hz,
         )
-        self._retain_cloud_position(phase, position, analysis, result)
-        if index != self._group_indexes[phase][-1]:
-            return PhaseVerdict(True, payload={"position_id": position.position_id})
-        return self._close_cloud_group(phase, position)
+        # ONE critical section for retain + close (eager-fit rider,
+        # 2026-07-30). Everything the eager fit reads is written in here — the
+        # retained positions, the combine they produce, and the cloud pipeline
+        # result — and ``run_speculative_group_close`` takes the same lock, so
+        # a fit running off the relay thread cannot observe this half-done. On
+        # a VOLUNTARY retake this is also what makes the discard below atomic
+        # with the re-stash.
+        with self._close_lock:
+            self._retain_cloud_position(phase, position, analysis, result)
+            if index != self._group_indexes[phase][-1]:
+                return PhaseVerdict(
+                    True, payload={"position_id": position.position_id}
+                )
+            return self._close_cloud_group(phase, position)
 
     def _retain_cloud_position(
         self,
@@ -5150,6 +5232,18 @@ class CrossoverV2Conductor:
             # it. Stash the combine so the confirm does not pay for a second
             # one (measured 2.7-6 s, see this method's own docstring).
             self._group_combined[phase] = combined
+            # …and DROP any eagerly-fitted candidate in the same breath
+            # (eager-fit rider, 2026-07-30). Reaching here a second time is a
+            # VOLUNTARY retake (§2.6): the household redid the final position,
+            # so the cloud just changed and anything fitted from the old one is
+            # answering a question nobody asked any more. Dropping it here —
+            # inside the same locked region that re-stashes the combine, and
+            # BEFORE the accept that lets the host start the next eager fit —
+            # is what makes "a bank always matches the current combine" hold
+            # without a generation counter to check it against. Freeing the
+            # reference also matters on its own: a candidate carries the fit's
+            # arrays, and this is a 1 GB Pi.
+            self._speculative_close = None
             payload["awaiting_confirm"] = True
         if phase == PHASE_CLOUD_VERIFY:
             # The delta probe's spatial arm, and the only point in the session
@@ -5175,30 +5269,46 @@ class CrossoverV2Conductor:
         retake of that position is still meaningful (§2.6), and the predicate
         the host wires as the runner's held-set gate (work order D1).
 
-        **A constraint for anyone adding a speculative/eager fit.** This reads
-        ``self._candidate is None``, and ``self._candidate`` is also
-        :meth:`confirm_cloud_measure_group`'s fire-once guard. Building a
-        candidate BEFORE the household confirms would therefore make this
-        return False, which would un-hold the runner's set and shut the retake
-        window in the same instant — silently, at the exact moment the design
-        exists to keep open. An eager fit has to decouple the two first: the
-        held-set predicate must ask "has the household confirmed?", not "does a
-        candidate exist?".
+        **This asks about the HOUSEHOLD, not about the candidate** — the
+        decoupling the eager-fit rider had to land before it could fit
+        anything early (owner UX direction, 2026-07-30). Until then this read
+        ``self._candidate is None``, which is ALSO
+        :meth:`confirm_cloud_measure_group`'s fire-once guard, and both this
+        seam and the host's ``completion_signal_required`` carried a comment
+        warning what that conflation would cost: a candidate built BEFORE the
+        confirm would have flipped this to False, un-held the runner's set and
+        shut the retake window in the same instant, silently, at the exact
+        moment the design exists to keep it open.
+
+        So the two questions are now answered by two different fields.
+        ``_group_confirmed`` records the household's own act and nothing else;
+        ``_candidate`` stays the fire-once guard. An eagerly-built candidate
+        parks in ``_speculative_close`` and is invisible here BY CONSTRUCTION —
+        pinned by
+        ``test_a_speculative_candidate_does_not_release_the_held_set``.
         """
         return (
             PHASE_CLOUD_MEASURE in self._group_combined
-            and self._candidate is None
+            and not self._group_confirmed
         )
 
     @property
     def cloud_close_state(self) -> str:
         """Where the pre-apply cloud's close has got to — the household-facing
-        distinction the wizard renders while no candidate exists yet.
+        distinction the wizard renders while no candidate has been PROPOSED yet.
 
         ``awaiting_confirm`` (walked, the phone is showing the confirm screen),
-        ``running`` (the household confirmed; the combine + fit are in flight),
-        or ``""`` (nothing pending — no cloud group, or the candidate is built,
-        or the close already failed and its own failure state renders).
+        ``running`` (the household confirmed; the close is in flight), or ``""``
+        (nothing pending — no cloud group, or the candidate is published, or the
+        close already failed and its own failure state renders).
+
+        "Proposed", not "exists", since the eager-fit rider (2026-07-30): a
+        candidate may be BUILT and banked during ``awaiting_confirm`` and this
+        deliberately keeps saying ``awaiting_confirm``, because what the screen
+        reports is whose move it is, not whether a computation has finished.
+        The household's move is on their phone until they make it, and an eager
+        fit is invisible by design — see
+        ``test_the_eager_fit_is_invisible_to_the_speaker_page``.
         """
         if self._candidate is not None:
             return CLOUD_CLOSE_NONE
@@ -5207,6 +5317,88 @@ class CrossoverV2Conductor:
         if self.cloud_measure_group_awaiting_confirm():
             return CLOUD_CLOSE_AWAITING_CONFIRM
         return CLOUD_CLOSE_NONE
+
+    def run_speculative_group_close(self) -> bool:
+        """Fit the pre-apply cloud NOW, before the household confirms.
+
+        The eager-fit rider's entry point (owner UX direction, 2026-07-30).
+        The household walks the last stage-1 position, accepts it, and then
+        carries a phone back to a browser — tens of seconds in which the
+        speaker used to do nothing, so the several seconds of combine + fit
+        were spent AFTER they arrived, as dead air on a screen that looked
+        stalled. This runs that fit on the accept instead and banks it; the
+        household's Continue then commits a finished candidate.
+
+        Returns True when a build was banked. Safe to call at any time and
+        from anywhere — every reason not to run is checked here rather than at
+        the call site, so the host's trigger stays one line.
+
+        **Runs OFF the relay thread** (the host starts it on a background
+        thread) and is the only part of this conductor that does. It takes
+        ``_close_lock`` for the whole fit, which is what keeps that honest: a
+        retake's ``_close_cloud_group`` and the household's
+        ``confirm_cloud_measure_group`` both take the same lock, so the three
+        can interleave only at their boundaries, never inside the fit. The
+        price is that a retake landing mid-fit waits for it — bounded by one
+        fit, and paid while the household is walking to a spot, since the
+        capture that follows a retake tap is itself far longer than a fit.
+
+        **It never closes the retake window.** Nothing here writes
+        ``_group_confirmed`` or ``_candidate``, so the runner's held set stays
+        held and the phone keeps offering Retake exactly as long as it would
+        have. A retake then DISCARDS what this banked
+        (:meth:`_close_cloud_group`) and the next accept re-runs it.
+
+        **A failure here is dropped, not remembered.** The bank stays empty and
+        the confirm refits from scratch, so a household that hits the
+        accountability veto or a fit bug sees the identical failure, raised
+        from the identical place, at the identical moment they would have seen
+        it before this rider existed. The cost is one wasted fit on a session
+        that is already ending; the alternative — re-raising a stored
+        exception across a thread boundary — buys seconds on a terminal path
+        in exchange for a second, subtly different failure route to reason
+        about. Rendering it EARLY was never an option: the household may still
+        retake, which moots it entirely.
+        """
+        with self._close_lock:
+            if not self.cloud_measure_group_awaiting_confirm():
+                return False
+            if self._speculative_close is not None or self._candidate is not None:
+                return False
+            if self._measure_analysis is None:
+                return False
+            combined = self._group_combined[PHASE_CLOUD_MEASURE]
+            started = time.monotonic()
+            try:
+                built = self._build_measure_candidate(
+                    self._measure_analysis, self._cloud_fit_evidence(combined),
+                )
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                # Deliberately open, and one of the few places in this file
+                # that earns it: this is speculative work whose failure the
+                # household has not asked about yet, and the confirm path is
+                # about to run the same fit and raise the same thing where it
+                # CAN be handled. Swallowing it here must therefore not depend
+                # on guessing the fit's raise surface — the accountability veto
+                # (``CaptureBeginRefused``) alone raises outside the named
+                # families this file's other boundaries use. ``Exception``, not
+                # ``BaseException``: a Stop or an interpreter teardown must
+                # still tear this thread down rather than be logged as a fit
+                # that merely did not bank.
+                log_event(
+                    logger, "correction.crossover_v2_speculative_close_failed",
+                    level=logging.WARNING, session_id=self.session_id,
+                    error=type(exc).__name__, exc_info=True,
+                )
+                return False
+            self._speculative_close = built
+            log_event(
+                logger, "correction.crossover_v2_speculative_close_banked",
+                session_id=self.session_id,
+                candidate_fingerprint=built.candidate.fingerprint,
+                elapsed_s=round(time.monotonic() - started, 3),
+            )
+            return True
 
     def note_group_close_started(self) -> None:
         """The household's set-completion signal arrived; the fit is next.
@@ -5263,17 +5455,38 @@ class CrossoverV2Conductor:
         raise leaves it unset, so a genuinely retryable failure can be retried;
         a session with no cloud group (the 3-entry shape, the post-apply
         session) never has anything stashed and always returns ``None``.
+
+        **Two guards now, not one** (eager-fit rider, 2026-07-30). The
+        fire-once guard above is unchanged, but "is there anything to confirm"
+        is asked directly — ``_group_combined`` — rather than borrowed from
+        :meth:`cloud_measure_group_awaiting_confirm`, which since the rider
+        answers the household's question instead. Recording the confirmation
+        is this method's own first act, so the retake window shuts on the
+        household's TAP and not on whether the fit that follows succeeds.
+
+        **The fit may already be done.** When the eager close banked one
+        (:meth:`run_speculative_group_close`), this commits it and returns in
+        milliseconds; otherwise it fits here exactly as it did before the
+        rider. The lock is what makes "may already be done" safe to ask: an
+        eager fit still in flight holds it, so this simply waits for it rather
+        than racing it.
         """
-        if not self.cloud_measure_group_awaiting_confirm():
-            return None
-        log_event(
-            logger, "correction.crossover_v2_cloud_group_confirmed",
-            session_id=self.session_id, phase=PHASE_CLOUD_MEASURE,
-            positions=len(self._group_positions[PHASE_CLOUD_MEASURE]),
-        )
-        return self._close_measure_cloud_candidate(
-            self._group_combined[PHASE_CLOUD_MEASURE]
-        )
+        with self._close_lock:
+            if PHASE_CLOUD_MEASURE not in self._group_combined:
+                return None
+            if self._candidate is not None:
+                return None
+            self._group_confirmed = True
+            log_event(
+                logger, "correction.crossover_v2_cloud_group_confirmed",
+                session_id=self.session_id, phase=PHASE_CLOUD_MEASURE,
+                positions=len(self._group_positions[PHASE_CLOUD_MEASURE]),
+                # Did the household's wait get to skip the fit entirely?
+                banked=self._speculative_close is not None,
+            )
+            return self._close_measure_cloud_candidate(
+                self._group_combined[PHASE_CLOUD_MEASURE]
+            )
 
     def _close_measure_cloud_candidate(self, combined: Any) -> dict[str, Any]:
         """Fit, build, and publish the candidate the household will review.
@@ -5314,9 +5527,20 @@ class CrossoverV2Conductor:
             raise CrossoverV2FlowError(
                 "cloud-measure group closed with no retained MEASURE analysis"
             )
-        payload = self._publish_measure_candidate(
-            self._measure_analysis, self._cloud_fit_evidence(combined)
-        )
+        # The eager fit's payoff, and the whole point of the rider: when a
+        # build is banked, the household's confirmation costs a commit rather
+        # than a fit, and the review screen is up by the time they look at it.
+        # A bank is only ever present for the CURRENT combine — a retake drops
+        # it in the same locked region that re-stashes the combine — so
+        # consuming it here cannot smuggle a stale cloud past the confirm.
+        banked = self._speculative_close
+        if banked is not None:
+            self._speculative_close = None
+            payload = self._commit_measure_candidate(banked)
+        else:
+            payload = self._publish_measure_candidate(
+                self._measure_analysis, self._cloud_fit_evidence(combined)
+            )
         # Released on success: the fit has consumed it and nothing reads it
         # again, so a tens-of-megabytes reference should not survive to the end
         # of a session that still has six captures to go (see the field's
@@ -5370,6 +5594,44 @@ class CrossoverV2Conductor:
         ``internal_error``. Still loud, still leaves the speaker untouched, just
         without the named screen; a caller reviving that shape has to wire its
         own refusal handling, exactly as it has to wire its own apply trigger.
+
+        **Split into build + commit** by the eager-fit rider (2026-07-30), so
+        the expensive half can run before the household confirms while the
+        half that MUTATES this conductor waits for them. This method is the
+        two called back to back and is what every pre-rider caller still gets.
+        """
+        return self._commit_measure_candidate(
+            self._build_measure_candidate(analysis, cloud)
+        )
+
+    def _build_measure_candidate(
+        self, analysis: ProgramAnalysis, cloud: "_CloudFitEvidence | None",
+    ) -> _SpeculativeClose:
+        """Fit and accountability-gate one candidate. Commits NOTHING.
+
+        The expensive half of :meth:`_publish_measure_candidate` — seconds of
+        fit — and the half the eager-fit rider runs off the relay thread before
+        the household has confirmed anything.
+
+        **What "commits nothing" has to mean for that to be safe.** Three
+        things make a candidate REAL, and none of them happen here: it is not
+        written to ``self._candidate`` (the fire-once guard), the
+        ``publish_candidate`` seam does not fire (no evidence is written), and
+        the retained MEASURE analysis is not released. So a build that a retake
+        moots can simply be dropped, leaving the conductor exactly as it was.
+
+        The accountability gate DOES run here, and deliberately: it is part of
+        producing a candidate, not part of proposing one. It raises
+        ``CaptureBeginRefused`` before anything is banked, which on the eager
+        path means the bank stays empty and the confirm refits — see
+        :meth:`run_speculative_group_close` for why that costs a failing
+        session one extra fit and buys an unchanged failure path.
+
+        What it still writes are the fit's own diagnostic by-products
+        (``_last_linearization_outcome``, ``_last_linearized_predicted_sum``,
+        the level-frame fields) — self-healing state that the next fit
+        overwrites wholesale, and the reason the eager path holds
+        ``_close_lock`` rather than running truly free of the conductor.
         """
         candidate = self._build_candidate(analysis, cloud)
         # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
@@ -5394,6 +5656,31 @@ class CrossoverV2Conductor:
         # stashed, none is published, and the review screen has nothing to
         # offer rather than an unaccountable proposal.
         self._assert_accountable(predicted_sum, analysis.predicted_sum)
+        return _SpeculativeClose(
+            candidate=candidate,
+            predicted_sum=predicted_sum,
+            analysis=analysis,
+            cloud=cloud,
+        )
+
+    def _commit_measure_candidate(self, built: _SpeculativeClose) -> dict[str, Any]:
+        """Make a built candidate REAL: stash it, publish it, disclose it.
+
+        The cheap half of :meth:`_publish_measure_candidate`, and the ONLY
+        place a candidate becomes visible to anything else. Reached identically
+        whether the fit ran moments ago on the household's confirmation or
+        seconds earlier on the eager path — the eager fit buys latency, never a
+        different product, which is why the two halves are split here rather
+        than duplicated.
+
+        Runs on the relay thread under ``_close_lock``, so the ``_candidate``
+        write and the ``publish_candidate`` seam — the two irreversible acts —
+        happen exactly once, in confirmation order.
+        """
+        candidate = built.candidate
+        predicted_sum = built.predicted_sum
+        analysis = built.analysis
+        cloud = built.cloud
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
         self._measure_commanded_delta = _commanded_delta(

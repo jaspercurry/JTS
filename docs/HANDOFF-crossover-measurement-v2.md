@@ -341,10 +341,22 @@ Index 10 is also `capture_target`, so the runner would ordinarily end the
 set on its acceptance. It does not: the host **holds** the set open
 (`completion_signal_required` / `on_completion_signal`) until the phone
 posts `complete_capture_set` — the household's "Continue" on the "all
-spots measured" screen. That signal is what closes the group, runs the
-fit, and publishes the candidate; until it arrives the final position is
+spots measured" screen. That signal is what closes the group and
+publishes the candidate; until it arrives the final position is
 still retakeable, and no `capture_set_complete` is posted (which is what
 keeps the phone on the confirm screen rather than an end screen).
+
+**The FIT usually already ran by then** (eager-fit rider, owner UX
+direction 2026-07-30). Index 10's acceptance starts it speculatively on
+a background thread, so the household's Continue normally commits a
+finished candidate instead of paying for the several seconds the fit
+costs while they stand at a browser. A voluntary retake of the final
+position discards that build and the next acceptance re-fits, so the
+signal still publishes a candidate fitted from exactly the cloud the
+household accepted. What did *not* move: the retake window (the held-set
+predicate now asks `_group_confirmed`, "has the household confirmed?",
+precisely so an early build cannot close it), the trust gates, or the
+rule that nothing applies inside this session.
 **Nothing is applied inside this session.** The household returns to
 jts.local and lands on the `review` screen.
 
@@ -881,10 +893,19 @@ destructive "Measure again" beside it: an absence being reported as a verdict
 when it was only a timestamp. `cloud_close` on the durable state
 (`awaiting_confirm` / `running` / `""`) is what tells those moments apart from a
 session that genuinely ended with nothing, and the host persists `running`
-BEFORE the close runs so the several seconds of combine + fit are a named state
+BEFORE the close runs so the seconds it can cost are a named state
 rather than a stale "confirm on your phone". The screen offers **no actions at
 all** — every one it could offer destroys work in progress — and sets `busy`
 on the fit-in-flight moment, the flow's one genuinely machine-paced wait.
+
+Since the eager-fit rider (2026-07-30) `running` is usually a sub-second
+flash: the fit ran on index 10's acceptance, so the close is a commit. It
+still costs a full fit whenever there was no banked build — a retake
+discarded it, or the eager attempt failed — which is exactly when the named
+state earns its keep. `awaiting_confirm` deliberately keeps rendering while
+that eager fit works: the household still has something to do and it is on
+their phone, so `running` would both misreport whose move it is and have to
+be walked backwards on a retake.
 
 **The `review` screen** (two-stage commission work order D3/D6, PR-T2) is the
 household's apply decision point, and the terminal a MEASURE-ONLY session
@@ -2230,7 +2251,12 @@ no retries-as-bodge). Treat these as regression fences.
     `Thread.start()`. That thread is gone — the apply is a household POST
     served in-request, which the tracker's ordinary in-flight-request
     accounting already holds — so the runner's hold is the only one this
-    flow takes. #1860 later added the two level-ramp kinds.) A held-open
+    flow takes. The eager-fit rider (2026-07-30) started a background
+    thread again — the speculative group close — and deliberately gives it
+    NO hold: it is daemonised, it only builds a candidate, and its result
+    is an optimisation the confirm never depends on, so a shutdown that
+    discards it mid-fit costs the household one re-fit and nothing else.
+    #1860 later added the two level-ramp kinds.) A held-open
     exit is reported once per 5 minutes
     (`systemd idle-exit deferred: … holds: …`), escalating to WARNING once
     the process has been continuously busy past
