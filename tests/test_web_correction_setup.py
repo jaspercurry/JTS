@@ -1098,9 +1098,9 @@ def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch, tmp_path):
     # Run the async helper on a fresh event loop for the test.
     monkeypatch.setattr(
         correction_setup, "_run_async",
-        lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(
-            coro
-        ),
+        # asyncio.run, not new_event_loop().run_until_complete — the latter
+        # never closes the loop it makes, leaking 3 fds per call.
+        lambda coro, timeout=None: asyncio.run(coro),
     )
 
     for verdict in ("accept", "surface", "revert_pending_confirm", None):
@@ -1127,9 +1127,9 @@ def test_maybe_auto_revert_swallows_errors(monkeypatch, tmp_path):
     _patch_no_op_camilla(monkeypatch)
     monkeypatch.setattr(
         correction_setup, "_run_async",
-        lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(
-            coro
-        ),
+        # asyncio.run, not new_event_loop().run_until_complete — the latter
+        # never closes the loop it makes, leaking 3 fds per call.
+        lambda coro, timeout=None: asyncio.run(coro),
     )
     sess = _FailSession("revert", tmp_path)
     assert correction_setup._maybe_auto_revert(sess) is False
