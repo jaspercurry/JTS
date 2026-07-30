@@ -1994,13 +1994,38 @@ def _sub_floor_tweeter(fc_hz: float, order: int = 2):
     return resp, envelope, radiating_band_hz(sections)
 
 
-def _core_level_sweep(order: int, fcs) -> list[float]:
+def _sub_floor_woofer(fc_hz: float, validity_floor_hz: float, order: int = 4):
+    """A flat woofer behind a LOW crossover whose response the room gate
+    trusts only above ``validity_floor_hz`` — the shape whose radiating band
+    lands at or below its own core mask's BOTTOM edge.
+
+    The mirror of :func:`_sub_floor_tweeter`, and the reason the width floor
+    has to be two-sided: a low-pass edge sits at ~0.80*Fc and slides DOWN as
+    Fc falls, while a room gate raises the trusted floor to meet it, so the
+    intersection runs out of room at the opposite end from a tweeter's.
+    Reachable whenever ``Fc <= 1.57 * validity_floor_hz`` — an ordinary
+    horn-in-a-room shape, not a contrived one.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=False),)
+    resp = _driver_response(
+        "woofer", crossover_response_db(_NATIVE_FREQS_HZ, sections),
+        validity_floor_hz=validity_floor_hz,
+    )
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    return resp, envelope, radiating_band_hz(sections)
+
+
+def _core_level_sweep(make, fcs) -> list[float]:
     """``driver_core_level_db`` across a sweep of crossover frequencies, on
     the production defaults, so a test can grade CONTINUITY rather than pick
     two points and hope."""
     levels = []
     for fc_hz in fcs:
-        resp, envelope, band = _sub_floor_tweeter(float(fc_hz), order=order)
+        resp, envelope, band = make(float(fc_hz))
         level = driver_core_level_db(resp, envelope, radiating_band_hz=band)
         assert level is not None
         levels.append(level)
@@ -2009,6 +2034,80 @@ def _core_level_sweep(order: int, fcs) -> list[float]:
 
 def _worst_adjacent_step_db(levels: list[float]) -> float:
     return max(abs(b - a) for a, b in zip(levels, levels[1:]))
+
+
+@pytest.mark.parametrize(
+    "validity_floor_hz, fcs",
+    [
+        # Fc step is 2.5 Hz, not the tweeter's 20-25: a woofer's widened band
+        # sits on its own low-pass shoulder, where the curve genuinely moves
+        # ~0.015 dB per Hz of Fc, so the sampling interval has to be fine
+        # enough to separate that SLOPE from a STEP. It is not a looser test —
+        # the ceiling is the same 0.10 dB, and the refinement below proves the
+        # variation is slope.
+        (600.0, np.arange(800.0, 1121.0, 2.5)),
+        (400.0, np.arange(540.0, 761.0, 2.5)),
+    ],
+)
+def test_the_woofer_core_level_is_continuous_across_the_width_floor(
+    validity_floor_hz, fcs,
+):
+    """**The floor is TWO-SIDED, and the woofer is why.**
+
+    Widening downward is the tweeter's fix: its high-pass edge slides UP into
+    the core mask's top, so there is always passband below to widen into. A
+    woofer runs out at the other end — its low-pass edge sits at ~0.80*Fc and
+    slides DOWN, while a room gate raises the trusted floor to meet it — so a
+    downward-only widen is clamped by ``core &`` and silently returns the
+    still-sub-floor intersection. The floor then never enforces at all in the
+    one region it was written for. Measured with the downward-only version:
+    a 600 Hz gate at Fc 760 and a 400 Hz gate at Fc 520 both read ONE-BIN
+    medians, with 21-30 dB steps in the neighbourhood.
+
+    So the deficit is made up UPWARD from the core's own bottom bin instead,
+    spending at most a floor width of the woofer's own low-pass skirt — the
+    same trade the tweeter already makes into its high-pass knee.
+
+    This sweep runs entirely ABOVE the empty-intersection transition (which
+    for these gates sits at Fc ≈ 757 and ≈ 512), so what it grades is the
+    FLOOR boundary specifically: the point where the intersection stops being
+    sub-floor and the widened band hands back over to it. Worst adjacent step
+    measured 0.073 dB (600 Hz gate) and 0.066 dB (400 Hz gate).
+    """
+    levels = _core_level_sweep(
+        lambda fc: _sub_floor_woofer(fc, validity_floor_hz), fcs,
+    )
+    worst = _worst_adjacent_step_db(levels)
+    assert worst < 0.10, f"worst adjacent step {worst:.4f} dB"
+    # The estimate stays on the radiating side throughout — never the
+    # whole-mask number, which for these shapes is 25-35 dB down.
+    assert all(level > -6.0 for level in levels)
+
+
+def test_the_woofer_floor_variation_is_slope_not_a_step():
+    """The discriminator behind the sweep above, made explicit: refine the Fc
+    increment and a genuine discontinuity does NOT shrink, while smooth
+    variation does, proportionally.
+
+    Measured on the 600 Hz-gate sweep — worst adjacent step 0.292 dB at 20 Hz,
+    0.149 at 10 Hz, 0.076 at 5 Hz — i.e. ~0.015 dB per Hz of Fc at every
+    resolution. That is the low-pass shoulder moving under a band that is
+    tracking it, not a band being swapped for another one.
+    """
+    coarse = _worst_adjacent_step_db(
+        _core_level_sweep(
+            lambda fc: _sub_floor_woofer(fc, 600.0), np.arange(800.0, 1121.0, 20.0),
+        )
+    )
+    fine = _worst_adjacent_step_db(
+        _core_level_sweep(
+            lambda fc: _sub_floor_woofer(fc, 600.0), np.arange(800.0, 1121.0, 5.0),
+        )
+    )
+    assert coarse == pytest.approx(0.292, abs=0.02)
+    # Quartering the Fc step quarters the observed jump, within the bin
+    # quantisation that eventually floors it. A step would not move at all.
+    assert fine < coarse / 3.0
 
 
 @pytest.mark.parametrize(
@@ -2045,7 +2144,7 @@ def test_the_core_level_is_continuous_across_the_width_floor(order, fcs, ceiling
     Sweeping is the point. A pair of points can only ever prove the property at
     the pair; the defect this replaces was invisible to exactly such a pair.
     """
-    levels = _core_level_sweep(order, fcs)
+    levels = _core_level_sweep(lambda fc: _sub_floor_tweeter(fc, order=order), fcs)
     worst = _worst_adjacent_step_db(levels)
     assert worst < ceiling_db, f"worst adjacent step {worst:.4f} dB"
     # ...and the level stays where the driver radiates rather than collapsing
@@ -2056,8 +2155,8 @@ def test_the_core_level_is_continuous_across_the_width_floor(order, fcs, ceiling
 @pytest.mark.parametrize(
     "order, fcs, expected_step_db",
     [
-        (2, np.arange(3650.0, 3901.0, 25.0), 15.91),
-        (4, np.arange(4500.0, 4801.0, 25.0), 40.62),
+        (2, np.arange(3650.0, 3901.0, 25.0), 15.82),
+        (4, np.arange(4500.0, 4801.0, 25.0), 40.42),
     ],
 )
 def test_the_empty_intersection_step_is_the_one_residual_and_it_is_disclosed(
@@ -2065,11 +2164,14 @@ def test_the_empty_intersection_step_is_the_one_residual_and_it_is_disclosed(
 ):
     """**The discontinuity that remains, measured and owned rather than hidden.**
 
-    Widening needs a top edge to anchor on. When the radiating band clears the
-    core mask's top entirely there is no intersection at all — not "too narrow"
-    but *none* — and the level falls back to the whole core mask, which is the
-    pre-#1929 answer. That transition really is a step: **15.91 dB at LR2 and
-    40.62 dB at LR4** on this fixture.
+    Widening needs an intersection to anchor on. When the radiating band clears
+    the core mask's top entirely there is none at all — not "too narrow" but
+    *none* — and the level falls back to the whole core mask, which is the
+    pre-#1929 answer. That transition really is a step: **15.82 dB at LR2 and
+    40.42 dB at LR4** on this fixture. (Both are ~0.1-0.2 dB smaller than the
+    downward-only version of the widen produced, because the two-sided rule
+    snaps each widened edge OUTWARD to the first bin that truly reaches the
+    floor, so the band it steps away from is one bin wider.)
 
     It is kept, deliberately, because the alternative is worse. There is no
     honest radiating-band estimate to widen toward — the driver's trusted
@@ -2083,7 +2185,7 @@ def test_the_empty_intersection_step_is_the_one_residual_and_it_is_disclosed(
     ~19 dB (LR2) from where the driver sits either way. Closing THAT is the
     comparator family's work, not this issue's.
     """
-    levels = _core_level_sweep(order, fcs)
+    levels = _core_level_sweep(lambda fc: _sub_floor_tweeter(fc, order=order), fcs)
     assert _worst_adjacent_step_db(levels) == pytest.approx(
         expected_step_db, abs=0.05
     )

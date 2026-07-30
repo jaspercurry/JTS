@@ -1057,15 +1057,45 @@ def _core_or_fallback_mask(
 #: (13.14 dB over 20 Hz) and LR4 3625→3650 stepped −1.803 → −35.642 (33.84 dB
 #: over 25 Hz), i.e. straight into ordinary two-way crossover territory.
 #:
-#: So a sub-floor intersection is WIDENED downward to exactly this width
-#: instead (anchored at its own top edge, clamped inside the core mask), never
-#: discarded. That is continuous by construction: an exact no-op at the
-#: boundary width, a constant-width band below it, and the shrinking
-#: intersection above it — and the estimate stays on the driver's radiating
-#: side rather than being replaced by a whole-mask number 13-35 dB away.
-#: Only a genuinely EMPTY intersection falls back to the whole mask, and
-#: :func:`core_level_band_hz` discloses that it did.
+#: So a sub-floor intersection is WIDENED to exactly this width instead, never
+#: discarded — and the rule is TWO-SIDED, which the first version of it was
+#: not. Widening runs downward from the intersection's own top edge; if the
+#: core mask's bottom stops that short, the remaining deficit is made up
+#: UPWARD from the core's bottom bin.
+#:
+#: Both directions are needed because the two roles run out of room at
+#: opposite ends. A tweeter's intersection is pinned against the core mask's
+#: TOP (its high-pass edge slides up into it), so there is always passband
+#: below to widen into. A woofer's slides DOWN — its low-pass edge sits at
+#: ~0.80*Fc — and meets a room gate that has raised the trusted floor, so
+#: below is where the room is gone. Downward-only widening therefore no-ops
+#: on the woofer side exactly when it is needed: measured with a 600 Hz gate,
+#: Fc 760 read a 1-bin median with the floor silently inactive, and a 400 Hz
+#: gate did the same at Fc 520 — 23-30 dB steps in the neighbourhood,
+#: reachable whenever Fc <= 1.57x the validity floor (an ordinary
+#: horn-in-a-room shape). Widening upward spends at most one floor width of
+#: the woofer's own low-pass skirt, which is the same trade the tweeter side
+#: already makes into its high-pass knee.
+#:
+#: The result is continuous by construction: an exact no-op at the boundary
+#: width, a constant-width band below it, the shrinking intersection above it
+#: — and the estimate stays a statement about THIS driver rather than a
+#: whole-mask number tens of dB away. Two cases still take the whole mask, and
+#: :func:`core_level_band_hz` discloses both: a genuinely EMPTY intersection,
+#: and a core mask that is itself narrower than the floor (nothing left to
+#: widen into, and the whole mask is what widening was converging on anyway).
 _MIN_LEVEL_BAND_OCTAVES: float = 1.0 / 3.0
+
+
+def _spans_floor(lo_hz: float, hi_hz: float) -> bool:
+    """Is ``[lo_hz, hi_hz]`` at least :data:`_MIN_LEVEL_BAND_OCTAVES` wide?
+
+    One predicate so the "is this enough band" question is asked identically
+    of the raw intersection and of each widened candidate — asking it two ways
+    is how the first version of this floor came to be silently inactive on the
+    woofer side.
+    """
+    return lo_hz > 0.0 and math.log2(hi_hz / lo_hz) >= _MIN_LEVEL_BAND_OCTAVES
 
 
 def _core_level_mask(
@@ -1107,17 +1137,45 @@ def _core_level_mask(
         return core
     used = grid_hz[narrowed]
     lo_used, hi_used = float(used[0]), float(used[-1])
-    if lo_used > 0.0 and math.log2(hi_used / lo_used) >= _MIN_LEVEL_BAND_OCTAVES:
+    if _spans_floor(lo_used, hi_used):
         return narrowed
-    # Sub-floor: widen DOWN from this intersection's own top edge. Anchoring on
-    # ``hi_used`` rather than on the crossover is what makes it continuous —
-    # at exactly the floor width the widened band is the intersection itself,
-    # and below it the band stops moving instead of being swapped for another.
-    widened = core & (
-        (grid_hz >= hi_used / (2.0 ** _MIN_LEVEL_BAND_OCTAVES))
-        & (grid_hz <= hi_used)
-    )
-    return widened if widened.any() else narrowed
+
+    # Sub-floor. Widening is done on the core mask's OWN bins, and each edge is
+    # snapped OUTWARD to the first bin that actually reaches the floor width —
+    # snapping inward leaves the result a bin short of the floor it just asked
+    # for, which silently sends every widened band to the whole-mask fallback.
+    core_idx = np.flatnonzero(core)
+    core_freqs = grid_hz[core_idx]
+    span = 2.0 ** _MIN_LEVEL_BAND_OCTAVES
+
+    # DOWN from this intersection's own top edge first. Anchoring on
+    # ``hi_used`` rather than on the crossover is what makes the neighbourhood
+    # continuous — at exactly the floor width the widened band IS the
+    # intersection, and below it the band stops moving instead of being swapped
+    # for another. This is the tweeter case: the room below is its passband.
+    top = int(np.searchsorted(core_freqs, hi_used, side="right")) - 1
+    bottom = int(np.searchsorted(core_freqs, hi_used / span, side="right")) - 1
+    if bottom < 0:
+        # Downward room is exhausted — the WOOFER case, where a low Fc slides
+        # ``hi_used`` down to meet a room gate that raised the trusted floor.
+        # Make the deficit up UPWARD from the core's own bottom bin instead.
+        # That spends at most one floor width of the driver's own low-pass
+        # skirt, the same trade the tweeter side already makes into its
+        # high-pass knee, and it keeps the estimate a statement about THIS
+        # driver rather than a whole-mask number tens of dB away.
+        bottom = 0
+        top = int(np.searchsorted(core_freqs, core_freqs[0] * span, side="left"))
+        if top >= core_freqs.size:
+            # Neither direction has room: the core mask is itself narrower than
+            # the floor. Nothing left to widen into, so take the documented
+            # whole-mask fallback — which for a core this small is what the
+            # widening was converging on anyway, so the neighbourhood stays
+            # continuous.
+            return core
+
+    widened = np.zeros_like(core)
+    widened[core_idx[bottom:top + 1]] = True
+    return widened
 
 
 def _target_and_plateau_db(
