@@ -26,6 +26,7 @@ from jasper.correction.session import (
     AutolevelStatus,
     SessionState,
 )
+from ._async_wait import wait_signalled
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
 )
@@ -133,21 +134,30 @@ async def test_autolevel_locks_when_lock_event_set(tmp_path):
     lock, expect status=LOCKED at the next ramp step."""
     sess = _make_session(tmp_path)
     set_history: list[float] = []
+    ramp_stepped = asyncio.Event()
 
     async def fake_get_vol():
         return -10.0  # original main_volume
 
     async def fake_set_vol(db):
         set_history.append(db)
+        # run() writes start_db once before the ramp loop begins, so the
+        # SECOND write is the first real ramp step.
+        if len(set_history) >= 2:
+            ramp_stepped.set()
 
     player = _StubTonePlayer()
 
-    # Run autolevel in a task, signal lock after one ramp step.
-    async def _signal_lock_quickly():
-        await asyncio.sleep(0.05)  # let one ramp step happen
+    # Signal lock once the ramp has actually moved. This used to be a fixed
+    # `sleep(0.05)`, which always beat run()'s own ~0.1 s pre-ramp sleep — so
+    # the lock landed at start_db, no ramp step ever ran, and the "was rising"
+    # assertion below passed vacuously. Waiting on the step itself makes which
+    # path this covers deterministic instead of scheduler-dependent.
+    async def _signal_lock_after_first_step():
+        await wait_signalled(ramp_stepped, "first autolevel ramp step")
         await sess.lock_autolevel()
 
-    asyncio.create_task(_signal_lock_quickly())
+    asyncio.create_task(_signal_lock_after_first_step())
     await sess.run_autolevel(
         get_main_volume_db=fake_get_vol,
         set_main_volume_db=fake_set_vol,
@@ -162,8 +172,9 @@ async def test_autolevel_locks_when_lock_event_set(tmp_path):
     assert sess.autolevel.status == AutolevelStatus.LOCKED
     assert sess.autolevel.original_main_volume_db == -10.0
     assert sess.autolevel.locked_main_volume_db is not None
-    # Locked somewhere in the ramp band (started at -40, was rising).
-    assert -40.0 <= sess.autolevel.locked_main_volume_db < 0.0
+    # Locked above start_db, i.e. the ramp really was rising. The strict `>`
+    # is what the wait above buys: this used to lock at exactly -40.0.
+    assert -40.0 < sess.autolevel.locked_main_volume_db < 0.0
     # The locked value matches the final set in set_history.
     assert set_history[-1] == sess.autolevel.locked_main_volume_db
     # Tone player was started + cancelled.
@@ -525,11 +536,13 @@ async def test_autolevel_sets_quiet_start_volume_before_tone(tmp_path):
 
     player = _RecordingPlayer()
 
-    async def _cancel_after_step():
+    async def _cancel_quickly():
+        # Only ends the run; this test asserts the first set_vol / tone_start
+        # ordering, which is settled before the ramp loop starts.
         await asyncio.sleep(0.05)
         await sess.cancel_autolevel()
 
-    asyncio.create_task(_cancel_after_step())
+    asyncio.create_task(_cancel_quickly())
     await sess.run_autolevel(
         get_main_volume_db=fake_get_vol,
         set_main_volume_db=fake_set_vol,
@@ -617,12 +630,19 @@ async def test_autolevel_lock_fades_down_before_tone_cancel(tmp_path):
     tone_cancel, then set_vol to lock_value."""
     sess = _make_session(tmp_path)
     events: list[tuple[str, float | None]] = []
+    set_vols = 0
+    ramp_stepped = asyncio.Event()
 
     async def fake_get_vol():
         return -10.0
 
     async def fake_set_vol(db):
+        nonlocal set_vols
         events.append(("set_vol", float(db)))
+        set_vols += 1
+        # 1st write is start_db; the 2nd is the first real ramp step.
+        if set_vols >= 2:
+            ramp_stepped.set()
 
     class _RecordingPlayer:
         def __init__(self):
@@ -638,11 +658,15 @@ async def test_autolevel_lock_fades_down_before_tone_cancel(tmp_path):
 
     player = _RecordingPlayer()
 
-    async def _lock_after_few_steps():
-        await asyncio.sleep(0.12)  # let ramp climb a bit
+    # Lock from above start_db so the fade-down loop has something to fade.
+    # Same reasoning as test_autolevel_locks_when_lock_event_set — the fixed
+    # `sleep(0.12)` this replaces beat run()'s pre-ramp sleep, so the ramp had
+    # not climbed at all.
+    async def _lock_after_first_step():
+        await wait_signalled(ramp_stepped, "first autolevel ramp step")
         await sess.lock_autolevel()
 
-    asyncio.create_task(_lock_after_few_steps())
+    asyncio.create_task(_lock_after_first_step())
     await sess.run_autolevel(
         get_main_volume_db=fake_get_vol,
         set_main_volume_db=fake_set_vol,
