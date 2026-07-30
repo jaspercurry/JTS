@@ -462,7 +462,8 @@ async def _start_control_socket(
         MEASURE_PAUSE       → open a room-correction measurement
                               window. Drops mic frames, pauses the
                               outputd content meter. Refuses (BUSY) if a
-                              session is active. Auto-clears in 2 min
+                              session is active. Auto-clears after
+                              voice_daemon.MEASUREMENT_AUTOCLEAR_SEC
                               if RESUME is never sent.
         MEASURE_RESUME      → close the measurement window.
                               Idempotent.

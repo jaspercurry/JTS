@@ -104,7 +104,7 @@ class _RefusingCues:
 
 
 async def _close_window(wl: WakeLoop) -> None:
-    """Cancel the 2-minute safety task so the test loop closes clean."""
+    """Cancel the auto-clear safety task so the test loop closes clean."""
     await wl.measurement_resume()
 
 
@@ -274,7 +274,7 @@ def test_drain_bound_fits_under_the_coordinator_read_timeout() -> None:
     the timeout it shipped with can be awaiting a daemon that now holds
     the reply through a drain. A coordinator that gives up believes voice
     was never paused, skips MEASURE_RESUME, and leaves the speaker gated
-    until the 2-minute auto-clear — so the bound must fit under the
+    until the daemon's auto-clear — so the bound must fit under the
     timeout with room for connect/write/scheduling on a loaded Pi."""
     assert MEASUREMENT_INFLIGHT_DRAIN_SEC < VOICE_MEASURE_PAUSE_TIMEOUT_SEC
     assert (
@@ -288,13 +288,21 @@ def test_lease_refresh_fits_under_the_daemon_measurement_auto_clear() -> None:
     MEASUREMENT_AUTOCLEAR_SEC, which is the crash backstop; the coordinator
     keeps a legitimate long window alive by re-sending MEASURE_PAUSE every
     MEASUREMENT_LEASE_REFRESH_SEC. Invert that order and a healthy sweep
-    un-gates itself mid-capture and lets household music back in. The margin
-    is one retry interval, so a single failed renewal still has a chance to
-    land before the backstop fires."""
+    un-gates itself mid-capture and lets household music back in.
+
+    The budget is a whole failed-renewal cycle, because a failure costs far
+    more than the retry delay. The failed attempt waits up to
+    VOICE_MEASURE_PAUSE_TIMEOUT_SEC for a reply BEFORE the loop switches to
+    the retry interval, and the retry then waits that long again — see
+    `_refresh_voice_lease` in correction/coordinator.py. Budget only the retry
+    delay and you green-light a refresh interval whose retry is still in
+    flight when the backstop fires."""
     assert 0 < MEASUREMENT_LEASE_REFRESH_SEC < MEASUREMENT_AUTOCLEAR_SEC
     assert (
-        MEASUREMENT_AUTOCLEAR_SEC - MEASUREMENT_LEASE_REFRESH_SEC
-        >= MEASUREMENT_LEASE_RETRY_SEC
+        MEASUREMENT_LEASE_REFRESH_SEC
+        + 2 * VOICE_MEASURE_PAUSE_TIMEOUT_SEC
+        + MEASUREMENT_LEASE_RETRY_SEC
+        < MEASUREMENT_AUTOCLEAR_SEC
     )
 
 

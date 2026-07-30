@@ -532,8 +532,9 @@ self-healing property no matter how the drift was introduced.
    persisted `listening_level` while the ramp state machine still believes its
    own value is live. This is not a cross-daemon Camilla lock and does not block
    emergency user mute/attenuation. Long relay setup windows renew
-   `MEASURE_PAUSE` every 60 seconds; if the correction process dies, the voice
-   daemon's 120-second timer still releases the guard.
+   `MEASURE_PAUSE` every `coordinator.MEASUREMENT_LEASE_REFRESH_SEC`; if the
+   correction process dies, the voice daemon's auto-clear timer
+   (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`) still releases the guard.
 2. Active source uses camilla-as-master (idle / AirPlay / USBSINK).
    Push-mode sources pin camilla at 0 dB by design, except for the
    explicit 0% content-mute floor.

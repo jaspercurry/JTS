@@ -224,7 +224,10 @@ class SessionConfig:
 # lock, backgrounded tab, network blip), the session would wedge forever and
 # block every future /start. This watchdog abandons such a stranded session so
 # the wizard self-recovers. A sweep+upload normally completes in seconds; 120 s
-# is generous headroom. Mirrors voice_daemon's measurement-window auto-clear.
+# is generous headroom. This runs concurrently with voice_daemon's
+# measurement-window auto-clear and happens to share its value, but the two are
+# independent: the coordinator's lease renewal decouples them, and neither
+# ordering is a contract. Tune this one on its own evidence.
 AWAITING_CAPTURE_TIMEOUT_SEC = 120.0
 
 # States the stranded-capture watchdog guards: every state where the session

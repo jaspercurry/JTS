@@ -2135,9 +2135,10 @@ in feedback (2026-05-09).
   and logs `event=measurement.inflight_drain_timeout` at WARNING, naming
   the first capture as possibly contaminated. Renewals do not drain.
 - While the measurement window remains open, the coordinator repeats
-  idempotent `MEASURE_PAUSE` every 60 seconds to renew the voice daemon's
-  120-second crash-recovery timer. A dead coordinator stops renewing, so the
-  speaker still self-recovers.
+  idempotent `MEASURE_PAUSE` every `MEASUREMENT_LEASE_REFRESH_SEC` to renew
+  the voice daemon's crash-recovery timer
+  (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`). A dead coordinator stops
+  renewing, so the speaker still self-recovers. A test pins the pair.
 - `MEASURE_RESUME` → clear the event and reconcile guard, restart trackers,
   return JSON.
 
@@ -2147,7 +2148,7 @@ async context manager:
 async with measurement_window():
     # 1. mux TEST_SELECT correction correction-measurement; require owner + gate
     # 2. UDS MEASURE_PAUSE → voice_daemon
-    # 3. renew the 60 s mux lease and 120 s voice lease while healthy
+    # 3. renew the mux lease and the voice lease while healthy
     # 4. yield (caller does the sweep + analysis + filter design)
     # 5. UDS MEASURE_RESUME + verified owner-scoped TEST_RELEASE (finally)
 ```
@@ -2809,9 +2810,9 @@ What can actually go wrong, ordered by likelihood × impact.
    so user can land there before HTTPS works.
 6. **WakeLoop deadlock on the measurement_active event during
    exception.** Mitigation: voice_daemon's MEASURE_RESUME is
-   idempotent and is also called from a 2-minute-after-PAUSE
-   safety timer (server-side) in case the coordinator crashes
-   without sending RESUME.
+   idempotent and is also called from the server-side auto-clear
+   safety timer (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC` after
+   PAUSE) in case the coordinator crashes without sending RESUME.
 7. **Filter design exceeds RAM on 1 GB after pause.** Mitigation:
    pre-flight `/proc/meminfo` check; refuse with clear message;
    suggest 2 GB upgrade. Don't OOM the Pi.

@@ -48,10 +48,10 @@ Robustness:
     enabled household sources manually stopped.
   - Gate and voice restoration run in ``finally`` and both have independent
     crash-recovery leases.
-  - The voice-daemon RESUME has a server-side 2-minute auto-clear safety timer
-    (see voice_daemon.py). A healthy long-running window renews that lease every
-    minute; a coordinator crash (kill -9) stops renewal and still recovers
-    automatically.
+  - The voice-daemon RESUME has a server-side auto-clear safety timer
+    (voice_daemon.MEASUREMENT_AUTOCLEAR_SEC). A healthy long-running window
+    renews that lease every MEASUREMENT_LEASE_REFRESH_SEC; a coordinator crash
+    (kill -9) stops renewal and still recovers automatically.
   - A precondition check refuses to start if a voice session is
     currently active — yanking an in-flight session is worse than
     asking the user to wait or end it first.
@@ -85,7 +85,7 @@ MEASUREMENT_LEASE_RETRY_SEC = 5.0
 # that reply while it drains assistant audio that was already in playout,
 # and a coordinator that gives up believes voice was never paused — it
 # skips MEASURE_RESUME on the way out and leaves the speaker gated until
-# the daemon's 2-minute auto-clear. The daemon's drain bound
+# the daemon's auto-clear. The daemon's drain bound
 # (voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC) must therefore stay under
 # this value; a test pins the pair. Lowering this needs the daemon-side
 # bound lowered first, in an earlier release.
@@ -485,8 +485,8 @@ async def measurement_window(
                     )
                 except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
                     logger.error(
-                        "voice_daemon MEASURE_RESUME failed: %s — daemon's "
-                        "auto-clear safety timer will recover in ~2 min",
+                        "voice_daemon MEASURE_RESUME failed: %s — the "
+                        "daemon's auto-clear safety timer will recover",
                         e,
                     )
             gate_release_error: MeasurementWindowError | None = None
