@@ -47,6 +47,12 @@ was not worth its cost: **every** reader of these corpora now anchors on
 :func:`sweep_anchor`, and there is no second registration convention left
 to reason about. The larger, program-global form of the same hazard is
 :func:`sweep_anchored_global_offset`.
+
+**Re-deriving a pinned reading?** The procedure (reproduce, classify
+detector-vs-reading, bisect, record era) is documented once, in
+``tests.test_spatial_combine.test_band_deficit_separates_honest_captures_from_stopband_residue``'s
+docstring -- it governs every population read through this module,
+not just that test's own.
 """
 from __future__ import annotations
 

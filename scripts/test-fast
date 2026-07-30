@@ -17,10 +17,37 @@ cd "$(git rev-parse --show-toplevel)"
 # shellcheck source=scripts/_test_lane.sh
 source "${_lane_dir}/_test_lane.sh"
 
+# issue #1850: registered before resolve_lane_tool runs, so this is the
+# lane's single verdict point no matter where an exit happens -- normal
+# completion, one of the pytest phases below failing, or resolve_lane_tool's
+# FATAL block aborting first. The temp-file variables are initialized empty
+# (not left unset) so cleanup is safe under `set -u` even if the trap fires
+# before their mktemp lines run.
+phase_tmp=""
+changed_file_tmp=""
+selected_test_tmp=""
+_lane_passed_total=0
+cleanup() {
+  # Captured FIRST, before any other command: `$?` reflects only the most
+  # recent command, and the `rm` below would otherwise clobber it before
+  # lane_emit_verdict ever saw the real value.
+  local exit_status=$?
+  # `|| true`: cleanup is best-effort, and must never be able to stop
+  # lane_emit_verdict from running. A missing/failing `rm` (this repo's own
+  # test sandbox has no coreutils on PATH by design) would otherwise abort
+  # this function right here under `set -e`, silently swallowing the one
+  # line the #1850 fix exists to guarantee.
+  rm -f "${phase_tmp}" "${changed_file_tmp}" "${selected_test_tmp}" 2>/dev/null || true
+  lane_emit_verdict test-fast "${exit_status}"
+}
+trap cleanup EXIT
+
 base_ref="${TEST_BASE:-origin/main}"
 pytest_bin="$(resolve_lane_tool test-fast pytest PYTEST)" || exit 1
 
 export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
+
+phase_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-fast-phase.XXXXXX")"
 
 echo "==> pytest CI routing policy"
 if ! routing_policy_output="$(
@@ -37,16 +64,13 @@ if (( ${#routing_policy_tests[@]} == 0 )); then
   echo "FATAL: CI routing policy returned no pytest targets" >&2
   exit 1
 fi
-"${pytest_bin}" -q --tb=short "${routing_policy_tests[@]}"
+lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short "${routing_policy_tests[@]}"
+_lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
 
 ruff_bin="$(resolve_lane_tool test-fast ruff RUFF)" || exit 1
 
 changed_file_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-fast-files.XXXXXX")"
 selected_test_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-fast-tests.XXXXXX")"
-cleanup() {
-  rm -f "${changed_file_tmp}" "${selected_test_tmp}"
-}
-trap cleanup EXIT
 
 collect_changed_files() {
   if git rev-parse --verify "${base_ref}" >/dev/null 2>&1; then
@@ -134,14 +158,93 @@ echo "==> ruff"
 "${ruff_bin}" check .
 
 echo "==> pytest last failures"
-set +e
-"${pytest_bin}" -q --tb=short --last-failed --last-failed-no-failures none "$@"
-last_failed_status=$?
-set -e
-if [[ "${last_failed_status}" -ne 0 && "${last_failed_status}" -ne 5 ]]; then
-  exit "${last_failed_status}"
+
+# issue #1758: a cached node id that no longer resolves (a renamed or deleted
+# test) makes pytest's own --last-failed machinery silently degrade into
+# collecting and running the FULL suite serially -- `--last-failed-no-failures
+# none` only guards the case where the cache is EMPTY, not this one. Verified
+# 2026-07-29: seeding one stale id alongside one live one made
+# `--last-failed --last-failed-no-failures none` print "run-last-failure: 1
+# known failures not in selected tests" and then run every item in the given
+# scope, not the one that actually last failed -- the exact ~17-minute-serial-
+# sweep shape reported twice against the flat-linearization ladder's renames.
+#
+# Fix: read the cache ourselves and validate before ever passing
+# --last-failed. One combined --collect-only probe (fast -- it only imports
+# the files these specific ids reference, not the whole suite) tells us
+# whether ANY are stale; only when it fails do we pay for the slower per-id
+# probe, so the common case (nothing renamed) costs one extra quick pytest
+# start, not N of them. A stale id then costs seconds, never the whole suite.
+lastfailed_file=".pytest_cache/v/cache/lastfailed"
+lastfailed_ids=()
+if [[ -f "${lastfailed_file}" ]]; then
+  while IFS= read -r node_id; do
+    [[ -n "${node_id}" ]] && lastfailed_ids+=("${node_id}")
+  done < <(python3 -c '
+import json, sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    data = {}
+for key in data:
+    print(key)
+' "${lastfailed_file}")
 fi
-if [[ "${last_failed_status}" -eq 5 ]]; then
+
+resolved_lastfailed_ids=()
+if (( ${#lastfailed_ids[@]} > 0 )); then
+  if "${pytest_bin}" --collect-only -q "${lastfailed_ids[@]}" >/dev/null 2>&1; then
+    resolved_lastfailed_ids=("${lastfailed_ids[@]}")
+  else
+    stale_ids=()
+    for node_id in "${lastfailed_ids[@]}"; do
+      if "${pytest_bin}" --collect-only -q "${node_id}" >/dev/null 2>&1; then
+        resolved_lastfailed_ids+=("${node_id}")
+      else
+        stale_ids+=("${node_id}")
+      fi
+    done
+    if (( ${#stale_ids[@]} > 0 )); then
+      echo "==> pruning ${#stale_ids[@]} stale last-failed id(s) (renamed/removed test?):"
+      printf '  %s\n' "${stale_ids[@]}"
+    fi
+    # Rewrite the cache to match what actually resolved, so a tool reading it
+    # directly (or a future run, if this run's own pytest invocation below
+    # never gets that far) does not see the stale id again. The real pytest
+    # run below will overwrite this with its own results regardless -- this
+    # write only matters if that run never happens or never completes.
+    if (( ${#resolved_lastfailed_ids[@]} > 0 )); then
+      python3 -c '
+import json, sys
+
+path = sys.argv[1]
+keep = set(sys.argv[2:])
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    data = {}
+data = {k: v for k, v in data.items() if k in keep}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+' "${lastfailed_file}" "${resolved_lastfailed_ids[@]}"
+    else
+      python3 -c '
+import json, sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump({}, fh)
+' "${lastfailed_file}"
+    fi
+  fi
+fi
+
+if (( ${#resolved_lastfailed_ids[@]} > 0 )); then
+  lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short "${resolved_lastfailed_ids[@]}" "$@"
+  _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
+else
   echo "no last-failed tests recorded"
 fi
 
@@ -152,10 +255,12 @@ if [[ -s "${selected_test_tmp}" ]]; then
   while IFS= read -r path; do
     selected_tests+=("${path}")
   done < "${selected_test_tmp}"
-  "${pytest_bin}" -q --tb=short "${selected_tests[@]}" "$@"
+  lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short "${selected_tests[@]}" "$@"
+  _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
 else
   echo "==> no direct changed-file test mapping found"
 fi
 
 echo "==> pytest always-on fast guards"
-"${pytest_bin}" -q --tb=short tests/test_dependency_groups.py "$@"
+lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short tests/test_dependency_groups.py "$@"
+_lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
