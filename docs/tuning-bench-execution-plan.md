@@ -383,9 +383,14 @@ session and prints the tap link + QR:
   NOT `jasper-control`'s `/state`, which has no correction block at
   all. **Poll gently and know the side effect**: the status/envelope
   GETs run the stale-volume-ceiling enforcement; and the room flow's
-  session is in-process memory in a daemon that idle-exits after
-  600 s without requests — a bench that stops polling can lose an
-  in-flight room session (crossover-v2 survives via its state file).
+  session is in-process memory with no state file (unlike
+  crossover-v2's), so a bench that stalls between steps can still
+  lose an in-flight room session. Since #1860 the level-match ramp
+  step itself (`/correction/relay/level-match`) holds the idle-exit
+  tracker for its own duration — the same mechanism #1854/#1856 gave
+  crossover-v2 — so a slow bench WITHIN that one step will not trip
+  the 600 s exit; every other room step (sweep, repeat, verify)
+  remains unheld and as vulnerable to the same 600 s stall as before.
 
 **`ingest`** — read product bundles for interpretation:
 - Room bundles: `jasper-correction-bundle inspect [--recompute]

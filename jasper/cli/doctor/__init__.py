@@ -291,6 +291,7 @@ from . import correction as correction
 from .correction import (
     _correction_root,
     check_correction_web_service,
+    check_correction_idle_exit_holds,
     _probe_https_status,
     check_correction_https_assets,
     check_correction_state_dirs,
@@ -613,6 +614,7 @@ __all__ = [
     "check_usbnet_management_probe",
     "_correction_root",
     "check_correction_web_service",
+    "check_correction_idle_exit_holds",
     "_probe_https_status",
     "check_correction_https_assets",
     "check_correction_state_dirs",

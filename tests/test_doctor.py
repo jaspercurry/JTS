@@ -5390,6 +5390,113 @@ def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
     assert "socket active" in r.detail
 
 
+# ---------- #1860: jasper-doctor check for long-outstanding idle-exit holds
+
+
+def test_check_correction_idle_exit_holds_registered_in_sync_checks():
+    assert "check_correction_idle_exit_holds" in _registered_check_names()
+
+
+def test_check_correction_idle_exit_holds_skips_when_service_not_active(monkeypatch):
+    def fake_run(cmd, timeout=5.0):
+        assert cmd[:2] == ["systemctl", "is-active"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="inactive\n", stderr="")
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_idle_exit_holds()
+    assert r.status == "ok"
+    assert "not running" in r.detail
+
+
+def test_check_correction_idle_exit_holds_skips_when_journalctl_unavailable(
+    monkeypatch,
+):
+    def fake_run(cmd, timeout=5.0):
+        if cmd[0] == "systemctl":
+            return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+        raise FileNotFoundError("journalctl not found")
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_idle_exit_holds()
+    assert r.status == "ok"
+    assert "journalctl" in r.detail
+
+
+def test_check_correction_idle_exit_holds_ok_with_no_deferred_warning(monkeypatch):
+    def fake_run(cmd, timeout=5.0):
+        if cmd[0] == "systemctl":
+            return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+        assert cmd[0] == "journalctl"
+        assert "warning" in cmd  # -p warning: only escalated lines are fetched
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_idle_exit_holds()
+    assert r.status == "ok"
+    assert "no long-outstanding holds" in r.detail
+
+
+def test_check_correction_idle_exit_holds_warns_on_leaked_hold(monkeypatch):
+    """Mirrors the exact rendered line from _systemd.py's _log_deferred_exit
+    once HOLD_LEAK_WARN_AFTER_SEC is crossed (#1856's escalation), proving
+    this check surfaces the SAME evidence at the doctor surface (#1860)."""
+    leaked_line = (
+        "systemd idle-exit deferred: 1 active requests/holds after 7530s "
+        "idle, busy for 7530s (threshold 600s, holds: relay:level_ramp:room) "
+        "— busy past 7200s, so this is a LEAKED hold, not a long session: "
+        "the process can no longer idle-exit and its on-idle-exit hook "
+        "cannot run"
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        if cmd[0] == "systemctl":
+            return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+        assert cmd[0] == "journalctl"
+        return subprocess.CompletedProcess(cmd, 0, stdout=leaked_line + "\n", stderr="")
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_idle_exit_holds()
+    assert r.status == "warn"
+    assert "7530s" in r.detail
+    assert "relay:level_ramp:room" in r.detail
+
+
+def test_check_correction_idle_exit_holds_reports_the_latest_of_several_lines(
+    monkeypatch,
+):
+    """journalctl returns oldest-first; an older (possibly since-resolved)
+    line must not shadow the most recent evidence."""
+    older = (
+        "systemd idle-exit deferred: 1 active requests/holds after 7300s "
+        "idle, busy for 7300s (threshold 600s, holds: relay:crossover_v2:session) "
+        "— busy past 7200s, so this is a LEAKED hold, not a long session: "
+        "the process can no longer idle-exit and its on-idle-exit hook "
+        "cannot run"
+    )
+    newer = (
+        "systemd idle-exit deferred: 1 active requests/holds after 7830s "
+        "idle, busy for 7830s (threshold 600s, holds: relay:level_ramp:crossover) "
+        "— busy past 7200s, so this is a LEAKED hold, not a long session: "
+        "the process can no longer idle-exit and its on-idle-exit hook "
+        "cannot run"
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        if cmd[0] == "systemctl":
+            return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+        assert cmd[0] == "journalctl"
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=f"{older}\n{newer}\n", stderr="",
+        )
+
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
+    r = doctor.check_correction_idle_exit_holds()
+    assert r.status == "warn"
+    assert "7830s" in r.detail
+    assert "relay:level_ramp:crossover" in r.detail
+    assert "7300s" not in r.detail
+
+
 def test_check_correction_https_assets_registered_in_sync_checks():
     assert "check_correction_https_assets" in _registered_check_names()
 

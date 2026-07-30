@@ -1597,6 +1597,7 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
             label=kind.label,
             relay_base=relay_base,
             return_url=return_url,
+            idle_hold=idle_hold,
         )
         kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
         return {"url": "https://capture.jasper.tech/session"}
@@ -1613,13 +1614,24 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         headers={"Content-Length": str(len(body))},
         rfile=io.BytesIO(body),
     )
-    payload = correction_setup._handle_crossover_relay_level_match(handler)
+
+    # #1860: level_ramp:crossover now forwards a REAL idle_hold into
+    # _run_relay_capture instead of the retired hardcoded no_hold — this
+    # marker must never be invoked here (this test fakes _run_relay_capture,
+    # so nothing should call it), only threaded through by identity.
+    def _unused_idle_hold_marker(_label):
+        raise AssertionError("idle_hold must not be invoked by a faked orchestrator")
+
+    payload = correction_setup._handle_crossover_relay_level_match(
+        handler, idle_hold=_unused_idle_hold_marker,
+    )
 
     assert applied["owner"] == "manual"
     assert applied["candidate_fingerprint"] == "candidate-1"
     assert registered["label"] == "level_ramp:crossover"
     assert registered["relay_base"] == "relay"
     assert registered["return_url"] == "https://jts.local/correction/crossover/"
+    assert registered["idle_hold"] is _unused_idle_hold_marker
     spec = registered["spec"]
     assert spec.stimulus.label == "250 Hz level-match tone"
     assert spec.screen[1]["items"][0].startswith(

@@ -4800,13 +4800,23 @@ async def _run_relay_level_match(
             logger.debug("level-match relay purge failed", exc_info=True)
 
 
-def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+def _handle_relay_level_match(
+    handler: BaseHTTPRequestHandler,
+    *,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
+) -> dict[str, Any]:
     """POST /relay/level-match: lock the listening-position measurement level.
 
     The room session must already have loaded its topology-preserving
     measurement baseline via ``/start``.  The returned tap-link opens the
     trusted phone page, where mic/calibration setup precedes the meter-only
     ramp.  No WAV is uploaded by this relay kind.
+
+    ``idle_hold`` is ``main``'s ``IdleShutdownTracker.hold`` — this kind runs
+    the human-paced ramp in ``_run_relay_level_match`` (suspending the room
+    session's own capture-timeout watchdog for the duration), which can
+    outlive the 600 s inbound-idle window the single-capture room kinds
+    cannot (issue #1860).
     """
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_level_ramp_spec
@@ -4880,11 +4890,11 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
         return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
         # A human-paced level ramp through _run_relay_level_match, NOT a single
         # capture: each control op is bounded by _RELAY_CONTROL_TIMEOUT_S but the
-        # ramp as a whole leans on the relay TTL as its backstop, so unlike the
-        # single-capture kinds it CAN outlive an inbound-idle window. Unheld only
-        # because #1854 is scoped to the observed break — of the unheld kinds,
-        # #1860 should look at this one first.
-        idle_hold=no_hold,
+        # ramp as a whole leans on the relay TTL (900 s) as its backstop, so
+        # unlike the single-capture kinds it CAN outlive an inbound-idle window.
+        # Held since #1860 — main's real tracker, threaded through the handler
+        # cfg exactly like the crossover-v2 kinds.
+        idle_hold=idle_hold,
     )
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
@@ -5031,8 +5041,18 @@ async def _fixed_axis_level_identity_guard(
 
 def _handle_crossover_relay_level_match(
     handler: BaseHTTPRequestHandler,
+    *,
+    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> dict[str, Any]:
-    """POST /crossover/level-match: acquire one geometry-scoped gain lease."""
+    """POST /crossover/level-match: acquire one geometry-scoped gain lease.
+
+    ``idle_hold`` is ``main``'s ``IdleShutdownTracker.hold`` — this kind runs
+    the same human-paced ramp (``_run_relay_level_match``) as
+    ``level_ramp:room``, so it can likewise outlive the 600 s inbound-idle
+    window (issue #1860). Unlike the room kind it suspends no session
+    watchdog — the ramp instead runs off ``CrossoverLevelLease``, whose
+    lifetime this handler's caller (the relay orchestrator) already owns.
+    """
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_level_ramp_spec
     from jasper.active_speaker.measurement import (
@@ -5507,11 +5527,11 @@ def _handle_crossover_relay_level_match(
         return_url=_request_local_return_url(handler, "/correction/crossover/"),
         # A human-paced level ramp through _run_relay_level_match, NOT a single
         # capture: each control op is bounded by _RELAY_CONTROL_TIMEOUT_S but the
-        # ramp as a whole leans on the relay TTL as its backstop, so unlike the
-        # single-capture kinds it CAN outlive an inbound-idle window. Unheld only
-        # because #1854 is scoped to the observed break — of the unheld kinds,
-        # #1860 should look at this one first.
-        idle_hold=no_hold,
+        # ramp as a whole leans on the relay TTL (900 s) as its backstop, so
+        # unlike the single-capture kinds it CAN outlive an inbound-idle window.
+        # Held since #1860 — main's real tracker, threaded through the handler
+        # cfg exactly like the crossover-v2 kinds.
+        idle_hold=idle_hold,
     )
     return {"relay": relay, "level_match": lease.level_match_snapshot()}
 
@@ -6793,7 +6813,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
 
                 if path == "/crossover/level-match":
-                    self._send_json(_handle_crossover_relay_level_match(self))
+                    self._send_json(
+                        _handle_crossover_relay_level_match(
+                            self, idle_hold=cfg["idle_hold"],
+                        )
+                    )
                     return
 
                 raise ValueError(f"unknown crossover route: {path}")
@@ -7172,7 +7196,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/relay/level-match":
                     from jasper.correction import failures
                     try:
-                        self._send_json(_handle_relay_level_match(self))
+                        self._send_json(
+                            _handle_relay_level_match(
+                                self, idle_hold=cfg["idle_hold"],
+                            )
+                        )
                     except (OSError, RuntimeError, ValueError) as e:
                         self._send_room_failure(
                             failures.public_failure(
