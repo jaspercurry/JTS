@@ -566,6 +566,212 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_both_background_owners(
     assert '"idle_hold": idle_hold' in inspect.getsource(correction_setup.make_server)
 
 
+# ---------- #1860: level-ramp kinds now hold the idle-exit tracker too ------
+#
+# level_ramp:room and level_ramp:crossover both run the human-paced control
+# loop in _run_relay_level_match (suspend_capture_timeout'd on the room side;
+# leased on the crossover side), whose only whole-run backstop is the relay's
+# own TTL (900s, jasper.capture_relay.session.DEFAULT_TTL_S) rather than a
+# short per-capture watchdog. That means, like crossover-v2 (#1854/#1856),
+# they can outlive the 600s inbound-idle window. The generic hold lifecycle
+# (acquire before spawn; release on completion/failure/never-spawned) is
+# already pinned kind-agnostically against _run_relay_capture itself above;
+# these tests instead pin the two NEW call sites' wiring: each handler must
+# forward a REAL idle_hold into _run_relay_capture rather than the retired
+# hardcoded no_hold, and the dispatch must read it off the handler cfg.
+
+
+def test_room_level_ramp_threads_the_idle_hold_into_the_relay_orchestrator(
+    monkeypatch,
+):
+    """_handle_relay_level_match must forward its idle_hold, not a hardcoded
+    no_hold, into _run_relay_capture (#1860)."""
+    from jasper.correction.session import SessionState
+
+    idle_hold = _RecordingIdleHold()
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        suspend_capture_timeout=lambda: None,
+        resume_capture_timeout=lambda: None,
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+
+    seen = {}
+
+    def fake_run(kind, relay_base, *, return_url, idle_hold):
+        seen["label"] = kind.label
+        seen["idle_hold"] = idle_hold
+        return {"tap_link": "https://capture.jasper.tech/#redacted"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
+
+    correction_setup._handle_relay_level_match(
+        SimpleNamespace(headers={"Host": "jts3.local"}),
+        idle_hold=idle_hold,
+    )
+
+    assert seen["label"] == "level_ramp:room"
+    assert seen["idle_hold"] is idle_hold
+
+
+def test_room_level_ramp_holds_the_idle_exit_for_the_whole_ramp(monkeypatch):
+    """The room level ramp keeps the socket-activated wizard alive for its
+    whole run, exactly like the crossover-v2 session (#1854/#1856): the hold
+    is taken before the runner is scheduled and released only once the ramp
+    (``_run_relay_level_match``) reaches a terminal state — never earlier.
+    """
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction.session import SessionState
+
+    idle_hold = _RecordingIdleHold()
+    release_ramp = threading.Event()
+    ramp_entered = threading.Event()
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        suspend_capture_timeout=lambda: None,
+        resume_capture_timeout=lambda: None,
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(
+        correction_adapter,
+        "open_capture",
+        lambda _client, _spec, **_kwargs: SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        ),
+    )
+
+    async def fake_run_relay_level_match(*_args, **_kwargs):
+        ramp_entered.set()
+        await asyncio.to_thread(release_ramp.wait)
+
+    monkeypatch.setattr(
+        correction_setup, "_run_relay_level_match", fake_run_relay_level_match,
+    )
+
+    correction_setup._set_relay_capture(None)
+    try:
+        correction_setup._handle_relay_level_match(
+            SimpleNamespace(headers={"Host": "jts3.local"}),
+            idle_hold=idle_hold,
+        )
+        # Held from the moment the POST returns — before the ramp has even
+        # started, which is the window a phone-only session sits in.
+        assert idle_hold.events == [("acquire", "relay:level_ramp:room")]
+        assert ramp_entered.wait(timeout=2)
+        assert idle_hold.active == 1
+
+        release_ramp.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if correction_setup._get_relay_capture()["status"] == "complete":
+                break
+            time.sleep(0.01)
+        assert correction_setup._get_relay_capture()["status"] == "complete"
+    finally:
+        release_ramp.set()
+        correction_setup._set_relay_capture(None)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and idle_hold.active:
+        time.sleep(0.01)
+    assert idle_hold.active == 0, "the completed ramp released its hold"
+    assert idle_hold.events == [
+        ("acquire", "relay:level_ramp:room"),
+        ("release", "relay:level_ramp:room"),
+    ]
+
+
+def test_room_level_ramp_releases_the_idle_hold_when_the_ramp_fails(monkeypatch):
+    """Every terminal path releases — a refused/failed ramp included, exactly
+    as #1856 requires of the crossover-v2 kinds. A hold that only released on
+    the happy path would trade a killed ramp for an immortal wizard."""
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction.session import SessionState
+
+    idle_hold = _RecordingIdleHold()
+    session = SimpleNamespace(
+        session_id="room-session",
+        state=SessionState.NEEDS_NOISE_CAPTURE,
+        suspend_capture_timeout=lambda: None,
+        resume_capture_timeout=lambda: None,
+    )
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base",
+        lambda: "https://relay.jasper.tech",
+    )
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(
+        correction_adapter,
+        "open_capture",
+        lambda _client, _spec, **_kwargs: SimpleNamespace(
+            tap_link="https://capture.test/#s=cap_1",
+            pi_session=object(),
+        ),
+    )
+
+    async def fake_run_relay_level_match(*_args, **_kwargs):
+        raise RuntimeError("the measurement link timed out")
+
+    monkeypatch.setattr(
+        correction_setup, "_run_relay_level_match", fake_run_relay_level_match,
+    )
+
+    correction_setup._set_relay_capture(None)
+    try:
+        correction_setup._handle_relay_level_match(
+            SimpleNamespace(headers={"Host": "jts3.local"}),
+            idle_hold=idle_hold,
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if correction_setup._get_relay_capture()["status"] == "failed":
+                break
+            time.sleep(0.01)
+        assert correction_setup._get_relay_capture()["status"] == "failed"
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and idle_hold.active:
+        time.sleep(0.01)
+    assert idle_hold.active == 0
+    assert idle_hold.events == [
+        ("acquire", "relay:level_ramp:room"),
+        ("release", "relay:level_ramp:room"),
+    ]
+
+
+def test_room_and_crossover_level_ramp_dispatch_read_idle_hold_from_cfg():
+    """Both #1860 ramp routes must read idle_hold off the handler cfg, the
+    same seam #1856 pinned for /crossover/v2/* — anchored on each route's OWN
+    ``if path ==`` dispatch (not just "the substring exists somewhere in
+    _make_handler") so a regression at either specific call site is caught.
+    """
+    dispatch = inspect.getsource(correction_setup._make_handler)
+    for route, handler_name in (
+        ('"/relay/level-match"', "_handle_relay_level_match"),
+        ('"/crossover/level-match"', "_handle_crossover_relay_level_match"),
+    ):
+        anchor = f"if path == {route}:"
+        route_at = dispatch.index(anchor)
+        handler_at = dispatch.index(handler_name, route_at)
+        window = dispatch[handler_at:handler_at + 300]
+        assert 'idle_hold=cfg["idle_hold"]' in window, (
+            f"{handler_name} dispatch does not thread cfg['idle_hold']: {window!r}"
+        )
+
+
 def test_relay_commit_and_stop_have_one_atomic_winner():
     stopped = threading.Event()
     kind = "crossover_sweep:driver"
@@ -3321,7 +3527,9 @@ def test_e2e_relay_refusal_returns_typed_homeowner_failure(
     route,
     handler_name,
 ):
-    def fake(_handler):
+    # **_kwargs swallows /relay/level-match's idle_hold=cfg["idle_hold"]
+    # (#1860) — the other two routes call their handler with just `self`.
+    def fake(_handler, **_kwargs):
         raise ValueError("raw relay/session diagnostic")
 
     monkeypatch.setattr(correction_setup, handler_name, fake)

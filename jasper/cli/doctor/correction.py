@@ -10,12 +10,15 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
+from ...web._systemd import DEFERRED_EXIT_LOG_PERIOD_SEC
 
 def _correction_root() -> Path:
     return Path(
@@ -53,6 +56,98 @@ def check_correction_web_service() -> CheckResult:
         "Run `sudo systemctl enable --now jasper-correction-web.socket` "
         "or redeploy.",
     )
+
+# One rendered line from _systemd.py's _log_deferred_exit: "systemd idle-exit
+# deferred: 2 active requests/holds after 7530s idle, busy for 7530s
+# (threshold 600s, holds: relay:level_ramp:room)" — optionally followed by the
+# " — busy past ...LEAKED hold..." note, which is what pushes it to WARNING.
+# Captures (busy_for_seconds, holds).
+_DEFERRED_HOLD_RE = re.compile(
+    r"idle-exit deferred: \d+ active requests/holds after [\d.]+s idle, "
+    r"busy for ([\d.]+)s \(threshold [\d.]+s, holds: ([^)]+)\)"
+)
+
+_CORRECTION_WEB_UNIT = "jasper-correction-web.service"
+
+
+@doctor_check(order=25.5, group="correction")
+def check_correction_idle_exit_holds() -> CheckResult:
+    """A leaked idle-exit hold must be visible here, not only in the journal.
+
+    ``IdleShutdownTracker.hold()`` (jasper/web/_systemd.py, issue #1854/#1856)
+    keeps correction-web's socket-activated process alive across background
+    session work that generates no inbound HTTP traffic: a crossover-v2 cloud
+    session, and — since #1860 — the two human-paced level-ramp kinds
+    (``level_ramp:room``, ``level_ramp:crossover``). Past
+    ``HOLD_LEAK_WARN_AFTER_SEC`` of unbroken busy time, ``_systemd.py`` itself
+    escalates its rate-limited "idle-exit deferred" line from INFO to
+    WARNING, because no legitimate session runs that long. This check reads
+    that same escalation from the unit's journal so a stuck hold shows up
+    for an operator running ``jasper-doctor``, not only for whoever happens
+    to be tailing the log when the line fires (#1860).
+
+    Read-only, and cannot fix anything: per
+    ``correction_setup._run_async``'s fail-closed invariant, nothing may
+    release a hold out from under a possibly-still-mutating measurement, so
+    a leaked hold is a bug for its own layer, not something this check reaps.
+
+    Scoped to ``jasper-correction-web.service`` — the only wizard that
+    threads a real hold anywhere today; the other five socket-activated
+    wizards (bluetooth/dial/sources/chat/system setup) pass
+    ``_systemd.no_hold`` at every call site and structurally cannot produce
+    this line. Skips when the service is not currently running (nothing to
+    leak) or when journalctl is unavailable (dev host).
+    """
+    label = "correction idle-exit holds"
+    active = _run(["systemctl", "is-active", _CORRECTION_WEB_UNIT]).stdout.strip()
+    if active != "active":
+        return CheckResult(label, "ok", f"{_CORRECTION_WEB_UNIT} not running (skipped)")
+
+    # The deferred-exit line repeats at most every DEFERRED_EXIT_LOG_PERIOD_SEC
+    # while the condition holds; doubling it comfortably spans one repeat
+    # without dragging in a long-resolved leak from hours ago.
+    since = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(seconds=DEFERRED_EXIT_LOG_PERIOD_SEC * 2)
+    )
+    try:
+        journal = _run(
+            ["journalctl", "-u", _CORRECTION_WEB_UNIT, "-p", "warning",
+             "--since", since.strftime("%Y-%m-%d %H:%M:%S UTC"),
+             "--no-pager", "--output=cat"],
+            timeout=5.0,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        return CheckResult(
+            label, "ok",
+            f"journalctl unavailable ({type(e).__name__}: {e}) — skipped",
+        )
+    if journal.returncode != 0:
+        return CheckResult(
+            label, "ok",
+            f"could not read journal (rc={journal.returncode}: "
+            f"{journal.stderr.strip()}) — skipped",
+        )
+
+    # journalctl returns oldest-first; keep the LAST match so a resolved
+    # older leak can't outrank a currently-outstanding one (or vice versa).
+    latest = None
+    for line in journal.stdout.splitlines():
+        if "idle-exit deferred" not in line:
+            continue
+        match = _DEFERRED_HOLD_RE.search(line)
+        if match is not None:
+            latest = match
+    if latest is None:
+        return CheckResult(label, "ok", "no long-outstanding holds observed")
+    busy_for, holds = latest.group(1), latest.group(2)
+    return CheckResult(
+        label, "warn",
+        f"busy {busy_for}s with holds outstanding ({holds}) — the wizard "
+        f"cannot idle-exit; see `journalctl -u {_CORRECTION_WEB_UNIT} | grep "
+        "'idle-exit deferred'`",
+    )
+
 
 def _probe_https_status(
     host: str, port: int, path: str, *, timeout: float = 4.0
