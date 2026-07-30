@@ -1030,6 +1030,66 @@ def _core_or_fallback_mask(
     return core if core.any() else envelope_mask
 
 
+#: Narrowest span, in octaves, a core-level MEDIAN may be read over (#1929).
+#:
+#: Not a magic number: this fit ladder-smooths at 1/6 octave below 4 kHz
+#: (:func:`_ladder_smooth`), so bins closer together than that are not
+#: independent samples of anything. A third of an octave is two smoothing
+#: kernels — the narrowest span on which "the median" is a statistic rather
+#: than one smoothed point wearing a statistic's name. On the production grid
+#: (:data:`~jasper.active_speaker.linearization_envelope.
+#: DEFAULT_ENVELOPE_GRID_HZ`, 176 log bins over 150 Hz-20 kHz ≈ 24.8 per
+#: octave) that is about 8 bins.
+#:
+#: What it protects against is a DISCONTINUITY, not a wrong answer. A tweeter
+#: whose radiating band starts just inside its core mask's top edge gets a
+#: one-bin intersection; one-bin-narrower and the intersection is empty and the
+#: whole mask is used instead. Measured at reference tier on a flat tweeter
+#: declared 300 Hz-20 kHz: LR2 at Fc 3750 read −2.847 dB from a single bin and
+#: at Fc 3775 read −19.401 dB from the fallback — a 16.55 dB step across 25 Hz
+#: of crossover frequency, and over 40 dB on the same sweep at LR4, feeding a
+#: gate whose whole tolerance is 3.0 dB. The floor makes both sides take the
+#: fallback, which is what those configurations did before #1929, is
+#: continuous (0.107 dB across that same 25 Hz), and refuses as it did before.
+_MIN_LEVEL_BAND_OCTAVES: float = 1.0 / 3.0
+
+
+def _core_level_mask(
+    envelope: EnvelopeCurve,
+    envelope_mask: np.ndarray,
+    radiating_band_hz: tuple[float, float] | None,
+) -> np.ndarray:
+    """The bins a core-level median runs over: the core mask, narrowed to
+    ``radiating_band_hz`` when that leaves a usable span.
+
+    THE one implementation of that rule — :func:`driver_core_level_db` and
+    :func:`core_level_band_hz` both bottom out here, so the level and the band
+    disclosed beside it are always the same decision.
+
+    Falls back to the whole core mask, rather than to "no level", when the
+    bound leaves nothing usable — either no bins at all (a three-way mid
+    squeezed between two crossovers closer together than their own edges
+    honestly has no radiating band; :func:`~jasper.active_speaker.branch_chain.
+    radiating_band_hz` documents that case) or fewer than
+    :data:`_MIN_LEVEL_BAND_OCTAVES` of them. A driver whose level is read over
+    a wider-than-ideal band is still a measured level; dropping it from the
+    frame instead would let one squeezed role stop grading every other one.
+    """
+    core = _core_or_fallback_mask(envelope, envelope_mask)
+    if radiating_band_hz is None:
+        return core
+    lo_hz, hi_hz = radiating_band_hz
+    grid_hz = envelope.freqs_hz
+    narrowed = core & (grid_hz >= lo_hz) & (grid_hz <= hi_hz)
+    if not narrowed.any():
+        return core
+    used = grid_hz[narrowed]
+    lo_used, hi_used = float(used[0]), float(used[-1])
+    if lo_used <= 0.0 or math.log2(hi_used / lo_used) < _MIN_LEVEL_BAND_OCTAVES:
+        return core
+    return narrowed
+
+
 def _target_and_plateau_db(
     smoothed_db: np.ndarray, level_mask: np.ndarray,
 ) -> tuple[float, float]:
@@ -1059,8 +1119,12 @@ def driver_core_level_db(
     :func:`jasper.active_speaker.branch_chain.radiating_band_hz`, solved by
     the composer, so nothing here knows what a crossover is. ``None`` (the
     default, and every caller before #1929) is the pre-#1929 whole-core-mask
-    median, byte for byte, and is also the honest answer for a one-way box's
-    summed chain, which radiates wherever it measures.
+    median, byte for byte. A branch with no crossover sections is NOT that
+    case: it gets ``(0.0, inf)`` from the solver, which narrows nothing, so a
+    caller never has to decide between the two. The narrowing is subject to
+    :func:`_core_level_mask`'s width floor — a bound that leaves too little
+    band to take a median over is not applied, and
+    :func:`core_level_band_hz` reports which way that went.
 
     **Why the band matters, and why only here.** The core mask is bounded by
     the driver's declared ``measurement_band_hz`` — a CAPTURE-COVERAGE
@@ -1097,21 +1161,33 @@ def driver_core_level_db(
     envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
     if not envelope_mask.any():
         return None
-    level_mask = _core_or_fallback_mask(envelope, envelope_mask)
-    if radiating_band_hz is not None:
-        lo_hz, hi_hz = radiating_band_hz
-        radiating = level_mask & (grid_hz >= lo_hz) & (grid_hz <= hi_hz)
-        # Empty intersection falls back to the whole core mask rather than to
-        # ``None`` — the same shape :func:`_core_or_fallback_mask` uses one
-        # line up. A three-way mid squeezed between two crossovers closer
-        # together than their own edges honestly has no radiating band
-        # (``radiating_band_hz`` documents that case), and a driver whose
-        # level is read over a wider-than-ideal band is still a measured
-        # level; dropping it from the frame instead would let one squeezed
-        # role stop grading every other one.
-        if radiating.any():
-            level_mask = radiating
-    return _target_and_plateau_db(smoothed_db, level_mask)[0]
+    return _target_and_plateau_db(
+        smoothed_db, _core_level_mask(envelope, envelope_mask, radiating_band_hz),
+    )[0]
+
+
+def core_level_band_hz(
+    envelope: EnvelopeCurve, *,
+    radiating_band_hz: tuple[float, float] | None = None,
+) -> tuple[float, float] | None:
+    """The span :func:`driver_core_level_db` ACTUALLY reads its median over,
+    for the same arguments — ``None`` when it would return ``None``.
+
+    Exists so a caller that discloses the band (the conductor's refusal
+    journal) discloses the realized one rather than the bound it asked for.
+    Those differ exactly when the bound is refused by
+    :func:`_core_level_mask`'s width floor, which is precisely the case a
+    reader diagnosing a refusal needs told rather than hidden. Both functions
+    bottom out in that one helper, so the number logged and the number used
+    cannot drift.
+    """
+    envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
+    if not envelope_mask.any():
+        return None
+    used = envelope.freqs_hz[
+        _core_level_mask(envelope, envelope_mask, radiating_band_hz)
+    ]
+    return (float(used[0]), float(used[-1]))
 
 
 def _adaptive_band_trim(

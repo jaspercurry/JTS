@@ -115,6 +115,7 @@ from jasper.active_speaker.branch_chain import (
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
     complex_correction_response,
+    core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
     solve_shared_level_frame,
@@ -2184,6 +2185,26 @@ def _driver_response_by_role(analysis: ProgramAnalysis, role: str) -> Any | None
     return None
 
 
+def _rounded_band_hz(
+    band_hz: tuple[float, float] | None,
+) -> tuple[float, float | None] | None:
+    """A ``(lo, hi)`` band rounded for the journal, with a non-finite upper
+    edge rendered as ``None`` rather than ``inf``.
+
+    A high-pass branch radiates to infinity, and ``inf`` is not JSON-safe;
+    ``None`` reads as "no upper bound" and survives every consumer. Shared by
+    the two places that log a band so they cannot render the same number two
+    ways.
+    """
+    if band_hz is None:
+        return None
+    lo_hz, hi_hz = band_hz
+    return (
+        round(float(lo_hz), 1),
+        round(float(hi_hz), 1) if math.isfinite(hi_hz) else None,
+    )
+
+
 def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
     for pilot in analysis.pilots:
         if pilot.role == role:
@@ -2363,7 +2384,7 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 # How far the two measured level estimates may disagree before the session is
 # refused (linearization-integrity PR-L5). The estimates are the trim solve's
 # power-band average on each side of Fc (`program_analysis.solve_branch_trims`)
-# and the fit's median over each driver's whole trusted passband
+# and the fit's median over each driver's own RADIATING band since #1929
 # (`linearization_fit.driver_core_level_db`), reconciled by
 # `solve_shared_level_frame` into one frame whose per-role offset IS their
 # disagreement.
@@ -2372,10 +2393,32 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 # REALIZED_LEVEL_MATCH_TOLERANCE_DB`, and imported from it rather than written
 # twice: both answer one question — do two estimates of where these drivers sit
 # agree — and PR-L4 already derived 3.0 dB for it from this exact evidence (the
-# worst honest frame disagreement across the five archived captures is 1.30 dB
-# after PR-L3; the 2026-07-27 profile that shipped 9-11 dB dark sat at
-# 8.76 dB). A second number for the same question is how two instruments start
-# disagreeing about what "agree" means.
+# 2026-07-27 profile that shipped 9-11 dB dark sat at 8.76 dB). A second number
+# for the same question is how two instruments start disagreeing about what
+# "agree" means.
+#
+# The FLOOR argument moved with #1929 and is no longer 1.08-1.30 dB. That range
+# was PR-L3's measurement with the median over each driver's whole DECLARED
+# capture span, which counted the driver's own crossover stopband as driver
+# level. On archived run 5 — the capture this repo replays, in
+# `tests/test_audio_measurement_program_analysis.py` — banding the median takes
+# the same session's disagreement from 1.076 dB to 0.510 dB. The other four
+# archived captures have not been re-measured under the band, so the honest
+# statement is "the one capture we replay halved", not a new range.
+#
+# What the tolerance still does NOT buy is a small residual. A pair that is
+# identical by construction still reads 0.910 dB, and the number climbs with
+# ordinary driver shape at roughly 1.33 dB per dB/octave of woofer passband
+# tilt (measured on the conductor fixture: 0.910 flat, 2.251 at -1 dB/oct,
+# 3.574 at -2, 4.883 at -3), so a -2 dB/oct woofer — an unremarkable driver —
+# refuses while the realized-level instrument reads 1.41 dB and passes.
+#
+# That gradient is the honest read of this constant: about 1.6 dB/oct of real
+# passband tilt is the whole budget, because 0.910 dB is spent before the
+# speaker contributes anything. #1929 removed one structural bias; it did not
+# make the two estimators agree, and the next field refusal comes from what is
+# left (#1870's own session re-fits to 3.2307 dB offline — still refused).
+# Closing THAT is the comparator family's work (plan section 4 M7 / WO-4).
 LEVEL_FRAME_AGREEMENT_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 # How much the correction must improve ITS OWN two-branch model before a
@@ -7466,8 +7509,8 @@ class CrossoverV2Conductor:
             session_id=self.session_id,
             fc_hz=round(float(self._fc_hz), 3),
             radiating_band_hz={
-                role: (round(lo, 1), round(hi, 1) if math.isfinite(hi) else None)
-                for role, (lo, hi) in radiating_bands.items()
+                role: _rounded_band_hz(band)
+                for role, band in radiating_bands.items()
             },
             crossover_order={
                 role: tuple(s.order for s in sections[role])
@@ -7531,16 +7574,23 @@ class CrossoverV2Conductor:
         # (``core_level + trim``) sits below the loudest — which is exactly the
         # DISAGREEMENT between two measured estimates of the same physical
         # relationship: the trim solve's power-band average on each side of Fc,
-        # and the fit's median over each driver's whole trusted passband. After
-        # PR-L3 fixed the trim's band-clamp asymmetry those two agree to
-        # 1.08-1.30 dB across the five archived captures, so a small offset is
-        # an honest reconciliation and gets applied. A LARGE one is not: it
-        # means the two instruments are measuring different things again, and
-        # blindly preferring either — which is what applying a 10 dB offset on
-        # one estimator's say-so would be — is the same "nothing ever compared
+        # and the fit's median over each driver's own RADIATING band (#1929;
+        # before that, over its whole declared capture span, which counted the
+        # driver's own crossover stopband as driver level). A small offset is an
+        # honest reconciliation and gets applied. A LARGE one is not: it means
+        # the two instruments are measuring different things again, and blindly
+        # preferring either — which is what applying a 10 dB offset on one
+        # estimator's say-so would be — is the same "nothing ever compared
         # these" failure the 2026-07-27 profile shipped, pointed a new
         # direction. So it is stashed here and refused at the confirm seam,
         # beside PR-L4's own two assertions.
+        #
+        # How close "close" actually is, measured rather than asserted: on the
+        # archived run-5 capture the two land 0.510 dB apart (1.076 before
+        # #1929), and on a pair that is identical by construction they still
+        # land 0.910 dB apart. The residual is real and #1929 did not close it —
+        # see LEVEL_FRAME_AGREEMENT_TOLERANCE_DB's own comment for what is left
+        # and where the next refusal comes from.
         self._last_level_frame = level_frame
         self._last_level_frame_disagreement_db = (
             max((abs(v) for v in level_frame.offset_db.values()), default=0.0)
@@ -7549,21 +7599,24 @@ class CrossoverV2Conductor:
         # The frame's own INPUTS, held for the refusal's journal line (#1929).
         # A refusal that names only the disagreement asks whoever reads it to
         # re-derive which driver read what, and over which band — and since
-        # #1929 the band is the answer to the most common cause. The band
-        # reported is the RADIATING bound handed to the median, which is the
-        # decision being disclosed; it is not the realized mask, and the two
-        # differ in the one case where the bound intersects no core bin at all
-        # and `driver_core_level_db` falls back to the whole mask. Reporting
-        # the bound rather than the mask is deliberate — it is the input this
-        # gate chose, and the same number `event=…_fit_band` already logs.
+        # #1929 the band is the answer to the most common cause.
+        #
+        # BOTH bands are reported, and that is the point. `radiating_band_hz`
+        # is the bound this gate asked for; `band_hz` is the span the median
+        # was actually taken over (`core_level_band_hz`, the same helper that
+        # decides it). They differ exactly when the bound was refused for
+        # leaving too little band — and that is the case where a reader
+        # diagnosing a refusal would otherwise be shown a band the number in
+        # front of them was never computed over.
         self._last_level_frame_cores = {
             role: {
                 "level_db": round(float(level), 3),
-                "radiating_band_hz": (
-                    round(radiating_bands[role][0], 1),
-                    round(radiating_bands[role][1], 1)
-                    if math.isfinite(radiating_bands[role][1]) else None,
+                "band_hz": _rounded_band_hz(
+                    core_level_band_hz(
+                        envelopes[role], radiating_band_hz=radiating_bands[role],
+                    )
                 ),
+                "radiating_band_hz": _rounded_band_hz(radiating_bands[role]),
             }
             for role, level in core_levels_db.items()
         }

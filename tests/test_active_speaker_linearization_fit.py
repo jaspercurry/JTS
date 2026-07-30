@@ -50,6 +50,7 @@ from jasper.active_speaker.linearization_fit import (
     _ladder_smooth,
     _shelf_stage,
     complex_correction_response,
+    core_level_band_hz,
     driver_core_level_db,
     fit_driver_linearization,
     linearization_filters_by_role,
@@ -1945,7 +1946,7 @@ def test_a_declared_band_inside_the_radiating_band_reads_bit_identical():
     ) == driver_core_level_db(resp, inside)
 
 
-def test_an_empty_radiating_band_falls_back_to_the_core_mask():
+def test_an_inverted_radiating_band_falls_back_to_the_core_mask():
     """A three-way mid squeezed between two crossovers closer together than
     their own edges honestly has NO radiating band (``radiating_band_hz``
     returns ``lo > hi``). Its level is still measured — over the whole core
@@ -1970,3 +1971,108 @@ def test_an_empty_radiating_band_falls_back_to_the_core_mask():
     level = driver_core_level_db(resp, envelope, radiating_band_hz=band)
     assert level is not None
     assert level == driver_core_level_db(resp, envelope)
+    assert core_level_band_hz(envelope, radiating_band_hz=band) == core_level_band_hz(
+        envelope
+    )
+
+
+def _sub_floor_tweeter(fc_hz: float, order: int = 2):
+    """A flat tweeter behind a HIGH crossover, declared 300 Hz-20 kHz at
+    reference tier with the production-default ``driver_class`` — the shape
+    whose radiating band lands at or past its own core mask's top edge.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db, radiating_band_hz,
+    )
+
+    sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=True),)
+    resp = _driver_response(
+        "tweeter", crossover_response_db(_NATIVE_FREQS_HZ, sections),
+    )
+    envelope = _envelope("tweeter", resp, excited_band_hz=(300.0, 20000.0))
+    return resp, envelope, radiating_band_hz(sections)
+
+
+def test_a_sub_floor_radiating_band_is_not_used_and_the_cliff_is_gone():
+    """**The #1929 discontinuity, and why it is a floor and not a fallback.**
+
+    A valid (``lo <= hi``) radiating band can still intersect the core mask in
+    ONE bin, and one bin narrower it intersects in none. Before the floor those
+    two neighbouring configurations returned wildly different levels — a
+    one-bin "median" of the curve's top edge, then the whole contaminated mask
+    — and the step fed a gate whose entire tolerance is 3.0 dB.
+
+    Reference tier, ``driver_class`` unknown (both production defaults), a flat
+    tweeter declared 300 Hz-20 kHz: at LR2 Fc 3750 the intersection is one bin
+    whose median is −2.847 dB; 25 Hz of Fc later it is empty and the fallback
+    reads −19.401 dB. **16.55 dB of level, for 25 Hz of crossover frequency.**
+
+    The floor makes both take the fallback, so the step is 0.107 dB — the curve
+    genuinely moving, nothing more.
+
+    **This is a should-fix, not a blocker, and the distinction is the point:**
+    these configurations were refused before #1929 too (the fallback level is
+    the pre-#1929 answer and it is 19 dB from where the driver sits). What
+    #1929 introduced was the DISCONTINUITY — a knife-edge in Fc that silently
+    decides which of two incompatible numbers the gate grades — plus a journal
+    that named the radiating band while the median had been taken over the
+    whole mask. Both are closed here; the underlying refusal is not, and is not
+    this issue's to close.
+    """
+    resp_one_bin, env_one_bin, band_one_bin = _sub_floor_tweeter(3750.0)
+    resp_empty, env_empty, band_empty = _sub_floor_tweeter(3775.0)
+
+    grid = env_one_bin.freqs_hz
+    core = _core_or_fallback_mask(
+        env_one_bin, env_one_bin.allowed_depth_db > 0.0,
+    )
+    narrowed = core & (grid >= band_one_bin[0]) & (grid <= band_one_bin[1])
+    assert int(narrowed.sum()) == 1, "the fixture must be the one-bin case"
+    empty = core & (grid >= band_empty[0]) & (grid <= band_empty[1])
+    assert not empty.any(), "the neighbour fixture must be the empty case"
+
+    # Neither uses the bound; both read the core mask, so the cliff is gone.
+    one_bin = driver_core_level_db(
+        resp_one_bin, env_one_bin, radiating_band_hz=band_one_bin,
+    )
+    empty_level = driver_core_level_db(
+        resp_empty, env_empty, radiating_band_hz=band_empty,
+    )
+    assert one_bin == driver_core_level_db(resp_one_bin, env_one_bin)
+    assert empty_level == driver_core_level_db(resp_empty, env_empty)
+    assert abs(one_bin - empty_level) < 0.5
+
+    # ...and the pre-floor step this replaces, computed from the same curve so
+    # the 16.55 dB is measured here rather than quoted from a comment.
+    smoothed = _ladder_smooth(
+        grid, np.interp(grid, resp_one_bin.freqs_hz, resp_one_bin.magnitude_db),
+    )
+    unfloored = float(np.median(smoothed[narrowed]))
+    assert unfloored == pytest.approx(-2.847, abs=0.01)
+    assert abs(unfloored - empty_level) == pytest.approx(16.55, abs=0.05)
+
+
+def test_the_disclosed_band_is_the_one_the_median_actually_used():
+    """#1929 observability, at the seam: when the bound is refused for being
+    too narrow, :func:`core_level_band_hz` reports the span the median was
+    really taken over — not the bound that was asked for. A refusal that names
+    a band the number was never computed over is worse than one that names
+    none, because it sends the reader to the wrong lever.
+    """
+    resp, envelope, band = _sub_floor_tweeter(3750.0)
+    disclosed = core_level_band_hz(envelope, radiating_band_hz=band)
+    assert disclosed is not None
+    # The bound was NOT used...
+    assert disclosed[0] < band[0]
+    # ...the whole core mask was, and that is what is disclosed.
+    assert disclosed == core_level_band_hz(envelope)
+
+    # On an ordinary tweeter the bound IS used, and then it is what is
+    # disclosed — the same function, both ways.
+    ordinary_resp, ordinary_env, ordinary_band = _sub_floor_tweeter(2000.0, order=4)
+    ordinary = core_level_band_hz(ordinary_env, radiating_band_hz=ordinary_band)
+    assert ordinary is not None and ordinary[0] >= ordinary_band[0]
+    assert ordinary != core_level_band_hz(ordinary_env)
+    assert driver_core_level_db(
+        ordinary_resp, ordinary_env, radiating_band_hz=ordinary_band,
+    ) == pytest.approx(-0.585, abs=0.01)

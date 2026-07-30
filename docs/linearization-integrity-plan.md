@@ -197,14 +197,15 @@ order's plain reading and are recorded here rather than only in the code:
 - **The shared level frame is GATED, not merely applied.** The frame's
   per-role offset IS the disagreement between two measured estimates of the
   same relationship — the trim solve's power-band average either side of Fc,
-  and the fit's median over each driver's own radiating band. (Until #1929
-  that median ran over the whole *declared* span, which is capture coverage
-  and routinely reaches past Fc, so each driver's own crossover stopband voted
-  in its level and refused a healthy 2026-07-30 session at 3.395 dB. On the
-  archived JTS3 corpus the two estimators agree 1.076 → 0.510 dB once the
-  median is banded.) After PR-L3
-  those agree to 1.08–1.30 dB, so a small offset is an honest reconciliation
-  and is folded into the anchored trim. A LARGE one is refused
+  and the fit's median over each driver's own **radiating band** (#1929; until
+  then, over the whole *declared* capture span, which routinely reaches past
+  Fc, so each driver's own crossover stopband voted in its level and refused a
+  healthy 2026-07-30 session at 3.395 dB). PR-L3 measured the two agreeing to
+  1.08–1.30 dB in the declared-span frame; banding the median takes archived
+  run 5 — the capture the test suite replays — from 1.076 dB to 0.510 dB, and
+  the other four have not been re-measured under the band. A small offset is
+  an honest reconciliation and is folded into the anchored trim. A LARGE one
+  is refused
   (`LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, deliberately the same 3.0 dB as
   `REALIZED_LEVEL_MATCH_TOLERANCE_DB` and imported from it): silently
   preferring either estimator by 10 dB would be the same "nothing ever

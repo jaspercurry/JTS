@@ -7869,9 +7869,16 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
     with pytest.MonkeyPatch.context() as mp:
         whole_band = flow.driver_core_level_db
+        whole_band_span = flow.core_level_band_hz
         mp.setattr(
             flow, "driver_core_level_db",
             lambda resp, env, **_band: whole_band(resp, env),
+        )
+        # ...and the disclosure with it, so the pre-fix arm is a faithful
+        # pre-#1929 session rather than one whose journal and whose number
+        # disagree about which band was used.
+        mp.setattr(
+            flow, "core_level_band_hz", lambda env, **_band: whole_band_span(env),
         )
         before = session()
         with pytest.raises(CaptureBeginRefused) as excinfo:
@@ -7887,17 +7894,103 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     assert verdict["accepted"] is True
     assert after._last_level_frame_disagreement_db == pytest.approx(1.10, abs=0.1)
     assert after._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-    # The other level instrument agrees — the frame did not buy its pass by
-    # mislevelling the pair (PR-L4 item 1, a different estimator on the
-    # committed trim).
+
+    # THE CORROBORATION, and it has to be read as a magnitude. PR-L4 item 1 is
+    # a third instrument — different inputs (post-fit branches), different band
+    # (mirrored ±1 octave), different estimator (power mean) — so if #1929 had
+    # bought the frame's pass by mislevelling the pair, this is what would say
+    # so. It does not: the committed trim lands the two branches 0.16 dB apart
+    # where the pre-#1929 trim left them 2.87 dB apart, a 3.03 dB move toward
+    # zero on an instrument this change does not touch.
+    #
+    # ``matched`` alone cannot make that claim — it is True in BOTH arms (2.87
+    # is inside the 3.0 dB tolerance, barely), so a boolean assertion here
+    # would pass identically against the defect it exists to catch.
+    before_difference_db = before._last_realized_level_match.difference_db
+    after_difference_db = after._last_realized_level_match.difference_db
+    assert before_difference_db == pytest.approx(2.865, abs=0.05)
+    assert after_difference_db == pytest.approx(-0.163, abs=0.05)
+    assert abs(after_difference_db) < 0.5
+    assert abs(after_difference_db) < abs(before_difference_db) - 2.0
     assert after._last_realized_level_match.matched is True
+
+
+def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():
+    """**What #1929 did NOT close, pinned so nobody has to rediscover it.**
+
+    Two branches that are the SAME flat driver behind mirrored halves of one
+    LR4 — no dips, no tilt, nothing to measure wrong — still leave the frame's
+    two estimators 0.910 dB apart. Banding the median took that from 9.408 dB,
+    which is the whole of #1929; it did not take it to zero, and it was never
+    going to: the trim solve reads a power mean over one octave either side of
+    Fc while the fit reads a median over the driver's entire radiating band,
+    and those are different questions about a curve that is not flat in the
+    same way over both.
+
+    Why pin it. 0.910 dB of the 3.0 dB tolerance is spent before any real
+    speaker contributes a single dB, so the headroom for genuine measurement
+    spread is 2.09 dB, not 3.0 — and an ordinary −2 dB/oct woofer passband tilt
+    is enough to refuse at 3.574 dB while the realized-level instrument reads
+    1.41 dB and passes. That is where the next field refusal comes from, and
+    the 2026-07-30 session in #1870 re-fits to 3.2307 dB offline — still
+    refused. A future change that narrows this gap should move this number;
+    one that widens it should have to argue with this test first.
+
+    This fixture cannot complete the journey — two perfect branches give a
+    correction nothing to improve, so it stops at the prediction gate — which
+    is why the assertion is on the frame's own stashed number and the refusal
+    code is asserted NOT to be the level frame's.
+    """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db,
+    )
+
+    freqs = _LINEARIZABLE_FREQS_HZ
+    woofer_db = crossover_response_db(
+        freqs, (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),),
+    )
+    tweeter_db = crossover_response_db(
+        freqs, (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),),
+    )
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(
+        freqs,
+        (10.0 ** (woofer_db / 20.0)).astype(complex),
+        (10.0 ** (tweeter_db / 20.0)).astype(complex),
+        _FIXTURE_FC_HZ,
+    )
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, woofer_db=woofer_db, tweeter_db=tweeter_db,
+        trim_db={
+            "woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3),
+        },
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        _run_phase(c, 2, 2)
+
+    # Refused, but NOT by the level frame — the frame cleared, and the residual
+    # below is what it cleared by.
+    assert excinfo.value.code != REASON_DRIVER_LEVELS_DISAGREE
+    assert c._last_level_frame_disagreement_db == pytest.approx(0.910, abs=0.02)
+    assert c._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
 
 
 def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
     """#1929 observability: the refusal that used to report only a
-    disagreement now carries the two inputs that produced it — each role's
-    core level and the radiating band it was read over — so a field diagnosis
-    does not have to re-derive which driver read what.
+    disagreement now carries the inputs that produced it — each role's core
+    level, the band the median was actually taken over, and the radiating
+    bound that was asked for — so a field diagnosis does not have to re-derive
+    which driver read what.
+
+    The −20 dB tweeter trim is a deliberate BRANCH-FORCER, not a physics
+    fixture: it is the cheapest way to drive the frame past its tolerance so
+    the refusal arm runs at all. Nothing here should be read as a claim about
+    what a real speaker's trim looks like — the physics claims live in
+    ``test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused`` and
+    in the corpus regression, both of which derive their trims from their own
+    branches.
     """
     caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
@@ -7911,8 +8004,17 @@ def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
 
     assert "event=correction.crossover_v2_level_frame_refused" in caplog.text
     assert "core_level_db=" in caplog.text
-    assert "'level_db'" in caplog.text and "'radiating_band_hz'" in caplog.text
+    for key in ("'level_db'", "'band_hz'", "'radiating_band_hz'"):
+        assert key in caplog.text, key
     assert set(c._last_level_frame_cores) == {"woofer", "tweeter"}
+    # The band reported is the one the median was taken over. On this ordinary
+    # two-way both roles clear the width floor, so it sits inside the bound
+    # rather than falling back to the whole mask — and the two keys differ,
+    # which is what makes reporting both worth the space.
+    for role in ("woofer", "tweeter"):
+        disclosed = c._last_level_frame_cores[role]
+        assert disclosed["band_hz"] != disclosed["radiating_band_hz"]
+        assert disclosed["band_hz"][0] >= disclosed["radiating_band_hz"][0]
 
 
 def test_no_boost_lands_in_a_drivers_own_crossover_stopband():
