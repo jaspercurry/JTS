@@ -254,9 +254,12 @@ async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatc
 @pytest.mark.asyncio
 async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch):
     gate_calls: list[str] = []
+    gate_renewed = asyncio.Event()
 
     async def acquire() -> None:
         gate_calls.append("acquire")
+        if gate_calls.count("acquire") >= 2:
+            gate_renewed.set()
 
     async def release(**_kwargs) -> None:
         gate_calls.append("release")
@@ -265,10 +268,16 @@ async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch)
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
     monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_REFRESH_SEC", 0.01)
 
+    # Mux-gate twin of test_long_window_renews_voice_measurement_lease: wait on
+    # the observable the assertion names (a 2nd acquire, i.e. one gate renewal)
+    # rather than racing the real refresh loop with a fixed wall-clock window.
+    # See that test and tests/_async_wait.py for the pattern, and #1918 for
+    # this test's exposure: the shape #1909 recorded flaking on other tests,
+    # never observed failing here.
     async with measurement_window(
         skip_voice_pause=True,
     ):
-        await asyncio.sleep(0.035)
+        await wait_signalled(gate_renewed, "mux measurement gate renewal")
 
     assert gate_calls.count("acquire") >= 2
     assert gate_calls[-1] == "release"
