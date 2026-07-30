@@ -196,3 +196,16 @@ def test_get_json_falls_back_for_non_json_error():
         "body": None,
         "request": {"path": "/probe", "options": {"cache": "no-store"}},
     }
+
+
+def test_non_json_forbidden_is_actionable_instead_of_a_json_parse_error():
+    """Wizard CSRF rejections are small HTML pages.  The shared JSON client
+    must preserve the 403 and tell the household how to recover rather than
+    leaking ``Unexpected token '<'`` from ``Response.json()``."""
+    assert _run_get_json(ok=False, status=403, payload=None) == {
+        "ok": False,
+        "message": "Request rejected (HTTP 403). Reload the page and try again.",
+        "status": 403,
+        "body": None,
+        "request": {"path": "/probe", "options": {"cache": "no-store"}},
+    }

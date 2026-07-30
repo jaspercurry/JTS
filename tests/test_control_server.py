@@ -1241,7 +1241,7 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
     assert body["error"] == "Turn on USB Audio Input in Sources first."
 
 
-def test_usb_mic_leg_persists_then_restarts_only_aec_bridge(
+def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
     monkeypatch,
     server_with_coordinator,
 ):
@@ -1251,12 +1251,15 @@ def test_usb_mic_leg_persists_then_restarts_only_aec_bridge(
     events = []
     choices = [
         {"value": "primary", "label": "Same as JTS voice"},
-        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+        {
+            "value": "raw0",
+            "label": "Raw microphone (no echo cancellation)",
+        },
     ]
     final_status = {
         "usb_mic": {
             "source_selection": {
-                "requested": "chip_aec_210",
+                "requested": "raw0",
                 "choices": choices,
                 "applied": None,
             },
@@ -1301,13 +1304,13 @@ def test_usb_mic_leg_persists_then_restarts_only_aec_bridge(
 
     status, body = _post(
         f"{base}/aec/usb-mic-leg",
-        {"leg": "chip_aec_210"},
+        {"leg": "raw0"},
     )
 
     assert status == 200
     assert body == final_status
     assert events == [
-        ("write", "chip_aec_210"),
+        ("write", "raw0"),
         (
             "restart",
             "jasper-aec-bridge.service",

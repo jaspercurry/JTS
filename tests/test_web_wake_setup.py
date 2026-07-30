@@ -130,6 +130,7 @@ def test_render_has_server_hydrated_computer_microphone_source_select():
     html = _render()
     assert "Computer microphone source" in html
     assert 'id="usb-mic-leg-select"' in html
+    assert 'id="usb-mic-leg-description"' in html
     assert 'id="usb-mic-leg-status"' in html
     # Choice labels arrive in /aec; the initial page owns no beam allowlist.
     assert "Same as JTS voice" not in html
@@ -386,6 +387,7 @@ def test_wake_module_renders_server_choices_action_and_runtime_effective_label()
     assert "source.choices" in module
     assert 'document.createElement("option")' in module
     assert "applied.effective_label" in module
+    assert 'await postJSON("usb-mic-leg", { leg })' in module
     assert 'const action = el("echo-status-action")' in module
     assert 'action.textContent = echo.action || ""' in module
 

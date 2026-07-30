@@ -436,6 +436,8 @@ def test_index_html_renders_all_registry_entries():
         assert f'value="{entry.key}"' in html
     assert "Use JTS as a computer microphone" in html
     assert "Use JTS as a Mac microphone" not in html
+    assert "never changes what JTS uses for voice or wake" in html
+    assert 'id="usb-mic-leg-description"' in html
 
 
 def test_index_html_marks_active_row(monkeypatch):

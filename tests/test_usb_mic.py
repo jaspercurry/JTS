@@ -40,6 +40,7 @@ from jasper.source_intent import intent_env_key
 from jasper.usb_mic import (
     USB_MIC_LEG_KEY,
     USB_MIC_PRIMARY_LEG,
+    USB_MIC_RAW_XVF_LEG,
     USB_MIC_HEADER_BYTES,
     USB_MIC_HEADER_STRUCT,
     USB_MIC_PACKET_MAGIC,
@@ -71,13 +72,13 @@ def test_usb_mic_leg_defaults_and_preserves_enable_intent(tmp_path: Path) -> Non
     assert read_usb_mic_leg(path) == USB_MIC_PRIMARY_LEG
 
     write_usb_mic_enabled(True, path)
-    write_usb_mic_leg("chip_aec_210", path)
+    write_usb_mic_leg(USB_MIC_RAW_XVF_LEG, path)
     assert usb_mic_enabled(path) is True
-    assert read_usb_mic_leg(path) == "chip_aec_210"
+    assert read_usb_mic_leg(path) == USB_MIC_RAW_XVF_LEG
 
     write_usb_mic_enabled(False, path)
     assert usb_mic_enabled(path) is False
-    assert read_usb_mic_leg(path) == "chip_aec_210"
+    assert read_usb_mic_leg(path) == USB_MIC_RAW_XVF_LEG
     assert USB_MIC_LEG_KEY in path.read_text()
 
 
@@ -93,11 +94,22 @@ def test_usb_mic_leg_choices_follow_active_chip_beam_plan() -> None:
 
     assert [choice["value"] for choice in choices] == [
         "primary",
+        "raw0",
         "chip_aec_150",
         "chip_aec_210",
     ]
     assert choices[0]["label"] == "Same as JTS voice"
-    assert choices[1]["azimuth_deg"] == 150.0
+    assert choices[1] == {
+        "value": "raw0",
+        "label": "Raw microphone (no echo cancellation)",
+        "description": (
+            "Comparison only — exports physical XVF microphone 0 without "
+            "chip or software echo cancellation or JTS voice gain. JTS "
+            "voice stays on its managed echo-cancelled source."
+        ),
+        "comparison_only": True,
+    }
+    assert choices[2]["azimuth_deg"] == 150.0
     assert usb_mic_leg_choices({}) == [
         {
             "value": "primary",

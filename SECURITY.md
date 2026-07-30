@@ -110,10 +110,10 @@ automatically (embedded in each page behind the read guard, read by
 - `POST /mic/mute` — the legacy route behind the dashboard's Voice assistant
   Pause/Resume control. It stops JTS wake detection and voice capture; it does
   not stop an independently enabled USB microphone export.
-- `POST /aec/usb-mic` — exposes or removes the AEC-cleaned room microphone on
-  the attached USB host.
-- `POST /aec/usb-mic-leg` — chooses which live AEC-cleaned microphone stream
-  reaches the attached USB host.
+- `POST /aec/usb-mic` — exposes or removes the selected computer-microphone
+  source on the attached USB host.
+- `POST /aec/usb-mic-leg` — chooses which server-advertised
+  computer-microphone source reaches the attached USB host.
 - `POST /grouping/set` — rewires multiroom output routing. This route
   **additionally** accepts a distinct **household credential**
   (`X-JTS-Household`) for the cross-device bond fan-out — a paired peer

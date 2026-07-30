@@ -374,7 +374,8 @@ def _mic_status_card_html() -> str:
       <div class="usb-mic-copy">
         <div class="usb-mic-name">Use JTS as a computer microphone</div>
         <div class="usb-mic-desc">
-          Adds the echo-cancelled microphone to the same USB connection.
+          Exports a selectable microphone to the same USB connection. This
+          never changes what JTS uses for voice or wake.
         </div>
         <div class="usb-mic-status" id="usb-mic-status">checking…</div>
       </div>
@@ -386,6 +387,8 @@ def _mic_status_card_html() -> str:
       <select id="usb-mic-leg-select" disabled>
         <option value="">checking…</option>
       </select>
+      <div class="usb-mic-source-description"
+           id="usb-mic-leg-description">checking…</div>
       <div class="usb-mic-source-status" id="usb-mic-leg-status">checking…</div>
     </div>
   </div>

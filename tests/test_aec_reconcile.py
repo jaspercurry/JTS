@@ -20,6 +20,13 @@ from jasper.audio_profile_state import profile_env_updates
 from jasper.control import aec_endpoints
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
+from jasper.usb_mic import (
+    USB_MIC_RAW_XVF_LEG,
+    read_usb_mic_leg,
+    usb_mic_enabled,
+    write_usb_mic_enabled,
+    write_usb_mic_leg,
+)
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
@@ -770,6 +777,31 @@ def test_fresh_auto_profile_uses_chip_aec_on_supported_6ch_xvf(tmp_path: Path) -
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
+
+
+def test_raw_usb_export_intent_survives_reconcile_without_changing_managed_xvf_voice(
+    tmp_path: Path,
+) -> None:
+    """USB-only raw intent cannot weaken the managed chip-AEC voice profile."""
+
+    usb_mic_intent = tmp_path / "usb_mic.env"
+    write_usb_mic_enabled(True, usb_mic_intent)
+    write_usb_mic_leg(USB_MIC_RAW_XVF_LEG, usb_mic_intent)
+    _write_env(tmp_path, "Array")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert usb_mic_enabled(usb_mic_intent) is True
+    assert read_usb_mic_leg(usb_mic_intent) == USB_MIC_RAW_XVF_LEG
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
 
 
 def test_mic_profile_resolver_failure_clears_stale_chip_support(

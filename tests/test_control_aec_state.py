@@ -624,6 +624,22 @@ def test_aec_full_status_includes_legs_and_threshold(
                 "fallback_active": False,
             },
         ),
+        (
+            "raw0",
+            {
+                "selection": "raw0",
+                "mode": "raw",
+                "leg": "raw0",
+            },
+            {
+                "value": "raw0",
+                "label": "Raw microphone (no echo cancellation)",
+                "mode": "raw",
+                "leg": "raw0",
+                "effective_label": "Raw microphone (no echo cancellation)",
+                "fallback_active": False,
+            },
+        ),
     ],
 )
 def test_usb_mic_source_selection_distinguishes_requested_from_applied_source(
@@ -650,6 +666,12 @@ def test_usb_mic_source_selection_distinguishes_requested_from_applied_source(
             "value": "chip_aec_150",
             "label": "Front hardware beam",
             "description": "Fixed hardware beam.",
+        },
+        {
+            "value": "raw0",
+            "label": "Raw microphone (no echo cancellation)",
+            "description": "Comparison only.",
+            "comparison_only": True,
         },
     ]
     monkeypatch.setattr(aec_endpoints, "_AEC_BRIDGE_STATS_FILE", str(stats))
