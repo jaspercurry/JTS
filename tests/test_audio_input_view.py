@@ -110,6 +110,35 @@ def test_no_mic_disables_echo_choices() -> None:
     assert all(not choice["enabled"] for choice in view["echo"]["choices"])
 
 
+def test_absent_mic_preserves_hidden_testing_profile_as_hardware_choice() -> None:
+    status = _base_status()
+    status["audio_profile"] = {
+        "selection": "xvf_chip_aec_testing",
+        "requested": "xvf_chip_aec_testing",
+        "active": None,
+        "state": "unavailable",
+    }
+    status["microphone"] = {
+        "detected": False,
+        "firmware": {"state": "absent", "label": "not detected"},
+        "warnings": ["XVF3800 mic is not detected."],
+    }
+    status["chip_aec_gate"] = {
+        "status": "needs_calibration",
+        "mic_available": False,
+        "production_available": False,
+        "testing_available": False,
+    }
+
+    view = build_microphone_settings_view(status)
+    hardware = _choice(view, "xvf_chip_aec")
+
+    assert hardware["selected"] is True
+    assert hardware["visible"] is True
+    assert hardware["enabled"] is False
+    assert sum(choice["selected"] for choice in view["echo"]["choices"]) == 1
+
+
 def test_xvf_without_chip_plan_is_visibly_parked_without_software_fallback() -> None:
     status = _base_status()
     status["audio_profile"] = {

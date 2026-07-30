@@ -275,7 +275,10 @@ def _echo_view(
         ),
         _profile_choice(
             _profile_spec(PROFILE_XVF_CHIP_AEC),
-            selected=selection == PROFILE_XVF_CHIP_AEC
+            selected=selection in {
+                PROFILE_XVF_CHIP_AEC,
+                PROFILE_XVF_CHIP_AEC_TESTING,
+            }
             or (managed_xvf and selection != PROFILE_AUTO),
             enabled=detected and chip_production_available,
             visible=bool(mic_view.get("kind") == "xvf3800" or chip_selected),
