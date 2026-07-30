@@ -19,6 +19,7 @@ page covered by the existing Python CI matrix with no extra CI wiring.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -56,6 +57,18 @@ _HARNESSES = [
 @pytest.mark.parametrize("harness", _HARNESSES)
 def test_capture_page_harness(harness: str):
     if _NODE is None:
+        # A developer without node gets a skip; CI does not. Mirrors
+        # ``tests/test_crossover_wizard_js.py`` verbatim, and for the same
+        # reason: this lane is the ONLY place these harnesses execute (the
+        # workflow's `js` job runs an explicit list that includes just one of
+        # them), so "node disappeared from the runner" would silently turn the
+        # whole family from covered into uncovered and still report green.
+        if os.environ.get("CI"):
+            pytest.fail(
+                "node is not on PATH in CI — these harnesses are the only "
+                "automated execution of capture-page/js/*, and skipping them "
+                "would report a green build over an untested capture page"
+            )
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_JS_DIR / harness)],
@@ -131,7 +144,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260729.1",
+        "capture_page_build": "20260729.2",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -139,7 +152,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260729-1" in index_html
+    assert "main.js?v=20260729-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -172,7 +185,26 @@ def test_capture_page_existing_field_rollout_order_is_pinned():
     assert "Reinterpreting an existing spec field (Pi first)" in readme
     assert "**Forward rollout → Pi first, page second.**" in readme
     assert "**Rollback → page first, Pi second.**" in readme
-    assert "build `20260729.1` starts rendering Room" in readme
+    assert "build `20260729.1` starts\nrendering Room" in readme
+
+
+def test_capture_page_new_phone_event_rollout_order_is_pinned():
+    """The sharper class the two-stage split introduced: the page starts
+    SENDING something the Pi requires, on a plan shape only the new Pi emits.
+    Neither the protocol list nor the build stamp detects it, so the ordering
+    (page first) and the tolerance requirement it rests on are documented and
+    pinned — and the tolerance itself is a branch in the page, not a hope
+    about timing."""
+    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "A new phone event both sides need (page first)" in readme
+    assert "**Page first, Pi second**" in readme
+    assert "build `20260729.2` is the fixture" in readme.lower()
+    # The branch the ordering rests on: an entry past the group means the
+    # confirmation still rides that next begin (an older conductor's plan).
+    assert "if (entryForIndex(ctx.spec, index + 1)) {" in main_js
+    assert "complete_capture_set: true" in main_js
 
 
 def test_capture_page_beep_copy_matches_the_composed_beep_count():
@@ -330,8 +362,14 @@ def test_capture_page_rejected_retake_can_keep_the_earlier_take():
         in main_js
     )
     # It returns to the screen the acceptance belonged on: the group-close
-    # confirm keeps the fit + apply behind the same tap they were behind.
-    assert "ctx.retakeAwaitingConfirm = Boolean(verdict.awaitingConfirm);" in main_js
+    # confirm keeps the fit behind the same tap it was behind. Since the
+    # two-stage split (work order D1) the awaiting-confirm branch is FIRST in
+    # the completion ladder rather than a nested else, so the flag is set from
+    # inside it — the ordering itself is pinned by
+    # tests/js/capture_plan_loop_test.mjs's
+    # testTheFinalHeldCaptureRendersTheConfirmNotAllDone.
+    assert "if (verdict.accepted && verdict.awaitingConfirm) {" in main_js
+    assert "ctx.retakeAwaitingConfirm = true;" in main_js
     assert "if (ctx.retakeAwaitingConfirm) {" in main_js
 
 

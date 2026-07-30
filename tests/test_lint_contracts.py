@@ -145,6 +145,16 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # deferred hold and dishonestly time out as relay_timeout. Logs
 # event=correction.crossover_v2_auto_apply_error + persists the failure —
 # never a silent path. Ceilings 621 -> 622 / 814 -> 815.
+#   2026-07-29 (two-stage PR-T3): that worker is DELETED with auto-apply, and
+#   the marker it held is now carried by ``_assert_stage_2_can_open`` in the
+#   same module — the apply's stage-2 openability preflight, which must fail
+#   CLOSED on any unexpected exception because "we could not check" and "we
+#   checked and it is fine" must never produce the same outcome on the one
+#   action that touches the speaker. Logs
+#   event=correction.crossover_v2_apply_stage2_preflight_failed and refuses;
+#   never a silent path. NET ZERO, so the ceilings below do not move — the
+#   attribution is recorded here rather than left pointing at code that no
+#   longer exists.
 # 2026-07-27: +1 BLE001 for the enhanced-AEC native-extension activation
 # transaction. Its catch-all is cleanup-and-reraise only: it atomically restores
 # the prior extension (or removes the new one) for any import/probe failure,

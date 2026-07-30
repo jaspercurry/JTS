@@ -51,15 +51,12 @@ import math
 import secrets
 import threading
 import time
-from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
-
-from ._systemd import no_hold
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
@@ -499,11 +496,12 @@ def _applied_offset_gate() -> float:
     """The conductor's ``applied_offset_db`` seam: the whole-band level move
     the apply declared (#1811), read fresh off durable state.
 
-    Written by :func:`observe_apply_success` on the auto-apply's background
-    thread; read one capture later by the delta probe on the runner's. Durable
-    state is the only thing both sides share, which is why this is a seam
-    rather than a constructor argument — same reason ``apply_complete`` and
-    ``apply_failed`` are.
+    Written by :func:`observe_apply_success` on the apply's own request
+    thread (the auto-apply worker's, before the two-stage split removed it);
+    read by the delta probe on a LATER session's runner thread. Durable state
+    is the only thing the two share — since the split they are not even the
+    same session — which is why this is a seam rather than a constructor
+    argument, the same reason ``apply_complete`` and ``apply_failed`` are.
 
     ``0.0`` for an absent, malformed, or non-finite value: "nothing known".
     The probe treats that honestly (the whole shift stays visible in
@@ -519,20 +517,22 @@ def _applied_offset_gate() -> float:
 
 
 def _apply_failure_gate() -> str:
-    """The conductor's ``apply_failed`` seam: reads a durable auto-apply
-    failure code (empty when none). Written by ``build_v2_run_and_consume``'s
-    ``_fire_auto_apply`` background thread via the SAME
+    """The conductor's ``apply_failed`` seam: reads a durable apply failure
+    code (empty when none), persisted through the SAME
     ``persist_conductor_state`` path every other capture failure uses — see
     ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.authorize_begin``,
     which refuses the deferred VERIFY hold outright once this names a code
-    rather than holding it toward a dishonest relay_timeout.
+    rather than holding it toward a dishonest relay_timeout. Retained with
+    that hold and, like it, unreached by any shipped session since the
+    two-stage split (D10) — the writer it was built for was the auto-apply
+    worker thread, which is gone.
 
     N1 (adversarial review, 2026-07-20): the contract is LITERAL — this seam
-    answers "did the auto-apply itself fail?", never "is SOME failure code
-    sitting in durable state for any reason." Any other code that happens to
-    be persisted (e.g. a stale value from an unrelated path) must not be
-    misread by authorize_begin as an apply failure; only
-    ``REASON_APPLY_FAILED`` qualifies.
+    answers "did the apply itself fail?", never "is SOME failure code sitting
+    in durable state for any reason." Any other code that happens to be
+    persisted (e.g. a stale value from an unrelated path) must not be misread
+    by authorize_begin as an apply failure; only ``REASON_APPLY_FAILED``
+    qualifies.
     """
     from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
 
@@ -859,6 +859,7 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     from jasper.active_speaker.crossover_v2_flow import (
         CAPTURE_PHASES,
         PHASE_APPLYING,
+        PHASE_CLOSING,
         PHASE_DONE,
         PHASE_MEASURE,
         PHASE_REVIEW,
@@ -914,12 +915,37 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     # file. It resolves through the loop above to its first unaccepted phase,
     # exactly as before.
     #
-    # ``applied`` still wins: once something is genuinely on the speaker the
-    # decision has been made, and PHASE_DONE's own "applied implies graded"
-    # ladder (``_post_apply_grade``) already owns the honest copy for an
-    # applied-but-unverified result. Re-offering "apply this?" over a speaker
-    # that already has it would be the mirror of the bug being fixed.
-    if not applied and PHASE_VERIFY not in phases:
+    # ``applied`` still wins over the REVIEW interlude: once something is
+    # genuinely on the speaker the decision has been made, and re-offering
+    # "apply this?" over a speaker that already has it would be the mirror of
+    # the bug being fixed.
+    #
+    # But an applied measure-only session is not DONE either (two-stage
+    # commission D2, PR-T3): stage 1 measured, the household applied from the
+    # review screen, and the post-apply check — stage 2 — has not been opened
+    # yet. That is exactly PHASE_VERIFY: "the crossover is applied, put the
+    # microphone back where it started", whose screen now carries the action
+    # that opens stage 2. Once stage 2 IS open its own conductor records VERIFY
+    # in ``session_phases``, so this branch stops firing and the ordinary walk
+    # above resolves the rest of the journey — including PHASE_DONE's "applied
+    # implies graded" ladder for a stage 2 that ran and could not decide.
+    if PHASE_VERIFY not in phases:
+        if applied:
+            return PHASE_VERIFY
+        # …and the measuring session's own TAIL is not the review interlude
+        # either. Accepting the final cloud position marks every stage-1 phase
+        # accepted, so this walk resolves the instant that capture lands —
+        # while the household is still holding a phone at the confirm screen
+        # (up to the runner's full between-step budget) and again while the
+        # combine + fit run. Both used to render the review screen's
+        # no-candidate copy: "JTS measured your speaker but has no correction
+        # to propose — measure again to try afresh", with a destructive
+        # "Measure again" beside it, over a measurement that was still in
+        # progress. ``cloud_close`` is what tells those moments apart from a
+        # session that genuinely ended with nothing (where it is ``""``, and
+        # the review screen's absence copy is the honest answer).
+        if str((state or {}).get("cloud_close") or ""):
+            return PHASE_CLOSING
         return PHASE_REVIEW
     return PHASE_DONE
 
@@ -1343,6 +1369,9 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # that declared none). Never defaulted to "full" — see
         # ``persist_conductor_state``.
         "tier": (str((state or {}).get("tier") or "") or None),
+        # Which sub-moment of the measuring session's tail this is, when
+        # ``phase`` is ``closing`` (two-stage D1). ``""`` everywhere else.
+        "cloud_close": str((state or {}).get("cloud_close") or ""),
         "candidate": (state or {}).get("candidate"),
         "verify": (state or {}).get("verify"),
         "failure": (state or {}).get("failure"),
@@ -1727,6 +1756,14 @@ def persist_conductor_state(
         # claim the measurement never made (the same unknown-vs-default rule
         # ``echo_band_provenance`` carries, issue #1763).
         "tier": snap.tier,
+        # WHERE the pre-apply cloud's close has got to (two-stage D1). The
+        # wizard renders from this file alone, and "every stage-1 phase
+        # accepted, no candidate" is true at three different moments — the
+        # household holding a phone at the confirm screen, the fit running,
+        # and a session that ended having produced nothing. Without this they
+        # rendered as the third one, which offered to throw away a
+        # measurement that was still in progress.
+        "cloud_close": snap.cloud_close,
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "candidate": _candidate_summary(conductor.candidate),
@@ -2961,10 +2998,7 @@ def build_v2_run_and_consume(
     poll_interval_s: float | None = None,
     timeout_s: float | None = None,
     first_begin_timeout_s: float | None = None,
-    run_async: Any = None,
-    camilla_factory: Any = None,
     playback_started: PlaybackStartSignal | None = None,
-    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> Callable[[Any, Any], Any]:
     """The async ``run_and_consume(client, pi_session)`` for one v2 session.
 
@@ -2974,14 +3008,16 @@ def build_v2_run_and_consume(
     through cancellation (Stop drains the runner before purging), and the
     relay session is purged on every exit path.
 
-    ``run_async``/``camilla_factory`` (owner ruling, 2026-07-20) are the SAME
-    dependencies :func:`handle_v2_apply` needs; when supplied, the conductor's
-    candidate-carrying ``consume_capture`` verdict (the one with
-    ``auto_apply: True`` — the CLOUD_MEASURE group close on a cloud session
-    since the 2026-07-27 timing move, MEASURE's own accept on the pre-cloud
-    shape) fires the auto-apply on its OWN background thread —
-    see ``_fire_auto_apply`` below. ``prepare_v2_verify``'s verify-only
-    conductor never produces one at all, so it passes neither.
+    **No session applies anything (two-stage commission work order D1).** This
+    runner took ``run_async``/``camilla_factory``/``idle_hold`` until PR-T3 for
+    one reason: to fire ``handle_v2_apply`` on a background thread the instant
+    the pre-apply cloud closed, and to keep the socket-activated wizard alive
+    while that thread ran (#1854). Apply is now the household's own POST from
+    the review screen — served in-request, so the idle tracker's ordinary
+    in-flight-request accounting covers it — and this runner needs none of the
+    three. What replaced them is the ``complete_capture_set`` seam below: the
+    household's explicit "Continue" closes the group, fits the candidate, and
+    persists it, and the journey stops there.
 
     Host-owned error mapping (S1c):
 
@@ -2999,8 +3035,8 @@ def build_v2_run_and_consume(
       reason (backgrounded / vanished) still reads as ``relay_timeout``. Both
       abandon the volume identically — only the persisted reason differs.
     * ``CaptureBeginRefused`` — the conductor already recorded the phase's own
-      failure code (including an auto-apply failure the conductor's own
-      ``authorize_begin`` turned into a refusal); persist it + abandon.
+      failure code (including the PR-L4 accountability veto refusing ON the
+      household's group-close confirmation); persist it + abandon.
     * ``CaptureStopped`` / cancellation — expected control flow: abandon the
       volume, no failure code.
     * ANY other ``Exception`` — the W6.1 catch-all cleanup arm: the seams
@@ -3013,14 +3049,12 @@ def build_v2_run_and_consume(
       the just-posted terminal host event must reach the phone before the
       relay session is purged out from under its next poll), purges, and
       re-raises.
-    * Plan complete with VERIFY accepted ⇒ CLOSE (exact restore); a completed
-      plan that did not reach done (attempt budget exhausted) abandons.
-
-    ``idle_hold`` is the socket-activated wizard's idle-exit hold
-    (``jasper.web._systemd.IdleShutdownTracker.hold``, threaded in from the
-    dispatch). The runner's OWN lifetime is already held by the relay
-    orchestrator that spawned it; what needs its own hold is the auto-apply
-    thread below, which can outlive this runner — see ``_fire_auto_apply``.
+    * Plan complete with every phase this session ran accepted ⇒ CLOSE (exact
+      restore); a completed plan that did not reach done (attempt budget
+      exhausted) abandons. Stage 1 takes the CLOSE path like any other complete
+      session: its phases are all accepted, the household is walking back to a
+      browser rather than to another capture, and an exact restore is the
+      honest end for a measurement that finished.
     """
 
     async def _run_and_consume(client: Any, pi_session: Any) -> None:
@@ -3039,7 +3073,6 @@ def build_v2_run_and_consume(
         from jasper.active_speaker.crossover_v2_flow import (
             PHASE_APPLYING,
             PHASE_DONE,
-            REASON_APPLY_FAILED,
             REASON_INTERNAL_ERROR,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
@@ -3051,212 +3084,83 @@ def build_v2_run_and_consume(
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
         from jasper.correction.coordinator import MeasurementWindowError
 
-        def _fire_auto_apply(candidate: Any) -> None:
-            """Trigger the SAME apply transaction a household's tap used to
-            invoke (owner ruling, 2026-07-20) — now automatic, on its own
-            thread so this loop stays free to keep answering the phone's very
-            next ``begin_capture`` (VERIFY), which is what shows "Applying to
-            your speaker…" via the EXISTING CaptureBeginDeferred hold
-            (``authorize_begin``'s ``apply_complete``/``apply_failed`` seam
-            checks) until this finishes. Since the 2026-07-27 timing move that
-            hold is a REAL wait rather than a formality — the apply now starts
-            at the pre-apply cloud's close, one capture before VERIFY, which is
-            the same relative position it held in the pre-cloud flow. A no-op
-            when ``run_async``/``camilla_factory`` were not supplied (the
-            verify-only re-arm session never produces a candidate at all, so it
-            never calls this).
+        def complete_capture_set() -> None:
+            """The household's "all spots measured — Continue" tap (D1).
+
+            **This is the group-close seam at the host boundary**, and the
+            only thing that fits a correction in stage 1. It replaces the
+            inference this runner used to make — that VERIFY's begin, the one
+            index past the walked cloud, WAS the confirmation — which stage 1
+            structurally cannot supply because it has no VERIFY entry.
+
+            What it deliberately does NOT do any more is apply. Until PR-T3
+            this function's predecessor (``_fire_auto_apply``) started the
+            apply transaction on its own background thread the instant the
+            group closed: unconditionally, inside the relay session, three
+            seconds before VERIFY, with the household holding a phone. The
+            2026-07-28 ruling made the review interlude the apply decision
+            point, so the candidate this builds is a PROPOSAL and the apply is
+            the household's own POST to ``/correction/crossover/v2/apply``.
+
+            The persist is load-bearing and must happen here: ``handle_v2_apply``
+            reads the candidate off the DURABLE state, not off the conductor,
+            so a confirmation whose fit never reached disk would leave the
+            review screen with nothing to review.
+
+            A refusal (the PR-L4 accountability veto raises
+            ``CaptureBeginRefused``) propagates to the runner, which publishes
+            it to the phone and ends the session exactly as an admission
+            refusal does.
             """
-            if run_async is None or camilla_factory is None:
-                return
-            fingerprint = str(getattr(candidate, "fingerprint", "") or "")
-            if not fingerprint:
-                return
-
-            def _session_already_ending() -> bool:
-                """SF1(a) (adversarial review, 2026-07-20): best-effort
-                cooperative check for a Stop that has ALREADY landed by the
-                time this thread gets scheduled — a host-driven Stop
-                (``stop_event``, e.g. the wizard's Stop button) or a
-                phone-driven Stop the run_capture_plan loop's own poll
-                already turned into a persisted terminal failure. Not a full
-                guarantee (the apply transaction itself cannot be safely
-                interrupted mid-flight once started — see the post-apply
-                coherent-merge fix in ``observe_apply_success`` for the race
-                that slips past this check), but it closes the common case
-                where the household stopped before this thread ever got a
-                chance to run.
-                """
-                if stop_event.is_set():
-                    return True
-                state = load_v2_state()
-                failure = (state or {}).get("failure")
-                return isinstance(failure, Mapping) and bool(failure.get("code"))
-
-            def _close_volume_on_terminal_apply_failure() -> None:
-                """Restore the household volume the moment the apply dies (#1811).
-
-                A failed auto-apply is TERMINAL for the session: the conductor's
-                ``apply_failed`` seam turns the deferred VERIFY hold into a
-                refusal, so no further capture will ever run. Until this
-                existed, the plan's ``active`` state simply sat there — the
-                runner only drains on the arm that catches that refusal, which
-                needs the phone to poll one more begin (or the whole relay
-                budget to expire) before it fires. Enforcement was lazy-on-read
-                everywhere else too: the wall-clock ceiling is only checked when
-                something asks. A household whose apply failed and who put the
-                phone down therefore kept a speaker pinned at measurement
-                volume for minutes.
-
-                Same hook, same force-restore semantics as every other drain
-                (``volume.abandon`` → ``SessionVolumePlan.abandon`` →
-                restore-exactly-once, releasing the held measurement pause), so
-                the runner's own ``_abandon_best_effort`` below stays correct
-                and simply resolves to ALREADY_RESOLVED.
-                """
-                try:
-                    run_async(
-                        volume.abandon(),
-                        timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
-                    )
-                except (
-                    concurrent.futures.TimeoutError, OSError, RuntimeError, ValueError,
-                ):
-                    # A timeout here does NOT mean the drain never ran:
-                    # ``_run_async`` cancels the loop task and then WAITS for it
-                    # to drain, so the plan's own restore-once ladder has either
-                    # completed or resolved itself to ``unresolved`` by the time
-                    # this arm is reached. What is unknown is the outcome, which
-                    # is why this is CRITICAL and why the runner's own
-                    # ``_abandon_best_effort`` still runs afterwards — it either
-                    # finishes the job or reports ALREADY_RESOLVED.
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_volume_abandon_failed",
-                        level=logging.CRITICAL,
-                        reason="auto_apply_failed",
-                    )
-                    return
-                log_event(
-                    logger,
-                    "correction.crossover_v2_apply_failure_volume_closed",
-                    level=logging.WARNING,
-                )
-
-            # Taken HERE, before ``start()``, and released in the worker's own
-            # ``finally``: between this line and the worker's first statement
-            # the runner can reach a terminal path and drop the hold on the
-            # session that spawned it, and a socket-activation idle exit in
-            # that window would kill the process mid-apply — the same race
-            # issue #1854 is, one layer in. Entering on this thread and exiting
-            # on the worker's is exactly what ``hold`` supports.
-            apply_hold = ExitStack()
-            apply_hold.enter_context(idle_hold("crossover-v2-auto-apply"))
-
-            def _run_apply() -> None:
-                if _session_already_ending():
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_auto_apply_skipped_stopped",
-                    )
-                    return
-                try:
-                    payload = handle_v2_apply(
-                        {"expected_candidate_fingerprint": fingerprint},
-                        run_async,
-                        camilla_factory,
-                    )
-                except CrossoverV2Refused:
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_auto_apply_refused",
-                        level=logging.WARNING,
-                    )
-                    persist_conductor_state(
-                        conductor, failure_code=REASON_APPLY_FAILED,
-                        evidence=evidence_refs,
-                    )
-                    _close_volume_on_terminal_apply_failure()
-                    return
-                except Exception:  # noqa: BLE001 — background thread has no
-                    # caller to reraise to; a silent auto-apply crash would
-                    # strand the phone on the deferred hold until it times out
-                    # dishonestly as relay_timeout. handle_v2_apply's own
-                    # "blocked" outcome already persists apply_blocked; this
-                    # arm covers everything ELSE that can escape it (a DSP
-                    # wedge, a genuinely unexpected exception).
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_auto_apply_error",
-                        level=logging.ERROR,
-                    )
-                    persist_conductor_state(
-                        conductor, failure_code=REASON_APPLY_FAILED,
-                        evidence=evidence_refs,
-                    )
-                    _close_volume_on_terminal_apply_failure()
-                    return
-                if payload.get("status") != "applied":
-                    # "blocked" (handle_v2_apply already called
-                    # _persist_apply_blocked with the specific issue) or any
-                    # other non-applied status — persist the generic failure
-                    # code too so authorize_begin's apply_failed seam refuses
-                    # the hold instead of waiting on it forever.
-                    persist_conductor_state(
-                        conductor, failure_code=REASON_APPLY_FAILED,
-                        evidence=evidence_refs,
-                    )
-                    _close_volume_on_terminal_apply_failure()
-                log_event(
-                    logger, "correction.crossover_v2_auto_apply",
-                    status=payload.get("status"),
-                )
-
-            def _worker() -> None:
-                try:
-                    _run_apply()
-                finally:
-                    apply_hold.close()
-
-            try:
-                threading.Thread(
-                    target=_worker, daemon=True, name="crossover-v2-auto-apply",
-                ).start()
-            except RuntimeError:
-                # The OS refused a new thread (memory pressure on a 1 GB Pi):
-                # nothing will ever run the release, so drop the hold here
-                # rather than leave the wizard immortal. The raise itself is
-                # unchanged — it escapes through ``authorize`` into the
-                # runner's catch-all cleanup arm, exactly as before.
-                apply_hold.close()
-                raise
-
-        def authorize(index: int, attempt: int, entry: Any = None) -> None:
-            with stop_lock:
-                if stop_event.is_set():
-                    raise CaptureStopped("capture stopped")
-            # The group-close seam (flow-simplification §2.6). A begin for an
-            # index PAST the walked pre-apply cloud is the household confirming
-            # through the "all spots done" screen, and THAT — not the final
-            # position's acceptance — is what fits the correction and starts
-            # the apply. Doing it here rather than inside
-            # ``conductor.authorize_begin`` keeps admission bookkeeping-only
-            # and keeps the fit next to the ``persist_conductor_state`` that
-            # must precede the apply thread (``handle_v2_apply`` reads the
-            # candidate off the durable state, not off this object).
-            #
-            # Ordering with the deferral below is load-bearing and is why this
-            # runs FIRST: the very begin that confirms is VERIFY's, which
-            # ``conductor.authorize_begin`` then parks on the apply hold. Were
-            # the order reversed the deferral would return before the fit ever
-            # ran and the hold would never be released.
-            confirmed = conductor.confirm_cloud_measure_group(index)
-            if confirmed:
+            # Persist FIRST, before the close runs. The combine plus the fit
+            # are the slowest thing in the session, the wizard renders from
+            # durable state, and until this write landed the speaker page kept
+            # telling the household to confirm on their phone for the several
+            # seconds after they already had.
+            conductor.note_group_close_started()
+            persist_conductor_state(
+                conductor, failure_code=None, evidence=evidence_refs,
+            )
+            confirmed = conductor.confirm_cloud_measure_group()
+            if confirmed is not None:
                 persist_conductor_state(
                     conductor, failure_code=None, evidence=evidence_refs,
                 )
-                if confirmed.get("auto_apply"):
-                    _fire_auto_apply(conductor.candidate)
+
+        def authorize(index: int, attempt: int, entry: Any = None) -> None:
+            # Admission, and ONLY admission. The group close used to run here
+            # first, inferred from a begin whose index was past the walked
+            # cloud, and fired the apply behind it; both moved to
+            # ``complete_capture_set`` above, on the household's explicit
+            # signal (work order D1). Nothing on this path applies anything.
+            with stop_lock:
+                if stop_event.is_set():
+                    raise CaptureStopped("capture stopped")
             conductor.authorize_begin(index, attempt, entry)
+
+        def completion_signal_required() -> bool:
+            """Whether this set is the household's to end (D1).
+
+            True exactly while the pre-apply cloud is walked and unconfirmed —
+            the window in which a voluntary retake of the final position still
+            means something, and the window the runner must not close by
+            arithmetic. Every other session shape (the post-apply session, the
+            recovery re-verify) never stashes a pre-apply group, so this is
+            always False there and the runner ends those sets exactly as it
+            always has.
+
+            **The constraint an eager/speculative fit has to respect** (owner
+            rider on #1806 — not implemented, deliberately not foreclosed):
+            this predicate resolves through ``self._candidate is None``, which
+            is ALSO the group close's fire-once guard. Building a candidate
+            before the household confirms would therefore flip this to False
+            and un-hold the runner's set — shutting the retake window in the
+            same instant, silently. The rider must decouple the two first: the
+            held-set question is "has the household confirmed?", not "does a
+            candidate exist?". See the predicate's own docstring on the
+            conductor.
+            """
+            return bool(conductor.cloud_measure_group_awaiting_confirm())
 
         def _post_sweep_phase_best_effort(phase: str, **extra: Any) -> None:
             """Post one phone-visible progress phase (§5.10 progress).
@@ -3350,7 +3254,8 @@ def build_v2_run_and_consume(
                 evidence=evidence_refs,
             )
             # (An ``auto_apply``-keyed branch lived here until
-            # flow-simplification PR-U1. It fired the apply off whichever
+            # flow-simplification PR-U1, and the flag it read is itself gone
+            # since PR-T3 removed auto-apply. It fired the apply off whichever
             # capture verdict carried the flag — MEASURE's accept originally,
             # the CLOUD_MEASURE group close after the 2026-07-27 timing move.
             # §2.6 moved the trigger off a capture verdict entirely and onto
@@ -3497,6 +3402,13 @@ def build_v2_run_and_consume(
                 on_armed=on_armed,
                 consume_capture=consume,
                 stop_requested=stop_event.is_set,
+                # The held-set pair (work order D1): stage 1's final cloud
+                # position IS its capture target, so without these the runner
+                # would end the set on arithmetic — the fit would never run,
+                # the household's retake window would shut at the same moment,
+                # and the review screen would have nothing to review.
+                completion_signal_required=completion_signal_required,
+                on_completion_signal=complete_capture_set,
                 **plan_kwargs,
             )
         )
@@ -3552,7 +3464,10 @@ def build_v2_run_and_consume(
                 # The deferred apply/"review" hold (CaptureBeginDeferred
                 # "awaiting_apply") expired: MEASURE was accepted but the
                 # conductor's own auto-apply never landed within
-                # REVIEW_HOLD_BUDGET_S. current_phase is PHASE_APPLYING ONLY in
+                # REVIEW_HOLD_BUDGET_S. RETAINED but unreached since PR-T3
+                # (D10): no shipped session parks on that hold any more, so
+                # this arm cannot fire in production — kept with the hold it
+                # classifies. current_phase is PHASE_APPLYING ONLY in
                 # that exact window (MEASURE accepted, VERIFY pending, apply not
                 # observed), so it cleanly separates a hold expiry from a
                 # generic transport death (#1605) — name the real cause instead
@@ -3966,14 +3881,15 @@ STAGE2_PREFLIGHT_KEY = "stage2_preflight"
 def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     """Run the stage-2 openability predicate for the REVIEW screen (D3).
 
-    Two-stage commission work order D3, PR-T2's half: *"The review screen runs
+    Two-stage commission work order D3: *"The review screen runs
     ``resolve_conductor_context``'s predicate — the same fail-closed resolution
     ``prepare_v2_verify`` will run — twice: once at review render, and again
     server-side immediately before the apply commits."* This is the render-time
-    half. **The pre-POST half belongs to PR-T3** and is deliberately absent
-    here: ``handle_v2_apply`` is also today's auto-apply path, so refusing there
-    before T3 removes auto-apply would newly refuse a shipped automatic path on
-    a screen-only rung (the ladder's own placement note).
+    half. **The pre-POST half landed with PR-T3** and lives in
+    :func:`_assert_stage_2_can_open`, which ``handle_v2_apply`` calls
+    immediately before the transaction commits. Neither is redundant: a
+    disabled control is not a security boundary, and a stale page, a second
+    tab, or a direct POST all reach the endpoint without ever rendering this.
 
     Without it, the failure mode is exactly the applied-and-ungraded end state
     the whole work order exists to eliminate — premise 5: a box can be applied
@@ -3994,25 +3910,16 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     gates, which is precisely how a screen ends up promising an apply that
     stage 2 then refuses.
 
-    **Today this costs exactly nothing, and the reason is structural.**
-    ``PHASE_REVIEW`` is **unreachable in production until PR-T3 lands the first
-    measure-only plan.** There are only two ``index_phase_map`` constructions in
-    the tree: :func:`~jasper.active_speaker.crossover_v2_flow
-    .build_v2_cloud_index_phase_map`, which sets ``mapping[n + 2] =
-    PHASE_VERIFY`` unconditionally for every tier and shape, and
-    ``prepare_v2_verify``'s ``{1: PHASE_VERIFY}``. So every shipped session's
-    recorded ``session_phases`` contains VERIFY, and ``_phase_from_state``'s
-    review branch keys on its ABSENCE. The corrupt-state fallback cannot reach
-    it either — it walks ``PRE_CLOUD_CAPTURE_PHASES``, which also contains
-    VERIFY. This function therefore early-returns on every envelope GET a
-    shipped box can produce: zero reads, zero writes, zero log lines. Pinned by
-    ``test_every_shipped_index_phase_map_contains_verify``.
+    **What it costs, re-derived against what the code now does.** PR-T2 argued
+    this cost nothing because ``PHASE_REVIEW`` was unreachable — no
+    ``index_phase_map`` could omit VERIFY — and named T3 as the rung that would
+    falsify that. It did: stage 1's map omits VERIFY by design, so the review
+    phase is real and this predicate runs for it.
 
-    **What it will cost once T3 makes the screen reachable, measured rather
-    than waved at.** One call is roughly six JSON reads (the topology and
-    design draft are each read more than once through different loaders), a
-    canonical-JSON SHA-256 profile fingerprint, and a preset compile. It is not
-    free of side effects: ``ensure_crossover_preview_ready()`` can write BOTH
+    One call is roughly six JSON reads (the topology and design draft are each
+    read more than once through different loaders), a canonical-JSON SHA-256
+    profile fingerprint, and a preset compile. It is not free of side effects:
+    ``ensure_crossover_preview_ready()`` can write BOTH
     ``active_speaker_crossover_preview.json`` and the topology file, and emits
     ``correction.crossover_v2_preview_ensured`` on every call, ready or not.
     The writes are self-limiting rather than per-call, though — that function
@@ -4020,17 +3927,25 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     already-ready one byte-untouched. No subprocess, no network, no
     audio-device probing.
 
-    Two things will bound it then, both structural rather than a cache. It runs
-    ONLY on the review phase, so no other screen pays anything. And the review
-    interlude is not a polled screen: the wizard polls only while a relay is in
-    flight (``main.js``'s ``schedulePoll(relayIsActive(env.relay) ? POLL_MS :
-    null)``), and stage 1's session has ENDED by the time this renders — so the
-    calls are bounded to the few seconds a just-closed relay spends winding
-    down, then stop, and a household sitting on the decision costs nothing.
-    **That second bound is a property of T3's session-end, so T3 owns
-    re-checking it** when it makes stage 1 real: a review screen that somehow
-    rendered beside a permanently in-flight relay would turn the writes above
-    into a 1.5 s loop, and that is the one shape this design would not survive.
+    **T2's second bound was WRONG, and the correction is the gate below.** T2
+    reasoned that the review interlude is never polled because stage 1's
+    session has ended by the time it renders, and named the one shape the
+    design would not survive: a review screen rendering beside a live relay,
+    turning those writes into a 1.5 s loop. That shape was real. Accepting the
+    final cloud position resolves every stage-1 phase, so the phase flipped the
+    instant that capture landed — while the runner was parked in D1's held-set
+    window (up to the full between-step budget) and the wizard was polling at
+    1.5 s. Measured mid-hold: ~80 calls per hold.
+
+    Two things bound it now, both structural rather than a cache. The
+    **candidate gate** below is the real one: with no candidate there is
+    nothing to apply, so there is nothing to preflight — which is exactly the
+    held-set window, the fit-in-flight window, and the refusal lane, and it
+    reduces all three to a dict lookup. (Those first two no longer resolve to
+    ``review`` at all since ``PHASE_CLOSING`` exists, so the gate is
+    belt-and-braces there; it is load-bearing for the refusal lane, where a
+    spec report exists with no candidate behind it.) And it runs ONLY on the
+    review phase, so no other screen pays anything.
 
     **Fail-closed in both directions.** A refusal disables Apply and hands the
     screen the refusal's own sentence; an UNEXPECTED exception does the same
@@ -4050,6 +3965,14 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 
     v2 = status.get("crossover_v2")
     if not isinstance(v2, MutableMapping) or v2.get("phase") != PHASE_REVIEW:
+        return
+    # No candidate ⇒ nothing to apply ⇒ nothing to preflight. See the cost
+    # paragraph above: this is what keeps the predicate off a polled screen.
+    # Absence of the key it would have written is NOT permission — the
+    # envelope's own reader treats it as a refusal — and with no candidate the
+    # Apply control does not render at all, so nothing is being hidden.
+    candidate = v2.get("candidate")
+    if not isinstance(candidate, Mapping) or not candidate.get("fingerprint"):
         return
     try:
         resolve_conductor_context(status)
@@ -4151,7 +4074,6 @@ def prepare_v2_session(
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
-    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> V2PreparedSession:
     """Prepare the ``POST /crossover/v2/session`` relay hosting (S1a).
 
@@ -4299,6 +4221,12 @@ def prepare_v2_session(
             # at its own defaults — so the prompt an entry carries and the
             # phase the conductor runs for that index can never disagree.
             index_phase_map=build_v2_cloud_index_phase_map(plan_shape=plan_shape),
+            # The boost-permission evidence gate (work order D2's consequence).
+            # This session's own phases carry no VERIFY — the post-apply sweep
+            # is stage 2 — so the measuring host declares from the SHAPE that
+            # the journey does verify. Derived, not asserted: a tier declaring
+            # no post-apply positions would drop boost with them.
+            post_apply_verifies=plan_shape.verify_capture_target >= 1,
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
@@ -4310,10 +4238,7 @@ def prepare_v2_session(
             stop_event=stop_event,
             stop_lock=stop_lock,
             evidence_refs=refs,
-            run_async=run_async,
-            camilla_factory=camilla_factory,
             playback_started=playback_started,
-            idle_hold=idle_hold,
         )
         return rc
 
@@ -4332,30 +4257,87 @@ def prepare_v2_session(
     )
 
 
+# The request field that selects which post-apply instrument
+# ``prepare_v2_verify`` opens, and its one non-default value.
+VERIFY_STAGE_KEY = "stage"
+VERIFY_STAGE_POST_APPLY = "post_apply"
+VERIFY_STAGE_RECOVERY = "recovery"
+
+
+def _verify_plan_shape(
+    raw: Mapping[str, Any] | None, state: Mapping[str, Any] | None,
+) -> Any:
+    """Resolve the post-apply plan shape, or ``None`` for the 1-entry recovery.
+
+    Explicit rather than inferred. A shape could be guessed from the durable
+    state (has VERIFY been walked? has it been accepted?), but every such
+    inference has a case where it silently downgrades Full's six-position
+    post-apply walk to one sweep — a household who opened stage 2 and let the
+    link expire before the first capture would get the recovery instrument on
+    their next tap and lose the spatial "after" evidence with no way to know.
+    The caller says which instrument it wants; the tier still comes from the
+    durable state, so the household's tier choice governs both stages.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        CrossoverV2FlowError,
+        resolve_plan_shape,
+    )
+
+    stage = str((raw or {}).get(VERIFY_STAGE_KEY) or VERIFY_STAGE_RECOVERY).strip()
+    if stage == VERIFY_STAGE_RECOVERY:
+        return None
+    if stage != VERIFY_STAGE_POST_APPLY:
+        raise CrossoverV2Refused(
+            f"unknown verify stage {stage!r} (expected "
+            f"{VERIFY_STAGE_POST_APPLY!r} or {VERIFY_STAGE_RECOVERY!r})"
+        )
+    try:
+        return resolve_plan_shape((state or {}).get("tier"))
+    except CrossoverV2FlowError as exc:
+        raise CrossoverV2Refused(str(exc)) from exc
+
+
 def prepare_v2_verify(
     raw: Mapping[str, Any],
     *,
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
-    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> V2PreparedSession:
-    """Prepare ``POST /crossover/v2/verify`` — the §5.2 re-verify re-arm.
+    """Prepare ``POST /crossover/v2/verify`` — the post-apply session.
 
     Requires a durable post-apply state (MEASURE accepted + applied). Opens a
-    NEW relay session hosting a 1-entry verify-only plan; the conductor is
-    rebuilt in verify-only mode (CHECK/MEASURE marked accepted, applied,
-    verify priors rehydrated from the durable state), with relay index 1
-    mapped to VERIFY.
+    NEW relay session hosting a post-apply plan; the conductor is rebuilt in
+    verify-only mode (CHECK/MEASURE marked accepted, applied, verify priors
+    rehydrated from the durable state), with its index→phase map built by
+    ``build_v2_verify_index_phase_map``.
+
+    **ONE entry point, two shapes** (two-stage commission work order D2,
+    owner-confirmed 2026-07-29) — generalized over the plan shape rather than
+    forked into a second builder:
+
+    * ``raw["stage"] == "post_apply"`` — **stage 2**, the tier's own shipped
+      verify walk. The tier comes from the durable state the measuring session
+      wrote, so the household's choice at the tier chooser governs both stages.
+      Express is one position at the mark; Full is the six-position spatial
+      walk whose combined curve the after-chart, the post-apply spec verdict,
+      and the delta probe read. Running Full's stage 2 as a single position
+      would leave its post-apply group with 0 curves and no combine at all.
+    * anything else (the default, and every shipped caller) — the **§5.2
+      recovery re-verify**: one entry at the mark, byte-identical to what this
+      endpoint has always done, and what a FAILED stage 2 offers.
+
+    An unrecognised ``stage`` is refused rather than silently measured as
+    something else — the same strictness ``normalize_tier`` applies to a tier.
     """
     import numpy as np
 
     from jasper.active_speaker.crossover_v2_flow import (
         PHASE_CHECK,
         PHASE_MEASURE,
-        PHASE_VERIFY,
         CrossoverV2Conductor,
         V2FlowSeams,
+        build_v2_verify_index_phase_map,
         build_v2_verify_session_spec,
         session_wall_clock_ceiling_s,
     )
@@ -4371,6 +4353,7 @@ def prepare_v2_verify(
             "verification needs an applied measured crossover; measure and "
             "apply first"
         )
+    plan_shape = _verify_plan_shape(raw, state)
     context = resolve_conductor_context(status)
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     priors_raw = state.get("verify_priors") or {}
@@ -4419,6 +4402,7 @@ def prepare_v2_verify(
         spec = build_v2_verify_session_spec(
             context.fc_hz,
             acknowledgement_binding=acknowledgement_binding,
+            plan_shape=plan_shape,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
@@ -4430,9 +4414,10 @@ def prepare_v2_verify(
         )
         relay_session_id = rc.pi_session.session_id
         # Re-arm the walked-away ceiling from THIS plan (1 entry ⇒ the plain
-        # 1800 s baseline). The volume plan is process-global, so a preceding
-        # cloud session would otherwise leave its own longer ceiling in force
-        # for a measurement that cannot possibly need it.
+        # 1800 s baseline; Full's stage-2 walk scales it like any other plan).
+        # The volume plan is process-global, so a preceding cloud session would
+        # otherwise leave its own longer ceiling in force for a measurement
+        # that cannot possibly need it.
         session_volume_plan().set_wall_clock_ceiling_s(
             session_wall_clock_ceiling_s(spec.capture_plan)
         )
@@ -4481,22 +4466,30 @@ def prepare_v2_verify(
                 # (#1811). The value survives in durable state across the
                 # re-arm, which is exactly what this seam reads.
                 applied_offset_db=_applied_offset_gate,
+                # The two cloud seams, re-threaded for stage 2 (work order D2).
+                # They were deliberately absent while this preparer only ever
+                # built ``{1: PHASE_VERIFY}`` — no cloud group of any kind, so
+                # ``_close_cloud_group``/``_run_cloud_pipeline`` never ran.
+                # Full's stage 2 IS a post-apply group, and without these its
+                # positions would never be retained and its combined curve
+                # never published: the after-chart, the post-apply spec
+                # verdict, and the delta probe all read that publication. A
+                # single-entry plan exercises neither, so the recovery
+                # re-verify is unchanged by their presence.
+                retain_position=bind_position_retention(
+                    evidence_store, relay_session_id, refs
+                ),
+                publish_cloud=bind_cloud_publisher(
+                    evidence_store, relay_session_id, refs
+                ),
             ),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
-            # No retain_position/publish_cloud seam here either (mirrors the
-            # pre-existing omission above): this session's index_phase_map is
-            # {1: PHASE_VERIFY} only, so it has no cloud group of any kind —
-            # the conductor's own group_indexes/group_positions dicts for this
-            # session are empty, and _close_cloud_group/_run_cloud_pipeline
-            # never run. Still threaded for correctness (a verify-only
-            # re-arm's conductor computes the same derived bands, even though
-            # nothing here exercises them).
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
             applied=True,
             gain_plan_db=state.get("gain_plan_db"),
-            index_phase_map={1: PHASE_VERIFY},
+            index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
             measure_predicted_sum=predicted_sum,
             measure_predicted_spec_report=predicted_spec,
             measure_gate_window_ms=(
@@ -4513,13 +4506,6 @@ def prepare_v2_verify(
             stop_lock=stop_lock,
             evidence_refs=refs,
             playback_started=playback_started,
-            # Threaded for the same reason the preparers keep identical
-            # signatures: this session's whole background lifetime is held by
-            # the relay orchestrator, and it supplies no
-            # ``run_async``/``camilla_factory``, so ``_fire_auto_apply``
-            # returns before taking the hold. Wired anyway so the seam cannot
-            # be the thing that is missing if a verify session ever grows one.
-            idle_hold=idle_hold,
         )
         return rc
 
@@ -4543,19 +4529,81 @@ def prepare_v2_verify(
 # --------------------------------------------------------------------------- #
 
 
+def _assert_stage_2_can_open(status: Mapping[str, Any]) -> None:
+    """Refuse an apply this speaker could not then verify (D3, PR-T3's half).
+
+    The pre-POST half of the stage-2 openability preflight. PR-T2 shipped the
+    render-time half — the review screen disables Apply and shows the refusal's
+    own sentence — and deliberately left this one to T3, because until T3
+    removed auto-apply ``handle_v2_apply`` was ALSO the automatic path and a
+    refusal here would have newly refused a shipped automatic flow.
+
+    It closes the hole work-order premise 5 was hiding: ``prepare_v2_verify``'s
+    very next line is ``resolve_conductor_context(status)``, which is
+    fail-closed and carries seven refusal sites of its own plus
+    ``ensure_crossover_preview_ready()``'s. So a box can be applied and still
+    be unable to open stage 2 — the household applies, stage 2 refuses at open,
+    and the speaker sits corrected with no verdict. That applied-and-ungraded
+    end state is the one this whole work order exists to eliminate.
+
+    **The SAME predicate the render-time half runs and stage 2 itself will
+    run**, not a cheaper lookalike free to disagree with either. A disabled
+    control is not a security boundary — a stale page, a second tab, or a
+    direct POST all reach this endpoint — so the screen's honesty layer and
+    this refusal are two halves of one guarantee, and neither is redundant.
+
+    Fail-closed in both directions: an unexpected exception refuses too,
+    because "we could not check" and "we checked and it is fine" must never
+    produce the same outcome on the one action that touches the speaker.
+    """
+    try:
+        resolve_conductor_context(status)
+    except CrossoverV2Refused as exc:
+        log_event(
+            logger,
+            "correction.crossover_v2_apply_stage2_preflight_refused",
+            level=logging.WARNING,
+            reason=str(exc),
+        )
+        raise CrossoverV2Refused(
+            f"{exc} Applying now would leave this speaker corrected but "
+            "unchecked, so the apply was not run."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — fail closed, see the docstring
+        log_event(
+            logger,
+            "correction.crossover_v2_apply_stage2_preflight_failed",
+            level=logging.ERROR,
+            error_type=type(exc).__name__,
+        )
+        raise CrossoverV2Refused(
+            "the speaker could not confirm it is ready to check this "
+            "correction afterwards, so the apply was not run"
+        ) from exc
+
+
 def handle_v2_apply(
     raw: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
+    *,
+    status: Mapping[str, Any],
 ) -> dict[str, Any]:
     """POST /crossover/v2/apply — apply the reviewed measured candidate.
 
+    **This is the ONLY path that applies a measured crossover, and it runs only
+    on an explicit household POST** (two-stage commission work order D1). Until
+    PR-T3 the relay runner also called it, automatically, off the pre-apply
+    cloud's close.
+
     Reopens the published candidate artifact through
     ``MeasuredCrossoverCandidate.from_mapping`` (the tamper check), gates on
-    the reviewed ``expected_candidate_fingerprint``, and rides the EXISTING
-    atomic apply-with-rollback transaction —
+    the reviewed ``expected_candidate_fingerprint``, runs the stage-2
+    openability preflight (:func:`_assert_stage_2_can_open` — ``status`` is
+    keyword-only and REQUIRED so no caller can quietly skip it), and rides the
+    EXISTING atomic apply-with-rollback transaction —
     ``apply_baseline_profile(measured_candidate=...)`` (the W4 seam) — then
-    marks the durable v2 state applied, which arms the deferred VERIFY.
+    marks the durable v2 state applied.
 
     W6 run-6 Blocker M: the seam's own freshness guard
     (``apply_baseline_profile``'s ``expected_candidate_fingerprint``) compares
@@ -4655,6 +4703,11 @@ def handle_v2_apply(
     if not isinstance(pre_apply_profile, Mapping):
         pre_apply_profile = None
 
+    # LAST, immediately before the transaction commits (D3). After the
+    # freshness gates, so a stale candidate still gets its own specific
+    # refusal rather than this one.
+    _assert_stage_2_can_open(status)
+
     cam = camilla_factory()
     payload = run_async(
         apply_baseline_profile(
@@ -4701,10 +4754,11 @@ def handle_v2_apply(
     issue = None
     if payload.get("status") == "blocked":
         # Finding N: name the blocker compactly (not buried in the full
-        # composed profile) and persist it so the "applying"-phase
-        # fix_and_retry screen can surface it (owner ruling, 2026-07-20:
-        # this endpoint is also the auto-apply's own SSOT) instead of the
-        # household seeing a generic message with no specific cause.
+        # composed profile) and persist it so the failure screen can surface
+        # it instead of the household seeing a generic message with no
+        # specific cause. This endpoint is the flow's ONE apply path since
+        # PR-T3 removed auto-apply, so it is also the only writer of this
+        # blocking issue — the SSOT claim survives its original reason.
         issue = _blocking_apply_issue(payload)
         if issue is not None:
             payload["issue"] = issue

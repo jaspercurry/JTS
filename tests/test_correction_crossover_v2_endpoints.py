@@ -28,11 +28,11 @@ flow-selector refusals the dispatch relies on.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,7 +44,6 @@ import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
     DEFAULT_CLOUD_MEASURE_POSITIONS,
-    DEFAULT_CLOUD_VERIFY_POSITIONS,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -68,7 +67,6 @@ from jasper.capture_relay.session import (
     CaptureAborted,
     CaptureBeginRefused,
     CaptureResult,
-    CaptureStopped,
     CaptureTimeout,
     mint_session,
     register_session,
@@ -210,7 +208,8 @@ def _wav(attempt: int) -> bytes:
 
 def _conductor(backend, session, phone, *, published, phases_seen=None,
                analyses=None, index_phase_map=None, tier="",
-               retained=None, on_play=None) -> CrossoverV2Conductor:
+               retained=None, on_play=None,
+               **conductor_kwargs) -> CrossoverV2Conductor:
     """A real conductor whose fake play uploads the phone blob (the acoustic
     seam) and whose fake analyze returns canned per-phase analyses.
 
@@ -272,38 +271,107 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
             else index_phase_map
         ),
         driver_spacing_m=0.15,
+        # A STAGE-1 conductor declares what ``prepare_v2_session`` declares:
+        # the correction it proposes is verified by stage 2, so the fit keeps
+        # its boost vocabulary even though this session runs no VERIFY of its
+        # own (work order D2). Overridable, so a stage-2 conductor built
+        # through ``_stage2_conductor_kwargs`` stays on the phase-derived
+        # default.
+        **{"post_apply_verifies": True, **conductor_kwargs},
     )
 
 
-# The relay index VERIFY occupies in the shipped cloud plan: CHECK(1),
-# MEASURE(2), then N-1 prompted pre-apply positions.
-VERIFY_INDEX = DEFAULT_CLOUD_MEASURE_POSITIONS + 2
+# STAGE 1's capture target: CHECK(1), MEASURE(2), then N-1 prompted pre-apply
+# positions. Since the two-stage split (work order D1) this is also the LAST
+# index of the measuring session — VERIFY belongs to stage 2's own index space,
+# where it is index 1.
+STAGE1_LAST_INDEX = DEFAULT_CLOUD_MEASURE_POSITIONS + 1
+STAGE2_VERIFY_INDEX = 1
 
 
 def _walk_to_verify(conductor, *, persist: bool = False) -> int:
     """Drive CHECK, MEASURE and the whole pre-apply cloud, one capture per index.
 
     Returns the last attempt number used, so a caller can continue the global
-    attempt counter into VERIFY the way the relay runner does. Tests that are
-    ABOUT VERIFY use this rather than a hand-written 1/2/3 walk: the cloud sits
-    between MEASURE and VERIFY in the shipped plan, so a three-step walk would
-    be testing an index layout no session emits.
+    attempt counter the way the relay runner does. Tests that are ABOUT the
+    post-apply phase use this rather than a hand-written 1/2/3 walk: the cloud
+    sits between MEASURE and the end of stage 1, so a three-step walk would be
+    testing an index layout no session emits.
 
-    The walk ends with the CONFIRM (flow-simplification §2.6 — the fit and the
-    candidate now land on the household's confirmation past the cloud, which
-    rides VERIFY's own begin), so a caller still holds a built candidate at
-    the end exactly as it did before that move.
+    The walk ends with the CONFIRM — the household's explicit set-completion
+    signal, which is what fits the correction (work order D1) — so a caller
+    holds a built candidate at the end.
     """
     attempt = 0
-    for index in range(1, VERIFY_INDEX):
+    for index in range(1, STAGE1_LAST_INDEX + 1):
         attempt += 1
         conductor.consume_capture(index, attempt, CaptureResult(wav=b"fake-capture"))
         if persist:
             v2host.persist_conductor_state(conductor, failure_code=None)
-    conductor.confirm_cloud_measure_group(VERIFY_INDEX)
+    conductor.confirm_cloud_measure_group()
     if persist:
         v2host.persist_conductor_state(conductor, failure_code=None)
     return attempt
+
+
+def _stage2_conductor_kwargs() -> dict:
+    """What ``prepare_v2_verify`` builds for a post-apply session: applied,
+    CHECK/MEASURE already accepted, and stage 2's own index->phase map."""
+    from jasper.active_speaker.crossover_v2_flow import (
+        build_v2_verify_index_phase_map,
+        resolve_plan_shape,
+    )
+
+    return {
+        "index_phase_map": build_v2_verify_index_phase_map(
+            plan_shape=resolve_plan_shape()
+        ),
+        "accepted_phases": (PHASE_CHECK, PHASE_MEASURE),
+        "applied": True,
+        "post_apply_verifies": None,
+    }
+
+
+def _stage2_conductor(backend, session, phone, *, published=None, **kwargs):
+    """A post-apply (stage-2) conductor over the SAME fakes.
+
+    The journey is two sessions since the split, so a test about the
+    post-apply phase builds the conductor stage 2 would build rather than
+    consuming a VERIFY index that stage 1's map does not contain.
+    """
+    return _conductor(
+        backend, session, phone,
+        published=[] if published is None else published,
+        **{**_stage2_conductor_kwargs(), **kwargs},
+    )
+
+
+@contextlib.contextmanager
+def _stage2_openable():
+    """Satisfy the apply's stage-2 openability preflight (work order D3).
+
+    ``handle_v2_apply`` runs ``resolve_conductor_context`` immediately before
+    the transaction commits — PR-T3's half of the preflight, the one that
+    catches a household applying from a stale page or a second tab. Tests whose
+    subject is the apply TRANSACTION stub the predicate to a pass so they keep
+    testing what they are about; the preflight's own behaviour (refusal copy,
+    fail-closed on an unexpected error, ordering after the freshness gates) has
+    its own tests.
+    """
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = lambda status: object()
+    try:
+        yield
+    finally:
+        v2host.resolve_conductor_context = original
+
+
+def _apply(raw, run_async, camilla_factory, *, status=None):
+    """``handle_v2_apply`` with the stage-2 preflight satisfied."""
+    with _stage2_openable():
+        return v2host.handle_v2_apply(
+            raw, run_async, camilla_factory, status={} if status is None else status,
+        )
 
 
 def _run(runner, client, session):
@@ -333,25 +401,18 @@ def _build_runner(conductor, volume, **kwargs):
 # --- happy path through the REAL plan runner -----------------------------------
 
 
-def test_happy_path_three_phases_with_deferred_verify_release():
+def test_happy_path_stage_1_ends_on_the_household_signal():
+    """RE-DERIVED from ``…three_phases_with_deferred_verify_release``.
+
+    That test's subject — VERIFY soft-held behind an in-session apply, released
+    by a ``capture_deferred`` round trip — is gone with auto-apply (work order
+    D1/D10). What survives is the walk itself, and the new ending: the set is
+    HELD open past its target until the household signals, and only then does
+    the Pi close the group, fit the candidate, and complete the set.
+    """
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-
-    def on_deferred(_driver):
-        # Owner ruling (2026-07-20): simulates the HOST's own auto-apply
-        # landing while the phone is parked on the "applying" hold — never a
-        # human tap. This test isolates the conductor+runner phase walk from
-        # the real handle_v2_apply transaction (exercised through real seams
-        # further down this file, and the dedicated auto-apply-wiring test
-        # right below); it marks the durable state applied directly, exactly
-        # as observe_apply_success would once handle_v2_apply succeeds — the
-        # deferred VERIFY arms the same way either way.
-        state = v2host.load_v2_state()
-        v2host.observe_apply_success(state["candidate"]["fingerprint"])
-
-    client, session, phone = _mint_v2_session(
-        backend, spec, on_deferred=on_deferred
-    )
+    client, session, phone = _mint_v2_session(backend, spec)
     published: list = []
     phases_seen: list = []
     conductor = _conductor(
@@ -360,14 +421,16 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     volume = VolumeRecorder()
     _run(_build_runner(conductor, volume), client, session)
 
-    # All three phases accepted through ONE relay session.
+    # Every phase this session runs, accepted through ONE relay session.
     assert conductor.current_phase == PHASE_DONE
-    assert conductor.verify_outcome == "pass"
-    assert phone.deferrals_seen >= 1  # VERIFY was soft-held until auto-apply
+    assert conductor.verify_outcome is None  # stage 1 verifies nothing
     assert [kind for kind, _ in published] == ["check", "candidate"]
-    # The relay observed the deferral then the released capture.
+    # No hold: nothing in this session waits on an apply any more.
     phases = backend.phases(session.session_id)
-    assert "capture_deferred" in phases
+    assert "capture_deferred" not in phases
+    assert phone.deferrals_seen == 0
+    # The set ended on the household's explicit signal, not on the counter.
+    assert phone.completions_posted == 1
     assert phases[-1] == "capture_set_complete"
     # Fix 2 (W6.4): the CHECK capture's host-event sequence includes the sweep
     # progress pair a real phone's `waitForSweepComplete`
@@ -402,18 +465,16 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     # The relay session was purged on completion.
     assert session.session_id not in backend.sessions
 
-    # Durable state: done, applied, verify pass, candidate fingerprint kept.
+    # Durable state: stage 1 walked, a candidate PROPOSED, nothing applied.
     state = v2host.load_v2_state()
     assert set(state["accepted_phases"]) == {
         PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
-        PHASE_VERIFY, PHASE_CLOUD_VERIFY,
     }
     assert state["session_phases"] == [
         PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
-        PHASE_VERIFY, PHASE_CLOUD_VERIFY,
     ]
-    assert state["applied"] is True
-    assert state["verify"] == {"outcome": "pass"}
+    assert state.get("applied") is not True
+    assert state.get("verify") is None
     assert state["failure"] is None
     assert state["candidate"]["fingerprint"]
 
@@ -421,15 +482,11 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     # rendered purely from the host-persisted status blocks (S1b).
     from jasper.active_speaker.crossover_envelope import build_crossover_envelope
 
-    # The status projection walked the full cloud, in order: CHECK, MEASURE,
-    # the pre-apply cloud, the apply hold (VERIFY pending, applied still
-    # False), then the post-apply cloud. `applying` appears because the phase
-    # for the VERIFY index is projected as APPLYING until the apply lands.
+    # The status projection walked stage 1 in order: CHECK, MEASURE, the
+    # pre-apply cloud. No `applying` — nothing applies inside this session.
     assert [phase for _p, phase in phases_seen] == (
         [PHASE_CHECK, PHASE_MEASURE]
         + [PHASE_CLOUD_MEASURE] * (DEFAULT_CLOUD_MEASURE_POSITIONS - 1)
-        + [PHASE_VERIFY]
-        + [PHASE_CLOUD_VERIFY] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
     )
     class _NoRecovery:
         needs_recovery = False
@@ -444,343 +501,169 @@ def test_happy_path_three_phases_with_deferred_verify_release():
         })
 
     # The wizard journey the household sees is UNCHANGED by the cloud: the
-    # position groups render inside the measure/verify screens they belong to
-    # (the phone carries the per-spot prompts), so the screen sequence still
-    # reads check → measure → verify with no new step in the ladder.
+    # position groups render inside the measure screen they belong to (the
+    # phone carries the per-spot prompts), so the sequence still reads
+    # check → measure with no new step in the ladder.
     screens = [_envelope_for(p)["screen"] for _s, p in phases_seen]
     assert screens[0] == "microphone_check"
-    assert set(screens[1:DEFAULT_CLOUD_MEASURE_POSITIONS + 1]) == {"measure"}
-    assert set(screens[DEFAULT_CLOUD_MEASURE_POSITIONS + 1:]) == {"verify"}
-    assert len(screens) == cloud_capture_target()
+    assert set(screens[1:]) == {"measure"}
+    assert len(screens) == resolve_plan_shape().measure_capture_target
+    # …and the session's OWN terminal is the review interlude, not "done".
     final_block = v2host.crossover_v2_status_block()
-    assert final_block["phase"] == "done"
-    assert _envelope_for(final_block["phase"])["screen"] == "done"
+    assert final_block["phase"] == "review"
 
 
-def test_auto_apply_fires_exactly_once_on_trusted_measure_and_arms_verify(monkeypatch):
-    """Owner ruling (2026-07-20): a trusted measurement must trigger the
-    SAME apply transaction a household's tap used to invoke — automatically,
-    on its own background thread, with no human review step in between.
-    (WHICH capture carries that trigger moved on 2026-07-27 — see
-    ``test_auto_apply_fires_at_the_cloud_measure_group_close_not_at_measure``,
-    which pins the ordering; this test pins the transaction itself.)
-    Monkeypatches ``v2host.handle_v2_apply`` itself (the real
-    ``apply_baseline_profile`` transaction through real seams is covered
-    separately by ``test_apply_translates_measured_fingerprint_to_baseline_fingerprint``
-    and its neighbors further down this file) so this test isolates exactly
-    one thing: ``build_v2_run_and_consume``'s auto-apply hook calls it, with
-    the right fingerprint, EXACTLY once, and the deferred VERIFY hold
-    releases once it succeeds — with no ``on_deferred`` hook wired at all,
-    unlike the happy-path test above (the phone's own deferred-retry loop is
-    what carries this to completion, exactly as on real hardware)."""
-    calls: list[dict] = []
+# --- the split: nothing applies without an explicit household POST (D1) ------
+#
+# Eight tests lived here and are DELETED rather than adapted, because their
+# subject is gone: `_fire_auto_apply`, its background thread, its idle-exit
+# hold (#1854), its volume-close-on-failure path (#1811), and the two
+# stop-vs-in-flight-apply races only that thread could produce. PR-T3 removed
+# auto-apply, so a session no longer starts an apply at all — there is no
+# thread to hold the wizard alive for, no in-flight apply for a Stop to race,
+# and no failed auto-apply to close the volume on (the session's own drain
+# already does). The apply is a household POST served in-request. What replaces
+# them is the invariant below, plus `handle_v2_apply`'s own tests further down.
 
-    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
-        calls.append(dict(raw))
-        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
-        return {"status": "applied"}
 
-    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+def test_no_session_path_applies_anything(monkeypatch):
+    """**The load-bearing pin of PR-T3**: no code path applies without an
+    explicit household POST (work order D1).
 
+    Drives a WHOLE stage-1 session through the REAL ``run_capture_plan``,
+    scripted phone included, with ``handle_v2_apply`` monkeypatched to record
+    any call at all. It must record none — while still producing the candidate
+    the review screen exists to show. Before the split this same walk applied a
+    correction unconditionally, inside the session, three seconds before VERIFY.
+    """
+    calls: list = []
+    monkeypatch.setattr(
+        v2host,
+        "handle_v2_apply",
+        lambda *a, **kw: calls.append((a, kw)) or {"status": "applied"},
+    )
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    assert spec.capture_plan.capture_target == 10
     client, session, phone = _mint_v2_session(backend, spec)
     published: list = []
     conductor = _conductor(backend, session, phone, published=published)
     volume = VolumeRecorder()
-    runner = _build_runner(
-        conductor, volume,
-        run_async=lambda coro, **kw: None,
-        camilla_factory=lambda: None,
-    )
-    _run(runner, client, session)
+    _run(_build_runner(conductor, volume), client, session)
 
-    assert conductor.current_phase == PHASE_DONE
-    assert conductor.verify_outcome == "pass"
-    candidate = next(cand for kind, cand in published if kind == "candidate")
-    assert len(calls) == 1
-    assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
-    assert v2host.load_v2_state()["applied"] is True
-
-
-class _RecordingIdleHold:
-    """Stand-in for ``IdleShutdownTracker.hold``: counts acquire/release and
-    remembers which thread each happened on."""
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, str, str]] = []
-        self.active = 0
-
-    def __call__(self, label: str):
-        @contextmanager
-        def _cm():
-            self.events.append(("acquire", label, threading.current_thread().name))
-            self.active += 1
-            try:
-                yield
-            finally:
-                self.active -= 1
-                self.events.append(
-                    ("release", label, threading.current_thread().name)
-                )
-
-        return _cm()
-
-    def wait_released(self, timeout: float = 5.0) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.active == 0 and len(self.events) >= 2:
-                return True
-            time.sleep(0.01)
-        return False
-
-
-def _auto_apply_hold_events(hold: _RecordingIdleHold) -> list[tuple[str, str, str]]:
-    return [e for e in hold.events if e[1] == "crossover-v2-auto-apply"]
-
-
-def test_auto_apply_thread_holds_the_wizard_idle_exit_gap_free(monkeypatch):
-    """The apply worker holds the socket-activated wizard alive (#1854).
-
-    2026-07-29 JTS3: correction-web `os._exit(0)`'d mid-verify because the whole
-    relay session ran on background workers no inbound request was keeping
-    alive. The relay orchestrator now holds the tracker for the session, but the
-    auto-apply thread can OUTLIVE that runner (a relay death during the deferred
-    VERIFY hold ends the runner while ``handle_v2_apply`` is still writing DSP
-    config), so it takes its own hold.
-
-    Gap-free is the point: the hold is taken on the thread that SPAWNS the
-    worker, before ``start()``, and released in the worker's own ``finally``.
-    A worker that took its own hold would leave a window where the session's
-    hold is already gone and the worker's is not yet taken — an idle exit
-    landing there kills the process mid-apply.
-    """
-    idle_hold = _RecordingIdleHold()
-    applied_while_held: list[bool] = []
-
-    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
-        applied_while_held.append(idle_hold.active > 0)
-        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
-        return {"status": "applied"}
-
-    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
-
-    backend = FakePlanRelayBackend()
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-    client, session, phone = _mint_v2_session(backend, spec)
-    conductor = _conductor(backend, session, phone, published=[])
-    volume = VolumeRecorder()
-    runner = _build_runner(
-        conductor, volume,
-        run_async=lambda coro, **kw: None,
-        camilla_factory=lambda: None,
-        idle_hold=idle_hold,
-    )
-    _run(runner, client, session)
-
-    assert conductor.current_phase == PHASE_DONE
-    assert applied_while_held == [True], "the apply ran inside the hold"
-    assert idle_hold.wait_released(), "the worker released its hold"
-
-    events = _auto_apply_hold_events(idle_hold)
-    assert [kind for kind, _label, _thread in events] == ["acquire", "release"]
-    acquire_thread = events[0][2]
-    release_thread = events[1][2]
-    assert acquire_thread != "crossover-v2-auto-apply", (
-        "the hold must be taken BEFORE the worker starts, not inside it"
-    )
-    assert release_thread == "crossover-v2-auto-apply", (
-        "and released by the worker itself, so it covers the whole apply"
-    )
-
-
-def test_auto_apply_thread_releases_its_idle_hold_when_the_apply_dies(monkeypatch):
-    """A crashed apply must not leave the wizard immortal (#1854).
-
-    The worker's failure arms persist ``apply_failed`` and restore the
-    household volume and then return; a hold released only on success would
-    trade a killed session for a process that never idles out again — losing
-    the ~10-30 MB Pss the idle exit exists to return on a 1 GB Pi.
-    """
-    idle_hold = _RecordingIdleHold()
-
-    def _exploding_handle_v2_apply(raw, run_async, camilla_factory):
-        raise RuntimeError("the DSP writer lock is wedged")
-
-    monkeypatch.setattr(v2host, "handle_v2_apply", _exploding_handle_v2_apply)
-
-    backend = FakePlanRelayBackend()
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-    client, session, phone = _mint_v2_session(backend, spec)
-    conductor = _conductor(backend, session, phone, published=[])
-    volume = VolumeRecorder()
-    runner = _build_runner(
-        conductor, volume,
-        run_async=_bg_run_async,
-        camilla_factory=_FakeVolCam,
-        idle_hold=idle_hold,
-    )
-    # The production shape: the crashed apply persists ``apply_failed``, the
-    # conductor's ``apply_failed`` seam turns VERIFY's deferred hold into a
-    # refusal, and the runner re-raises it through its begin-refused arm.
-    with pytest.raises(CaptureBeginRefused):
-        _run(runner, client, session)
-
-    assert idle_hold.wait_released(), "the failed apply released its hold"
-    events = _auto_apply_hold_events(idle_hold)
-    assert [kind for kind, _label, _thread in events] == ["acquire", "release"]
-    assert idle_hold.active == 0
-
-
-def test_auto_apply_fires_on_the_confirm_past_the_cloud_not_on_any_capture(monkeypatch):
-    """The §2.6 group-close seam, proved end to end through the REAL
-    ``run_capture_plan`` + conductor + ``_fire_auto_apply`` wiring.
-
-    The trigger has moved twice and this pins where it landed. Originally the
-    fit and apply fired on MEASURE's accept; the 2026-07-27 timing move put
-    them on the CLOUD_MEASURE group close so the fit could consume the cloud's
-    honesty verdict; flow-simplification §2.6 moved them once more, off a
-    capture verdict entirely and onto the household's CONFIRMATION past the
-    walked cloud — which is what keeps the final prompted position retakeable.
-    The 2026-07-20 "automatic, no human tap" ruling is unchanged: the confirm
-    is a tap to continue, never a tap to approve a correction.
-
-    Four things are asserted at once, because they are one property:
-
-    * **ordering** — no candidate and no apply exist at the start of capture
-      10 (the group's last position) NOR at its acceptance; both exist by the
-      start of capture 11 (VERIFY). Nothing between them is a capture, so the
-      only thing that can have fired them is VERIFY's own begin;
-    * **the seam is `authorize`, not `consume`** — ``consume()`` no longer has
-      an ``auto_apply`` branch at all, so this cannot pass by the old
-      mechanism. Asserted directly on the source, since a wiring test that
-      would also pass against the deleted path proves nothing;
-    * ``handle_v2_apply`` is still called exactly once, with the published
-      candidate's own fingerprint;
-    * **VERIFY still gates on the apply** — its begin is held (§5.2's
-      ``on_apply``) and only releases once the transaction lands, and the
-      session still reaches DONE.
-    """
+    assert calls == []
+    # …and the runner's own wiring cannot fire one: the seam is gone.
     import inspect
 
-    # The old mechanism is gone, not merely unused: nothing keys on the flag.
-    consume_source = inspect.getsource(v2host.build_v2_run_and_consume)
-    assert 'verdict.get("auto_apply")' not in consume_source
-    assert "confirm_cloud_measure_group" in consume_source
-    calls: list[dict] = []
+    source = inspect.getsource(v2host.build_v2_run_and_consume)
+    # Its docstring names the removal, so read the CODE: no call, no thread.
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "handle_v2_apply(" not in code
+    assert "def _fire_auto_apply" not in code
+    assert "threading.Thread" not in code
 
-    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
-        calls.append(dict(raw))
-        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
-        return {"status": "applied"}
+    # The measurement still finished, and still produced a PROPOSAL.
+    assert [kind for kind, _ in published] == ["check", "candidate"]
+    state = v2host.load_v2_state()
+    assert state["candidate"]["fingerprint"]
+    assert state.get("applied") is not True
+    assert state["failure"] is None
+    # A measure-only session resolves to the review interlude, never "done".
+    assert v2host.crossover_v2_status_block()["phase"] == "review"
+    # The phone signalled the set complete exactly once; the Pi answered with
+    # capture_set_complete only after that signal.
+    assert phone.completions_posted == 1
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
 
-    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+
+def test_the_set_stays_open_until_the_household_signals_it(monkeypatch):
+    """The held-set contract, at the runner boundary (work order D1).
+
+    Stage 1's final cloud position IS its capture target, so an unheld runner
+    would post ``capture_set_complete`` and return the moment that position was
+    accepted — the fit would never run, and the retake window the confirm
+    screen exists to keep open would shut in the same instant. This drives the
+    walk with a phone that NEVER signals, and pins that the Pi neither closes
+    the group nor claims the set complete.
+    """
+    _skip_purge_grace(monkeypatch)
+
+    class _SilentPhone(V2PhoneDriver):
+        def complete_set(self):  # the household who never taps Continue
+            self.finished = True
 
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-    client, session, phone = _mint_v2_session(backend, spec)
+    client, session, phone = _mint_v2_session(
+        backend, spec, driver_cls=_SilentPhone,
+    )
     published: list = []
-    seen: list[tuple[int, str, bool, bool]] = []
+    conductor = _conductor(backend, session, phone, published=published)
+    with pytest.raises(CaptureTimeout):
+        _run(
+            _build_runner(conductor, VolumeRecorder(), timeout_s=0.4),
+            client,
+            session,
+        )
 
-    def _on_play(phase: str, index: int) -> None:
-        state = v2host.load_v2_state() or {}
-        seen.append((
-            index, phase,
-            state.get("candidate") is not None,
-            bool(state.get("applied")),
-        ))
-
-    conductor = _conductor(
-        backend, session, phone, published=published, on_play=_on_play,
-    )
-    # The state the instant capture 10 is ACCEPTED — after its verdict is
-    # persisted, before VERIFY's begin. The old mechanism fired here; the seam
-    # under test fires one begin later, and nothing between the two is a
-    # capture, so this snapshot is what discriminates them.
-    # Read off the conductor rather than the durable file, so the snapshot does
-    # not depend on where the host happens to persist: under the OLD mechanism
-    # ``_close_cloud_group`` built the candidate inside this very call, so
-    # ``conductor.candidate`` would already be set here.
-    accepted_10_state: tuple[bool, bool] | None = None
-    real_consume = conductor.consume_capture
-
-    def _watched_consume(index, attempt, result, entry=None):
-        nonlocal accepted_10_state
-        verdict = real_consume(index, attempt, result, entry)
-        if index == 10 and verdict.get("accepted"):
-            accepted_10_state = (conductor.candidate is not None, conductor.applied)
-        return verdict
-
-    conductor.consume_capture = _watched_consume  # type: ignore[method-assign]
-    volume = VolumeRecorder()
-    runner = _build_runner(
-        conductor, volume,
-        run_async=lambda coro, **kw: None,
-        camilla_factory=lambda: None,
-    )
-    _run(runner, client, session)
-
-    by_index = {index: (phase, cand, applied) for index, phase, cand, applied in seen}
-    # The plan's own shape, so this test fails loudly if the running order ever
-    # changes underneath it rather than silently checking the wrong captures.
-    assert by_index[2][0] == PHASE_MEASURE
-    assert by_index[10][0] == PHASE_CLOUD_MEASURE
-    assert by_index[11][0] == PHASE_VERIFY
-
-    # MEASURE has been consumed for eight captures by now and STILL produced
-    # no candidate and no apply — the timing move's original point.
-    for index in range(3, 11):
-        _phase, candidate_present, applied = by_index[index]
-        assert candidate_present is False, index
-        assert applied is False, index
-    # …and capture 10's own ACCEPTANCE does not fire them either — that is the
-    # §2.6 change, and it is what leaves the final position retakeable. Only
-    # by VERIFY's begin (the confirm) do both exist.
-    assert accepted_10_state == (False, False)
-    assert by_index[11][1] is True
-    assert by_index[11][2] is True
-
-    assert conductor.current_phase == PHASE_DONE
-    assert conductor.verify_outcome == "pass"
-    candidate = next(cand for kind, cand in published if kind == "candidate")
-    assert len(calls) == 1
-    assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
-    assert v2host.load_v2_state()["applied"] is True
+    # Walked in full, never confirmed: no fit, no candidate, nothing durable
+    # claiming a proposal exists.
+    assert conductor.cloud_measure_group_awaiting_confirm() is True
+    assert conductor.candidate is None
+    assert [kind for kind, _ in published] == ["check"]
+    assert "capture_set_complete" not in backend.phases(session.session_id)
 
 
-def test_an_express_session_runs_end_to_end_through_the_real_runner(monkeypatch):
-    """The express tier, walked in full — the shape nothing else exercises.
+def test_the_group_close_is_the_signal_never_a_begin(monkeypatch):
+    """D1's first item, pinned where it can regress.
 
-    Every other test here drives the 16-capture full tier, so express's own
-    structural claims (flow-simplification §1.1/§1.2) were only ever asserted
-    against a plan object. This runs one through the REAL
-    ``run_capture_plan`` + conductor + apply wiring and pins the four things
-    that are different about it:
-
-    * **M = 1 reaches DONE.** A session with no post-apply group must not sit
-      forever pending a ``cloud_verify`` phase it never had;
-    * **the confirm seam fires at the express group's own tail**, not at some
-      index inherited from the full tier's layout;
-    * **the done screen rides VERIFY**, which is the last entry the runner
-      completes on this tier — ``renderPlanAllDone`` reads that entry, so a
-      done screen left on the absent group would strand the household on
-      generic copy;
-    * the apply still happens exactly once, under the same gates.
+    ``confirm_cloud_measure_group`` used to gate on a begin whose index was
+    past the cloud group, and the host called it on EVERY begin. Now it is an
+    explicit entry point with no index at all, called only from the runner's
+    completion-signal seam. A conductor that has walked its cloud must not
+    close it on an admission of any kind.
     """
-    calls: list[dict] = []
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    attempt = 0
+    for index in range(1, STAGE1_LAST_INDEX + 1):
+        attempt += 1
+        conductor.consume_capture(index, attempt, CaptureResult(wav=b"w"))
+    assert conductor.cloud_measure_group_awaiting_confirm() is True
 
-    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
-        calls.append(dict(raw))
-        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
-        return {"status": "applied"}
+    # A voluntary retake of the final position is an admission, not a
+    # confirmation — the window this seam exists to keep open.
+    conductor.authorize_begin(STAGE1_LAST_INDEX, attempt + 1)
+    assert conductor.candidate is None
+    assert [kind for kind, _ in published] == ["check"]
 
-    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+    # The explicit close is what fits, exactly once.
+    assert conductor.confirm_cloud_measure_group()["candidate_fingerprint"]
+    assert conductor.confirm_cloud_measure_group() is None
+    assert [kind for kind, _ in published] == ["check", "candidate"]
 
+
+def test_an_express_session_runs_end_to_end_through_the_real_runner():
+    """The express tier's STAGE 1, walked in full — the shape nothing else
+    exercises.
+
+    Every other test here drives the Full tier, so express's own structural
+    claims (flow-simplification §1.1/§1.2) were only ever asserted against a
+    plan object. This runs one through the REAL ``run_capture_plan`` +
+    conductor and pins what is different about it after the two-stage split:
+    six captures rather than ten, its own held-set confirmation at its own
+    tail, a candidate proposed and nothing applied.
+    """
     shape = resolve_plan_shape(TIER_EXPRESS)
     spec = build_v2_session_spec(
         _roles(), FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
     )
-    assert spec.capture_plan.capture_target == 7
+    assert spec.capture_plan.capture_target == 6
     backend = FakePlanRelayBackend()
     client, session, phone = _mint_v2_session(backend, spec)
     published: list = []
@@ -788,45 +671,38 @@ def test_an_express_session_runs_end_to_end_through_the_real_runner(monkeypatch)
         backend, session, phone, published=published, tier=TIER_EXPRESS,
         index_phase_map=build_v2_cloud_index_phase_map(plan_shape=shape),
     )
-    confirmed_at: list[int] = []
+    confirms: list = []
     real_confirm = conductor.confirm_cloud_measure_group
 
-    def _watched_confirm(index):
-        payload = real_confirm(index)
+    def _watched_confirm():
+        payload = real_confirm()
         if payload:
-            confirmed_at.append(index)
+            confirms.append(payload)
         return payload
 
     conductor.confirm_cloud_measure_group = _watched_confirm  # type: ignore[method-assign]
-    _run(
-        _build_runner(
-            conductor, VolumeRecorder(),
-            run_async=lambda coro, **kw: None,
-            camilla_factory=lambda: None,
-        ),
-        client,
-        session,
+    _run(_build_runner(conductor, VolumeRecorder()), client, session)
+
+    # The session really ran all six and finished on the household's signal.
+    assert conductor.current_phase == PHASE_DONE
+    assert PHASE_VERIFY not in conductor.session_phases
+    assert phone.completions_posted == 1
+    assert len(confirms) == 1
+    candidate = next(cand for kind, cand in published if kind == "candidate")
+    assert confirms[0]["candidate_fingerprint"] == candidate.fingerprint
+    # …and nothing was applied by any of it.
+    assert v2host.load_v2_state().get("applied") is not True
+    assert v2host.crossover_v2_status_block()["tier"] == TIER_EXPRESS
+    assert v2host.crossover_v2_status_block()["phase"] == "review"
+
+    # Stage 2 is where express's end screen lives now — one entry at the mark.
+    from jasper.active_speaker.crossover_v2_flow import (
+        build_v2_verify_capture_plan,
     )
 
-    # The session really ran all seven and finished.
-    assert conductor.current_phase == PHASE_DONE
-    assert conductor.verify_outcome == "pass"
-    assert PHASE_CLOUD_VERIFY not in conductor.session_phases
-    # The confirm fired once, on the begin PAST the express group's tail.
-    express_verify_index = 1 + shape.cloud_measure_positions + 1
-    assert confirmed_at == [express_verify_index] == [7]
-    # …and the apply followed it, exactly once.
-    candidate = next(cand for kind, cand in published if kind == "candidate")
-    assert len(calls) == 1
-    assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
-    assert v2host.load_v2_state()["applied"] is True
-    assert v2host.crossover_v2_status_block()["tier"] == TIER_EXPRESS
-
-    # The end screen rides the entry the runner actually finishes on.
-    last_entry = spec.capture_plan.entries[-1]
-    assert last_entry.kind_label == "verify"
-    assert last_entry.index + 1 == express_verify_index
-    assert last_entry.screen["done_title"] == "Your speaker is tuned"
+    stage2 = build_v2_verify_capture_plan(FC_HZ, plan_shape=shape)
+    assert stage2.capture_target == 1
+    assert stage2.entries[-1].screen["done_title"] == "Your speaker is tuned"
 
 
 def test_abandoning_an_express_session_before_the_confirm_leaves_the_dsp_alone(
@@ -834,29 +710,18 @@ def test_abandoning_an_express_session_before_the_confirm_leaves_the_dsp_alone(
 ):
     """§2.6's abandonment guarantee on the EXPRESS path too.
 
-    Express reaches the confirm four captures sooner than full does, so its
+    Express reaches the confirm four captures sooner than Full does, so its
     "walked the whole cloud, then stopped" window is a different (and much
     likelier) moment. Stopping there must still leave the speaker untouched.
     """
     _skip_purge_grace(monkeypatch)
-    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
-    calls: list = []
-    monkeypatch.setattr(
-        v2host,
-        "handle_v2_apply",
-        lambda raw, run_async, camilla_factory: calls.append(raw) or {
-            "status": "applied"
-        },
-    )
-
     shape = resolve_plan_shape(TIER_EXPRESS)
     spec = build_v2_session_spec(
         _roles(), FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
     )
     backend = FakePlanRelayBackend()
     client, session, phone = _mint_v2_session(backend, spec)
-    # Stop right after the express cloud's LAST position (capture 6 of 7).
-    phone.abort_after_results = 1 + shape.cloud_measure_positions
+    phone.abort_after_results = shape.measure_capture_target
 
     def _abort_stopped(reason="stopped"):
         PhonePlanDriver.abort(phone, "stopped")
@@ -864,276 +729,17 @@ def test_abandoning_an_express_session_before_the_confirm_leaves_the_dsp_alone(
     phone.abort = _abort_stopped
     published: list = []
     conductor = _conductor(
-        backend, session, phone, published=published,
+        backend, session, phone, published=published, tier=TIER_EXPRESS,
         index_phase_map=build_v2_cloud_index_phase_map(plan_shape=shape),
     )
     with pytest.raises(CaptureAborted) as excinfo:
-        _run(
-            _build_runner(
-                conductor, VolumeRecorder(),
-                run_async=lambda coro, **kw: None,
-                camilla_factory=lambda: None,
-            ),
-            client,
-            session,
-        )
+        _run(_build_runner(conductor, VolumeRecorder()), client, session)
 
     assert excinfo.value.reason == "stopped"
-    assert calls == []
     assert [kind for kind, _payload in published] == ["check"]
     state = v2host.load_v2_state()
     assert state.get("applied") is not True
     assert state.get("candidate") is None
-    assert state["failure"] == {"code": "user_stopped"}
-
-
-def test_no_run_async_or_camilla_factory_means_no_auto_apply_attempt(monkeypatch):
-    """``prepare_v2_verify``'s verify-only re-arm session never supplies
-    ``run_async``/``camilla_factory`` to ``build_v2_run_and_consume`` (its
-    conductor never produces a MEASURE accept anyway) — but if it somehow
-    did, the auto-apply hook must no-op rather than crash on a missing
-    dependency."""
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        v2host, "handle_v2_apply",
-        lambda raw, run_async, camilla_factory: calls.append(raw) or {"status": "applied"},
-    )
-
-    backend = FakePlanRelayBackend()
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-
-    def on_deferred(_driver):
-        state = v2host.load_v2_state()
-        v2host.observe_apply_success(state["candidate"]["fingerprint"])
-
-    client, session, phone = _mint_v2_session(
-        backend, spec, on_deferred=on_deferred
-    )
-    published: list = []
-    conductor = _conductor(backend, session, phone, published=published)
-    volume = VolumeRecorder()
-    # No run_async / camilla_factory passed — _build_runner leaves them at
-    # build_v2_run_and_consume's own None defaults.
-    _run(_build_runner(conductor, volume), client, session)
-
-    assert conductor.current_phase == PHASE_DONE
-    assert not calls  # the auto-apply hook never fired handle_v2_apply
-
-
-class _SyncThread:
-    """Runs the auto-apply worker in-line instead of on a real OS thread —
-    makes the two interleaving tests below deterministic (no polling for a
-    background thread to finish) while still exercising the REAL
-    _fire_auto_apply / observe_apply_success / _persist_terminal_failure
-    code paths, unchanged from production."""
-
-    def __init__(self, target, daemon=None, name=None) -> None:
-        self._target = target
-
-    def start(self) -> None:
-        self._target()
-
-
-class _ThreadingModuleWithSyncThread:
-    """A thin ``threading``-module stand-in that only overrides ``Thread``.
-
-    ``build_v2_run_and_consume``'s ``_fire_auto_apply`` is the ONLY thing in
-    ``jasper.web.correction_crossover_v2`` that constructs a fresh
-    ``threading.Thread`` at test time (the module's own locks/events are
-    already-constructed objects by the time a test runs, and this file's own
-    tests build their own ``threading.Event()``/``Lock()`` directly, not via
-    ``v2host.threading``) — but ``asyncio`` itself uses the REAL
-    ``threading.Thread`` internally (executor shutdown), so swapping the
-    global class outright breaks the event loop. Patching ``v2host.threading``
-    to THIS proxy instead scopes the swap to exactly the one call site that
-    needs it.
-    """
-
-    Thread = _SyncThread
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(threading, name)
-
-
-def test_a_failed_auto_apply_closes_the_session_volume_immediately(monkeypatch):
-    """#1811 part 2 (forensics finding 9): terminal failure closes the plan.
-
-    A failed auto-apply is TERMINAL — the conductor's ``apply_failed`` seam
-    turns VERIFY's deferred hold into a refusal, so no further capture will
-    ever run. Until this landed, nothing drained the held measurement volume
-    at that moment: the runner only drains on the arm that catches that
-    refusal, which needs the phone to poll one more begin, and every other
-    enforcement in this plan (the wall-clock ceiling, the stale-active
-    reconcile) is lazy-on-read. A household whose apply failed and who put the
-    phone down kept a speaker pinned at measurement volume.
-
-    Drives the REAL runner + conductor + ``_fire_auto_apply`` wiring, with
-    ``handle_v2_apply`` faked to a ``blocked`` outcome and only
-    ``threading.Thread`` swapped for a synchronous stand-in so the ordering is
-    deterministic.
-    """
-    _skip_purge_grace(monkeypatch)
-    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
-    monkeypatch.setattr(
-        v2host, "handle_v2_apply",
-        lambda raw, run_async, camilla_factory: {"status": "blocked"},
-    )
-
-    backend = FakePlanRelayBackend()
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-    client, session, phone = _mint_v2_session(backend, spec)
-    conductor = _conductor(backend, session, phone, published=[])
-    volume = VolumeRecorder()
-    runner = _build_runner(
-        conductor, volume,
-        run_async=_bg_run_async,
-        camilla_factory=lambda: None,
-    )
-    with pytest.raises(CaptureBeginRefused):
-        _run(runner, client, session)
-
-    assert v2host.load_v2_state()["failure"]["code"] == REASON_APPLY_FAILED
-    # Two drains: the proactive one this test exists for, fired the moment the
-    # apply came back blocked, and the runner's own terminal cleanup on the
-    # refusal that followed. Against the real plan the second is a no-op
-    # (``SessionVolumeRestoreResult.ALREADY_RESOLVED`` — restore-exactly-once);
-    # the recorder counts calls, not mutations.
-    assert volume.events == ["open", "abandon", "abandon"]
-
-
-def test_stop_before_apply_start_skips_the_dsp_mutation(monkeypatch):
-    """SF1(a) interleaving 1/2 (adversarial review, 2026-07-20): a Stop that
-    lands BEFORE the auto-apply worker's cooperative pre-apply check must
-    prevent the DSP mutation entirely — handle_v2_apply (the actual
-    apply_baseline_profile transaction) must never be called. Drives the
-    REAL run_capture_plan + conductor + _fire_auto_apply wiring; only
-    threading.Thread is swapped for a synchronous stand-in so the ordering
-    is deterministic, and handle_v2_apply is replaced with a spy so a call
-    is directly observable."""
-    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        v2host, "handle_v2_apply",
-        lambda raw, run_async, camilla_factory: calls.append(raw) or {"status": "applied"},
-    )
-
-    backend = FakePlanRelayBackend()
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-    client, session, phone = _mint_v2_session(backend, spec)
-    published: list = []
-    conductor = _conductor(backend, session, phone, published=published)
-    stop_event = threading.Event()
-    real_play = conductor._seams.play
-
-    def play_then_stop(phase: str, program: Any) -> None:
-        real_play(phase, program)
-        if phase == "measure":
-            # A host-driven Stop (the wizard's Stop button) — or a
-            # phone-driven Stop a concurrent poll cycle already turned into
-            # a persisted terminal failure, see the "after" test below for
-            # that ordering — landing BEFORE the auto-apply worker's
-            # pre-apply check gets a chance to run (§ the check's own
-            # docstring: this is a best-effort race-narrowing check, not a
-            # cancellation of an in-flight transaction).
-            stop_event.set()
-
-    conductor._seams = replace(conductor._seams, play=play_then_stop)
-    volume = VolumeRecorder()
-    runner = _build_runner(
-        conductor, volume,
-        run_async=lambda coro, **kw: None,
-        camilla_factory=lambda: None,
-        stop_event=stop_event,
-    )
-    with pytest.raises(CaptureStopped):
-        _run(runner, client, session)
-
-    assert not calls  # handle_v2_apply (the DSP mutation) was never invoked
-    state = v2host.load_v2_state()
-    assert state.get("applied") is not True
-
-
-def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch):
-    """SF1(b)/(c) interleaving 2/2: the auto-apply transaction lands BEFORE
-    the phone's Stop is processed (a deliberate Stop tap right after the
-    capture that fires the auto-apply — realistic timing, since the
-    auto-apply's own transaction is synchronous-fast in this test and the
-    phone's Stop needs a further relay round trip to be discovered). The final
-    durable state must be COHERENT: applied=True preserved alongside the honest
-    user_stopped record (never clobbered either direction — SF1(b)), and the
-    wizard envelope must say the crossover WAS applied and surface Undo, never
-    a dishonest "nothing happened, start over" (SF1(c)).
-
-    The abort point moved with the 2026-07-27 timing move — from result 2
-    (MEASURE) to result 10 (the CLOUD_MEASURE group's last position) — and
-    moved once more with flow-simplification §2.6, which put the fit and the
-    auto-apply on the household's CONFIRM past the cloud rather than on that
-    position's acceptance. The apply therefore fires while VERIFY's begin is
-    being admitted, so the earliest post-apply Stop the scripted phone can
-    express is after VERIFY's own result. The interleaving under test is
-    unchanged; only the capture that fires the apply is later.
-
-    (Aborting at result 10 instead is a DIFFERENT case — abandonment BEFORE
-    the confirm, which §2.6 requires to leave the speaker untouched. It has
-    its own test below.)"""
-    _skip_purge_grace(monkeypatch)
-    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
-
-    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
-        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
-        return {"status": "applied"}
-
-    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
-
-    backend = FakePlanRelayBackend()
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-    client, session, phone = _mint_v2_session(backend, spec)
-    # Abort right after VERIFY's result — the first result that follows the
-    # confirm which builds the candidate and fires the auto-apply.
-    phone.abort_after_results = 11
-
-    def _abort_stopped(reason="stopped"):
-        PhonePlanDriver.abort(phone, "stopped")
-
-    phone.abort = _abort_stopped
-    published: list = []
-    conductor = _conductor(backend, session, phone, published=published)
-    volume = VolumeRecorder()
-    runner = _build_runner(
-        conductor, volume,
-        run_async=lambda coro, **kw: None,
-        camilla_factory=lambda: None,
-    )
-    with pytest.raises(CaptureAborted) as excinfo:
-        _run(runner, client, session)
-
-    assert excinfo.value.reason == "stopped"
-    state = v2host.load_v2_state()
-    # Coherent, not clobbered either direction: the transaction genuinely
-    # landed AND the stop is honestly on record.
-    assert state["applied"] is True
-    assert state["failure"] == {"code": "user_stopped"}
-    assert PHASE_MEASURE in state["accepted_phases"]
-
-    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
-
-    block = v2host.crossover_v2_status_block()
-    # The stop landed right after VERIFY, so the next pending phase is the
-    # post-apply cloud (not "applying" — the apply already landed, which is the
-    # whole premise here). What this test is really about is the applied-keyed
-    # override below (W6.7 ruling 3): the render must stay honest ("already
-    # applied") regardless of which phase the projection reports.
-    assert block["phase"] == PHASE_CLOUD_VERIFY
-    assert PHASE_CLOUD_MEASURE in state["accepted_phases"]
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": block,
-    })
-    assert env["screen"] == "verify_fail"
-    assert "already applied" in env["verdict_text"].lower()
-    labels = [a["label"] for a in env["alternate_actions"]]
-    assert "Undo (restore previous sound)" in labels
 
 
 def test_abandoning_before_the_confirm_leaves_the_speaker_untouched(monkeypatch):
@@ -1142,27 +748,17 @@ def test_abandoning_before_the_confirm_leaves_the_speaker_untouched(monkeypatch)
     Before the group-close move, the FINAL cloud position's acceptance fitted
     the correction and started the apply — so a household that walked the whole
     cloud and then stopped had already had their speaker retuned. Now the fit
-    waits for their confirmation past that position, and stopping instead of
-    confirming must leave the DSP alone entirely: no candidate published, no
-    apply invoked, nothing durable claiming applied.
+    waits for their confirmation, and stopping instead of confirming must leave
+    the DSP alone entirely: no candidate published, nothing durable claiming
+    applied.
     """
     _skip_purge_grace(monkeypatch)
-    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
-    calls: list = []
-    monkeypatch.setattr(
-        v2host,
-        "handle_v2_apply",
-        lambda raw, run_async, camilla_factory: calls.append(raw) or {
-            "status": "applied"
-        },
-    )
-
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec)
     # Stop right after the pre-apply cloud's LAST position — walked in full,
     # never confirmed.
-    phone.abort_after_results = 10
+    phone.abort_after_results = STAGE1_LAST_INDEX
 
     def _abort_stopped(reason="stopped"):
         PhonePlanDriver.abort(phone, "stopped")
@@ -1170,18 +766,12 @@ def test_abandoning_before_the_confirm_leaves_the_speaker_untouched(monkeypatch)
     phone.abort = _abort_stopped
     published: list = []
     conductor = _conductor(backend, session, phone, published=published)
-    runner = _build_runner(
-        conductor, VolumeRecorder(),
-        run_async=lambda coro, **kw: None,
-        camilla_factory=lambda: None,
-    )
     with pytest.raises(CaptureAborted) as excinfo:
-        _run(runner, client, session)
+        _run(_build_runner(conductor, VolumeRecorder()), client, session)
 
     assert excinfo.value.reason == "stopped"
-    assert calls == []  # the DSP mutation was never invoked
-    # …and no CANDIDATE was even published (the CHECK gain plan is a different
-    # artifact and legitimately rides the same recorder).
+    # No CANDIDATE was published (the CHECK gain plan is a different artifact
+    # and legitimately rides the same recorder).
     assert [kind for kind, _payload in published] == ["check"]
     state = v2host.load_v2_state()
     assert state.get("applied") is not True
@@ -1322,92 +912,97 @@ def test_deliberate_phone_stop_gets_its_own_honest_reason_not_relay_timeout(monk
     assert state["accepted_phases"] == []
 
 
-def test_review_hold_timeout_gets_its_own_reason_not_relay_timeout(monkeypatch):
-    """Item 4 (#1605): when the deferred apply/"review" hold expires — MEASURE
-    accepted but the conductor's own auto-apply never lands within
-    REVIEW_HOLD_BUDGET_S — the terminal reason is review_hold_timeout ("applying
-    took too long"), not the generic relay_timeout "the measurement link timed
-    out". current_phase is PHASE_APPLYING only in that exact window, which is
-    what separates a hold expiry from an ordinary transport timeout (see
-    test_capture_timeout_maps_to_relay_timeout_and_abandons_volume, whose
-    CHECK-phase timeout is UNCHANGED and still classifies as relay_timeout)."""
-    _skip_purge_grace(monkeypatch)
-    import jasper.capture_relay.session as _relay_session
-    monkeypatch.setattr(_relay_session, "REVIEW_HOLD_BUDGET_S", 0.1)
+def test_the_review_hold_machinery_is_retained_but_no_longer_on_the_path():
+    """Work order D10, made executable.
 
+    ``VERIFY_ANCHOR_HOLD_MESSAGE``, the ``awaiting_apply``
+    ``CaptureBeginDeferred``, ``REVIEW_HOLD_BUDGET_S`` and the
+    ``review_hold_timeout`` reason stop governing a live session once the apply
+    moves into the untimed interlude. D10 keeps them — no new design may depend
+    on them, and a conductor built without a prior apply still gets the honest
+    hold — so this pins BOTH halves: the machinery still works, and no shipped
+    session reaches it.
+
+    **A discrepancy with the work order, recorded here rather than papered
+    over.** D10 says the 1-entry recovery re-verify and the ``apply_failed``
+    refusal "still reach them". Neither does: ``prepare_v2_verify`` constructs
+    its conductor with ``applied=True``, so ``_apply_observed`` short-circuits
+    before the deferral AND before the ``apply_failed`` check, which live in
+    the same branch. The machinery is genuinely unreached in production now.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        VERIFY_ANCHOR_HOLD_MESSAGE,
+        CrossoverV2Conductor,
+    )
+    from jasper.capture_relay.session import (
+        REVIEW_HOLD_BUDGET_S,
+        CaptureBeginDeferred,
+    )
+
+    assert REVIEW_HOLD_BUDGET_S > 0
+    assert VERIFY_ANCHOR_HOLD_MESSAGE
+
+    # No SHIPPED conductor reaches the hold: stage 1 has no VERIFY index at
+    # all, and stage 2 is constructed applied.
+    assert PHASE_VERIFY not in build_v2_cloud_index_phase_map().values()
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    stage2 = _stage2_conductor(backend, session, phone)
+    stage2.authorize_begin(STAGE2_VERIFY_INDEX, 1)  # admitted, never deferred
 
-    # A live phone rearms the hold clock on every deferred retry, so it only
-    # expires when the phone VANISHES mid-hold (backgrounded / screen locked).
-    # Simulate that: after the first deferral the phone stops stepping, and
-    # with no auto-apply wired (no run_async/camilla_factory) the hold is never
-    # released — REVIEW_HOLD_BUDGET_S after that last retry it expires.
-    def _vanish_mid_hold(driver):
-        driver.step = lambda: None
-
-    client, session, phone = _mint_v2_session(
-        backend, spec, on_deferred=_vanish_mid_hold
+    # …and a conductor built WITHOUT a prior apply still gets the honest hold,
+    # with the household-facing sentence, exactly as before.
+    unapplied = CrossoverV2Conductor(
+        session_id=session.session_id,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=V2FlowSeams(
+            play=lambda phase, program: None,
+            analyze=lambda program, result, priors, geometry: None,
+            publish_check=lambda plan, ambient: None,
+            publish_candidate=lambda cand: None,
+            apply_complete=lambda: False,
+            apply_failed=lambda: "",
+        ),
+        index_phase_map={1: PHASE_VERIFY},
     )
-    published: list = []
-    conductor = _conductor(backend, session, phone, published=published)
-    volume = VolumeRecorder()
-    runner = _build_runner(conductor, volume, poll_interval_s=0.01, timeout_s=20.0)
-    with pytest.raises(CaptureTimeout):
-        _run(runner, client, session)
-
-    # In-memory conductor never observed the apply — the discriminator.
-    assert conductor.current_phase == PHASE_APPLYING
-    assert volume.events == ["open", "abandon"]
-    state = v2host.load_v2_state()
-    assert state["failure"] == {"code": "review_hold_timeout"}
-
-    # The envelope renders the session-restart template with the honest copy.
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
-
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {
-            "phase": "applying",
-            "failure": {"code": "review_hold_timeout"},
-        },
-    })
-    assert env["screen"] == "session_restart"
-    assert "took too long" in env["verdict_text"].lower()
+    with pytest.raises(CaptureBeginDeferred) as excinfo:
+        unapplied.authorize_begin(1, 1)
+    assert excinfo.value.code == "awaiting_apply"
+    assert excinfo.value.user_message == VERIFY_ANCHOR_HOLD_MESSAGE
 
 
 # --- the full cloud session, end to end through the real runner ---------------
 
 
 def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
-    """The whole shipped choreography — 16 prompted captures plus one retake —
-    driven by a scripted phone through the REAL ``run_capture_plan``, the REAL
-    conductor, and the REAL capture-relay registration.
+    """The whole shipped STAGE-1 choreography — 10 prompted captures plus one
+    retake — driven by a scripted phone through the REAL ``run_capture_plan``,
+    the REAL conductor, and the REAL capture-relay registration.
 
     This is the test that finally exercises PR-3a's capacity raise in anger:
     the plan's ``max_attempts`` is above the pre-capacity relay's frozen
     ceiling, so registration probes ``GET /capabilities`` (dormant until now,
-    since no builder emitted a plan that large), and the 17th attempt writes
-    blob index 16 — a key the old 8-index space could not have stored.
+    since no builder emitted a plan that large), and the 11th attempt writes
+    blob index 10 — a key the old 8-index space could not have stored.
     """
     from jasper.capture_relay.spec import LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
 
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
-    assert spec.capture_plan.capture_target == cloud_capture_target() == 16
+    # RE-DERIVED (work order D1): stage 1 is 10 captures, not the 16 of the
+    # single session it replaced; ``cloud_capture_target()`` still names the
+    # whole journey.
+    assert spec.capture_plan.capture_target == 10
+    assert cloud_capture_target() == 16
     assert spec.capture_plan.max_attempts > LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
 
-    def on_deferred(_driver):
-        state = v2host.load_v2_state()
-        v2host.observe_apply_success(state["candidate"]["fingerprint"])
-
     requests: list = []
-    client, session, phone = _mint_v2_session(
-        backend, spec, on_deferred=on_deferred, record=requests,
-    )
+    client, session, phone = _mint_v2_session(backend, spec, record=requests)
     # The capacity gate fired at registration, ahead of POST /sessions.
     assert ("GET", "/capabilities") in requests
     assert requests.index(("GET", "/capabilities")) < requests.index(
@@ -1449,16 +1044,17 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
         _run(_build_runner(conductor, volume), client, session)
 
     assert conductor.current_phase == PHASE_DONE
-    assert conductor.verify_outcome == "pass"
-    # 16 accepted captures + the one geometry retake = 17 attempts, so the last
-    # blob rode index 16 — beyond the legacy 0..7 space entirely.
+    assert conductor.candidate is not None  # proposed, not applied
+    assert v2host.load_v2_state().get("applied") is not True
+    # 10 accepted captures + the one geometry retake = 11 attempts, so the last
+    # blob rode index 10 — beyond the legacy 0..7 space entirely.
     results = [
         e for e in backend.host_events[session.session_id]
         if e.get("phase") == "capture_result"
     ]
-    assert len(results) == 17
-    assert sum(1 for e in results if e["accepted"]) == 16
-    assert max(e["attempt"] for e in results) - 1 == 16
+    assert len(results) == 11
+    assert sum(1 for e in results if e["accepted"]) == 10
+    assert max(e["attempt"] for e in results) - 1 == 10
     rejections = [e for e in results if not e["accepted"]]
     assert [e["index"] for e in rejections] == [last_cloud_measure_index]
     # B2: the rejection carries its household copy AND the wider-spot
@@ -1467,15 +1063,13 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     assert rejections[0]["reason"]
     assert "forearms" in rejections[0]["prompt"]
 
-    # Both groups closed with a geometry verdict on record.
-    for phase in (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY):
-        assert phase in conductor.accepted_phases
-        assert conductor.group_geometry(phase) is not None
+    # The pre-apply group closed with a geometry verdict on record; the
+    # post-apply one belongs to stage 2 and this session never had it.
+    assert PHASE_CLOUD_MEASURE in conductor.accepted_phases
+    assert conductor.group_geometry(PHASE_CLOUD_MEASURE) is not None
+    assert PHASE_CLOUD_VERIFY not in conductor.session_phases
     assert len(conductor.group_positions(PHASE_CLOUD_MEASURE)) == (
         DEFAULT_CLOUD_MEASURE_POSITIONS - 1
-    )
-    assert len(conductor.group_positions(PHASE_CLOUD_VERIFY)) == (
-        DEFAULT_CLOUD_VERIFY_POSITIONS - 1
     )
     # The replaced take left no position behind; the accepted retake did.
     ids = conductor.group_positions(PHASE_CLOUD_MEASURE)
@@ -1500,14 +1094,19 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     assert "forearms" not in takes[0]["prompt"]
 
     # §5.5 unchanged: exactly one volume open, exact restore on the done path.
+    # A measure-only session that finishes IS done — every phase it ran is
+    # accepted — so it takes the same clean CLOSE the single session took.
     assert volume.events[0] == "open"
     assert volume.events[-1] == "close"
     assert "abandon" not in volume.events
+    # …and the set ended on the household's own signal.
+    assert phone.completions_posted == 1
     assert backend.phases(session.session_id)[-1] == "capture_set_complete"
 
     # The durable state discloses the cloud outcome — PR-4's own extension.
     state = v2host.load_v2_state()
-    assert set(state["cloud"]) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+    # Stage 1 discloses its OWN group; the post-apply one is stage 2's.
+    assert set(state["cloud"]) == {PHASE_CLOUD_MEASURE}
     for phase, block in state["cloud"].items():
         assert block["geometry"]["locked"] in (True, False)
         # Position + attempt, so a reader can tell which take of a retaken
@@ -1549,7 +1148,7 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
                 assert provenance["derived_lo_hz"] == pipeline["echo_band_hz"][0]
         assert conductor.group_cloud_result(phase) == pipeline
     compact = v2host.crossover_v2_status_block()["cloud"]
-    assert set(compact) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+    assert set(compact) == {PHASE_CLOUD_MEASURE}
     for entry in compact.values():
         assert isinstance(entry["geometry_locked"], bool)
         # None (not 0) is the honest shape when the pipeline never became
@@ -2163,13 +1762,20 @@ def test_a_measure_only_session_resolves_to_review_never_done():
     assert v2host.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
-def test_an_applied_measure_only_session_still_resolves_to_done():
-    """``applied`` wins over the review branch.
+def test_an_applied_measure_only_session_resolves_to_verify_not_review_or_done():
+    """RE-DERIVED from PR-T2's ``…_still_resolves_to_done`` (work order D2).
 
-    Once something is genuinely on the speaker the decision has been made, and
-    PHASE_DONE's own "applied implies graded" ladder already owns the honest
-    copy for an applied-but-unverified result. Re-offering "apply this?" over a
-    speaker that already has it would be the mirror of the bug above.
+    T2 pinned that ``applied`` wins over the review branch, which is still
+    true and still the point: re-offering "apply this?" over a speaker that
+    already has it would be the mirror of the bug T2 fixed. What T2 could not
+    yet express is where an applied measure-only session goes INSTEAD, because
+    stage 2 did not exist — so it pinned ``done``, the only other terminal.
+
+    T3 makes that answer wrong: stage 1 measured, the household applied from
+    the review screen, and the post-apply check has not been opened yet. "Your
+    speaker is tuned" over an unverified correction is exactly the class of
+    claim this work order exists to remove. The honest resolution is
+    PHASE_VERIFY, whose screen carries the action that opens stage 2.
     """
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -2177,7 +1783,23 @@ def test_an_applied_measure_only_session_still_resolves_to_done():
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "applied": True,
     })
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_DONE
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_VERIFY
+    # …and the review interlude is NOT re-offered.
+    assert v2host.crossover_v2_status_block()["phase"] != "review"
+
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": v2host.crossover_v2_status_block(),
+    })
+    assert env["screen"] == "verify"
+    # The stage-2 entry point, tier-matched by the durable state's own tier.
+    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/verify"
+    assert env["next_action"]["body"] == {"stage": "post_apply"}
 
 
 def test_a_session_that_verified_still_resolves_to_done():
@@ -2229,6 +1851,12 @@ def test_a_corrupt_state_cannot_reach_the_review_screen_either():
 
 
 def _preflight_status(phase, **v2):
+    # A candidate by default: the preflight also gates on one (PR-T3), because
+    # with nothing to apply there is nothing to preflight, and every REAL
+    # review screen that renders an Apply control has one. A fixture without
+    # it would be testing the cost gate, not the predicate — the tests that
+    # ARE about the cost gate pass ``candidate=None`` explicitly.
+    v2.setdefault("candidate", {"fingerprint": "fp-preflight"})
     return {
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -2242,7 +1870,9 @@ def test_the_preflight_runs_only_on_the_review_screen():
     and ``ensure_crossover_preview_ready()`` can WRITE a regenerated preview.
     No other screen may pay that, so the phase gate is a contract, not an
     optimisation — pinned by refusing to let a non-review phase call the
-    predicate at all."""
+    predicate at all. (``closing`` is in the list for PR-T3's own reason: it
+    is a POLLED screen — the relay is still live — so the predicate running
+    there would be the 1.5 s write loop the cost paragraph names.)"""
     calls = []
 
     def _boom(status):
@@ -2253,7 +1883,7 @@ def test_the_preflight_runs_only_on_the_review_screen():
     v2host.resolve_conductor_context = _boom
     try:
         for phase in (PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
-                      PHASE_VERIFY, "applying", "done"):
+                      PHASE_VERIFY, "applying", "closing", "done"):
             status = _preflight_status(phase)
             v2host.attach_stage2_preflight(status)
             assert v2host.STAGE2_PREFLIGHT_KEY not in status["crossover_v2"]
@@ -2342,39 +1972,200 @@ def test_an_unexpected_preflight_failure_fails_closed(caplog):
     assert "event=correction.crossover_v2_stage2_preflight_refused" in caplog.text
 
 
-def test_every_shipped_index_phase_map_contains_verify():
-    """Why the review screen — and its preflight — cost nothing until PR-T3.
+def test_the_held_window_is_not_the_review_screen(monkeypatch):
+    """**PR-T3 gate blocker B2.** Accepting the final cloud position marks
+    every stage-1 phase accepted, so the phase resolution fires the INSTANT
+    that capture lands — while the runner is parked in D1's held-set window,
+    the relay is live, and the household is holding a phone at the confirm
+    screen. That used to resolve to ``review``, whose no-candidate copy told
+    them "JTS measured your speaker but has no correction to propose — measure
+    again to try afresh" and offered a destructive "Measure again" beside it,
+    over a measurement that was still in progress.
 
-    ``_phase_from_state``'s review branch keys on VERIFY being ABSENT from the
-    walked phases, and every shipped session records a VERIFY. There are only
-    two ``index_phase_map`` constructions in the tree: this builder, which sets
-    ``mapping[n + 2] = PHASE_VERIFY`` unconditionally, and
-    ``prepare_v2_verify``'s ``{1: PHASE_VERIFY}``. So ``PHASE_REVIEW`` is
-    unreachable in production today and ``attach_stage2_preflight``
-    early-returns on every envelope GET a shipped box can produce — zero reads,
-    zero writes, zero log lines.
+    Driven through the REAL conductor and the REAL persist path, reading the
+    durable state exactly as the wizard does.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
 
-    Pinned because it is the load-bearing half of that cost claim, and because
-    it is exactly what PR-T3 changes: the first measure-only plan makes this
-    assertion fail, which is the right moment to re-read the preflight's cost
-    paragraph rather than discover it on hardware.
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+    attempt = 0
+    for index in range(1, STAGE1_LAST_INDEX + 1):
+        attempt += 1
+        conductor.consume_capture(index, attempt, CaptureResult(wav=b"w"))
+        v2host.persist_conductor_state(conductor, failure_code=None)
+
+    # HELD: walked, unconfirmed, no candidate.
+    assert conductor.cloud_measure_group_awaiting_confirm() is True
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "closing"
+    assert block["cloud_close"] == "awaiting_confirm"
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "closing"
+    assert "confirm on your phone" in env["verdict_text"]
+    assert env["busy"] is False
+    # NOTHING destructive, and nothing to decide: the phone owns the only live
+    # control (Retake / Continue), and every action this screen could offer
+    # would throw away work in progress.
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
+    assert "no correction to propose" not in env["verdict_text"]
+
+    # CONFIRMED, fit in flight: the host persists BEFORE running the close.
+    conductor.note_group_close_started()
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "closing"
+    assert block["cloud_close"] == "running"
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "closing"
+    assert "working out your correction" in env["verdict_text"]
+    assert env["busy"] is True  # the flow's one machine-paced wait
+    assert env["next_action"] is None
+    assert env["alternate_actions"] == []
+
+    # CLOSED: the candidate exists, and only now is it the household's move.
+    assert conductor.confirm_cloud_measure_group()["candidate_fingerprint"]
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "review"
+    assert block["cloud_close"] == ""
+
+
+def test_a_session_that_ended_with_nothing_still_reaches_the_review_screen():
+    """The state ``closing`` must NOT swallow the absence case.
+
+    **What this actually covers, stated precisely:** durable state with every
+    stage-1 phase accepted, no candidate, and NO ``cloud_close`` — which is
+    state written before this field existed, or state whose ``cloud_close``
+    was never populated. It is genuine and correctly handled: the review
+    screen's absence copy plus "measure again" is the honest answer for a
+    session that is not in progress. It is NOT a live-conductor path — no live
+    conductor reaches all-phases-accepted with an empty ``cloud_close``,
+    because accepting the group's last index stashes the combine and the
+    property reads ``awaiting_confirm`` from that moment until a candidate
+    exists. The pin is about the READER's fallback, not about a state the
+    writer can produce."""
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "applied": False,
+    })
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == "review"
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "review"
+    assert any(a["id"] == "review_remeasure" for a in env["alternate_actions"])
+
+
+def test_the_preflight_does_not_run_without_a_candidate(caplog):
+    """The cost gate (gate blocker B2's second half). The preflight is not
+    cheap — six JSON reads, a profile fingerprint, a preset compile, and
+    ``ensure_crossover_preview_ready`` which can WRITE two files and logs on
+    every call — and it used to run on every 1.5 s poll of a live held window
+    (~80 calls per hold, measured). With no candidate there is nothing to
+    apply, so there is nothing to preflight."""
+    calls: list = []
+    original = v2host.resolve_conductor_context
+    v2host.resolve_conductor_context = lambda status: calls.append(status) or object()
+    try:
+        status = {
+            "active": True,
+            "crossover_v2": {"phase": "review", "candidate": None},
+        }
+        v2host.attach_stage2_preflight(status)
+        assert calls == []
+        assert v2host.STAGE2_PREFLIGHT_KEY not in status["crossover_v2"]
+        # …and a candidate WITH a fingerprint still runs it, so the gate is a
+        # condition rather than a switch that turned the feature off.
+        status["crossover_v2"]["candidate"] = {"fingerprint": "abc"}
+        v2host.attach_stage2_preflight(status)
+        assert len(calls) == 1
+        assert status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]["ok"] is True
+    finally:
+        v2host.resolve_conductor_context = original
+
+
+def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
+    """**The deliberate T3 tripwire, re-derived** (work order D1/D2).
+
+    PR-T2 pinned ``test_every_shipped_index_phase_map_contains_verify``: every
+    shipped ``index_phase_map`` contained a VERIFY, which was the load-bearing
+    half of its claim that ``PHASE_REVIEW`` — and therefore
+    ``attach_stage2_preflight`` — cost nothing, because the review branch keys
+    on VERIFY's absence and nothing could produce it. T2 wrote that pin
+    expecting T3 to break it, and named the break as the moment to re-read the
+    preflight's cost paragraph.
+
+    **The new invariant, stated explicitly:** a STAGE-1 (measuring) map
+    contains no VERIFY entry, by design — its absence is what resolves a
+    measure-only session to the review interlude instead of "your speaker is
+    tuned". A STAGE-2 (post-apply) map always contains exactly one, at index 1,
+    because a post-apply session that verified nothing would have nothing to
+    grade. Both halves are checked across both tiers and all four corners of
+    Full's validated (N, M) box, so neither rests on the default counts.
+
+    **The cost paragraph, re-read.** ``attach_stage2_preflight`` is now
+    genuinely reachable, once per envelope GET while the review interlude is
+    on screen. T2 named the one shape it would not survive: a review screen
+    rendering beside a permanently in-flight relay, which would turn
+    ``ensure_crossover_preview_ready``'s writes into a 1.5 s loop. T3 owns
+    re-checking that, and it holds — the review screen is reached only AFTER
+    stage 1's session has ended (its runner returns, the relay is purged, and
+    the wizard's poll stops at ``relayIsActive(env.relay)``), and the interlude
+    itself starts no session. The calls are bounded to the seconds a
+    just-closed relay spends winding down, exactly as T2 predicted.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         TIER_EXPRESS,
         TIER_FULL,
         build_v2_cloud_index_phase_map,
+        build_v2_verify_index_phase_map,
+        resolve_plan_shape,
     )
 
     for tier in (TIER_FULL, TIER_EXPRESS):
-        mapping = build_v2_cloud_index_phase_map(tier=tier)
-        assert PHASE_VERIFY in mapping.values(), tier
-    # ...including every corner of the FULL tier's validated (N, M) box, so
-    # the claim does not rest on the default position counts alone.
+        stage1 = build_v2_cloud_index_phase_map(tier=tier)
+        assert PHASE_VERIFY not in stage1.values(), tier
+        assert PHASE_CLOUD_VERIFY not in stage1.values(), tier
+        stage2 = build_v2_verify_index_phase_map(
+            plan_shape=resolve_plan_shape(tier)
+        )
+        assert stage2[1] == PHASE_VERIFY, tier
+        assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, tier
     for n, m in ((6, 5), (12, 5), (6, 12), (12, 12), (9, 6)):
-        mapping = build_v2_cloud_index_phase_map(
+        shape = resolve_plan_shape(
             cloud_measure_positions=n, cloud_verify_positions=m,
         )
-        assert PHASE_VERIFY in mapping.values(), (n, m)
+        stage1 = build_v2_cloud_index_phase_map(plan_shape=shape)
+        assert PHASE_VERIFY not in stage1.values(), (n, m)
+        assert PHASE_CLOUD_VERIFY not in stage1.values(), (n, m)
+        stage2 = build_v2_verify_index_phase_map(plan_shape=shape)
+        assert stage2[1] == PHASE_VERIFY, (n, m)
+        assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, (n, m)
+    # The recovery re-verify keeps its shipped one-entry map.
+    assert build_v2_verify_index_phase_map() == {1: PHASE_VERIFY}
 
 
 def test_the_envelope_route_actually_runs_the_preflight():
@@ -2457,6 +2248,210 @@ def test_both_session_preparers_rearm_the_walked_away_volume_ceiling():
     ) > session_wall_clock_ceiling_s(
         build_v2_verify_capture_plan(FC_HZ)
     ) == DEFAULT_WALL_CLOCK_CEILING_S
+
+
+# --- the apply's stage-2 openability preflight (work order D3, PR-T3 half) ---
+
+
+def _ready_to_apply(monkeypatch, tmp_path):
+    """The real apply environment plus durable state holding its candidate.
+
+    Same seeding the neighbouring apply tests use, so these exercise the REAL
+    ``handle_v2_apply`` up to (and, when the preflight refuses, not past) the
+    transaction.
+    """
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_preflight",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    return candidate
+
+
+def test_apply_refuses_when_stage_2_could_not_be_opened(monkeypatch, tmp_path):
+    """**The pin the work order names for this rung.** A speaker that cannot
+    open its post-apply check must not be corrected and left ungraded — the
+    applied-and-ungraded end state this whole work order exists to eliminate.
+
+    T2 shipped the render-time half (Apply is disabled and the refusal renders
+    verbatim). This is the server-side half, and it is NOT redundant with it: a
+    disabled control is not a security boundary — a stale page, a second tab,
+    or a direct POST all reach this endpoint.
+    """
+    candidate = _ready_to_apply(monkeypatch, tmp_path)
+
+    def _refuse(_status):
+        raise v2host.CrossoverV2Refused(
+            "confirm the driver safety profile before measuring"
+        )
+
+    monkeypatch.setattr(v2host, "resolve_conductor_context", _refuse)
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            _FakeApplyCam,
+            status={},
+        )
+
+    # The predicate's OWN sentence reaches the household, not a generic one.
+    assert "confirm the driver safety profile" in str(excinfo.value)
+    assert "was not run" in str(excinfo.value)
+    # The DSP was never touched: nothing durable claims an apply happened, and
+    # no pre-apply profile was stashed (which only a real commit produces).
+    state = v2host.load_v2_state()
+    assert state.get("applied") is not True
+    assert state.get("pre_apply_profile") is None
+
+
+def test_an_unexpected_preflight_failure_refuses_the_apply_too(
+    monkeypatch, tmp_path,
+):
+    """Fail-closed in BOTH directions: "we could not check" and "we checked
+    and it is fine" must never produce the same outcome on the one action that
+    touches the speaker."""
+    candidate = _ready_to_apply(monkeypatch, tmp_path)
+
+    def _explode(_status):
+        raise RuntimeError("the topology file is unreadable")
+
+    monkeypatch.setattr(v2host, "resolve_conductor_context", _explode)
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            _FakeApplyCam,
+            status={},
+        )
+    assert "could not confirm" in str(excinfo.value)
+    assert v2host.load_v2_state().get("applied") is not True
+
+
+def test_the_preflight_runs_after_the_freshness_gates(monkeypatch):
+    """Ordering: a STALE candidate gets its own specific refusal ("review the
+    newest measurement"), not the preflight's. Getting this backwards would
+    tell a household to go fix their safety profile when what they actually
+    need is to re-read a newer measurement."""
+    v2host.save_v2_state({
+        "session_id": "cap_preflight",
+        "candidate": {"fingerprint": "a-newer-fingerprint"},
+        "applied": False,
+    })
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context",
+        lambda _status: (_ for _ in ()).throw(
+            v2host.CrossoverV2Refused("safety profile")
+        ),
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_apply(
+            {"expected_candidate_fingerprint": "the-reviewed-one"},
+            _bg_run_async,
+            _FakeApplyCam,
+            status={},
+        )
+    assert "no longer current" in str(excinfo.value)
+
+
+def test_the_apply_endpoint_cannot_skip_the_preflight():
+    """``status`` is REQUIRED and keyword-only, so no caller can quietly drop
+    it — and the dispatch really does supply one."""
+    import inspect
+
+    sig = inspect.signature(v2host.handle_v2_apply)
+    status_param = sig.parameters["status"]
+    assert status_param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert status_param.default is inspect.Parameter.empty
+
+    from jasper.web import correction_setup
+
+    source = inspect.getsource(correction_setup._handle_crossover_v2_apply)
+    assert "status=correction_crossover_backend.status_payload()" in source
+    # …and the call site really is inside handle_v2_apply, before the commit.
+    apply_source = inspect.getsource(v2host.handle_v2_apply)
+    assert "_assert_stage_2_can_open(status)" in apply_source
+    # rindex, not index: the first `apply_baseline_profile(` is the import.
+    assert apply_source.index("_assert_stage_2_can_open(status)") < apply_source.rindex(
+        "apply_baseline_profile("
+    )
+
+
+# --- stage 2's entry point (work order D2) -----------------------------------
+
+
+def test_the_verify_endpoint_opens_the_tier_matched_stage_2_or_the_recovery():
+    """ONE entry point, two shapes — generalized over the plan shape rather
+    than forked into a second builder (work order D2).
+
+    The tier comes from the durable state the MEASURING session wrote, so the
+    household's choice at the tier chooser governs both stages.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        TIER_EXPRESS,
+        TIER_FULL,
+        build_v2_verify_capture_plan,
+        resolve_plan_shape,
+    )
+
+    for tier, expected in ((TIER_FULL, 6), (TIER_EXPRESS, 1)):
+        shape = v2host._verify_plan_shape({"stage": "post_apply"}, {"tier": tier})
+        assert shape == resolve_plan_shape(tier)
+        assert build_v2_verify_capture_plan(
+            FC_HZ, plan_shape=shape,
+        ).capture_target == expected
+
+    # Absent / explicit "recovery" is the shipped 1-entry re-arm, which is what
+    # a FAILED stage 2 offers — every pre-two-stage caller posts `{}`.
+    for raw in ({}, {"stage": "recovery"}, None):
+        assert v2host._verify_plan_shape(raw, {"tier": TIER_FULL}) is None
+    assert build_v2_verify_capture_plan(FC_HZ).capture_target == 1
+
+
+def test_an_unknown_verify_stage_is_refused_rather_than_guessed():
+    """Same strictness ``normalize_tier`` applies to a tier: a caller asking
+    for an instrument this build does not have fails loudly rather than
+    silently measuring something else."""
+    from jasper.active_speaker.crossover_v2_flow import TIER_FULL
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host._verify_plan_shape({"stage": "turbo"}, {"tier": TIER_FULL})
+    assert "unknown verify stage" in str(excinfo.value)
+
+
+def test_the_failed_screens_re_verify_still_asks_for_the_recovery():
+    """The shipped ``verify_retry`` action posts no ``stage``, so a failed
+    post-apply check still offers ONE cheap sweep rather than re-walking the
+    whole post-apply cloud. Read off the envelope so a body change is visible
+    here rather than on hardware."""
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": PHASE_VERIFY,
+            "applied": True,
+            "failure": {"code": "verify_out_of_tolerance"},
+        },
+    })
+    retry = env["next_action"]
+    assert retry["endpoint"] == "/correction/crossover/v2/verify"
+    assert "stage" not in (retry.get("body") or {})
 
 
 # --- verify-only re-arm (S1d: resume skips accepted phases at the relay) --------
@@ -2856,7 +2851,7 @@ def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
 
 def test_apply_endpoint_requires_current_candidate():
     with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.handle_v2_apply(
+        _apply(
             {"expected_candidate_fingerprint": "fp"}, None, None
         )
     # A stale fingerprint against a persisted candidate is refused by name.
@@ -2866,7 +2861,7 @@ def test_apply_endpoint_requires_current_candidate():
         "candidate": {"fingerprint": "fp-current"},
     })
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.handle_v2_apply(
+        _apply(
             {"expected_candidate_fingerprint": "fp-stale"}, None, None
         )
     assert "no longer current" in str(excinfo.value)
@@ -4188,13 +4183,15 @@ def test_verify_fail_persists_expert_evidence_through_the_real_persist_path():
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
-    conductor = _conductor(
-        backend, session, phone, published=[],
-        analyses={"verify": lambda program: _verify_analysis(program, max_db=2.4)},
+    analyses = {"verify": lambda program: _verify_analysis(program, max_db=2.4)}
+    stage1 = _conductor(backend, session, phone, published=[], analyses=analyses)
+    attempt = _walk_to_verify(stage1, persist=True)
+    # STAGE 2 is its own session with its own conductor (work order D1/D2), so
+    # VERIFY is index 1 of a new index space rather than index 11 of stage 1's.
+    conductor = _stage2_conductor(backend, session, phone, analyses=analyses)
+    conductor.consume_capture(
+        STAGE2_VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify")
     )
-    attempt = _walk_to_verify(conductor, persist=True)
-    conductor.note_apply_complete()  # arm VERIFY
-    conductor.consume_capture(VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify"))
     v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
 
     assert conductor.verify_outcome == "fail"
@@ -4217,13 +4214,13 @@ def test_verify_block_carries_no_flatness_key_after_the_pr5_rebase():
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
-    conductor = _conductor(
-        backend, session, phone, published=[],
-        analyses={"verify": _verify_analysis},
+    analyses = {"verify": _verify_analysis}
+    stage1 = _conductor(backend, session, phone, published=[], analyses=analyses)
+    attempt = _walk_to_verify(stage1, persist=True)
+    conductor = _stage2_conductor(backend, session, phone, analyses=analyses)
+    conductor.consume_capture(
+        STAGE2_VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify")
     )
-    attempt = _walk_to_verify(conductor, persist=True)
-    conductor.note_apply_complete()  # arm VERIFY
-    conductor.consume_capture(VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify"))
     v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
 
     assert conductor.verify_outcome == "pass"
@@ -4238,13 +4235,15 @@ def test_verify_fail_block_still_persists_evidence_and_no_flatness():
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
-    conductor = _conductor(
-        backend, session, phone, published=[],
-        analyses={"verify": lambda program: _verify_analysis(program, max_db=2.4)},
+    analyses = {"verify": lambda program: _verify_analysis(program, max_db=2.4)}
+    stage1 = _conductor(backend, session, phone, published=[], analyses=analyses)
+    attempt = _walk_to_verify(stage1, persist=True)
+    # STAGE 2 is its own session with its own conductor (work order D1/D2), so
+    # VERIFY is index 1 of a new index space rather than index 11 of stage 1's.
+    conductor = _stage2_conductor(backend, session, phone, analyses=analyses)
+    conductor.consume_capture(
+        STAGE2_VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify")
     )
-    attempt = _walk_to_verify(conductor, persist=True)
-    conductor.note_apply_complete()  # arm VERIFY
-    conductor.consume_capture(VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify"))
     v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
 
     assert conductor.verify_outcome == "fail"
@@ -4352,7 +4351,11 @@ def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
     # real relay-driven flow does — the durable file does not exist at all
     # until the first one runs.
     _walk_to_verify(conductor, persist=True)
-    assert conductor.current_phase == PHASE_APPLYING
+    # A measure-only session's own terminal is DONE (nothing left to capture);
+    # the durable state resolves to the review interlude, where the household
+    # taps Apply — and where a REFUSED apply has to leave them.
+    assert conductor.current_phase == PHASE_DONE
+    assert v2host.crossover_v2_status_block()["phase"] == "review"
 
     v2host._persist_apply_blocked({
         "id": "measured_candidate_preset_mismatch",
@@ -4364,7 +4367,11 @@ def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
     assert PHASE_CHECK in state["accepted_phases"]
     assert PHASE_MEASURE in state["accepted_phases"]
     block = v2host.crossover_v2_status_block()
-    assert block["phase"] == PHASE_APPLYING  # NOT PHASE_CHECK
+    # RE-DERIVED for the split: a refused apply leaves the speaker UNAPPLIED,
+    # so the honest phase is the review interlude the household tapped from —
+    # not PHASE_APPLYING (nothing is applying; the apply is an HTTP request
+    # that already returned) and, the point of this test, not PHASE_CHECK.
+    assert block["phase"] == "review"  # NOT PHASE_CHECK
 
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
@@ -5345,7 +5352,7 @@ def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
         "applied": False,
     })
 
-    payload = v2host.handle_v2_apply(
+    payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
@@ -5482,7 +5489,7 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
         "applied": False,
     })
 
-    payload = v2host.handle_v2_apply(
+    payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
@@ -5541,7 +5548,7 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
     )
     v2host.ensure_crossover_preview_ready()
 
-    payload = v2host.handle_v2_apply(
+    payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
@@ -5579,7 +5586,7 @@ def test_the_declared_offset_survives_persist_conductor_state(monkeypatch, tmp_p
         "candidate": {"fingerprint": candidate.fingerprint},
         "applied": False,
     })
-    v2host.handle_v2_apply(
+    _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
@@ -5617,7 +5624,7 @@ class _StubConductor:
         return SimpleNamespace(
             session_id=self._session_id, accepted_phases=(), session_phases=(),
             tier="", applied=self._applied, gain_plan_db=None,
-            candidate_fingerprint=None,
+            candidate_fingerprint=None, cloud_close="",
         )
 
 
@@ -5756,7 +5763,7 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
         "applied": False,
     })
 
-    payload = v2host.handle_v2_apply(
+    payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": pre_pr6b_payload,
@@ -5803,7 +5810,7 @@ def test_apply_refuses_when_composition_is_no_longer_bound_to_reviewed_candidate
     )
 
     with pytest.raises(v2host.CrossoverV2Refused, match="no longer current"):
-        v2host.handle_v2_apply(
+        _apply(
             {
                 "expected_candidate_fingerprint": candidate.fingerprint,
                 "candidate": candidate.to_dict(),
@@ -5853,7 +5860,7 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
     )
     v2host.ensure_crossover_preview_ready()
 
-    payload = v2host.handle_v2_apply(
+    payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
@@ -5980,7 +5987,7 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
         "candidate": {"fingerprint": run8_candidate.fingerprint},
         "applied": False,
     })
-    apply_payload = v2host.handle_v2_apply(
+    apply_payload = _apply(
         {
             "expected_candidate_fingerprint": run8_candidate.fingerprint,
             "candidate": run8_candidate.to_dict(),
@@ -6109,7 +6116,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         "candidate": {"fingerprint": run1_candidate.fingerprint},
         "applied": False,
     })
-    run1_payload = v2host.handle_v2_apply(
+    run1_payload = _apply(
         {
             "expected_candidate_fingerprint": run1_candidate.fingerprint,
             "candidate": run1_candidate.to_dict(),
@@ -6143,7 +6150,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": run2_candidate.fingerprint},
     })
-    run2_payload = v2host.handle_v2_apply(
+    run2_payload = _apply(
         {
             "expected_candidate_fingerprint": run2_candidate.fingerprint,
             "candidate": run2_candidate.to_dict(),
@@ -6246,7 +6253,7 @@ def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
         "candidate": {"fingerprint": run8_candidate.fingerprint},
         "applied": False,
     })
-    apply_payload = v2host.handle_v2_apply(
+    apply_payload = _apply(
         {
             "expected_candidate_fingerprint": run8_candidate.fingerprint,
             "candidate": run8_candidate.to_dict(),
@@ -6294,7 +6301,7 @@ def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
         "applied": False,
     })
 
-    payload = v2host.handle_v2_apply(
+    payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
@@ -6365,7 +6372,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
         "candidate": {"fingerprint": candidate.fingerprint},
         "applied": False,
     })
-    payload = v2host.handle_v2_apply(
+    payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
@@ -6419,7 +6426,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
         "candidate": {"fingerprint": candidate_again.fingerprint},
         "applied": False,
     })
-    payload_again = v2host.handle_v2_apply(
+    payload_again = _apply(
         {
             "expected_candidate_fingerprint": candidate_again.fingerprint,
             "candidate": candidate_again.to_dict(),

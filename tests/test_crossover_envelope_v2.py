@@ -67,7 +67,7 @@ def _step_statuses(env: dict) -> dict[str, str]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -82,7 +82,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = build_crossover_envelope(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
     assert env["flow"] == "v2"
 
 
@@ -394,7 +394,20 @@ def test_apply_blocked_at_a_non_apply_step_gets_no_extra_nudge():
 def test_verify_phase_screen():
     env = build_crossover_envelope_v2(_status(phase="verify"))
     assert env["screen"] == "verify"
-    assert env["next_action"] is None
+    # STAGE 2's entry point (two-stage work order D2, PR-T3). The measuring
+    # session ended at the review screen and the household applied from there,
+    # so the post-apply check is a NEW session somebody has to start — and
+    # deliberately so, because the relay TTL begins ticking at open and the
+    # household is still walking back to fetch the phone. It used to be None:
+    # the same screen rendered mid-session while the phone drove it, and the
+    # shared relay gate still suppresses this action while stage 2's own relay
+    # is in flight.
+    assert env["next_action"] == {
+        "id": "verify_start",
+        "label": "Check the result",
+        "endpoint": "/correction/crossover/v2/verify",
+        "body": {"stage": "post_apply"},
+    }
     assert _step_statuses(env)["verify"] == "active"
     # Full's VERIFY anchor is followed by the post-apply cloud — no
     # express-only disclosure here.
@@ -786,7 +799,7 @@ def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
     assert "headroom_cost" in env["candidate_review"]
 
 
@@ -1320,7 +1333,7 @@ def test_applied_false_with_verify_phase_does_not_force_verify_fail():
 ])
 def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
-    assert env["schema_version"] == 10
+    assert env["schema_version"] == 11
     assert env["screen"]
     assert env["verdict_text"]
 
@@ -1690,10 +1703,12 @@ def test_review_puts_the_measured_flatness_where_it_informs_the_decision():
 
 
 def test_the_review_screen_moved_the_schema_version():
-    """PR-T2's own bump: the screen vocabulary gained ``review`` and the
-    envelope gained ``prediction``. Additive — no key removed or re-typed —
-    so an unredeployed page ignores the new key rather than refusing the
-    envelope, the same property the 8 → 9 bump had."""
+    """PR-T2's bump (9 → 10): the screen vocabulary gained ``review`` and the
+    envelope gained ``prediction``. PR-T3's (10 → 11): the vocabulary gained
+    ``closing`` and the envelope gained ``busy``. Both additive — no key
+    removed or re-typed — so an unredeployed page ignores the new keys rather
+    than refusing the envelope, the same property the 8 → 9 bump had."""
     env = build_crossover_envelope_v2(_review_status())
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 10
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
     assert "prediction" in env
+    assert env["busy"] is False  # present on every screen, true on one

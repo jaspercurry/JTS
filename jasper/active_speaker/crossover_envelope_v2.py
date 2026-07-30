@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The v2 conductor screen envelope (schema 8, Wave 5a; auto-apply since 2026-07-20).
+"""The v2 conductor screen envelope (schema 11, Wave 5a; two-stage since PR-T3).
 
 ``docs/crossover-measurement-productization-design.md`` §5.9/§5.10 defines the
 v2 screen sequence — ``("speaker_setup", "microphone_check", "measure",
@@ -47,6 +47,8 @@ from .crossover_v2_flow import (
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
     PHASE_MEASURE,
+    CLOUD_CLOSE_RUNNING,
+    PHASE_CLOSING,
     PHASE_REVIEW,
     PHASE_VERIFY,
     REASON_REGISTRY,
@@ -81,7 +83,16 @@ logger = logging.getLogger(__name__)
 # "applying" in-flight screen added, the "done"/RESULT screen's shape changed
 # to plain-outcome-first + expert disclosure + prominent Undo) — owner ruling,
 # 2026-07-20.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 10
+# Bumped 10 → 11: a new screen id, ``closing`` — the measuring session's own
+# tail, while the pre-apply cloud's close has not yet produced a candidate
+# (two-stage commission work order D1, PR-T3 gate blocker B2). Those moments
+# used to render as ``review`` with its no-candidate copy, which told a
+# household mid-measurement that nothing had been produced and offered to
+# throw it away. Additive: no key removed or re-typed, and the crossover
+# wizard's own module is data-driven off ``verdict_text`` / ``next_action`` /
+# ``alternate_actions``, so it renders the new screen with no JS change. The
+# envelope also gains an always-present ``busy`` flag (see ``_envelope``).
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 11
 
 # The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
 # step is gone; these five are the whole journey.
@@ -118,6 +129,10 @@ _PHASE_STEP = {
     # It shares the step with PHASE_APPLYING deliberately — the stepper tracks
     # where the journey is, and "deciding to apply" and "applying" are the same
     # place in it.
+    # The measuring session's tail stays on the MEASURE step: the household is
+    # still finishing a measurement (confirming on the phone, or waiting out
+    # the fit), and the apply decision has not been put to them yet.
+    PHASE_CLOSING: "measure",
     PHASE_REVIEW: "apply",
     PHASE_APPLYING: "apply",
     PHASE_VERIFY: "verify",
@@ -700,6 +715,59 @@ def _review_verdict(prediction: Mapping[str, Any] | None, has_candidate: bool) -
     )
 
 
+def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
+    """The measuring session's TAIL — measured, not yet proposed (D1, B2).
+
+    Every stage-1 phase is accepted and no candidate exists yet. That is true
+    at two very different moments, and this screen says which:
+
+    * ``awaiting_confirm`` — the pre-apply cloud is walked and the phone is
+      showing the group-close confirm. The household has something to do, and
+      it is on the phone, not here.
+    * ``running`` — they confirmed; the combine and the fit are in flight.
+      Nobody has anything to do. This is the flow's one genuinely
+      machine-paced wait, so it is the one screen that sets ``busy``.
+
+    **Why this is not the review screen.** It used to be. Accepting the final
+    cloud position resolves every stage-1 phase, so ``_phase_from_state``
+    flipped to ``review`` the instant that capture landed — mid-hold, with the
+    relay live and the wizard polling at 1.5 s. The household read "JTS
+    measured your speaker but has no correction to propose — measure again to
+    try afresh" over a measurement that was still running, with a destructive
+    "Measure again" beside it. The absence of a candidate was being reported as
+    a verdict when it was only a timestamp.
+
+    **No actions at all**, and that is the point: every action this screen
+    could offer is destructive of work in progress. "Measure again" would throw
+    away a walked cloud; "Leave it as it is" would abandon a fit that is about
+    to produce the very thing the household is waiting for. The phone owns the
+    only live control (Retake / Continue on the confirm screen), and Stop rides
+    the relay block as it does on every in-session screen.
+    """
+    v2 = _v2(status)
+    running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
+    return _envelope(
+        screen="closing",
+        active_step="measure",
+        verdict=(
+            "JTS is working out your correction from the measurements — this "
+            "takes a few seconds."
+            if running
+            else "All spots measured — confirm on your phone to continue."
+        ),
+        next_action=None,
+        alternate_actions=[],
+        busy=running,
+        status=status,
+        # The pre-apply cloud's own flatness/carve-out disclosure is already
+        # on record by now (its group closed to get here), and it is the same
+        # measured evidence the review screen will lead with. Showing it here
+        # lets a household read what was measured while the fit runs, without
+        # being asked to decide anything about it.
+        expert_details=_flatness_details_lines(status),
+    )
+
+
 def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     """The REVIEW screen: the household's apply decision (work order D3).
 
@@ -1129,6 +1197,7 @@ def _envelope(
     expert_details: list[str] | None = None,
     advertise_relay: bool = True,
     prediction: Mapping[str, Any] | None = None,
+    busy: bool = False,
 ) -> dict[str, Any]:
     return {
         "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
@@ -1147,6 +1216,14 @@ def _envelope(
         "relay": (_mapping(status.get("relay")) or None) if advertise_relay else None,
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
+        # Whether this screen is MACHINE-paced — the speaker is working and the
+        # household has nothing to do but wait. Declared for the renderer (a
+        # spinner belongs on exactly these screens and nowhere else); no
+        # renderer reads it yet, so it is inert until one does. ``False``
+        # everywhere except the ``closing`` screen's fit-in-flight moment,
+        # which is the only state in this flow where the wait is the speaker's
+        # rather than the household's.
+        "busy": bool(busy),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         "candidate_review": dict(candidate_review) if candidate_review else None,
@@ -1557,11 +1634,15 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
     elif phase == PHASE_APPLYING:
-        # Owner ruling (2026-07-20): no human control page here anymore — the
-        # conductor's own auto-apply is in flight (machine-paced seconds, not
-        # a human wait). A blocked/errored auto-apply surfaces through the
-        # generic ``failure`` branch above (REASON_APPLY_FAILED), never here;
-        # by construction this branch only renders while genuinely pending.
+        # An apply is pending. RETAINED but unreached since PR-T3 (D10):
+        # ``_phase_from_state`` can only return PHASE_APPLYING from the walk's
+        # VERIFY-unaccepted-and-not-applied special case, and no shipped
+        # session records a VERIFY it has not accepted — stage 1 has no VERIFY
+        # index and stage 2 opens already-applied. The household-visible wait
+        # while the fit runs is the ``closing`` screen; the apply itself is an
+        # HTTP request that has already returned by the time anything renders.
+        # A blocked/errored apply surfaces through the generic ``failure``
+        # branch above (REASON_APPLY_FAILED), never here.
         env = _envelope(
             screen="applying", active_step="apply",
             verdict="Applying the measured crossover to your speaker…",
@@ -1584,7 +1665,26 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="verify", active_step="verify",
             verdict=verdict,
-            next_action=None,
+            # STAGE 2's entry point (two-stage commission D2, PR-T3). The
+            # measuring session ended at the review screen and the household
+            # applied from there, so the post-apply check is a NEW session
+            # somebody has to start — and it must be started deliberately,
+            # because the relay TTL begins ticking at open and the household
+            # is still walking back to fetch the phone. ``stage:
+            # "post_apply"`` selects the tier's own verify shape rather than
+            # the 1-entry recovery re-arm; the tier itself comes from the
+            # durable state the measuring session wrote.
+            #
+            # No ``show_during_relay``: while stage 2's own relay IS in flight
+            # this screen renders the same copy with the action suppressed by
+            # the shared relay gate, exactly as every other in-session screen
+            # does — one button to start it, none to start it twice.
+            next_action={
+                "id": "verify_start",
+                "label": "Check the result",
+                "endpoint": "/correction/crossover/v2/verify",
+                "body": {"stage": "post_apply"},
+            },
             status=status,
             # B1 fix (adversarial review of PR #1780): Express's pre-apply
             # cloud has already closed by the time this screen renders (it
@@ -1604,6 +1704,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action=None,
             status=status,
         )
+    elif phase == PHASE_CLOSING:
+        env = _closing_envelope(status)
     elif phase == PHASE_REVIEW:
         env = _review_envelope(status)
     elif phase == PHASE_DONE:

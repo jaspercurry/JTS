@@ -292,7 +292,13 @@ def test_hold_is_released_when_the_body_raises() -> None:
 
 
 def test_concurrent_holds_expire_only_after_the_last_release() -> None:
-    """Holds nest: the v2 session and its auto-apply worker overlap."""
+    """Holds nest: two overlapping background lifetimes.
+
+    Labelled for the v2 session and its auto-apply worker when written; that
+    worker is gone with auto-apply (two-stage PR-T3), so read the labels as a
+    representative PAIR of overlapping holds rather than as a live pairing —
+    what the tracker must get right (nesting, not double-releasing) is
+    unchanged and is what this exercises."""
     tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
 
     with tracker.hold("session"):
@@ -320,7 +326,8 @@ def test_a_hold_may_be_taken_on_one_thread_and_released_on_another() -> None:
     """The gap-free pattern for a worker thread: acquire BEFORE ``start()``,
     release in the worker's own ``finally``.
 
-    ``build_v2_run_and_consume``'s auto-apply worker depends on this — a thread
+    ``build_v2_run_and_consume``'s auto-apply worker depended on this before
+    PR-T3 deleted it, and #1860's level-ramp holds depend on it now — a thread
     scheduled but not yet started, while the session runner drops its own hold,
     is exactly the window that would let the process exit mid-apply.
     """

@@ -422,9 +422,11 @@ function renderActions(primary, alternates = []) {
 
 // `suppressConnectAffordance` keeps the relay ACTIVE (so polling continues and
 // Stop stays wired) but hides the "Open phone capture" link + QR — used on the
-// review screen, where the phone is already connected and parked in the
-// "waiting for apply" hold, so a "scan to connect" prompt beside the Apply
-// button would be a misleading second primary (W6.10 blocker #2).
+// review screen, where the phone is already connected, so a "scan to connect"
+// prompt beside the Apply button would be a misleading second primary (W6.10
+// blocker #2). ("parked in the waiting-for-apply hold" was the 2026-07-20
+// reason; since the two-stage split the phone is winding down a just-ended
+// stage-1 session instead, and the affordance is just as misleading.)
 function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
   const active = relay && RELAY_IN_FLIGHT.has(relay.status);
   const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
@@ -458,8 +460,8 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
     return;
   }
   if (suppressConnectAffordance) {
-    // Phone connected and holding for apply — keep the section (Stop stays
-    // wired, polling continues) but do not re-advertise a connect link/QR.
+    // Phone connected — keep the section (Stop stays wired, polling
+    // continues) but do not re-advertise a connect link/QR.
     els.relayStatus.textContent = 'Your phone is connected — review and apply below.';
     return;
   }
@@ -503,7 +505,7 @@ function renderActionRow(env) {
   // The relay gate suppresses a next_action beside a live phone link so a
   // second capture can't be started (the 2026-07-16 two-primary-buttons bug).
   // The review screen's Apply is the exception: it is the PRIMARY action while
-  // the phone is parked in the "waiting for apply" hold, so the envelope marks
+  // the just-ended stage-1 relay is still winding down, so the envelope marks
   // it show_during_relay and it renders through (W6.10 blocker #2).
   const showPrimary = !relayActive
     || (env.next_action && env.next_action.show_during_relay);
@@ -545,8 +547,8 @@ function render(env) {
   renderNudges(env.nudges, env.expert_details);
   renderCandidateReview(env.candidate_review);
   renderCloud(els, env);
-  // On the review screen the show_during_relay primary (Apply) owns the phone —
-  // keep the relay live for polling/Stop but hide its connect link/QR.
+  // On the review screen the show_during_relay primary (Apply) owns the screen
+  // — keep the relay live for polling/Stop but hide its connect link/QR.
   const suppressConnectAffordance = Boolean(
     env.next_action && env.next_action.show_during_relay,
   );

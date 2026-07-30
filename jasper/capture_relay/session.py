@@ -65,21 +65,30 @@ DEFAULT_TIMEOUT_S = 120.0
 # deferred begin retry rearms it (counts as liveness) and a vanished phone
 # still eventually collapses here (teardown intact).
 #
-# Owner ruling (2026-07-20): the human mid-flow Apply gate is gone — the
-# conductor auto-applies the candidate itself, so this hold now covers only
-# the auto-apply TRANSACTION's own latency (a CamillaDSP set-config +
-# confirm round trip, typically well under a few seconds), not a human
-# reading a candidate and deciding whether to tap Apply. The budget shrank
-# from the prior 900 s (sized for a human review) to 30 s — generous
-# multi-second margin over typical apply latency without holding the phone
-# through anything resembling a human-scale wait. A genuinely stuck apply
-# (well past 30 s) is itself an anomaly worth surfacing as a session
-# collapse rather than holding indefinitely. Re-derive from W6 bench
-# observation of real auto-apply latency if this proves too tight.
+# **RETAINED, and unreached by any shipped session** (two-stage commission
+# work order D10, PR-T3). The sole consumer is ``begin_budget``'s
+# ``auto_advance == on_apply`` arm, and no plan emits that entry any more:
+# stage 1 has no VERIFY index at all and stage 2 opens already-applied. Kept
+# because D10 keeps the hold itself — a conductor built without a prior apply
+# still gets the honest deferral — but no new design may depend on it.
+#
+# The history below is why the number is 30 and not 900, and it describes a
+# ruling that has since been REVERSED; read it as archaeology, not as current
+# behaviour. Owner ruling (2026-07-20): the human mid-flow Apply gate is gone
+# — the conductor auto-applied the candidate itself, so this hold covered only
+# the auto-apply TRANSACTION's own latency (a CamillaDSP set-config + confirm
+# round trip, typically well under a few seconds), not a human reading a
+# candidate and deciding whether to tap Apply. The budget shrank from the prior
+# 900 s (sized for a human review) to 30 s. The 2026-07-28 ruling restored the
+# human decision and moved it OUT of the session entirely (the untimed review
+# interlude on jts.local), which is why nothing holds for an apply now. Anyone
+# reviving this budget re-derives it against whatever it would then be holding
+# for.
 REVIEW_HOLD_BUDGET_S = 30.0
 
 # The ``auto_advance`` policy value (mirrors
-# ``jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_ON_APPLY``) that marks a
+# ``jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_ON_APPLY``, whose own
+# comment records that no plan emits it since PR-T3) that marks a
 # capture-plan entry whose begin is gated on the apply-complete host event. Kept
 # as a local literal so this generic runner does not import the v2 flow upward;
 # the two are pinned equal by tests/test_capture_relay_plan.py.
@@ -105,6 +114,15 @@ CAPTURE_INCOMPATIBLE_USER_MESSAGE = (
 # The blob for an admitted attempt rides relay `capture_index = attempt - 1`
 # (attempt 1 uses the legacy un-indexed key).
 BEGIN_CAPTURE_EVENT_KEY = "begin_capture"
+# The household's explicit "I am done measuring" signal (two-stage commission
+# work order D1, issue #1806). A plan whose host HOLDS the set open past its
+# capture target — because closing the set is a household decision, not an
+# arithmetic one — ends on this event instead of on the target being met. The
+# literal ``true`` only, for the same reason ``begin_capture.retake`` demands
+# it: one wire shape per meaning on an authenticated control field. A page that
+# never sends it cannot reach any of it, and a host that does not hold the set
+# never looks at it.
+COMPLETE_CAPTURE_SET_EVENT_KEY = "complete_capture_set"
 HOST_PHASE_CAPTURE_AUTHORIZED = "capture_authorized"
 HOST_PHASE_CAPTURE_RESULT = "capture_result"
 HOST_PHASE_CAPTURE_REFUSED = "capture_refused"
@@ -403,6 +421,10 @@ class PollState:
     # touch them.
     begin_capture: dict | None = None
     blobs: dict | None = None
+    # The household's explicit set-completion signal
+    # (``COMPLETE_CAPTURE_SET_EVENT_KEY``). Only ever read by a plan whose host
+    # holds the set open past its capture target; ``False`` everywhere else.
+    complete_capture_set: bool = False
 
 
 @dataclass(frozen=True)
@@ -553,6 +575,9 @@ def classify_status(status_payload: dict) -> PollState:
         if isinstance(event.get(BEGIN_CAPTURE_EVENT_KEY), dict)
         else None
     )
+    # Literal ``true`` only — a falsey or truthy-but-not-True value is not the
+    # household's confirmation, and there is exactly one wire shape per meaning.
+    complete_capture_set = event.get(COMPLETE_CAPTURE_SET_EVENT_KEY) is True
     ready = status_payload.get("state") == "ready"
     integrity = status_payload.get("integrity")
     blobs = (
@@ -576,6 +601,7 @@ def classify_status(status_payload: dict) -> PollState:
         acknowledgement=acknowledgement,
         begin_capture=begin_capture,
         blobs=blobs,
+        complete_capture_set=complete_capture_set,
     )
 
 
@@ -1209,6 +1235,8 @@ def run_capture_plan(
     monotonic: Callable[[], float] = time.monotonic,
     play_cue: Callable[[str], None] | None = None,
     stop_requested: Callable[[], bool] | None = None,
+    completion_signal_required: Callable[[], bool] | None = None,
+    on_completion_signal: Callable[[], None] | None = None,
 ) -> list[PlanCaptureOutcome]:
     """Run one session-spanning capture SET (SPEC W2.3).
 
@@ -1298,10 +1326,35 @@ def run_capture_plan(
     ``first_begin_timeout_s`` (when set) widens ONLY the very first
     ``awaiting_begin`` before any capture — reading the placement instructions
     legitimately outlasts the general 120 s budget.
+
+    **A HELD set: ending the set is the household's decision (two-stage
+    commission work order D1).** ``completion_signal_required`` and
+    ``on_completion_signal`` are wired as a PAIR, or not at all. When the target
+    is met the runner asks ``completion_signal_required()``; a ``True`` answer
+    means the host is not finished with this set and the runner neither posts
+    ``capture_set_complete`` nor returns. It stays in ``awaiting_begin`` — so
+    the just-accepted slot is still retakeable on exactly the terms above — and
+    waits for the phone's authenticated
+    :data:`COMPLETE_CAPTURE_SET_EVENT_KEY`, whose arrival calls
+    ``on_completion_signal()`` (which may raise
+    :class:`CaptureBeginRefused` and is published to the phone identically to
+    an admission refusal) and only then completes the set. The wait spends the
+    ordinary between-capture ``awaiting_begin`` budget; NO new time budget is
+    introduced. The crossover-v2 host uses this so the pre-apply cloud's group
+    close — the fit — runs on the household's confirmation rather than on the
+    arithmetic of a counter reaching a target.
     """
     plan = session.spec.capture_plan
     if plan is None:
         raise CaptureFailed("run_capture_plan requires a capture_plan spec")
+    if (completion_signal_required is None) != (on_completion_signal is None):
+        # Half-wired is the one shape that fails silently and expensively: a
+        # held set with no handler parks a household on the confirm screen
+        # until the inactivity budget kills the session.
+        raise CaptureFailed(
+            "completion_signal_required and on_completion_signal must be "
+            "wired together"
+        )
     return _run_with_failure_cues(
         session,
         play_cue,
@@ -1320,6 +1373,8 @@ def run_capture_plan(
             sleep=sleep,
             monotonic=monotonic,
             stop_requested=stop_requested,
+            completion_signal_required=completion_signal_required,
+            on_completion_signal=on_completion_signal,
         ),
     )
 
@@ -1340,6 +1395,8 @@ def _poll_capture_plan(
     sleep: Callable[[float], None],
     monotonic: Callable[[], float],
     stop_requested: Callable[[], bool] | None,
+    completion_signal_required: Callable[[], bool] | None = None,
+    on_completion_signal: Callable[[], None] | None = None,
 ) -> list[PlanCaptureOutcome]:
     def raise_if_stopped() -> None:
         if stop_requested is not None and stop_requested():
@@ -1399,9 +1456,26 @@ def _poll_capture_plan(
             return REVIEW_HOLD_BUDGET_S
         return timeout_s
 
+    def post_set_complete(accepted: int) -> None:
+        client.post_host_event(
+            session.session_id,
+            session.pull_token,
+            {
+                "phase": HOST_PHASE_CAPTURE_SET_COMPLETE,
+                "accepted": accepted,
+                "capture_target": plan_target,
+            },
+        )
+
     outcomes: list[PlanCaptureOutcome] = []
     accepted_count = 0
     attempts_used = 0
+    # Whether the target is met but the HOST is holding the set open for the
+    # household's explicit completion signal (work order D1). Set at the
+    # target-met branch and re-evaluated there after every later upload, so a
+    # voluntary retake of the final slot re-enters the hold rather than ending
+    # the set behind the household's back.
+    completion_pending = False
     current: tuple[int, int] | None = None
     # Whether the in-flight attempt is a VOLUNTARY retake of the just-accepted
     # slot (§2.6). It changes exactly one thing downstream: an accepted retake
@@ -1453,6 +1527,52 @@ def _poll_capture_plan(
                 f"phone aborted the capture ({state.abort_reason or 'no reason'})",
                 reason=state.abort_reason,
             )
+
+        # The household's explicit set-completion signal (work order D1). Only
+        # honoured while the set is actually held AND nothing is in flight —
+        # a signal that landed while a voluntary retake was recording must not
+        # close the group out from under the capture that is still running.
+        if (
+            completion_pending
+            and phase == "awaiting_begin"
+            and state.complete_capture_set
+        ):
+            raise_if_stopped()
+            log_event(
+                logger,
+                "capture_relay.plan_completion_signalled",
+                session_id=session.session_id,
+                accepted=accepted_count,
+            )
+            assert on_completion_signal is not None  # paired by run_capture_plan
+            try:
+                on_completion_signal()
+            except CaptureBeginRefused as refusal:
+                # The host refused ON the confirmation (the v2 conductor's
+                # pre-apply accountability veto is the shipped case). Same
+                # publication an admission refusal gets, so the phone renders
+                # the named reason rather than waiting out a budget.
+                log_event(
+                    logger,
+                    "capture_relay.plan_refused",
+                    level=logging.WARNING,
+                    session_id=session.session_id,
+                    code=refusal.code,
+                )
+                post_refusal_best_effort(
+                    None, None, refusal.code, refusal.user_message
+                )
+                raise
+            post_set_complete(accepted_count)
+            log_event(
+                logger,
+                "capture_relay.plan_complete",
+                session_id=session.session_id,
+                accepted=accepted_count,
+                attempts=attempts_used,
+                completion_signalled=True,
+            )
+            return outcomes
 
         if not page_compatible and (
             state.setup_validate
@@ -1830,15 +1950,53 @@ def _poll_capture_plan(
                     },
                 )
                 if accepted_count >= plan_target:
-                    client.post_host_event(
-                        session.session_id,
-                        session.pull_token,
-                        {
-                            "phase": HOST_PHASE_CAPTURE_SET_COMPLETE,
-                            "accepted": accepted_count,
-                            "capture_target": plan_target,
-                        },
+                    completion_pending = bool(
+                        completion_signal_required is not None
+                        and completion_signal_required()
                     )
+                    if completion_pending:
+                        # HELD (work order D1): the target is arithmetic, the
+                        # end of the set is a decision. Post nothing — the
+                        # phone's last verdict is the one it renders the
+                        # confirm screen from, and a ``capture_set_complete``
+                        # here would win the relay's last-write-wins host slot
+                        # and tell the household the session was over.
+                        log_event(
+                            logger,
+                            "capture_relay.plan_awaiting_completion",
+                            session_id=session.session_id,
+                            accepted=accepted_count,
+                            attempts=attempts_used,
+                        )
+                        phase = "awaiting_begin"
+                        # **This budget WIDENS, and the consequence is
+                        # recorded rather than discovered.** There is no entry
+                        # past a stage-1 plan's target, so ``begin_budget``
+                        # finds no ``screen`` and falls back to ``timeout_s``
+                        # — 120 s. The single-session plan this replaced had
+                        # VERIFY sitting at that index carrying
+                        # ``AUTO_ADVANCE_ON_APPLY``, so the same screen used
+                        # to get ``REVIEW_HOLD_BUDGET_S`` (30 s).
+                        #
+                        # That is 4× longer for the household to sit on the
+                        # confirm screen, and the window in which a voluntary
+                        # or geometry retake of the final position can re-close
+                        # the group widens with it — which is issue #1872's
+                        # duplicate-close path (``_close_cloud_group`` runs
+                        # ``publish_cloud`` once per acceptance of the group's
+                        # last index, and the evidence store's write-once guard
+                        # then refuses the second artifact). It ships
+                        # deliberately: that path is PRE-EXISTING and bounded,
+                        # it is inherent to keeping the final position
+                        # retakeable at all (the whole point of this hold), the
+                        # store fails soft on the first artifact, and the FIT
+                        # cannot double-fire because ``self._candidate`` guards
+                        # it fire-once. #1872's own fix — close exactly once
+                        # per phase — is still owed and is marginally more
+                        # likely to be hit here than before.
+                        deadline = monotonic() + begin_budget(accepted_count + 1)
+                        continue
+                    post_set_complete(accepted_count)
                     log_event(
                         logger,
                         "capture_relay.plan_complete",
@@ -1893,8 +2051,16 @@ def _poll_capture_plan(
                     first_begin_timeout_s if first_begin
                     else begin_budget(accepted_count + 1)
                 )
+                # A HELD set has no next capture to begin — the target is met
+                # and the runner is waiting on the household's own signal — so
+                # naming one would send a support read looking for a capture
+                # that was never expected. Say what actually ran out.
                 detail = (
-                    f"phone never began the next capture within {waited_s:.0f}s"
+                    "the household never confirmed the finished measurement "
+                    f"within {waited_s:.0f}s (their phone ended the walk, or "
+                    "the page went stale at the confirm screen)"
+                    if completion_pending
+                    else f"phone never began the next capture within {waited_s:.0f}s"
                 )
             raise CaptureTimeout(
                 f"{detail} (session {session.session_id})",

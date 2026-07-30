@@ -56,14 +56,17 @@ The conductor exposes the three ``run_capture_plan`` callbacks
 (:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
 lifecycle hooks the flow needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
-relay session (a heterogeneous ``CapturePlan`` — 16 entries at the full tier's
-shipped defaults, 7 on express: check / measure / the pre-apply position group /
-verify / the post-apply position group, which express omits entirely; see
-"position-group choreography" below)
-spans all phases; VERIFY is soft-held behind :class:`CaptureBeginDeferred`
-until the host's OWN auto-apply completes — the mechanism is unchanged from
-the pre-ruling design, only the release trigger moved from a human tap to
-:func:`jasper.web.correction_crossover_v2`'s auto-apply hook.
+journey spans TWO relay sessions since the two-stage split (work order D1/D2,
+issue #1806), each a heterogeneous ``CapturePlan``: **stage 1** is check /
+measure / the pre-apply position group (10 entries at the full tier's shipped
+defaults, 6 on express), and **stage 2** is verify / the post-apply position
+group (6 at Full, 1 on express, which omits the group entirely). See
+"position-group choreography" below. **Nothing is applied inside a session** —
+stage 1 ends on the household's explicit set-completion signal, which closes
+the group and publishes a candidate they then review and choose to apply on
+jts.local. VERIFY's soft hold behind :class:`CaptureBeginDeferred` is retained
+machinery that no shipped session reaches (D10): stage 1 has no VERIFY index
+and stage 2 is constructed already-applied.
 
 **Failure taxonomy (§5.10).** Terminal verdicts are internal reason codes, not
 screens: :data:`REASON_REGISTRY` maps each code to one of the four screen
@@ -191,7 +194,22 @@ PHASE_CLOUD_VERIFY = "cloud_verify"
 # speaker that had been measured and not tuned at all (work order current-state
 # premise 6, a verified collision rather than a theoretical one).
 PHASE_REVIEW = "review"
+# The measuring session's own tail (two-stage work order D1): every stage-1
+# phase is accepted, and the pre-apply cloud's close has NOT produced a
+# candidate yet — either because the household has not confirmed on the phone,
+# or because the fit is running. Like PHASE_REVIEW it is a control-page phase
+# with no capture index, and it exists because without it those moments
+# resolved to PHASE_REVIEW: the wizard told a household mid-hold that the
+# measurement had produced nothing and offered to throw it away, while the
+# relay was still live and the phone was waiting for their tap.
+PHASE_CLOSING = "closing"
 PHASE_DONE = "done"
+
+# Where the pre-apply cloud's close has got to. Read by the wizard through
+# durable state; see :attr:`V2ConductorSnapshot.cloud_close`.
+CLOUD_CLOSE_NONE = ""
+CLOUD_CLOSE_AWAITING_CONFIRM = "awaiting_confirm"
+CLOUD_CLOSE_RUNNING = "running"
 
 # Capture-plan index → phase. APPLYING is a control-page phase (no capture)
 # that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
@@ -546,13 +564,66 @@ class V2PlanShape:
     cloud_verify_positions: int
 
     @property
+    def measure_capture_target(self) -> int:
+        """Accepted captures STAGE 1 runs (``1 + N``) — CHECK plus the
+        pre-apply cloud (MEASURE's design-axis anchor plus ``N − 1`` prompted
+        positions). 10 at the Full tier's shipped defaults, 6 for express.
+
+        Stage 1 ends at the group-close confirm and applies nothing (two-stage
+        commission work order D1), so it carries no post-apply entry at all.
+        """
+        return 1 + self.cloud_measure_positions
+
+    @property
+    def verify_capture_target(self) -> int:
+        """Accepted captures STAGE 2 runs (``M``) — VERIFY's anchor plus
+        ``M − 1`` prompted post-apply positions. 6 at Full, 1 for express
+        (whose whole post-apply check is the anchor at the mark).
+        """
+        return self.cloud_verify_positions
+
+    @property
     def capture_target(self) -> int:
-        """Accepted captures this shape runs (``1 + N + M``)."""
-        return 1 + self.cloud_measure_positions + self.cloud_verify_positions
+        """Accepted captures the WHOLE JOURNEY runs (``1 + N + M``).
+
+        No single session emits this any more — since the two-stage split it is
+        the sum of two sessions' targets (:attr:`measure_capture_target` and
+        :attr:`verify_capture_target`), which is what the tier chooser's
+        household-facing "N measurements" claim is about: the household is
+        choosing both stages when it picks a tier.
+        """
+        return self.measure_capture_target + self.verify_capture_target
+
+    @property
+    def measure_max_attempts(self) -> int:
+        """Stage 1's admission budget (its entries + geometry retakes + spare)."""
+        return (
+            self.measure_capture_target
+            + GEOMETRY_RETRY_POSITIONS
+            + CLOUD_RETAKE_ALLOWANCE
+        )
+
+    @property
+    def verify_max_attempts(self) -> int:
+        """Stage 2's admission budget, derived exactly like stage 1's."""
+        return (
+            self.verify_capture_target
+            + GEOMETRY_RETRY_POSITIONS
+            + CLOUD_RETAKE_ALLOWANCE
+        )
 
     @property
     def max_attempts(self) -> int:
-        """This shape's admission budget (entries + geometry retakes + spare)."""
+        """The whole journey's admission budget — the CONSERVATIVE bound.
+
+        Kept as the sum rather than ``max(measure, verify)`` because its one
+        consumer is the relay-capacity guard
+        (:func:`assert_cloud_plan_fits_relay_capacity` and ``jasper-doctor``),
+        which asks "can the relay carry what this flow needs"; the sum is
+        strictly larger than either stage's own budget, so a guard that passes
+        on it passes on both. It is deliberately NOT what either session emits
+        — those read :attr:`measure_max_attempts` / :attr:`verify_max_attempts`.
+        """
         return self.capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
 
     @property
@@ -790,7 +861,7 @@ def build_v2_cloud_index_phase_map(
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
 ) -> dict[int, str]:
-    """Capture-plan index → conductor phase for one cloud session.
+    """Capture-plan index → conductor phase for a STAGE-1 (measure) session.
 
     The relay drives 1-based indexes where ``index == accepted_count + 1``
     (``capture_relay.session._poll_capture_plan``), so this map is also the
@@ -799,11 +870,15 @@ def build_v2_cloud_index_phase_map(
         1                    CHECK
         2                    MEASURE            (design-axis anchor)
         3 .. N+1             CLOUD_MEASURE      (N-1 prompted positions)
-        N+2                  VERIFY             (design-axis anchor, on_apply)
-        N+3 .. N+M+1         CLOUD_VERIFY       (M-1 prompted positions)
 
-    At ``M = 1`` (the express tier) the last line is empty: VERIFY's anchor is
-    the final index and the session runs no post-apply group at all.
+    **There is deliberately no VERIFY entry** (two-stage commission work order
+    D1, issue #1806). Stage 1 measures and stops at the group-close confirm;
+    nothing is applied inside it, so nothing post-apply can be measured by it.
+    The post-apply half is stage 2's own session and its own map — see
+    :func:`build_v2_verify_index_phase_map`. VERIFY's absence here is what
+    ``jasper.web.correction_crossover_v2._phase_from_state`` reads to resolve a
+    measure-only session to the review interlude instead of "your speaker is
+    tuned".
 
     Single source of truth: ``build_v2_capture_plan`` builds its entries from
     this same function, so an entry's prompt can never address a different
@@ -815,13 +890,36 @@ def build_v2_cloud_index_phase_map(
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
-    n, m = shape.cloud_measure_positions, shape.cloud_verify_positions
+    n = shape.cloud_measure_positions
     mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
     for offset in range(n - 1):
         mapping[3 + offset] = PHASE_CLOUD_MEASURE
-    mapping[n + 2] = PHASE_VERIFY
+    return mapping
+
+
+def build_v2_verify_index_phase_map(
+    *,
+    plan_shape: V2PlanShape | None = None,
+) -> dict[int, str]:
+    """Capture-plan index → conductor phase for a STAGE-2 (verify) session.
+
+    ::
+
+        1                    VERIFY             (design-axis anchor, at the mark)
+        2 .. M               CLOUD_VERIFY       (M-1 prompted positions)
+
+    ``plan_shape is None`` is the shipped 1-entry recovery re-verify —
+    ``{1: PHASE_VERIFY}``, byte-identical to what ``prepare_v2_verify``
+    hardcoded before the split. A shape supplies the tier's own post-apply walk
+    (work order D2, owner-confirmed 2026-07-29): express is ``M = 1`` and so
+    resolves to the same single-entry map; Full is the six-position spatial
+    walk whose combined curve the after-chart, the post-apply spec verdict, and
+    the delta probe all read.
+    """
+    m = 1 if plan_shape is None else plan_shape.verify_capture_target
+    mapping = {1: PHASE_VERIFY}
     for offset in range(m - 1):
-        mapping[n + 3 + offset] = PHASE_CLOUD_VERIFY
+        mapping[2 + offset] = PHASE_CLOUD_VERIFY
     return mapping
 
 
@@ -943,9 +1041,13 @@ REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # raw confidence number, so doubt becomes guidance ("move the mic"), never a
 # question ("apply anyway?").
 REASON_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
-# The conductor's OWN auto-apply (the same transaction a household's tap used
-# to trigger) came back blocked or raised — never silently stranding the
-# phone on a hold that can only time out dishonestly as relay_timeout.
+# The apply transaction came back blocked or raised. It was the conductor's
+# OWN auto-apply until the two-stage split (D1); since then the only apply is
+# the household's POST from the review screen, which persists its blocking
+# issue through ``_persist_apply_blocked`` and answers the request directly.
+# The code is retained: it is still the honest name for "the apply failed",
+# and ``_persist_terminal_failure`` still scopes its §5.6 evidence reset away
+# from it (an apply failure says nothing about the mic position).
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
 # relay-transport death — see the catch-all's exception classification in
@@ -954,12 +1056,12 @@ REASON_APPLY_FAILED = "apply_failed"
 # honest copy instead of a manufactured "timed out" claim.
 REASON_USER_STOPPED = "user_stopped"
 # The deferred apply/"review" hold (CaptureBeginDeferred "awaiting_apply")
-# expired before the conductor's own auto-apply completed — the apply
-# transaction stalled past REVIEW_HOLD_BUDGET_S while the phone waited on the
-# hold. Distinct from a relay-transport death (relay_timeout) and a deliberate
-# phone Stop (user_stopped): name the actual cause (the apply step timed out)
-# rather than a generic "the measurement link timed out" claim (#1605). Same
-# TEMPLATE_SESSION_RESTART shape — a fresh session is the only way forward.
+# expired before an apply completed. Distinct from a relay-transport death
+# (relay_timeout) and a deliberate phone Stop (user_stopped): name the actual
+# cause rather than a generic "the measurement link timed out" claim (#1605).
+# Same TEMPLATE_SESSION_RESTART shape — a fresh session is the only way
+# forward. RETAINED but unreached since the two-stage split (D10): no shipped
+# session holds for an apply any more.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # Position-group choreography (flat-linearization PR-3b): the pre-apply cloud
 # closed with `spatial_combine.assess_geometry` reporting `locked` — every
@@ -974,9 +1076,9 @@ REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # measurement on a defect no mic move can decorrelate.
 REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 # Accountability assertions (linearization-integrity PR-L4). Both refuse a
-# candidate at the confirm seam, BEFORE the auto-apply thread starts, so the
-# speaker is never touched: the honest outcome of "we cannot show this makes
-# your speaker better" is to leave it alone and say so.
+# candidate at the confirm seam, so no proposal ever reaches the review screen
+# and the speaker is never touched: the honest outcome of "we cannot show this
+# makes your speaker better" is to leave it alone and say so.
 #
 # item 1 — the two drivers' realized levels, read on their own mirrored
 # ±1-octave half-bands about Fc after the committed trim, sit further apart than
@@ -2174,10 +2276,9 @@ class AnalyzeCapture(Protocol):
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
 ApplyGate = Callable[[], bool]
-# Reads whether the conductor's own auto-apply (triggered by the host off the
-# candidate-carrying verdict — the CLOUD_MEASURE group close on a cloud
-# session, MEASURE's own accept on the pre-cloud shape; §owner rulings
-# 2026-07-20 and 2026-07-27) hit a TERMINAL failure —
+# Reads whether an apply hit a TERMINAL failure. Retained with the deferred
+# VERIFY hold it feeds, and unreached by any shipped session since the
+# two-stage split (D10) — its writer was the auto-apply worker thread —
 # returns the reason code (e.g. REASON_APPLY_FAILED) or "" while still
 # pending/never attempted. Distinct from ``apply_complete`` (success only) so
 # ``authorize_begin`` can REFUSE the deferred VERIFY with an honest reason
@@ -2260,6 +2361,15 @@ class V2ConductorSnapshot:
     # guessing one would attach a post-apply cross-position claim to a result
     # that never measured across positions.
     tier: str = ""
+    # WHERE the pre-apply cloud's close has got to, for the surfaces that have
+    # to say something true while it is in flight (two-stage work order D1).
+    # One of :data:`CLOUD_CLOSE_NONE` / :data:`CLOUD_CLOSE_AWAITING_CONFIRM` /
+    # :data:`CLOUD_CLOSE_RUNNING`. Persisted because the wizard renders from
+    # durable state alone: without it, "every stage-1 phase is accepted and
+    # there is no candidate" reads identically at three very different moments
+    # — the household holding a phone at the confirm screen, the fit running,
+    # and a session that ended having produced nothing.
+    cloud_close: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2270,6 +2380,7 @@ class V2ConductorSnapshot:
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
             "tier": self.tier,
+            "cloud_close": self.cloud_close,
         }
 
 
@@ -3575,12 +3686,13 @@ class CrossoverV2Conductor:
     the safety caps + session volume, and the injected :class:`V2FlowSeams`.
     Hand :meth:`authorize_begin`, :meth:`on_armed`, and :meth:`consume_capture`
     to :func:`jasper.capture_relay.session.run_capture_plan`; call
-    :meth:`note_apply_complete` once the host's own auto-apply lands (the
-    deferred VERIFY then arms) — an optional synchronous shortcut for a caller
-    that already holds this conductor; the seam-based ``apply_complete``/
-    ``apply_failed`` checks in :meth:`authorize_begin` are the durable path and
-    work even without this call. :meth:`snapshot` / :meth:`hydrate` carry phase
-    persistence.
+    :meth:`note_apply_complete` once an apply lands (the deferred VERIFY then
+    arms) — an optional synchronous shortcut for a caller that already holds
+    this conductor; the seam-based ``apply_complete``/``apply_failed`` checks
+    in :meth:`authorize_begin` are the durable path and work even without this
+    call. Since the two-stage split (D10) no shipped session reaches that hold,
+    so neither is on the critical path. :meth:`snapshot` / :meth:`hydrate`
+    carry phase persistence.
     """
 
     def __init__(
@@ -3599,6 +3711,7 @@ class CrossoverV2Conductor:
         applied: bool = False,
         gain_plan_db: Mapping[str, float] | None = None,
         index_phase_map: Mapping[int, str] | None = None,
+        post_apply_verifies: bool | None = None,
         measure_predicted_sum: Any = None,
         measure_predicted_spec_report: Mapping[str, Any] | None = None,
         measure_commanded_delta: Any = None,
@@ -3663,6 +3776,28 @@ class CrossoverV2Conductor:
         # would otherwise sit forever "pending" on a cloud group it never runs).
         present = set(self._index_phase_map.values())
         self._phases = tuple(p for p in CAPTURE_PHASES if p in present)
+        # Whether the correction this session proposes will be MEASURED after
+        # it is applied — the boost-permission evidence gate (see the
+        # ``FitVocabulary`` construction in ``_build_candidate``).
+        #
+        # It used to be read straight off ``self._phases``, which was exact
+        # while one session carried both the fit and the post-apply sweep. The
+        # two-stage split (work order D2) moved the sweep into its OWN session,
+        # so a measuring conductor's phases correctly contain no VERIFY while
+        # the verification itself is very much still part of the journey —
+        # reading the phases alone would have silently demoted every two-stage
+        # correction to cut-only. The measuring host therefore DECLARES the
+        # answer from the plan shape it resolved (``verify_capture_target``),
+        # which keeps the gate a derivation rather than a constant: a future
+        # tier that declares no post-apply positions drops boost with them.
+        # ``None`` keeps the original phase-derived reading, so every other
+        # caller — the post-apply session, the recovery re-verify, the 3-entry
+        # shape, every test — is unchanged.
+        self._post_apply_verifies = (
+            PHASE_VERIFY in self._phases
+            if post_apply_verifies is None
+            else bool(post_apply_verifies)
+        )
         self._group_indexes: dict[str, tuple[int, ...]] = {
             phase: tuple(
                 sorted(i for i, p in self._index_phase_map.items() if p == phase)
@@ -3808,6 +3943,13 @@ class CrossoverV2Conductor:
         # ``hydrate`` — see that method for why production cannot.
         self._measure_analysis: Any = None
         self._candidate: Any = None
+        # Set the instant the household's set-completion signal is admitted,
+        # so the seconds the combine + fit spend are a NAMED state rather than
+        # indistinguishable from "still waiting for the tap". Never cleared: a
+        # close that raises leaves its own failure state, which renders ahead
+        # of any phase, and a close that succeeds sets ``_candidate``, which
+        # takes precedence in ``cloud_close_state``.
+        self._group_close_running = False
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
         # The VERIFY tracking numbers behind the verify_fail screen's collapsed
         # expert disclosure (#1605). Set only once the tolerance comparison is
@@ -4097,15 +4239,13 @@ class CrossoverV2Conductor:
     def current_phase(self) -> str:
         for phase in self._phases:
             if phase not in self._accepted:
-                # Everything before VERIFY accepted but not yet applied ⇒ the
-                # conductor's own auto-apply is in flight (or has failed) — no
-                # human control page, just a brief machine-paced window before
-                # VERIFY arms. The MEASURE test is the cheap stand-in for
-                # "a candidate should exist by now": on a cloud session the
-                # pre-apply group sits between the two and is filtered out by
-                # the loop above before this branch is ever reached, so this
-                # only fires once the group has closed and the candidate has
-                # been built (2026-07-27 timing move).
+                # Everything before VERIFY accepted but not yet applied ⇒ an
+                # apply is pending. RETAINED and unreached by any shipped
+                # session since the two-stage split (D10): stage 1 has no
+                # VERIFY in ``self._phases`` at all, and stage 2 is
+                # constructed ``applied=True``. The wizard's own resolution
+                # (``_phase_from_state``) is what routes those two shapes, to
+                # the review interlude and to PHASE_VERIFY respectively.
                 if phase == PHASE_VERIFY and PHASE_MEASURE in self._accepted and not self._applied:
                     return PHASE_APPLYING
                 return phase
@@ -4286,6 +4426,7 @@ class CrossoverV2Conductor:
                 if self._candidate is not None else None
             ),
             tier=self._tier,
+            cloud_close=self.cloud_close_state,
         )
 
     @classmethod
@@ -4325,9 +4466,15 @@ class CrossoverV2Conductor:
     def authorize_begin(self, index: int, attempt: int, entry: Any = None) -> None:
         """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
 
-        VERIFY is soft-held (:class:`CaptureBeginDeferred`) until the
-        conductor's own auto-apply is observed (never a human tap, since the
-        2026-07-20 owner ruling); a phase whose retry budget is spent is
+        VERIFY is soft-held (:class:`CaptureBeginDeferred`) until an apply is
+        observed. **Since the two-stage split (work order D10) no shipped
+        session reaches that hold**: stage 1 has no VERIFY index at all, and
+        stage 2's conductor is constructed ``applied=True``, so
+        ``_apply_observed`` short-circuits before either the deferral or the
+        ``apply_failed`` refusal below. The machinery is retained rather than
+        deleted — no new design may depend on it, and a conductor built without
+        a prior apply still gets the honest hold. A phase whose retry budget is
+        spent is
         refused (:class:`CaptureBeginRefused`, which ends the session so the
         envelope's terminal screen shows). If the auto-apply hit a TERMINAL
         failure (``seams.apply_failed()`` names a reason), the hold is refused
@@ -5025,64 +5172,119 @@ class CrossoverV2Conductor:
 
         True exactly between the final prompted position's acceptance and the
         household's confirmation past it — the window in which a voluntary
-        retake of that position is still meaningful (§2.6).
+        retake of that position is still meaningful (§2.6), and the predicate
+        the host wires as the runner's held-set gate (work order D1).
+
+        **A constraint for anyone adding a speculative/eager fit.** This reads
+        ``self._candidate is None``, and ``self._candidate`` is also
+        :meth:`confirm_cloud_measure_group`'s fire-once guard. Building a
+        candidate BEFORE the household confirms would therefore make this
+        return False, which would un-hold the runner's set and shut the retake
+        window in the same instant — silently, at the exact moment the design
+        exists to keep open. An eager fit has to decouple the two first: the
+        held-set predicate must ask "has the household confirmed?", not "does a
+        candidate exist?".
         """
         return (
             PHASE_CLOUD_MEASURE in self._group_combined
             and self._candidate is None
         )
 
-    def confirm_cloud_measure_group(self, index: int) -> dict[str, Any] | None:
-        """Close out the pre-apply cloud once the household confirms past it.
+    @property
+    def cloud_close_state(self) -> str:
+        """Where the pre-apply cloud's close has got to — the household-facing
+        distinction the wizard renders while no candidate exists yet.
 
-        **This is the group-close seam** (§2.6). ``index`` is the 1-based wire
-        index of the begin that carries the confirmation — in practice VERIFY's,
-        posted when the household taps through the "all spots done" screen.
-        Returns the same ``{candidate, auto_apply}`` payload
-        :meth:`_close_cloud_group` used to fold into the final position's
-        verdict, so the host fires the identical auto-apply it always did;
-        returns ``None`` when there is nothing to confirm.
+        ``awaiting_confirm`` (walked, the phone is showing the confirm screen),
+        ``running`` (the household confirmed; the combine + fit are in flight),
+        or ``""`` (nothing pending — no cloud group, or the candidate is built,
+        or the close already failed and its own failure state renders).
+        """
+        if self._candidate is not None:
+            return CLOUD_CLOSE_NONE
+        if self._group_close_running:
+            return CLOUD_CLOSE_RUNNING
+        if self.cloud_measure_group_awaiting_confirm():
+            return CLOUD_CLOSE_AWAITING_CONFIRM
+        return CLOUD_CLOSE_NONE
+
+    def note_group_close_started(self) -> None:
+        """The household's set-completion signal arrived; the fit is next.
+
+        The host calls this and persists BEFORE running the close, because the
+        close is the session's slowest step (the combine plus the fit) and the
+        wizard renders from durable state: without this write the speaker page
+        would keep telling a household to confirm on their phone for the
+        several seconds after they already did.
+
+        **The corner that ordering buys, named rather than left to be found.**
+        A crash in the window between that persist and the close leaves
+        ``running`` on disk with nothing running — the speaker page would show
+        "JTS is working out your correction" indefinitely. It is bounded (the
+        wizard's Start over is present on every screen and clears the durable
+        state) and it is the right trade: the alternative ordering lies to
+        every household on every successful close, this one only after a
+        crash. The cheap mitigation if it ever bites: ``running`` beside a
+        relay that is no longer in flight is DETECTABLY stale, and the
+        envelope already has ``status["relay"]`` to see that with.
+        """
+        self._group_close_running = True
+
+    def confirm_cloud_measure_group(self) -> dict[str, Any] | None:
+        """Close out the pre-apply cloud on the household's EXPLICIT confirmation.
+
+        **This is the group-close seam** (§2.6), and since the two-stage split
+        (work order D1) it is an explicit confirmation entry point rather than
+        an inference. It used to take the 1-based wire ``index`` of a begin and
+        gate on that index being strictly past the cloud group — in practice
+        VERIFY's begin, which stage 1 no longer has, so a session that ends at
+        the cloud would never have fitted anything at all. The host now calls
+        this directly when the phone's set-completion signal arrives (the
+        household tapping "Continue" on the "all spots measured" screen), and
+        there is no index to reason about: a begin *inside* the group is not a
+        confirmation because it does not come through this call at all.
+
+        Returns the ``{candidate_fingerprint, headroom_cost_db}`` payload
+        :meth:`_publish_measure_candidate` builds, or ``None`` when there is
+        nothing to confirm. **It no longer carries an ``auto_apply`` flag and
+        nothing downstream applies anything** — the candidate is a PROPOSAL the
+        review screen shows, and the apply is a separate, explicit household
+        POST to ``/correction/crossover/v2/apply``.
 
         Why a separate method the HOST calls, rather than folding it into
         :meth:`authorize_begin`: admission stays bookkeeping — budget, defer,
-        refuse — and the one call that fits a correction and hands it to the
-        apply transaction stays visible at the host boundary, next to the
-        ``persist_conductor_state`` that must precede the apply thread.
+        refuse — and the one call that fits a correction stays visible at the
+        host boundary, next to the ``persist_conductor_state`` that must
+        precede anything reading the durable candidate.
 
         Fires at most once per session: the guard is ``self._candidate``, which
-        :meth:`_publish_measure_candidate` sets. A raise leaves it unset, so a
-        genuinely retryable failure can be retried; a session with no cloud
-        group (the 3-entry shape, the verify-only re-arm) never has anything
-        stashed and always returns ``None``.
+        :meth:`_publish_measure_candidate` sets — that guard, not the retired
+        index gate, is what makes this idempotent against a repeated signal. A
+        raise leaves it unset, so a genuinely retryable failure can be retried;
+        a session with no cloud group (the 3-entry shape, the post-apply
+        session) never has anything stashed and always returns ``None``.
         """
         if not self.cloud_measure_group_awaiting_confirm():
-            return None
-        last_index = self._group_indexes[PHASE_CLOUD_MEASURE][-1]
-        if int(index) <= last_index:
-            # A begin still INSIDE the group (a retake of the final position)
-            # is not a confirmation — it is the household using the window
-            # this seam exists to keep open.
             return None
         log_event(
             logger, "correction.crossover_v2_cloud_group_confirmed",
             session_id=self.session_id, phase=PHASE_CLOUD_MEASURE,
             positions=len(self._group_positions[PHASE_CLOUD_MEASURE]),
-            confirmed_at_index=int(index),
         )
         return self._close_measure_cloud_candidate(
             self._group_combined[PHASE_CLOUD_MEASURE]
         )
 
     def _close_measure_cloud_candidate(self, combined: Any) -> dict[str, Any]:
-        """Fit, build, publish, and hand the candidate to auto-apply.
+        """Fit, build, and publish the candidate the household will review.
 
         The relocated tail of :meth:`_measure_verdict` (owner decision,
         2026-07-27). It runs once per session, driven by
         :meth:`confirm_cloud_measure_group` (flow-simplification §2.6 moved
         the trigger from the final position's ACCEPTANCE to the household's
-        confirmation past it), and returns the two payload keys the host's
-        auto-apply wiring reads — which keys on ``auto_apply`` and never on a
-        phase.
+        confirmation past it; the two-stage split, work order D1, made that
+        confirmation an explicit signal and moved the APPLY out of the session
+        entirely). What it produces is a PROPOSAL, not an action.
 
         **The fit now consumes the cloud** (plan interpretation call (A), the
         wiring half of PR-6): :func:`_cloud_fit_evidence` turns this group's
@@ -5103,10 +5305,10 @@ class CrossoverV2Conductor:
         **Production cannot reach it**: ``prepare_v2_session`` hydrates against
         a freshly MINTED relay session id, so the id never matches and hydrate
         always takes the fresh-start-at-CHECK branch (§5.6's own rule). If it
-        is ever reached, this raises rather than returning a payload without
-        ``auto_apply``: a session with no candidate can never release VERIFY's
-        ``on_apply`` hold, so the alternative is a silent stall until the relay
-        times out, and an honest ``internal_error`` screen beats that.
+        is ever reached, this raises rather than returning a payload with no
+        candidate behind it: a confirmation that silently produced nothing
+        would leave the household on a review screen with nothing to review,
+        and an honest ``internal_error`` screen beats that.
         """
         if self._measure_analysis is None:
             raise CrossoverV2FlowError(
@@ -5137,15 +5339,13 @@ class CrossoverV2Conductor:
     def _publish_measure_candidate(
         self, analysis: ProgramAnalysis, cloud: "_CloudFitEvidence | None",
     ) -> dict[str, Any]:
-        """Build, publish, and hand one candidate to auto-apply.
+        """Build and publish one candidate for the household to review.
 
         The single build/publish path, called from whichever capture is the
-        last before the apply for this session's shape — the CLOUD_MEASURE
-        group close when the session runs one, MEASURE's own accept when it
-        does not (see :meth:`_measure_verdict`). Returns the two payload keys
-        the host's ``consume()`` seam reads; that seam keys on ``accepted``
-        plus ``auto_apply`` and never on a phase, which is why the timing move
-        needed no host change.
+        last of the measuring session for this shape — the CLOUD_MEASURE group
+        close when the session runs one, MEASURE's own accept when it does not
+        (see :meth:`_measure_verdict`). Returns the candidate's identity and
+        its disclosed level cost; nothing it returns triggers an apply.
 
         **The accountability seam (linearization-integrity PR-L4).** This is the
         last moment before the speaker is touched, and it is where the two
@@ -5189,10 +5389,10 @@ class CrossoverV2Conductor:
             if self._last_linearized_predicted_sum is not None
             else analysis.predicted_sum
         )
-        # PR-L4: the last gate before the speaker is touched. Raises
-        # CaptureBeginRefused, so nothing below runs — no candidate is stashed,
-        # none is published, and the payload that triggers auto-apply is never
-        # returned.
+        # PR-L4: the last gate before a candidate can be proposed at all.
+        # Raises CaptureBeginRefused, so nothing below runs — no candidate is
+        # stashed, none is published, and the review screen has nothing to
+        # offer rather than an unaccountable proposal.
         self._assert_accountable(predicted_sum, analysis.predicted_sum)
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
@@ -5218,12 +5418,16 @@ class CrossoverV2Conductor:
         )
         return {
             "candidate_fingerprint": candidate.fingerprint,
-            # Tells the host to trigger auto-apply immediately (§owner ruling,
-            # 2026-07-20 — automatic, never a human tap). Every candidate that
-            # reaches this point cleared MEASURE's trust gates already (at its
-            # own capture, however many captures back this session's shape puts
-            # it), so this is unconditionally True here, not a second decision.
-            "auto_apply": True,
+            # (An ``auto_apply: True`` literal lived here until the two-stage
+            # split, PR-T3. It told the host to fire the apply the moment this
+            # returned — unconditionally, three seconds before VERIFY, with the
+            # household holding a phone. Apply is now the household's own POST
+            # from the review screen, so a key named for an automatic trigger
+            # would name a path that no longer exists; it is DELETED rather
+            # than left inert, because "nothing applies without an explicit
+            # household action" is this flow's invariant and a vestigial flag
+            # is how an invariant quietly comes back undone.)
+            #
             # "This correction costs N dB of maximum level" (PR-L5). The
             # worst branch's charge — the quantity the graph actually gives up,
             # and the same number the emitter absorbs.
@@ -5277,8 +5481,14 @@ class CrossoverV2Conductor:
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
     ) -> None:
-        """The three pre-apply accountability assertions, run before the apply
-        fires: PR-L5's shared-level-frame agreement, then PR-L4's items 1 and 2.
+        """The three accountability assertions, run before the PROPOSAL exists:
+        PR-L5's shared-level-frame agreement, then PR-L4's items 1 and 2.
+
+        "Pre-apply" until PR-T3, when the apply moved out of the session
+        entirely; the gate did not move with it, and did not need to. Refusing
+        here means no candidate is ever stashed or published, so the review
+        screen has nothing to offer and the household is never asked to decide
+        about a correction JTS cannot stand behind.
 
         Raises :class:`CaptureBeginRefused` with a named
         :data:`REASON_REGISTRY` code — the host's own refusal arm then persists
@@ -6667,11 +6877,15 @@ class CrossoverV2Conductor:
         # Boost permission is EVIDENCE-gated, and this is the gate. TWO
         # conditions, both necessary:
         #
-        # 1. The session will MEASURE what the speaker did with the boost
-        #    (`PHASE_VERIFY`). Today every plan shape runs VERIFY, so this reads
-        #    as always-on — but it is the correct condition rather than a
-        #    constant, so a future plan that drops the post-apply sweep drops
-        #    boost with it instead of shipping an unverified one.
+        # 1. The JOURNEY will MEASURE what the speaker did with the boost
+        #    (`self._post_apply_verifies`). Today every plan shape declares a
+        #    post-apply check, so this reads as always-on — but it is the
+        #    correct condition rather than a constant, so a future tier that
+        #    drops the post-apply sweep drops boost with it instead of
+        #    shipping an unverified one. Since the two-stage split that check
+        #    is a SEPARATE session, which is why this reads a declared fact
+        #    rather than this session's own phase list — see the field's own
+        #    comment in ``__init__``.
         #
         # 2. The cloud verdict actually reached the envelope (`cloud is not
         #    None`). This is the owner ruling's ONE retained constraint —
@@ -6688,7 +6902,7 @@ class CrossoverV2Conductor:
         #    withheld, and the absence is already disclosed by
         #    `event=correction.crossover_v2_fit_without_cloud`.
         vocabulary = FitVocabulary(
-            allow_boost=PHASE_VERIFY in self.session_phases and cloud is not None,
+            allow_boost=self._post_apply_verifies and cloud is not None,
         )
 
         fits: dict[str, Any] = {}
@@ -7164,7 +7378,12 @@ AUTO_ADVANCE_COUNTDOWN_S = 5
 # (page policy, not a protocol change — the field is opaque to the schema).
 AUTO_ADVANCE_TAP = "tap"            # requires the user's tap (first capture)
 AUTO_ADVANCE_COUNTDOWN = "countdown"  # auto-begins behind a cancelable countdown
-AUTO_ADVANCE_ON_APPLY = "on_apply"  # armed by the apply-complete host event
+# Armed by the apply-complete host event. RETAINED but emitted by no plan
+# since PR-T3 (D10): stage 1 has no VERIFY entry and stage 2 opens
+# already-applied, so nothing waits on an apply inside a session any more. Kept
+# as plan-grammar vocabulary — the page and the runner both still understand it
+# — and deliberately not deleted; no new design may depend on it.
+AUTO_ADVANCE_ON_APPLY = "on_apply"
 
 # PROVISIONAL (W6.10 fold-in): phone-inactivity budget for the very FIRST begin
 # of a v2 session (before any capture). The microphone-check screen's placement
@@ -7212,32 +7431,37 @@ def build_v2_capture_plan(
     cloud_measure_positions: int | None = None,
     cloud_verify_positions: int | None = None,
 ) -> Any:
-    """The heterogeneous cloud CapturePlan (§5.7 + flat-linearization PR-3b).
+    """The STAGE-1 (measure) CapturePlan (§5.7 + flat-linearization PR-3b).
 
-    16 entries at the full tier's shipped defaults (7 for express): CHECK,
-    MEASURE, ``N-1`` prompted pre-apply positions, VERIFY, ``M-1`` prompted
-    post-apply positions — the layout ``build_v2_cloud_index_phase_map``
-    documents, built from that same function so prompt and phase cannot
-    disagree.
+    10 entries at the full tier's shipped defaults (6 for express): CHECK,
+    MEASURE, ``N-1`` prompted pre-apply positions — the layout
+    ``build_v2_cloud_index_phase_map`` documents, built from that same function
+    so prompt and phase cannot disagree.
+
+    **Stage 1 stops at the pre-apply cloud** (two-stage commission work order
+    D1). It used to carry VERIFY and the post-apply group too, and to apply a
+    correction mid-session three seconds before VERIFY; the household decides
+    the apply now, in an untimed interlude on jts.local, and the post-apply
+    walk is stage 2's own session (:func:`build_v2_verify_capture_plan` with a
+    plan shape). The final cloud position is therefore the plan's TARGET, which
+    is why the host holds the set open for the household's explicit completion
+    signal rather than letting ``capture_set_complete`` end it (see
+    ``capture_relay.session.run_capture_plan``'s held-set contract).
 
     **Screen grammar (flow-simplification §2.1).** Every entry's ``screen``
     carries ``progress`` (the one server-derived counter), ``title`` (ONE
-    imperative instruction) and ``body`` (at most one supporting clause). The
-    VERIFY entry is the deliberate exception: its ``title``/``body`` stay the
-    apply-hold copy an old cached page renders during the hold, and the
-    post-apply confirmation instruction rides the NEW ``confirm_title`` /
-    ``confirm_body`` keys such a page ignores (§2.2). Screens are an opaque
-    ``str -> str`` map, so none of this is a relay/protocol change.
+    imperative instruction) and ``body`` (at most one supporting clause).
+    Screens are an opaque ``str -> str`` map, so none of this is a
+    relay/protocol change.
 
     Entry durations derive from the composed programs (MEASURE sized from a
     nominal gain plan — sweep/gap lengths are gain-independent, so the duration
     is exact even before CHECK's solve) plus a lead/tail margin; each entry's
     ``screen`` carries the phase prompt AND the §5.2 auto-advance policy:
     CHECK and MEASURE each require a tap (MEASURE is the longest and loudest
-    capture of the session — issue #1823; see the entry below), VERIFY arms on
-    the apply-complete host event, and every prompted cloud position requires
-    the operator's tap — the mic has to be MOVED between them, so a countdown
-    would fire into a hand still in flight.
+    capture of the session — issue #1823; see the entry below), and every
+    prompted cloud position requires the operator's tap — the mic has to be
+    MOVED between them, so a countdown would fire into a hand still in flight.
 
     No phone-side mechanism is new: ``CapturePlanEntry.screen`` and
     ``AUTO_ADVANCE_TAP`` already carry per-entry copy the page renders and gates
@@ -7260,6 +7484,9 @@ def build_v2_capture_plan(
         ),
         courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
+    # Every prompted cloud position plays the VERIFY-shaped summed sweep, so
+    # its DURATION is the verify program's even though stage 1 runs no VERIFY
+    # phase of its own.
     verify = build_verify_program(
         fc_hz,
         leading_pilot_gains_db=(
@@ -7274,7 +7501,7 @@ def build_v2_capture_plan(
         cloud_verify_positions=cloud_verify_positions,
     )
     index_phase = build_v2_cloud_index_phase_map(plan_shape=shape)
-    target = shape.capture_target
+    target = shape.measure_capture_target
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
     entries: list[Any] = [
         CapturePlanEntry(
@@ -7331,9 +7558,6 @@ def build_v2_capture_plan(
     cloud_measure_indexes = [
         i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_MEASURE
     ]
-    cloud_verify_indexes = [
-        i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_VERIFY
-    ]
     for offset, capture_index in enumerate(cloud_measure_indexes):
         prompt = CLOUD_POSITION_PROMPTS[offset]
         entries.append(
@@ -7349,91 +7573,9 @@ def build_v2_capture_plan(
                 ),
             )
         )
-    verify_index = _index_of_phase(index_phase, PHASE_VERIFY)
-    verify_screen: dict[str, str] = {
-        "progress": capture_progress_label(verify_index, target),
-        "title": "Applying",
-        # Fallback only — the live hold shows the CaptureBeginDeferred
-        # deferral's own user_message instead (authorize_begin below),
-        # which wins whenever a hold is actually in progress. BOTH carry
-        # the reposition instruction: the pre-apply cloud leaves
-        # the operator standing at a wide offset, and VERIFY's tracking
-        # comparator grades against MEASURE's design-axis prediction,
-        # so it is only meaningful captured back at the mark. The apply
-        # hold is exactly the window in which to walk back.
-        #
-        # DELIBERATELY NOT repurposed into the redesign's instruction slot
-        # (§2.1/§2.2): ``validate_capture_page`` enforces a build-stamp
-        # FORMAT and never a minimum build, so a phone carrying a cached
-        # pre-redesign bundle is admitted and renders these two as the hold
-        # heading. Repurposing them would make that page show a walk-back
-        # instruction as its "Applying" heading. The post-apply confirmation
-        # copy therefore rides the new keys below, which an old page ignores.
-        "body": VERIFY_ANCHOR_HOLD_MESSAGE,
-        "auto_advance": AUTO_ADVANCE_ON_APPLY,
-        # The step-11 fix (§2.2): the tone must not fire the moment the apply
-        # lands, racing the household's walk back to the mark. The entry KEEPS
-        # ``AUTO_ADVANCE_ON_APPLY`` (so the runner's ``begin_budget`` hold
-        # semantics stay live); what changes is that the page renders these
-        # two once authorization arrives and waits for the tap before arming.
-        # That wait sits in the runner's ``awaiting_arm`` phase, whose budget
-        # is ``DEFAULT_TIMEOUT_S`` (120 s) — comfortably past the 60 s
-        # acceptance criterion.
-        "confirm_title": "Back on the mark, holding still?",
-        "confirm_body": "Same spot, same height, pointed at the speaker.",
-    }
-    # The phone's END screen once every capture completes
-    # (capture-page/js/main.js's renderPlanAllDone reads the FINAL wire
-    # index's entry) — owner ruling, 2026-07-20: state the outcome plainly and
-    # point at the speaker page for undo/compare, rather than the shared "All
-    # measurements done" generic copy every other capture-plan flow gets.
-    #
-    # WHICH entry is last depends on the tier: the full plan ends on the
-    # post-apply group's tail, express (M = 1) ends on VERIFY itself. Express
-    # also says LESS, because it verified less — it confirmed the result at
-    # the mark and made no cross-position post-apply claim at all (§1.3).
-    done_screen = {
-        "done_title": "Your speaker is tuned",
-        "done_body": (
-            "Verified and applied. Manage or undo on the speaker page."
-            if shape.has_cloud_verify_group
-            else "Confirmed at the mark and applied. Run a Full measurement "
-            "for the verified-everywhere result, or manage this one on the "
-            "speaker page."
-        ),
-    }
-    if not shape.has_cloud_verify_group:
-        verify_screen.update(done_screen)
-    entries.append(
-        CapturePlanEntry(
-            index=verify_index - 1,
-            kind_label="verify",
-            duration_ms=verify_ms,
-            screen=verify_screen,
-        )
-    )
-    for offset, capture_index in enumerate(cloud_verify_indexes):
-        prompt = CLOUD_POSITION_PROMPTS[offset]
-        last = offset == len(cloud_verify_indexes) - 1
-        screen = _cloud_entry_screen(
-            progress=capture_progress_label(capture_index, target),
-            title=prompt.headline,
-            body=prompt.detail,
-            auto_advance=AUTO_ADVANCE_TAP,
-        )
-        if last:
-            screen.update(done_screen)
-        entries.append(
-            CapturePlanEntry(
-                index=capture_index - 1,
-                kind_label="cloud_verify",
-                duration_ms=verify_ms,
-                screen=screen,
-            )
-        )
     return CapturePlan(
         capture_target=target,
-        max_attempts=shape.max_attempts,
+        max_attempts=shape.measure_max_attempts,
         schema_version=2,
         entries=tuple(entries),
     )
@@ -7446,19 +7588,35 @@ def _index_of_phase(index_phase: Mapping[int, str], phase: str) -> int:
     raise CrossoverV2FlowError(f"cloud index map has no {phase} entry")
 
 
-def build_v2_verify_capture_plan(fc_hz: float) -> Any:
-    """A 1-entry verify-only plan for the §5.2 re-verify re-arm session.
+def build_v2_verify_capture_plan(
+    fc_hz: float, *, plan_shape: V2PlanShape | None = None,
+) -> Any:
+    """The post-apply (STAGE 2) plan — the tier's own verify walk, or the
+    1-entry recovery re-arm.
 
-    Used by ``/crossover/v2/verify`` after a VERIFY fail/inconclusive when the
-    original session has died: the household explicitly chose "Try again," so
-    the single entry requires the tap (no countdown — apply already happened).
-    The hosting conductor maps relay index 1 → VERIFY via ``index_phase_map``.
+    ``plan_shape is None`` is the shipped §5.2 recovery re-verify, byte-
+    identical to what it has always been: one entry, ``CAPTURE_PLAN_MAX_
+    ATTEMPTS``, and copy that LEADS with how cheap it is (§2.4 — the 2026-07-27
+    hardware session abandoned this recovery because nothing on screen said
+    "Try again" was one sweep rather than another walk). It is what a FAILED
+    stage 2 offers, and what ``/crossover/v2/verify`` still does by default.
 
-    **The copy leads with how cheap this is (§2.4).** The 2026-07-27 hardware
-    session ABANDONED this recovery because the screen never said that "Try
-    again" is one sweep rather than another walk — the household read it as
-    re-doing the whole cloud and stopped instead. Saying the cheap thing
-    loudly is the fix; nothing about the measurement changed.
+    A ``plan_shape`` builds **stage 2 of the two-stage commission flow** (work
+    order D2, owner-confirmed 2026-07-29): ``M`` entries — VERIFY's design-axis
+    anchor at the mark plus ``M − 1`` prompted post-apply positions — so each
+    tier keeps its shipped verify shape. Express is ``M = 1`` (its whole
+    post-apply check is the anchor, and it makes no cross-position claim);
+    Full is the six-position spatial walk whose combined curve the after-chart,
+    the post-apply spec verdict, and the delta probe all read. Running Full's
+    stage 2 as a single position would leave its post-apply group with 0 curves
+    and no combine at all, and would make ``_TIER_CLAIMS``' "re-checks the
+    result at several spots" untrue.
+
+    **The §2.2 confirm-then-tone tap survives, re-anchored to stage 2's own
+    begin** (work order D10). The anchor entry carries ``confirm_title`` /
+    ``confirm_body`` verbatim, so the tone still waits for the household to
+    say they are standing on the mark — what changed is only the ordering
+    premise (there is no in-session apply to confirm *after* any more).
     """
     from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
@@ -7469,22 +7627,95 @@ def build_v2_verify_capture_plan(fc_hz: float) -> Any:
         ),
         courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
-    entry = CapturePlanEntry(
-        index=0,
-        kind_label="verify",
-        duration_ms=_program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS,
-        screen={
-            "progress": capture_progress_label(1, 1),
-            "title": REVERIFY_NO_REWALK_HEADLINE,
-            "body": "Put the phone back on the mark and hold it still.",
-            "auto_advance": AUTO_ADVANCE_TAP,
-        },
-    )
+    verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
+    if plan_shape is None:
+        entry = CapturePlanEntry(
+            index=0,
+            kind_label="verify",
+            duration_ms=verify_ms,
+            screen={
+                "progress": capture_progress_label(1, 1),
+                "title": REVERIFY_NO_REWALK_HEADLINE,
+                "body": "Put the phone back on the mark and hold it still.",
+                "auto_advance": AUTO_ADVANCE_TAP,
+            },
+        )
+        return CapturePlan(
+            capture_target=1,
+            max_attempts=CAPTURE_PLAN_MAX_ATTEMPTS,
+            schema_version=2,
+            entries=(entry,),
+        )
+    index_phase = build_v2_verify_index_phase_map(plan_shape=plan_shape)
+    target = plan_shape.verify_capture_target
+    # The phone's END screen once every capture completes
+    # (capture-page/js/main.js's renderPlanAllDone reads the FINAL wire index's
+    # entry) — owner ruling, 2026-07-20: state the outcome plainly and point at
+    # the speaker page for undo/compare, rather than the shared "All
+    # measurements done" generic copy. This is STAGE-2 copy and moved here with
+    # stage 2: it is the end of the journey, not the end of a measurement.
+    #
+    # WHICH entry is last depends on the tier: Full ends on the post-apply
+    # group's tail, express (M = 1) ends on the anchor itself. Express also
+    # says LESS, because it verified less — it confirmed the result at the mark
+    # and made no cross-position post-apply claim at all (§1.3).
+    done_screen = {
+        "done_title": "Your speaker is tuned",
+        "done_body": (
+            "Verified and applied. Manage or undo on the speaker page."
+            if plan_shape.has_cloud_verify_group
+            else "Confirmed at the mark and applied. Run a Full measurement "
+            "for the verified-everywhere result, or manage this one on the "
+            "speaker page."
+        ),
+    }
+    anchor_screen: dict[str, str] = {
+        "progress": capture_progress_label(1, target),
+        "title": "Back at the mark — one sweep to check the result.",
+        "body": "Same spot, same height, pointed at the speaker.",
+        "auto_advance": AUTO_ADVANCE_TAP,
+        # §2.2's confirm-then-tone tap, on stage 2's own begin (D10). Same two
+        # strings the single-session plan carried, so the grammar the household
+        # learned in stage 1 is the grammar stage 2 opens with.
+        "confirm_title": "Back on the mark, holding still?",
+        "confirm_body": "Same spot, same height, pointed at the speaker.",
+    }
+    if not plan_shape.has_cloud_verify_group:
+        anchor_screen.update(done_screen)
+    entries: list[Any] = [
+        CapturePlanEntry(
+            index=0,
+            kind_label="verify",
+            duration_ms=verify_ms,
+            screen=anchor_screen,
+        )
+    ]
+    cloud_verify_indexes = [
+        i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_VERIFY
+    ]
+    for offset, capture_index in enumerate(cloud_verify_indexes):
+        prompt = CLOUD_POSITION_PROMPTS[offset]
+        screen = _cloud_entry_screen(
+            progress=capture_progress_label(capture_index, target),
+            title=prompt.headline,
+            body=prompt.detail,
+            auto_advance=AUTO_ADVANCE_TAP,
+        )
+        if offset == len(cloud_verify_indexes) - 1:
+            screen.update(done_screen)
+        entries.append(
+            CapturePlanEntry(
+                index=capture_index - 1,
+                kind_label="cloud_verify",
+                duration_ms=verify_ms,
+                screen=screen,
+            )
+        )
     return CapturePlan(
-        capture_target=1,
-        max_attempts=CAPTURE_PLAN_MAX_ATTEMPTS,
+        capture_target=target,
+        max_attempts=plan_shape.verify_max_attempts,
         schema_version=2,
-        entries=(entry,),
+        entries=tuple(entries),
     )
 
 
@@ -7492,24 +7723,41 @@ def build_v2_verify_session_spec(
     fc_hz: float,
     *,
     acknowledgement_binding: str,
+    plan_shape: V2PlanShape | None = None,
     **spec_kwargs: Any,
 ) -> Any:
-    """The relay v3 spec for a verify-only re-arm session (§5.2 re-verify).
+    """The relay v3 spec for a post-apply session (stage 2, or §5.2 recovery).
 
-    Its consent steps LEAD with :data:`REVERIFY_NO_REWALK_HEADLINE` — the same
-    sentence the plan entry's own instruction carries — because the 2026-07-27
-    hardware session abandoned this recovery for want of it (§2.4).
+    **The consent surface is chosen by the PLAN's own shape, not by the caller's
+    intent**, so a one-sweep session and a walk can never advertise each other's
+    copy. A single-capture plan — the recovery re-verify, and Express's stage 2,
+    which really is one held-still sweep at the mark — keeps the stationary
+    consent copy and LEADS with :data:`REVERIFY_NO_REWALK_HEADLINE`, because the
+    2026-07-27 hardware session abandoned this recovery for want of that
+    sentence (§2.4) and a household who has just walked a cloud needs it just
+    as much. A multi-capture plan (Full's stage 2) is a walk, so it takes the
+    guided consent surface with its own capture count and tier, exactly as
+    :func:`build_v2_session_spec` does for stage 1.
     """
     from jasper.capture_relay.spec import build_crossover_sweep_spec
 
-    plan = build_v2_verify_capture_plan(fc_hz)
+    plan = build_v2_verify_capture_plan(fc_hz, plan_shape=plan_shape)
+    walked = plan.capture_target > 1
+    extra: dict[str, Any] = (
+        {
+            "guided_captures": plan.capture_target,
+            "guided_tier": plan_shape.tier if plan_shape is not None else "",
+        }
+        if walked
+        else {"reverify_lead": REVERIFY_NO_REWALK_HEADLINE}
+    )
     return build_crossover_sweep_spec(
         driver_label="crossover verification",
         driver_role="summed",
         acknowledgement_binding=acknowledgement_binding,
-        stimulus_duration_ms=plan.entries[0].duration_ms,
+        stimulus_duration_ms=max(entry.duration_ms for entry in plan.entries),
         capture_plan=plan,
-        reverify_lead=REVERIFY_NO_REWALK_HEADLINE,
+        **extra,
         **spec_kwargs,
     )
 
@@ -7537,10 +7785,15 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     than it might have. The restore ladder ("exact" then the -60 dBFS emergency
     floor) and the restore-once latch are untouched.
 
-    At the Full tier's shipped 16-entry cloud this is 1800 + 13*120 = 3360 s;
-    at the Express tier's 7-entry cloud, 1800 + 4*120 = 2280 s; at the
-    19-entry maximum the unclamped value would be 3720 s and the plan's hard
-    cap binds at 3600 s.
+    Since the two-stage split (work order D2) each STAGE arms its own ceiling
+    from its own plan, and this function is unchanged — it reads whatever plan
+    it is handed. Full: stage 1 (10 entries) 1800 + 7*120 = 2640 s, stage 2
+    (6) 1800 + 3*120 = 2160 s. Express: stage 1 (6) 2160 s, stage 2 (1) the
+    plain 1800 s baseline. **The split lowers the worst case from 3360 s to
+    2640 s and gives each stage its own fresh relay TTL; it does not make
+    either stage fit inside that 900 s TTL, and this docstring must not be
+    read as claiming it does.** At the 19-entry maximum the unclamped value
+    would be 3720 s and the plan's hard cap binds at 3600 s.
     """
     from jasper.active_speaker.session_volume_plan import (
         DEFAULT_WALL_CLOCK_CEILING_S,
@@ -7646,12 +7899,24 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
     out: dict[str, dict[str, int]] = {}
     for tier in TIERS:
         shape = resolve_plan_shape(tier)
-        plan = build_v2_capture_plan(
+        # BOTH stages (two-stage commission D2). ``capture_target`` has always
+        # been the whole journey's count, and after the split the duration has
+        # to be the whole journey's too or the chooser quotes a Full tier's 16
+        # measurements against stage 1's minutes alone. Two ceils rather than
+        # one is deliberately conservative: this is a DISPLAY number and the
+        # household really does pay two per-session set-ups.
+        #
+        # T4 owns the stage-aware WORDING this derivation makes possible ("N
+        # now, M after you apply"); this is the arithmetic underneath it.
+        stage1 = build_v2_capture_plan(
             _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
         )
+        stage2 = build_v2_verify_capture_plan(_DISPLAY_FC_HZ, plan_shape=shape)
         out[tier] = {
             "capture_target": shape.capture_target,
-            "estimated_minutes": plan.estimated_minutes(),
+            "estimated_minutes": (
+                stage1.estimated_minutes() + stage2.estimated_minutes()
+            ),
         }
     return out
 
