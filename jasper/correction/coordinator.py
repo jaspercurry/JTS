@@ -94,9 +94,10 @@ MEASUREMENT_FANIN_LABEL = "correction"
 MEASUREMENT_GATE_OWNER = "correction-measurement"
 MEASUREMENT_GATE_REFRESH_SEC = 20.0
 MEASUREMENT_GATE_RETRY_SEC = 0.1
-# Abort the owning window before mux's 60 s availability lease can expire and
-# reopen music. Each failed acquire is itself bounded at 3 s, leaving >15 s of
-# recovery margin at the default.
+# Abort the owning window before mux's availability lease
+# (mux.FANIN_TEST_LEASE_SEC) can expire and reopen music. Each failed acquire
+# is itself bounded (see _acquire_measurement_gate), leaving recovery margin at
+# the defaults; a test pins the ordering.
 MEASUREMENT_GATE_ABORT_SEC = 40.0
 
 # Mutual-exclusion flag for measurement_window(). Only one window may be open

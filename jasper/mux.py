@@ -136,7 +136,8 @@ FANIN_TEST_OWNERS = frozenset({
     "correction-measurement",
 })
 # A diagnostic owner must renew before this monotonic deadline. This is long
-# enough for the 35 s commissioning tone; correction renews every 20 s. A web
+# enough for the commissioning tone (web_commissioning.COMMISSION_TONE_DURATION_S);
+# correction renews every correction.coordinator.MEASUREMENT_GATE_REFRESH_SEC. A web
 # worker crash therefore self-recovers instead of pinning household music off.
 FANIN_TEST_LEASE_SEC = 60.0
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"

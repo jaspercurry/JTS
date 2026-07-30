@@ -239,8 +239,9 @@ async def test_idle_output_never_waits() -> None:
 
 
 async def test_lease_refresh_into_an_open_window_never_waits() -> None:
-    """The coordinator re-sends MEASURE_PAUSE every 60 s to renew the
-    daemon's crash-recovery lease. The first capture began long ago and
+    """The coordinator re-sends MEASURE_PAUSE every
+    MEASUREMENT_LEASE_REFRESH_SEC to renew the daemon's crash-recovery
+    lease. The first capture began long ago and
     #1786 blocks new output, so a renewal has nothing to drain and must
     stay latency-free even if something is somehow playing."""
     wl = WakeLoop.for_tests()
