@@ -81,6 +81,7 @@ code = [
   "docs/doc-map.toml",
   "docs/testing-tooling.md",
   ".claude/commands/deep-audit.md",
+  ".claude/agents/adversarial-gate.md",
 ]
 docs = [
   "AGENTS.md",

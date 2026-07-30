@@ -102,8 +102,13 @@ blank SD card to working speaker.
 must be resolved, force-pushes and branch deletion are blocked, and the
 rule is enforced for admins too — so nobody, including the maintainer, can
 merge into a red `main`. Strict/up-to-date branches are off. There is no
-required reviewer: green `ci` plus resolved conversations is the merge
-rule for this solo-maintainer repository.
+required reviewer at the GitHub level: green `ci` plus resolved
+conversations is what branch protection enforces mechanically.
+[AGENTS.md's standing multi-agent
+method](AGENTS.md#the-standing-multi-agent-method) layers a process
+obligation on top that GitHub does not check: every PR also gets an
+independent adversarial review to 0 blockers/0 should-fixes before it
+merges.
 
 Two operational notes:
 
