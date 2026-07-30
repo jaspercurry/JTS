@@ -155,6 +155,32 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 DISCONTINUITY_MIN_SAMPLES = 4.0
 DISCONTINUITY_RSS_RATIO = 0.25
 
+# #1839 addendum: the step-fit above trusts its OWN INPUT — every located
+# sweep's `located_start` — implicitly. That trust is unearned once the
+# correlator can barely find the sweep at all: session
+# cap_-Us10xORVNlFa_dgi-sP7g's sweeps located at confidence 0.0298 (too
+# quiet, #1838's field incident), and this fit still reported a
+# confident-looking -2090.5-sample step fitted from what was actually noise.
+# `jasper.active_speaker.crossover_v2_flow`'s `_sweep_locate_confidence_ok`
+# makes the identical judgment against the identical `SegmentLocation.confidence`
+# signal, at the same 0.3 floor — but that constant lives one layer up (the
+# flow conductor depends on this module, not the reverse), so importing it
+# here would invert that dependency. Duplicated deliberately: this module
+# needs its own "was this sweep even heard" precondition before it fits a
+# step, not merely a return value a caller might forget to cross-check.
+DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR = 0.3
+
+# Sentinel for "the located sweeps were not trustworthy enough to fit a step
+# from at all" — distinct from `0.0`, which means "confidently no step" on a
+# clean, well-located capture. Collapsing the two would hide exactly the
+# ambiguity #1839 exists to remove: a future bench pass reading the
+# discontinuity distribution could not otherwise tell "clean" from "never
+# checked". A `str`, not a `float`, so a consumer cannot mistake it for a
+# vanishingly small step; see `DriftEstimate.discontinuity_samples` and
+# `analysis_diagnostic_summary` for the two places that must (and now do)
+# handle the non-numeric case.
+DISCONTINUITY_UNRESOLVED = "unresolved"
+
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
 DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
@@ -657,8 +683,13 @@ class DriftEstimate:
     single discrete timeline step when one explains the located sweeps: its
     signed size in samples (positive ⇒ everything after it arrived LATE, the
     2026-07-27 shape) and the segment id it landed AFTER. ``0.0`` / ``""``
-    when no step is resolved — including on a clean capture, where this is
-    the expected value. Diagnostic only; never gates ``glitch_detected``.
+    when no step is resolved on a capture whose sweeps were confidently
+    located — including on a clean capture, where this is the expected
+    value. ``DISCONTINUITY_UNRESOLVED`` (a `str`) / ``""`` (#1839) when one
+    or more located sweeps fell below ``DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR``
+    instead: a step fitted from an unlocated sweep is not a clean reading, it
+    is a fabrication, so it is a distinct sentinel rather than silently
+    ``0.0``. Diagnostic only; never gates ``glitch_detected``.
     """
 
     epsilon_ppm: float
@@ -668,7 +699,7 @@ class DriftEstimate:
     repeat_level_delta_db: float = 0.0
     per_role_epsilon_ppm: Mapping[str, float] = field(default_factory=dict)
     glitch_inputs: tuple[str, ...] = ()
-    discontinuity_samples: float = 0.0
+    discontinuity_samples: float | str = 0.0
     discontinuity_after_segment: str = ""
 
 
@@ -1567,13 +1598,22 @@ def _repeat_epsilon(
 def _locate_discontinuity(
     program: ExcitationProgram,
     stimulus_locs: Sequence[SegmentLocation],
-) -> tuple[float, str]:
+) -> tuple[float | str, str]:
     """Fit a single discrete timeline STEP across the located sweeps (#1765).
 
-    Returns ``(step_samples, after_segment_id)``, or ``(0.0, "")`` when no
-    step is resolved. Diagnostic only — see ``DISCONTINUITY_MIN_SAMPLES`` for
-    the hardware forensics this exists to name, and ``DriftEstimate`` for the
-    fields it feeds.
+    Returns ``(step_samples, after_segment_id)`` when a step is resolved;
+    ``(0.0, "")`` when no step is resolved on a capture whose sweeps were
+    confidently located — including a clean capture, where this is the
+    expected value; or ``(DISCONTINUITY_UNRESOLVED, "")`` (#1839) when one or
+    more of ``stimulus_locs`` falls below
+    ``DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR`` — a step fitted from a sweep the
+    locator could barely find is not a "clean capture" reading, it is a
+    number invented from noise (real incident: session
+    cap_-Us10xORVNlFa_dgi-sP7g's sweeps located at confidence 0.0298, and this
+    function reported a confident-looking -2090.5-sample step before this
+    precondition existed). Diagnostic only — see ``DISCONTINUITY_MIN_SAMPLES``
+    for the hardware forensics this exists to name, and ``DriftEstimate`` for
+    the fields it feeds.
 
     Model: a sweep scheduled at ``start`` and located at ``located`` satisfies
     ``located = acoustic_delay[role] + start·(1+ε) + step·[start > cut]``. One
@@ -1605,6 +1645,13 @@ def _locate_discontinuity(
     # parameters = one per role + shared drift slope + the step itself
     if len(ordered) < len(roles) + 4:
         return 0.0, ""
+
+    # #1839: a step fitted from a sweep the locator could barely find is not
+    # a "clean, no step" reading (0.0) — it is a confident-looking
+    # fabrication from noise. Gate BEFORE the least-squares fit, on the exact
+    # per-location confidence the fit is about to trust implicitly.
+    if any(loc.confidence < DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR for loc in ordered):
+        return DISCONTINUITY_UNRESOLVED, ""
 
     starts = np.array(
         [float(program.segment(loc.segment_id).start_sample) for loc in ordered]
@@ -1789,7 +1836,14 @@ def _estimate_drift(
             epsilon_ppm=round(epsilon * 1e6, 2),
             max_residual_samples=round(max_residual, 2),
             repeat_level_delta_db=round(repeat_level_delta_db, 3),
-            discontinuity_samples=round(discontinuity_samples, 2),
+            # #1839: `discontinuity_samples` is `DISCONTINUITY_UNRESOLVED` (a
+            # `str`, not a number) when the located sweeps weren't trustworthy
+            # enough to fit a step from — `round()` would raise on that value.
+            discontinuity_samples=(
+                round(discontinuity_samples, 2)
+                if isinstance(discontinuity_samples, (int, float))
+                else discontinuity_samples
+            ),
             discontinuity_after_segment=discontinuity_after,
         )
     return DriftEstimate(
@@ -3367,10 +3421,33 @@ def _solve_gain_plan(
 
 
 def _snr_floor_ok(ambient_report: Mapping[str, Any], target_capture_dbfs: float) -> bool:
+    """False when the ambient report is missing, empty, or every row is
+    unreadable (#1831) — never raises on a malformed ``level_dbfs``.
+
+    Mirrors ``_ambient_rows_in_band``'s defensive parse, one function above:
+    more than one producer writes ambient band rows (a live in-process
+    ``snr_policy`` report, plus a replayed/legacy artifact), so a row this
+    cannot read must cost this gate that row's evidence — never crash CHECK's
+    accept path. Unreachable from today's in-process producer alone, but the
+    asymmetry between the two functions is exactly what bites a replay path.
+    """
     bands = ambient_report.get("bands") if isinstance(ambient_report, Mapping) else None
     if not bands:
         return False
-    worst = max(float(b["level_dbfs"]) for b in bands if "level_dbfs" in b)
+    worst: float | None = None
+    for b in bands:
+        if not isinstance(b, Mapping):
+            continue
+        try:
+            level = float(b["level_dbfs"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(level):
+            continue
+        if worst is None or level > worst:
+            worst = level
+    if worst is None:
+        return False
     return (target_capture_dbfs - worst) >= DRIVER.snr_ok_db
 
 
@@ -3992,8 +4069,15 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         # (#1765) — a glitched capture's `epsilon_ppm` above is an artefact of
         # that step, not a drift measurement. See DriftEstimate's docstring.
         out["glitch_inputs"] = ",".join(getattr(drift, "glitch_inputs", ()) or ())
-        out["discontinuity_samples"] = round(
-            float(getattr(drift, "discontinuity_samples", 0.0)), 3
+        # #1839: `discontinuity_samples` is `DISCONTINUITY_UNRESOLVED` (a
+        # `str`, not a number) when the located sweeps weren't trustworthy
+        # enough to fit a step from — `float()` would raise on that value,
+        # which this duck-typed, must-never-raise summary cannot afford.
+        discontinuity = getattr(drift, "discontinuity_samples", 0.0)
+        out["discontinuity_samples"] = (
+            round(float(discontinuity), 3)
+            if isinstance(discontinuity, (int, float))
+            else discontinuity
         )
         out["discontinuity_after_segment"] = getattr(
             drift, "discontinuity_after_segment", "",

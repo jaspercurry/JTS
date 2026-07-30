@@ -25,6 +25,7 @@ Runtime is kept low with short (≥0.5 s) sweeps and 48 kHz mono buffers.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
@@ -640,6 +641,109 @@ def test_discontinuity_reaches_the_durable_diagnostic_summary():
     assert "residual_desync" in summary["glitch_inputs"]
     assert summary["discontinuity_samples"] == pytest.approx(64.0, abs=2.0)
     assert summary["discontinuity_after_segment"] == "sweep_w"
+
+
+def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity():
+    """#1839: `_locate_discontinuity` must not turn an untrustworthy sweep
+    location into a confident-looking number. Real incident (session
+    cap_-Us10xORVNlFa_dgi-sP7g): sweeps located at confidence 0.0298 against
+    production's 0.3 floor (``DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR``), and
+    the pre-fix code still reported a fabricated
+    ``discontinuity_samples = -2090.5``.
+
+    Reuses the EXACT located sweeps the pinned splice fixture above
+    (``test_midcapture_splice_is_attributed_to_a_discontinuity_not_drift``)
+    resolves to a confident +64.00-sample step — only ``confidence`` is
+    overridden to below the floor, isolating the new precondition from the
+    fit math it guards. Trusted, this input resolves +64.00 (that pinned
+    test); untrusted, it must report the sentinel instead of ANY number,
+    right or wrong.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    sweep_w = prog.segment("sweep_w")
+    cut = GLOBAL_OFFSET + sweep_w.start_sample + sweep_w.n_samples + 4_000
+    spliced = np.concatenate([cap[:cut], np.zeros(64), cap[cut:]])
+
+    res = analyze_program_capture(
+        prog, spliced, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    # Sanity: this fixture really does resolve a confident step when the
+    # sweeps are trusted — the pinned +64.00 case proven above.
+    assert res.drift.discontinuity_samples == pytest.approx(64.0, abs=2.0)
+
+    sweep_locs = [
+        dataclasses.replace(loc, confidence=0.0298)
+        for loc in res.locations
+        if loc.kind == KIND_SWEEP
+    ]
+    step, after = program_analysis._locate_discontinuity(prog, sweep_locs)
+    assert step == program_analysis.DISCONTINUITY_UNRESOLVED
+    assert after == ""
+
+
+def test_discontinuity_unresolved_survives_the_durable_diagnostic_summary():
+    """#1839 consumer audit: `analysis_diagnostic_summary` does ``float(...)``
+    on ``discontinuity_samples`` (see the pinned-value test above, which
+    exercises the numeric path) — it must degrade, not raise, when that field
+    holds ``DISCONTINUITY_UNRESOLVED`` instead of a number. This is the
+    "must never raise" operator-retention-sidecar path
+    (``analysis_diagnostic_summary``'s own docstring)."""
+    drift = program_analysis.DriftEstimate(
+        epsilon_ppm=0.0,
+        baselines_ppm={},
+        max_residual_samples=0.0,
+        glitch_detected=False,
+        discontinuity_samples=program_analysis.DISCONTINUITY_UNRESOLVED,
+        discontinuity_after_segment="",
+    )
+    analysis = program_analysis.ProgramAnalysis(
+        phase=PHASE_MEASURE, program_id="test", locations=(), drift=drift,
+    )
+    summary = analysis_diagnostic_summary(analysis)
+    assert summary["discontinuity_samples"] == program_analysis.DISCONTINUITY_UNRESOLVED
+
+
+def test_glitch_log_event_survives_an_unresolved_discontinuity(caplog):
+    """#1839 consumer audit, second seam: the ``program_analysis.glitch``
+    log_event rounds ``discontinuity_samples`` for display — it must not
+    raise when that value is the ``DISCONTINUITY_UNRESOLVED`` sentinel. A
+    genuinely noise-buried capture (not a hand-built fixture) drives
+    sweep-locate confidence low enough to trip BOTH the glitch verdict and
+    the new gate at once, matching the real incident's shape (mis-located
+    sweeps produced a residual that tripped ``glitch_detected``, #1838's D3).
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+        noise=5.0,  # deliberately buries the sweeps far under the noise floor
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_measurement.program_analysis"):
+        res = analyze_program_capture(
+            prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+        )
+    assert res.glitch_detected
+    assert res.drift.discontinuity_samples == program_analysis.DISCONTINUITY_UNRESOLVED
+    glitch_lines = [
+        r.getMessage() for r in caplog.records
+        if "event=program_analysis.glitch" in r.getMessage()
+    ]
+    assert len(glitch_lines) == 1
+    assert "discontinuity_samples=unresolved" in glitch_lines[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1496,6 +1600,46 @@ def test_ambient_rows_in_band_skips_rows_it_cannot_read():
         ],
     )
     assert rows == [(160.0, 350.0, -60.0)]
+
+
+def test_snr_floor_ok_skips_rows_it_cannot_read():
+    """#1831: `_snr_floor_ok` sits one function below `_ambient_rows_in_band`
+    (previous test) and reads the exact same ``level_dbfs`` shape, but until
+    this fix its ``float(b["level_dbfs"])`` was unguarded — a malformed row
+    raised ``ValueError`` instead of costing this gate that row's evidence.
+    Unreachable from today's in-process producer alone (which always writes
+    numeric levels), but the asymmetry with its sibling bites a replayed or
+    legacy-artifact ambient report. Same fixture shape as the sibling test,
+    with a non-mapping row, a missing key, a non-numeric value, and a NaN
+    value all present alongside two genuinely-readable rows.
+
+    Numbers matter here, not just "did it raise": a broken fix that silently
+    coerced the unreadable rows to ``0.0`` dBFS (louder than every real row
+    here) would flip this from PASS (``True``) to FAIL (``False``) — so this
+    also pins that unreadable rows are skipped, not defaulted.
+    """
+    report = {
+        "bands": [
+            {"level_dbfs": -60.0},
+            "not-a-mapping",
+            {"no_level_key": True},
+            {"level_dbfs": "loud"},
+            {"level_dbfs": float("nan")},
+            {"level_dbfs": -90.0},
+        ],
+    }
+    # Worst READABLE level is -60.0 (DRIVER.snr_ok_db == 25.0 dB):
+    # -10.5 - (-60.0) == 49.5 >= 25.0.
+    assert program_analysis._snr_floor_ok(report, target_capture_dbfs=-10.5) is True
+
+
+def test_snr_floor_ok_false_when_no_row_is_readable():
+    """#1831 fail-closed extension: `_snr_floor_ok` already treats an EMPTY
+    ``bands`` list as "no evidence" (``False``); a ``bands`` list present but
+    every row unreadable must resolve the same way — never claim the SNR
+    floor is satisfied from zero real evidence."""
+    report = {"bands": [{"level_dbfs": "loud"}, {"no_level_key": True}, "garbage"]}
+    assert program_analysis._snr_floor_ok(report, target_capture_dbfs=-10.5) is False
 
 
 def test_measure_level_solve_refuses_a_degenerate_ambient_report(caplog):
