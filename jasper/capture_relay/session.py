@@ -169,6 +169,43 @@ class CapturePageIncompatible(RuntimeError):
     """The public capture page does not implement this Pi's protocol."""
 
 
+# The two clocks a capture session can run out of, named so every surface that
+# discloses an expiry uses the same word (work order D8, issue #1807).
+#
+#   TIME_BUDGET_STEP — the per-step phone-inactivity budget (``DEFAULT_TIMEOUT_S``
+#     and the wider first-begin / hold variants). Refreshed on every tap, so it
+#     is the one a household spends by walking away mid-walk.
+#   TIME_BUDGET_LINK — the relay session's own TTL (``DEFAULT_TTL_S``), counted
+#     from the moment the link was minted and refreshed by nothing.
+TIME_BUDGET_STEP = "step"
+TIME_BUDGET_LINK = "link"
+
+
+def expired_time_budget(exc: BaseException) -> str:
+    """Which budget an ended session ran out of, or ``""`` if neither.
+
+    Every one of these deaths persists as the same failure code, so without
+    this classifier the only place the difference survived was an exception
+    message — and the household was shown "the speaker reached its measurement
+    attempt limit", which describes a third thing entirely.
+
+    Deliberately conservative: an unclassifiable death answers ``""`` and the
+    surfaces fall back to their existing generic copy. Naming the wrong clock
+    would be worse than naming none, because "you have two minutes between
+    taps" is advice, and advice about the wrong budget sends a household back
+    to fail the same way.
+    """
+    if isinstance(exc, CaptureTimeout):
+        return TIME_BUDGET_STEP
+    # A purged or expired relay session answers 401/403/404 to the Pi exactly
+    # as it does to the phone (see the page's own isDeadSessionError). A 5xx or
+    # a transport OSError is an outage, not a budget.
+    status = getattr(exc, "status", None)
+    if isinstance(status, int) and status in (401, 403, 404, 410):
+        return TIME_BUDGET_LINK
+    return ""
+
+
 class RelayCapacityUnavailable(ValueError):
     """The DEPLOYED relay cannot store every blob index this plan would use.
 

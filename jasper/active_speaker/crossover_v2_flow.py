@@ -379,6 +379,71 @@ GEOMETRY_RETRY_POSITIONS = 2
 CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 
 
+# The offset class that carries fundamental 1's LF edge. A move at or past
+# this distance is "wide"; everything shorter only decorrelates HF nulls.
+# DERIVED FROM THE PHYSICS, not from the copy: the parent plan's two-path
+# inversion side-finding needs ~30 cm-class spread before the cloud's LF
+# common-mode bounce lift starts converging, and ~10 cm before HF nulls
+# decorrelate at all (:data:`MIN_CLOUD_OFFSET_CM`). Because
+# :attr:`CloudPositionPrompt.wide` is computed from this constant rather than
+# hand-set per row, an editor who narrows a wide prompt's distance moves the
+# derived group floors with it and
+# ``test_cloud_prompts_front_load_the_wide_offsets`` fails loudly — the
+# adjustment is refused by construction, not by a second copy of the rule.
+WIDE_OFFSET_MIN_CM = 30.0
+# The shortest prompted move that is still a move: below this the position is
+# not decorrelating anything and is costing a household a session minute.
+MIN_CLOUD_OFFSET_CM = 10.0
+# How far the geometry-locked retake rungs ask the operator to go. Past every
+# position in the table (its widest is 60 cm), because a retake at a distance
+# the cloud already sampled is not a wider spot; and no further than that,
+# because a desk-scale setup has to be able to reach it — issue #1874's open
+# question is whether the lock's threshold suits tabletop clouds at all, and
+# this retake must not answer it by walking a household out of the room.
+GEOMETRY_RETRY_OFFSET_CM = 75.0
+
+# The named question each prompted position answers (McCarthy's mic-position
+# vocabulary, attribution-stage plan §5 promotion queue item 1). Persisted with
+# the position so the attribution stage can consume a labelled sample instead
+# of an anonymous member of an average; profile-independent, so both listening
+# profiles read the same labels.
+#
+#   ONAX  — inside the design-axis window (lateral offset < WIDE_OFFSET_MIN_CM)
+#   OFFAX — out at the coverage edge (lateral offset >= WIDE_OFFSET_MIN_CM)
+#   XOVR  — vertical offset: the axis the woofer/tweeter crossover lobes on,
+#           which is the mechanism M8 needs a labelled sample of
+#
+# WHAT A CONSUMER MUST NOT ASSUME: a cloud carries every role. Roles come from
+# the walked PREFIX of the table, so the Full tier's 8 prompted positions
+# sample all three, but EXPRESS's 4 sample {onax, offax} ONLY — its walk stops
+# before the first vertical move. That is by design (express is the shorter
+# instrument, §1.3), so an attribution consumer reads the roles a group
+# actually has and reports the absent one as unsampled, never as null evidence.
+POSITION_ROLE_ONAX = "onax"
+POSITION_ROLE_OFFAX = "offax"
+POSITION_ROLE_XOVR = "xovr"
+POSITION_ROLES = (POSITION_ROLE_ONAX, POSITION_ROLE_OFFAX, POSITION_ROLE_XOVR)
+
+
+def format_position_distance(offset_cm: float) -> str:
+    """One prompted distance, in inches with the metric value beside it.
+
+    Units are a RECORDED OWNER RULING being superseded by a newer one. The
+    body-part register (hand-widths, forearms) came from the 2026-07-25 studio
+    session, where numeric prompts had proved unusable; the 2026-07-28 field
+    session on issue #1805 withdrew it — *"drop body-part units — prompts
+    should use inches and/or meters"*. The newer field ruling wins, and both
+    units ride every prompt because a household reading this is standing in a
+    room with whatever tape measure it owns.
+
+    Centimetres rather than metres at this scale: every prompted move is
+    between 0.1 m and 0.6 m, and "0.12 m LEFT" is worse copy than "12 cm
+    LEFT" for the same number.
+    """
+    inches = round(float(offset_cm) / 2.54)
+    return f"{inches:g} in ({float(offset_cm):g} cm)"
+
+
 @dataclass(frozen=True)
 class CloudPositionPrompt:
     """One prompted mic move in a position group.
@@ -392,18 +457,32 @@ class CloudPositionPrompt:
     the durable evidence sidecar, which wants the whole instruction the
     operator actually followed rather than only its first sentence.
 
-    ``wide`` marks the moves that carry the plan's ~30 cm-class offset (a
-    forearm rather than a hand-width). The flag is not decoration: fundamental
-    1 needs ≥10 cm of spread to decorrelate HF nulls and ≥~30 cm to support
-    the LF edge, so ``CLOUD_POSITION_PROMPTS`` is ORDERED to put two wide
-    moves inside the first ``MIN_CLOUD_MEASURE_POSITIONS - 1`` offsets —
-    pinned by test, because an editor reordering this table for readability
-    would silently delete the LF half of the measurement.
+    ``offset_cm`` is the DISTANCE FROM THE MARK the pose states, and it is the
+    row's load-bearing datum rather than decoration: ``wide`` is computed from
+    it (see :data:`WIDE_OFFSET_MIN_CM`), so the ~30 cm-class guarantee cannot
+    be voided by editing copy alone. ``role`` names the question the position
+    answers (:data:`POSITION_ROLES`).
+
+    ``CLOUD_POSITION_PROMPTS`` is ORDERED to put two wide moves inside the
+    first ``MIN_CLOUD_MEASURE_POSITIONS - 1`` offsets — pinned by test, because
+    an editor reordering this table for readability would silently delete the
+    LF half of the measurement.
     """
 
     headline: str
     detail: str = ""
-    wide: bool = False
+    offset_cm: float = 0.0
+    role: str = POSITION_ROLE_ONAX
+
+    @property
+    def wide(self) -> bool:
+        """Whether this move carries the plan's ~30 cm-class LF-edge offset.
+
+        Derived, never stored: a row whose distance is edited below the class
+        stops being wide in the same edit, which is what makes the floors
+        below re-derive instead of going stale.
+        """
+        return float(self.offset_cm) >= WIDE_OFFSET_MIN_CM
 
     @property
     def text(self) -> str:
@@ -416,53 +495,134 @@ class CloudPositionPrompt:
         return f"{self.headline} {self.detail}".strip() if self.detail else self.headline
 
 
+def _pose(
+    template: str,
+    offset_cm: float,
+    role: str,
+    detail: str = "",
+    **bearing: str,
+) -> CloudPositionPrompt:
+    """One table row: an ABSOLUTE pose whose copy is generated from its number.
+
+    ``template`` carries a ``{d}`` slot filled by
+    :func:`format_position_distance` plus the bearing words the row supplies,
+    so a row's stated distance and its ``offset_cm`` cannot drift apart — the
+    number is the source and the sentence is derived from it. Two shared
+    templates rather than eleven hand-written sentences is also what keeps
+    every row an absolute pose: there is no per-row prose in which a relative
+    delta could reappear.
+
+    Refuses at IMPORT TIME below the HF-decorrelation floor, for the same
+    reason ``wide`` is derived: a move too short to decorrelate anything is a
+    session minute spent on nothing, and the floor is enforced rather than
+    documented.
+
+    ``ValueError`` rather than :class:`CrossoverV2FlowError` deliberately —
+    the table below is built while this module is still executing, and that
+    class is not defined until much further down, so raising it here would give
+    the editor this guard exists for a ``NameError`` instead of the message.
+    """
+    if float(offset_cm) < MIN_CLOUD_OFFSET_CM:
+        raise ValueError(
+            f"a prompted cloud move must be at least {MIN_CLOUD_OFFSET_CM:g} cm "
+            f"to decorrelate HF nulls, got {offset_cm:g} cm"
+        )
+    if role not in POSITION_ROLES:
+        raise ValueError(
+            f"cloud position role must be one of {POSITION_ROLES}, got {role!r}"
+        )
+    return CloudPositionPrompt(
+        headline=template.format(
+            d=format_position_distance(offset_cm), **bearing
+        ),
+        detail=detail,
+        offset_cm=offset_cm,
+        role=role,
+    )
+
+
+# Every wide row's supporting clause. Stepping in as you go out keeps the
+# microphone about as far from the speaker as the mark is, which is the
+# equidistance precondition any later position-pair level comparison needs
+# (attribution-stage plan G8) — an unequal path length makes a level
+# difference distance-contaminated rather than axial.
+_WIDE_LATERAL_DETAIL = (
+    "Step a little toward the speaker as you go out, so you stay about as far "
+    "from it as the mark is, and keep the microphone pointed at it."
+)
+_VERTICAL_DETAIL = "Keep the microphone pointed at the speaker."
+
 # The prompt table, in the order a group walks it.
 #
-# Copy provenance: the validated reference is the S0 kit's ``_prompt_position``
-# table (captures/flat-linearization-20260725/s0-kit/s0_capture.py), whose
+# Copy provenance and the RULING THAT SUPERSEDED IT: the validated reference is
+# the S0 kit's ``_prompt_position`` table
+# (captures/flat-linearization-20260725/s0-kit/s0_capture.py), whose
 # hand-width/forearm language was an owner request from the 2026-07-25 studio
 # session after numeric prompts ("move the mic 10 cm left") proved unusable
-# standing next to a speaker holding a mic stand. Product copy keeps that
-# register — casual, body-relative, never numeric-precision — and stays
+# standing next to a speaker holding a mic stand. The 2026-07-28 field session
+# (issue #1805) withdrew that register — *"drop body-part units — prompts
+# should use inches and/or meters"* — so distances are numeric again, in both
+# units, and the 2026-07-25 ruling no longer governs this table. Copy stays
 # hardware-blind: no horn, no JTS3, nothing that assumes a particular cabinet.
+#
+# EVERY ROW IS AN ABSOLUTE POSE, never a delta on the previous one (owner
+# field ruling, 2026-07-29 on issue #1806): "raise one hand" then "now move two
+# hands left" leaves a household guessing whether the raise survived. Each row
+# states the complete target — distance, bearing, and height — measured from
+# THE MARK, which is also the guidance half of issue #1874: ambiguous relative
+# deltas plausibly produce the clustering that trips the geometry lock.
+#
+# The actor is THE MICROPHONE, not "the phone" (same owner ruling): households
+# measure with a phone, a laptop, or a calibrated USB mic, and the device is
+# incidental to the instruction.
 #
 # ONE ordered table serves both groups: the pre-apply group uses
 # ``[:N - 1]`` and the post-apply group ``[:M - 1]``, so whichever group ends
-# soonest still gets the front-loaded spread. That is why the two wide moves
-# sit at offsets 3 and 4 rather than at the end, where the S0 kit (which always
-# ran all ten) could afford to put them.
+# soonest still gets the front-loaded spread. That is why the FIRST TWO wide
+# moves sit at offsets 3 and 4 (1-based) rather than at the end, where the S0
+# kit (which always ran all ten) could afford to put them — the later rows
+# carry wide offsets too, but only a group long enough to reach them walks
+# them, so they cannot be what the guarantee rests on. The left/right
+# alternation is deliberately UNCHANGED: reordering this table moves two
+# derived numbers (``MIN_CLOUD_VERIFY_POSITIONS`` and
+# ``express_cloud_measure_positions()``), and what made the alternation read as
+# weird in the field was the ambiguous relative phrasing, which the absolute
+# poses above remove.
+_LATERAL_POSE = "Move the microphone {d} to the {side} of the mark, at mark height."
+_VERTICAL_POSE = "Move the microphone back over the mark, {d} {updown} mark height."
+
 CLOUD_POSITION_PROMPTS: tuple[CloudPositionPrompt, ...] = (
-    CloudPositionPrompt("Move one hand-width LEFT of the mark."),
-    CloudPositionPrompt("Now move one hand-width RIGHT of the mark."),
-    CloudPositionPrompt(
-        "Move a forearm's length LEFT of the mark.",
-        "Step a little toward the speaker as you go, and keep the phone "
-        "pointed at it.",
-        wide=True,
+    _pose(_LATERAL_POSE, 12.0, POSITION_ROLE_ONAX, side="LEFT"),
+    _pose(_LATERAL_POSE, 12.0, POSITION_ROLE_ONAX, side="RIGHT"),
+    _pose(
+        _LATERAL_POSE, 40.0, POSITION_ROLE_OFFAX,
+        side="LEFT", detail=_WIDE_LATERAL_DETAIL,
     ),
-    CloudPositionPrompt(
-        "Now the same on the RIGHT: a forearm's length out.",
-        "A step toward the speaker again, phone still pointed at it.",
-        wide=True,
+    _pose(
+        _LATERAL_POSE, 40.0, POSITION_ROLE_OFFAX,
+        side="RIGHT", detail=_WIDE_LATERAL_DETAIL,
     ),
-    CloudPositionPrompt("Come back over the mark, one hand-width HIGHER."),
-    CloudPositionPrompt("Now over the mark again, one hand-width LOWER."),
-    CloudPositionPrompt("Move two hand-widths LEFT of the mark."),
-    CloudPositionPrompt("Now move two hand-widths RIGHT of the mark."),
-    CloudPositionPrompt(
-        "Come back to the mark's height, then step to a spot you have not "
-        "used yet.",
-        "A little diagonal off the mark is perfect.",
+    _pose(
+        _VERTICAL_POSE, 12.0, POSITION_ROLE_XOVR,
+        updown="ABOVE", detail=_VERTICAL_DETAIL,
     ),
-    CloudPositionPrompt(
-        "Raise the phone a forearm's length ABOVE the mark.",
-        "Keep it pointed at the speaker.",
-        wide=True,
+    _pose(
+        _VERTICAL_POSE, 12.0, POSITION_ROLE_XOVR,
+        updown="BELOW", detail=_VERTICAL_DETAIL,
     ),
-    CloudPositionPrompt(
-        "Now lower it a forearm's length BELOW the mark.",
-        "Keep it pointed at the speaker.",
-        wide=True,
+    _pose(_LATERAL_POSE, 25.0, POSITION_ROLE_ONAX, side="LEFT"),
+    _pose(_LATERAL_POSE, 25.0, POSITION_ROLE_ONAX, side="RIGHT"),
+    _pose(
+        _LATERAL_POSE, 60.0, POSITION_ROLE_OFFAX,
+        side="LEFT", detail=_WIDE_LATERAL_DETAIL,
+    ),
+    _pose(
+        _VERTICAL_POSE, 40.0, POSITION_ROLE_XOVR,
+        updown="ABOVE", detail=_VERTICAL_DETAIL,
+    ),
+    _pose(
+        _VERTICAL_POSE, 40.0, POSITION_ROLE_XOVR,
+        updown="BELOW", detail=_VERTICAL_DETAIL,
     ),
 )
 
@@ -472,7 +632,7 @@ CLOUD_POSITION_PROMPTS: tuple[CloudPositionPrompt, ...] = (
 # back on the design axis — the hold is the walk-back window.
 VERIFY_ANCHOR_HOLD_MESSAGE = (
     "Applying the measured crossover to your speaker. While that finishes, put "
-    "the phone back on the mark — same spot, same height, pointed at the "
+    "the microphone back on the mark — same spot, same height, pointed at the "
     "speaker."
 )
 
@@ -487,11 +647,20 @@ REVERIFY_NO_REWALK_HEADLINE = (
 
 # What the geometry-locked retake asks for. Two rungs, so a second retake is a
 # genuinely different instruction rather than the same sentence twice.
+#
+# Carries the SAME register as the position table (issue #1805's 2026-07-28
+# ruling): numeric distances in both units, absolute poses measured from the
+# mark, and "the microphone" as the actor. The second rung's height is stated
+# rather than left as "a little higher or lower than before" — a household
+# asked to break a spatial tie should not be the one deciding which way.
 CLOUD_GEOMETRY_RETRY_PROMPTS: tuple[str, ...] = (
-    "Same measurement, wider spot: take this one about two forearms' length "
-    "to the LEFT of the mark, still pointed at the speaker.",
-    "One more, wider still: about two forearms' length to the RIGHT of the "
-    "mark, and a little higher or lower than before.",
+    "Same measurement, wider spot: move the microphone "
+    f"{format_position_distance(GEOMETRY_RETRY_OFFSET_CM)} to the LEFT of the "
+    "mark, at mark height, still pointed at the speaker.",
+    "One more, wider still: move the microphone "
+    f"{format_position_distance(GEOMETRY_RETRY_OFFSET_CM)} to the RIGHT of the "
+    f"mark and {format_position_distance(WIDE_OFFSET_MIN_CM)} ABOVE mark "
+    "height.",
 )
 
 
@@ -511,6 +680,74 @@ def _min_positions_for_two_wide_offsets() -> int:
             "fundamental 1's LF edge needs ~30 cm-class spread"
         )
     return wide[1] + 2
+
+
+# The sentences that bracket a walk preview. The pre-apply group opens with
+# CHECK and MEASURE, both on the mark; the post-apply group opens with VERIFY's
+# anchor alone — so the lead states a different count, and the tail states a
+# different next step, because after stage 1 the household decides and after
+# stage 2 the journey is over.
+CLOUD_WALK_PREVIEW_LEAD = (
+    "Start on the mark — the first two measurements happen there, with the "
+    "microphone still."
+)
+CLOUD_WALK_PREVIEW_LEAD_POST_APPLY = (
+    "Start on the mark — the first measurement happens there, with the "
+    "microphone still."
+)
+CLOUD_WALK_PREVIEW_TAIL = (
+    "That is the whole walk. JTS then works out what it heard, and you go back "
+    "to the speaker page to decide what to do about it."
+)
+CLOUD_WALK_PREVIEW_TAIL_POST_APPLY = (
+    "That is the whole walk. JTS then grades the result and the speaker page "
+    "shows how it did."
+)
+
+
+def cloud_walk_preview(
+    positions: int, *, post_apply: bool = False
+) -> tuple[str, ...]:
+    """The WHOLE walk, in order, for the pre-session orientation screen.
+
+    Work order D7 (issues #1804 + #1805): the household sees every position
+    before step 1 instead of discovering one prompt at a time. This is the
+    single derivation every preview surface reads, so a preview can never
+    describe a walk the plan will not actually prompt — it enumerates the same
+    ``[:positions - 1]`` slice :func:`build_v2_capture_plan` and
+    :func:`build_v2_verify_capture_plan` enumerate, from the same table.
+
+    ``post_apply`` selects stage 2's bracketing copy; the prompted moves are
+    the same table either way, because both groups walk it from the front.
+
+    The preview is bounded by the SAME wide-offset guarantee the plan builder
+    enforces: ``CLOUD_POSITION_PROMPTS``' rows carry their distances as data
+    and ``wide`` is computed from :data:`WIDE_OFFSET_MIN_CM`, so a narrowed
+    walk moves :func:`_min_positions_for_two_wide_offsets` (and with it
+    :data:`MIN_CLOUD_VERIFY_POSITIONS` and
+    :func:`express_cloud_measure_positions`) rather than quietly shipping a
+    one-wide cloud. There is no second copy of that rule here to drift.
+    """
+    walked = max(0, int(positions) - 1)
+    if walked > len(CLOUD_POSITION_PROMPTS):
+        raise CrossoverV2FlowError(
+            f"cloud walk preview needs {walked} position prompts but "
+            f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
+        )
+    if not walked:
+        # A group with no prompted moves is not a walk and gets no preview —
+        # Express's stage 2 is one held-still sweep at the mark, whose consent
+        # screen already leads with REVERIFY_NO_REWALK_HEADLINE.
+        return ()
+    lead = (
+        CLOUD_WALK_PREVIEW_LEAD_POST_APPLY if post_apply
+        else CLOUD_WALK_PREVIEW_LEAD
+    )
+    tail = (
+        CLOUD_WALK_PREVIEW_TAIL_POST_APPLY if post_apply
+        else CLOUD_WALK_PREVIEW_TAIL
+    )
+    return (lead, *(p.text for p in CLOUD_POSITION_PROMPTS[:walked]), tail)
 
 
 # --------------------------------------------------------------------------- #
@@ -2452,6 +2689,13 @@ class _CloudPosition:
     captured_at: float
     response: Any
     sample_rate_hz: int
+    # The named question this position answers (:data:`POSITION_ROLES`), copied
+    # off the prompt the operator was actually given. Persisted with the
+    # position so the attribution stage reads a labelled sample rather than an
+    # anonymous member of an average (attribution-stage plan §5 promotion queue
+    # item 1). Defaulted so every construction site that predates roles — the
+    # corpus and unit fixtures — stays valid unchanged.
+    role: str = POSITION_ROLE_ONAX
     # PR-4: the contract-derived analysis bands this position's GROUP should be
     # combined/searched with — spatial_combine.combine_positions's own
     # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
@@ -4485,10 +4729,14 @@ class CrossoverV2Conductor:
             position = 0
         if position < len(CLOUD_POSITION_PROMPTS):
             return CLOUD_POSITION_PROMPTS[position]
-        return CloudPositionPrompt(
-            "Move the phone about a hand-width to a fresh spot you have not "
-            "used yet."
-        )
+        # A DISTINCT defensive spot, not a repeat of a table row: this fallback
+        # only fires for a group longer than the table (which
+        # ``_validated_cloud_counts`` refuses, so it is unreachable today), and
+        # a group that long has already walked every row. Naming one of them
+        # again would send the operator back to a spot the cloud has, which is
+        # the one thing an extra position must not do. 45 cm right is past the
+        # table's widest RIGHT offset (40 cm) and inside the geometry rung's.
+        return _pose(_LATERAL_POSE, 45.0, POSITION_ROLE_OFFAX, side="RIGHT")
 
     def _prompt_shown_for(self, phase: str, index: int) -> CloudPositionPrompt:
         """The prompt the operator ACTUALLY followed for the take in hand.
@@ -4503,7 +4751,8 @@ class CrossoverV2Conductor:
         (``consume_capture`` clears it only on acceptance), and
         ``_geometry_retries_used`` counts the rung that was shown, so the pair
         identifies the instruction exactly. A wider-spread rung is ``wide`` by
-        construction — it asks for two forearms.
+        construction — it asks for :data:`GEOMETRY_RETRY_OFFSET_CM`, past the
+        wide class by design, and ``wide`` is computed from that distance.
         """
         slot = self._slot_of_index(index)
         if self._last_reason.get(slot) == REASON_CLOUD_GEOMETRY_LOCKED:
@@ -4511,7 +4760,11 @@ class CrossoverV2Conductor:
             rung = CLOUD_GEOMETRY_RETRY_PROMPTS[
                 min(used - 1, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
             ]
-            return CloudPositionPrompt(rung, wide=True)
+            return CloudPositionPrompt(
+                rung,
+                offset_cm=GEOMETRY_RETRY_OFFSET_CM,
+                role=POSITION_ROLE_OFFAX,
+            )
         return self._cloud_prompt(phase, index)
 
     # --- lifecycle -----------------------------------------------------------
@@ -5065,6 +5318,7 @@ class CrossoverV2Conductor:
             attempt=attempt,
             prompt=prompt.text,
             wide=prompt.wide,
+            role=prompt.role,
             captured_at=time.time(),
             response=response,
             sample_rate_hz=self._verify_program.sample_rate_hz,
@@ -5140,6 +5394,10 @@ class CrossoverV2Conductor:
             "take_id": f"{position.position_id}_a{int(position.attempt):02d}",
             "prompt": position.prompt,
             "wide": position.wide,
+            # The position's named question (attribution-stage plan §5's
+            # promotion-queue item 1). The prompt string alone cannot be parsed
+            # back into a role, so the label rides the record explicitly.
+            "role": position.role,
             "captured_at": position.captured_at,
             "session_id": self.session_id,
             "gate_window_ms": _gate_window_ms(position.response),
@@ -7896,10 +8154,35 @@ def build_v2_capture_plan(
             screen={
                 "progress": capture_progress_label(1, target),
                 "title": (
-                    "Stand the phone about 1 m in front of the speaker, at "
-                    "tweeter height."
+                    "Stand the microphone about 1 m in front of the speaker, "
+                    "at tweeter height."
                 ),
-                "body": "Stay quiet — JTS listens to the room first.",
+                # NOT "stay quiet" (work order D8, issue #1835). CHECK's 12 s
+                # ambient window is the SESSION's room-noise measurement and it
+                # is deliberately composed to run BEFORE anyone is asked to
+                # hush (jasper.audio_measurement.program's module docstring);
+                # the gain solve reads it, so a pre-hushed room reads quieter
+                # than reality and the solve under-drives against the noise the
+                # later sweeps actually face. The measurement-honest request is
+                # to carry on. The speaker asks for quiet itself, on the
+                # in-sweep windows where quiet genuinely is wanted — a
+                # different window with a different purpose, which this must
+                # not collapse into one sentence.
+                "body": (
+                    "JTS listens to the room exactly as it is first, so carry "
+                    "on as you were — it will say when to be quiet."
+                ),
+                # The phone's OWN pre-arm floor window, which is a third
+                # measurement again: a sub-second reading of what the
+                # microphone hears, taken before the speaker plays anything.
+                # It gets its own sentence for the same reason — asking for
+                # quiet there hushes the room a moment before CHECK measures
+                # it. Absent on every other entry, where the page's default
+                # (quiet, because a sweep follows immediately) stays right.
+                "noise_note": (
+                    "Listening to the room as it normally is — carry on as "
+                    "you were."
+                ),
                 "auto_advance": AUTO_ADVANCE_TAP,
             },
         ),
@@ -7909,7 +8192,7 @@ def build_v2_capture_plan(
             duration_ms=_program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS,
             screen={
                 "progress": capture_progress_label(2, target),
-                "title": "Keep the phone still — this spot is the mark.",
+                "title": "Keep the microphone still — this spot is the mark.",
                 # MEASURE is the session's LONGEST capture and the one that
                 # CAN be its loudest — since #1825/#1829 each driver's level is
                 # solved to the SNR the fit needs in its own band, so a quiet
@@ -7994,8 +8277,8 @@ def build_v2_verify_capture_plan(
     Full is the six-position spatial walk whose combined curve the after-chart,
     the post-apply spec verdict, and the delta probe all read. Running Full's
     stage 2 as a single position would leave its post-apply group with 0 curves
-    and no combine at all, and would make ``_TIER_CLAIMS``' "re-checks the
-    result at several spots" untrue.
+    and no combine at all, and would make ``_TIER_CLAIMS``' "re-check the
+    result at several spots around the mark" untrue.
 
     **The §2.2 confirm-then-tone tap survives, re-anchored to stage 2's own
     begin** (work order D10). The anchor entry carries ``confirm_title`` /
@@ -8132,6 +8415,12 @@ def build_v2_verify_session_spec(
         {
             "guided_captures": plan.capture_target,
             "guided_tier": plan_shape.tier if plan_shape is not None else "",
+            # Stage 2's walk is previewed on the same terms as stage 1's (work
+            # order D7): a post-apply cloud discovered one prompt at a time is
+            # the same defect, and the group walks the same table.
+            "walk_preview": cloud_walk_preview(
+                plan.capture_target, post_apply=True
+            ),
         }
         if walked
         else {"reverify_lead": REVERIFY_NO_REWALK_HEADLINE}
@@ -8244,13 +8533,16 @@ def tier_display_info() -> dict[str, dict[str, int]]:
     different plausible topologies (varying woofer/tweeter bands and
     ``fc_hz`` — see ``tests/test_crossover_v2_conductor.py``'s
     ``test_tier_display_info_minutes_hold_across_plausible_topologies``),
-    Full displays 11 minutes and Express displays 5 minutes in every case
+    Full displays 11 minutes and Express displays 6 minutes in every case
     checked, with Express the tighter margin (on the order of 10-15 s of
     headroom before the next minute boundary, at this representative pair —
     the number that would need re-deriving if a future change genuinely
-    widened the plausible band space). ``capture_target`` needs no audio
-    program at all — it is pure arithmetic on the resolved
-    :class:`V2PlanShape`.
+    widened the plausible band space). Express's figure moved from 5 to 6 with
+    the two-stage split, and the reason is the split's own arithmetic rather
+    than a longer session: the journey is now TWO plans and each ceils to a
+    whole minute separately, which is the deliberately conservative choice
+    recorded below. ``capture_target`` needs no audio program at all — it is
+    pure arithmetic on the resolved :class:`V2PlanShape`.
 
     **Memoized (N1 fix, adversarial review of PR #1780).** The representative
     inputs are fixed module constants, so the result never changes within a
@@ -8272,10 +8564,16 @@ def tier_display_info() -> dict[str, dict[str, int]]:
         )
         return {
             tier: {
-                "capture_target": resolve_plan_shape(tier).capture_target,
+                "capture_target": shape.capture_target,
                 "estimated_minutes": 0,
+                # Present even here: the chooser's copy reads both, and a
+                # KeyError on the degraded path would take the whole
+                # microphone_check screen down over a duration it already
+                # knows how to render as unknown.
+                "stage1_captures": shape.measure_capture_target,
+                "stage2_captures": shape.verify_capture_target,
             }
-            for tier in TIERS
+            for tier, shape in ((t, resolve_plan_shape(t)) for t in TIERS)
         }
 
 
@@ -8302,6 +8600,15 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
             "estimated_minutes": (
                 stage1.estimated_minutes() + stage2.estimated_minutes()
             ),
+            # The per-stage split T4's chooser copy states, off the SHAPE's own
+            # two targets — the same properties the two plan builders size
+            # themselves from, so the chooser and the plans cannot quote
+            # different sessions, and their sum is ``capture_target`` by
+            # construction. Available without an audio program, which is what
+            # lets the fallback path below answer with the same numbers rather
+            # than omitting the keys the chooser copy reads.
+            "stage1_captures": shape.measure_capture_target,
+            "stage2_captures": shape.verify_capture_target,
         }
     return out
 
@@ -8357,6 +8664,11 @@ def build_v2_session_spec(
         # say "quick tune" vs "full measurement" without the spec builder
         # re-deriving a shape it does not own (§1.4 / §2.3).
         guided_tier=shape.tier,
+        # …and the whole walk up front (work order D7). Built HERE, from the
+        # same table and the same group size the per-entry screens above are
+        # built from, so the preview and the prompts cannot describe different
+        # walks.
+        walk_preview=cloud_walk_preview(shape.cloud_measure_positions),
         **spec_kwargs,
     )
 

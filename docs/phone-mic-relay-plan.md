@@ -423,7 +423,19 @@ capture_spec:
     format: "wav"             # mono 16-bit PCM WAV at sample_rate_hz
   max_upload_bytes: 33554432  # 32 MB cap; mirror the Pi backend limit
   return_url: "http://jts5.local/correction/"  # Back to speaker after upload
+  time_budget:                # optional; set by the relay ADAPTER at mint time
+    step_s: 120               #   the runner's per-step phone-inactivity budget
+    session_s: 900            #   this session's own ttl_s, not a second copy
 ```
+
+`time_budget` is a DISCLOSURE, never a budget of its own (two-stage commission
+work order D8, issue #1807): the page can only name the clock it is racing if
+the Pi tells it, and the number has to be the one the session is genuinely
+minted with. Set in `capture_relay/correction_adapter.py` rather than in a spec
+builder for that reason — a builder does not know which session its spec ends
+up in. Absent on every spec that does not go through the adapter, and the page
+says nothing about time when it is absent rather than inventing a number, which
+is what keeps a new page safe against an older Pi.
 
 ### The page is agnostic; the Pi owns the intelligence
 
@@ -512,6 +524,12 @@ attempt, accepted, verdict fields}` → the phone renders "Measurement N of
 `capture_set_complete` or `capture_set_exhausted`. Out-of-order / replayed /
 malformed begins are refused loudly; per-event replay is already blocked by the
 authenticated-envelope sequence.
+
+A `capture_set_exhausted` posted by a HOST (rather than by the runner reaching
+its attempt limit) may carry `budget: "step" | "link"` — which clock ran out,
+so the page stops calling a timeout an attempt limit (work order D8). Absent
+from the runner's own exhaustion event, which genuinely is an attempt limit,
+and absent from an older Pi; the page keeps the attempt-limit copy either way.
 
 **Per-capture entries (plan `schema_version: 2` — dormant).** `capture_plan`
 may additionally carry an `entries` table (one `{index, kind_label,

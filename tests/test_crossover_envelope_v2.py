@@ -166,16 +166,33 @@ def test_check_phase_tier_durations_and_counts_are_derived_not_hand_written():
     actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
     full = actions["start_v2_session_full"]
     express = actions["start_v2_session_express"]
+    # RE-DERIVED for the two-stage split (work order D7, PR-T4). The chooser
+    # used to quote ONE capture count against one duration; after the split a
+    # household picking a tier is picking TWO sessions with its own decision in
+    # between, so the description states the per-stage counts and the
+    # whole-journey duration. `capture_target` is still the sum of the two by
+    # construction, which is what this asserts instead of a literal.
     assert str(info["full"]["estimated_minutes"]) in full["description"]
-    assert str(info["full"]["capture_target"]) in full["description"]
+    assert str(info["full"]["stage1_captures"]) in full["description"]
+    assert str(info["full"]["stage2_captures"]) in full["description"]
     assert str(info["express"]["estimated_minutes"]) in express["description"]
-    assert str(info["express"]["capture_target"]) in express["description"]
+    assert str(info["express"]["stage1_captures"]) in express["description"]
+    assert str(info["express"]["stage2_captures"]) in express["description"]
+    for tier in ("full", "express"):
+        assert (
+            info[tier]["stage1_captures"] + info[tier]["stage2_captures"]
+            == info[tier]["capture_target"]
+        )
+    # …and the interlude is NAMED, because it is the thing the split added and
+    # a chooser that hid it would sell two sittings as one.
+    assert "You decide whether to apply" in full["description"]
+    assert "You decide whether to apply" in express["description"]
     # The one-line claims difference (§1.3): express confirms at the mark,
     # full re-checks at several spots around the mark. B2 fix (adversarial
     # review of PR #1780): "across the room" overclaimed past what the
     # post-apply cloud actually samples.
-    assert "confirms the result at the mark" in express["description"]
-    assert "re-checks the result at several spots around the mark" in full["description"]
+    assert "confirm the result at the mark" in express["description"]
+    assert "re-check the result at several spots around the mark" in full["description"]
 
 
 def test_check_phase_recommends_full_on_a_first_commission():

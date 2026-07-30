@@ -504,6 +504,27 @@ adjustment says why ("these two spots have to be about a forearm apart —
 that spread is what lets JTS tell a room echo from the speaker"), it
 does not silently snap.
 
+**SHIPPED IN PR-T4: the preview and the floor. DEFERRED: the household-facing
+spacing control.** T4 shipped what the acceptance criterion names — the walk
+is previewable up front, stated in inches and centimetres, wide offsets
+intact — and shipped the enforcement the adjustment needs, which was the
+harder half: a prompt row's distance is now DATA (`offset_cm`), `wide` is
+COMPUTED from it against `WIDE_OFFSET_MIN_CM`, `_pose()` refuses below the
+HF-decorrelation floor at import time, and both derived group floors re-derive
+from the table rather than restating it. Any narrowing therefore moves
+`_min_positions_for_two_wide_offsets()` and fails loudly, which is exactly the
+"refused by construction" this decision asked for.
+
+What is NOT shipped is a control that lets a household choose a spacing. Its
+home is a rung that owns the **conductor**, not this one: the conductor reads
+the module-level `CLOUD_POSITION_PROMPTS` at three sites (`_cloud_prompt`,
+`_prompt_shown_for`'s retry rungs, and `_close_measure_cloud_candidate`'s
+geometry rung), so a per-session table is a conductor *field* threaded through
+every construction site — a change in the same class as the eager-fit rider's
+`_close_lock`, and one that should land where the conductor's concurrency and
+lifecycle are already in hand. Until then the table is adjustable by an editor
+under the enforced floor, and not by a household.
+
 **Sibling copy the reshaped walk orphans — PR-T4 owns all of it:**
 - The screen-grammar exemplar in
   [`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
@@ -537,6 +558,34 @@ does not silently snap.
   speaker continues automatically at the exact moment it deliberately
   will not. PR-T4 owns that fallback.
 
+**Recorded deferral — per-step VISUAL distinctness (#1806's field list).**
+The owner's 2026-07-29 note asks for more than new words: *"the capture-page
+position screens change only one word (left ↔ right) between steps — too
+subtle to notice mid-session. Each position needs a visually distinct state
+(layout/diagram/step glyph), not a word swap."* PR-T4's absolute poses widen the
+copy's variation — a step now differs in its distance, its bearing, and
+often its height — but the improvement is uneven (measured, not
+asserted): at Full's shipped walk, 4 of the 7 transitions
+between prompted positions still differ in one word only (the LEFT/RIGHT pairs
+at 12 cm, 40 cm and 25 cm, and the ABOVE/BELOW pair at 12 cm), because the
+walk deliberately samples symmetric positions and D7 forbids reordering the
+table. **A glyph or diagram is therefore still owed, and it is NOT T4's:** the
+capture page renders the spec through a closed component vocabulary that is a
+SECURITY boundary (`capture-page/js/render.js` — a `type` it does not know
+renders nothing, which is what bounds a hostile payload to "wrong text on
+screen"). Adding a step glyph means extending that vocabulary, which belongs
+to a rung that can carry the renderer's threat model with it. Routed there,
+not dropped.
+
+**Recorded deferral — mic-agnostic wording in the REJECTION templates.** The
+same owner ruling makes "the microphone" the actor. PR-T4 applied it to every
+prompt, consent step, placement instruction, and acknowledgement it owns; the
+per-reason rejection copy in `REASON_REGISTRY`
+([`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py))
+still says "move the phone closer" and similar, and belongs to the reason
+registry rather than to this ladder's copy — with the exception of the AGC
+diagnosis, which is correctly phone-specific because browser AGC is.
+
 **D8 — The phone tells the truth about time, and about CHECK. ADOPT
 (#1807 + #1835).** The page surfaces the current step's remaining
 window and the session's remaining wall clock, in plain language
@@ -566,6 +615,22 @@ telling one person standing in the room what to do right now, the
 speaker window is describing a measurement state — and #1835 filed the
 second half deliberately. PR-T4 either differentiates them or records
 why one string serves both; it does not drop the question.
+
+**#1835's second half — ANSWERED in PR-T4: they differ, and there are THREE
+windows, not two.** The phone's own pre-arm window (`captureAmbientNoise`,
+≤ 2 s) is a *third* measurement again: it is the phone's floor for the
+upload's `noise_floor` field, taken before the speaker plays anything, and it
+fires on every capture. The speaker window (`ambient_started`) is the Pi's
+program-composed one, whose quiet request is the speaker's call because only
+the speaker knows which of ITS two windows is playing. So one string cannot
+serve both — the phone is telling one person what to do in the next two
+seconds, the speaker window is describing a measurement state of a known
+length. Shipped resolution: the phone's pre-arm line became per-entry copy
+(`screen.noise_note`), CHECK supplies one that asks the household to carry on,
+every other entry supplies none and keeps the page's default (right for them —
+a sweep follows immediately), and the in-sweep lines are untouched. Pinned by
+`test_check_stops_hushing_the_room_before_it_measures_it` and
+`tests/js/capture_time_budget_test.mjs`.
 
 **D9 — No dead air on retry. ADOPT (#1840's page half).** A retry
 screen shows progress and its own timeout rather than sitting static
@@ -734,14 +799,21 @@ apply from the screen, because T3 is what makes the screen's Apply real.
 - **Two ambient windows, two purposes.** CHECK's pre-arm window and the
   in-sweep ambient windows are different measurements. D8 changes one
   string; collapsing them into one is a measurement defect.
-- **The relay TTL is duplicated and unpinned.** `900` is an
-  independent literal in `relay/src/worker.js` and
-  `jasper/capture_relay/session.py`, **and** hardcoded again in
-  `jasper/capture_relay/correction_adapter.py`, which is the value the
-  v2 path actually gets (the v2 callers do not pass `ttl_s`). Unlike
-  `MAX_CAPTURE_PLAN_ATTEMPTS` there is no equality test. Any PR that
-  changes a session's time budget resolves that duplication first, or
-  states explicitly that it did not touch it.
+- **The relay TTL was duplicated and unpinned; PR-T4 collapsed the two
+  PYTHON copies, not the duplication entirely.** `900` was an independent
+  literal in `relay/src/worker.js` and `jasper/capture_relay/session.py`,
+  **and** hardcoded again in `jasper/capture_relay/correction_adapter.py`,
+  which is the value the v2 path actually gets (the v2 callers do not pass
+  `ttl_s`). PR-T4 had to publish that value to the phone (D8), so the
+  adapter's literal now imports `session.DEFAULT_TTL_S` and
+  `test_the_adapters_ttl_default_is_the_sessions_own_constant` pins it — a
+  pin that asserts *the two Python copies collapsed, not that the
+  duplication is gone entirely*. `relay/src/worker.js` keeps its own
+  deliberately: it is a separate release that must bound whatever any Pi
+  asks for, and there is still no equality test across that boundary. Any
+  PR that CHANGES a session's time budget resolves what remains first, or
+  states explicitly that it did not touch it (PR-T4 did not — it published
+  the value and changed no budget).
 - **`renderPlanCountdown` is dead.** #1823 made MEASURE a tap, and the
   source says no shipped plan reaches the countdown; a test pins it.
   Do not "fix" the stale-countdown symptom there — it is already
@@ -771,4 +843,4 @@ stages fit inside the relay TTL with the interlude untimed" — they do
 not, and D2 says why: every realized wall-clock ceiling still exceeds
 900 s. What the split buys is measurable and is what is stated here.)
 
-Last verified: 2026-07-29
+Last verified: 2026-07-30

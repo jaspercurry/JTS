@@ -1368,3 +1368,44 @@ def test_cue_is_best_effort_and_never_masks_the_failure():
             sleep=lambda _s: None,
             play_cue=boom,
         )
+
+
+# --- which clock ran out (work order D8, issue #1807) -------------------------
+
+
+def test_expired_time_budget_names_the_clock_or_stays_silent():
+    """Every one of these deaths persists as the same failure code, so this
+    classifier is where the difference survives to the household.
+
+    Deliberately conservative: an unclassifiable death answers ``""`` and the
+    surfaces fall back to their existing generic copy. Naming the wrong clock
+    would be worse than naming none — "you have two minutes between taps" is
+    advice, and advice about the wrong budget sends a household back to fail
+    the same way.
+    """
+    from jasper.capture_relay.session import (
+        TIME_BUDGET_LINK,
+        TIME_BUDGET_STEP,
+        expired_time_budget,
+    )
+
+    # The phone-inactivity budget, in every relay phase that can spend it.
+    for phase in ("awaiting_begin", "awaiting_arm", "awaiting_upload", None):
+        assert (
+            expired_time_budget(CaptureTimeout("gone", phase=phase))
+            == TIME_BUDGET_STEP
+        )
+
+    # A purged or expired relay session answers the Pi exactly as it answers
+    # the phone (the page's own isDeadSessionError reads the same statuses).
+    for status in (401, 403, 404, 410):
+        assert (
+            expired_time_budget(RelayError("dead", status)) == TIME_BUDGET_LINK
+        )
+
+    # An outage is not a budget, and neither is a deliberate stop or a corrupt
+    # blob. Each of these already has its own honest copy.
+    assert expired_time_budget(RelayError("relay is broken", 502)) == ""
+    assert expired_time_budget(OSError("connection reset")) == ""
+    assert expired_time_budget(CaptureAborted("stopped", reason="stopped")) == ""
+    assert expired_time_budget(CaptureFailed("bad blob")) == ""

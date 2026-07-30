@@ -148,6 +148,36 @@ deploy the Pi commit first, verify its capture spec, and only then publish
 in `tests/test_capture_page_js.py`; it deliberately avoids reintroducing a
 second browser-owned copy.
 
+#### An additive field that degrades on its own (either order)
+
+The mildest class, and the one to reach for by default: the Pi starts sending
+something new, the page renders it when present, and **the page's behaviour
+without it is already correct** — not merely tolerable. Both directions are then
+safe and no ordering rule applies. The test is strict: if the page's no-field
+fallback is a sentence you would not ship on its own, this is not that class,
+it is the "reinterpreting an existing spec field" class above.
+
+Build `20260730.1` is the fixture, with three of them (two-stage commission D8 /
+D9):
+
+- `capture_spec.time_budget` (`{step_s, session_s}`, set at mint time by
+  `jasper/capture_relay/correction_adapter.py`) — the page shows the
+  how-long-can-I-pause line and names the clock on an expiry. Without it the
+  page says nothing about time, which is exactly what it said before. **It
+  rides EVERY adapter-minted spec, not just the crossover ones** — room sweep,
+  sync, balance and level ramp all mint through `open_capture` — so the budget
+  line appears on any plan step screen and the expiry copy is honest fleet-
+  wide. The page-owned step screens are the only surface that renders it; a
+  spec's own `ui.screen` never mentions it.
+- `capture_plan.entries[].screen.noise_note` — per-entry copy for the phone's
+  own pre-arm floor window, so CHECK stops asking for quiet before the window
+  that deliberately measures an un-hushed room (issue #1835). Without it the
+  page keeps its default, which is right for every other entry.
+- the `capture_set_exhausted` host event's `budget` field — names which clock
+  expired so the page stops calling a timeout an attempt limit. Without it the
+  page keeps the attempt-limit copy, which is what the runner's own exhaustion
+  event genuinely means.
+
 (The relay Worker is a third independent release with its own ordering rule for
 relay **capacity** changes — see [`relay/README.md`](../relay/README.md)
 "Release order". That rule puts the Pi last, which matches the ADD direction

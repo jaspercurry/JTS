@@ -13,6 +13,8 @@ opacity is proven separately in tests/js/relay_worker_test.mjs.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from jasper.capture_relay import spec as spec_mod
@@ -222,7 +224,10 @@ def test_crossover_summed_capture_binds_fixed_reference_axis():
     assert "tweeter axis" in steps["items"][0]
     assert "level with the centre" in steps["items"][0]
     assert "completely still" in steps["items"][0]
-    assert steps["items"][2] == "Keep the phone still until the sweep finishes"
+    # The ACTOR is the microphone, not the phone (owner ruling, 2026-07-29 on
+    # issue #1806): households measure with a phone, a laptop, or a calibrated
+    # USB mic, and the device is incidental to the instruction.
+    assert steps["items"][2] == "Keep the microphone still until the sweep finishes"
     button = next(item for item in spec.screen if item["type"] == "button")
     assert "fixed on-axis" in button["label"]
 
@@ -253,16 +258,26 @@ def test_crossover_guided_cloud_never_promises_a_stationary_mic():
     assert "tweeter axis" in label
     assert "level with the centre" in label
     assert "will not move" not in label
-    assert "move it only when the phone asks me to" in label
+    assert "move it only when I am asked to" in label
+    # …and the promise names no DEVICE, for the same reason the steps do not
+    # ("microphone" is the actor; "phone" as a standalone word is the device).
+    assert not re.search(r"\bphone\b", label)
     assert "16" in label
 
     steps = next(item for item in spec.screen if item["type"] == "steps")
     assert "that spot is your mark" in steps["items"][0]
-    assert "move it a little between sweeps" in steps["items"][0]
+    # RE-DERIVED for the two-stage split (work order D7): "come back to the
+    # mark" was stage 2's business — the post-apply anchor — so this consent
+    # screen stopped promising a return the session it consents to never makes.
+    # What it promises instead is what stage 1 actually does: every position is
+    # measured from the mark, and each one is named with a distance.
+    assert "spots measured from that mark" in steps["items"][0]
+    assert "each one named with a distance" in steps["items"][0]
+    assert "come back to the mark" not in steps["items"][0]
     assert "completely still" not in steps["items"][0]
     # Per-sweep stillness, kept and made explicit about what follows it.
     assert steps["items"][2] == (
-        "Keep the phone still until each sweep finishes, then follow the "
+        "Keep the microphone still until each sweep finishes, then follow the "
         "on-screen prompt to move it"
     )
     button = next(item for item in spec.screen if item["type"] == "button")

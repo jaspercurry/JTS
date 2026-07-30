@@ -51,6 +51,7 @@ _HARNESSES = [
     "capture_plan_loop_test.mjs",
     "capture_calibration_confirm_test.mjs",
     "capture_defect_fixes_test.mjs",
+    "capture_time_budget_test.mjs",
 ]
 
 
@@ -144,7 +145,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260729.2",
+        "capture_page_build": "20260730.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -152,7 +153,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260729-2" in index_html
+    assert "main.js?v=20260730-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -219,9 +220,18 @@ def test_capture_page_beep_copy_matches_the_composed_beep_count():
 
     assert COURTESY_TONE_BEEP_COUNT == 3, (
         "the composed beep count moved — update the capture page's prelude copy "
-        "(main.js, 'Listen for three beeps') to match, then this pin"
+        "(main.js, 'Listen for three beeps') and the guided consent screen's "
+        "orientation step (capture_relay/spec.py, 'three short beeps') to "
+        "match, then this pin"
     )
     assert "Listen for three beeps" in main_js
+    # The ORIENTATION screen says it too, before the first tone (work order D7
+    # / issue #1804): an unexplained burst of beeps at measurement level is the
+    # moment a first-time household stops the session. Same spelled-out
+    # convention as the page's line, and pinned in the same place so the two
+    # cannot drift apart from the composer or from each other.
+    spec_py = (_REPO / "jasper/capture_relay/spec.py").read_text(encoding="utf-8")
+    assert "three short beeps" in spec_py
 
 
 def test_capture_page_classifies_relay_timeouts_by_tag_not_by_message():
@@ -261,6 +271,11 @@ def test_capture_page_step_screens_render_one_instruction_grammar():
     assert ".cap-eyebrow {" in index_html
     # The one primary label: the tap IS the placement confirmation.
     assert 'const STEP_PRIMARY_LABEL = "I’m there — play the tone";' in main_js
+    # …and the D8 budget line rides UNDER the action, in its own quieter slot,
+    # so "how long can I pause?" never competes with the instruction for the
+    # headline/detail slots the grammar reserves.
+    assert 'el("p", { class: "cap-note cap-budget", text: budget })' in main_js
+    assert ".cap-budget {" in index_html
 
 
 def test_capture_page_stop_is_a_text_link_behind_a_danger_confirm():
@@ -385,8 +400,22 @@ def test_capture_page_pre_arm_failure_never_strands_a_fatal_affordance():
     assert "function repairPreArmAffordance(ctx, { index, attempt, target, retake }) {" in main_js
     # The retake repair re-arms the offer whose closure re-posts the IDENTICAL
     # pair, and names that control instead of the forward primary.
-    assert "armRetakeSlot(ctx, { index, attempt: attempt - 1 });" in main_js
+    assert "const restore = { index, attempt: attempt - 1, target };" in main_js
+    assert "armRetakeSlot(ctx, restore);" in main_js
     assert "return RETAKE_LABEL;" in main_js
+    # …AND PUTS IT BACK ON SCREEN (gate blocker B1). Re-arming alone sufficed
+    # only while a retake left the OFFERING screen up; since the retake round
+    # renders its own affordance-free in-progress screen, this arm has to
+    # re-render one that carries the control the copy names — the group-close
+    # confirm when the retake was of the final position, the manual next screen
+    # otherwise. Behaviour is pinned in capture_plan_loop_test.mjs against
+    # ON-SCREEN labels; these keep the wiring visible here.
+    assert "renderPlanGroupConfirm(ctx, restore);" in main_js
+    assert "renderPlanNext(ctx, restore);" in main_js
+    # …routed by the SAME flag keepEarlierTakeControl already returns on, so a
+    # retake of the cloud's final position lands back on the confirm rather
+    # than on a next-measurement screen the held set has no next entry for.
+    assert main_js.count("if (ctx.retakeAwaitingConfirm) {") == 2
     # The no-affordance repair drops back to the manual screen the countdown's
     # own Cancel produces, which has one.
     assert "if (!hasBegin && index > 1) {" in main_js
@@ -933,9 +962,22 @@ def test_capture_page_plan_loop_derives_named_screens_for_every_outcome():
     # runner refuses it as out-of-order, which ends the session).
     assert "await runPlanCapture(ctx, { index, attempt: attempt + 1, retake });" in main_js
     assert "await runPlanCapture(ctx, { index: index + 1, attempt: attempt + 1 });" in main_js
-    assert '"All measurements done — the speaker continues automatically."' in main_js
+    # RE-DERIVED for PR-T4 (work order D7): the shared completion screen's
+    # fallback stopped promising an automatic continuation that a stage-1
+    # session deliberately does not make.
+    assert (
+        '"All measurements done — the speaker page shows what happens next."'
+        in main_js
+    )
+    # (the only surviving mention is the comment recording what it replaced)
+    assert main_js.count("the speaker continues automatically") == 1
     assert 'text: "Measurement refused"' in main_js
-    assert 'text: "Reached the attempt limit"' in main_js
+    # The exhausted terminal keeps the attempt-limit copy for a genuine attempt
+    # limit, but PR-T4 gave it a second, honest face: when the Pi says WHICH
+    # clock expired, calling a timeout an attempt limit is simply false (work
+    # order D8). The heading is now selected rather than literal.
+    assert '"Reached the attempt limit"' in main_js
+    assert "expiredBudgetCopy(ctx, verdict)" in main_js
     # Refusal and exhaustion never route through the success text.
     refused_start = main_js.index("function renderPlanRefused")
     refused_end = main_js.index("function renderPlanExhausted", refused_start)

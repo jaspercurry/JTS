@@ -84,8 +84,10 @@ Why 4 prompted positions and not the floated 3:
   comment above the table counts them 1-based as "3 and 4";
   `test_cloud_prompts_front_load_the_wide_offsets`). A 4-position group
   walks offsets 0–3 and picks up both wide moves from the already-shipped,
-  already-validated table — hand-width left/right plus forearm left/right,
-  which is the owner's "middle, left, right" at two scales. Three prompted
+  already-validated table — a short left/right pair plus a wide left/right
+  pair (12 cm then 40 cm since the two-stage ladder's D7 restated them in
+  inches and centimetres), which is the owner's "middle, left, right" at two
+  scales. Three prompted
   positions would capture only one wide move, violating the ≥ 2-wide
   constraint the plan adjudicated as load-bearing for the LF edge
   (the cloud's LF common-mode bounce lift does not converge with N at
@@ -211,17 +213,29 @@ screen renders exactly this grammar, in this order, in the same DOM slots
 every time:
 
 ```
-[eyebrow]   Measurement 4 of 7            ← small; the ONLY counter
-[headline]  A forearm's length LEFT       ← the instruction, 1.5rem+,
-            of the mark                     one imperative sentence
+[eyebrow]   Measurement 4 of 6            ← small; the ONLY counter
+[headline]  Move the microphone 16 in     ← the instruction, 1.5rem+,
+            (40 cm) to the LEFT of the      one imperative sentence
+            mark, at mark height.           stating a COMPLETE pose
 [detail]    Step a little toward the      ← ≤ 1 short supporting clause;
-            speaker; keep the phone         may be empty
-            pointed at it.
+            speaker as you go out…          may be empty
 [action]    [ I'm there — play the tone ] ← single full-width primary
+[budget]    You have about 2 minutes      ← quiet; present only when the
+            between taps…                   Pi published its budgets
 [stop]      Stop measuring                ← small text link; its tap
                                             opens a danger-styled
                                             confirm (see below)
 ```
+
+**The worked example is current as of the two-stage split** (work order D7).
+Two things in it moved and both were load-bearing: the counter is stage 1's
+(6 for a Quick tune, 10 for a Full measurement — not the whole journey's), and
+the instruction is a numeric ABSOLUTE pose in inches and centimetres. The
+body-part register the earlier example used ("A forearm's length LEFT") was
+withdrawn by the 2026-07-28 field session (issue #1805); the relative phrasing
+was withdrawn by the 2026-07-29 one (issue #1806), which is also the likeliest
+cause of the position clustering that trips the geometry lock (issue #1874).
+The `[budget]` row is D8's and is absent when the Pi published no budgets.
 
 **Stop demotion is a deliberate reversal of a documented decision.**
 `render.js` styles Stop as the page's one danger-red button *on purpose*

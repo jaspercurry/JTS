@@ -394,6 +394,7 @@ def _records(n: int = 3) -> list[dict]:
             "index": i,
             "attempt": 2 if i == 1 else 1,
             "take_id": f"cloud_measure_{i:02d}_a{2 if i == 1 else 1:02d}",
+            "role": ("onax", "offax", "xovr")[i % 3],
             "gate_window_ms": 7.0,
             "validity_floor_hz": 142.9,
             "gating_applied": True,
@@ -421,6 +422,37 @@ def test_the_members_survive_alongside_the_aggregate() -> None:
     for row in block["positions"]:
         assert row["magnitude_db"]
         assert len(row["magnitude_db"]) == len(block["curve_grid"]["freqs_hz"])
+
+
+def test_each_position_carries_the_named_question_it_answers() -> None:
+    """The attribution stage's actual consumer is this block, not the bundle
+    sidecar — so a role that reaches only the sidecar reaches nobody.
+
+    ``role`` (attribution plan §5's promotion-queue item 1, shipped with T4's
+    position prompts) is projected through ``_RECORD_FIELDS`` like every other
+    per-position scalar, and it is READ off the record rather than re-derived
+    from the prompt string: the prompt is household copy that product rulings
+    rewrite, which is the whole reason the label exists as data.
+    """
+    block = position_evidence_block(
+        _combined(), position_records=_records(), validity_floor_hz=142.9
+    )
+
+    assert [row["role"] for row in block["positions"]] == ["onax", "offax", "xovr"]
+    # …and the block explains the vocabulary to whoever reads the artifact,
+    # including that an absent role is unsampled rather than absent evidence.
+    description = block["field_descriptions"]["role"]
+    assert "onax" in description and "offax" in description and "xovr" in description
+    assert "UNSAMPLED" in description
+
+    # A record that predates the label simply carries no role, rather than one
+    # invented from its prompt — the same absence discipline every other
+    # optional scalar in this block already follows.
+    older = [{k: v for k, v in r.items() if k != "role"} for r in _records()]
+    legacy = position_evidence_block(
+        _combined(), position_records=older, validity_floor_hz=142.9
+    )
+    assert all("role" not in row for row in legacy["positions"])
 
 
 def test_the_per_position_curve_is_at_least_a_twelfth_octave_from_the_floor() -> None:

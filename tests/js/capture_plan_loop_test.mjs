@@ -673,9 +673,14 @@ async function testFullAcceptedRoundTripEndsAllDone() {
 
   // Third (final) capture completes the set directly.
   assert.equal(headingText(ctx.screenEl), "All measurements done");
+  // RE-DERIVED for PR-T4 (work order D7): the fallback used to promise "the
+  // speaker continues automatically", which is exactly false for a stage-1
+  // session — it deliberately does not continue, it waits for the household's
+  // decision. The replacement is true of every flow that reaches this shared
+  // screen, so no flow needs a branch to be told the truth.
   assert.equal(
     noteText(ctx.screenEl),
-    "All measurements done — the speaker continues automatically.",
+    "All measurements done — the speaker page shows what happens next.",
   );
   const link = backLink(ctx.screenEl);
   assert.ok(link, "the terminal screen offers Back to speaker");
@@ -773,9 +778,15 @@ async function testGeometryRetakeRendersTheServerSuppliedGuidance() {
   const REASON =
     "These spots were too close together to tell a real dip from an echo. " +
     "Take this one from further out and we will use it instead.";
+  // RE-DERIVED for PR-T4 (#1805's 2026-07-28 ruling): the shipped rung is a
+  // numeric ABSOLUTE pose now. This fixture mirrors
+  // `CLOUD_GEOMETRY_RETRY_PROMPTS[0]` — the page renders whatever the Pi
+  // sends, so the value here is only ever a realistic sample, but a sample in
+  // a register the Pi has stopped emitting is a fixture that stops testing the
+  // shipped path.
   const PROMPT =
-    "Same measurement, wider spot: take this one about two forearms' length " +
-    "to the LEFT of the mark, still pointed at the speaker.";
+    "Same measurement, wider spot: move the microphone 30 in (75 cm) to the " +
+    "LEFT of the mark, at mark height, still pointed at the speaker.";
 
   const spec = planSpec({ target: 2, maxAttempts: 4 });
   const { client } = makeFakePlanClient({
@@ -2879,10 +2890,27 @@ async function testPreArmFailureDuringARetakeReArmsTheRetakeNotTheForwardPath() 
     `the copy must name the retake control, got: ${lastStatus}`,
   );
   assert.equal(ctx.retakeSlot.index, 1, "the retake offer is live again");
+  // …AND IT IS ON SCREEN. `ctx.retakeSlot` is bookkeeping and the `retake`
+  // handle above is a node the page may since have replaced — asserting
+  // either one proves the household can act only if the control is still in
+  // the screen tree. It was not: PR-T4 gave a retake its own affordance-free
+  // in-progress screen, and this arm left THAT up under copy naming a button
+  // that was no longer rendered — action labels [] where the pre-T4 build had
+  // both, with Stop the only remaining tap mid-walk. Read what is rendered.
+  assert.deepEqual(
+    actionLabels(ctx.screenEl),
+    ["I’m there — play the tone", "Retake this measurement"],
+    "the failure copy must name a control the household can actually see",
+  );
 
   // Re-tapping it re-posts the IDENTICAL pair (the runner tolerates that),
-  // never the forward one the visible primary would have posted.
-  await fire(retake);
+  // never the forward one the visible primary would have posted. Re-read the
+  // control off the screen for the same reason.
+  const liveRetake = actionButtons(ctx.screenEl).find(
+    (b) => b.textContent === "Retake this measurement",
+  );
+  assert.ok(liveRetake, "the re-armed retake is a rendered control");
+  await fire(liveRetake);
   const begins = posted.filter((e) => e.begin_capture && !e.armed);
   assert.deepEqual(
     begins.map((e) => [e.begin_capture.index, e.begin_capture.attempt, e.begin_capture.retake]),
@@ -3614,6 +3642,199 @@ async function testARefusedGroupCloseSurfacesRatherThanHanging() {
   ok();
 }
 
+// ============================================================================
+// 58 (D10, PR-T4). The group-confirm's DETAIL line is the last thing a
+// household reads before the interlude, so it has to set the interlude up.
+//
+// It branches on the same predicate the tap itself branches on — is there an
+// entry past this group? — which is what keeps the page correct against BOTH
+// conductors. The page publishes first (README "Release order"), so a new
+// bundle legitimately meets an old conductor whose plan still carries VERIFY
+// past the group, and there JTS really does tune next.
+// ============================================================================
+async function testTheConfirmDetailSaysWhoDecidesNext() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  // Measure-only (the shipped stage-1 shape): the final position IS the
+  // target, so nothing is tuned next — the household decides.
+  const spec = measureOnlyPlanSpec();
+  const { client } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) =>
+      index === 3
+        ? { accepted: true, group_complete: "cloud_measure", awaiting_confirm: true }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+
+  const detail = noteTexts(ctx.screenEl).join(" ");
+  assert.ok(
+    !detail.includes("JTS tunes the speaker next"),
+    "a measure-only plan must not promise a tune it deliberately will not do",
+  );
+  assert.match(detail, /you decide what to do about it/i);
+  assert.match(detail, /speaker page/i);
+  // The retake escape hatch survives — it is the reason this screen exists.
+  assert.match(detail, /Retake this spot first/);
+
+  // …and the LEGACY shape (an entry past the group) keeps the true sentence.
+  statusHistory.length = 0;
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+  const legacy = measureOnlyPlanSpec({ target: 3, maxAttempts: 6 });
+  legacy.capture_plan.capture_target = 2;
+  const legacyClient = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 6,
+    resultFor: (index) =>
+      index === 2
+        ? { accepted: true, group_complete: "cloud_measure", awaiting_confirm: true }
+        : { accepted: true },
+  });
+  const legacyCtx = makeCtx(legacy, legacyClient.client);
+  await onPlanStart(legacyCtx);
+  await fire(primaryButton(legacyCtx));
+
+  assert.equal(
+    headingText(legacyCtx.screenEl), "All spots measured — ready to continue?",
+  );
+  assert.ok(
+    noteTexts(legacyCtx.screenEl).join(" ").includes("JTS tunes the speaker next"),
+    "with an entry past the group the old sentence is the true one",
+  );
+  ok();
+}
+
+// ============================================================================
+// 59 (owner field note, 2026-07-29). A retake NAMES THE STEP BEING RETAKEN.
+//
+// "After pressing retry, the top-of-screen copy describes the next action
+// rather than the step being retried." Every screen that offers a retake is
+// about a different index than the retake itself — `renderPlanNext` shows the
+// UPCOMING position's instruction — and `runPlanCapture` paints no screen of
+// its own, so the household re-measured position N while reading position
+// N+1's instruction.
+// ============================================================================
+async function testARetakeRendersTheStepItIsRetakingNotTheNextOne() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  installDocument(makeStatusEl());
+
+  const entries = [0, 1].map((i) => ({
+    index: i,
+    kind_label: "cloud_measure",
+    duration_ms: 17000,
+    screen: {
+      progress: `Measurement ${i + 1} of 2`,
+      title: i === 0 ? "SPOT ONE" : "SPOT TWO",
+      auto_advance: "tap",
+    },
+  }));
+  const spec = planSpec({ target: 2, maxAttempts: 4, entries });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 4 });
+  const ctx = makeCtx(spec, client);
+
+  // The heading AT THE MOMENT THE MICROPHONE STARTS is the one the household
+  // is actually reading while they hold the mic — after the round completes
+  // the page has legitimately moved on, so a post-hoc read would prove
+  // nothing about the window the defect lives in.
+  const headingsAtRecord = [];
+  const recorder = globalThis.__recorder;
+  const start = recorder.start.bind(recorder);
+  recorder.start = () => {
+    headingsAtRecord.push(headingText(ctx.screenEl));
+    return start();
+  };
+
+  await onPlanStart(ctx);
+  // The offering screen is about the UPCOMING spot — that is the whole trap.
+  assert.equal(headingText(ctx.screenEl), "SPOT TWO");
+  const retake = actionButtons(ctx.screenEl).find(
+    (b) => b.textContent === "Retake this measurement",
+  );
+  assert.ok(retake, "the retake offer is on screen");
+
+  await fire(retake);
+
+  // The retake's own recording window read SPOT ONE — the slot actually being
+  // re-measured — where before it read the next position's instruction.
+  assert.ok(headingsAtRecord.length >= 2, headingsAtRecord.join(" | "));
+  assert.equal(
+    headingsAtRecord[headingsAtRecord.length - 1], "SPOT ONE",
+    "the retake screen must name the step being retaken, not the next one",
+  );
+  ok();
+}
+
+// ============================================================================
+// 60 (PR-T4 gate blocker B1). The same repair, from the GROUP-CLOSE CONFIRM —
+// the worst place to strand a household, because the whole apply decision sits
+// behind that screen's Continue.
+//
+// A retake of the cloud's FINAL position is offered by `renderPlanGroupConfirm`,
+// not `renderPlanNext`, so the screen the repair has to put back is a different
+// one. `ctx.retakeAwaitingConfirm` is what tells them apart — the same flag
+// `keepEarlierTakeControl` already routes on.
+// ============================================================================
+async function testPreArmFailureDuringAFinalPositionRetakeRestoresTheConfirm() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  globalThis.__recorderError = null;
+  installDocument(makeStatusEl());
+
+  const spec = measureOnlyPlanSpec();
+  const { client, posted } = makeFakePlanClient({
+    target: 3,
+    maxAttempts: 6,
+    resultFor: (index) =>
+      index === 3
+        ? { accepted: true, group_complete: "cloud_measure", awaiting_confirm: true }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  await fire(primaryButton(ctx));
+  await fire(primaryButton(ctx));
+  assert.equal(headingText(ctx.screenEl), "All spots measured — ready to continue?");
+
+  const retake = actionButtons(ctx.screenEl).find(
+    (b) => b.textContent === "Retake this measurement",
+  );
+  assert.ok(retake, "the final position is retakeable at the confirm");
+
+  ctx.recorder = null;
+  globalThis.__recorderError = new Error("Permission denied");
+  await fire(retake);
+  globalThis.__recorderError = null;
+
+  // Back on the confirm, with BOTH its controls — the decision the whole
+  // two-stage flow rests on is reachable again, and the copy names a control
+  // that is on the screen.
+  assert.equal(headingText(ctx.screenEl), "All spots measured — ready to continue?");
+  assert.deepEqual(actionLabels(ctx.screenEl), ["Continue", "Retake this measurement"]);
+  assert.ok(
+    statusHistory[statusHistory.length - 1].includes(
+      "Tap Retake this measurement to try again",
+    ),
+  );
+  // …and no forward begin was posted while the Pi may still await the retake.
+  assert.ok(
+    !posted.some((e) => e.begin_capture && e.begin_capture.index === 4),
+    "the repair never posts past the held group",
+  );
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -3672,6 +3893,9 @@ const tests = [
   testTheFinalHeldCaptureRendersTheConfirmNotAllDone,
   testContinueSignalsThenWaitsForTheSetToClose,
   testARefusedGroupCloseSurfacesRatherThanHanging,
+  testTheConfirmDetailSaysWhoDecidesNext,
+  testARetakeRendersTheStepItIsRetakingNotTheNextOne,
+  testPreArmFailureDuringAFinalPositionRetakeRestoresTheConfirm,
 ];
 
 await runTestFunctions(tests, () => passed);
