@@ -102,6 +102,12 @@ resolve_lane_tool() {
 # (including inside resolve_lane_tool's FATAL block above). A truncating pipe
 # then always shows the verdict, never just whatever happened to be running
 # when the transcript got cut.
+#
+# N counts passing EXECUTIONS across phases, not distinct tests: test-fast
+# can run the same node id more than once (a changed test file matches both
+# the changed-file-selection phase and the always-on guards), and each
+# passing run adds to N. An honest count of what actually ran, not a claim
+# about how many distinct tests exist.
 
 # lane_pipe_pytest <output-file> <command...>
 #
@@ -114,6 +120,16 @@ resolve_lane_tool() {
 # returned via `$?` using `PIPESTATUS[0]` rather than relying on `pipefail`
 # alone, so this helper behaves the same even if a future caller sources it
 # without `set -o pipefail`.
+#
+# PIPESTATUS[0] (pytest), not [1] (tee), is deliberate: pytest's own exit
+# code is the authoritative signal for whether the TESTS passed, and a `tee`
+# failure is a different failure mode (infrastructure, not test outcome).
+# That is not the same as swallowing a tee failure -- a dead/unresolvable
+# `tee` breaks the pipe pytest is writing to, so pytest itself then exits
+# nonzero too (observed directly while developing this: an unresolvable
+# `tee` produced a BrokenPipeError in the writing process, not a silent
+# pass). A failed tee SHOULD read FAILED, and in the realistic failure paths
+# it does, via that cascade rather than via [1].
 lane_pipe_pytest() {
   local output_file="$1"
   shift

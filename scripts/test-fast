@@ -162,12 +162,20 @@ echo "==> pytest last failures"
 # issue #1758: a cached node id that no longer resolves (a renamed or deleted
 # test) makes pytest's own --last-failed machinery silently degrade into
 # collecting and running the FULL suite serially -- `--last-failed-no-failures
-# none` only guards the case where the cache is EMPTY, not this one. Verified
-# 2026-07-29: seeding one stale id alongside one live one made
-# `--last-failed --last-failed-no-failures none` print "run-last-failure: 1
+# none` only guards the case where the cache is EMPTY, not this one. The
+# degenerate sweep fires specifically when NO cached id resolves within the
+# collected scope (every cached id renamed/deleted, or every cached id from
+# outside the given scope): pytest correctly deselects a MIX of live and
+# stale ids on its own (verified 2026-07-29 against pytest 9.0.3: one live id
+# alongside one stale one narrowed cleanly to "1 selected", the stale entry
+# just dropped), so one stale entry riding along with a live one is NOT
+# itself the trigger. An all-stale cache is: that same probe showed
+# `--last-failed --last-failed-no-failures none` print "run-last-failure: N
 # known failures not in selected tests" and then run every item in the given
-# scope, not the one that actually last failed -- the exact ~17-minute-serial-
-# sweep shape reported twice against the flat-linearization ladder's renames.
+# scope, not the (zero) that actually resolved -- the exact
+# ~17-minute-serial-sweep shape reported twice against the
+# flat-linearization ladder's renames, where a whole file's worth of cached
+# ids went stale at once.
 #
 # Fix: read the cache ourselves and validate before ever passing
 # --last-failed. One combined --collect-only probe (fast -- it only imports
@@ -242,6 +250,11 @@ with open(sys.argv[1], "w", encoding="utf-8") as fh:
 fi
 
 if (( ${#resolved_lastfailed_ids[@]} > 0 )); then
+  # Deliberate: passing both is a UNION, not `"$@"` scoping the cached ids --
+  # pytest runs the resolved ids AND whatever `"$@"` names, exactly the same
+  # union `--last-failed` itself had with trailing args before this fix.
+  # Harmless: a caller-supplied path only adds tests to the phase, it can
+  # never cause a cached failure to be silently skipped.
   lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short "${resolved_lastfailed_ids[@]}" "$@"
   _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
 else
