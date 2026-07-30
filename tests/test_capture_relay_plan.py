@@ -234,6 +234,9 @@ class PhonePlanDriver:
         # scripts stay byte-identical.
         self.retake_indexes: set[int] = set()
         self.retakes_posted: list[tuple[int, int]] = []
+        # How many times this phone has signalled the SET complete (work order
+        # D1). Zero for every plan whose host does not hold the set open.
+        self.completions_posted = 0
 
     def _post(self, event):
         self.sequence += 1
@@ -289,6 +292,18 @@ class PhonePlanDriver:
         self._post({"aborted": True, "abort_reason": reason})
         self.finished = True
 
+    def complete_set(self):
+        """The household's "all spots measured — Continue" tap.
+
+        Mirrors ``capture-page/js/main.js``'s ``completePlanCaptureSet``: on an
+        accepted verdict carrying ``awaiting_confirm`` the page posts this
+        signal instead of a begin for the next entry — which a held set does
+        not have, since its final slot IS the capture target (two-stage
+        commission work order D1).
+        """
+        self._post({"complete_capture_set": True, "capture_page": self.page})
+        self.completions_posted += 1
+
     def step(self):
         if self.finished:
             return
@@ -319,6 +334,13 @@ class PhonePlanDriver:
                 # measurement" on the capture that just completed.
                 self.retake_indexes.discard(index)
                 self.begin(index, attempt + 1, retake=True)
+            elif host.get("accepted") and host.get("awaiting_confirm"):
+                # ORDER IS LOAD-BEARING, exactly as on the real page: a held
+                # set's final slot is also its target, so an accepted verdict
+                # here would otherwise route to a forward begin the runner must
+                # refuse. Retake still wins above it — the confirm screen keeps
+                # offering it, which is the whole point of the window.
+                self.complete_set()
             elif (index, attempt) in self.retakes_posted:
                 # A retake's slot is accepted either way — an accepted retake
                 # replaced the take, a rejected one left the original standing
