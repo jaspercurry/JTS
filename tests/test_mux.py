@@ -340,13 +340,30 @@ async def test_alert_storm_does_not_postpone_fixed_patrol(
     # assumed, observing only 1 patrol-tagged trigger instead of >= 2.
     # Waiting on the observable (2 patrol triggers recorded) instead proves
     # the same property — patrols keep firing despite a continuous alert
-    # storm — without depending on how much wall-clock time that takes. The
-    # timeout is a hang-breaker, not a timing assertion (tests/_async_wait.py).
+    # storm — without depending on how much wall-clock time that takes.
+    #
+    # wait_signalled's own timeout is a hang-breaker, not a timing assertion
+    # (tests/_async_wait.py:30-32) — it is generous enough (10s default) to
+    # never flake, which means it alone cannot catch a real cadence
+    # regression (e.g. ALERT_COALESCE_SEC drifting 10x slower): the test
+    # would just wait longer and still pass. The elapsed ceiling below is
+    # what pins the actual rate promise, per that same doctrine — "the
+    # test's own assertions are what pin timing promises." 2.0s is 100x
+    # POLL_INTERVAL_SEC and 14x the old fixed window that flaked, so it
+    # cannot itself flake under load while still catching a real regression.
+    loop = asyncio.get_running_loop()
+    start = loop.time()
     storm_task = asyncio.create_task(alert_storm())
     try:
         await wait_signalled(
             two_patrols_seen, "second patrol-tagged reconcile trigger",
             producer=mux_task,
+        )
+        elapsed = loop.time() - start
+        assert elapsed < 2.0, (
+            f"2 patrol-tagged reconciles took {elapsed:.3f}s under a "
+            "continuous alert storm -- the fixed-patrol cadence may have "
+            "regressed"
         )
     finally:
         storm_task.cancel()
