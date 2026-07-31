@@ -145,7 +145,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260730.1",
+        "capture_page_build": "20260731.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -153,11 +153,15 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260730-1" in index_html
+    assert "main.js?v=20260731-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
-    assert 'from "./constraints.js?v=20260711-4"' in main_js
+    # Bumped with #1941 R4: constraints.js's realized-constraint describe()
+    # feeds household copy, so a warm-cache browser holding the old module
+    # would keep attributing the browser's own track settings to the
+    # microphone — the exact misattribution this sweep removed.
+    assert 'from "./constraints.js?v=20260731-1"' in main_js
     # Bumped with #1824 B1: relay-client.js gained the machine-readable
     # timeout tag the page classifies on. A warm-cache phone holding the old
     # module would keep raising untagged timeouts, so the classifier would stay
@@ -775,8 +779,8 @@ def test_capture_page_level_ramp_shows_friendly_agc_suspected_copy():
 
     assert 'terminalError === "agc_suspected"' in ramp_complete
     assert (
-        "The microphone is adjusting its own level, which prevents "
-        "accurate measurement. Try a different device or a USB "
+        "This browser is adjusting the microphone level, which prevents "
+        "accurate measurement. Try a different browser or a USB "
         "measurement microphone." in ramp_complete
     )
     assert 'terminalError === "agc_indeterminate"' in ramp_complete

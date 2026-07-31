@@ -577,14 +577,24 @@ screen"). Adding a step glyph means extending that vocabulary, which belongs
 to a rung that can carry the renderer's threat model with it. Routed there,
 not dropped.
 
-**Recorded deferral — mic-agnostic wording in the REJECTION templates.** The
-same owner ruling makes "the microphone" the actor. PR-T4 applied it to every
-prompt, consent step, placement instruction, and acknowledgement it owns; the
-per-reason rejection copy in `REASON_REGISTRY`
+**Recorded deferral — mic-agnostic wording in the REJECTION templates. CLOSED
+by PR #1959 (#1941 R4).** The same owner ruling makes "the microphone" the
+actor. PR-T4 applied it to every prompt, consent step, placement instruction,
+and acknowledgement it owns; the per-reason rejection copy in `REASON_REGISTRY`
 ([`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py))
-still says "move the phone closer" and similar, and belongs to the reason
-registry rather than to this ladder's copy — with the exception of the AGC
-diagnosis, which is correctly phone-specific because browser AGC is.
+still said "move the phone closer" and similar, and belonged to the reason
+registry rather than to this ladder's copy. #1941's stage-2 sweep closed that
+registry half — `snr_floor`, `pilot_level_collapse`, and
+`verify_level_shift` now name the microphone — and a curated guard
+([`tests/test_measurement_vocabulary.py`](../tests/test_measurement_vocabulary.py))
+keeps it closed.
+
+**The AGC exception survives, but attributed to the BROWSER rather than the
+phone.** Browser AGC really is browser-specific, so that diagnosis must not
+blame the capsule — a UMIK-2 has no AGC. The copy therefore names the browser
+("This browser is adjusting the microphone level…"), which is both the honest
+attribution and mic-agnostic; "phone" was never the load-bearing word, "not
+the microphone" was.
 
 **D8 — The phone tells the truth about time, and about CHECK. ADOPT
 (#1807 + #1835).** The page surfaces the current step's remaining

@@ -472,7 +472,9 @@ def test_room_correction_card_uses_room_handoff() -> None:
 
     assert 'id="correction-card" href="/correction/room/"' in html
     assert "data-https" not in html
-    assert "Phone measurement relay" in html
+    # #1941 R4: the instrument is the microphone, never the phone — the row is
+    # the entry point to /correction/room/, whose own subtitle says the same.
+    assert "Microphone measurement relay" in html
 
 
 def test_room_correction_preflight_switches_to_https() -> None:

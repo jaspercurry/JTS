@@ -579,7 +579,7 @@ Prefer:
 - **Open measurement page**
 - **Scan with your phone's camera**
 - **Show QR code**
-- **Put your phone at the main seat**
+- **Put the microphone at the main seat**
 - **Move to position 2 of 6**
 - **Measure this position**
 - **Apply room correction**

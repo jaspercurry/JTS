@@ -37,6 +37,8 @@ import ast
 import re
 from pathlib import Path
 
+_REPO = Path(__file__).resolve().parents[1]
+
 # Standalone "phone"/"phones" only — never the "phone" inside "microphone",
 # "headphone", "iPhone", or "smartphone".
 PHONE_WORD_RE = re.compile(r"(?:^|[^A-Za-z])[Pp]hones?(?:[^A-Za-z]|$)")
@@ -44,8 +46,20 @@ PHONE_WORD_RE = re.compile(r"(?:^|[^A-Za-z])[Pp]hones?(?:[^A-Za-z]|$)")
 
 # --- The swept surfaces -------------------------------------------------------
 # Every file whose household-facing copy was swept for #1941 R4, grouped by the
-# four clusters the requirement names. A file listed here is asserted to contain
-# no "phone" string literal outside ALLOWED_PHONE_LITERALS below.
+# four clusters the requirement names. A file listed here is asserted to carry no
+# un-exempt "phone" in whatever this guard can read of it:
+#
+#   * ``.py``  — string literals via AST, docstrings excluded;
+#   * ``.js``  — string literals, with comment bodies blanked first;
+#   * ``.html``— *rendered* text (element text plus the user-visible attributes),
+#                because a page's copy lives between its tags, not in a literal.
+#
+# That third mode exists because the first review of this guard proved a real
+# hole: run against ``deploy/index.html`` as if it were JS, the extractor found
+# 919 string literals and ZERO "phone" hits while the landing page was rendering
+# "Phone measurement relay" in plain sight. Element text is simply not a string
+# literal. Reading such a file with the JS extractor is worse than not listing it
+# — it reports clean and means nothing.
 
 SWEPT_SURFACES: tuple[str, ...] = (
     # Cluster 1 — wizard verdict lines (the §5.10 reason registry and the
@@ -63,6 +77,9 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/web/sync_flow.py",
     # Cluster 3 — relay hand-off chrome (the speaker-side pages that hand the
     # household off to the measurement page, and the shared QR affordance).
+    # The landing page is the ENTRY POINT to /correction/room/, so its row label
+    # and that page's subtitle have to agree; they did not until #1959.
+    "deploy/index.html",
     "jasper/web/correction_crossover_flow.py",
     "deploy/assets/correction/js/main.js",
     "deploy/assets/correction/js/crossover/main.js",
@@ -98,6 +115,10 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # verbatim `error` the audio-measurement ramp emits, pinned by
     # tests/test_audio_measurement_ramp.py. Only their VALUES are household copy.
     "no usable phone samples": "raw ramp error string (refusal-table key)",
+    # The ONE fragment with reach beyond a single string: it also covers the
+    # CaptureTimeout detail "phone never armed within {n}s". Both are non-copy
+    # (table key / log detail), so one entry is the honest shape — see
+    # FRAGMENT_REACH_EXCEPTIONS and the test that pins it.
     "phone never armed": "raw ramp error string (refusal-table key)",
     "phone feed lost": "raw ramp error string (refusal-table-prefix key)",
     # --- Diagnostic detail on CaptureTimeout / CaptureFailed, and internal
@@ -146,6 +167,17 @@ ALLOWED_PHONE_LITERALS: dict[str, str] = {
     "phone": "mic-trust TIER key, mirrored from "
     "jasper.active_speaker.linearization_envelope.MIC_TIERS — a closed set of "
     "keys (reference / consumer / phone), never rendered as a sentence",
+}
+
+
+# How many distinct readable strings each fragment is allowed to exempt. A
+# fragment is meant to excuse ONE string; anything broader is how an exemption
+# quietly grows into a licence. Only entries listed here may exempt more than
+# one, and the count is pinned so growth has to be deliberate.
+FRAGMENT_REACH_EXCEPTIONS: dict[str, int] = {
+    # Also covers the CaptureTimeout detail "phone never armed within {n}s" —
+    # the ramp's refusal-table key is a prefix of it. Both are non-copy.
+    "phone never armed": 2,
 }
 
 
@@ -240,6 +272,29 @@ def _js_string_literals(source: str) -> list[str]:
     ]
 
 
+_HTML_INERT_RE = re.compile(r"(?is)<(script|style)\b.*?</\1>")
+_HTML_TAG_RE = re.compile(r"(?s)<[^>]+>")
+_HTML_VISIBLE_ATTR_RE = re.compile(
+    r"""(?:aria-label|title|placeholder|alt)=(["'])(.*?)\1""", re.S
+)
+
+
+def _html_rendered_text(source: str) -> list[str]:
+    """What a household actually reads on the page.
+
+    Element text with ``<script>``/``<style>`` bodies dropped, plus the
+    attributes a browser surfaces (``aria-label``, ``title``, ``placeholder``,
+    ``alt``) — a screen-reader label is household copy as surely as a heading.
+    Inline script string literals are deliberately NOT scanned here: a page that
+    needs them scanned belongs in the JS list as its own module.
+    """
+    body = _HTML_INERT_RE.sub(" ", source)
+    return [
+        _HTML_TAG_RE.sub(" ", body),
+        *(match.group(2) for match in _HTML_VISIBLE_ATTR_RE.finditer(body)),
+    ]
+
+
 def _excerpt(literal: str) -> str:
     """A readable pointer at the offending word, not the whole page template."""
     match = PHONE_WORD_RE.search(literal)
@@ -248,14 +303,19 @@ def _excerpt(literal: str) -> str:
     return f"…{flat}…"
 
 
-def _offending_excerpts(path: Path) -> list[str]:
-    """Every un-exempt standalone "phone" in ``path``'s string literals."""
-    source = path.read_text(encoding="utf-8")
-    literals = (
-        _python_string_literals(source)
-        if path.suffix == ".py"
-        else _js_string_literals(source)
-    )
+def _readable_strings(name: str) -> list[str]:
+    """Everything this guard can read out of ``name``, per its extension."""
+    source = (_REPO / name).read_text(encoding="utf-8")
+    if name.endswith(".py"):
+        return _python_string_literals(source)
+    if name.endswith(".html"):
+        return _html_rendered_text(source)
+    return _js_string_literals(source)
+
+
+def _offending_excerpts(name: str) -> list[str]:
+    """Every un-exempt standalone "phone" in what ``name`` shows a household."""
+    literals = _readable_strings(name)
     offenders = []
     for literal in literals:
         if literal in ALLOWED_PHONE_LITERALS:
@@ -273,7 +333,7 @@ def _offending_excerpts(path: Path) -> list[str]:
 
 def test_swept_surfaces_exist():
     """A renamed or deleted file must not silently drop out of the sweep."""
-    missing = [name for name in SWEPT_SURFACES if not Path(name).is_file()]
+    missing = [name for name in SWEPT_SURFACES if not (_REPO / name).is_file()]
     assert not missing, (
         "SWEPT_SURFACES names files that no longer exist; re-point the guard at "
         f"their new home rather than deleting the entry: {missing}"
@@ -289,9 +349,7 @@ def test_swept_surfaces_never_call_the_instrument_a_phone():
     the reason it is not copy.
     """
     offenders = {
-        name: found
-        for name in SWEPT_SURFACES
-        if (found := _offending_excerpts(Path(name)))
+        name: found for name in SWEPT_SURFACES if (found := _offending_excerpts(name))
     }
     assert not offenders, (
         "The measurement flow's household-facing copy must call the instrument "
@@ -324,16 +382,54 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
 def test_allowlist_entries_are_still_used():
     """An exemption that no longer matches anything is stale — it outlived the
     string it excused, and a stale exemption is how a real offender slips in
-    later under a name someone already agreed to ignore."""
+    later under a name someone already agreed to ignore.
+
+    Matched against the EXTRACTED strings, not the raw file text: an exemption
+    whose only remaining home is a comment exempts nothing a household can read,
+    and should read as stale rather than as still-earning-its-keep.
+    """
     corpus = "\n".join(
-        Path(name).read_text(encoding="utf-8") for name in SWEPT_SURFACES
+        text for name in SWEPT_SURFACES for text in _readable_strings(name)
     )
     unused = [
         fragment for fragment in ALLOWED_PHONE_FRAGMENTS if fragment not in corpus
     ]
     assert not unused, (
-        "ALLOWED_PHONE_FRAGMENTS entries no longer present on any swept surface; "
-        f"drop them so the exemption list stays honest: {unused}"
+        "ALLOWED_PHONE_FRAGMENTS entries no longer present in any swept "
+        f"surface's readable strings; drop them: {unused}"
+    )
+    orphan_literals = [
+        literal
+        for literal in ALLOWED_PHONE_LITERALS
+        if not any(
+            literal in _readable_strings(name) for name in SWEPT_SURFACES
+        )
+    ]
+    assert not orphan_literals, (
+        "ALLOWED_PHONE_LITERALS entries that match no literal on any swept "
+        f"surface; drop them: {orphan_literals}"
+    )
+
+
+def test_no_fragment_exempts_more_than_it_was_granted():
+    """Fragment reach is bounded and recorded, so an exemption cannot quietly
+    widen into a licence. A fragment excuses ONE string unless
+    FRAGMENT_REACH_EXCEPTIONS says otherwise, with the count pinned."""
+    readable = [
+        text
+        for name in SWEPT_SURFACES
+        for text in _readable_strings(name)
+        if PHONE_WORD_RE.search(text)
+    ]
+    over = {}
+    for fragment in ALLOWED_PHONE_FRAGMENTS:
+        reach = len({text for text in readable if fragment in text})
+        allowed = FRAGMENT_REACH_EXCEPTIONS.get(fragment, 1)
+        if reach > allowed:
+            over[fragment] = f"exempts {reach} strings, granted {allowed}"
+    assert not over, (
+        "fragment exemptions reaching further than granted — narrow the "
+        f"fragment, or record the wider reach with its reason: {over}"
     )
 
 

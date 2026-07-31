@@ -22,7 +22,7 @@ import { importContentKey, encryptWav } from "./crypto.js";
 import {
   constraintDecision,
   verifyRealizedConstraints,
-} from "./constraints.js?v=20260711-4";
+} from "./constraints.js?v=20260731-1";
 import { safeReturnUrl } from "./return-url.js";
 import {
   acquireWakeLock,
@@ -649,11 +649,15 @@ function renderLevelRampComplete(ctx, ramp) {
   };
   const message = messages[state] || messages.error;
   if (state === "error" && terminalError === "agc_suspected") {
-    // The Pi observed a flat reported-vs-commanded staircase slope — this
-    // phone's mic chain IS adjusting gain automatically. Friendly copy
-    // instead of the raw server code.
+    // The Pi observed a flat reported-vs-commanded staircase slope — something
+    // in the recording chain IS adjusting gain automatically. The copy names
+    // the BROWSER, because that is where AGC lives: a dedicated measurement mic
+    // has none, so blaming the microphone would send the household to replace
+    // the one part that is behaving. (No model names here — this file must not
+    // embed a mic catalogue; see the Pi-registry inference contract in
+    // tests/test_capture_page_js.py.) Friendly copy instead of the raw code.
     message.note =
-      "The microphone is adjusting its own level, which prevents accurate measurement. Try a different device or a USB measurement microphone.";
+      "This browser is adjusting the microphone level, which prevents accurate measurement. Try a different browser or a USB measurement microphone.";
     message.status = `Level check failed — ${message.note}`;
   } else if (state === "error" && terminalError === "agc_indeterminate") {
     // The Pi could not gather enough staircase evidence to render a verdict
