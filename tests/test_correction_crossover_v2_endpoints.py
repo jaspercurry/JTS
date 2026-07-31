@@ -1787,6 +1787,122 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
     assert v2host.crossover_v2_status_block()["cloud"] is None
 
 
+def _seeded_session_with_a_banked_finding(copy: str) -> None:
+    """A completed measuring session whose fit banked one household finding."""
+    v2host.save_v2_state({
+        "session_id": "cap_measuring_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": "fp-measured"},
+        "applied": True,
+        "evidence": {
+            "bundle_session_id": "bundle-stage-1",
+            v2host.FINDING_HOUSEHOLD_REFS_KEY: [
+                {"household_copy": copy, "at": time.time()},
+            ],
+        },
+    })
+
+
+def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
+    return CrossoverV2Conductor(
+        session_id=session_id,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=V2FlowSeams(
+            play=lambda *a, **k: None,
+            analyze=lambda *a, **k: None,
+            publish_check=lambda *a, **k: None,
+            publish_candidate=lambda *a, **k: None,
+            apply_complete=v2host._applied_gate,
+            apply_failed=v2host._apply_failure_gate,
+        ),
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        index_phase_map=index_phase_map,
+    )
+
+
+def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
+    """CC1: the DONE screen is in a different session from the one that banked.
+
+    ``prepare_v2_verify`` opens a NEW relay session AND a NEW evidence bundle,
+    so "read this session's bundle" cannot reach the finding the MEASURING
+    session banked — the household would be told the speaker is tuned with the
+    disclosure silently dropped somewhere between deciding and being told.
+    The projection therefore carries forward on its own predicate: a session
+    that never runs MEASURE never had the chance to bank one, so its silence is
+    a timestamp rather than a verdict.
+
+    Walks the real seam (mirroring the ``cloud`` B1 test above): seeded durable
+    state → the REAL re-arm conductor → the REAL ``persist_conductor_state`` →
+    the state, `/state`'s projection, and the done screen.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    copy = "Two measurements of how this speaker's ranges balance disagreed."
+    _seeded_session_with_a_banked_finding(copy)
+
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
+        failure_code=None,
+        evidence={"bundle_session_id": "bundle-stage-2"},
+    )
+
+    # Surface 1: the durable state — carried across the bundle hop.
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["evidence"]["bundle_session_id"] == "bundle-stage-2"
+    assert state["evidence"][v2host.FINDING_HOUSEHOLD_REFS_KEY][0][
+        "household_copy"
+    ] == copy
+
+    # Surface 2: /state's projection.
+    assert [
+        row["household_copy"]
+        for row in v2host.crossover_v2_status_block()["findings"]
+    ] == [copy]
+
+    # Surface 3: the screen the household actually reads.
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            **v2host.crossover_v2_status_block(),
+            "phase": PHASE_DONE,
+            "verify": {"outcome": "pass"},
+        },
+    })
+    assert [f["text"] for f in env["findings"]] == [copy]
+
+
+def test_a_fresh_measurement_that_banks_nothing_clears_the_old_finding():
+    """The converse, and the reason the predicate is MEASURE rather than an
+    unconditional carry: a new measuring session writes its own projection —
+    empty included — so a speaker that has since been re-measured cleanly never
+    replays a previous session's finding as if this measurement had found it.
+    """
+    _seeded_session_with_a_banked_finding("An old finding nobody re-measured.")
+
+    # A fresh full session: its own session_phases include MEASURE, so it owns
+    # the answer to "what did this measurement learn" — and it learned nothing.
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
+        failure_code=None,
+        evidence={"bundle_session_id": "bundle-fresh"},
+    )
+
+    state = v2host.load_v2_state()
+    assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in (state["evidence"] or {})
+    assert v2host.crossover_v2_status_block()["findings"] == []
+
+
 def test_a_corrupt_session_phases_list_never_reads_as_done():
     """S5: ``session_phases`` filters to the empty tuple on garbage, and a
     zero-length walk falls through to PHASE_DONE — i.e. a garbled state file

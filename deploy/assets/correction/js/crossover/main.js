@@ -123,13 +123,25 @@ function renderApplied(applied) {
   els.applied.dataset.state = state;
 }
 
-function renderNudges(nudges, expertDetails) {
+function renderNudges(nudges, expertDetails, findings) {
   const rows = (Array.isArray(nudges) ? nudges : []).map((nudge) =>
     el('p', {
       class: `wizard-nudge ${nudge.severity === 'warn' ? 'warn' : 'info'}`,
       text: nudge.text || '',
     }),
   );
+  // What the measurement LEARNED about this speaker
+  // (crossover_envelope_v2._finding_notes — WO-1's read half). Quiet `info`
+  // register, one line each, because a finding is something to know rather
+  // than a problem to solve — the same styling the aged-resume history note
+  // uses. Below the nudges (which are about THIS screen's state) and above
+  // the expert numbers (which are folded away). The server composes the
+  // sentence, dates it when it is not today's, and sends nothing at all when
+  // nothing was banked, so there is no empty-state to render here.
+  (Array.isArray(findings) ? findings : []).forEach((finding) => {
+    const text = finding && finding.text ? String(finding.text) : '';
+    if (text) rows.push(el('p', {class: 'wizard-nudge info', text}));
+  });
   // Optional collapsed expert numbers (the verify_fail screen's tracking
   // evidence — crossover_envelope_v2._verify_expert_details, #1605). Reuses the
   // same <details> disclosure style as the candidate provenance so the primary
@@ -544,7 +556,7 @@ function render(env) {
   els.verdict.textContent = env.verdict_text || '';
   renderApplied(env.applied);
   renderSteps(env.steps);
-  renderNudges(env.nudges, env.expert_details);
+  renderNudges(env.nudges, env.expert_details, env.findings);
   renderCandidateReview(env.candidate_review);
   renderCloud(els, env);
   // On the review screen the show_during_relay primary (Apply) owns the screen

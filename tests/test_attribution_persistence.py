@@ -1038,6 +1038,129 @@ def test_a_frame_finding_failure_never_costs_the_session(tmp_path: Path) -> None
     assert "finding_artifacts" not in refs
 
 
+def test_the_banked_finding_is_read_back_for_the_household_to_see(
+    tmp_path: Path,
+) -> None:
+    """WO-1's READ half at the seam (panel lens C, CC1).
+
+    Before this, ``read_finding_set`` had zero non-test callers: the flow banked
+    a finding with validated household copy and nothing ever read one back, so
+    #1949's "bank a finding and proceed" reduced, in the household's
+    experience, to "proceed". The publisher now reopens what it just wrote —
+    through the STRICT reader, citation re-hash and all — and projects the one
+    field a household may read into the durable refs the screens render from.
+    """
+
+    from jasper.attribution.promotion import LEVEL_FRAME_HOUSEHOLD_COPY
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, _ = _open_store(tmp_path)
+    refs: dict = {}
+    _publish_candidate_artifact(store)
+    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+
+    projected = refs[v2host.FINDING_HOUSEHOLD_REFS_KEY]
+    assert len(projected) == 1
+    # The sentence is the producer's, copied, never re-minted here.
+    assert projected[0]["household_copy"] == LEVEL_FRAME_HOUSEHOLD_COPY
+    assert projected[0]["at"] > 0
+    # ``household_copy`` and a clock — nothing else. The mechanism id, the
+    # evidence scalars, the confidence tier, the probe lists and the citations
+    # are INTERNAL taxonomy (findings.py's two-vocabularies rule) and must not
+    # be on a household wire even unrendered, where a future renderer could
+    # reach them by accident.
+    assert set(projected[0]) == {"household_copy", "at"}
+    wire = json.dumps(projected)
+    for internal in ("M7", "refit", "unsure", "core_level_db_woofer", "3.276"):
+        assert internal not in wire, f"{internal} crossed onto the household wire"
+
+
+def test_a_carve_out_set_is_recorded_but_never_projected(tmp_path: Path) -> None:
+    """The deliberate boundary: the store holds every finding; the household
+    wire holds only sentences no other surface already owns.
+
+    A carve-out finding's ``household_copy`` is COPIED from the carve-out record
+    (``promote_carve_outs`` rule 3), and ``carve_outs_by_band``'s
+    ``disclosure``/``expert`` registers already render that same fact on the
+    review and done screens through ``_carve_out_expert_lines``. Projecting it
+    again would put one fact on one screen twice, from two owners — the
+    single-source-of-truth failure this program is most careful about. Pinned so
+    a future edit that "completes" the projection has to argue with this test
+    rather than quietly duplicate the copy.
+    """
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, _ = _open_store(tmp_path)
+    refs: dict = {}
+    v2host.bind_cloud_publisher(store, RELAY, refs)(
+        PHASE, {"available": True, "carve_outs": _carve_outs()}
+    )
+    # Recorded — the durable finding set exists and reopens.
+    banked = read_finding_set(store, relay_session_id=RELAY, phase=PHASE)
+    assert banked is not None and [f.mechanism for f in banked.findings] == ["M2"]
+    # …and NOT on the household wire.
+    assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in refs
+
+
+def test_a_finding_whose_evidence_vanished_is_never_projected(
+    tmp_path: Path,
+) -> None:
+    """Rehydration honesty: the read-back is what stands between a household
+    and a diagnosis that reads fine and rests on nothing.
+
+    ``read_finding_set`` re-resolves and re-hashes every bundle citation and
+    raises ``FindingEvidenceMissing`` when it cannot confirm one. The projection
+    must let that stop it — rendering the sentence anyway would be exactly the
+    failure ``verify_finding_evidence`` exists to prevent, moved one layer out
+    to where a household would read it. Nothing is projected, nothing is
+    invented, and the session is not harmed (§3.4).
+    """
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, bundle = _open_store(tmp_path)
+    refs: dict = {}
+    _publish_candidate_artifact(store)
+    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+    assert refs[v2host.FINDING_HOUSEHOLD_REFS_KEY]
+
+    # The cited artifact goes away underneath a second read.
+    (
+        Path(store.bundle_dir)
+        / "evidence" / "v1" / "artifacts" / "crossover_v2" / RELAY / "candidate.json"
+    ).unlink()
+    with pytest.raises(FindingEvidenceMissing):
+        read_finding_set(store, relay_session_id=RELAY, phase="measure")
+
+    fresh: dict = {}
+    v2host._bank_household_findings(
+        store, relay_session_id=RELAY, phase="measure", refs=fresh,
+    )
+    assert fresh == {}
+    assert bundle.exists()
+
+
+def test_a_missing_finding_set_projects_nothing_rather_than_an_empty_claim(
+    tmp_path: Path,
+) -> None:
+    """Absence stays absence. A bundle with no set for this phase is the
+    legacy/never-banked state — ``read_finding_set`` answers ``None`` — and the
+    projection must add no row for it. An empty list here would be
+    indistinguishable from "attribution ran and found nothing", which is a
+    claim this session never made.
+    """
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, _ = _open_store(tmp_path)
+    refs: dict = {}
+    v2host._bank_household_findings(
+        store, relay_session_id=RELAY, phase="measure", refs=refs,
+    )
+    assert refs == {}
+
+
 def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
     tmp_path: Path,
 ) -> None:
