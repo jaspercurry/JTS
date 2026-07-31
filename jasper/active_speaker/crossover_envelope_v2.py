@@ -575,8 +575,11 @@ def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
     if not flatness:
         return []
     if not flatness.get("evaluable"):
+        # Same capitalized lead as the evaluable arm below. It was lowercase,
+        # which read as a fragment beside its sibling and let the two arms
+        # drift apart under tests that pin only one of them.
         return [
-            "measured before tuning: flatness could not be measured — every "
+            "Measured before tuning: flatness could not be measured — every "
             "spec band was excluded or out of range"
         ] + _carve_out_expert_lines(block)
     numeric = "; ".join(_flatness_lines_from_block(flatness))
@@ -608,11 +611,12 @@ def _carve_out_expert_lines(block: Mapping[str, Any]) -> list[str]:
     range. This function only prefixes the band the line belongs to.
 
     Takes a compact cloud-phase BLOCK directly (B1 fix, adversarial review of
-    PR #1780) rather than ``status`` — the caller picks CLOUD-VERIFY for the
-    Full tier or CLOUD-MEASURE for Express (:func:`_flatness_details_lines`),
-    since carve-outs are a post-apply-persistent fact disclosed from
-    whichever cloud each tier actually produces, not read from one hardcoded
-    phase.
+    PR #1780) rather than ``status`` — the caller picks CLOUD-VERIFY when a
+    post-apply cloud exists and CLOUD-MEASURE when none does
+    (:func:`_flatness_details_lines`; the tier branch that used to make that
+    choice went with #1965), since carve-outs are a post-apply-persistent fact
+    disclosed from whichever cloud the session actually produced, not read
+    from one hardcoded phase.
     """
     lines: list[str] = []
     carve_outs = block.get("carve_outs")

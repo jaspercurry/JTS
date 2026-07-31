@@ -2324,10 +2324,76 @@ def test_full_review_carries_at_least_the_evidence_express_carries():
     )["expert_details"]
     assert express, "fixture must produce evidence for the comparison to mean anything"
     assert full == express
+    # (The scope clause's own suppression is pinned across all three fixed
+    # screens by ``test_the_before_tuning_scope_clause_waits_for_a_passing_check``
+    # below; this line keeps the review case beside the equality it belongs to.)
     # …and it is still framed as the BEFORE state, on both tiers: stage 1 has
     # applied nothing, so nothing here may read as "how flat your speaker is".
     assert full[0].startswith("Measured before tuning: ")
     assert not any("confirmed at the mark" in line for line in full)
+
+
+@pytest.mark.parametrize("tier", ("express", "full"))
+@pytest.mark.parametrize("v2", (
+    # The three screens #1965 gave the Full tier back. None of them has a
+    # PASSING post-apply check, so none may carry the clause that claims one.
+    pytest.param({"phase": "review", "candidate": _candidate_summary()}, id="review"),
+    pytest.param({"phase": "closing"}, id="closing"),
+    pytest.param(
+        {"phase": "verify", "verify": {"outcome": "fail"},
+         "failure": {"code": REASON_VERIFY_OUT_OF_TOLERANCE}},
+        id="verify_fail",
+    ),
+))
+def test_the_before_tuning_scope_clause_waits_for_a_passing_check(v2, tier):
+    """"The applied correction targets these; the result was confirmed at the
+    mark only" is a claim about the POST-APPLY check — that one exists, and
+    that it was the single anchor sweep. #1965 made these three screens read
+    the pre-apply cloud on BOTH tiers, so the clause had to stop riding along
+    unconditionally: at review and closing nothing is applied at all, and at
+    verify_fail the check ran and FAILED.
+
+    Pinned on both tiers and all three screens because the clause was already
+    wrong on Express here before #1965 — pinning only the screen the issue
+    named would leave the other two free to regain it.
+    """
+    env = build_crossover_envelope_v2(_status(
+        tier=tier, cloud=_cloud_measure_flatness_status(), **v2,
+    ))
+    details = env["expert_details"]
+    assert any("Measured before tuning: " in line for line in details), details
+    assert not any("confirmed at the mark" in line for line in details), details
+    assert not any("applied correction targets" in line for line in details), details
+
+
+def test_both_before_tuning_arms_lead_with_the_same_words():
+    """The pre-apply reader has two arms — a numeric one and an "every spec
+    band was excluded" one — and both are the BEFORE state, so both open the
+    same way. The non-evaluable arm's lead used to be lowercase, which is the
+    shape a pin on one arm lets drift in the other."""
+    env = build_crossover_envelope_v2(_status(
+        phase="review", tier="full", candidate=_candidate_summary(),
+        cloud=_cloud_measure_flatness_status(evaluable=False),
+    ))
+    assert env["expert_details"][0] == (
+        "Measured before tuning: flatness could not be measured — every "
+        "spec band was excluded or out of range"
+    )
+
+
+def test_the_before_tuning_scope_clause_renders_once_the_check_has_passed():
+    """The other side of the gate — without which the test above would also
+    pass if the clause were simply deleted. Express's done screen is the state
+    the clause was written for and the only one where both its halves are
+    true: a correction is applied, and the only confirmation of it was the
+    single sweep at the mark."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express", verify={"outcome": "pass"},
+        candidate=_candidate_summary(), cloud=_cloud_measure_flatness_status(),
+    ))
+    combined = " ".join(env["expert_details"])
+    assert "The applied correction targets these; the result was confirmed " \
+           "at the mark only" in combined
 
 
 def test_the_review_screen_moved_the_schema_version():

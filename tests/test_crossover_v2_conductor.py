@@ -3341,7 +3341,16 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     last = express.entries[-1]
     assert last.screen["done_title"] == "Your speaker is tuned"
     assert "Run a Full measurement" in last.screen["done_body"]
-    assert "verified-everywhere" in last.screen["done_body"]
+    # The B2-corrected phrase, not the withdrawn one. This line used to pin
+    # `"verified-everywhere" in done_body` — an assertion actively holding the
+    # overclaim that PR #1780's review had already ruled out on jts.local, so
+    # the phone contradicted the wizard on one journey. Pin the shipped wording
+    # instead, and pin the withdrawn one OUT so it cannot come back.
+    assert (
+        "the result checked at several spots around the mark"
+        in last.screen["done_body"]
+    )
+    assert "verified-everywhere" not in last.screen["done_body"]
 
     # RE-DERIVED budgets. Stage 2 draws its own, from its own target:
     # Full 6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE, Express 1 + …
@@ -3385,10 +3394,13 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
     * **Structural** — this builder's entire input is a crossover frequency
       and a plan SHAPE. There is no measured outcome in scope to bind copy to,
       so a future "Verified" here would be as unearned as this one was.
-    * **Cross-surface** — whatever the phone bakes has to hold under BOTH spec
-      outcomes. It does so by being exactly the claim jts.local's own verdict
-      OPENS with, pass or fail; jts.local owns the divergence, as the only
-      surface whose component vocabulary can carry it.
+    * **Cross-surface** — whatever the phone bakes has to hold under EVERY
+      outcome jts.local can report. It does so by being exactly the claim each
+      of jts.local's five done verdicts OPENS with; jts.local owns the
+      divergence, as the only surface whose component vocabulary can carry it.
+      All five are pinned, not the two this fix reasoned about: the phone bakes
+      one headline for both tiers and all outcomes, so a single unpinned
+      variant is enough to reopen the defect.
     """
     import inspect
 
@@ -3411,23 +3423,47 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
     # It names the surface that DOES own the verdict instead of guessing it.
     assert "speaker page" in body
 
-    def _verdict(spec_passed: bool) -> str:
+    # ONE headline is baked for BOTH tiers…
+    express_done = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
+    ).entries[-1].screen
+    headline = done["done_title"]
+    assert express_done["done_title"] == headline
+
+    def _verdict(**v2) -> str:
         return build_crossover_envelope_v2({
             "active": True,
             "setup": {"active": True, "status": "ready"},
             "crossover_v2": {
-                "phase": "done",
-                "tier": TIER_FULL,
-                "verify": {"outcome": "pass"},
-                "cloud": {PHASE_CLOUD_VERIFY: {"overall_passed": spec_passed}},
+                "phase": "done", "verify": {"outcome": "pass"}, **v2,
             },
         })["verdict_text"]
 
-    passed, failed = _verdict(True), _verdict(False)
-    assert passed != failed, "jts.local must be the outcome-bound surface"
-    assert "further from flat than the target" in failed
-    assert passed.startswith(done["done_title"])
-    assert failed.startswith(done["done_title"])
+    # …so the invariant holds only if EVERY jts.local done verdict opens with
+    # it. There are five, independently authored in three separate branches of
+    # the PHASE_DONE arm, and pinning the two this fix reasoned about would
+    # leave the other three free to drift out from under the phone.
+    variants = {
+        "express": _verdict(tier=TIER_EXPRESS),
+        "generic": _verdict(tier=TIER_FULL),
+        "spec_fail": _verdict(
+            tier=TIER_FULL,
+            cloud={PHASE_CLOUD_VERIFY: {"overall_passed": False}},
+        ),
+        "grade_inconclusive": _verdict(
+            tier=TIER_FULL,
+            post_apply_grade={"graded": False, "state": "inconclusive"},
+        ),
+        "grade_never_finished": _verdict(
+            tier=TIER_FULL, post_apply_grade={"graded": False, "state": ""},
+        ),
+    }
+    assert len(set(variants.values())) == 5, (
+        "five DISTINCT verdicts, or a fixture stopped reaching its branch"
+    )
+    assert "further from flat than the target" in variants["spec_fail"]
+    for name, text in variants.items():
+        assert text.startswith(headline), (name, text)
 
 
 def test_the_recovery_re_verify_plan_is_unchanged_by_the_split():
@@ -4430,9 +4466,12 @@ _GOLDEN_V2_PLAN_BYTES = {
         1942,
         "575ae0cb9e0a43a9f24492c43bc1e6192740164f96d9e9b7eb639d1bba629446",
     ),
+    # Moved by #1964's fix round: Express's upgrade-path phrase drops the
+    # withdrawn "verified-everywhere" overclaim for the B2 wording jts.local
+    # already ships.
     "stage2-express": (
-        609,
-        "c8d6a5a908f6edc9c08ec2f9d5e3d31261f9579d2411de0d741d6c669e3ee1c6",
+        630,
+        "a5f499d6c1219460a377ee4cd083a45fc86aa93dff3d446bc2c1c4c58955f07b",
     ),
     "1-entry": (
         329,

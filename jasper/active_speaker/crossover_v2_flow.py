@@ -8921,14 +8921,25 @@ def build_v2_verify_capture_plan(
     # ``capture_set_complete`` before the phone's ~250 ms poll reads the final
     # ``capture_result``. So the verdict has ONE owner, jts.local's done
     # screen, and this screen says where it is rather than guessing it.
+    #
+    # **Express's upgrade-path phrase is COPIED, not authored** (B2 fix,
+    # adversarial review of PR #1780). It read "for the verified-everywhere
+    # result", which that review ruled an overclaim — a Full walk re-checks a
+    # handful of prompted spots around the mark, never every point in the room
+    # — and the corrected phrase already ships on jts.local in two places
+    # (``crossover_envelope_v2``'s express ``done_verdict`` and
+    # ``_TIER_CLAIMS[TIER_FULL]``). The phone kept the withdrawn wording, so
+    # one journey said both things: the same cross-surface divergence the
+    # paragraph above closes. Spell it the way the wizard spells it, so a
+    # future re-wording has one place to start rather than three.
     done_screen = {
         "done_title": "Your speaker is tuned",
         "done_body": (
             "The speaker page has the result — manage or undo there."
             if plan_shape.has_cloud_verify_group
             else "Confirmed at the mark and applied. Run a Full measurement "
-            "for the verified-everywhere result, or manage this one on the "
-            "speaker page."
+            "for the result checked at several spots around the mark, or "
+            "manage this one on the speaker page."
         ),
     }
     anchor_screen: dict[str, str] = {
