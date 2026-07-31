@@ -39,13 +39,21 @@ that fix, plus the detector and policy work around it.
   (`SEARCH_T_MIN_MS`/`SEARCH_T_MAX_MS`). This is the STA/LTA-class
   energy picker whose spike false-trigger mode is the incident.
 - Window: rectangular + half-Hann tail, `TAPER_FRACTION = 0.25`,
-  `WINDOW_KIND = "half_hann_tail"`, `GATING_SCHEMA_VERSION = 1`.
+  `WINDOW_KIND = "half_hann_tail"`, `GATING_SCHEMA_VERSION = 2`
+  (bumped 1 → 2 by R9's gating contract, which changed
+  `first_reflection_ms` from the onset to the reflection's envelope
+  peak and added the disclosure fields).
 - Floor: `f_valid_floor_hz(window_s) = 1/T`; provenance vocabulary
   `FLOOR_MEASURED` / `FLOOR_SEARCH_BOUND` / `NEAR_FIELD_EXEMPT` exists,
   but **no consumer reads it for trust** — a 27-sample
-  `FLOOR_MEASURED` is as authoritative as a 7 ms one. There is no
-  minimum-gate guard anywhere; `SEARCH_T_MIN_MS` is a search offset,
-  not a validity assertion.
+  `FLOOR_MEASURED` is as authoritative as a 7 ms one. (R9 made it
+  readable — every record now carries the rendered sentence beside the
+  enum — but reading is not refusing, and nothing yet refuses on it.)
+  There is still no minimum-gate guard that REFUSES; R9 added a
+  classification one, so `SEARCH_T_MIN_MS` is now the boundary below
+  which a candidate is recorded in the `internal_reflection_ledger` and
+  can never become a window bound. It remains a search offset, not a
+  validity assertion about the window that was chosen.
 - Near-floor band: `NEAR_FLOOR_RATIO = 1.25` marks
   `[floor, 1.25·floor)` "near_validity_floor". Locally documented as
   advisory, but **downstream it is a hard admission predicate**:

@@ -36,6 +36,8 @@ threshold.
 """
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import pytest
 
@@ -82,6 +84,52 @@ def test_consult_table_constants_pinned():
     assert gating.FLOOR_MEASURED == "measured_reflection"
     assert gating.FLOOR_SEARCH_BOUND == "search_span_bound"
     assert gating.NEAR_FIELD_EXEMPT == "near_field"
+
+
+def test_the_threshold_tuning_guidance_does_not_point_the_wrong_way():
+    """#1983 — this comment is production guidance, and it was backwards.
+
+    It used to say "raise K, not lower it, if field corpora show misses".
+    Measured on 1,980 annotated RIRs plus 12,750 synthetic injections with
+    the criteria frozen before the run
+    (``captures/detector-certification-20260801`` §4.2), P_D is unimodal
+    with its maximum at the shipped K = 12; raising K makes MISSES
+    monotonically worse (0.662 -> 0.601 -> 0.482 -> 0.277 -> 0.000) while
+    P_FA simultaneously RISES to 0.641. Over 12 -> 20 dB both error rates
+    degrade together — strictly dominated.
+
+    An operator or agent following the old sentence would have made the
+    detector worse in both directions, so this pins the correction rather
+    than trusting a comment to stay fixed. It is asserted on the source
+    text because a comment is the only artifact the defect lived in.
+    """
+    source = inspect.getsource(gating)
+    upper = source.upper()
+
+    assert "DO NOT RAISE K" in upper, (
+        "the corrected directive is missing — see #1983"
+    )
+    assert "STRICTLY DOMINATED" in upper
+    assert "CAPTURES/DETECTOR-CERTIFICATION-20260801" in upper, (
+        "the corrected guidance must cite the measurement it rests on"
+    )
+    # Both failure directions named, not just the optimistic one — naming
+    # only "a miss over-claims LF validity" is what let the old advice look
+    # reasonable (certification §5).
+    assert "MISS" in upper and "FALSE DETECT" in upper
+
+    # The old advice may still be QUOTED, since a reader who met it
+    # elsewhere needs to know it was superseded — but only ever as
+    # something being corrected, never as standing guidance.
+    stale = "raise K, not lower it"
+    start = 0
+    while (found := source.find(stale, start)) != -1:
+        context = source[max(0, found - 400) : found + 400]
+        assert "backwards" in context, (
+            f"{stale!r} appears at offset {found} without being marked "
+            "superseded — see #1983; it is wrong above the shipped K=12"
+        )
+        start = found + 1
 
 
 def test_gating_contract_constants_pinned():
