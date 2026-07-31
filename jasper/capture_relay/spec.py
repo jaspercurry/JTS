@@ -1718,7 +1718,7 @@ def build_crossover_sweep_spec(
     capture_plan: CapturePlan | None = None,
     guided_captures: int = 0,
     guided_tier: str = "",
-    walk_preview: Sequence[str] = (),
+    walk_shape: str = "",
     reverify_lead: str = "",
     default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
@@ -1790,17 +1790,26 @@ def build_crossover_sweep_spec(
     meaningful alongside ``guided_captures``; ignored otherwise, and omitting
     it keeps the pre-tier copy byte-identical.
 
-    ``walk_preview`` is the ORIENTATION half of the guided consent screen (work
-    order D7, issues #1804 + #1805): the whole walk, position by position,
-    rendered before the first tone so a household reads it up front instead of
-    discovering one prompt at a time. Supplied by the caller that owns the plan
-    — :func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_preview`, the
-    same table the per-entry screens are built from — because this builder must
-    not grow a second description of a walk it does not own. Empty (every
-    non-cloud caller, and Express's 1-entry stage 2) renders nothing and is
-    byte-identical to the pre-preview screen. Only meaningful alongside
-    ``guided_captures``; ignored otherwise, for the same reason as
-    ``guided_tier``.
+    ``walk_shape`` is the ORIENTATION half of the guided consent screen (work
+    order D7, issues #1804 + #1805; re-presented by #1941 R1): how far the walk
+    reaches from the mark and that each position is prompted, in ONE sentence
+    below the steps, so a household knows the shape of the session before the
+    first tone instead of discovering it one prompt at a time. Supplied by the
+    caller that owns the plan —
+    :func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_shape`, derived
+    from the same table the per-entry screens are built from — because this
+    builder must not grow a second description of a walk it does not own.
+
+    It used to be a ``Sequence[str]`` of every position, rendered as a second
+    ``ui_steps`` list. That was D7's presentation and #1941 withdrew it: ten
+    enumerated moves under a 73-word placement block is the wall the owner's
+    2026-07-30 field note describes, and a household cannot act on position 10
+    while standing at position 1. The intent it served — no surprises — is
+    kept by the sentence; the spoon-feeding is the per-entry screens' job.
+
+    Empty (every non-cloud caller, and Express's 1-entry stage 2) renders
+    nothing. Only meaningful alongside ``guided_captures``; ignored otherwise,
+    for the same reason as ``guided_tier``.
 
     ``reverify_lead`` is an OPT-IN first step for the 1-entry re-verify re-arm
     (§2.4): the recovery is one sweep back at the mark, and the 2026-07-27
@@ -1876,7 +1885,7 @@ def build_crossover_sweep_spec(
             else driver_placement_instruction(driver_role)
         )
         if is_driver
-        else cloud_walk_placement_instruction(walk) if walk
+        else cloud_walk_placement_instruction() if walk
         else summed_placement_instruction()
     )
     button_label = (
@@ -1927,9 +1936,59 @@ def build_crossover_sweep_spec(
     tier_line = _guided_tier_step(guided_tier, walk, capture_plan)
     if tier_line:
         steps.append(tier_line)
+    if walk:
+        # WHAT TO BRING, before the session rather than during it (#1941 R2).
+        # The 2026-07-30 field session reached the first prompted distance
+        # holding neither a tape measure nor a stand, because nothing had said
+        # to fetch either — expectation-setting that arrives at the moment it
+        # is needed has already failed.
+        #
+        # The tape measure is stated as the CONSEQUENCE of a fact the
+        # placement step used to carry unattached ("each one named with a
+        # distance"): a fact that motivates an action reads once and sticks,
+        # where the same fact floating in a placement paragraph reads as
+        # trivia. The stand is a RECOMMENDATION, not a requirement — the
+        # owner's ruling on #1941 Q3, and the honest shape: we cannot detect a
+        # hand-held mic, so refusing to proceed is not on the table, and the
+        # acknowledgement contract (``cloud_walk_acknowledgement_label``)
+        # deliberately does not promise one. Its "why" is one clause and is
+        # physical rather than exhortative, because "use a tripod!" without a
+        # reason is the kind of instruction a household skips.
+        steps.append(
+            "Bring a tape measure or ruler — every position is named with a "
+            "distance from the mark. A stand or tripod for the microphone is "
+            "worth using: a hand and body near the capsule change what it "
+            "hears, and a stand repeats a position better than a hand does"
+        )
+    steps.append(placement_instruction)
+    if walk:
+        # What the SPEAKER does, said before the first tone (work order D7 /
+        # issue #1804). The household has been told how long it takes, what to
+        # bring, and where to stand; this is the fourth thing an orientation
+        # screen owes them — what they are about to hear — because an
+        # unexplained burst of beeps at measurement level is the moment a
+        # first-time household stops the session.
+        #
+        # It sits BEFORE "tap Start and stay quiet" rather than after the
+        # whole block (#1941 R1): those seconds of silence are the seconds
+        # this sentence describes, so a household that reads in order learns
+        # what the noise will be before being asked to sit through it.
+        #
+        # Deliberately states no duration of its own: ``seconds`` is the
+        # LONGEST plan entry's whole capture window (quiet window + beeps +
+        # tone), which the step below already quotes honestly as the time to
+        # stay quiet. Reusing it here would advertise a 40-second "tone" that
+        # is nothing of the kind. "three" mirrors
+        # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT`` the way
+        # the capture page's own prelude line does — spelled out because a
+        # household counts beeps, and pinned by the same test.
+        steps.append(
+            "Each measurement is three short beeps, a pause, and then a rising "
+            "tone — loud, but no louder than JTS needs to hear itself over the "
+            "room"
+        )
     steps.extend(
         [
-            placement_instruction,
             (
                 "Tap Start and stay quiet while JTS measures the room "
                 f"noise, then plays about {seconds} seconds of sweep"
@@ -1948,27 +2007,6 @@ def build_crossover_sweep_spec(
             ),
         ]
     )
-    if walk:
-        # What the SPEAKER does, said before the first tone (work order D7 /
-        # issue #1804). The household has been told where to stand and how long
-        # it takes; this is the third thing an orientation screen owes them —
-        # what they are about to hear — because an unexplained burst of beeps
-        # at measurement level is the moment a first-time household stops the
-        # session.
-        #
-        # Deliberately states no duration of its own: ``seconds`` is the
-        # LONGEST plan entry's whole capture window (quiet window + beeps +
-        # tone), which the step above already quotes honestly as the time to
-        # stay quiet. Reusing it here would advertise a 40-second "tone" that
-        # is nothing of the kind. "three" mirrors
-        # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT`` the way
-        # the capture page's own prelude line does — spelled out because a
-        # household counts beeps, and pinned by the same test.
-        steps.append(
-            "Each measurement is three short beeps, a pause, and then a rising "
-            "tone — loud, but no louder than JTS needs to hear itself over the "
-            "room"
-        )
     return CaptureSpec(
         kind="crossover_sweep",
         duration_ms=duration_ms,
@@ -1996,23 +2034,20 @@ def build_crossover_sweep_spec(
                 f"Crossover — {driver_label}" if is_driver else "Tune your speaker"
             ),
             ui_steps(steps),
-            # The walk, all of it, before step 1 (work order D7). A second
-            # ``steps`` list rather than a new component type: the renderer's
-            # vocabulary is a SECURITY BOUNDARY (capture-page/js/render.js), and
-            # a preview is an ordered list of instructions — exactly what
-            # ``steps`` already is. Absent for every caller that passes no
-            # preview, so no screen grows an empty section.
-            *(
-                (
-                    ui_note(
-                        "Here is the whole walk, so you can see it before you "
-                        "start:"
-                    ),
-                    ui_steps([str(line) for line in walk_preview]),
-                )
-                if walk and walk_preview
-                else ()
-            ),
+            # The shape of the walk, in one sentence, between the steps and the
+            # Start button (work order D7's intent, #1941 R1's presentation).
+            # A ``note`` rather than a seventh step: it is not an instruction —
+            # nothing here is for the household to DO — and the renderer's
+            # vocabulary is a SECURITY BOUNDARY (capture-page/js/render.js), so
+            # this composes from the existing types rather than widening it.
+            #
+            # It replaced a ``ui_note`` lead plus a SECOND ``ui_steps`` list of
+            # every prompted position. Two stacked lists is the defect the
+            # owner reported: the eye cannot tell which one it is meant to act
+            # on, and the second was ten moves the household could not act on
+            # yet. Absent for every caller that passes no shape, so no screen
+            # grows an empty section.
+            *((ui_note(str(walk_shape)),) if walk and walk_shape else ()),
             # (``ui_level_meter("mic")`` used to sit here. It was dead on
             # EVERY crossover consent screen — the v2 cloud, the legacy
             # per-driver sweeps, and the 1-entry re-verify alike — because the

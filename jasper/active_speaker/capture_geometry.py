@@ -395,31 +395,35 @@ def summed_placement_instruction() -> str:
     )
 
 
-def cloud_walk_placement_instruction(captures: int) -> str:
+def cloud_walk_placement_instruction() -> str:
     """Placement copy for the guided spatial cloud (``CLOUD_WALK_...`` policy).
 
-    Same starting point as :func:`summed_placement_instruction` — the mark, on
-    the tweeter axis — and the same per-sweep stillness, which is what a valid
-    capture actually needs. What it must NOT repeat is the whole-session
-    stillness promise: this session prompts the household to move the mic
-    between captures, so promising otherwise on the consent screen would be
-    asking them to agree to something the flow immediately contradicts.
+    Answers exactly ONE of the orientation screen's questions — *where do I
+    stand?* — and stops (issue #1941 R1). Same starting point as
+    :func:`summed_placement_instruction` (the mark, on the tweeter axis), but
+    it must NOT repeat the stationary copy's whole-session stillness promise:
+    this session prompts the household to move the mic between captures, so
+    promising otherwise on the consent screen would be asking them to agree to
+    something the flow immediately contradicts. Per-sweep stillness — the
+    promise an individual capture really does depend on — is its own step, and
+    is unchanged.
 
-    ``captures`` is THIS session's count. Since the two-stage split (work order
-    D7) that is stage 1's, and "come back to the mark" was stage 2's business —
-    the post-apply anchor — so this instruction stops promising a return the
-    session it consents to does not make. It states where the mark is, that
-    every prompted position is measured from it, and that the household is told
-    each position; it does not describe the second session, which has its own
-    consent screen.
+    **It takes no capture count on purpose.** It used to open with "Across
+    about ``{captures}`` measurements…", one line under a derived tier line
+    that had just said "…10 measurements, about 7 minutes" — the same number,
+    twice, in the densest block on the screen. The tier line
+    (``spec._guided_tier_step``) owns that number; this owns the mark. The
+    other two facts it used to carry moved to where they earn their keep:
+    *every position is measured from the mark, named with a distance* now
+    motivates the tape measure in the what-to-bring step, and *how far the
+    walk reaches* is the shape note
+    (:func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_shape`).
     """
     return (
         "Start with the microphone capsule on the tweeter axis, exactly level "
         "with the centre of the tweeter or horn mouth, about 1 metre away when "
         "the room permits — that spot is your mark. Aim it according to its "
-        f"calibration file. Across about {int(captures)} measurements you will "
-        "be asked to move it to spots measured from that mark — each one named "
-        "with a distance — and to hold it still while each sweep is playing."
+        "calibration file."
     )
 
 

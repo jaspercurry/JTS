@@ -145,7 +145,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260731.1",
+        "capture_page_build": "20260731.2",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -153,7 +153,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260731-1" in index_html
+    assert "main.js?v=20260731-2" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -778,9 +778,14 @@ def test_capture_page_level_ramp_shows_friendly_agc_suspected_copy():
     ramp_complete = main_js[start:end]
 
     assert 'terminalError === "agc_suspected"' in ramp_complete
+    # "browser or device", not "browser" alone (#1941 delta-gate NIT-A): on iOS
+    # every browser is WebKit, so browser-switching is not a remedy there and
+    # the copy would otherwise leave an iPhone household with nothing to try.
+    # The sibling agc_indeterminate line below already named the device — these
+    # two now agree.
     assert (
         "This browser is adjusting the microphone level, which prevents "
-        "accurate measurement. Try a different browser or a USB "
+        "accurate measurement. Try a different browser or device, or a USB "
         "measurement microphone." in ramp_complete
     )
     assert 'terminalError === "agc_indeterminate"' in ramp_complete

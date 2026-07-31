@@ -656,8 +656,14 @@ function renderLevelRampComplete(ctx, ramp) {
     // the one part that is behaving. (No model names here — this file must not
     // embed a mic catalogue; see the Pi-registry inference contract in
     // tests/test_capture_page_js.py.) Friendly copy instead of the raw code.
+    //
+    // "browser or device" rather than "browser": on iOS every browser is
+    // WebKit, so a household that dutifully installs a second browser lands on
+    // the same engine, the same AGC, and the same failure — with no remedy
+    // left to try. Naming the DEVICE keeps a way out open where switching
+    // browsers structurally cannot help. (#1941 delta-gate NIT-A.)
     message.note =
-      "This browser is adjusting the microphone level, which prevents accurate measurement. Try a different browser or a USB measurement microphone.";
+      "This browser is adjusting the microphone level, which prevents accurate measurement. Try a different browser or device, or a USB measurement microphone.";
     message.status = `Level check failed — ${message.note}`;
   } else if (state === "error" && terminalError === "agc_indeterminate") {
     // The Pi could not gather enough staircase evidence to render a verdict

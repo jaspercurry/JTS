@@ -265,21 +265,47 @@ def test_crossover_guided_cloud_never_promises_a_stationary_mic():
     assert "16" in label
 
     steps = next(item for item in spec.screen if item["type"] == "steps")
-    assert "that spot is your mark" in steps["items"][0]
-    # RE-DERIVED for the two-stage split (work order D7): "come back to the
-    # mark" was stage 2's business — the post-apply anchor — so this consent
-    # screen stopped promising a return the session it consents to never makes.
-    # What it promises instead is what stage 1 actually does: every position is
-    # measured from the mark, and each one is named with a distance.
-    assert "spots measured from that mark" in steps["items"][0]
-    assert "each one named with a distance" in steps["items"][0]
-    assert "come back to the mark" not in steps["items"][0]
-    assert "completely still" not in steps["items"][0]
-    # Per-sweep stillness, kept and made explicit about what follows it.
-    assert steps["items"][2] == (
+    items = steps["items"]
+    # #1941 R1: the orientation is at most six items, and each promise below is
+    # pinned by CONTENT rather than by index — the reading ORDER is the thing
+    # that requirement is free to restructure, the promises are not.
+    assert len(items) <= 6
+    orientation = "\n".join(items)
+
+    # WHERE TO STAND. RE-DERIVED for the two-stage split (work order D7): "come
+    # back to the mark" was stage 2's business — the post-apply anchor — so
+    # this consent screen stopped promising a return the session it consents to
+    # never makes.
+    assert "that spot is your mark" in orientation
+    assert "come back to the mark" not in orientation
+    assert "completely still" not in orientation
+    # …and the mark step says ONLY where to stand (#1941 R1): the capture count
+    # belongs to the derived tier line, and repeating it one line below was
+    # half of the density the owner reported.
+    mark_step = next(i for i in items if "that spot is your mark" in i)
+    assert "measurements" not in mark_step
+
+    # WHAT YOU NEED, before the session (#1941 R2) — and the fact that
+    # motivates it: every position is measured from the mark and named with a
+    # distance, which is WHY a tape measure is worth fetching.
+    assert "every position is named with a distance from the mark" in orientation
+    bring_step = next(i for i in items if i.startswith("Bring a tape measure"))
+    # The stand is a RECOMMENDATION (owner ruling, #1941 Q3), stated with its
+    # physical reason — never as a requirement the flow cannot enforce.
+    assert "stand or tripod for the microphone is worth using" in bring_step
+    assert "change what it hears" in bring_step
+    for demand in ("you must", "required", "do not proceed"):
+        assert demand not in bring_step.lower()
+    # …and the acknowledgement still promises only what the cloud needs, so a
+    # hand-held mic is not consenting to something it cannot deliver.
+    assert "tripod" not in label and "stand" not in label
+
+    # Per-sweep stillness, kept verbatim and made explicit about what follows
+    # it. This is the promise an individual capture depends on.
+    assert (
         "Keep the microphone still until each sweep finishes, then follow the "
         "on-screen prompt to move it"
-    )
+    ) in items
     button = next(item for item in spec.screen if item["type"] == "button")
     assert button["label"] == "The mic is on the mark — start measuring"
     assert "fixed on-axis" not in button["label"]

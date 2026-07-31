@@ -448,6 +448,22 @@ step 1, rather than discovered one prompt at a time. The walk reads as a
 walk: start at the mark, out to one side, out to the other, back through
 the mark at different heights.
 
+> **D7's PRESENTATION was superseded on 2026-07-31 by
+> [#1941](https://github.com/jaspercurry/JTS/issues/1941) R1; its INTENT
+> was kept.** The enumerated preview shipped as a second `ui_steps` list
+> of every position, stacked under the placement block, and the owner's
+> 2026-07-30 field run rejected it: *"a huge block of text below another
+> really big block of text… crazy dense with the 10 steps all spelled
+> out. The user doesn't know what's gonna happen next, let alone 10
+> things from now."* What replaced it is one derived sentence —
+> `cloud_walk_shape`, how far the walk reaches from the mark plus the
+> promise that each position is prompted — so "no surprises" survives
+> while the wall does not. **The adjustable-spacing half of #1805 was
+> never built and is not revived by this**; the wide-offset floor below
+> still governs if it ever is. Current consent-screen truth lives in
+> [`jasper/capture_relay/spec.py`](../jasper/capture_relay/spec.py)'s
+> `build_crossover_sweep_spec`.
+
 **Units: a recorded owner ruling is being superseded by a newer one, and
 the supersession is explicit.** The body-part register is not incidental
 copy — it is a ruling recorded in the code

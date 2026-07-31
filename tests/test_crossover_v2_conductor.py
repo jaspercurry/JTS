@@ -58,10 +58,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     CLOUD_GEOMETRY_RETRY_PROMPTS,
     CLOUD_POSITION_PROMPTS,
     CLOUD_RETAKE_ALLOWANCE,
-    CLOUD_WALK_PREVIEW_LEAD,
-    CLOUD_WALK_PREVIEW_LEAD_POST_APPLY,
-    CLOUD_WALK_PREVIEW_TAIL,
-    CLOUD_WALK_PREVIEW_TAIL_POST_APPLY,
+    CLOUD_WALK_SHAPE_TAIL,
+    CLOUD_WALK_SHAPE_TAIL_POST_APPLY,
     COURTESY_PRELUDE_ENABLED,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
     DEFAULT_CLOUD_VERIFY_POSITIONS,
@@ -128,7 +126,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_verify_session_spec,
     cloud_capture_target,
     cloud_plan_max_attempts,
-    cloud_walk_preview,
+    cloud_walk_shape,
     express_cloud_measure_positions,
     format_position_distance,
     open_measurement_volume,
@@ -3747,13 +3745,21 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
             )
 
 
-def test_the_orientation_screen_previews_the_whole_walk_before_the_first_tone():
-    """Work order D7 (#1804 + #1805): the household reads every position up
-    front instead of discovering one prompt at a time.
+def test_the_orientation_states_the_walks_shape_instead_of_enumerating_it():
+    """#1941 R1, keeping work order D7's intent (#1804 + #1805).
 
-    The preview is not a second description of the walk — it enumerates the
-    SAME ``[:N - 1]`` slice of the SAME table the per-entry screens are built
-    from, which is why a plan-shape change moves both together or neither.
+    D7 put every position on the consent screen so the walk would not be
+    discovered one prompt at a time. The intent survives; the presentation does
+    not. A SECOND ``ui_steps`` list of ten moves, stacked under the first, was
+    the owner's 2026-07-30 field defect — *"crazy dense with the 10 steps all
+    spelled out"* — and a household standing at position 1 cannot act on
+    position 10 anyway.
+
+    What replaces it is one ``note`` carrying the two facts the list was
+    actually being used to convey: how far from the mark this reaches, and that
+    each position is prompted. The distance is DERIVED from the same
+    ``[:N - 1]`` slice of the same table the per-entry screens are built from,
+    which is why a plan-shape change still moves both together or neither.
     """
     for tier, positions in (
         (TIER_FULL, DEFAULT_CLOUD_MEASURE_POSITIONS),
@@ -3763,39 +3769,52 @@ def test_the_orientation_screen_previews_the_whole_walk_before_the_first_tone():
             _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
         )
         step_lists = [c["items"] for c in spec.screen if c["type"] == "steps"]
-        assert len(step_lists) == 2, "consent steps, then the walk preview"
-        preview = step_lists[1]
-        # Every prompted move, in order, bracketed by where to start and what
-        # happens after — the whole shape of the session.
-        walked = [p.text for p in CLOUD_POSITION_PROMPTS[: positions - 1]]
-        assert preview[1:-1] == walked
-        assert preview[0] == CLOUD_WALK_PREVIEW_LEAD
-        assert preview[-1] == CLOUD_WALK_PREVIEW_TAIL
-        # The tail sets up the INTERLUDE rather than promising a tune.
-        assert "decide" in preview[-1]
+        assert len(step_lists) == 1, "ONE list — the stacked preview is gone"
+        # The acceptance bar #1941 sets for the pre-tone screen: at most six
+        # list items, and one orientation note.
+        assert len(step_lists[0]) <= 6
+
+        walked = CLOUD_POSITION_PROMPTS[: positions - 1]
+        shape = cloud_walk_shape(positions)
+        notes = [c["text"] for c in spec.screen if c["type"] == "note"]
+        assert shape in notes
+
+        # The reach is the walked slice's furthest offset, in the prompts' own
+        # units — not a hand-written number that could outlive the table.
+        assert format_position_distance(max(p.offset_cm for p in walked)) in shape
+        # …and no position is enumerated on the consent screen any more.
+        for prompt in walked:
+            assert prompt.text not in shape
+            assert prompt.text not in step_lists[0]
+        # The household is told they will be prompted, and the tail sets up the
+        # INTERLUDE rather than promising a tune.
+        assert "you will be told each one" in shape
+        assert shape.endswith(CLOUD_WALK_SHAPE_TAIL)
+        assert "decide" in CLOUD_WALK_SHAPE_TAIL
 
         # …and the plan really does prompt exactly those, in that order.
         prompted = [
             e.screen["title"] for e in spec.capture_plan.entries
             if e.kind_label == "cloud_measure"
         ]
-        assert prompted == [p.headline for p in CLOUD_POSITION_PROMPTS[: positions - 1]]
+        assert prompted == [p.headline for p in walked]
 
 
-def test_the_post_apply_walk_is_previewed_with_its_own_bracketing_copy():
-    """Stage 2's walk is discovered one prompt at a time otherwise — the same
-    defect — and its bracketing sentences are NOT stage 1's: one anchor rather
-    than two on the mark, and the journey ends rather than pausing for a
-    decision. Express's 1-entry stage 2 is not a walk and gets no preview."""
+def test_the_post_apply_walk_states_its_shape_with_its_own_tail():
+    """Stage 2's walk gets the same one-line shape as stage 1's, with its own
+    tail: the journey ends there rather than pausing for a decision. Express's
+    1-entry stage 2 is not a walk and gets no shape line at all."""
     full = build_v2_verify_session_spec(
         FC_HZ, acknowledgement_binding="b" * 24, plan_shape=resolve_plan_shape(),
     )
-    preview = [c["items"] for c in full.screen if c["type"] == "steps"][1]
-    assert preview[0] == CLOUD_WALK_PREVIEW_LEAD_POST_APPLY
-    assert preview[-1] == CLOUD_WALK_PREVIEW_TAIL_POST_APPLY
-    assert preview[1:-1] == [
-        p.text for p in CLOUD_POSITION_PROMPTS[: DEFAULT_CLOUD_VERIFY_POSITIONS - 1]
-    ]
+    walked = CLOUD_POSITION_PROMPTS[: DEFAULT_CLOUD_VERIFY_POSITIONS - 1]
+    shape = cloud_walk_shape(DEFAULT_CLOUD_VERIFY_POSITIONS, post_apply=True)
+    assert len([c for c in full.screen if c["type"] == "steps"]) == 1
+    assert shape in [c["text"] for c in full.screen if c["type"] == "note"]
+    assert format_position_distance(max(p.offset_cm for p in walked)) in shape
+    assert shape.endswith(CLOUD_WALK_SHAPE_TAIL_POST_APPLY)
+    # Stage 2 grades rather than handing back a decision.
+    assert CLOUD_WALK_SHAPE_TAIL_POST_APPLY != CLOUD_WALK_SHAPE_TAIL
 
     express = build_v2_verify_session_spec(
         FC_HZ,
@@ -3803,8 +3822,13 @@ def test_the_post_apply_walk_is_previewed_with_its_own_bracketing_copy():
         plan_shape=resolve_plan_shape(TIER_EXPRESS),
     )
     assert len([c for c in express.screen if c["type"] == "steps"]) == 1
-    assert cloud_walk_preview(1) == ()
-    assert cloud_walk_preview(1, post_apply=True) == ()
+    assert cloud_walk_shape(1) == ""
+    assert cloud_walk_shape(1, post_apply=True) == ""
+    # …and an empty shape renders NO note rather than an empty one, so the
+    # one-sweep screen never grows a blank section.
+    assert all(
+        c["text"] for c in express.screen if c["type"] == "note"
+    ), "an empty shape must render no note at all"
 
 
 def test_check_stops_hushing_the_room_before_it_measures_it():
