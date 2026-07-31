@@ -392,11 +392,11 @@ def _verify_level_reference_lines(status: Mapping[str, Any]) -> list[str]:
     step_db = _finite(reset.get("step_db"))
     if step_db is None:
         return []
-    # ``_failure_when_phrase`` reads one ``at`` key and already answers
-    # "earlier" for a stamp it cannot place on a calendar, so the two dated
-    # surfaces phrase a date the same way rather than growing a second
+    # ``_record_when_phrase`` reads one ``at`` key and already answers
+    # "earlier" for a stamp it cannot place on a calendar, so every dated
+    # surface phrases a date the same way rather than growing a second
     # formatter.
-    when = _failure_when_phrase({"at": reset.get("prior_at")})
+    when = _record_when_phrase({"at": reset.get("prior_at")})
     return [
         "level reference reset for this session "
         f"(the previous one, {when}, was {step_db:.2f} dB away)"
