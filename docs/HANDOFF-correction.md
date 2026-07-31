@@ -2166,10 +2166,16 @@ need already exist:
 - Music source daemons stay running and fan-in continues draining their private
   lanes. This avoids process churn, preserves source intent exactly, and means
   a killed web worker cannot strand enabled sources manually stopped. Mux's
-  60-second monotonic owner lease is the external crash-recovery boundary;
-  correction renews it every 20 seconds. If renewal stays unconfirmed for 40
-  seconds, the renewal task cancels the owning measurement and `finally`
-  restores voice/gate state before mux could reopen music into a live sweep.
+  monotonic owner lease (`mux.FANIN_TEST_LEASE_SEC`) is the external
+  crash-recovery boundary; correction renews it every
+  `MEASUREMENT_GATE_REFRESH_SEC`. Once renewal has stayed unconfirmed for
+  `MEASUREMENT_GATE_ABORT_SEC`, the renewal task cancels the owning
+  measurement and `finally` restores voice/gate state before mux could reopen
+  music into a live sweep. That deadline is only *checked* after a failed
+  acquire, so the abort fires at the first check past it — bounded by
+  `MEASUREMENT_GATE_ABORT_SEC` + `MEASUREMENT_LEASE_RETRY_SEC` +
+  `MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC`, which is the sum a test pins under
+  mux's lease (ordering alone would not catch the overshoot).
 - "Pause voice loop" = UDS command (mirrors `/cue/play` shape).
 - "Pause AEC bridge" = if enabled, the bridge re-converges in
   ~200 ms after the sweep stops; no pause needed.
@@ -2799,8 +2805,9 @@ What can actually go wrong, ordered by likelihood × impact.
    [test_camilla_ducker.py](../tests/test_camilla_ducker.py) tests
    against it.
 4. **measurement_window() loses its web worker while music is isolated.**
-   Mitigation: mux owns a closed owner vocabulary and a 60-second monotonic
-   lease. Same-owner selection renews it; another feature cannot steal/release
+   Mitigation: mux owns a closed owner vocabulary and a monotonic
+   `mux.FANIN_TEST_LEASE_SEC` lease. Same-owner selection renews it; another
+   feature cannot steal/release
    it; expiry strictly restores the current manual/auto/NONE gate and retains
    ownership for retry if that low-level restore fails. Source processes and
    household intent are never changed by correction.

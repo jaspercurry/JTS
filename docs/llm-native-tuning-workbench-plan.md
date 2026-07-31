@@ -1190,15 +1190,16 @@ Verified seams (checked 2026-07-27; re-verify before building):
   jasper-voice reads at startup: it refuses before emitting a stimulus unless
   an active daemon acknowledges `MEASURE_PAUSE` (or is absent after the lease
   is durably visible to any restart), and aborts if renewal cannot be confirmed
-  before the 120 s lease expires. The mux
-  lease's owner/label sets are closed frozensets in `jasper/mux.py`
+  before the pause lease (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`) expires.
+  The mux lease's owner/label sets are closed frozensets in `jasper/mux.py`
   (`FANIN_TEST_LABELS = {"correction"}`, `FANIN_TEST_OWNERS =
   {"active-speaker-commissioning", "correction-measurement"}`) — a
   workbench-specific owner id is a deliberate `jasper/mux.py` change, not
   just a new string, and it would not by itself prevent a racing
   `MEASURE_RESUME`. Crash recovery remains layered: the advisory lock drops
-  with its process, the mux lease auto-expires within 60 s, and the voice
-  pause auto-clears within 120 s if the holder dies.
+  with its process, the mux lease auto-expires within
+  `mux.FANIN_TEST_LEASE_SEC`, and the voice pause auto-clears within
+  `voice_daemon.MEASUREMENT_AUTOCLEAR_SEC` if the holder dies.
 - Stimulus: `jasper.audio_measurement.sweep.synchronized_swept_sine` +
   `write_sweep_wav` (mono-enforced); the exact single-channel invariant
   for driver work is

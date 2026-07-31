@@ -103,8 +103,9 @@ band-RMS so fades don't drag the average.
 - **Pause voice for the sweep.** Send `MEASURE_PAUSE` /
   `MEASURE_RESUME` on voice's UDS (`/run/jasper/voice.sock` — the
   same commands `jasper/correction/coordinator.py::measurement_window`
-  uses; voice self-heals via a 120 s server-side auto-clear if the
-  bench dies). KNOWN LEAK the bench inherits either way: cue playback
+  uses; voice self-heals via the server-side auto-clear
+  (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`) if the bench dies).
+  KNOWN LEAK the bench inherits either way: cue playback
   and timer announcements check only the output gate, not the
   measurement flag — a firing timer can speak into a capture. The
   repeats+spread machinery is the mitigation (an announced-over

@@ -283,13 +283,150 @@ async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch)
     assert gate_calls[-1] == "release"
 
 
-def test_mux_gate_refresh_deadline_precedes_mux_lease_expiry():
-    assert 0 < coordinator.MEASUREMENT_GATE_REFRESH_SEC
-    assert (
-        coordinator.MEASUREMENT_GATE_REFRESH_SEC
-        < coordinator.MEASUREMENT_GATE_ABORT_SEC
-        < mux_module.FANIN_TEST_LEASE_SEC
+def test_mux_gate_abort_ladder_fires_before_mux_lease_expiry():
+    """Pin the ladder's worst-case abort time, not the constants' ordering.
+
+    ``_refresh_measurement_gate_lease`` only *checks* its deadline after an
+    acquire attempt fails, so the abort lands on the first check at or past
+    ``MEASUREMENT_GATE_ABORT_SEC`` — never exactly on it. Ordering alone
+    therefore proves nothing: at ``MEASUREMENT_GATE_ABORT_SEC = 55`` the old
+    assertion (``20 < 55 < 60``) stays green while the real abort lands only
+    once mux has already reopened household music into a live sweep. The
+    sibling test below reproduces exactly that — two of its schedules abort
+    at 60.0 s and 61.0 s against a 60 s lease.
+
+    Two invariants, both derived from the constants themselves:
+
+    * **Recovery.** A first failed acquire must land under the deadline, so a
+      transient mux blip gets at least one retry instead of killing the
+      window outright.
+    * **Safety.** The check before the aborting one was under the deadline by
+      definition, and the step that follows costs at most one back-off plus
+      one full mux round trip. So for *every* failure schedule the abort
+      fires strictly before ``ABORT + RETRY + COMMAND_TIMEOUT``, and that
+      sum must clear mux's availability lease.
+
+    This test pins the arithmetic. Its sibling below,
+    ``test_gate_abort_ladder_stays_inside_its_modelled_bound``, pins the other
+    half — that the loop still behaves the way the arithmetic models it.
+    """
+
+    refresh = coordinator.MEASUREMENT_GATE_REFRESH_SEC
+    abort = coordinator.MEASUREMENT_GATE_ABORT_SEC
+    retry = coordinator.MEASUREMENT_LEASE_RETRY_SEC
+    command = coordinator.MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC
+    assert 0 < refresh
+    assert 0 < retry
+    assert 0 < command
+
+    # Recovery: the first failed check lands under the deadline.
+    assert refresh + command < abort
+
+    # Safety: the latest possible abort still precedes mux reopening music.
+    assert abort + retry + command < mux_module.FANIN_TEST_LEASE_SEC
+
+
+def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float:
+    """Run the REAL refresh loop on a virtual clock; return the abort instant.
+
+    ``asyncio.sleep`` advances a modelled clock instead of sleeping and
+    ``time.monotonic`` reads it, so the answer is the loop's own decision
+    point in modelled seconds — exact, fast, and indifferent to how loaded
+    the test host is. Every acquire after the entering one burns the next
+    cost from ``acquire_costs`` (cycled) and then fails, which is how a mux
+    round trip that consumes part or all of its deadline is expressed.
+    """
+
+    clock = {"t": 0.0}
+    aborted: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(delay, *args, **kwargs):
+        clock["t"] += float(delay)
+        await real_sleep(0)  # yield without advancing the modelled clock
+
+    class _Clock:
+        @staticmethod
+        def monotonic() -> float:
+            return clock["t"]
+
+    calls = {"n": 0}
+
+    async def acquire() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return  # the enter-path acquire succeeds; the lease starts here
+        clock["t"] += acquire_costs[(calls["n"] - 2) % len(acquire_costs)]
+        raise MeasurementWindowError("mux unavailable")
+
+    async def release(**_kwargs) -> None:
+        return None
+
+    class _RecordingTarget(coordinator.MeasurementAbortTarget):
+        def abort(self, fallback):
+            aborted.append(clock["t"])
+            super().abort(fallback)
+
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
+    monkeypatch.setattr(coordinator, "time", _Clock)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    async def drive() -> None:
+        never = asyncio.Event()  # only the abort ends the body
+        async with measurement_window(
+            skip_voice_pause=True, abort_target=_RecordingTarget(),
+        ):
+            await never.wait()
+
+    with pytest.raises((MeasurementWindowError, asyncio.CancelledError)):
+        asyncio.run(drive())
+
+    assert aborted, "the ladder never aborted"
+    return aborted[0]
+
+
+@pytest.mark.parametrize(
+    # Fractions of MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC, not bare seconds, so
+    # the schedules keep their meaning if that deadline is ever retuned.
+    "cost_fractions",
+    [
+        (0.0,),                     # socket missing — every acquire fails fast
+        (1 / 3,),
+        (5 / 6,),
+        (1.0,),                     # every acquire burns its whole deadline
+        (0.0, 1.0),                 # alternating fast/slow
+        (1.0, 1 / 6, 2 / 3, 0.0),   # mixed — no schedule may exceed the bound
+    ],
+)
+def test_gate_abort_ladder_stays_inside_its_modelled_bound(
+    monkeypatch, cost_fractions,
+):
+    """The loop must still behave the way the arithmetic pin models it.
+
+    The sibling test above asserts ``ABORT + RETRY + COMMAND_TIMEOUT`` clears
+    mux's lease. That bound is only worth anything while the loop keeps its
+    current shape — one back-off plus one acquire between deadline checks.
+    Add a step to the ladder and the arithmetic would stay green while the
+    real abort slid later, which is the exact failure this pin exists to
+    stop. So drive the real loop and check the modelled abort against both
+    the bound and mux's lease, over several failure schedules including
+    mixed fast/slow ones (the worst case is not always the all-slow one).
+    """
+
+    command = coordinator.MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC
+    costs = tuple(fraction * command for fraction in cost_fractions)
+    bound = (
+        coordinator.MEASUREMENT_GATE_ABORT_SEC
+        + coordinator.MEASUREMENT_LEASE_RETRY_SEC
+        + command
     )
+
+    abort_at = _simulate_gate_abort(monkeypatch, costs)
+
+    assert abort_at >= coordinator.MEASUREMENT_GATE_ABORT_SEC
+    assert abort_at < bound
+    assert abort_at < mux_module.FANIN_TEST_LEASE_SEC
 
 
 @pytest.mark.asyncio
