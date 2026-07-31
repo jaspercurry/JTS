@@ -21,7 +21,7 @@ from http import HTTPStatus
 from typing import Any, Callable
 
 from jasper.audio_measurement.correction_lane import (
-    DEFAULT_ALSA_DEVICE as PLAYBACK_DEVICE,
+    CORRECTION_SUBSTREAM as PLAYBACK_DEVICE,
 )
 from jasper.log_event import log_event
 

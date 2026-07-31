@@ -42,9 +42,7 @@ from typing import Awaitable, Callable
 # The ALSA lane a program WAV is played into — the correction fan-in substream
 # that feeds CamillaDSP's capture, same as the isolated driver sweep
 # (``jasper.active_speaker.web_commissioning.COMMISSION_TONE_ALSA_DEVICE``).
-from jasper.audio_measurement.correction_lane import (
-    DEFAULT_ALSA_DEVICE as CORRECTION_SUBSTREAM,
-)
+from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.playback import (
     PlaybackResult,

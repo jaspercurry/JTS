@@ -57,7 +57,7 @@ from typing import Any, Callable
 from ._common import JsonBodyError, read_json_object
 
 from jasper.audio_measurement.correction_lane import (
-    DEFAULT_ALSA_DEVICE as PLAYBACK_DEVICE,
+    CORRECTION_SUBSTREAM as PLAYBACK_DEVICE,
 )
 from jasper.log_event import log_event
 from jasper.measurement.level import DEFAULT_LOCK_FRAMES, MicLevelTracker

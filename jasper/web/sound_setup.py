@@ -88,7 +88,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from jasper.audio_measurement.correction_lane import (
-    DEFAULT_ALSA_DEVICE as VOLUME_FLOOR_TONE_ALSA_DEVICE,
+    CORRECTION_SUBSTREAM as VOLUME_FLOOR_TONE_ALSA_DEVICE,
 )
 from jasper.log_event import log_event
 from jasper.output_topology import (

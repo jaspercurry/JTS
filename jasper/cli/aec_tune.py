@@ -78,7 +78,7 @@ from types import FrameType
 
 import numpy as np
 
-from jasper.audio_measurement.correction_lane import DEFAULT_ALSA_DEVICE
+from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.mics import xvf3800
 
 logger = logging.getLogger("jasper.aec_tune")
@@ -738,7 +738,7 @@ def main() -> int:
                             "aplay",
                             "-q",
                             "-D",
-                            DEFAULT_ALSA_DEVICE,
+                            CORRECTION_SUBSTREAM,
                             str(noise_wav),
                         ],
                     )

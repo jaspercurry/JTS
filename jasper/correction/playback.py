@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jasper.audio_measurement.correction_lane import (
-    DEFAULT_ALSA_DEVICE as DEFAULT_ALSA_DEVICE,
+    CORRECTION_SUBSTREAM as CORRECTION_SUBSTREAM,
 )
 from jasper.audio_measurement.playback import (
     PlaybackCleanupState as PlaybackCleanupState,
@@ -33,6 +33,14 @@ from jasper.audio_measurement.playback import (
 
 
 DEFAULT_TONE_DIR = Path("/var/lib/jasper/correction/tones")
+
+# Back-compat name: jasper.active_speaker.commissioning_host still does
+# `from jasper.correction.playback import DEFAULT_ALSA_DEVICE`, and this
+# module's own public surface has always exposed it under this name. The
+# single source of truth is CORRECTION_SUBSTREAM
+# (jasper.audio_measurement.correction_lane); every other consumer imports
+# that name directly rather than reaching through this compatibility alias.
+DEFAULT_ALSA_DEVICE = CORRECTION_SUBSTREAM
 
 
 def _raise_legacy_error(error: PlaybackError, *, missing_label: str) -> None:

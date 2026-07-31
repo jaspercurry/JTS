@@ -80,7 +80,7 @@ from jasper.active_speaker.startup_load import (
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
 from jasper.audio_measurement.correction_lane import (
-    DEFAULT_ALSA_DEVICE as COMMISSION_TONE_ALSA_DEVICE,
+    CORRECTION_SUBSTREAM as COMMISSION_TONE_ALSA_DEVICE,
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB

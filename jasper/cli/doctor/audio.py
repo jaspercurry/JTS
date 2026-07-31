@@ -22,7 +22,7 @@ from ...audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     mixer_control_groups_for as _dac_mixer_control_groups_for,
 )
-from ...audio_measurement.correction_lane import DEFAULT_ALSA_DEVICE
+from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla import CamillaController, CamillaUnavailable
 from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
@@ -1178,7 +1178,7 @@ def check_fanin_asound_wiring() -> CheckResult:
         "librespot_substream": "hw:Loopback,0,0",
         "shairport_substream": "hw:Loopback,0,1",
         "bluealsa_substream": "hw:Loopback,0,2",
-        DEFAULT_ALSA_DEVICE: "hw:Loopback,0,4",
+        CORRECTION_SUBSTREAM: "hw:Loopback,0,4",
     }
     missing: list[str] = []
     wrong: list[str] = []
