@@ -159,7 +159,7 @@ frame or physical?), #1857 (worst-band pointer anchored on a full-range mean),
 slides, pulling courtesy beeps into the floor estimate), #1847 (`band_levels_dbfs`
 Hann-weights chirps — sub-bass reads ~10 dB low), #1938 (**R8** — fixture
 defaults `trim_db` from the default curves, mislabeling every custom-curve
-caller), #1882 + #1883 (alignment-confidence coverage; `sweep_anchor`
+caller, closed), #1882 + #1883 (alignment-confidence coverage; `sweep_anchor`
 derivation — **#1883 part 1 is R12**), #1652 (CHECK-SNR gate + noise-attributed
 VERIFY failures), #1672 (per-serial mic cals disagree ~4.7 dB above 8 kHz),
 #1774 (**R12** — re-baseline S0 under the corrected calibration sign), #1969
@@ -248,8 +248,9 @@ is discarded. P4 is the read path plus the render, the household-wire delta
 labeled honestly as model-vs-model, and per-speaker persistence of VERIFY's
 model error. Cheap — every piece exists; nothing reads it.
 
-**Status.** PENDING RATIFICATION; nothing merged. **Scheduled: R8** for the
-findings reader (its first rung), then **R11** for the attempts loop.
+**Status.** PENDING RATIFICATION. First rung merged — the findings reader,
+#1982, 2026-07-31; **ratification still pending**. Then **R11** for the
+attempts loop.
 
 **Reshapes.** Precedes WO-6 and WO-7. WO-7's per-attempt
 predicted-vs-measured evidence stream is **unimplementable until P4 exists** —
@@ -263,7 +264,7 @@ tier reads a block that cannot exist at stage 1 — Full shows less than Express
 #1784 (full-band honest two-panel before/after), #1927 (**R8** — VERIFY
 pilot-transfer baseline never expires — and see P0 finding 1: a fixed baseline accumulates
 drift comparable to the whole floor within ~15 attempts, so this is a rule, not
-just a bug), #1876 (convergence: does a clean-slate re-run reach the same tune?),
+just a bug, closed), #1876 (convergence: does a clean-slate re-run reach the same tune?),
 #1844 (LLM-native tuning workbench W1–W4 — the consumer the loop feeds).
 
 ---
