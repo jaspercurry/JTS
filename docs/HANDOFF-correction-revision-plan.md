@@ -111,7 +111,8 @@ cross-frame comparison the product makes — including the corrected headline th
 ~84% of the scorecard's "2.02× optimistic prediction" was instrument tilt, not
 model error.
 
-**Status.** PENDING RATIFICATION. Nothing merged.
+**Status.** PENDING RATIFICATION; nothing merged. **Scheduled: R9**, the
+instrument round, under the provisional green light.
 
 **Reshapes.** Precedes WO-6 and WO-7. **WO-5's frame-anchor question (Q-E) is
 superseded-pending**: which anchor the reference frame uses is not a free choice
@@ -151,7 +152,9 @@ inter-driver differential arrival the flow already computes), `floor_source`,
 the DSP fingerprint, the role label — and accept declared driver spacing instead
 of hard-coding 0.0.
 
-**Status.** PENDING RATIFICATION. Nothing merged.
+**Status.** PENDING RATIFICATION; nothing merged. **Not yet scheduled to a
+round** — the rung that most wants ratification before it is built, since it
+changes what every future capture records.
 
 **Reshapes.** Precedes WO-4: **WO-4's "the mechanism set can be frozen now" is
 superseded-pending**, because a registry citing evidence that cannot say where
@@ -182,7 +185,8 @@ offline (the CamillaDSP render harness exists, aimed elsewhere). Two of three
 seams are mis-assigned today; this is also the likely home of the genuine
 1000–1600 Hz model error left after tilt removal.
 
-**Status.** PENDING RATIFICATION. Nothing merged.
+**Status.** PENDING RATIFICATION; nothing merged. **Scheduled: R10**, the
+objective round.
 
 **Reshapes.** Precedes WO-6 and **any delay work** — so **WO-3's delay-adoption
 path (Q-A) is superseded-pending**: no delay value is adopted on model evidence
@@ -219,7 +223,8 @@ is discarded. P4 is the read path plus the render, the household-wire delta
 labeled honestly as model-vs-model, and per-speaker persistence of VERIFY's
 model error. Cheap — every piece exists; nothing reads it.
 
-**Status.** PENDING RATIFICATION. Nothing merged.
+**Status.** PENDING RATIFICATION; nothing merged. **Scheduled: R8** for the
+findings reader (its first rung), then **R11** for the attempts loop.
 
 **Reshapes.** Precedes WO-6 and WO-7. WO-7's per-attempt
 predicted-vs-measured evidence stream is **unimplementable until P4 exists** —
