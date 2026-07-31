@@ -397,10 +397,21 @@ class Mux:
 
                     timeout = max(0.0, next_patrol - loop.time())
                     woke = False
+                    # asyncio.timeout(), NOT asyncio.wait_for(): on CPython
+                    # <= 3.11 wait_for SWALLOWS a CancelledError that arrives
+                    # in the same tick its awaited future completes (Lib/
+                    # asyncio/tasks.py: `except CancelledError: if fut.done():
+                    # return fut.result()`). This wait sits on exactly that
+                    # seam — an alert resolves the event constantly — so a
+                    # cancellation delivered alongside an alert was eaten and
+                    # run() became IMMORTAL: it kept patrolling forever and
+                    # every awaiter of the task hung (#1935). 3.12 rewrote
+                    # wait_for on top of asyncio.timeout(); using it directly
+                    # gets the correct behaviour on 3.11 too. Do not "simplify"
+                    # this back to wait_for while 3.11 is supported.
                     try:
-                        await asyncio.wait_for(
-                            self._reconcile_wake.wait(), timeout=timeout,
-                        )
+                        async with asyncio.timeout(timeout):
+                            await self._reconcile_wake.wait()
                         woke = True
                     except asyncio.TimeoutError:
                         pass

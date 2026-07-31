@@ -298,6 +298,65 @@ async def test_noop_alert_reconcile_uses_mux_event_at_debug(
 
 
 @pytest.mark.asyncio
+async def test_run_answers_cancellation_racing_a_wake_alert(mux, monkeypatch):
+    """Mux.run() must terminate when cancelled, even when a wake alert lands
+    in the very same event-loop tick as the cancellation.
+
+    Regression for #1935. CPython <= 3.11's ``asyncio.wait_for`` swallows a
+    CancelledError that arrives in the tick its awaited future completes
+    (Lib/asyncio/tasks.py, ``except CancelledError: if fut.done(): return
+    fut.result()``). The mux patrol wait sat on exactly that seam, so a
+    cancellation delivered alongside an alert was consumed: run() kept
+    looping forever, the task never finished, and anything awaiting its
+    death — the daemon's shutdown path, or a test's teardown gather — hung
+    until an external timeout killed the process. 3.12 rewrote wait_for on
+    top of ``asyncio.timeout()`` and is not affected, which is why only the
+    py3.11 CI leg ever failed.
+
+    The race below is deterministic, not probabilistic: ``notify_source_changed``
+    resolves the awaited event and ``cancel()`` follows with no intervening
+    await, so both wake-ups are queued in the same iteration.
+    """
+    import jasper.source_events as source_events
+
+    # Park in the bounded wait: only the alert or the cancellation wakes it,
+    # so the race is not muddied by an unrelated patrol expiry.
+    mux.POLL_INTERVAL_SEC = 3600
+    mux._fanin_none_best_effort = AsyncMock()
+    monkeypatch.setattr(
+        source_events,
+        "start_source_event_tasks",
+        lambda *args, **kwargs: [],
+    )
+
+    async def control_forever():
+        await asyncio.Future()
+
+    mux._run_control_server = control_forever
+    reconciled = asyncio.Event()
+
+    async def record_reconcile(*, trigger, dirty_sources):
+        reconciled.set()
+
+    mux._reconcile = record_reconcile
+    mux_task = asyncio.create_task(mux.run())
+    await wait_signalled(reconciled, "startup reconcile", producer=mux_task)
+    # Let run() settle into the bounded wait before racing it.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    mux.notify_source_changed(Source.AIRPLAY, "test")
+    mux_task.cancel()
+
+    _, pending = await asyncio.wait({mux_task}, timeout=10.0)
+    assert not pending, (
+        "Mux.run() ignored cancellation and is still looping -- a swallowed "
+        "CancelledError makes the task immortal and hangs every awaiter (#1935)"
+    )
+    assert mux_task.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_alert_storm_does_not_postpone_fixed_patrol(
     mux, monkeypatch,
 ):
