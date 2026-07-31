@@ -1049,9 +1049,15 @@ reference. Currently:
   returning-user state, one phone handoff, target/headroom/latency promises,
   mandatory proof, acceptance authority, and ownership boundaries.
 - [`HANDOFF-correction-revision-plan.md`](docs/HANDOFF-correction-revision-plan.md) —
-  **Historical completed P-track plan.** H1 carries into the Room hardware
-  track; the rest is layered-pipeline rationale and program archaeology, not
-  current behavior or current planning authority.
+  **The correction/measurement program's roadmap spine (current planning
+  authority), plus the historical P-track plan as its appendix.** The spine
+  holds the machine charter, the P0–P4 ladder with per-rung ratification status
+  and its reconciliation against the attribution work orders, the campaign
+  rounds (code-locality territories with exit criteria), the research index,
+  the phase→issue index, and the CURRENT POSITION marker that closing rounds
+  update. The appendix is the completed 2026-07-12 layered-pipeline
+  campaign: H1 carries into the Room hardware track; the rest is rationale and
+  archaeology, not current behavior.
 - [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —
   **Planning brief / execution plan of record** for Bass Extension:
   commissioned, volume-scheduled low-frequency alignment (Linkwitz-Transform
