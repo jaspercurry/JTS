@@ -2770,6 +2770,114 @@ def _publish_findings(
     )
 
 
+def bind_findings_publisher(
+    store: Any, relay_session_id: str, refs: dict[str, Any]
+) -> Callable[[Mapping[str, Any]], None]:
+    """The real ``publish_findings`` seam — the #1866 frame-gate finding.
+
+    The owner's 2026-07-30 ruling: a level-frame disagreement is BANKED as an
+    M7 finding, and the session proceeds, when the realized-level check passes
+    on the pair about to ship — a closed-loop read of the OUTCOME, not a
+    referee between the two frames (see the flow's gate comment for why the
+    distinction matters). The conductor decides and hands over an evidence
+    record; this binder is the only thing that knows there is a store.
+
+    **Its own phase, and that is forced rather than chosen.** The finding set
+    lands at ``findings_measure.json``, beside the cloud groups'
+    ``findings_cloud_measure.json`` / ``findings_cloud_verify.json``. The store
+    is write-once and the cloud group's set is published at group CLOSE —
+    several seconds and one household tap before the fit this finding comes out
+    of even runs — so reusing that phase would be a PATH_CONFLICT, not a merge.
+    The per-phase path already exists for exactly this reason (see
+    :func:`~jasper.attribution.storage.findings_relative_path`), and the phase
+    it takes is the flow phase the finding belongs to.
+
+    **It cites ``candidate.json``**, the artifact
+    :func:`bind_evidence_publishers`' ``publish_candidate`` wrote moments
+    earlier, for three reasons: it is the thing the finding is ABOUT (the
+    trims committed under a frame whose estimators disagreed), it carries the
+    frame's own per-role ``level_frame_offset_db`` inside its ``linearization``
+    block, and it is guaranteed to exist and to be durable at this point in the
+    session — which a citation must be, since
+    :func:`~jasper.attribution.storage.read_finding_set` re-hashes it on every
+    read and raises when it cannot be confirmed.
+
+    Fail-soft, like :func:`_publish_findings` and for the same §3.4 reason: the
+    candidate is already published and the gate has already ruled that this
+    session may proceed. A findings failure is a lost diagnosis, never a lost
+    tune.
+    """
+
+    def publish_findings(record: Mapping[str, Any]) -> None:
+        from jasper.active_speaker.commissioning_evidence_store import (
+            EVIDENCE_ROOT,
+        )
+        from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+        from jasper.attribution.findings import FindingSet
+        from jasper.attribution.promotion import (
+            PRODUCED_BY_LEVEL_FRAME,
+            promote_level_frame_disagreement,
+        )
+        from jasper.attribution.storage import (
+            bundle_evidence_ref,
+            publish_finding_set,
+        )
+
+        try:
+            identity = v2_session_identity(store, relay_session_id)
+            finding = promote_level_frame_disagreement(
+                record,
+                session=identity,
+                cites=(
+                    bundle_evidence_ref(
+                        store.identify_artifact(
+                            f"{EVIDENCE_ROOT}/artifacts/crossover_v2/"
+                            f"{relay_session_id}/candidate.json"
+                        ),
+                        identity,
+                    ),
+                ),
+            )
+            # A record the promoter refused is already logged by it, with the
+            # reason. Publishing an EMPTY set here would be a lie of a
+            # different shape — "attribution ran and found nothing" — about a
+            # session whose gate found something and said so in the journal.
+            if finding is None:
+                return
+            artifact = publish_finding_set(
+                store,
+                relay_session_id=relay_session_id,
+                phase=PHASE_MEASURE,
+                finding_set=FindingSet(
+                    session=identity,
+                    produced_by=PRODUCED_BY_LEVEL_FRAME,
+                    findings=(finding,),
+                ),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            log_event(
+                logger,
+                "correction.crossover_v2_findings_publish_failed",
+                level=logging.WARNING,
+                relay_session_id=relay_session_id,
+                phase=PHASE_MEASURE,
+                exc_info=True,
+            )
+            return
+        refs.setdefault("finding_artifacts", {})[PHASE_MEASURE] = (
+            artifact.fingerprint
+        )
+        log_event(
+            logger,
+            "correction.crossover_v2_findings_published",
+            relay_session_id=relay_session_id,
+            phase=PHASE_MEASURE,
+            findings=1,
+        )
+
+    return publish_findings
+
+
 def bind_cloud_publisher(
     store: Any, relay_session_id: str, refs: dict[str, Any]
 ) -> Callable[[str, Mapping[str, Any]], None]:
@@ -4547,6 +4655,14 @@ def prepare_v2_session(
                     evidence_store, relay_session_id, refs
                 ),
                 publish_cloud=bind_cloud_publisher(
+                    evidence_store, relay_session_id, refs
+                ),
+                # #1866: banked only by the MEASURE candidate's own gate, so it
+                # is wired on the measuring preparer alone. The stage-2 /
+                # re-verify preparer below never builds a MEASURE candidate —
+                # its index map is verify-only — so binding it there would ship
+                # a seam nothing can reach.
+                publish_findings=bind_findings_publisher(
                     evidence_store, relay_session_id, refs
                 ),
                 rollback=bind_delta_probe_rollback(run_async, camilla_factory),

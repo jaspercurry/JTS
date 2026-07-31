@@ -2,26 +2,32 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The excluded-band promotion path — the embryo becomes a finding.
+"""The promotion paths — verdicts the flow already computed become findings.
 
 ``docs/attribution-stage-plan.md`` §3.1: "The excluded-band tau records are
 the embryo: [attribution] promotes them from 'reason to refuse EQ' to findings
 with mechanism and fix class attached."
 
-That is exactly and only what this module does. It reads the carve-out records
-the cloud pipeline **already persists** — each one already carrying its band,
-its tau, its r, its depth, its position-variance classification, and its
-household sentence — and attaches the three things a finding adds: a
-``mechanism``, a ``fix_class``, and a ``confidence`` tier with the probe that
-would raise it.
+That is exactly and only what this module does, and it now does it for **two**
+records rather than one. Both are promotions in the same strict sense: the
+numbers already exist, computed by shipped instruments for their own purposes,
+and promotion attaches the three things a finding adds — a ``mechanism``, a
+``fix_class``, and a ``confidence`` tier with the probe that would raise it.
 
-**This is not a detector** (that is WO-4). No signal is analysed here, no
-threshold is applied, no classification is computed. Every number and every
-word comes from a record the shipped pipeline produced; promotion is a
-translation, and it can only ever name a mechanism the shipped
-``InterferenceNullReport`` already classified.
+* :func:`promote_carve_outs` — the excluded-band records, each already
+  carrying its band, its tau, its r, its depth, its position-variance
+  classification, and its household sentence.
+* :func:`promote_level_frame_disagreement` — the level-frame gate's own
+  comparison, banked under the owner's 2026-07-30 ruling on #1866 when the two
+  estimators disagree and the realized-level check nonetheless passes on the
+  pair the session is about to ship.
 
-**Three rules the plan binds this path to, each pinned by test:**
+**Neither is a detector** (that is WO-4). No signal is analysed here, no
+threshold is applied, no classification is computed. Every number comes from a
+record the shipped pipeline produced; promotion is a translation, and it can
+only ever name a mechanism some shipped instrument already decided.
+
+**Three rules the plan binds the carve-out path to, each pinned by test:**
 
 1. **Every promoted finding is ``unsure``.** §5: "Any finding whose only
    support is P2 stays ``unsure`` with P4 as its recommended probe." The cloud
@@ -61,11 +67,17 @@ from typing import Any, Iterable, Mapping, Sequence
 from jasper.log_event import log_event
 
 from .findings import EvidenceRef, Finding, FindingError
-from .mechanisms import MECHANISM_BOUNDARY_SBIR, MECHANISM_HF_REFLECTION
+from .mechanisms import (
+    MECHANISM_BOUNDARY_SBIR,
+    MECHANISM_HF_REFLECTION,
+    MECHANISM_LEVEL_FRAME,
+)
 from .session_identity import SessionIdentity
 from .vocabulary import (
     CONFIDENCE_UNSURE,
+    PROBE_DESIGN_AXIS,
     PROBE_POSITION_VARIANCE,
+    PROBE_REPEAT_VARIANCE,
     PROBE_ROTATION,
 )
 
@@ -73,6 +85,14 @@ logger = logging.getLogger(__name__)
 
 #: Producer id written into the finding set's provenance marker.
 PRODUCED_BY = "jasper.attribution.promotion.promote_carve_outs"
+
+#: The level-frame path's own provenance marker. Separate from
+#: :data:`PRODUCED_BY` because the two paths publish to different phases from
+#: different points in the session, and a reader asking "who wrote this set"
+#: should get the function that actually did.
+PRODUCED_BY_LEVEL_FRAME = (
+    "jasper.attribution.promotion.promote_level_frame_disagreement"
+)
 
 #: The one carve-out source that carries attributable evidence. Mirrors
 #: ``crossover_v2_flow.CARVE_OUT_SOURCE_IDENTIFIED_NULL``; the sibling
@@ -257,4 +277,186 @@ def promote_carve_outs(
     return tuple(out)
 
 
-__all__ = ["PRODUCED_BY", "SOURCE_IDENTIFIED_NULL", "promote_carve_outs"]
+#: The one sentence a household may be shown about a banked frame
+#: disagreement, and the ONLY place it is written.
+#:
+#: **Minted here rather than copied**, which is the one way this path differs
+#: from :func:`promote_carve_outs`'s rule 3. That rule exists because the
+#: carve-out record already carries the shipped sentence a household is told
+#: about an excluded band, so writing a second one would be two owners for one
+#: verdict. The frame gate has no such sentence for this outcome: its only
+#: household copy is the REFUSAL's ("re-check sensitivity and the pad"), which
+#: is both wrong for a session that proceeds and the copy #1924's family is
+#: separately about. So this string is the first copy for a new outcome, and
+#: it lives here — beside the schema that validates it — rather than in the
+#: flow, so there is still exactly one owner.
+#:
+#: Three claims, each true at the moment of minting and no more:
+#:
+#: * two measurements of the same thing disagreed;
+#: * a further check found the tuning itself lands the two ranges level;
+#: * the disagreement is recorded.
+#:
+#: It says "offered", not "applied" or "kept" — the candidate is a PROPOSAL
+#: the review screen shows, and the apply is a separate household action
+#: (two-stage split, PR-T3). Copy claiming the tuning was applied would be
+#: false for every session that is refused, retaken, or simply never
+#: confirmed. It names no part of the speaker: §3.1's hardware-noun
+#: prohibition is enforced by :class:`~jasper.attribution.findings.Finding`
+#: itself, so a future edit that reaches for "woofer" fails at construction
+#: rather than in front of a household.
+#:
+#: **It no longer says "independent", and that word was doing real work.** The
+#: check is ``realized_branch_level_match``, whose own docstring is explicit
+#: that it is "One estimator, not a second opinion" — the same power-band
+#: average over the same halves that set the trim, re-read on the pair about to
+#: ship. It is independent of the FIT's median and it is genuinely non-vacuous,
+#: but "an independent check" invites a household to read it as a second
+#: opinion that settled which measurement was right, and no instrument in this
+#: session did that. Household copy may be simple; it may not be false.
+LEVEL_FRAME_HOUSEHOLD_COPY = (
+    "Two measurements of how this speaker's high and low ranges balance "
+    "disagreed. A further check found the tuning itself lands the two ranges "
+    "level, so it was offered rather than refused, and the disagreement "
+    "recorded."
+)
+
+#: The band keys, which become ``band_hz`` rather than evidence. Named so the
+#: producer and this reader cannot drift; every OTHER key in the record is
+#: evidence, deliberately (see :func:`promote_level_frame_disagreement`).
+_LEVEL_FRAME_BAND_KEYS = ("f_lo_hz", "f_hi_hz")
+
+
+def promote_level_frame_disagreement(
+    record: Any,
+    *,
+    session: SessionIdentity,
+    cites: Iterable[EvidenceRef],
+) -> Finding | None:
+    """Promote one banked level-frame disagreement to an M7 finding.
+
+    The owner's 2026-07-30 ruling on #1866: when
+    ``solve_shared_level_frame``'s two estimators disagree beyond
+    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` but ``realized_branch_level_match``
+    PASSES, the fit banks the disagreement as an M7-class finding and proceeds.
+    This function is the "banks it as a finding" half; the flow owns the
+    decision, and the *only* records that reach here are ones it already
+    decided to bank.
+
+    **Two phrases from the ruling are deliberately not repeated here, because
+    the code does not do what they say** — the flow's own gate comment derives
+    both:
+
+    * *"proceeds on the near-Fc anchor (the trim solve)"*. Proceeding changes
+      nothing about the trims; the fit commits the anchor it always computed,
+      and the trim term cancels out of it, so the committed placement is set by
+      the CORE-MEDIAN frame — the *disputed* estimator. The accurate sentence
+      is "the same tune, not refused".
+    * *"the estimator the realized check corroborates"*. The realized check is
+      a closed-loop read of the pair about to ship ("One estimator, not a
+      second opinion" — its own docstring), so it grades the OUTCOME and cannot
+      referee two frames against each other.
+
+    Neither correction changes what is banked or when. They change what the
+    evidence is claimed to mean, which is this module's whole responsibility.
+
+    **It re-decides nothing.** There is no threshold here, no comparison of
+    the disagreement against the tolerance, no re-reading of the realized
+    check — all three are the gate's, and duplicating any of them would be the
+    second computation of one verdict §3.1 forbids. A record that arrives is
+    promoted or is refused as malformed; there is no third answer.
+
+    **Every non-band key is evidence, by rule rather than by list.** The
+    carve-out path names its evidence keys explicitly because it reads a
+    persisted structure with many fields it does NOT want. This record is
+    built for exactly this purpose one call away, so a key list here would be
+    a second schema to keep in sync — and the failure mode of drift is a
+    finding silently missing the number a reader needed. ``Finding`` validates
+    every value is a finite scalar, a string, a bool, or ``None``, so a
+    malformed record is refused rather than persisted.
+
+    Args:
+      record: the flow's banked record — the two band keys plus the evidence.
+      session: the session this disagreement belongs to.
+      cites: the evidence pointers the finding carries; at least one must be a
+        commissioning-bundle citation (``Finding`` enforces it).
+
+    Returns:
+      The finding, or ``None`` when the record is malformed — logged, never
+      silent, and never raised: a findings failure must not cost a session
+      that the gate has already decided may proceed.
+    """
+
+    if not isinstance(record, Mapping):
+        return None
+    band_hz = _band_bounds(record)
+    evidence = {
+        str(key): value
+        for key, value in record.items()
+        if key not in _LEVEL_FRAME_BAND_KEYS
+    }
+    if band_hz is None:
+        log_event(
+            logger,
+            "attribution.level_frame_promotion_refused",
+            level=logging.WARNING,
+            mechanism=MECHANISM_LEVEL_FRAME,
+            error=(
+                "banked level-frame record has no usable band: "
+                f"f_lo_hz={record.get('f_lo_hz')!r} "
+                f"f_hi_hz={record.get('f_hi_hz')!r}"
+            ),
+        )
+        return None
+    try:
+        return Finding(
+            mechanism=MECHANISM_LEVEL_FRAME,
+            band_hz=band_hz,
+            evidence=evidence,
+            # `unsure`, and this is the honest tier rather than a cautious
+            # one. THAT the two estimators disagreed is measured; that the
+            # disagreement is a real inter-driver level error is not, because
+            # the shipped gate's own residual produces this exact signature on
+            # a healthy speaker — a pair identical by construction reads
+            # 0.910 dB apart, and ordinary woofer passband tilt adds roughly
+            # 1.33 dB per dB/octave (both measured, see
+            # `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`'s own comment). A single
+            # session cannot separate "the drivers really sit that far apart"
+            # from "these two estimators read different spans of a curve that
+            # is not flat in the same way over both", so it does not claim to.
+            confidence=CONFIDENCE_UNSURE,
+            # `refit`, never `eq`. M7 declares both, and the split is exactly
+            # plan §4's: `eq` when a driver's level is genuinely low, `refit`
+            # "when the level error is upstream in the fit's own frame". A
+            # disagreement BETWEEN two estimates of the frame is upstream of
+            # every trim derived from them by construction, so adding level
+            # cannot be the fix — re-solving the frame is.
+            fix_class="refit",
+            household_copy=LEVEL_FRAME_HOUSEHOLD_COPY,
+            # NO probe was run. The evidence is the flow's own two estimators
+            # plus the realized-level check, none of which is a §5 primitive,
+            # and claiming one ran would be the cheapest possible way to
+            # launder a model-derived number into probe-adjudicated standing.
+            probes_run=(),
+            probes_recommended=(PROBE_DESIGN_AXIS, PROBE_REPEAT_VARIANCE),
+            cites=tuple(cites),
+        )
+    except FindingError as exc:
+        log_event(
+            logger,
+            "attribution.level_frame_promotion_refused",
+            level=logging.WARNING,
+            mechanism=MECHANISM_LEVEL_FRAME,
+            error=str(exc),
+        )
+        return None
+
+
+__all__ = [
+    "LEVEL_FRAME_HOUSEHOLD_COPY",
+    "PRODUCED_BY",
+    "PRODUCED_BY_LEVEL_FRAME",
+    "SOURCE_IDENTIFIED_NULL",
+    "promote_carve_outs",
+    "promote_level_frame_disagreement",
+]
