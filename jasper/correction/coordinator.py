@@ -79,6 +79,11 @@ DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
 # Must stay under the daemon's auto-clear with room for a retry; a test pins
 # the pair.
 MEASUREMENT_LEASE_REFRESH_SEC = 60.0
+# Back-off before re-trying a failed lease renewal. One policy, deliberately
+# shared by BOTH leases an open window holds — the voice pause above and the
+# mux gate below. It is budgeted twice: the voice/auto-clear pin and the mux
+# abort-ladder bound (see MEASUREMENT_GATE_ABORT_SEC) both read it, so
+# retuning it for one lease is checked against the other.
 MEASUREMENT_LEASE_RETRY_SEC = 5.0
 # How long we wait for the daemon's MEASURE_PAUSE reply. Named because it
 # is now a contract, not a local timeout: since #1898 the daemon may hold
@@ -93,11 +98,31 @@ VOICE_MEASURE_PAUSE_TIMEOUT_SEC = 3.0
 MEASUREMENT_FANIN_LABEL = "correction"
 MEASUREMENT_GATE_OWNER = "correction-measurement"
 MEASUREMENT_GATE_REFRESH_SEC = 20.0
+# Inter-attempt sleep for _release_measurement_gate's confirm loop on the way
+# OUT — not the refresh loop above, which backs off on MEASUREMENT_LEASE_RETRY_SEC.
+# The adjacency makes that easy to misread; the abort ladder budgets the other one.
 MEASUREMENT_GATE_RETRY_SEC = 0.1
+# Deadline for one jasper-mux control round trip. _mux_socket_command wraps
+# the whole exchange — connect, send, reply, close — so a wedged UDS cannot
+# outlive it while mux's lease keeps ageing. Named because the abort ladder
+# below budgets it: it is how far past MEASUREMENT_GATE_ABORT_SEC a failing
+# acquire can carry the abort. This bounds jasper-mux's socket only; it is
+# NOT the voice daemon's VOICE_MEASURE_PAUSE_TIMEOUT_SEC, a different
+# contract on a different socket that merely shares a value today.
+MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC = 3.0
 # Abort the owning window before mux's availability lease
-# (mux.FANIN_TEST_LEASE_SEC) can expire and reopen music. Each failed acquire
-# is itself bounded (see _acquire_measurement_gate), leaving recovery margin at
-# the defaults; a test pins the ordering.
+# (mux.FANIN_TEST_LEASE_SEC) can expire and reopen music into a live sweep.
+# The refresh loop only CHECKS this deadline after an acquire attempt fails,
+# so the abort lands on the first check at or past it — never exactly on it.
+# The check before that one was under the deadline by definition, and the step
+# that follows costs at most one MEASUREMENT_LEASE_RETRY_SEC back-off plus one
+# MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC acquire, so the real worst case is
+# bounded by the sum of those three — measured from OUR last_confirmed. mux's
+# lease starts earlier than that: it stamps _test_fanin_expires_at before
+# replying, so it is already ageing by up to one round trip when we stamp
+# last_confirmed. What has to clear mux's lease therefore counts the command
+# timeout twice, and that is what the test pins — bare ordering stays green
+# while the abort lands after mux has already let music back in.
 MEASUREMENT_GATE_ABORT_SEC = 40.0
 
 # Mutual-exclusion flag for measurement_window(). Only one window may be open
@@ -165,7 +190,7 @@ async def _acquire_measurement_gate() -> None:
         payload = await _mux_socket_command(
             "TEST_SELECT "
             f"{MEASUREMENT_FANIN_LABEL} {MEASUREMENT_GATE_OWNER}",
-            timeout=3.0,
+            timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
         )
     except (OSError, RuntimeError, ValueError, asyncio.TimeoutError) as exc:
         raise MeasurementWindowError(
@@ -189,7 +214,8 @@ async def _release_measurement_gate(*, allow_other_owner: bool = False) -> None:
     for attempt in range(3):
         try:
             payload = await _mux_socket_command(
-                f"TEST_RELEASE {MEASUREMENT_GATE_OWNER}", timeout=3.0,
+                f"TEST_RELEASE {MEASUREMENT_GATE_OWNER}",
+                timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
             )
             if (
                 payload.get("test_source") is None
@@ -209,7 +235,9 @@ async def _release_measurement_gate(*, allow_other_owner: bool = False) -> None:
             # indeterminate-acquire cleanup distinguish another feature's
             # owner without ever releasing that owner's gate.
             try:
-                status = await _mux_socket_command("STATUS", timeout=3.0)
+                status = await _mux_socket_command(
+                    "STATUS", timeout=MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
+                )
             except (OSError, RuntimeError, ValueError, asyncio.TimeoutError):
                 status = None
             if isinstance(status, dict):
@@ -481,6 +509,12 @@ async def measurement_window(
             # Restore voice first, then release mux's music-isolation gate.
             if voice_paused:
                 try:
+                    # A plain read deadline, NOT
+                    # VOICE_MEASURE_PAUSE_TIMEOUT_SEC: RESUME has no
+                    # in-playout drain to wait out, and giving up here is
+                    # recoverable (the daemon's auto-clear un-gates voice)
+                    # rather than leaving the speaker gated. Equal values
+                    # today, different contracts.
                     await _voice_uds_command(
                         voice_socket_path, "MEASURE_RESUME", timeout=3.0,
                     )
