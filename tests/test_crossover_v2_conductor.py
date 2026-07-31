@@ -126,6 +126,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_verify_session_spec,
     cloud_capture_target,
     cloud_plan_max_attempts,
+    cloud_geometry_retry_reach_cm,
+    cloud_walk_reach_cm,
     cloud_walk_shape,
     express_cloud_measure_positions,
     format_position_distance,
@@ -3779,9 +3781,48 @@ def test_the_orientation_states_the_walks_shape_instead_of_enumerating_it():
         notes = [c["text"] for c in spec.screen if c["type"] == "note"]
         assert shape in notes
 
-        # The reach is the walked slice's furthest offset, in the prompts' own
-        # units — not a hand-written number that could outlive the table.
-        assert format_position_distance(max(p.offset_cm for p in walked)) in shape
+        # The reach is DERIVED from the walked slice, in the prompts' own units
+        # — not a hand-written number that could outlive the table.
+        reach = cloud_walk_reach_cm(positions)
+        assert format_position_distance(reach) in shape
+        # …and it is a true CEILING, not the stated maximum restated. The wide
+        # rows also ask the operator to step IN toward the speaker so the
+        # radius holds, which puts the capsule on a chord: a stated 40 cm
+        # lateral move really lands ~40.9 cm from the mark at the placement
+        # copy's nominal 1 m. Re-derived here, because the first version of
+        # this screen quoted the bare offset and was therefore false on the
+        # very walk it described.
+        nominal_mark_distance_cm = 100.0
+        worst_chord = max(
+            math.hypot(
+                p.offset_cm,
+                nominal_mark_distance_cm
+                - math.sqrt(
+                    max(nominal_mark_distance_cm**2 - p.offset_cm**2, 0.0)
+                ),
+            )
+            for p in walked
+        )
+        assert worst_chord <= reach, (
+            f"the quoted reach {reach} cm no longer covers the walk's own "
+            f"step-in chord ({worst_chord:.2f} cm) — widen "
+            "CLOUD_WALK_REACH_ROUNDING_CM rather than shipping a false ceiling"
+        )
+
+        # …and the claim is bounded against EVERY prompt the flow can show,
+        # not just the walked slice. CLOUD_GEOMETRY_RETRY_PROMPTS is a shipped
+        # path (GEOMETRY_RETRY_POSITIONS = 2) and is deliberately "past every
+        # position in the table", so a bare "every spot is within X" would be
+        # false the moment a capture is retaken. Whether the honesty clause is
+        # needed is DERIVED from that reach, so a narrowed retake drops it.
+        retry_reach = cloud_geometry_retry_reach_cm()
+        if retry_reach > reach:
+            assert "a redo can ask for one step further out" in shape
+        else:
+            assert "redo" not in shape
+        # Today's constants really do exercise the first branch.
+        assert retry_reach > reach
+
         # …and no position is enumerated on the consent screen any more.
         for prompt in walked:
             assert prompt.text not in shape
@@ -3807,11 +3848,15 @@ def test_the_post_apply_walk_states_its_shape_with_its_own_tail():
     full = build_v2_verify_session_spec(
         FC_HZ, acknowledgement_binding="b" * 24, plan_shape=resolve_plan_shape(),
     )
-    walked = CLOUD_POSITION_PROMPTS[: DEFAULT_CLOUD_VERIFY_POSITIONS - 1]
     shape = cloud_walk_shape(DEFAULT_CLOUD_VERIFY_POSITIONS, post_apply=True)
     assert len([c for c in full.screen if c["type"] == "steps"]) == 1
     assert shape in [c["text"] for c in full.screen if c["type"] == "note"]
-    assert format_position_distance(max(p.offset_cm for p in walked)) in shape
+    # Same derived ceiling and the same retake honesty as stage 1 — the
+    # geometry-locked retake is armed on this group too.
+    reach = cloud_walk_reach_cm(DEFAULT_CLOUD_VERIFY_POSITIONS)
+    assert format_position_distance(reach) in shape
+    assert cloud_geometry_retry_reach_cm() > reach
+    assert "a redo can ask for one step further out" in shape
     assert shape.endswith(CLOUD_WALK_SHAPE_TAIL_POST_APPLY)
     # Stage 2 grades rather than handing back a decision.
     assert CLOUD_WALK_SHAPE_TAIL_POST_APPLY != CLOUD_WALK_SHAPE_TAIL

@@ -692,6 +692,61 @@ CLOUD_WALK_SHAPE_TAIL_POST_APPLY = (
     "Afterwards the speaker page shows how the tune did."
 )
 
+# The granularity the orientation's REACH is quoted at, and the reason it is
+# rounded UP rather than quoted exactly.
+#
+# A reach that is not a true ceiling is worse than no number at all: a
+# household that cleared exactly the quoted space and is then prompted past it
+# has been mis-set by the one sentence meant to prevent that. TWO things push a
+# position's real displacement past the offset its prompt states:
+#
+#   * the wide rows' equidistance step-in (``_WIDE_LATERAL_DETAIL``) — after
+#     stepping toward the speaker the capsule sits on a CHORD, so a stated
+#     40 cm lateral move really lands ~40.9 cm from the mark at the placement
+#     copy's nominal 1 m; and
+#   * ``CLOUD_GEOMETRY_RETRY_PROMPTS``, which is deliberately "past every
+#     position in the table" (75 cm, and ~80.8 cm on rung 2).
+#
+# The first is absorbed by rounding up to the next whole step — never merely
+# to the stated maximum, which is why the arithmetic below is STRICTLY
+# greater. The second is NOT absorbed: inflating the everyday number to cover
+# a retake most sessions never see would destroy the sentence's
+# space-planning value, so the retake is acknowledged in its own short clause
+# instead. ``tests/test_crossover_v2_conductor.py`` re-derives both bounds and
+# fails if either stops holding.
+CLOUD_WALK_REACH_ROUNDING_CM = 10.0
+
+
+def cloud_walk_reach_cm(positions: int) -> float:
+    """The ceiling the orientation quotes for a walk of ``positions`` captures.
+
+    DERIVED from the same ``[:positions - 1]`` slice of
+    :data:`CLOUD_POSITION_PROMPTS` the walk is prompted from, then rounded UP
+    to the next whole :data:`CLOUD_WALK_REACH_ROUNDING_CM` — *strictly* up, so
+    the result is never merely equal to a stated offset and therefore absorbs
+    the wide rows' step-in chord. See that constant for why both halves matter.
+    """
+    walked = max(0, int(positions) - 1)
+    if not walked:
+        return 0.0
+    furthest = max(float(p.offset_cm) for p in CLOUD_POSITION_PROMPTS[:walked])
+    step = CLOUD_WALK_REACH_ROUNDING_CM
+    return math.floor(furthest / step) * step + step
+
+
+def cloud_geometry_retry_reach_cm() -> float:
+    """How far from the mark the geometry-locked retake can send the operator.
+
+    Rung 2 is a COMPOUND pose — :data:`GEOMETRY_RETRY_OFFSET_CM` sideways *and*
+    :data:`WIDE_OFFSET_MIN_CM` up — so its displacement is the hypotenuse, not
+    either leg. Derived here rather than inside the test so the orientation's
+    honesty clause and the prompts it is honest about read one number.
+    """
+    return max(
+        GEOMETRY_RETRY_OFFSET_CM,
+        math.hypot(GEOMETRY_RETRY_OFFSET_CM, WIDE_OFFSET_MIN_CM),
+    )
+
 
 def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
     """The walk's SHAPE in one sentence, for the pre-session orientation screen.
@@ -732,15 +787,24 @@ def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
         # Express's stage 2 is one held-still sweep at the mark, whose consent
         # screen already leads with REVERIFY_NO_REWALK_HEADLINE.
         return ""
-    furthest = max(p.offset_cm for p in CLOUD_POSITION_PROMPTS[:walked])
+    reach = cloud_walk_reach_cm(positions)
     tail = (
         CLOUD_WALK_SHAPE_TAIL_POST_APPLY if post_apply
         else CLOUD_WALK_SHAPE_TAIL
     )
+    # The retake clause is CONDITIONAL on the retake actually reaching past the
+    # quoted ceiling, so the sentence never carries a caveat it does not need.
+    # Today it always does (75 cm / ~80.8 cm against a 50 cm walk), but a
+    # narrowed retake should drop the clause rather than keep a stale one.
+    beyond = (
+        " though a redo can ask for one step further out,"
+        if cloud_geometry_retry_reach_cm() > reach
+        else ""
+    )
     return (
-        f"Every spot is within {format_position_distance(furthest)} of the "
-        "mark, and you will be told each one when it is time — nothing to "
-        f"memorise now. {tail}"
+        f"Every spot is within {format_position_distance(reach)} of the "
+        f"mark,{beyond} and you will be told each one when it is time — "
+        f"nothing to memorise now. {tail}"
     )
 
 
