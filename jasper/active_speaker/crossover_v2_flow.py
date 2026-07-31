@@ -2236,6 +2236,21 @@ def _gate_floor_source(response: Any) -> str | None:
     return str(source) if isinstance(source, str) else None
 
 
+def _gate_disclosure(response: Any) -> str | None:
+    """``_gate_floor_source`` and its floors, rendered as one sentence.
+
+    Rendered, never composed here: the copy has a single writer,
+    ``jasper.audio_measurement.gate_disclosure.describe_gate``, so the
+    per-position evidence file and the retained-capture sidecar cannot
+    describe the same gate two different ways.
+    """
+    if response is None or not getattr(response, "gating", None):
+        return None
+    from jasper.audio_measurement import gate_disclosure
+
+    return gate_disclosure.describe_gate(response.gating)
+
+
 def _capture_wav_sha256(result: Any) -> str | None:
     """SHA-256 of a capture's WAV bytes, or ``None`` when there are none.
 
@@ -5760,6 +5775,9 @@ class CrossoverV2Conductor:
             # because none was found. Every position of the 2026-07-30 corpus
             # was the second, and this record could not say so.
             "gate_floor_source": _gate_floor_source(position.response),
+            # The same fact as a sentence, so a reader of this file does not
+            # have to know the enum's vocabulary to read the record honestly.
+            "gate_disclosure": _gate_disclosure(position.response),
             "validity_floor_hz": getattr(
                 position.response, "validity_floor_hz", None
             ),

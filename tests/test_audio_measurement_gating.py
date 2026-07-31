@@ -78,10 +78,28 @@ def test_consult_table_constants_pinned():
     assert gating.TAPER_FRACTION == 0.25
     assert gating.NEAR_FLOOR_RATIO == 1.25
     assert gating.WINDOW_KIND == "half_hann_tail"
-    assert gating.GATING_SCHEMA_VERSION == 1
+    assert gating.GATING_SCHEMA_VERSION == 2
     assert gating.FLOOR_MEASURED == "measured_reflection"
     assert gating.FLOOR_SEARCH_BOUND == "search_span_bound"
     assert gating.NEAR_FIELD_EXEMPT == "near_field"
+
+
+def test_gating_contract_constants_pinned():
+    """The R9 contract's own numbers (#1969), same rule as the table above.
+
+    ``TRUSTED_FLOOR_MULTIPLIER`` and ``TOA_REFINE_MS`` in particular are
+    reproduction constants: the banked E5 record and the certified
+    peak-refined variant were computed with these values, so changing one
+    silently de-couples the product from the evidence that justified it.
+    """
+    assert gating.TRUSTED_FLOOR_MULTIPLIER == 2.5
+    assert gating.TOA_REFINE_MS == 0.5
+    assert gating.LEDGER_SPAN_MS == 1.6
+    assert gating.LEDGER_PROMINENCE_DB == 6.0
+    assert gating.LEDGER_PROMINENCE_LOOKBACK == 12
+    assert gating.LEDGER_MAX_ENTRIES == 6
+    assert gating.CLASS_DUT_INTERNAL == "DUT_internal_ungateable"
+    assert gating.CLASS_GATEABLE == "gateable"
 
 
 # ---------- f_valid_floor_hz formula ------------------------------------------
@@ -245,16 +263,20 @@ def test_gate_impulse_response_measured_reflection_window_and_floor():
 
     gated, fragment = gating.gate_impulse_response(ir, SR)
 
-    assert fragment["schema_version"] == 1
+    assert fragment["schema_version"] == 2
     assert fragment["window"] == "half_hann_tail"
     assert fragment["floor_source"] == gating.FLOOR_MEASURED
     assert fragment["direct_peak_ms"] == pytest.approx(p_idx / SR * 1000)
     assert fragment["first_reflection_ms"] == pytest.approx(
         refl_idx / SR * 1000, abs=0.15
     )
-    # window_ms is exactly the peak-to-reflection span (taper NOT subtracted).
+    # window_ms is exactly the peak-to-ONSET span (taper NOT subtracted).
+    # Schema 2 split the two facts this pairing used to conflate:
+    # `reflection_onset_ms` is where the window ends, `first_reflection_ms`
+    # is when the reflection arrived. They coincided in schema 1 only
+    # because the arrival was reported as the onset.
     assert fragment["window_ms"] == pytest.approx(
-        fragment["first_reflection_ms"] - fragment["direct_peak_ms"]
+        fragment["reflection_onset_ms"] - fragment["direct_peak_ms"]
     )
     assert fragment["window_ms"] == pytest.approx(offset_ms, abs=0.15)
     assert 230.0 <= fragment["f_valid_floor_hz"] <= 270.0
@@ -395,15 +417,18 @@ def test_exempt_gating_block_shape():
 
     block = gating.exempt_gating_block(ir, SR)
     assert block == {
-        "schema_version": 1,
+        "schema_version": 2,
         "applied": False,
         "exempt_reason": "near_field",
         "direct_peak_ms": pytest.approx(p_idx / SR * 1000),
         "first_reflection_ms": None,
+        "reflection_onset_ms": None,
         "window_ms": None,
         "window": "half_hann_tail",
         "f_valid_floor_hz": None,
+        "f_trusted_hz": None,
         "floor_source": None,
+        "internal_reflection_ledger": [],
     }
 
 
@@ -412,6 +437,311 @@ def test_exempt_gating_block_custom_reason():
     block = gating.exempt_gating_block(ir, SR, reason="some_other_reason")
     assert block["exempt_reason"] == "some_other_reason"
     assert block["applied"] is False
+
+
+# ---------- the R9 gating contract (#1969) ---------------------------------
+#
+# Everything below rides ALONGSIDE the gate. The suite's first job is to
+# prove that: the contract added reporting, and reporting must not be able
+# to move a decision.
+
+
+def _band_limited_ir(
+    lo_hz: float,
+    hi_hz: float,
+    *,
+    reflection_offset_ms: float | None = None,
+    reflection_db: float = -11.6,
+    noise_db: float = -45.0,
+    seed: int = 1969,
+) -> np.ndarray:
+    """A physically realizable IR — a band-limited arrival on a noise floor.
+
+    The delta fixtures above pin exact timing (see the module docstring on
+    why deltas, not FIR output). These pin behaviour that only MEANS
+    anything on a signal with a passband: an ideal delta has infinite
+    bandwidth, so it has no "band the DUT radiates" and its analytic
+    envelope is all sidelobe.
+    """
+    from scipy.signal import firwin, lfilter
+
+    rng = np.random.default_rng(seed)
+    n = int(0.030 * SR)
+    x = np.zeros(n)
+    x[500] = 1.0
+    if reflection_offset_ms is not None:
+        x[500 + int(round(reflection_offset_ms * 1e-3 * SR))] = 10 ** (
+            reflection_db / 20
+        )
+    taps = firwin(511, [lo_hz / (SR / 2), hi_hz / (SR / 2)], pass_zero=False)
+    ir = lfilter(taps, 1.0, x)
+    return ir / np.abs(ir).max() + rng.normal(0, 10 ** (noise_db / 20), n)
+
+
+# --- byte-identity: the contract changed reporting, never a decision ------
+
+#: Captured from the PRE-CONTRACT ``gate_impulse_response`` (commit
+#: ``5e7efd268``) and asserted against the current one. These four fields
+#: ARE the gate's decisions: whether a capture gates, where its window ends,
+#: where the direct arrival was, and the low-frequency floor that follows.
+#: Nothing the R9 contract added may move any of them.
+#:
+#: The same comparison was run out of band over a wider corpus — 34
+#: fixtures including 10 real jts3 per-branch IRs — comparing the full
+#: fragment plus a SHA-256 of the gated float32 samples, and came back
+#: byte-identical. Those IRs are untracked session artifacts and cannot
+#: live here, so this table is the tracked subset. See the PR body.
+_PRE_CONTRACT_GATE_DECISIONS = {
+    # name: (floor_source, window_ms, direct_peak_ms, f_valid_floor_hz)
+    "measured_3.6ms_-6dB": ("measured_reflection", 3.5208333333333335,
+                            10.416666666666666, 284.02366863905326),
+    "measured_4.0ms_-10dB": ("measured_reflection", 3.9166666666666665,
+                             10.416666666666666, 255.31914893617022),
+    "measured_5.8ms_-8dB": ("measured_reflection", 5.708333333333333,
+                            10.416666666666666, 175.1824817518248),
+    "fallback_bare_delta": ("search_span_bound", 7.0, 4.166666666666667,
+                            142.85714285714286),
+    "fallback_weak_reflection": ("search_span_bound", 7.0, 10.416666666666666,
+                                 142.85714285714286),
+    "ungateable_silent": (None, None, 0.0, None),
+    "ungateable_no_room": (None, None, 2.0625, None),
+}
+
+
+def _decision_fixture(name: str) -> np.ndarray:
+    """Rebuild one fixture of :data:`_PRE_CONTRACT_GATE_DECISIONS` by name."""
+    rng = np.random.default_rng(20260731)
+    n = int(0.030 * SR)
+    if name.startswith("measured_"):
+        offset_ms = float(name.split("_")[1].removesuffix("ms"))
+        level_db = float(name.split("_")[2].removesuffix("dB"))
+        ir, _ = _delta_ir_with_reflection(n, 500, offset_ms, level_db)
+        return ir + rng.normal(0, 10 ** (-45 / 20), n)
+    if name == "fallback_bare_delta":
+        return _delta_ir(2000, 200)
+    if name == "fallback_weak_reflection":
+        ir, _ = _delta_ir_with_reflection(n, 500, 4.0, -20.0)
+        return ir + rng.normal(0, 10 ** (-50 / 20), n)
+    if name == "ungateable_silent":
+        return np.zeros(2000, dtype=np.float64)
+    if name == "ungateable_no_room":
+        return _delta_ir(100, 99)
+    raise AssertionError(f"unknown fixture {name!r}")
+
+
+@pytest.mark.parametrize("name", sorted(_PRE_CONTRACT_GATE_DECISIONS))
+def test_gate_decisions_are_unchanged_by_the_disclosure_contract(name):
+    """R9 added disclosure. Disclosure must not be able to gate differently.
+
+    Spans all three states a capture can end in — measured reflection,
+    ceiling fallback, ungateable — against values recorded from the
+    pre-contract code.
+    """
+    expected = _PRE_CONTRACT_GATE_DECISIONS[name]
+    _gated, fragment = gating.gate_impulse_response(_decision_fixture(name), SR)
+    got = (
+        fragment["floor_source"],
+        fragment["window_ms"],
+        fragment["direct_peak_ms"],
+        fragment["f_valid_floor_hz"],
+    )
+    assert got == pytest.approx(expected, rel=1e-12, abs=1e-12), (
+        f"{name}: gate DECISION moved. Expected {expected}, got {got}. The "
+        "R9 contract may only add reporting fields."
+    )
+
+
+def test_the_window_is_built_from_the_onset_not_the_reported_arrival():
+    """The structural reason a reported ToA cannot move a window.
+
+    ``apply_gate_fragment`` rebuilds the operator from ``direct_peak_ms``
+    and ``window_ms`` ALONE. If the reported arrival ever leaked into the
+    window, the rebuild would disagree with what was actually applied.
+    """
+    ir, _ = _delta_ir_with_reflection(int(0.030 * SR), 500, 4.0, -6.0)
+    ir = ir + 1e-3
+    gated, fragment = gating.gate_impulse_response(ir, SR)
+    rebuilt = gating.apply_gate_fragment(ir, SR, fragment)
+    assert np.array_equal(gated, rebuilt)
+    # ... and the arrival really is a DIFFERENT number from the bound here,
+    # so the equality above is not passing by coincidence.
+    assert fragment["first_reflection_ms"] != fragment["reflection_onset_ms"]
+
+
+# --- peak reporting (certification §4.5) ----------------------------------
+
+
+def test_reported_arrival_is_the_envelope_peak_not_the_onset():
+    """The certified peak-reporting fix.
+
+    The shipped detector reports the smoothed envelope's threshold CROSSING,
+    which precedes the reflection: measured against exact synthetic ground
+    truth the bias is -0.125 ms, eating most of a 0.15 ms tolerance before
+    noise is considered (``captures/detector-certification-20260801`` §4.5).
+    Relocalising the report to the envelope peak moved the median error to
+    0.000 ms and lifted strict-tolerance detection 0.464 -> 0.609 with the
+    detection decision byte-identical.
+    """
+    n = int(0.030 * SR)
+    ir, refl_idx = _delta_ir_with_reflection(n, 500, 4.0, -6.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    truth_ms = refl_idx / SR * 1000.0
+
+    onset_err = abs(fragment["reflection_onset_ms"] - truth_ms)
+    arrival_err = abs(fragment["first_reflection_ms"] - truth_ms)
+    assert arrival_err < onset_err, (
+        "peak reporting must be closer to the true arrival than the onset"
+    )
+    assert arrival_err == pytest.approx(0.0, abs=1e-9)
+    # The onset is EARLY, never late — which is what makes gating to it the
+    # conservative choice.
+    assert fragment["reflection_onset_ms"] <= fragment["first_reflection_ms"]
+
+
+def test_peak_refinement_is_bounded_to_the_certified_window():
+    """It relocalises within ``TOA_REFINE_MS`` of the onset and no further —
+    a wider search could walk onto a LATER, stronger reflection and report
+    that one's arrival as the first."""
+    n = int(0.030 * SR)
+    ir, _ = _delta_ir_with_reflection(n, 500, 4.0, -6.0)
+    # A much louder second reflection well outside the refine window.
+    ir[500 + int(round(5.5 * 1e-3 * SR))] = 10 ** (-1.0 / 20)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    drift_ms = fragment["first_reflection_ms"] - fragment["reflection_onset_ms"]
+    assert 0.0 <= drift_ms <= gating.TOA_REFINE_MS
+
+
+# --- the asymmetric-cost classification guard ------------------------------
+
+
+def test_a_sub_search_window_feature_is_classified_and_never_gates():
+    """The guard's whole promise, on the shape that motivated it.
+
+    jts3's horn carries a real ~291 us feature at -11.2 dB. It is NOT a room
+    reflection and gating there would set the window to 0.29 ms — a 3448 Hz
+    validity floor and an 8621 Hz trusted floor — destroying the entire
+    evidence band around the 2 kHz crossover the tuner depends on
+    (``captures/detector-certification-20260801`` §5). A miss merely
+    over-claims low-frequency validity; this would be catastrophic, so the
+    costs are deliberately not symmetric.
+    """
+    ir = _band_limited_ir(2500.0, 18000.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+
+    ledger = fragment["internal_reflection_ledger"]
+    internal = [e for e in ledger if e["classification"] == gating.CLASS_DUT_INTERNAL]
+    assert internal, "a wideband branch's early features must be enumerated"
+    for entry in internal:
+        assert entry["tau_us"] < gating.SEARCH_T_MIN_MS * 1000.0
+        assert set(entry) == {"tau_us", "level_db", "prominence_db", "classification"}
+
+    # ... and NOTHING it recorded became a window bound.
+    assert fragment["floor_source"] == gating.FLOOR_SEARCH_BOUND
+    assert fragment["window_ms"] == pytest.approx(gating.SEARCH_T_MAX_MS, abs=0.05)
+    assert fragment["first_reflection_ms"] is None
+
+
+def test_ledger_classifies_by_the_minimum_gate_boundary_exactly():
+    """``SEARCH_T_MIN_MS`` is the single boundary — a feature inside the
+    search span is ``gateable`` (the detector's own decision governs it),
+    one before it is loudspeaker-internal by construction."""
+    ir = _band_limited_ir(2500.0, 18000.0, reflection_offset_ms=1.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    for entry in fragment["internal_reflection_ledger"]:
+        expected = (
+            gating.CLASS_DUT_INTERNAL
+            if entry["tau_us"] < gating.SEARCH_T_MIN_MS * 1000.0
+            else gating.CLASS_GATEABLE
+        )
+        assert entry["classification"] == expected
+
+
+def test_ledger_is_bounded_so_a_noisy_capture_cannot_bloat_every_sidecar():
+    """It is persisted per capture, so its length is a resource question."""
+    rng = np.random.default_rng(4)
+    ir = np.zeros(int(0.030 * SR))
+    ir[500] = 1.0
+    ir[501:] = rng.normal(0, 10 ** (-20 / 20), ir.size - 501)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    assert len(fragment["internal_reflection_ledger"]) <= gating.LEDGER_MAX_ENTRIES
+
+
+def test_ledger_is_a_list_even_when_empty_never_none():
+    """Empty means "the search looked and found no prominent early feature",
+    which is a different claim from "nothing looked"."""
+    _gated, fragment = gating.gate_impulse_response(np.zeros(2000), SR)
+    assert fragment["internal_reflection_ledger"] == []
+
+
+# --- the disclosed floors --------------------------------------------------
+
+
+def test_f_trusted_floor_is_two_and_a_half_times_the_nominal_one():
+    assert gating.f_trusted_floor_hz(0.004) == pytest.approx(625.0)
+    assert gating.f_trusted_floor_hz(0.007) == pytest.approx(1000.0 / 7.0 * 2.5)
+
+
+def test_f_trusted_floor_guards_nonpositive_and_nonfinite_like_its_sibling():
+    for bad in (0.0, -0.001, float("nan"), float("inf")):
+        assert gating.f_trusted_floor_hz(bad) == float("inf")
+
+
+@pytest.mark.parametrize(
+    "name", ["measured_4.0ms_-10dB", "fallback_bare_delta", "ungateable_silent"]
+)
+def test_disclosure_fields_are_present_on_every_bound_source(name):
+    """The persisted schema, on all three states a capture can end in."""
+    _gated, fragment = gating.gate_impulse_response(_decision_fixture(name), SR)
+    assert set(fragment) == {
+        "schema_version", "direct_peak_ms", "first_reflection_ms",
+        "reflection_onset_ms", "window_ms", "window", "f_valid_floor_hz",
+        "f_trusted_hz", "floor_source", "internal_reflection_ledger",
+    }
+    assert isinstance(fragment["internal_reflection_ledger"], list)
+    if fragment["floor_source"] is None:
+        assert fragment["f_valid_floor_hz"] is None
+        assert fragment["f_trusted_hz"] is None
+    else:
+        assert fragment["f_trusted_hz"] == pytest.approx(
+            gating.TRUSTED_FLOOR_MULTIPLIER * fragment["f_valid_floor_hz"]
+        )
+
+
+def test_the_trusted_floor_is_disclosed_beside_the_nominal_one_and_gates_nothing():
+    """The load-bearing half of "disclosed, never enforced".
+
+    2.5/T is roughly 2.5x stricter than the floor the product refuses on. If
+    it had leaked into the gate, the window or the reported validity floor
+    would move with it. Both must be exactly what 1/T alone produces.
+    """
+    ir, _ = _delta_ir_with_reflection(int(0.030 * SR), 500, 4.0, -6.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    window_s = fragment["window_ms"] / 1000.0
+    assert fragment["f_valid_floor_hz"] == pytest.approx(
+        gating.f_valid_floor_hz(window_s)
+    )
+    assert fragment["f_trusted_hz"] == pytest.approx(
+        gating.f_trusted_floor_hz(window_s)
+    )
+    assert fragment["f_trusted_hz"] > fragment["f_valid_floor_hz"]
+
+
+def test_apply_gate_fragment_still_ignores_every_contract_field():
+    """The paired-noise seam reads ``direct_peak_ms``/``window_ms`` only, so
+    stripping the contract's additions must not change the operator."""
+    n = 2000
+    signal, _ = _delta_ir_with_reflection(n, 500, 4.0, -6.0)
+    signal += 1e-3
+    paired = np.linspace(-0.5, 0.5, n, dtype=np.float64)
+    _gated, fragment = gating.gate_impulse_response(signal, SR)
+    stripped = {
+        k: v for k, v in fragment.items()
+        if k in {"direct_peak_ms", "window_ms", "floor_source"}
+    }
+    assert np.array_equal(
+        gating.apply_gate_fragment(paired, SR, fragment),
+        gating.apply_gate_fragment(paired, SR, stripped),
+    )
 
 
 def test_exempt_gating_block_empty_ir_does_not_raise():
