@@ -12,11 +12,14 @@ rather than keep a hand-copied fork (the sibling ``/correction/`` surface alread
 routes through ``web_commissioning`` via ``correction_crossover_backend``).
 
 These guards make a future re-fork fail CI: the shared helpers must be the *same
-function objects* on both surfaces (i.e. imported, not re-defined), and the
+function objects* on both surfaces (i.e. imported, not re-defined), the tone's
+timing/device constants must be bound by import rather than re-declared, and the
 driver-test signal plan must come out identical from either surface.
 """
 
 from __future__ import annotations
+
+import ast
 
 import pytest
 
@@ -24,6 +27,8 @@ import jasper.active_speaker.web_commissioning as web_commissioning
 import jasper.mux as mux
 import jasper.web.correction_crossover_backend as correction_backend
 import jasper.web.sound_setup as sound_setup
+
+OWNER_MODULE = "jasper.active_speaker.web_commissioning"
 
 # The commission-tone helpers active-speaker now owns and both operator surfaces
 # share. ``_stop_commission_tone_locked`` is intentionally NOT here: it is bound
@@ -43,6 +48,87 @@ SHARED_COMMISSION_TONE_HELPERS = (
     "_config_paths_match",
     "_summed_playback_with_issue",
 )
+
+# The commission-tone constants active-speaker owns. /sound/ re-declared all
+# five (2026-07, issue #1950) and the function-shaped guards above never saw it:
+# `def <name>(` does not match a `NAME = value` assignment.
+#
+# ``_SUMMED_TEST_ARM_REPORT`` is intentionally NOT here. It is a sixth
+# byte-identical fork between the two modules, but it is a MUTABLE dict, so
+# giving it one owner means two surfaces sharing one object — a coupling
+# decision, not a de-duplication. Safe to defer today because its only
+# consumer (``active_speaker.safe_playback.arm_safe_playback_session``) reads
+# it and projects it into a flat scalar dict, never retaining the nested
+# containers. To close it later: add the name below and the guard covers it.
+#
+# Identity (`is`) is NOT a sufficient guard for these. CPython interns
+# identifier-like string literals, so two modules independently declaring
+# SUMMED_COMMISSION_SPEECH_BACKEND compare `is`-identical and a re-fork of a
+# string constant passes an identity assertion silently. The binding-shape
+# guard below is the load-bearing one; identity is kept only as a cheap
+# same-value cross-check.
+SHARED_COMMISSION_TONE_CONSTANTS = (
+    "COMMISSION_TONE_ALSA_DEVICE",
+    "COMMISSION_TONE_DURATION_S",
+    "COMMISSION_TONE_RESTART_MARGIN_S",
+    "COMMISSION_TONE_STARTUP_CHECK_S",
+    "SUMMED_COMMISSION_SPEECH_BACKEND",
+)
+
+
+def _forked_constant_bindings(source: str, names: tuple[str, ...]) -> list[str]:
+    """Names in `names` that `source` binds by module-level assignment.
+
+    Parsed rather than pattern-matched, mirroring tests/test_lint_contracts.py.
+    A text scan is a trap here: the deleted block's replacement comment and this
+    module's own prose both name the constants, and a `NAME = ` line-prefix grep
+    reads them as violations. The AST sees only code.
+
+    Scope is deliberately module level (`tree.body`, not `ast.walk`): a
+    function-local variable that happens to share a name is shadowing, not a
+    forked module constant, and flagging it would be a false positive.
+
+    Known gap, accepted: iterating `tree.body` also skips assignments nested
+    in module-level compound statements — `try: from owner import X / except
+    ImportError: X = <literal>` is a plausible re-fork this will not catch,
+    and unlike shadowing it is not a false positive. Unreachable today (the
+    only module-level compound statement in either file is `if __name__ ==
+    "__main__":`), and the runtime identity check below covers it from the
+    other side. Closing it properly means pruning FunctionDef/AsyncFunctionDef/
+    ClassDef and recursing the rest.
+    """
+
+    wanted = set(names)
+    forked: set[str] = set()
+    for node in ast.parse(source).body:
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        elif isinstance(node, ast.AugAssign):
+            targets = [node.target]
+        for target in targets:
+            # `A = B = v` and `A, B = v` bind more than one name.
+            leaves = (
+                target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target]
+            )
+            forked.update(
+                leaf.id
+                for leaf in leaves
+                if isinstance(leaf, ast.Name) and leaf.id in wanted
+            )
+    return sorted(forked)
+
+
+def _names_imported_from(source: str, module: str) -> set[str]:
+    """Names `source` imports from `module` via `from <module> import ...`."""
+
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module == module:
+            imported.update(alias.asname or alias.name for alias in node.names)
+    return imported
 
 
 def test_sound_setup_shares_web_commissioning_tone_helpers():
@@ -67,6 +153,91 @@ def test_no_forked_commission_tone_helper_defs_in_sound_setup():
             f"sound_setup re-defines {name}; it must import it from "
             "jasper.active_speaker.web_commissioning instead (L4-1)."
         )
+
+
+def test_no_forked_commission_tone_constants_in_sound_setup():
+    """sound_setup must import the tone constants, not re-declare them (#1950)."""
+
+    src = sound_setup.__loader__.get_source(sound_setup.__name__)
+    assert src is not None
+    forked = _forked_constant_bindings(src, SHARED_COMMISSION_TONE_CONSTANTS)
+    assert forked == [], (
+        f"sound_setup re-declares {', '.join(forked)}; import them from "
+        f"{OWNER_MODULE} instead (#1950). A forked "
+        "COMMISSION_TONE_DURATION_S can drift above mux.FANIN_TEST_LEASE_SEC "
+        "and readmit household music into a live sweep."
+    )
+
+
+def test_sound_setup_imports_commission_tone_constants_from_owner():
+    """The positive half: each constant is bound by an import from the owner."""
+
+    src = sound_setup.__loader__.get_source(sound_setup.__name__)
+    assert src is not None
+    imported = _names_imported_from(src, OWNER_MODULE)
+    missing = [n for n in SHARED_COMMISSION_TONE_CONSTANTS if n not in imported]
+    assert missing == [], (
+        f"sound_setup does not import {', '.join(missing)} from {OWNER_MODULE}; "
+        "the commission-tone constants have a single owner (#1950)."
+    )
+    for name in SHARED_COMMISSION_TONE_CONSTANTS:
+        assert getattr(sound_setup, name) == getattr(web_commissioning, name)
+
+
+_FORKED_FIXTURE = '''\
+"""Prose that names COMMISSION_TONE_DURATION_S must not trip the guard."""
+# nor may this comment mentioning SUMMED_COMMISSION_SPEECH_BACKEND = "x"
+COMMISSION_TONE_DURATION_S = 35.0
+COMMISSION_TONE_ALSA_DEVICE: str = "correction_substream"
+COMMISSION_TONE_RESTART_MARGIN_S = COMMISSION_TONE_STARTUP_CHECK_S = 3.0
+
+
+def _local_shadow():
+    SUMMED_COMMISSION_SPEECH_BACKEND = "local-is-not-a-module-fork"
+    return SUMMED_COMMISSION_SPEECH_BACKEND
+'''
+
+_IMPORTED_FIXTURE = '''\
+"""COMMISSION_TONE_DURATION_S is imported, not declared."""
+from jasper.active_speaker.web_commissioning import (
+    COMMISSION_TONE_ALSA_DEVICE,
+    COMMISSION_TONE_DURATION_S,
+)
+
+SOMETHING_ELSE = 1.0
+'''
+
+
+def test_constant_guard_detects_a_re_fork():
+    """The guard must fail on what it exists to catch.
+
+    The sibling `def`-shaped guard passed against the very tree that carried
+    the fork for months (#1950); tests/test_lint_contracts.py records the same
+    mistake shipping once before. Pin the catching direction so a future
+    simplification cannot go quietly vacuous.
+    """
+
+    assert _forked_constant_bindings(
+        _FORKED_FIXTURE, SHARED_COMMISSION_TONE_CONSTANTS
+    ) == [
+        "COMMISSION_TONE_ALSA_DEVICE",
+        "COMMISSION_TONE_DURATION_S",
+        "COMMISSION_TONE_RESTART_MARGIN_S",
+        "COMMISSION_TONE_STARTUP_CHECK_S",
+    ]
+
+
+def test_constant_guard_accepts_imports_and_ignores_prose():
+    """And it must not cry wolf — which is why it parses instead of grepping."""
+
+    assert (
+        _forked_constant_bindings(_IMPORTED_FIXTURE, SHARED_COMMISSION_TONE_CONSTANTS)
+        == []
+    )
+    assert _names_imported_from(_IMPORTED_FIXTURE, OWNER_MODULE) == {
+        "COMMISSION_TONE_ALSA_DEVICE",
+        "COMMISSION_TONE_DURATION_S",
+    }
 
 
 def test_correction_routes_through_web_commissioning_owner():
@@ -96,7 +267,20 @@ def test_commissioning_uses_its_owner_scoped_mux_gate(monkeypatch):
 
 
 def test_commissioning_tone_fits_inside_mux_gate_lease():
+    """A tone outliving mux's lease lets the gate expire mid-sweep.
+
+    Pinned on the owner *and* on /sound/, because /sound/ is the surface that
+    actually plays it. Post-#1950 the two are the same object and the second
+    assertion is a tautology — which is the point: it goes red the moment
+    /sound/ re-declares its own copy, catching drift the owner-only pin missed.
+    """
+
     assert web_commissioning.COMMISSION_TONE_DURATION_S < mux.FANIN_TEST_LEASE_SEC
+    assert sound_setup.COMMISSION_TONE_DURATION_S < mux.FANIN_TEST_LEASE_SEC
+    assert (
+        sound_setup.COMMISSION_TONE_DURATION_S
+        is web_commissioning.COMMISSION_TONE_DURATION_S
+    )
 
 
 def test_indeterminate_commission_select_runs_owner_scoped_cleanup(monkeypatch):

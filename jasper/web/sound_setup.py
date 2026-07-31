@@ -107,15 +107,26 @@ from jasper.active_speaker.commission_wiring import (
     write_commission_path_safety,
 )
 
-# Commission-tone orchestration helpers are owned by the active-speaker domain
-# (jasper.active_speaker.web_commissioning) so the /sound/ and /correction/
-# operator surfaces share one implementation of the mux/fan-in/WAV/signal-plan
-# plumbing on this hardware-safe path. /sound/ imports them here rather than
-# keeping a hand-copied fork; the only commission-tone piece that stays local is
-# _stop_commission_tone_locked, which is bound to this module's own
-# _COMMISSION_TONE_SESSION/_COMMISSION_TONE_LOCK that the /sound/ play
-# orchestration owns. See L4-1 in the Codex-week review.
+# Commission-tone orchestration helpers AND the tone's timing/device constants
+# are owned by the active-speaker domain (jasper.active_speaker.web_commissioning)
+# so the /sound/ and /correction/ operator surfaces share one implementation of
+# the mux/fan-in/WAV/signal-plan plumbing on this hardware-safe path. /sound/
+# imports them here rather than keeping a hand-copied fork; the only
+# commission-tone piece that stays local is _stop_commission_tone_locked, which
+# is bound to this module's own _COMMISSION_TONE_SESSION/_COMMISSION_TONE_LOCK
+# that the /sound/ play orchestration owns. See L4-1 in the Codex-week review.
+#
+# COMMISSION_TONE_DURATION_S in particular must stay the owner's object: mux
+# leases the test fan-in gate for FANIN_TEST_LEASE_SEC, and a /sound/ copy that
+# drifted above that lease would let the gate expire mid-tone and readmit
+# household music into a live sweep. tests/test_commission_tone_single_owner.py
+# pins both the import and the lease headroom.
 from jasper.active_speaker.web_commissioning import (
+    COMMISSION_TONE_ALSA_DEVICE,
+    COMMISSION_TONE_DURATION_S,
+    COMMISSION_TONE_RESTART_MARGIN_S,
+    COMMISSION_TONE_STARTUP_CHECK_S,
+    SUMMED_COMMISSION_SPEECH_BACKEND,
     _combined_speech_stimulus_wav_path,
     _commission_summed_stimulus_issue,
     _commission_tone_issue,
@@ -2256,14 +2267,11 @@ async def _active_speaker_rollback_startup_config_payload(
 # path-safety evidence are shared with the `jasper-active-speaker` CLI via
 # `jasper.active_speaker.commission_wiring` (commission_seams /
 # read_current_config_path / resolve_commission_inputs /
-# write_commission_path_safety) — imported lazily in each payload below so the
-# socket-activated wizard process stays light.
+# write_commission_path_safety) — imported eagerly at the top of this module.
 
-COMMISSION_TONE_ALSA_DEVICE = VOLUME_FLOOR_TONE_ALSA_DEVICE
-COMMISSION_TONE_DURATION_S = 35.0
-COMMISSION_TONE_RESTART_MARGIN_S = 3.0
-COMMISSION_TONE_STARTUP_CHECK_S = 0.08
-SUMMED_COMMISSION_SPEECH_BACKEND = "correction_substream_summed_speech"
+# COMMISSION_TONE_* and SUMMED_COMMISSION_SPEECH_BACKEND are imported from
+# jasper.active_speaker.web_commissioning at the top of this module — they are
+# the owner's objects, not /sound/ copies. Do not re-declare them here.
 SUMMED_TEST_CONFIRM_STOP_REASONS = {"operator_confirmed"}
 SUMMED_TEST_MAX_LOOP_SECONDS = 10 * 60.0
 _COMMISSION_TONE_LOCK = threading.Lock()

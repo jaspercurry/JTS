@@ -438,7 +438,7 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0567 | `jasper/web/correction_setup.py` :: _dispatch_sync :3306 | nit | W3 | **fixed** | sync WAV upload budget has a named module constant |
 | DA-0568 | `jasper/web/rooms_setup.py` :: _get_member_grouping (~886-920) / _get_membe | nit | W3 | **fixed** | bounded remote JSON GET transport consolidated behind one helper — #1309 |
 | DA-0569 | `jasper/web/rooms_setup.py` :: _lan_target (~line 692-719) vs jasper/multir | nit | W3 | **fixed** | one IPv4-only LAN predicate now owns validation and outbound SSRF policy — #1309 |
-| DA-0570 | `jasper/web/sound_setup.py` :: :2139 | nit | W3 | **fixed** | commissioning and floor tests share one ALSA-device constant |
+| DA-0570 | `jasper/web/sound_setup.py` :: :2139 | nit | W3 | **reversed** | was fixed in #1793 by aliasing the commission tone to `VOLUME_FLOOR_TONE_ALSA_DEVICE`; #1950 undid that alias deliberately. Two unrelated features happened to share the box's single correction substream, so retuning the volume-floor tone would have silently retargeted the commission tone. They are again separate constants with the same literal, and that is intended. The commission-tone constants now have one owner (`active_speaker.web_commissioning`), pinned by `tests/test_commission_tone_single_owner.py`. |
 | DA-0571 | `jasper/web/sound_setup.py` :: _active_speaker_play_summed_commission_tone | nit | W3 | **fixed** | audible test subprocesses share one bounded terminate/kill helper |
 | DA-0572 | `jasper/web/speaker_setup.py` :: _systemctl / _unit_active | nit | W3 | **open** | — |
 | DA-0573 | `jasper/web/transit_setup.py` :: _mask_key | nit | W3 | **fixed** | transit key rendering reuses canonical secret masking |
