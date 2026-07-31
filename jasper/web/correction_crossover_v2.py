@@ -2775,9 +2775,11 @@ def bind_findings_publisher(
 ) -> Callable[[Mapping[str, Any]], None]:
     """The real ``publish_findings`` seam — the #1866 frame-gate finding.
 
-    The owner's 2026-07-30 ruling: a level-frame disagreement that the
-    independent realized-level check corroborates is BANKED as an M7 finding
-    and the session proceeds. The conductor decides and hands over an evidence
+    The owner's 2026-07-30 ruling: a level-frame disagreement is BANKED as an
+    M7 finding, and the session proceeds, when the realized-level check passes
+    on the pair about to ship — a closed-loop read of the OUTCOME, not a
+    referee between the two frames (see the flow's gate comment for why the
+    distinction matters). The conductor decides and hands over an evidence
     record; this binder is the only thing that knows there is a store.
 
     **Its own phase, and that is forced rather than chosen.** The finding set

@@ -6298,21 +6298,60 @@ class CrossoverV2Conductor:
         #
         # **The refusal is no longer unconditional (owner ruling, #1866,
         # 2026-07-30).** A disagreement over tolerance now asks ONE more
-        # question before it stops the session: does the independent realized-
-        # level instrument agree with the trim solve? If it does, the session
-        # banks the disagreement as a finding and PROCEEDS on the near-Fc
-        # anchor; the hard refusal remains only when the realized check ALSO
-        # fails. Why the ruling went that way, in one line: #1929 removed a
-        # structural bias from one estimator, it did not make the two agree,
-        # and what is left refuses healthy speakers — a pair identical by
-        # construction reads 0.910 dB apart and ordinary woofer passband tilt
-        # adds ~1.33 dB per dB/octave, so a −2 dB/oct woofer refuses at 3.574
-        # while the realized instrument reads 1.41 and passes. The field case
-        # is the 2026-07-30 session: 3.2307 dB under the banded estimator,
-        # realized −0.247, predicted on-axis residual 3.106 → 1.333 dB (all
-        # recorded on #1870). Refusing that is a false negative on a good
-        # tune, and the diagnosis the gate already computed reached no artifact
-        # at all.
+        # question before it stops the session: does the realized-level check
+        # pass on the pair this session is about to ship? If it does, the
+        # session banks the disagreement as a finding and PROCEEDS; the hard
+        # refusal remains only when the realized check ALSO fails. Why the
+        # ruling went that way, in one line: #1929 removed a structural bias
+        # from one estimator, it did not make the two agree, and what is left
+        # refuses healthy speakers — a pair identical by construction reads
+        # 0.910 dB apart and ordinary woofer passband tilt adds ~1.33 dB per
+        # dB/octave, so a −2 dB/oct woofer refuses at 3.574 while the realized
+        # instrument reads 1.41 and passes. The field case is the 2026-07-30
+        # session: 3.2307 dB under the banded estimator, realized −0.247,
+        # predicted on-axis residual 3.106 → 1.333 dB (all recorded on #1870).
+        # Refusing that is a false negative on a good tune, and the diagnosis
+        # the gate already computed reached no artifact at all.
+        #
+        # **What "proceeds" commits, stated precisely — because the obvious
+        # reading is wrong.** The ruling's own wording is "proceeds on the
+        # near-Fc anchor (the trim solve)", and that describes an outcome the
+        # code does not produce. Proceeding changes NOTHING about the trims:
+        # the fit commits the anchor it always computed, and in
+        # ``anchor_base + giveback + level_frame_offset`` the trim term
+        # CANCELS — ``offset = system − trim − core``, leaving
+        # ``giveback + system − core`` (the cancellation is derived in
+        # ``anchor_base_db``'s own comment). So the committed inter-driver
+        # placement is set by the CORE-MEDIAN frame — the disputed estimator —
+        # not by the trim solve. On the conductor fixture: committed −0.674,
+        # which is the core-median value to 4 dp; anchoring on the trim solve's
+        # placement instead would give +2.602; the two differ by 3.276, exactly
+        # the banked disagreement, which is not a coincidence but the identity
+        # ``placement_trim − placement_core = −offset``.
+        #
+        # The honest description of this branch is therefore: **the pipeline
+        # commits the anchor it always computed (which embeds the disputed
+        # estimator); proceeding is the same tune, not refused; the realized
+        # check gates the OUTCOME rather than selecting an estimator.** That is
+        # a weaker claim than "we proceed on the corroborated estimator" and it
+        # is the true one — the corroboration is evidence that the shipped pair
+        # is level, not evidence about which estimator was right. This
+        # description differs from the ruling's, so the change is held for the
+        # owner's confirmation (requested on #1866) rather than merged under
+        # the inverted account.
+        #
+        # **What the realized check is, and is not.** It is a CLOSED-LOOP
+        # check, not cross-band arbitration: its own docstring says "One
+        # estimator, not a second opinion" — the levels come from
+        # ``solve_branch_trims`` on the TRIMMED pair, the same power-band
+        # average over the same ``branch_level_bands_hz`` halves that set the
+        # trim. So it cannot referee the two frames against each other, and
+        # nothing here should read as if it did. What it IS: independent of the
+        # fit's core median (different inputs — the post-fit linearized
+        # branches — different band, different statistic), and non-vacuous —
+        # it fails on a −6 dB/oct woofer where the frame gate also fails. It
+        # answers one question, the useful one: did the pair we are about to
+        # ship end up level?
         #
         # **Ordering: nothing moved, and nothing needed to.** The realized
         # verdict this branch consults is item 1's own
@@ -6538,6 +6577,18 @@ class CrossoverV2Conductor:
         # bands and not the radiating ones — a high-pass branch radiates to
         # infinity, so a radiating union has no upper edge, while the core
         # band is exactly the finite span each median was computed on.
+        #
+        # **The union is an OUTER hull, and it spans a gap neither median
+        # read** — on the conductor fixture the woofer's core stops at 1255.8
+        # Hz and the tweeter's starts at 2020.0, so 1255.8-2020.0 Hz is inside
+        # the finding's band and inside no measurement. That is the right shape
+        # rather than a rounding of it: this finding is about the RELATIONSHIP
+        # between two drivers, which lives in the handoff sitting in that gap,
+        # and a band stated as two disjoint intervals would say the finding is
+        # about two places when it is about one. It is not, and must not be
+        # read as, a claim that anything was measured in the gap — the
+        # per-role ``core_band_*`` keys below are what say where each number
+        # actually came from.
         edges = [
             band for role in cores
             if (band := cores[role].get("band_hz")) is not None

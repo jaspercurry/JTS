@@ -19,8 +19,8 @@ and promotion attaches the three things a finding adds — a ``mechanism``, a
   classification, and its household sentence.
 * :func:`promote_level_frame_disagreement` — the level-frame gate's own
   comparison, banked under the owner's 2026-07-30 ruling on #1866 when the two
-  estimators disagree and the independent realized-level check corroborates
-  one of them.
+  estimators disagree and the realized-level check nonetheless passes on the
+  pair the session is about to ship.
 
 **Neither is a detector** (that is WO-4). No signal is analysed here, no
 threshold is applied, no classification is computed. Every number comes from a
@@ -294,7 +294,7 @@ def promote_carve_outs(
 #: Three claims, each true at the moment of minting and no more:
 #:
 #: * two measurements of the same thing disagreed;
-#: * the result they produced was checked independently and matched;
+#: * a further check found the tuning itself lands the two ranges level;
 #: * the disagreement is recorded.
 #:
 #: It says "offered", not "applied" or "kept" — the candidate is a PROPOSAL
@@ -305,10 +305,20 @@ def promote_carve_outs(
 #: prohibition is enforced by :class:`~jasper.attribution.findings.Finding`
 #: itself, so a future edit that reaches for "woofer" fails at construction
 #: rather than in front of a household.
+#:
+#: **It no longer says "independent", and that word was doing real work.** The
+#: check is ``realized_branch_level_match``, whose own docstring is explicit
+#: that it is "One estimator, not a second opinion" — the same power-band
+#: average over the same halves that set the trim, re-read on the pair about to
+#: ship. It is independent of the FIT's median and it is genuinely non-vacuous,
+#: but "an independent check" invites a household to read it as a second
+#: opinion that settled which measurement was right, and no instrument in this
+#: session did that. Household copy may be simple; it may not be false.
 LEVEL_FRAME_HOUSEHOLD_COPY = (
     "Two measurements of how this speaker's high and low ranges balance "
-    "disagreed. An independent check of the tuning they produced matched, so "
-    "it was offered rather than refused, and the disagreement recorded."
+    "disagreed. A further check found the tuning itself lands the two ranges "
+    "level, so it was offered rather than refused, and the disagreement "
+    "recorded."
 )
 
 #: The band keys, which become ``band_hz`` rather than evidence. Named so the
@@ -327,12 +337,28 @@ def promote_level_frame_disagreement(
 
     The owner's 2026-07-30 ruling on #1866: when
     ``solve_shared_level_frame``'s two estimators disagree beyond
-    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` but the independent
-    ``realized_branch_level_match`` check PASSES, the fit banks the
-    disagreement as an M7-class finding and proceeds on the near-Fc anchor.
+    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` but ``realized_branch_level_match``
+    PASSES, the fit banks the disagreement as an M7-class finding and proceeds.
     This function is the "banks it as a finding" half; the flow owns the
     decision, and the *only* records that reach here are ones it already
     decided to bank.
+
+    **Two phrases from the ruling are deliberately not repeated here, because
+    the code does not do what they say** — the flow's own gate comment derives
+    both:
+
+    * *"proceeds on the near-Fc anchor (the trim solve)"*. Proceeding changes
+      nothing about the trims; the fit commits the anchor it always computed,
+      and the trim term cancels out of it, so the committed placement is set by
+      the CORE-MEDIAN frame — the *disputed* estimator. The accurate sentence
+      is "the same tune, not refused".
+    * *"the estimator the realized check corroborates"*. The realized check is
+      a closed-loop read of the pair about to ship ("One estimator, not a
+      second opinion" — its own docstring), so it grades the OUTCOME and cannot
+      referee two frames against each other.
+
+    Neither correction changes what is banked or when. They change what the
+    evidence is claimed to mean, which is this module's whole responsibility.
 
     **It re-decides nothing.** There is no threshold here, no comparison of
     the disagreement against the tolerance, no re-reading of the realized

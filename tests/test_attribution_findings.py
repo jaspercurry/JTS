@@ -830,6 +830,16 @@ def test_the_banked_finding_s_household_copy_obeys_the_conventions() -> None:
     assert "phone" not in lowered
     for banned in ("was kept", "we have applied", "your speaker now"):
         assert banned not in lowered
+    # …and it must not claim the check was INDEPENDENT. It is
+    # ``realized_branch_level_match``, whose own docstring says "One estimator,
+    # not a second opinion" — the same power-band average over the same halves
+    # that set the trim, re-read on the pair about to ship. It is independent
+    # of the fit's median and it is non-vacuous, but "an independent check"
+    # invites a household to read it as a second opinion that settled which
+    # measurement was right, and nothing in the session did that. Simple copy
+    # is allowed; false copy is not.
+    for overclaim in ("independent", "confirmed", "verified", "proved"):
+        assert overclaim not in lowered, overclaim
     # Short enough to read on a review screen (IA over copy).
     assert len(LEVEL_FRAME_HOUSEHOLD_COPY) < 260
 

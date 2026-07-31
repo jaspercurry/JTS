@@ -201,18 +201,25 @@ _SEED: tuple[MechanismSpec, ...] = (
         # upstream of any trim derived from them, so adding level cannot be
         # the answer — re-solving the frame is. Pinned by test.
         fix_classes=("eq", "refit"),
-        # **Not the probe §4's M7 row names.** That row's probe column is "per
-        # -driver passband comparison against a declared-sensitivity prior",
-        # which is not a member of §5's P1-P7 table — and PROBES is closed, so
+        # **A gap, declared as one — no §5 probe DECIDES M7 today.** This
+        # field's contract is the strong one ("the probe that would decide
+        # this mechanism when a finding is unsure"), and neither entry below
+        # meets it. The probe that would is the one §4's M7 row names — a
+        # per-driver passband comparison against a declared-sensitivity prior —
+        # and it is not a member of §5's P1-P7 table. PROBES is closed, so
         # inventing an id for it here would be a scope change made silently in
-        # the wrong file. These two ARE in the table and both meet the
-        # schema's own bar for this field ("probes that would RAISE this
-        # finding's confidence", not "probes that decide it"): P5 reads the
-        # inter-driver balance on a second axis, so it separates a real level
-        # relationship from one that is a property of where the mic was; P7
-        # bounds how much of a disagreement could be measurement spread at
-        # all. Adding §4's own probe to §5's table is a plan change, and it
-        # belongs in the plan.
+        # the wrong file; adding it to the table is a plan change and belongs
+        # in the plan.
+        #
+        # So this field carries the best available RAISERS rather than a
+        # decider, and the weaker standing is stated rather than papered over:
+        # P5 reads the inter-driver balance on a second axis, separating a real
+        # level relationship from a property of where the mic was; P7 bounds
+        # how much of a disagreement could be measurement spread at all.
+        # Neither settles which of the two frames is right. An empty tuple was
+        # the alternative and is worse — it would say "nothing helps", which is
+        # false, and it would leave an ``unsure`` M7 finding unable to
+        # construct at all (``Finding`` requires a recommended probe).
         discriminating_probes=(PROBE_DESIGN_AXIS, PROBE_REPEAT_VARIANCE),
         corpus_evidence_tier=EVIDENCE_TIER_ADJUDICATED,
         corpus_citation=(

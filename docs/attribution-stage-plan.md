@@ -365,7 +365,14 @@ measured-as-zero.
 
 **M7 vs M3 is the same trap one level down.** #1667's trim bias and the 7–11 dB
 tweeter deficit are *level* errors in the overlap band, not acoustic-slope
-errors. M3 is "the shapes don't sum"; M7 is "the levels were never compared."
+errors. M3 is "the shapes don't sum"; M7 is "the levels were never compared" —
+which named the 2026-07-29 state of the pipeline and no longer describes it.
+Since the three comparators in M7's row above shipped, the mechanism's live
+form is *"the levels are compared and the comparisons do not agree"*: two
+estimators of the same inter-driver placement 3.28 dB apart on ordinary
+passband tilt, with a closed-loop check saying the shipped pair is level. The
+contrast with M3 is unchanged; what changed is that M7 is now detected rather
+than merely suspected.
 
 M4's frame mismatch is a *measured evidence* class: it says two frames
 disagree and by how much. Whether that disagreement should change the
@@ -579,11 +586,11 @@ ahead of demonstrated yield** — the observed-first rule the registry lives
 under, applied to probes.
 
 **Second admission path — flow-first (owner ruling, 2026-07-30 bench,
-~15:30 EDT; recorded on #1866, amends the criterion above).** The owner:
-*"I know I have that rule about [probes] demonstrating yield on the bench
-before [shipping], but sometimes the bench is on the fly. Keep that framing
-where we can test something in the flow and validate that it works happily,
-and then once it does, we can harden it."*
+~15:30 EDT; recorded on #1866, amends the criterion above).** The owner
+(verbatim in substance): *"I know I have that rule about [probes]
+demonstrating yield on the bench before [shipping], but sometimes the bench is
+on the fly. Keep that framing where we can test something in the flow and
+validate that it works happily, and then once it does, we can harden it."*
 
 So the hand-rolled-bench-yield precondition is **no longer the sole gate**. A
 probe may instead be built **flow-first**: an experimental, **lab-gated**
@@ -593,7 +600,8 @@ validated apply path with restore-on-exit, honest self-describing artifacts),
 validated live in the flow, and **then** hardened. What prompted it: the
 2026-07-30 bench's hand-rolled Phase-4 kit repeatedly re-implemented rails the
 product already owns — session volume, level ceilings, safety solves (full
-trail on #1870) — and the owner called the shape mid-session.
+trail on #1870) — and the owner called the shape mid-session. **Flow-first
+replaces it.**
 
 Three things are **unchanged**, and they are what keep this an added path
 rather than a lowered bar:

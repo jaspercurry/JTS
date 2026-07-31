@@ -407,6 +407,11 @@ class FakeSeams:
     # PR-L5: the delta probe's automatic-rollback seam. ``None`` (the default)
     # is the honest "no binding" case the conductor must still refuse under.
     rollback: Any = None
+    # #1866: every level-frame finding the conductor banks, in order. Bound by
+    # default (unlike ``rollback``) because "no findings seam" is the degraded
+    # case here, not the normal one — a test that wants it unbound passes
+    # ``publish_findings=None`` through ``dataclasses.replace``.
+    banked_findings: list = field(default_factory=list)
 
     def seams(self) -> V2FlowSeams:
         def analyze(program, result, priors, geometry, *, phase=None):
@@ -430,6 +435,7 @@ class FakeSeams:
             apply_complete=lambda: self.apply_done,
             apply_failed=lambda: self.apply_failed_code,
             rollback=self.rollback,
+            publish_findings=self.banked_findings.append,
         )
 
 
@@ -6041,9 +6047,9 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     asserts on it.
 
     **The realized verdict is supplied, since the #1866 ruling.** A frame
-    disagreement no longer refuses on its own: when the independent realized-
-    level check corroborates the committed pair, the session banks a finding
-    and proceeds. That is the correct answer for THIS fixture's own physics —
+    disagreement no longer refuses on its own: when the realized-level check
+    passes on the pair about to ship, the session banks a finding and
+    proceeds. That is the correct answer for THIS fixture's own physics —
     the −20 dB is a raw-trim INPUT the fit's anchor then repairs, so the
     speaker that would ship is level — and it is not what this test is about.
     What this test is about is the guard, so the realized instrument is held
@@ -7838,7 +7844,7 @@ def test_a_role_with_no_crossover_region_is_credited_nothing_and_named(caplog):
     assert sections_by_role(()) == {}
 
 
-def _healthy_crossed_over_pair():
+def _healthy_crossed_over_pair(dip_db: float = 7.0):
     """Two HEALTHY drivers, each measured THROUGH its own side of a matched
     LR4 pair at the fixture's Fc, each with one benign in-band dip.
 
@@ -7849,6 +7855,16 @@ def _healthy_crossed_over_pair():
     own radiating band and give the fit something real to flatten, so the
     session walks the whole journey instead of stopping at a later gate for a
     reason that has nothing to do with the level frame.
+
+    **The 7 dB depth is chosen, not arbitrary.** At the 6 dB it shipped with,
+    the post-fix arm cleared item 2's 0.5 dB improvement floor by 0.0003 dB —
+    so the test's headline result rode a gate it was not testing, by a margin
+    smaller than a rounding step, and any unrelated fit change could flip it
+    into a confusing failure. Depth was swept: 6 dB leaves 0.0003 dB of margin,
+    8 dB leaves the PRE arm only 0.016 dB, and at 9 dB the pre arm stops
+    refusing altogether and the comparison collapses. 7 dB maximizes the
+    smaller of the two margins (pre 0.132 dB below the floor, post 0.091 dB
+    above it), which is what makes both arms mean what they say.
 
     The declared sweep spans (``_roles()``: woofer 150-6000, tweeter
     300-20000) both cross the 1600 Hz Fc, which is the #1929 premise and the
@@ -7862,7 +7878,7 @@ def _healthy_crossed_over_pair():
     freqs = _LINEARIZABLE_FREQS_HZ
 
     def dip(center_hz: float) -> np.ndarray:
-        return -6.0 * np.exp(-0.5 * ((np.log2(freqs / center_hz) / 0.3) ** 2))
+        return -dip_db * np.exp(-0.5 * ((np.log2(freqs / center_hz) / 0.3) ** 2))
 
     lowpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),)
     highpass = (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),)
@@ -7946,7 +7962,7 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # the refusal comes from the prediction gate: the mislevelled frame makes
     # the correction fail to beat its own baseline.
     assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    assert before._last_level_frame_disagreement_db == pytest.approx(6.53, abs=0.1)
+    assert before._last_level_frame_disagreement_db == pytest.approx(6.16, abs=0.1)
     assert (
         before._last_level_frame_disagreement_db
         > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
@@ -7963,24 +7979,28 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     after = session()
     verdict = _run_phase(after, 2, 2)
     assert verdict["accepted"] is True
-    assert after._last_level_frame_disagreement_db == pytest.approx(1.10, abs=0.1)
+    assert after._last_level_frame_disagreement_db == pytest.approx(0.99, abs=0.1)
     assert after._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
 
-    # THE CORROBORATION, and it has to be read as a magnitude. PR-L4 item 1 is
-    # a third instrument — different inputs (post-fit branches), different band
-    # (mirrored ±1 octave), different estimator (power mean) — so if #1929 had
-    # bought the frame's pass by mislevelling the pair, this is what would say
-    # so. It does not: the committed trim lands the two branches 0.16 dB apart
-    # where the pre-#1929 trim left them 2.87 dB apart, a 3.03 dB move toward
-    # zero on an instrument this change does not touch.
+    # THE CORROBORATION, and it has to be read as a magnitude. PR-L4 item 1
+    # reads different inputs (the post-fit branches), a different band
+    # (mirrored ±1 octave), and a different statistic (power mean) from the
+    # fit's median — so if #1929 had bought the frame's pass by mislevelling
+    # the pair, this is what would say so. It does not: the committed trim
+    # lands the two branches 0.32 dB apart where the pre-#1929 trim left them
+    # 2.85 dB apart, a 2.53 dB move toward zero on an instrument this change
+    # does not touch. (It is not a fully independent third opinion — it is
+    # ``solve_branch_trims`' own estimator re-read on the trimmed pair, "One
+    # estimator, not a second opinion" per its own docstring — which is why the
+    # claim here is scoped to "not mislevelled", not "independently confirmed".)
     #
-    # ``matched`` alone cannot make that claim — it is True in BOTH arms (2.87
+    # ``matched`` alone cannot make that claim — it is True in BOTH arms (2.85
     # is inside the 3.0 dB tolerance, barely), so a boolean assertion here
     # would pass identically against the defect it exists to catch.
     before_difference_db = before._last_realized_level_match.difference_db
     after_difference_db = after._last_realized_level_match.difference_db
-    assert before_difference_db == pytest.approx(2.865, abs=0.05)
-    assert after_difference_db == pytest.approx(-0.163, abs=0.05)
+    assert before_difference_db == pytest.approx(2.847, abs=0.05)
+    assert after_difference_db == pytest.approx(-0.321, abs=0.05)
     assert abs(after_difference_db) < 0.5
     assert abs(after_difference_db) < abs(before_difference_db) - 2.0
     assert after._last_realized_level_match.matched is True
@@ -8072,8 +8092,9 @@ def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
 
     **Two forcers now, and the second one arrived with the #1866 ruling.**
     Over-tolerance alone no longer reaches the REFUSAL: since the frame gate's
-    semantics change, a disagreement the independent realized-level check
-    corroborates is banked as a finding and the session proceeds. So this test
+    semantics change, a disagreement is banked as a finding and the session
+    proceeds whenever the realized-level check passes on the pair about to
+    ship. So this test
     supplies the unmatched realized verdict that the refusal arm now requires,
     the same way ``test_the_realized_level_assertion_still_fires_when_the_
     frame_agreed`` supplies its own. Every assertion below is unchanged — the
@@ -8157,45 +8178,41 @@ def _tilted_woofer_fixture(fakes: FakeSeams, *, tilt_db_per_oct: float) -> None:
     )
 
 
-def _conductor_with_findings(fakes: FakeSeams, banked: list):
-    """A conductor whose ``publish_findings`` seam records rather than stores."""
-    base = fakes.seams()
-    return CrossoverV2Conductor(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=replace(base, publish_findings=banked.append),
-        driver_spacing_m=0.15,
-    )
-
-
 def test_a_disagreeing_frame_the_realized_check_corroborates_banks_and_proceeds(
     caplog,
 ):
     """**The ruling, end to end** (owner, 2026-07-30 bench, #1866): "when
     ``solve_shared_level_frame``'s two estimators disagree beyond
-    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` but the independent
+    ``LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`` but the
     ``realized_branch_level_match`` check PASSES, the fit **banks the
-    disagreement as an M7-class finding** … **and proceeds on the near-Fc
-    anchor**."
+    disagreement as an M7-class finding** … and proceeds."
 
-    Four things are pinned, because the ruling asserts four:
+    Four things are pinned:
 
     1. the session COMPLETES rather than refusing;
     2. a finding is banked carrying both estimators, both bands, and the
        realized difference;
-    3. the committed trims are the near-Fc ANCHOR — proceeding is not a
-       different tune, it is the same tune not refused;
+    3. **proceeding is the same tune, not refused** — the committed trims are
+       byte-for-byte the anchor the fit already computed;
     4. the decision is visible in the journal under its own event.
+
+    **Claim 3 is deliberately NOT "proceeds on the near-Fc anchor (the trim
+    solve)", which is the ruling's wording and is inverted.** The trim term
+    cancels out of ``anchor_base + giveback + level_frame_offset``, so the
+    committed inter-driver placement is set by the CORE-MEDIAN frame — the
+    *disputed* estimator. This fixture measures that directly: committed
+    −0.674 is the core-median value, anchoring on the trim solve's placement
+    would give +2.602, and the two differ by 3.276 — exactly the banked
+    disagreement. What proceeding buys is that the session is not refused; it
+    does not switch estimators, and the realized check grades the outcome
+    rather than picking a winner. The gate comment in ``_assert_accountable``
+    derives all of this.
 
     Why the tilt is the right provocation rather than a contrivance: #1929
     removed a structural bias from one estimator, it did not make the two
     agree, and what is left scales with ordinary driver shape. A speaker with
     a −1.6 dB/oct woofer passband — baffle-step territory, not a defect —
-    refuses under the pre-ruling gate while every instrument that grades the
+    refuses under the pre-ruling gate while the instrument that grades the
     OUTPUT says the tune is fine.
     """
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
@@ -8203,8 +8220,8 @@ def test_a_disagreeing_frame_the_realized_check_corroborates_banks_and_proceeds(
     _tilted_woofer_fixture(
         fakes, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
     )
-    banked: list = []
-    c = _conductor_with_findings(fakes, banked)
+    c = _conductor(fakes)
+    banked = fakes.banked_findings
 
     # Record every trim pair the level adjudication grades, so claim 3 below
     # can assert against the ANCHOR the fit itself solved instead of a number
@@ -8255,20 +8272,55 @@ def test_a_disagreeing_frame_the_realized_check_corroborates_banks_and_proceeds(
         assert record[f"core_band_lo_hz_{role}"] is not None
         assert record[f"core_band_hi_hz_{role}"] is not None
         assert record[f"radiating_band_lo_hz_{role}"] is not None
-    # The band the finding is about is the span the medians were read over.
+    # The band the finding is about is the span the medians were read over —
+    # its edges are the OUTER edges of the two core bands, so the interval
+    # spans the 1255.8–2020 Hz gap between them, which NEITHER median read.
+    # That is the honest shape for a finding about the relationship BETWEEN
+    # two drivers (it is about the handoff, which lives in that gap) and it is
+    # deliberately not a claim that anything was measured there.
     assert record["f_lo_hz"] == record["core_band_lo_hz_woofer"]
     assert record["f_hi_hz"] == record["core_band_hi_hz_tweeter"]
+    assert record["core_band_hi_hz_woofer"] < record["core_band_lo_hz_tweeter"]
 
-    # 3 — the committed trims ARE the near-Fc anchor the fit already solved,
-    # taken from the fit's OWN call rather than recomputed here (``graded``
-    # records both candidate pairs the level adjudication weighed, in the order
-    # ``_fit_linearization`` grades them: resolved, then anchored).
+    # 3 — proceeding is the SAME TUNE, not refused: the committed trims are
+    # the anchor the fit already computed, taken from the fit's OWN call
+    # rather than recomputed here (``graded`` records both candidate pairs the
+    # level adjudication weighed, in the order ``_fit_linearization`` grades
+    # them: resolved, then anchored).
     assert len(graded) == 2, graded
     committed = dict(c.candidate.role_attenuations_db)
     anchored = graded[1]
     assert set(anchored) == set(committed)
     for role, value in anchored.items():
         assert committed[role] == pytest.approx(value, abs=1e-9)
+
+    # …and WHICH estimator that anchor places on, because the ruling's own
+    # wording ("the trim solve") says the opposite of what the code does. The
+    # trim term cancels out of ``anchor_base + giveback + level_frame_offset``,
+    # leaving ``giveback + system − core``, so the committed inter-driver
+    # placement follows the CORE MEDIAN — the disputed estimator. Asserted as
+    # the identity rather than as a magic number: the placement the trim solve
+    # would have produced differs from the committed one by exactly the banked
+    # disagreement.
+    lin = c.candidate.linearization
+    giveback = {role: lin[role]["correction_giveback_db"] for role in lin}
+    cores = {r: v["level_db"] for r, v in c._last_level_frame_cores.items()}
+    trims = dict(c._last_level_frame_trims)
+    placed = committed["woofer"] - committed["tweeter"]
+    core_frame = (
+        (giveback["woofer"] - cores["woofer"])
+        - (giveback["tweeter"] - cores["tweeter"])
+    )
+    trim_frame = (
+        (giveback["woofer"] + trims["woofer"])
+        - (giveback["tweeter"] + trims["tweeter"])
+    )
+    assert placed == pytest.approx(core_frame, abs=1e-3)
+    assert placed == pytest.approx(-0.674, abs=0.02)
+    assert trim_frame == pytest.approx(2.602, abs=0.02)
+    assert abs(trim_frame - core_frame) == pytest.approx(
+        c._last_level_frame_disagreement_db, abs=1e-3
+    )
 
     # 4 — the decision is in the journal under its own event, and the refusal
     # event is NOT, so a reader can tell a banked session from a stopped one.
@@ -8286,11 +8338,11 @@ def test_a_disagreeing_frame_the_realized_check_also_fails_still_refuses(caplog)
     refusal keeps PR-L4's own ``driver_levels_disagree`` code and therefore its
     shipped household sentence, no finding is minted, and the candidate is
     never stashed. **No finding on this path is deliberate, not an omission**:
-    the record's whole content is "two instruments disagreed and a third
-    corroborated one of them", and with the third instrument failing there is
-    no corroboration to record — banking one anyway would persist a diagnosis
-    whose own evidence contradicts it, in a session the household is being
-    told to go fix.
+    the record's whole content is "two estimators disagreed AND the pair we
+    were about to ship still came out level", and with the realized check
+    failing the second half is false — banking one anyway would persist a
+    diagnosis whose own evidence contradicts it, in a session the household is
+    being told to go fix.
 
     The realized verdict is SUPPLIED rather than provoked, for the reason
     ``test_the_realized_level_assertion_still_fires_when_the_frame_agreed``
@@ -8304,8 +8356,8 @@ def test_a_disagreeing_frame_the_realized_check_also_fails_still_refuses(caplog)
     _tilted_woofer_fixture(
         fakes, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
     )
-    banked: list = []
-    c = _conductor_with_findings(fakes, banked)
+    c = _conductor(fakes)
+    banked = fakes.banked_findings
 
     def _unmatched(*_a, **_kw):
         return RealizedLevelMatch(
@@ -8351,7 +8403,12 @@ def test_a_banked_finding_never_costs_the_session_it_was_banked_for(caplog):
     _tilted_woofer_fixture(
         unbound, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
     )
-    c = _conductor(unbound)
+    c = CrossoverV2Conductor(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(unbound.seams(), publish_findings=None),
+        driver_spacing_m=0.15,
+    )
     _run_phase(c, 1, 1)
     assert _run_phase(c, 2, 2)["accepted"] is True
     assert c.candidate is not None
@@ -8383,6 +8440,86 @@ def test_a_banked_finding_never_costs_the_session_it_was_banked_for(caplog):
     )
 
 
+def test_a_retaken_eager_fit_banks_its_finding_exactly_once():
+    """**The reason the finding is minted at the gate but persisted at the
+    commit** — pinned, because it is the whole justification for a two-step
+    that would otherwise look like indirection for its own sake.
+
+    The gate runs on the EAGER close and again on the confirm when a retake
+    moots the bank (``run_speculative_group_close``: "the bank stays empty and
+    the confirm refits"), so it mints more than once. The findings store is
+    write-once. Publishing at the gate would therefore hand the store the same
+    path twice on this ordinary, household-reachable path — a ``PATH_CONFLICT``
+    on the second — and the first write would describe a candidate that no
+    longer exists. Riding ``_SpeculativeClose`` and publishing from
+    ``_commit_measure_candidate`` makes both impossible: the dropped build
+    takes its record with it, and the commit fires once behind
+    ``confirm_cloud_measure_group``'s ``_candidate`` guard.
+    """
+    fakes = FakeSeams()
+    _tilted_woofer_fixture(
+        fakes, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
+    )
+    c = _cloud_conductor(fakes)
+    attempt = _walk_measure_cloud_to_accept(c)
+
+    # The eager fit runs the gate — and banks nothing durable, because nothing
+    # is committed yet.
+    assert c.run_speculative_group_close() is True
+    assert c._speculative_close.level_frame_finding is not None
+    assert fakes.banked_findings == []
+
+    # The household redoes the final spot: the eager build is discarded whole,
+    # its record with it.
+    for _ in range(GEOMETRY_RETRY_POSITIONS + 1):
+        verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+        attempt += 1
+        if verdict["accepted"]:
+            break
+    assert c._speculative_close is None
+    assert fakes.banked_findings == []
+
+    # The confirm refits, re-mints, and commits — once.
+    assert _confirm_cloud(c)["candidate_fingerprint"]
+    assert len(fakes.banked_findings) == 1
+    assert fakes.banked_findings[0]["disagreement_db"] == pytest.approx(
+        3.276, abs=0.02
+    )
+    # A re-delivered confirm signal cannot double-publish it.
+    assert c.confirm_cloud_measure_group() is None
+    assert len(fakes.banked_findings) == 1
+
+
+def test_a_gate_that_refuses_after_the_frame_banked_persists_nothing():
+    """The other half of the same design: a record minted at the frame gate
+    dies with the candidate when a LATER gate refuses.
+
+    Item 2 refuses this session — the correction does not improve its own
+    model — after the frame gate has already banked. Nothing is committed, so
+    nothing is published: the record describes the frame behind a proposal,
+    and there is no proposal. A gate-site publish would have persisted a
+    diagnosis for a tune the household was never offered.
+    """
+    fakes = FakeSeams()
+    _tilted_woofer_fixture(
+        fakes, tilt_db_per_oct=_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    # This fixture clears item 2 by 0.99 dB against the shipped 0.5 dB floor
+    # (``reason=improved``), so raising the floor is the smallest change that
+    # makes a LATER gate refuse while the frame gate above still banks. The
+    # constant itself is not under test here — the ordering is.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 5.0)
+        with pytest.raises(CaptureBeginRefused) as excinfo:
+            _run_phase(c, 2, 2)
+
+    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    assert c.candidate is None
+    assert fakes.banked_findings == []
+
+
 def test_an_agreeing_frame_banks_nothing():
     """The ordinary session, which the ruling does not touch: a frame inside
     tolerance mints no finding and calls no seam.
@@ -8394,8 +8531,8 @@ def test_an_agreeing_frame_banks_nothing():
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
-    banked: list = []
-    c = _conductor_with_findings(fakes, banked)
+    c = _conductor(fakes)
+    banked = fakes.banked_findings
     _run_phase(c, 1, 1)
     assert _run_phase(c, 2, 2)["accepted"] is True
     assert (
