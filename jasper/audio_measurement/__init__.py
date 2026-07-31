@@ -79,6 +79,12 @@ Modules:
     ladder and corroborating it against a measured arrival, so an
     uncorrectable comb is excluded with its delay and reflection ratio
     recorded as the reason.
+  - :mod:`~jasper.audio_measurement.frame_fit` — the FRAME between two
+    magnitude curves the flow is about to difference: a least-squares
+    ``offset + tilt·log2(f)``, two scalars, fitted and DISCLOSED so a
+    cross-instrument comparison can no longer report instrument tilt as model
+    error. Serves the **diagnose** stage; owns the frame model and the typed
+    disclosure record, and owns no band, no threshold, and no verdict.
 
 Layer-specific logic — PEQ design, targets, correction strategy, the
 active-speaker verdicts, the web flows — stays in its owning package and

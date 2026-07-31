@@ -9333,6 +9333,114 @@ def test_verify_pass_states_the_band_it_graded():
     assert c.verify_graded_band_hz == [2000.0, 4000.0]
 
 
+def _tracking_with_frame(**frame_overrides):
+    frame = {
+        "offset_db": -0.75,
+        "tilt_db_per_octave": -0.79,
+        "pivot_hz": 2828.4,
+        "n_bins": 400,
+        "band_hz": [2000.0, 4000.0],
+        "raw": {"rms_db": 0.4, "max_db": 0.9},
+        "tilt_removed": {"rms_db": 0.18, "max_db": 0.31},
+    }
+    frame.update(frame_overrides)
+    return {
+        "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
+        "tracking_band_hz": [2000.0, 4000.0],
+        "frame": frame,
+    }
+
+
+def test_a_passing_verify_still_discloses_the_frame_it_compared_across():
+    """Rung P1 — "Verified." must say how much of the agreement was frame.
+
+    VERIFY differences an on-axis MODEL against an in-room MEASUREMENT. On the
+    2026-07-29 corpus a single −0.79 dB/octave tilt between those two frames
+    accounted for 84 % of the flow's apparent prediction error, so a pass with
+    the frame unstated invites exactly the reading the panel had to correct.
+    Surfaced on a PASS for the same reason the graded band is (#1868): the
+    passing screen is the one that would otherwise overclaim.
+    """
+    fakes = FakeSeams()
+    fakes.verify = lambda program: ProgramAnalysis(
+        phase="verify", program_id=program.program_id,
+        locations=(_loc("sweep_verify", "summed_sweep"),),
+        summed_response=_driver_response_diag("summed"),
+        summed_ripple_db=1.1,
+        verify_tracking=_tracking_with_frame(),
+        linearity_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    assert _run_phase(c, 3, 3)["accepted"] is True
+
+    assert c.verify_outcome == "pass"
+    assert c.verify_frame == {
+        "offset_db": -0.75,
+        "tilt_db_per_octave": -0.79,
+        # The span the fit saw, carried because a two-parameter fit over few
+        # bins or a narrow reach is ill-conditioned and the record is the only
+        # place a reader can see that. It is also NOT the graded band whenever
+        # the prediction has a deep notch — these bins are the ones the
+        # comparison trusts.
+        "pivot_hz": 2828.4,
+        "n_bins": 400,
+        "band_hz": [2000.0, 4000.0],
+        # Both grades, so no screen can render the tilt-removed half alone.
+        "rms_db_raw": 0.4,
+        "max_db_raw": 0.9,
+        "rms_db_tilt_removed": 0.18,
+        "max_db_tilt_removed": 0.31,
+    }
+
+
+def test_an_unfitted_frame_is_disclosed_as_absent_never_as_agreement():
+    """A comparison whose frame could not be measured says nothing, rather than
+    reporting a flat frame — absence and "the frames matched" are different
+    claims and must not collapse into one."""
+    fakes = FakeSeams()
+    fakes.verify = lambda program: ProgramAnalysis(
+        phase="verify", program_id=program.program_id,
+        locations=(_loc("sweep_verify", "summed_sweep"),),
+        summed_response=_driver_response_diag("summed"),
+        summed_ripple_db=1.1,
+        verify_tracking=_tracking_with_frame(
+            offset_db=None, tilt_db_per_octave=None, pivot_hz=None, n_bins=0,
+            band_hz=None, tilt_removed={"rms_db": None, "max_db": None},
+        ),
+        linearity_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    assert _run_phase(c, 3, 3)["accepted"] is True
+
+    assert c.verify_frame is None
+
+
+def test_a_verify_that_graded_nothing_claims_no_frame():
+    """An early refusal compared nothing, so it spanned no frame — and a prior
+    attempt's frame must not leak into this one (the same reset discipline the
+    graded band carries)."""
+    fakes = FakeSeams()
+    fakes.verify = lambda program: ProgramAnalysis(
+        phase="verify", program_id=program.program_id,
+        locations=(_loc("sweep_verify", "summed_sweep", confidence=0.05),),
+        summed_response=_driver_response_diag("summed"),
+        linearity_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    assert _run_phase(c, 3, 3)["accepted"] is False
+
+    assert c.verify_frame is None
+
+
 def test_a_verify_that_graded_nothing_claims_no_band():
     """#1868 — an early refusal graded nothing, and says nothing.
 

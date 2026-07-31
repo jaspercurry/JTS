@@ -534,36 +534,66 @@ def notch_excluded_tracking_error_db(
     Falls back to the full band when every bin would be excluded (a
     degenerate all-notch band), so the comparator is never computed over an
     empty set.
+
+    The bin set itself is :func:`notch_excluded_band_mask`'s, so a caller that
+    needs to know WHICH bins this graded reads them from that one owner rather
+    than re-deriving the rule.
     """
     frequencies = np.asarray(freqs, dtype=np.float64)
     measured = np.asarray(measured_db, dtype=np.float64)
+    predicted = np.asarray(predicted_db, dtype=np.float64)
+    if not (frequencies.ndim == measured.ndim == predicted.ndim == 1):
+        raise ValueError("tracking arrays must be 1-D")
+    if not (len(frequencies) == len(measured) == len(predicted)):
+        raise ValueError("tracking arrays must have matching lengths")
+    keep = notch_excluded_band_mask(
+        frequencies, predicted, band,
+        notch_exclusion_db=notch_exclusion_db,
+        notch_reference_db=notch_reference_db,
+    )
+    return _offset_invariant_rms_and_max(measured[keep], predicted[keep])
+
+
+def notch_excluded_band_mask(
+    freqs,
+    predicted_db,
+    band,
+    *,
+    notch_exclusion_db: float,
+    notch_reference_db=None,
+) -> np.ndarray:
+    """The bins :func:`notch_excluded_tracking_error_db` actually grades.
+
+    A **full-grid** boolean mask: in-band, minus any bin whose PREDICTED level
+    sits more than ``notch_exclusion_db`` below the band's own predicted
+    median. See :func:`notch_excluded_tracking_error_db` for why the exclusion
+    keys on the prediction and never on the measurement, and for the
+    all-notch fallback (every bin excluded ⇒ the whole band is kept, so the
+    caller is never handed an empty set).
+
+    **The single owner of that bin choice.** It is public because a second
+    consumer needs the same bins and must not re-derive the rule: rung P1's
+    frame fit
+    (:func:`jasper.audio_measurement.frame_fit.fit_frame`, called from
+    ``program_analysis._analyze_verify``) estimates the cross-frame
+    ``(offset, tilt)`` from the bins this comparison TRUSTS. Fitting a
+    straight line through a deep predicted notch lets the notch's own depth
+    lever the slope — measured on a 25 dB notch at a band edge, an injected
+    −0.800 dB/octave frame came back **+0.226**, the wrong sign — which would
+    then be "removed" from the residual as if it were instrument tilt.
+    """
+    frequencies = np.asarray(freqs, dtype=np.float64)
     predicted = np.asarray(predicted_db, dtype=np.float64)
     notch_reference = (
         predicted
         if notch_reference_db is None
         else np.asarray(notch_reference_db, dtype=np.float64)
     )
-    if not (
-        frequencies.ndim
-        == measured.ndim
-        == predicted.ndim
-        == notch_reference.ndim
-        == 1
-    ):
+    if not (frequencies.ndim == predicted.ndim == notch_reference.ndim == 1):
         raise ValueError("tracking arrays must be 1-D")
-    if not (
-        len(frequencies)
-        == len(measured)
-        == len(predicted)
-        == len(notch_reference)
-    ):
+    if not (len(frequencies) == len(predicted) == len(notch_reference)):
         raise ValueError("tracking arrays must have matching lengths")
-    mask = _band_mask(frequencies, band)
-    band_predicted = predicted[mask]
-    band_measured = measured[mask]
-    band_notch_reference = notch_reference[mask]
-    median_predicted = float(np.median(band_notch_reference))
-    keep = band_notch_reference >= (median_predicted - notch_exclusion_db)
-    if not np.any(keep):
-        keep = np.ones_like(keep, dtype=bool)
-    return _offset_invariant_rms_and_max(band_measured[keep], band_predicted[keep])
+    in_band = _band_mask(frequencies, band)
+    median_predicted = float(np.median(notch_reference[in_band]))
+    keep = in_band & (notch_reference >= (median_predicted - notch_exclusion_db))
+    return keep if bool(np.any(keep)) else in_band

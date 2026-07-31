@@ -38,6 +38,7 @@ from scipy.signal import fftconvolve, resample_poly
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import deconv, gate_disclosure, gating, program_analysis
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.frame_fit import fit_frame
 from jasper.audio_measurement.program import (
     KIND_SWEEP,
     PHASE_MEASURE,
@@ -2523,6 +2524,282 @@ def test_verify_tracking_smooths_measured_and_predicted_curves_equally():
         notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
     )
     assert old_max > 1.5
+
+
+# --------------------------------------------------------------------------- #
+# frame discipline (rung P1)
+# --------------------------------------------------------------------------- #
+
+
+def _verify_against(predicted_sum, *, seed: int = 7):
+    """Analyze one synthetic VERIFY capture against a supplied predicted sum."""
+    prog = build_verify_program(FC_HZ, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    ir = np.zeros(8192)
+    ir[100] = 0.7
+    ir[200] = 1.0
+    mono = fftconvolve(pcm[:, 0], ir)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+    del seed
+    return analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ, predicted_sum=predicted_sum),
+    )
+
+
+def _self_prediction():
+    """The capture's OWN summed response — a prediction in the SAME frame, so
+    any frame the fit then reports is exactly what the test injected."""
+    baseline = _verify_against(None)
+    response = baseline.summed_response
+    assert response is not None
+    return response.freqs_hz, response.magnitude_db
+
+
+def _with_frame(pred_freqs, pred_db, *, offset_db: float, tilt_db_per_octave: float):
+    """A predicted curve moved by a known frame, so the analysis sees exactly
+    ``offset_db``/``tilt_db_per_octave`` of MEASURED-minus-PREDICTED.
+
+    The frame is subtracted from the prediction rather than added to the
+    capture — the capture is the thing under test and must stay untouched. The
+    DC bin has no octave and is left alone (``log2(0)``).
+    """
+    freqs = np.asarray(pred_freqs, dtype=float)
+    positive = freqs > 0.0
+    frame = np.zeros_like(freqs)
+    frame[positive] = offset_db + tilt_db_per_octave * np.log2(freqs[positive] / 1000.0)
+    return freqs, np.asarray(pred_db, dtype=float) - frame
+
+
+def test_verify_discloses_the_frame_it_compared_across():
+    """Rung P1: every tracking record says what frame the two curves spanned.
+
+    Not a nice-to-have. VERIFY differences an ON-AXIS two-branch model against
+    an IN-ROOM gated measurement; on the 2026-07-29 corpus a single
+    −0.79 dB/octave tilt between those frames was 84 % of the flow's apparent
+    prediction error (first-principles panel W1). A record without the frame is
+    half a measurement.
+    """
+    result = _verify_against(_self_prediction())
+    tracking = result.verify_tracking
+    assert tracking is not None
+    frame = tracking["frame"]
+    assert set(frame) == {
+        "offset_db", "tilt_db_per_octave", "pivot_hz", "n_bins", "band_hz",
+        "raw", "tilt_removed",
+    }
+    # The record's raw pair IS the reported pair — one computation, two views,
+    # so a surface reading the disclosure can never quote a different number
+    # than the one the tolerance gated on.
+    assert frame["raw"]["rms_db"] == tracking["rms_db"]
+    assert frame["raw"]["max_db"] == tracking["max_db_notch_excluded"]
+    # Same-frame prediction ⇒ a frame near zero, measured rather than assumed.
+    assert frame["offset_db"] == pytest.approx(0.0, abs=1e-6)
+    assert frame["tilt_db_per_octave"] == pytest.approx(0.0, abs=1e-6)
+    # The frame was measured inside the graded band (its outermost GRID BINS,
+    # which is why it is not the band's own edges) and nowhere else.
+    lo, hi = tracking["tracking_band_hz"]
+    assert lo <= frame["band_hz"][0] <= frame["band_hz"][1] <= hi
+    assert frame["n_bins"] > 100
+
+
+def _notched(pred_freqs, pred_db, *, center_hz: float, depth_db: float = 25.0):
+    """A deep modelled interference notch in the PREDICTED curve.
+
+    Narrow (a sixth-octave half-width) and deep enough to clear
+    ``VERIFY_NOTCH_EXCLUSION_DB``, so the flow's own gating comparator refuses
+    to grade those bins — which is exactly why the frame fit must refuse to
+    estimate from them.
+    """
+    freqs = np.asarray(pred_freqs, dtype=float)
+    notch = np.zeros_like(freqs)
+    positive = freqs > 0.0
+    octaves = np.zeros_like(freqs)
+    octaves[positive] = np.log2(freqs[positive] / center_hz)
+    notch = -depth_db * np.exp(-((octaves / (1.0 / 6.0)) ** 2))
+    return freqs, np.asarray(pred_db, dtype=float) + notch
+
+
+@pytest.mark.parametrize("notch_at,center_hz", [("edge", FC_HZ * 2.0), ("centre", FC_HZ)])
+def test_excluding_notch_bins_from_the_fit_beats_fitting_the_whole_band(
+    notch_at, center_hz,
+):
+    """The bins the comparator refuses to GRADE must not estimate the FRAME.
+
+    Gate finding on PR #1987. The fit used to run over the whole
+    validity-floor-clamped band, INCLUDING the deep-predicted-notch bins
+    ``notch_excluded_tracking_error_db`` deliberately drops. Inside a modelled
+    notch the depth is hypersensitive to sub-dB branch differences (the W6.7
+    finding the exclusion exists for), so a straight line through one lets the
+    notch lever the slope — on the gate's own bench a −0.800 dB/octave frame
+    with a 25 dB edge notch came back **+0.226**, the wrong sign, and would
+    then have been "removed" from the residual as if it were instrument tilt.
+
+    **What is pinned is the DIRECTION, measured in-test against the very
+    construction it replaces — not a magnitude and not a sign.** Both are
+    tempting and both would be false pins: how far a surviving notch skirt can
+    still lever the slope depends on the skirt's WIDTH, which the exclusion
+    bounds only in DEPTH (12 dB). On this fixture the shipped fit still lands
+    +0.31 dB/oct at the band edge — better than the pre-fix +5.72 by 18×, and
+    still the wrong sign. Asserting sign recovery here would be asserting a
+    property the mask intersection does not have; asserting a tolerance would
+    be freezing an accident of this notch's shape. The honest, useful contract
+    is that trusting fewer bins is never worse than trusting all of them.
+    """
+    tilt = -0.800
+    framed = _with_frame(
+        *_self_prediction(), offset_db=0.0, tilt_db_per_octave=tilt,
+    )
+    supplied_freqs, supplied_db = _notched(*framed, center_hz=center_hz)
+    result = _verify_against((supplied_freqs, supplied_db))
+    tracking = result.verify_tracking
+    assert tracking is not None
+    frame = tracking["frame"]
+
+    freqs, measured_db, predicted_db = result.verify_tracking_curve
+    freqs = np.asarray(freqs, dtype=float)
+    band = tuple(tracking["tracking_band_hz"])
+    in_band = (freqs >= band[0]) & (freqs <= band[1])
+
+    # The notch really did exclude bins — otherwise this fixture proves nothing.
+    assert frame["n_bins"] < int(in_band.sum())
+    assert band[0] <= frame["band_hz"][0] <= frame["band_hz"][1] <= band[1]
+
+    # The construction this replaced: fit over every graded bin, notch included.
+    unexcluded = fit_frame(
+        freqs[in_band], measured_db[in_band], predicted_db[in_band],
+    )
+    shipped_error = abs(frame["tilt_db_per_octave"] - tilt)
+    unexcluded_error = abs(unexcluded.tilt_db_per_octave - tilt)
+    assert shipped_error < unexcluded_error
+    # And the pre-fix construction really was badly levered here, so the
+    # comparison above is not two near-identical numbers agreeing by luck.
+    assert unexcluded_error > 1.0
+
+
+def test_the_beside_grade_is_not_promised_to_be_smaller_than_the_raw_one():
+    """"tilt-removed ≤ raw" is NOT a theorem and must never be asserted.
+
+    The two numbers are taken over different bin sets by different graders, and
+    removing a frame estimated on one set can legitimately raise a residual
+    measured on another — before the notch-exclusion fix, a 25 dB notch at band
+    centre did exactly that (tilt-removed max 4.85 dB vs raw 4.74 dB). What the
+    product promises is DISCLOSURE of both, not an ordering between them; a
+    test that pinned the ordering would be pinning a coincidence, and the next
+    corpus that broke it would look like a regression instead of a measurement.
+
+    So this pins the honest contract: both numbers are present and finite, and
+    nothing anywhere requires one to be smaller.
+    """
+    pred_freqs, pred_db = _self_prediction()
+    framed = _with_frame(pred_freqs, pred_db, offset_db=0.0, tilt_db_per_octave=-0.8)
+    result = _verify_against(_notched(*framed, center_hz=FC_HZ))
+    tracking = result.verify_tracking
+    assert tracking is not None
+    raw, tilt_removed = tracking["frame"]["raw"], tracking["frame"]["tilt_removed"]
+    for value in (raw["rms_db"], raw["max_db"],
+                  tilt_removed["rms_db"], tilt_removed["max_db"]):
+        assert isinstance(value, float) and math.isfinite(value)
+
+
+def test_an_injected_tilt_is_recovered_and_graded_beside_the_raw_residual():
+    """The synthetic-tilt fixture: inject a KNOWN frame between two otherwise
+    identical curves and watch the product path split it out.
+
+    The raw grade must SHOW the tilt (that is what an undisclosed frame does to
+    a comparison) and the tilt-removed grade must collapse to ~nothing (that is
+    what the disclosure buys). Both numbers ride the same record; neither
+    replaces the other.
+    """
+    offset_db, tilt_db_per_octave = 1.4, -0.8
+    result = _verify_against(_with_frame(
+        *_self_prediction(),
+        offset_db=offset_db,
+        tilt_db_per_octave=tilt_db_per_octave,
+    ))
+    tracking = result.verify_tracking
+    assert tracking is not None
+    frame = tracking["frame"]
+
+    # The tilt comes back. The offset is stated at the fit's own pivot, so
+    # re-express the injected frame there before comparing.
+    assert frame["tilt_db_per_octave"] == pytest.approx(tilt_db_per_octave, abs=0.01)
+    assert frame["offset_db"] == pytest.approx(
+        offset_db + tilt_db_per_octave * np.log2(frame["pivot_hz"] / 1000.0), abs=0.01
+    )
+
+    # The raw grade carries the tilt; the beside-grade does not. What remains
+    # in the beside-grade is the analysis path's own 1/6-octave smoothing
+    # acting on a log-linear ramp over a LINEAR FFT grid — tens of millidB,
+    # three orders below the tolerance and two below the tilt it removed.
+    raw, tilt_removed = frame["raw"], frame["tilt_removed"]
+    assert raw["rms_db"] > 0.15
+    assert tilt_removed["rms_db"] < 0.1 * raw["rms_db"]
+    assert tilt_removed["rms_db"] == pytest.approx(0.0, abs=0.05)
+    assert tilt_removed["max_db"] == pytest.approx(0.0, abs=0.1)
+    assert raw["max_db"] > tilt_removed["max_db"]
+
+
+def test_the_frame_disclosure_never_moves_the_raw_grade():
+    """The MUST-NOT of rung P1, pinned: the gate reads the same number it read
+    before a frame was ever fitted.
+
+    Recomputed independently from the very curves the analysis reduced
+    (``verify_tracking_curve``) with the shipped graders — so this fails if the
+    reported raw scalars are ever quietly taken over a frame-removed curve,
+    which is the exact regression the beside-grade could invite.
+    """
+    pred_freqs, tilted = _with_frame(
+        *_self_prediction(), offset_db=2.0, tilt_db_per_octave=-0.9,
+    )
+    result = _verify_against((pred_freqs, tilted))
+    tracking = result.verify_tracking
+    assert tracking is not None
+    assert tracking["frame"]["tilt_db_per_octave"] == pytest.approx(-0.9, abs=0.01)
+
+    freqs, measured_db, predicted_db = result.verify_tracking_curve
+    band = tuple(tracking["tracking_band_hz"])
+    rms, max_abs = analysis_mod.tracking_error_db(
+        freqs, measured_db, predicted_db, band,
+    )
+    assert tracking["rms_db"] == rms
+    assert tracking["max_db"] == max_abs
+    _rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
+        freqs, measured_db, predicted_db, band,
+        notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+        notch_reference_db=np.interp(freqs, pred_freqs, tilted),
+    )
+    assert tracking["max_db_notch_excluded"] == max_excl
+
+
+def test_a_verify_with_no_prediction_discloses_no_frame_at_all():
+    """No comparison, no frame. Absence must mean "nothing was compared",
+    never "the frames agreed"."""
+    result = _verify_against(None)
+    assert result.verify_tracking is None
+
+
+def test_the_frame_and_its_beside_grades_ride_the_retention_sidecar():
+    """The retained clip is the forensic record of ONE comparison, and the
+    frame is half of what that comparison was — so it travels with it, flat,
+    beside the raw scalars it does not replace."""
+    result = _verify_against(_with_frame(
+        *_self_prediction(), offset_db=0.0, tilt_db_per_octave=0.7,
+    ))
+    summary = program_analysis.analysis_diagnostic_summary(result)
+    tracking = result.verify_tracking
+    assert tracking is not None
+
+    frame = tracking["frame"]
+    assert summary["frame_offset_db"] == frame["offset_db"]
+    assert summary["frame_tilt_db_per_octave"] == pytest.approx(0.7, abs=0.01)
+    assert summary["frame_pivot_hz"] == frame["pivot_hz"]
+    assert summary["frame_n_bins"] == frame["n_bins"]
+    assert summary["rms_db_tilt_removed"] == frame["tilt_removed"]["rms_db"]
+    assert summary["max_db_notch_excluded_tilt_removed"] == frame["tilt_removed"]["max_db"]
+    # And the raw ones are still there, unchanged, beside them.
+    assert summary["rms_db"] == tracking["rms_db"]
+    assert summary["max_db_notch_excluded"] == tracking["max_db_notch_excluded"]
 
 
 def test_notch_mask_uses_raw_prediction_when_comparison_is_smoothed():

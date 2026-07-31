@@ -1301,6 +1301,7 @@ the page's ~250 ms poll reads it.
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. It no longer owns any flatness claim — flatness-verify (#1668 PR-D) was retired here by the flat-linearization plan's PR-5 and now lives on the cloud pipeline; see "Flatness" above. |
 | [`jasper/audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner + echo/geometry diagnostics (flat-linearization S1, #1741 offline core; wired into the live flow by PR-4, #1756): `combine_positions` → `CombinedResponse` (power-mean spec curve, per-position curves, exclusion mask, `.geometry`/`GeometryLock`), `detect_echo` → `EchoDiagnostic` (two-estimator echo detection; `effective_floor_us`, `earlier_dominant_arrival`/`band_below_passband` refusal hardening from PR-2, #1749), `assess_geometry`, `usable_echo_estimates`. Pure computation, numpy only, no I/O/logging/policy. |
 | [`jasper/audio_measurement/interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py) | The orthogonal interference-null identification gate (PR-1, #1751): `identify_interference_nulls` → `InterferenceNullReport` of `IdentifiedNull` records (τ/r/rung/depth/classification), fits a null ladder to the combined cloud's measured minima and corroborates against the cloud's arrival estimates; `position_invariant` / `position_dependent` / `insufficient_evidence`. Consumed by PR-4's `assemble_cloud_group_result` and PR-6b's (#1760) carve-out disclosure. Same purity contract as `spatial_combine`, zero production callers until PR-4. |
+| [`jasper/audio_measurement/frame_fit.py`](../jasper/audio_measurement/frame_fit.py) | The FRAME between two curves about to be differenced (rung P1): `fit_frame` → `FrameFit` (least-squares `offset_db` + `tilt_db_per_octave` on log-magnitude, plus the pivot/span they were fitted over) and `FrameComparison`, the typed disclosure record pairing that frame with a comparison's raw and tilt-removed grades. Owns the frame model and its JSON shape; owns no band, no threshold, no verdict, and computes no grade of its own — the CALLER owes it the bins the comparison trusts (see `analysis.notch_excluded_band_mask`). One production caller — `program_analysis._analyze_verify`. Pure numpy. |
 | [`jasper/attribution/`](../jasper/attribution/__init__.py) | Mechanism attribution's schema + persistence half (attribution plan WO-1, issue #1866). `findings.py` — the `Finding` artifact (`{mechanism, band, evidence, confidence, fix_class, household_copy, probes_run, probes_recommended}` + its evidence citations) and its self-describing serialization; `mechanisms.py` — the pure-data declaration registry, the shipped `REASON_REGISTRY` shape; `vocabulary.py` — the closed fix-class / confidence-tier / probe sets; `promotion.py` — the excluded-band promotion path (carve-out records → findings); `position_evidence.py` — the per-position members serializer consumed by `assemble_cloud_group_result`; `session_identity.py` — the one identifier that survives every store hop; `storage.py` — bundle-lifetime persistence (Q-C) **and `read_finding_set`, whose one production caller is `correction_crossover_v2._bank_household_findings`** — it reopens a just-published set through the strict reader and projects `household_copy` (and nothing else) into the durable v2 state for the envelope's `findings` key. No detectors (WO-4), no rich report (WO-6 — mechanism/evidence/confidence and the two-panel visualization), no daemon. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
@@ -1617,6 +1618,55 @@ discriminator at all, the verdict below it carries a
 `|level_check_unavailable` suffix in its `reason` — a rollback decided without
 that check says so.
 
+**VERIFY discloses the FRAME it compared across** (rung P1, correction-program
+ladder). `measured − predicted` is a difference between two *instruments*: an
+on-axis two-branch model composed from the MEASURE sitting, against an in-room
+gated point measurement from the VERIFY sitting. `_analyze_verify` therefore
+least-squares fits `offset + tilt·log2(f)` and publishes it as
+`verify_tracking["frame"]` — a
+`jasper.audio_measurement.frame_fit.FrameComparison`: the two terms plus the
+pivot and span they were fitted over, the raw grade pair, and the same pair
+re-graded after the frame is removed. **Two scalars, no more** — this is a
+disclosure, not a curve-warping framework, and it is deliberately not a
+goodness-of-fit test.
+
+**The frame is fitted over the bins the comparison TRUSTS**, not merely the
+graded band: `analysis.notch_excluded_band_mask` — the single owner of that bin
+choice, extracted from `notch_excluded_tracking_error_db` so the two cannot
+drift — drops deep-predicted-notch bins, and the fit inherits that set on top
+of the validity-floor clamp. Inside a modelled notch the depth is
+hypersensitive to sub-dB branch differences (the W6.7 finding the exclusion
+exists for), so a straight line through one lets the notch lever the slope. Two
+measured cautions, both on the product path with a 25 dB notch: fitting the
+whole band recovered an injected −0.800 dB/oct as **+5.7** at a band edge,
+while the shipped trusted-bin fit recovers **+0.31** — 18× better and *still
+the wrong sign*. The exclusion bounds a notch's DEPTH (12 dB), not its skirt
+WIDTH, so a wide enough surviving skirt still biases the estimate. Treat a
+disclosed tilt measured over a notch-heavy prediction as indicative only; see
+issue #1990. `n_bins`/`band_hz` ride the record precisely so a reader can see
+how much was trusted.
+
+Nothing about grading moved. `max_db_notch_excluded` is still the number
+`VERIFY_TOLERANCE_DB` gates on and the delta probe still classifies the raw
+error; the tilt-removed pair sits BESIDE them, computed by re-running the same
+graders on a frame-removed curve so the two are one construction over two
+inputs. Why it exists: on the 2026-07-29 corpus the replay scorecard's headline
+"predictions are 2.02× optimistic" was ~84 % a single −0.79 dB/octave frame
+tilt (2026-07-31 first-principles panel W1 — raw 2.054 dB rms, 1.335 dB with
+the one scalar out, crossover-band shape correlation +0.97), and the product
+could not tell instrument tilt from model error. It travels on every outcome
+including a pass (`verify.frame` in the durable state, `frame offset … , tilt …`
++ `raw: …` + `tilt-removed: …` in the expert-details disclosure, `frame_*` /
+`*_tilt_removed` on the verify diag line and in the retained-capture sidecar),
+for the same reason the graded band does: a pass is exactly when an unstated
+frame would be read as model agreement. **A tilt-removed grade never renders
+alone** — it is the friendlier number by construction, so the done screen (which
+has no `evidence` block, that being persisted only on a non-pass) prints the raw
+pair from the same record; the verify_fail screen already has it above and does
+not repeat it. An unfitted frame is disclosed as ABSENT, never as a flat one.
+The delta probe takes no second fit — it reads the same `verify_tracking_curve`,
+so its frame is this one.
+
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
 relay plan's `max_attempts` bounds the whole session.
@@ -1759,7 +1809,12 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `verify_tolerance_db`, `verify_gate_window_ms`, `verify_gate_floor_source`,
   `measure_gate_window_ms`
   (the comparability pair behind `verify_inconclusive`), `validity_floor_hz`,
-  `tracking_band_lo_hz`/`tracking_band_hi_hz`, `rms_db`. There is
+  `tracking_band_lo_hz`/`tracking_band_hi_hz`, `rms_db`,
+  and the rung-P1 frame disclosure — `frame_offset_db`,
+  `frame_tilt_db_per_octave`, `rms_db_tilt_removed`, `max_db_tilt_removed`
+  (all `None` on a verdict that reached no tracking comparison, and the last
+  two also when no frame could be fitted; `max_db_tilt_removed` is the twin of
+  `max_db_notch_excluded`, the number that gates). There is
   deliberately no `measure_gate_floor_source` beside `measure_gate_window_ms`:
   that window is RESTORED from persisted state on a resumed session and the
   floor source is not persisted, so the pair could only be reported as a real

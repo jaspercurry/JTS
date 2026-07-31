@@ -358,6 +358,66 @@ def _verify_graded_band_lines(status: Mapping[str, Any]) -> list[str]:
     return [f"checked {lo:.0f}–{hi:.0f} Hz"]
 
 
+def _verify_frame_lines(
+    status: Mapping[str, Any], *, raw_already_shown: bool,
+) -> list[str]:
+    """"frame offset X dB, tilt Y dB/oct" — what the comparison spanned.
+
+    **One owner, rendered on every outcome**, exactly like
+    :func:`_verify_graded_band_lines` above. The band says how WIDE the tracking
+    claim is; this says how much of it was the instrument rather than the
+    speaker. VERIFY differences an on-axis two-branch MODEL against an in-room
+    gated MEASUREMENT, and on the 2026-07-29 corpus a single −0.79 dB/octave
+    tilt between those frames accounted for 84 % of the flow's apparent
+    prediction error (rung P1). A pass printed over an unstated tilt reads as
+    "the model was right"; stating it makes the claim exactly as strong as the
+    comparison.
+
+    Lines are terse for the same reason :func:`_verify_level_reference_lines`
+    is: the wizard joins ``expert_details`` with "; " into one collapsed
+    paragraph beside "level error 0.42 dB (limit 1.0 dB)" and "checked
+    2000–4000 Hz".
+
+    **A tilt-removed grade is never rendered alone.** It is the smaller,
+    friendlier number by construction on the corpus that motivated it, and a
+    screen showing only it would be the flattering half of a comparison
+    presented as the comparison. ``raw_already_shown`` says whether the caller
+    has ALREADY put the raw pair on screen: the verify_fail screen has, through
+    :func:`_verify_expert_details`'s evidence block, so repeating it there
+    would be noise; the done screen has NOT, because the host persists that
+    block only for a non-pass outcome — so on a pass this function prints the
+    raw pair itself, from the same record the tilt-removed pair comes from and
+    with no arithmetic of its own.
+
+    Empty when no frame was fitted, since silence is the honest rendering of an
+    unmeasured frame.
+    """
+    frame = _mapping(_mapping(_v2(status).get("verify")).get("frame"))
+    offset_db = _finite(frame.get("offset_db"))
+    tilt = _finite(frame.get("tilt_db_per_octave"))
+    if offset_db is None or tilt is None:
+        return []
+    lines = [f"frame offset {offset_db:+.2f} dB, tilt {tilt:+.2f} dB/oct"]
+
+    def _pair(max_key: str, rms_key: str) -> str:
+        max_db = _finite(frame.get(max_key))
+        rms_db = _finite(frame.get(rms_key))
+        parts = []
+        if max_db is not None:
+            parts.append(f"level error {max_db:.2f} dB")
+        if rms_db is not None:
+            parts.append(f"tracking average error {rms_db:.2f} dB")
+        return ", ".join(parts)
+
+    raw = "" if raw_already_shown else _pair("max_db_raw", "rms_db_raw")
+    tilt_removed = _pair("max_db_tilt_removed", "rms_db_tilt_removed")
+    if raw:
+        lines.append("raw: " + raw)
+    if tilt_removed and (raw_already_shown or raw):
+        lines.append("tilt-removed: " + tilt_removed)
+    return lines
+
+
 def _verify_level_reference_lines(status: Mapping[str, Any]) -> list[str]:
     """"level reference reset for this session…" — the #1927 disclosure.
 
@@ -443,7 +503,18 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
         rms_db = _finite(evidence.get("rms_db"))
         if rms_db is not None:
             lines.append(f"tracking average error {rms_db:.2f} dB")
+    # Whether the evidence block above put the RAW pair on this screen. It is
+    # the owner of those numbers here — it alone can state the gated one
+    # against its limit — so the frame block below defers to it rather than
+    # printing them twice.
+    raw_already_shown = bool(lines)
     lines.extend(_verify_graded_band_lines(status))
+    # The frame those numbers were measured ACROSS (rung P1), appended for the
+    # same reason and on the same terms as the band above: independent of the
+    # evidence guard, because it has its own presence condition and a screen
+    # that has a frame should say so even when the raw numbers beside it are
+    # missing.
+    lines.extend(_verify_frame_lines(status, raw_already_shown=raw_already_shown))
     return lines
 
 
@@ -2352,8 +2423,21 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # evidence block stays off a passing screen as before — how far
             # inside tolerance a pass landed is not a claim the household
             # needs adjudicated, but how WIDE the claim is, is.
+            # Rung P1 adds the second: the FRAME the comparison spanned. Same
+            # argument as the band — the badge says "Verified.", and an
+            # instrument tilt is the difference between "the model was right"
+            # and "the model and the room disagreed smoothly and nobody said
+            # so". Still report-only; the raw numbers stayed the gate.
+            #
+            # ``raw_already_shown=False``: this screen has no evidence block
+            # (the host persists it only on a non-pass), so the frame block
+            # must print the RAW pair itself. Without that, the one screen a
+            # household reads as "it worked" would show the tilt-removed grade
+            # alone — the smaller number, unaccompanied, which is precisely the
+            # over-claim rung P1 exists to stop.
             expert_details=(
                 _verify_graded_band_lines(status)
+                + _verify_frame_lines(status, raw_already_shown=False)
                 + _verify_level_reference_lines(status)
                 + _flatness_details_lines(status)
             ),

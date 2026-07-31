@@ -56,6 +56,7 @@ import numpy as np
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import calibration as calibration_mod
 from jasper.audio_measurement import deconv, gate_disclosure, gating, snr_policy
+from jasper.audio_measurement.frame_fit import FrameComparison, fit_frame
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     KIND_PILOT,
@@ -1051,6 +1052,12 @@ class ProgramAnalysis:
     gain_plan: GainPlan | None = None
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
+    # Measured-vs-predicted scalars for one VERIFY capture, plus — since rung
+    # P1 — the ``"frame"`` the two curves were compared ACROSS and the
+    # tilt-removed twins of the two numbers a gate or a screen reads. The raw
+    # scalars keep their meaning and their value exactly; see
+    # :func:`_analyze_verify`'s frame-discipline block for why the tilt is
+    # disclosed rather than corrected for.
     verify_tracking: dict[str, Any] | None = None
     # The SMOOTHED ``(freqs_hz, measured_db, predicted_db)`` triple the
     # tracking scalars above were reduced from (linearization-integrity PR-L5).
@@ -4053,6 +4060,100 @@ def _analyze_verify(
                 "rms_db_full_band": raw_rms,
                 "max_db_full_band": raw_max,
             }
+            # FRAME DISCIPLINE (rung P1). The two curves above are not in the
+            # same frame and never were: ``predicted_db`` is an ON-AXIS
+            # two-branch model composed from the MEASURE sitting, and
+            # ``measured_db`` is an IN-ROOM gated point measurement from the
+            # VERIFY sitting. Differencing them raw cannot tell instrument
+            # frame from model error — on the 2026-07-29 corpus a single
+            # −0.79 dB/octave tilt between exactly these two frames accounted
+            # for 84 % of the "predictions are 2.02× optimistic" headline
+            # (first-principles panel W1 / CC-1). So the frame is fitted, the
+            # two terms are disclosed, and the residual is reported BOTH ways.
+            #
+            # Nothing above changes. ``max_db_notch_excluded`` is still what
+            # gates (``crossover_v2_flow._verify_verdict``) and every raw
+            # scalar is byte-identical to what it was before this block
+            # existed: a measured tilt is EVIDENCE, not permission to re-grade.
+            # Attributing it — directivity? mic? sitting? — needs an instrument
+            # this fit does not have, and until it is attributed the raw number
+            # is still the honest one to refuse on.
+            #
+            # FITTED OVER THE BINS THIS COMPARISON TRUSTS — the validity-floor
+            # clamped band MINUS the deep-predicted-notch bins the gating
+            # comparator already refuses to grade. Not a nicety: inside a
+            # modelled notch the depth is hypersensitive to sub-dB branch
+            # differences (the W6.7 finding the exclusion exists for), and a
+            # straight line drawn through one lets the notch lever the slope.
+            # On a 25 dB notch at a band edge an injected −0.800 dB/octave
+            # frame was recovered as **+0.226** — the wrong sign — and would
+            # then have been "removed" from the residual as instrument tilt.
+            # The mask comes from ``notch_excluded_band_mask``, the same and
+            # only owner of that bin choice, never re-derived here.
+            #
+            # This REDUCES the lever; it does not remove it. The exclusion
+            # bounds a notch's DEPTH (12 dB) and says nothing about its skirt
+            # WIDTH, so a wide surviving skirt still biases the estimate: on
+            # this path, 1/6-octave 25 dB edge notch, the whole-band fit reads
+            # +5.72 and the trusted-bin fit +0.31 against a −0.800 truth — 18×
+            # better and still the wrong sign. Do NOT read a disclosed tilt as
+            # trustworthy over a notch-heavy prediction, and do not add a
+            # "tilt-removed ≤ raw" assertion anywhere: it is not a theorem.
+            # Widening the fit-side margin is a threshold decision — issue
+            # #1990 carries the numbers and the options.
+            frame_mask = analysis_mod.notch_excluded_band_mask(
+                summed.freqs_hz, predicted_db, tracking_band,
+                notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+                notch_reference_db=predicted_db_interp,
+            )
+            frame = fit_frame(
+                summed.freqs_hz[frame_mask],
+                measured_db[frame_mask],
+                predicted_db[frame_mask],
+            )
+            tilt_removed_rms_db: float | None = None
+            tilt_removed_max_db: float | None = None
+            if frame.fitted:
+                # One frame, estimated once from the trusted bins, removed from
+                # the measured curve — then each grade is re-taken by its OWN
+                # grader over its OWN bins, so both keep their established
+                # conventions and only the frame changed. Both graders
+                # mean-centre their error, and mean-centring is invariant to
+                # ANY additive constant, so the frame's OFFSET term cannot move
+                # either number whatever bin set it was fitted on; only the
+                # TILT can. That is why these are ``tilt_removed``.
+                deframed_db = measured_db - frame.frame_db(summed.freqs_hz)
+                # Twins for exactly the two numbers that reach a gate or a
+                # screen — the notch-excluded max the tolerance reads, and the
+                # RMS the expert disclosure prints. Not a twin for every raw
+                # scalar in the record: a beside-number nobody reads is a
+                # second thing to keep true.
+                tilt_removed_rms_db = analysis_mod.tracking_error_db(
+                    summed.freqs_hz, deframed_db, predicted_db, tracking_band,
+                )[0]
+                tilt_removed_max_db = analysis_mod.notch_excluded_tracking_error_db(
+                    summed.freqs_hz, deframed_db, predicted_db, tracking_band,
+                    notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+                    notch_reference_db=predicted_db_interp,
+                )[1]
+            # ONE writer, ONE typed record. The raw pair below is assigned from
+            # the very locals published above, not recomputed — so the
+            # disclosure cannot state a different raw number than the gate
+            # reads (pinned by a test).
+            #
+            # ``raw_max_db`` is the NOTCH-EXCLUDED max, not ``max_abs``: on
+            # every surface that renders a "level error" for this comparison
+            # that is what the phrase means, because it is what the tolerance
+            # gates on. A record pairing a tilt-removed notch-excluded max
+            # against a raw non-excluded one would be two bin sets under one
+            # label.
+            tracking["frame"] = FrameComparison(
+                fit=frame,
+                raw_rms_db=rms,
+                raw_max_db=max_excl,
+                tilt_removed_rms_db=tilt_removed_rms_db,
+                tilt_removed_max_db=tilt_removed_max_db,
+            ).to_dict()
     # A v2 VERIFY program opens with a pre-pilot ambient window + a leading
     # pilot pair (design §5.2, issue #1810) so the post-apply capture carries
     # its own behavioral-linearity evidence AND the noise floor needed to
@@ -4269,5 +4370,31 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         if isinstance(band, (list, tuple)) and len(band) == 2:
             out["tracking_band_lo_hz"] = band[0]
             out["tracking_band_hi_hz"] = band[1]
+        # Frame discipline (rung P1). A retained clip is the forensic record of
+        # ONE comparison, and the frame is half of what that comparison was, so
+        # the frame's terms and the tilt-removed grades ride the sidecar BESIDE
+        # the raw scalars above — never instead of them. Flattened one field
+        # per term like every other per-subject block in this summary. Present
+        # with ``None`` terms when the comparison ran but no frame could be
+        # fitted; absent only when no tracking comparison happened at all.
+        #
+        # NAMING, deliberately not aligned with the household-facing record:
+        # here the twin is ``max_db_notch_excluded_tilt_removed`` because it
+        # sits beside ``max_db_notch_excluded`` and a forensic dump should pair
+        # by name. The durable ``verify.frame`` block calls the same number
+        # ``max_db_tilt_removed`` because on that surface the gated max is
+        # already spelled ``max_db`` (``_verify_evidence_from_tracking``).
+        # Each record uses its own neighbourhood's vocabulary; the number is
+        # one number, written once, in ``_analyze_verify``.
+        frame = tracking.get("frame")
+        if isinstance(frame, Mapping):
+            out["frame_offset_db"] = frame.get("offset_db")
+            out["frame_tilt_db_per_octave"] = frame.get("tilt_db_per_octave")
+            out["frame_pivot_hz"] = frame.get("pivot_hz")
+            out["frame_n_bins"] = frame.get("n_bins")
+            tilt_removed = frame.get("tilt_removed")
+            if isinstance(tilt_removed, Mapping):
+                out["rms_db_tilt_removed"] = tilt_removed.get("rms_db")
+                out["max_db_notch_excluded_tilt_removed"] = tilt_removed.get("max_db")
 
     return out

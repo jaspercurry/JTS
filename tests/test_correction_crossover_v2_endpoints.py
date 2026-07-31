@@ -6335,6 +6335,7 @@ class _StubConductor:
     verify_outcome = None
     verify_evidence = None
     verify_graded_band_hz = None
+    verify_frame = None
     delta_probe = None
     measure_predicted_sum = None
     measure_gate_window_ms = None
@@ -6474,6 +6475,35 @@ def test_the_graded_band_is_persisted_even_on_a_pass():
     plain.verify_outcome = "fail"
     v2host.persist_conductor_state(plain, failure_code=None)
     assert "graded_band_hz" not in (v2host.load_v2_state() or {})["verify"]
+
+
+def test_the_compared_frame_is_persisted_even_on_a_pass():
+    """Rung P1: the frame the comparison spanned, on every outcome.
+
+    Same always-persisted shape and same argument as the graded band above. A
+    pass is precisely when an undisclosed tilt is dangerous: on the 2026-07-29
+    corpus one −0.79 dB/octave frame tilt was 84 % of what the flow reported as
+    prediction error, and nothing in a "Verified." state file would have said
+    so.
+    """
+    conductor = _StubConductor("s1")
+    conductor.verify_outcome = "pass"
+    conductor.verify_frame = {
+        "offset_db": -0.75, "tilt_db_per_octave": -0.79,
+        "rms_db_tilt_removed": 1.34, "max_db_tilt_removed": 0.62,
+    }
+    v2host.save_v2_state({"session_id": "s1"})
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    verify = (v2host.load_v2_state() or {})["verify"]
+    assert verify["frame"] == conductor.verify_frame
+
+    # A verify that fitted no frame writes no key — absent means "no frame was
+    # measured", never "the frames agreed".
+    plain = _StubConductor("s1")
+    plain.verify_outcome = "fail"
+    v2host.persist_conductor_state(plain, failure_code=None)
+    assert "frame" not in (v2host.load_v2_state() or {})["verify"]
 
 
 def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():

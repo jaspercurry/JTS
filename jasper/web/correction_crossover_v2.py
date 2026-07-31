@@ -1968,6 +1968,19 @@ def persist_conductor_state(
                     if conductor.verify_graded_band_hz
                     else {}
                 ),
+                # WHAT FRAME the comparison spanned, on EVERY outcome (rung
+                # P1). Same shape and same argument as the graded band above:
+                # VERIFY differences an on-axis MODEL against an in-room
+                # MEASUREMENT, and on the 2026-07-29 corpus a single
+                # −0.79 dB/oct tilt between those two frames was 84% of the
+                # flow's apparent prediction error. The raw numbers are
+                # untouched — this says how much of them was the instrument,
+                # and a pass is exactly when nobody would otherwise ask.
+                **(
+                    {"frame": dict(conductor.verify_frame)}
+                    if conductor.verify_frame
+                    else {}
+                ),
                 # The level-reference reset this session performed, when the
                 # previous session's reference differed enough to be worth
                 # saying (#1927). Same every-outcome shape as the graded band
