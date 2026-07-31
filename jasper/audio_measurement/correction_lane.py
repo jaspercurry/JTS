@@ -39,8 +39,8 @@ import ``numpy`` at module scope for WAV/DSP mechanics. Several consumers of
 this constant are socket-activated wizard modules that must stay light
 (``jasper.web.sound_setup``, ``jasper.web.sync_flow``,
 ``jasper.web.balance_flow`` — see AGENTS.md "Web wizard conventions") plus
-``jasper.active_speaker.web_commissioning``, which none of them imported
-numpy before this refactor and must not start now. This module has no
+``jasper.active_speaker.web_commissioning`` — none of which imported numpy
+before this refactor, and none should start now. This module has no
 imports beyond ``__future__``, so reading the constant costs those wizards
 nothing.
 """
