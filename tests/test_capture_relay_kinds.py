@@ -297,8 +297,9 @@ def test_crossover_guided_cloud_never_promises_a_stationary_mic():
     for demand in ("you must", "required", "do not proceed"):
         assert demand not in bring_step.lower()
     # …and the acknowledgement still promises only what the cloud needs, so a
-    # hand-held mic is not consenting to something it cannot deliver.
-    assert "tripod" not in label and "stand" not in label
+    # hand-held mic is not consenting to something it cannot deliver. Word
+    # boundaries so a future "understand"/"standing" cannot false-trip this.
+    assert not re.search(r"\b(tripod|stands?)\b", label)
 
     # Per-sweep stillness, kept verbatim and made explicit about what follows
     # it. This is the promise an individual capture depends on.
