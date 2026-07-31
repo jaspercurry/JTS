@@ -6508,7 +6508,7 @@ class CrossoverV2Conductor:
         # placement is set by the CORE-MEDIAN frame — the disputed estimator —
         # not by the trim solve. On the conductor fixture: committed −0.674,
         # which is the core-median value to 4 dp; anchoring on the trim solve's
-        # placement instead would give +2.602; the two differ by 3.276, exactly
+        # placement instead would give +2.535; the two differ by 3.209, exactly
         # the banked disagreement, which is not a coincidence but the identity
         # ``placement_trim − placement_core = −offset``.
         #

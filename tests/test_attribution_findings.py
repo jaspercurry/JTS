@@ -684,10 +684,10 @@ def _level_frame_record(**overrides: object) -> dict:
     record = {
         "f_lo_hz": 150.0,
         "f_hi_hz": 5844.7,
-        "disagreement_db": 3.276,
+        "disagreement_db": 3.209,
         "tolerance_db": 3.0,
         "reference_role": "woofer",
-        "system_level_db": 3.276,
+        "system_level_db": 3.209,
         "realized_difference_db": -0.828,
         "realized_tolerance_db": 3.0,
         "realized_level_w_db": 0.213,
@@ -697,7 +697,7 @@ def _level_frame_record(**overrides: object) -> dict:
         "core_band_hi_hz_woofer": 1255.8,
         "radiating_band_lo_hz_woofer": 0.0,
         "radiating_band_hi_hz_woofer": 1282.3,
-        "trim_band_average_db_woofer": 0.0,
+        "trim_band_average_db_woofer": -0.067,
         "frame_offset_db_woofer": 0.0,
         "core_level_db_tweeter": 0.0,
         "core_band_lo_hz_tweeter": 2020.0,
@@ -705,7 +705,7 @@ def _level_frame_record(**overrides: object) -> dict:
         "radiating_band_lo_hz_tweeter": 1996.4,
         "radiating_band_hi_hz_tweeter": None,
         "trim_band_average_db_tweeter": 0.0,
-        "frame_offset_db_tweeter": 3.276,
+        "frame_offset_db_tweeter": 3.209,
     }
     record.update(overrides)
     return record
@@ -753,7 +753,7 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     # level-match term), per role.
     assert evidence["core_level_db_woofer"] == 3.276
     assert evidence["core_level_db_tweeter"] == 0.0
-    assert evidence["trim_band_average_db_woofer"] == 0.0
+    assert evidence["trim_band_average_db_woofer"] == -0.067
     assert evidence["trim_band_average_db_tweeter"] == 0.0
     # Both bands, per role: the span the median was actually taken over, and
     # the radiating bound it was asked for (#1929's disclosure pair).
@@ -769,7 +769,7 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     assert evidence["radiating_band_hi_hz_tweeter"] is None
     # The disagreement, its tolerance, and the realized check whose pass is
     # what let the session proceed.
-    assert evidence["disagreement_db"] == 3.276
+    assert evidence["disagreement_db"] == 3.209
     assert evidence["tolerance_db"] == 3.0
     assert evidence["realized_difference_db"] == -0.828
     assert evidence["realized_tolerance_db"] == 3.0

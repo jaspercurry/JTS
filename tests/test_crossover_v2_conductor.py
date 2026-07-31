@@ -5739,8 +5739,8 @@ def _solve_fixture_raw_trim(
         tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
     trim_w, trim_t, _lw, _lt = solve_branch_trims(
         freqs,
-        (10.0 ** (woofer_db / 20.0)).astype(complex),
-        (10.0 ** (tweeter_db / 20.0)).astype(complex),
+        (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
+        (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
         _FIXTURE_FC_HZ,
     )
     return {"woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3)}
@@ -8837,7 +8837,7 @@ def test_a_gate_that_refuses_after_the_frame_banked_persists_nothing():
     )
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    # This fixture clears item 2 by 0.98 dB against the shipped 0.5 dB floor
+    # This fixture clears item 2 by 0.983 dB against the shipped 0.5 dB floor
     # (``reason=improved``), so raising the floor is the smallest change that
     # makes a LATER gate refuse while the frame gate above still banks. The
     # constant itself is not under test here — the ordering is.

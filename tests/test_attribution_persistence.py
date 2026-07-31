@@ -900,10 +900,10 @@ def test_a_findings_failure_never_fails_the_cloud_publish(tmp_path: Path) -> Non
 _LEVEL_FRAME_RECORD = {
     "f_lo_hz": 150.0,
     "f_hi_hz": 5844.7,
-    "disagreement_db": 3.276,
+    "disagreement_db": 3.209,
     "tolerance_db": 3.0,
     "reference_role": "woofer",
-    "system_level_db": 3.276,
+    "system_level_db": 3.209,
     "realized_difference_db": -0.828,
     "realized_tolerance_db": 3.0,
     "realized_level_w_db": 0.213,
@@ -913,7 +913,7 @@ _LEVEL_FRAME_RECORD = {
     "core_band_hi_hz_woofer": 1255.8,
     "radiating_band_lo_hz_woofer": 0.0,
     "radiating_band_hi_hz_woofer": 1282.3,
-    "trim_band_average_db_woofer": 0.0,
+    "trim_band_average_db_woofer": -0.067,
     "core_level_db_tweeter": 0.0,
     "core_band_lo_hz_tweeter": 2020.0,
     "core_band_hi_hz_tweeter": 5844.7,
@@ -966,7 +966,7 @@ def test_the_banked_frame_finding_lands_in_the_bundle_and_reopens(
     assert finding.band_hz == (150.0, 5844.7)
     # All three level instruments survived the hop.
     assert finding.evidence["core_level_db_woofer"] == 3.276
-    assert finding.evidence["trim_band_average_db_woofer"] == 0.0
+    assert finding.evidence["trim_band_average_db_woofer"] == -0.067
     assert finding.evidence["realized_difference_db"] == -0.828
     # …and the citation is the candidate this finding is about.
     cite = finding.cites[0]
