@@ -48,7 +48,10 @@ A session that proposes a new palette, a typeface pairing, a per-screen
 
 ## 3. The type ladder
 
-**11 / 12 / 13 / 14 / 16 px. Nothing else.** The steps are deliberately tight —
+**11 / 12 / 13 / 14 / 16 px. Nothing else** — in `px` or `rem`. Relative `em`
+sizing inside a prose element (`.form-hint code` at `0.95em`) is exempt: it
+tracks its parent rather than naming a step, so it can't drift off the ladder.
+The guard's self-test pins both halves of that rule. The steps are tight —
 this is a dense settings surface, and a wider ratio would push every card taller
 for no gain. So **hierarchy comes from case, weight and colour, not size**, the
 grammar HANDOFF-management-ui.md already describes: region headers and field
@@ -176,11 +179,12 @@ Copy is design. The rules most often broken:
 
 ## 12. Visual-craft review lenses
 
-When a diff touches `jasper/web/*`, `deploy/assets/*`, `deploy/index.html`, or
-`capture-page/*`, the adversarial gate applies these lenses *in addition to*
-its normal pass. Same one gate, same severity ladder — **Blocker / Should-fix /
-Note, to a 0/0 bar**; there is no second review command. Look at the whole
-rendered screen before reading a line of CSS. Then:
+[`.claude/commands/adversarial-review.md`](../.claude/commands/adversarial-review.md)
+owns *when* these apply — it names the paths in its JTS checklist, so the
+trigger has one home and cannot drift from this list. This section owns *what*
+to look at. Same one gate, same severity ladder — **Blocker / Should-fix / Nit,
+to a 0/0 bar**; there is no second review command. Look at the whole rendered
+screen before reading a line of CSS. Then:
 
 1. **Hierarchy** — squint. If three things compete, nothing is primary.
 2. **Type** — every size on §3's ladder; hierarchy from case/weight/colour.
