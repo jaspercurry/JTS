@@ -1349,7 +1349,7 @@ def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():
     THIRD, distinct reason code alongside verify_out_of_tolerance/
     verify_inconclusive, rendered through the exact same one-default
     ("Try again") + Undo screen shape — with its own copy naming the
-    actual cause (the phone's mic chain drifted, not the speaker)."""
+    actual cause (the mic chain moved, not the speaker)."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", failure={"code": REASON_VERIFY_LEVEL_SHIFT},
     ))
@@ -1358,6 +1358,74 @@ def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():
     assert env["next_action"]["label"] == "Try again"
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Undo (restore previous sound)" in labels
+
+
+def test_verify_level_shift_copy_names_the_two_controls_that_resolve_it():
+    """#1924's routing half: the copy points at Re-measure and Undo — both on
+    this screen — and no longer at the retry, which cannot clear the verdict
+    (in-session it re-compares against the same reference; on this screen it
+    mints a session that re-baselines and so never reaches the gate)."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", failure={"code": REASON_VERIFY_LEVEL_SHIFT},
+    ))
+    verdict = env["verdict_text"]
+    assert "Re-measure" in verdict
+    assert "undo" in verdict
+    assert "re-verify" not in verdict.lower()
+    assert "try again" not in verdict.lower()
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Re-measure" in labels
+    assert "Undo (restore previous sound)" in labels
+
+
+def test_level_reference_reset_is_disclosed_on_a_failed_verify():
+    """#1927's disclosure: one dated line in the collapsed expert details,
+    saying the reference was set fresh and how far the previous one sat."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_LEVEL_SHIFT},
+        verify={
+            "outcome": "inconclusive",
+            "level_reference": {
+                "prior_at": time.time() - 24 * 60 * 60, "step_db": 0.775,
+            },
+        },
+    ))
+    assert (
+        "level reference reset for this session "
+        "(the previous one, yesterday, was 0.78 dB away)"
+    ) in env["expert_details"]
+
+
+def test_level_reference_reset_is_disclosed_on_a_passing_verify():
+    """Rendered on EVERY outcome, like the graded band beside it: a PASS is
+    exactly when an unstated reset would let a household read cross-day
+    identity into a claim that only ever covered this sitting."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express",
+        verify={
+            "outcome": "pass",
+            "level_reference": {
+                "prior_at": time.time() - 24 * 60 * 60, "step_db": 1.2,
+            },
+        },
+        candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == "done"
+    assert [line for line in env["expert_details"] if "level reference" in line] == [
+        "level reference reset for this session "
+        "(the previous one, yesterday, was 1.20 dB away)"
+    ]
+
+
+def test_level_reference_disclosure_is_silent_without_a_reset():
+    """No prior, or a prior this session's own chain agreed with, says
+    nothing — the reset itself is unconditional and unremarkable."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express", verify={"outcome": "pass"},
+        candidate=_candidate_summary(),
+    ))
+    assert env["expert_details"] == []
 
 
 def test_unknown_failure_code_still_renders_a_retry_screen():
