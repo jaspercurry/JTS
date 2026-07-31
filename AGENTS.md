@@ -108,18 +108,16 @@ detail; they do not replace this baseline.
    operational probe that proves the change. If the environment cannot
    run a relevant check, say exactly what blocked it.
 
-### Session working agreement — roles, review, and what the owner weighs
+### Session working agreement — review, and what the owner weighs
 
 These are standing expectations, not per-session preferences. They were
 being restated by hand every session; they live here now so a fresh agent
 inherits them, and **so does any prompt you write for another session or
 subagent — pass this section through rather than assuming it is known.**
 
-**Roles.** Fable is the architect, debugger, and coordinator. It plans,
-directs, diagnoses, and reviews; implementation is delegated to Opus or
-Sonnet subagents. This is the default shape for non-trivial work — not a
-rule against Fable editing code, but a bias: when a task is large enough to
-decompose, Fable decomposes and reviews rather than typing the whole thing.
+Which *model* plays which role is deliberately not specified here: that is a
+per-operator preference (rule 4 above — repo files are for everyone, and this
+file serves Codex too), so it belongs in an operator's own memory or config.
 
 **Adversarial review is not optional.** Any change touching production code
 gets `/adversarial-review`
