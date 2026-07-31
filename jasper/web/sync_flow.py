@@ -20,6 +20,9 @@ import threading
 from http import HTTPStatus
 from typing import Any, Callable
 
+from jasper.audio_measurement.correction_lane import (
+    CORRECTION_SUBSTREAM as PLAYBACK_DEVICE,
+)
 from jasper.log_event import log_event
 
 from .pair_flow import members_by_channel, resolve_pair
@@ -29,7 +32,6 @@ logger = logging.getLogger("jasper.web.sync")
 SESSION_MAX_S = 240.0
 WINDOW_OPEN_TIMEOUT_S = 20.0
 PLAYBACK_REAP_TIMEOUT_S = 2.0
-PLAYBACK_DEVICE = "correction_substream"
 
 _ACTIVE_PHASES = frozenset({"measuring", "applying"})
 

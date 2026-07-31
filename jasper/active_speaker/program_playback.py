@@ -39,6 +39,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
+# The ALSA lane a program WAV is played into — the correction fan-in substream
+# that feeds CamillaDSP's capture, same as the isolated driver sweep
+# (``jasper.active_speaker.web_commissioning.COMMISSION_TONE_ALSA_DEVICE``).
+from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.playback import (
     PlaybackResult,
@@ -51,11 +55,6 @@ from jasper.log_event import log_event
 from .program_admission import ProgramAdmission
 
 logger = logging.getLogger(__name__)
-
-# The ALSA lane a program WAV is played into — the correction fan-in substream
-# that feeds CamillaDSP's capture, same as the isolated driver sweep
-# (``jasper.active_speaker.web_commissioning.COMMISSION_TONE_ALSA_DEVICE``).
-CORRECTION_SUBSTREAM = "correction_substream"
 
 # Injected seams (Wave 5 binds CamillaController-backed implementations).
 ReadCurrentConfigPath = Callable[[], Awaitable[str | None]]

@@ -79,6 +79,9 @@ from jasper.active_speaker.startup_load import (
     rollback_driver_commissioning_config,
 )
 from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
+from jasper.audio_measurement.correction_lane import (
+    CORRECTION_SUBSTREAM as COMMISSION_TONE_ALSA_DEVICE,
+)
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.log_event import log_event
@@ -93,7 +96,6 @@ logger = logging.getLogger(__name__)
 
 CamillaFactory = Callable[[], Any]
 
-COMMISSION_TONE_ALSA_DEVICE = "correction_substream"
 COMMISSION_TONE_DURATION_S = 35.0
 COMMISSION_TONE_RESTART_MARGIN_S = 3.0
 COMMISSION_TONE_STARTUP_CHECK_S = 0.08

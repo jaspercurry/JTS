@@ -56,6 +56,9 @@ from typing import Any, Callable
 
 from ._common import JsonBodyError, read_json_object
 
+from jasper.audio_measurement.correction_lane import (
+    CORRECTION_SUBSTREAM as PLAYBACK_DEVICE,
+)
 from jasper.log_event import log_event
 from jasper.measurement.level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
@@ -83,8 +86,6 @@ WINDOW_OPEN_TIMEOUT_S = 20.0
 # before failing visibly instead of leaving the phone in an ambiguous loop.
 FLOOR_WAIT_TIMEOUT_S = 6.0
 FLOOR_RETRY_WAIT_MS = 300
-
-PLAYBACK_DEVICE = "correction_substream"
 
 # Phases that must block a new correction session (and a new /start).
 # "analyzed"/"applied" do NOT hold the window.

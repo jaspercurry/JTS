@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
+from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
     NormalizedActiveRawIdentity,
@@ -880,7 +881,7 @@ class CommissioningVerificationService:
             evidence_store=self.evidence_store,
             load_current_authority=load_capture_authority,
             raw_transport=raw_capture_transport,
-            alsa_device="correction_substream",
+            alsa_device=CORRECTION_SUBSTREAM,
             playback_timeout_s=CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
         )
         with self.run_store.claim_live_execution(self.run):
