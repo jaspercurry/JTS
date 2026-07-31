@@ -53,6 +53,14 @@ SHARED_COMMISSION_TONE_HELPERS = (
 # five (2026-07, issue #1950) and the function-shaped guards above never saw it:
 # `def <name>(` does not match a `NAME = value` assignment.
 #
+# ``_SUMMED_TEST_ARM_REPORT`` is intentionally NOT here. It is a sixth
+# byte-identical fork between the two modules, but it is a MUTABLE dict, so
+# giving it one owner means two surfaces sharing one object — a coupling
+# decision, not a de-duplication. Safe to defer today because its only
+# consumer (``active_speaker.safe_playback.arm_safe_playback_session``) reads
+# it and projects it into a flat scalar dict, never retaining the nested
+# containers. To close it later: add the name below and the guard covers it.
+#
 # Identity (`is`) is NOT a sufficient guard for these. CPython interns
 # identifier-like string literals, so two modules independently declaring
 # SUMMED_COMMISSION_SPEECH_BACKEND compare `is`-identical and a re-fork of a
@@ -79,6 +87,15 @@ def _forked_constant_bindings(source: str, names: tuple[str, ...]) -> list[str]:
     Scope is deliberately module level (`tree.body`, not `ast.walk`): a
     function-local variable that happens to share a name is shadowing, not a
     forked module constant, and flagging it would be a false positive.
+
+    Known gap, accepted: iterating `tree.body` also skips assignments nested
+    in module-level compound statements — `try: from owner import X / except
+    ImportError: X = <literal>` is a plausible re-fork this will not catch,
+    and unlike shadowing it is not a false positive. Unreachable today (the
+    only module-level compound statement in either file is `if __name__ ==
+    "__main__":`), and the runtime identity check below covers it from the
+    other side. Closing it properly means pruning FunctionDef/AsyncFunctionDef/
+    ClassDef and recursing the rest.
     """
 
     wanted = set(names)

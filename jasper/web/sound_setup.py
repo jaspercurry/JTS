@@ -2267,8 +2267,7 @@ async def _active_speaker_rollback_startup_config_payload(
 # path-safety evidence are shared with the `jasper-active-speaker` CLI via
 # `jasper.active_speaker.commission_wiring` (commission_seams /
 # read_current_config_path / resolve_commission_inputs /
-# write_commission_path_safety) — imported lazily in each payload below so the
-# socket-activated wizard process stays light.
+# write_commission_path_safety) — imported eagerly at the top of this module.
 
 # COMMISSION_TONE_* and SUMMED_COMMISSION_SPEECH_BACKEND are imported from
 # jasper.active_speaker.web_commissioning at the top of this module — they are
