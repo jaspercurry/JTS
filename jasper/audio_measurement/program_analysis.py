@@ -4044,6 +4044,29 @@ def _gate_window_ms_of(response: "DriverResponse | None") -> float | None:
     return float(window) if isinstance(window, (int, float)) else None
 
 
+def _gate_floor_source_of(response: "DriverResponse | None") -> str | None:
+    """WHY this capture's gate window is what it is (issue #1966).
+
+    ``window_ms`` alone cannot distinguish the two states the gate can end
+    in, and they print identically: :data:`~jasper.audio_measurement.gating.
+    FLOOR_MEASURED` means a reflection onset was found and the window stops
+    at it, while :data:`~jasper.audio_measurement.gating.FLOOR_SEARCH_BOUND`
+    means the search ran to :data:`~jasper.audio_measurement.gating.
+    SEARCH_T_MAX_MS` without finding one and the window was CAPPED there.
+    A 7 ms window means "reflections removed" in the first case and "no
+    reflection found" in the second; the whole 2026-07-30 corpus sat at the
+    bound, and the record could not say so because this field was computed
+    by the gate and dropped here.
+
+    ``None`` — an ungateable capture (silent/NaN, or no room after the
+    direct peak to search), matching ``gating``'s own unknown-vs-value rule.
+    """
+    if response is None:
+        return None
+    source = response.gating.get("floor_source") if response.gating else None
+    return str(source) if isinstance(source, str) else None
+
+
 def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     """Flat, JSON-safe numeric diagnostics from one :class:`ProgramAnalysis`.
 
@@ -4135,6 +4158,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     for resp in getattr(analysis, "driver_responses", None) or ():
         role = resp.role
         out[f"{role}_gate_window_ms"] = _gate_window_ms_of(resp)
+        out[f"{role}_gate_floor_source"] = _gate_floor_source_of(resp)
         out[f"{role}_validity_floor_hz"] = resp.validity_floor_hz
         if resp.snr is not None:
             worst = resp.snr.get("worst_relevant") or {}
@@ -4174,6 +4198,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     summed_response = getattr(analysis, "summed_response", None)
     if summed_response is not None:
         out["verify_gate_window_ms"] = _gate_window_ms_of(summed_response)
+        out["verify_gate_floor_source"] = _gate_floor_source_of(summed_response)
         out["verify_validity_floor_hz"] = summed_response.validity_floor_hz
 
     tracking = getattr(analysis, "verify_tracking", None)

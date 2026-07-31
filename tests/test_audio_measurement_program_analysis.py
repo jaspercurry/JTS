@@ -36,7 +36,7 @@ import pytest
 from scipy.signal import fftconvolve, resample_poly
 
 from jasper.audio_measurement import analysis as analysis_mod
-from jasper.audio_measurement import deconv, program_analysis
+from jasper.audio_measurement import deconv, gating, program_analysis
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_SWEEP,
@@ -614,6 +614,63 @@ def test_midcapture_splice_is_attributed_to_a_discontinuity_not_drift():
     # …and the step itself is named, with its size and where it landed.
     assert res.drift.discontinuity_samples == pytest.approx(64.0, abs=2.0)
     assert res.drift.discontinuity_after_segment == "sweep_w"
+
+
+def test_diagnostic_summary_says_WHY_the_gate_window_is_what_it_is():
+    """#1966 — the sidecar must distinguish "reflection found" from "capped".
+
+    ``gate_impulse_response`` uses ``SEARCH_T_MAX_MS`` as BOTH the search
+    ceiling and the fallback window when nothing is found, so a capped window
+    and a genuinely reflection-terminated one can print the identical
+    ``gate_window_ms``. Across the entire 2026-07-30 corpus every capture was
+    the capped case — 7.0 ms window, 142.857 Hz validity floor, on all 8 cloud
+    positions and all 17 VERIFY sidecars — while the label "reflection-gated"
+    read downstream as "reflections removed". The gate computed
+    ``floor_source`` all along; the sidecar dropped it.
+
+    This fixture is a clean, reflection-free capture, i.e. the corpus's own
+    state: the detector finds nothing and the window is capped at the ceiling.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    summary = analysis_diagnostic_summary(res)
+
+    assert summary["woofer_gate_floor_source"] == gating.FLOOR_SEARCH_BOUND
+    assert summary["tweeter_gate_floor_source"] == gating.FLOOR_SEARCH_BOUND
+    # The corpus signature: window sitting exactly at the search ceiling, with
+    # a validity floor of 1/window — which is what makes the bare number
+    # unreadable without the field above.
+    assert summary["woofer_gate_window_ms"] == pytest.approx(
+        gating.SEARCH_T_MAX_MS, abs=0.05
+    )
+    assert summary["woofer_validity_floor_hz"] == pytest.approx(
+        1000.0 / gating.SEARCH_T_MAX_MS, rel=0.02
+    )
+
+
+def test_diagnostic_summary_reports_a_measured_reflection_as_such():
+    """#1966, the discriminating half: a capture WITH a reflection must not
+    report the same provenance as one without. Same field, different value —
+    otherwise the disclosure discloses nothing."""
+    fc_hz = 2000.0
+    woofer_ir, _tweeter_ir, _n_fft = _reflection_fixture(fc_hz)
+    _gated, fragment = gating.gate_impulse_response(woofer_ir, SR)
+    assert fragment["floor_source"] == gating.FLOOR_MEASURED
+    assert fragment["first_reflection_ms"] is not None
+    # And the window is SHORTER than the ceiling, because a real onset ended
+    # it — the pair (window, floor_source) is what makes a record readable.
+    assert fragment["window_ms"] < gating.SEARCH_T_MAX_MS
 
 
 def test_discontinuity_reaches_the_durable_diagnostic_summary():

@@ -138,6 +138,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     tier_display_info,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
 from jasper.audio_measurement.program_analysis import (
@@ -4738,6 +4739,7 @@ def _pilot_obs(
 def _driver_response_diag(
     role: str, *, window_ms: float = 8.0, floor_hz: float | None = None,
     snr_db: float | None = None, snr_verdict: str | None = None,
+    floor_source: str = gating.FLOOR_MEASURED,
 ) -> DriverResponse:
     freqs = np.linspace(100.0, 20000.0, 64)
     snr = (
@@ -4747,7 +4749,12 @@ def _driver_response_diag(
     return DriverResponse(
         role=role, freqs_hz=freqs, magnitude_db=np.zeros(64),
         complex_tf=np.ones(64, dtype=complex),
-        gating={"applied": True, "window_ms": window_ms},
+        # ``floor_source`` defaults to the "gate found a reflection" state and
+        # is overridden per test — the two states print the same
+        # ``window_ms`` and mean opposite things (#1966).
+        gating={
+            "applied": True, "window_ms": window_ms, "floor_source": floor_source,
+        },
         snr=snr, validity_floor_hz=floor_hz,
     )
 
@@ -8647,3 +8654,196 @@ def test_the_stamped_disclosure_equals_what_the_emitter_actually_charges():
     assert charged == pytest.approx(
         worst_headroom_cost_db(candidate.linearization), abs=1e-6
     )
+
+
+# --- diagnosis-honesty batch: what the instruments disclose ---------------------
+#
+# Four shipped instruments each stated less than they measured. These pin the
+# disclosure, not the physics: the numbers below are fixtures, but the SHAPE of
+# what reaches a persisted record or a household screen is the contract.
+
+
+def test_measure_priors_carry_the_ambient_report_check_measured():
+    """#1830 — MEASURE grades its per-driver SNR against CHECK's room floor.
+
+    ``_driver_response`` computes the SNR verdict only when it is handed an
+    ambient report, and ``_measure_priors`` used to build priors without one —
+    so ``DriverResponse.snr`` was ``None`` on every v2 session ever run while
+    the evidence to compute it sat in the same session's ``check.json``.
+
+    Asserted THROUGH the conductor on purpose. ``test_measure_uses_check_
+    ambient_for_snr_verdicts`` in the program-analysis suite already pins the
+    analyzer half, but it constructs ``MeasurementPriors(ambient_report=...)``
+    by hand — which is exactly why it stayed green for the entire life of the
+    bug. The production gap was the conductor never putting the report there.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)   # CHECK
+    _run_phase(c, 2, 2)   # MEASURE
+
+    measure_priors = next(
+        priors for phase, _prog_phase, _result, priors, _geom in fakes.analyzed
+        if phase == PHASE_MEASURE
+    )
+    assert measure_priors.ambient_report == {"bands": [{"level_dbfs": -70.0}]}, (
+        "MEASURE must be handed CHECK's measured ambient, or the per-driver "
+        "SNR verdict silently never computes"
+    )
+
+
+def test_measure_priors_carry_no_ambient_when_check_never_ran():
+    """#1830, the other half: absence stays honest.
+
+    A conductor rehydrated past CHECK (accepted phases + the persisted gain
+    plan, which is what lets it compose a MEASURE program without re-running
+    CHECK) has no ambient of its own. The report is deliberately NOT persisted
+    alongside the gain plan: a noise floor is a claim about this room at this
+    mic position, and the §5.6 binding rule restarts any other session at
+    CHECK precisely because that position is unverifiable across sessions. So
+    the SNR verdict stays absent rather than being graded against a floor
+    measured somewhere else.
+    """
+    fakes = FakeSeams()
+    c = _conductor(
+        fakes,
+        accepted_phases=(PHASE_CHECK,),
+        gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
+    )
+    _run_phase(c, 2, 2)   # MEASURE, with no CHECK consumed by THIS conductor
+
+    measure_priors = next(
+        priors for phase, _prog_phase, _result, priors, _geom in fakes.analyzed
+        if phase == PHASE_MEASURE
+    )
+    assert measure_priors.ambient_report is None
+
+
+def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
+    """#1966 — ``gate_window_ms`` alone cannot say whether anything was gated.
+
+    A window that stops at a found reflection and a window CAPPED at the
+    search ceiling because none was found print the same number. Across the
+    whole 2026-07-30 corpus every capture was the second state, and the record
+    could not say so: the gate computes ``floor_source`` and every v2 consumer
+    dropped it.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.verify = lambda program: ProgramAnalysis(
+        phase="verify", program_id=program.program_id,
+        locations=(_loc("sweep_verify", "summed_sweep"),),
+        # 8.0 ms, matching the MEASURE fixture's own window: a SHORTER verify
+        # gate is refused by the gate-comparability rule before tracking runs,
+        # and this test is about what an accepted capture discloses.
+        summed_response=_driver_response_diag(
+            "summed", window_ms=8.0, floor_hz=125.0,
+            floor_source=gating.FLOOR_SEARCH_BOUND,
+        ),
+        summed_ripple_db=1.1,
+        verify_tracking={
+            "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
+            "tracking_band_hz": [2000.0, 4000.0],
+        },
+        linearity_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    assert _run_phase(c, 3, 3)["accepted"] is True
+
+    assert "verify_gate_window_ms=8.0" in caplog.text
+    assert f"verify_gate_floor_source={gating.FLOOR_SEARCH_BOUND}" in caplog.text
+    # The two states must remain distinguishable values, not two spellings of
+    # the same one — that indistinguishability IS the defect.
+    assert gating.FLOOR_SEARCH_BOUND != gating.FLOOR_MEASURED
+
+
+def test_measure_diag_names_the_binding_gate_and_its_floor_source(caplog):
+    """#1966 — MEASURE reports the SHORTEST driver window, so it must report
+    that same response's floor source, never another response's."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+
+    def measure(program):
+        analysis = _measure_analysis(program)
+        return dataclasses.replace(
+            analysis,
+            driver_responses=(
+                # The binding (shortest) window is the search-bound one.
+                _driver_response_diag(
+                    "woofer", window_ms=5.0,
+                    floor_source=gating.FLOOR_SEARCH_BOUND,
+                ),
+                _driver_response_diag(
+                    "tweeter", window_ms=9.0,
+                    floor_source=gating.FLOOR_MEASURED,
+                ),
+            ),
+        )
+
+    fakes.measure = measure
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+
+    assert "gate_window_ms=5.0" in caplog.text
+    assert f"gate_floor_source={gating.FLOOR_SEARCH_BOUND}" in caplog.text, (
+        "the reported floor source must belong to the response whose window "
+        "was reported, not to whichever response happened to be first"
+    )
+
+
+def test_verify_pass_states_the_band_it_graded():
+    """#1868 — "Verified." must say over what.
+
+    The graded band is not the nominal Fc±1 octave: ``overlap_band_hz`` clamps
+    its lower edge up to the tweeter's real sweep floor and ``_analyze_verify``
+    clamps it again to the capture's validity floor. It used to ride the
+    ``evidence`` block, which the host persists only on a NON-pass outcome — so
+    the one screen that says the result is good was the one screen that never
+    said what was checked.
+    """
+    fakes = FakeSeams()
+    fakes.verify = lambda program: ProgramAnalysis(
+        phase="verify", program_id=program.program_id,
+        locations=(_loc("sweep_verify", "summed_sweep"),),
+        summed_response=_driver_response_diag("summed"),
+        summed_ripple_db=1.1,
+        verify_tracking={
+            "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
+            "tracking_band_hz": [2000.0, 4000.0],
+        },
+        linearity_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    assert _run_phase(c, 3, 3)["accepted"] is True
+
+    assert c.verify_outcome == "pass"
+    assert c.verify_graded_band_hz == [2000.0, 4000.0]
+
+
+def test_a_verify_that_graded_nothing_claims_no_band():
+    """#1868 — an early refusal graded nothing, and says nothing.
+
+    Absence must mean "no comparison happened", never "checked everywhere",
+    and a previous attempt's band must not leak into this one.
+    """
+    fakes = FakeSeams()
+    fakes.verify = lambda program: ProgramAnalysis(
+        phase="verify", program_id=program.program_id,
+        locations=(_loc("sweep_verify", "summed_sweep", confidence=0.05),),
+        summed_response=_driver_response_diag("summed"),
+        linearity_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    assert _run_phase(c, 3, 3)["accepted"] is False
+
+    assert c.verify_graded_band_hz is None

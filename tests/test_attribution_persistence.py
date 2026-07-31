@@ -42,6 +42,7 @@ from jasper.attribution.findings import (
 )
 from jasper.attribution.position_evidence import (
     CURVE_FRACTIONAL_OCTAVE,
+    FIELD_DESCRIPTIONS,
     POSITION_EVIDENCE_SCHEMA,
     log_grid_hz,
     position_evidence_block,
@@ -396,6 +397,9 @@ def _records(n: int = 3) -> list[dict]:
             "take_id": f"cloud_measure_{i:02d}_a{2 if i == 1 else 1:02d}",
             "role": ("onax", "offax", "xovr")[i % 3],
             "gate_window_ms": 7.0,
+            # The 2026-07-30 corpus's own state: the window is the SEARCH
+            # CEILING, not a found reflection (#1966).
+            "gate_floor_source": "search_span_bound",
             "validity_floor_hz": 142.9,
             "gating_applied": True,
             "summed_ripple_db": 3.1,
@@ -514,6 +518,31 @@ def test_the_per_position_scalars_the_pipeline_already_had_survive() -> None:
     assert first["echo"]["refusal"] == ""
     assert first["gate_window_ms"] == 7.0
     assert first["summed_ripple_db"] == 3.1
+
+
+def test_each_position_says_why_its_gate_window_is_what_it_is() -> None:
+    """#1966 — ``gate_window_ms`` is projected through ``_RECORD_FIELDS``, and
+    so must its provenance be, or the allowlist silently drops it.
+
+    A 7.0 ms window means "the window stops at a measured reflection" or "the
+    search reached its ceiling and found nothing" — opposite epistemic states
+    that print identically. Every position of the 2026-07-30 corpus was the
+    second one, and ``gating_applied: True`` beside it read as the first.
+    """
+    rows = position_evidence_block(
+        _combined(), position_records=_records(), validity_floor_hz=142.9
+    )["positions"]
+
+    assert all(r["gate_floor_source"] == "search_span_bound" for r in rows)
+    # It is NOT the grid's own floor_source, which uses a different vocabulary
+    # for a different question and lives one level up.
+    grid_source = position_evidence_block(
+        _combined(), position_records=_records(), validity_floor_hz=142.9
+    )["curve_grid"]["floor_source"]
+    assert grid_source == "validity_floor_hz"
+    assert grid_source != rows[0]["gate_floor_source"]
+    # Both fields are described where a reader will look for them.
+    assert "gate_floor_source" in FIELD_DESCRIPTIONS
 
 
 def test_the_accepted_attempt_is_recoverable_per_position() -> None:

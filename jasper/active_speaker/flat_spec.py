@@ -567,7 +567,23 @@ class SpecFlatness:
       max_hz: that bin's frequency. ``None`` when unevaluable.
       max_band_hz: ``(f_lo_hz, f_hi_hz)`` of the band that worst bin lives
         in — which tolerance row the number is being judged against.
-        ``None`` when unevaluable.
+        ``None`` when unevaluable. **Not the frame the deviation is measured
+        FROM** — that is ``reference_band_hz``, and conflating the two is
+        the mistake issue #1857 was filed about.
+      reference_band_hz: ``(f_lo_hz, f_hi_hz)`` of :data:`REFERENCE_BAND_HZ`
+        — the span whose power mean over non-excluded bins IS the zero that
+        every ``max_db`` here is stated against (:func:`evaluate_flat_spec`
+        computes it once as ``reference_db``; this names the span it was
+        pooled over). Carried because the frame is not a detail of the
+        number, it is half of it: on the 2026-07-30 corpus a dark tweeter
+        pulls this full-range mean ~2.7 dB below a woofer-anchored one, and
+        the same persisted curve's worst-band pointer moves +5.44 dB @
+        428 Hz → −5.86 dB @ 1901 Hz between the two frames — a sign flip
+        and a different driver blamed. A surface that prints a worst band
+        without naming its frame is stating half a measurement. Always
+        populated, including when ``evaluable`` is ``False``: which frame
+        WOULD have been used is knowable even when no band could be graded,
+        and a reader comparing two sessions needs it either way.
       tolerance_db: that band's tolerance. ``None`` when unevaluable.
       rms_db: :attr:`ConvergenceResidual.rms_db` — RMS deviation pooled
         over every non-excluded spec-band bin. ``None`` when unevaluable.
@@ -600,6 +616,7 @@ class SpecFlatness:
     n_excluded: int
     evaluable: bool
     passed: bool
+    reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -608,6 +625,10 @@ class SpecFlatness:
             "max_band_hz": (
                 list(self.max_band_hz) if self.max_band_hz is not None else None
             ),
+            # The frame every ``max_db``/``rms_db`` above is stated against
+            # (issue #1857) — see the field's docstring for why it travels
+            # beside the pointer rather than being left implicit.
+            "reference_band_hz": list(self.reference_band_hz),
             "tolerance_db": self.tolerance_db,
             "rms_db": self.rms_db,
             "n_bins": self.n_bins,
