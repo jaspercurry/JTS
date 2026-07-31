@@ -468,7 +468,7 @@ export function commissionGateReason(gateId) {
 // refines the per-driver levels with a measurement. Holding the mic close and at
 // a CONSISTENT distance for every driver is what makes the levels comparable.
 export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
-  'Automatic tuning option: hold your phone’s microphone about ' +
+  'Automatic tuning option: hold the microphone about ' +
   '2–5 cm from the centre of the driver, pointed straight at it, while its tone ' +
   'plays — keep the same distance for every driver. A safe applied manual crossover ' +
   'can proceed to room correction without this step. Measured values replace manual ' +
@@ -556,8 +556,8 @@ export function levelMatchSummary(baseline) {
 export const CALIBRATED_ALIGNMENT_GUIDANCE =
   'For polarity, use a calibrated measurement mic (Dayton iMM-6/UMM-6, miniDSP ' +
   'UMIK, or an uploaded REW curve): select it under “Calibrated mic”, then capture ' +
-  'the summed crossover in-phase and with one driver inverted. A phone can ' +
-  'level-match but cannot judge polarity — that needs calibrated phase.';
+  'the summed crossover in-phase and with one driver inverted. An uncalibrated ' +
+  'mic can level-match but cannot judge polarity — that needs calibrated phase.';
 
 function humanPolarityAction(action) {
   return {
@@ -625,7 +625,7 @@ export function crossoverAlignmentSummary(payload) {
     note: authorized ?
       'Proposal from a calibrated measurement — review the evidence, then capture ' +
         'the summed crossover with the chosen polarity to apply it to the baseline.' :
-      'Polarity needs a calibrated measurement mic; with a phone you can still ' +
+      'Polarity needs a calibrated measurement mic; without one you can still ' +
         'level-match each driver.',
     guidance: CALIBRATED_ALIGNMENT_GUIDANCE
   };

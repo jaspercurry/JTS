@@ -756,13 +756,15 @@ _RAMP_REFUSAL_COPY: dict[str, str] = {
     ),
     "agc_indeterminate": (
         "The speaker couldn't collect enough evidence that the microphone's "
-        "level held steady during the check. Keep the phone still and the "
-        "room quiet, then retry."
+        "level held steady during the check. Keep the microphone still and "
+        "the room quiet, then retry."
     ),
+    # The KEYS of this table are the raw wire ``error`` strings the ramp
+    # produces (pinned by tests/test_audio_measurement_ramp.py); only the
+    # household-facing VALUES carry the #1941 R4 vocabulary.
     "no usable phone samples": (
-        "The speaker never heard a usable reading from the phone's "
-        "microphone. Check the phone is close enough and its microphone "
-        "isn't blocked, then retry."
+        "The speaker never heard a usable reading from the microphone. "
+        "Check it is close enough and isn't blocked, then retry."
     ),
     "tone ended before the ramp completed": (
         "The test tone stopped before the check finished. Retry the level "
@@ -770,11 +772,11 @@ _RAMP_REFUSAL_COPY: dict[str, str] = {
     ),
     "clip detected": (
         "The microphone picked up a sound too loud to measure safely. Move "
-        "the phone or turn the volume down, then retry."
+        "the microphone or turn the volume down, then retry."
     ),
     "phone never armed": (
-        "The phone page never started the check. Reopen the measurement "
-        "link and tap Start."
+        "The measurement page never started the check. Reopen the "
+        "measurement link and tap Start."
     ),
 }
 
@@ -794,8 +796,8 @@ _RAMP_REFUSAL_PREFIX_COPY: tuple[tuple[str, str, str], ...] = (
     (
         "phone feed lost",
         "phone_feed_lost",
-        "The speaker lost the phone's microphone feed partway through the "
-        "check. Keep the capture page open, then retry.",
+        "The speaker lost the microphone feed partway through the check. "
+        "Keep the measurement page open, then retry.",
     ),
     (
         "safe cap reached below target window",

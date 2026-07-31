@@ -127,7 +127,7 @@ def describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
         return (
             "The microphone can't get a clean reading at this distance — "
             "it's picking up too much on loud passages and too little on "
-            "quiet ones. Move the phone close to the driver being measured "
+            "quiet ones. Move the microphone close to the driver being measured "
             "(about 3 cm / just over an inch away), then measure again."
         )
 

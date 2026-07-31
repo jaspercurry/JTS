@@ -101,7 +101,7 @@ AUTO_ADVANCE_ON_APPLY = "on_apply"
 # host event names a friendly, actionable message instead. This is the single
 # Pi-side origin of the copy — the phone renders whatever ``error`` it carries.
 CAPTURE_INCOMPATIBLE_USER_MESSAGE = (
-    "This phone's measurement page couldn't be verified. Reopen the link from "
+    "This measurement page couldn't be verified. Reopen the link from "
     "your speaker and try again."
 )
 

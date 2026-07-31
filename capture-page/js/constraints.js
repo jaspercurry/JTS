@@ -66,7 +66,7 @@ export function verifyRealizedConstraints(settings, spec, capturedChannelCount =
 function describe(realized) {
   const parts = [];
   if (realized.dirtyFlags.length) {
-    parts.push(`this phone kept ${realized.dirtyFlags.join(", ")} on`);
+    parts.push(`the microphone kept ${realized.dirtyFlags.join(", ")} on`);
   }
   if (!realized.sampleRateOk) parts.push("the sample rate is wrong");
   if (!realized.channelsOk) parts.push("the channel count is wrong");

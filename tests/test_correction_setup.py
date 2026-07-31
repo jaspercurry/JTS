@@ -166,9 +166,9 @@ def test_capture_relay_next_position_ui_hides_expired_link():
     js = _module_js()
 
     assert "hideEl(relayLinkRow, true);" in js
-    assert "Phone capture received. Wait for the next instruction on this page." in js
+    assert "Measurement received. Wait for the next instruction on this page." in js
     assert "snapshot.state === 'needs_next_position'" in js
-    assert "Move the phone to position" in js
+    assert "Move the microphone to position" in js
 
 
 def test_relay_polling_continues_while_backend_uploads_capture():
@@ -925,13 +925,15 @@ def test_relay_failure_message_translates_timeout_never_a_bare_exception_string(
     the wizard's status line -- ``renderRelay`` in
     ``deploy/assets/correction/js/crossover/main.js`` just echoes
     ``relay.error``. A timeout-family exception must translate to a human
-    sentence naming the phone connection and the retry path; every other
-    exception (not evidenced as a wizard-facing problem) is unaffected."""
+    sentence naming the measurement-page connection and the retry path; every
+    other exception (not evidenced as a wizard-facing problem) is unaffected."""
 
     timeout_exc = TimeoutError("The read operation timed out")
     message = correction_setup._relay_failure_message(timeout_exc)
     assert message != "The read operation timed out"
-    assert "phone" in message.lower()
+    # Names the surface the household should act on. #1941 R4 made that noun
+    # device-agnostic — the capturing browser may be a laptop or a UMIK-2 host.
+    assert "measurement page" in message.lower()
     assert "timed out" in message.lower()
     assert "try this step again" in message.lower() or "again" in message.lower()
 
@@ -996,8 +998,8 @@ def test_relay_failure_message_translates_incompatible_page_to_an_action():
 
     message = correction_setup._relay_failure_message(excinfo.value)
     assert message == (
-        "The phone page is out of date for this speaker. "
-        "Close the phone tab and open a fresh link from this page."
+        "The measurement page is out of date for this speaker. "
+        "Close that tab and open a fresh link from this page."
     )
     for jargon in ("protocol", "incompatible", "build", "observed"):
         assert jargon not in message.lower()
@@ -1045,7 +1047,7 @@ def test_server_owned_step_mismatch_message_is_plain_not_the_raw_guard_string():
     )
     message = correction_setup._relay_failure_message(exc)
     assert "server-owned next step" not in message
-    assert "reopen the phone link" in message.lower()
+    assert "reopen the link" in message.lower()
 
     assert (
         correction_setup._relay_failure_reason(exc) == "server_owned_step_mismatch"

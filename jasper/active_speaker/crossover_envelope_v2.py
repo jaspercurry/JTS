@@ -755,7 +755,7 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "JTS is working out your correction from the measurements — this "
             "takes a few seconds."
             if running
-            else "All spots measured — confirm on your phone to continue."
+            else "All spots measured — confirm on the measurement page."
         ),
         next_action=None,
         alternate_actions=[],
@@ -1329,7 +1329,7 @@ def _entry_envelope(
             "tweeter height and pointing at it — about where you'd sit to "
             "listen (see the picture). That spot is your mark. JTS runs a "
             "quick microphone check first, then measures from the mark and "
-            "from a few nearby spots your phone will guide you to — that "
+            "from a few nearby spots it will guide you to — that "
             "is what lets it tell the speaker apart from the room. Choose "
             "how thorough a measurement to run below."
         ),
@@ -1924,8 +1924,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                "Keep the phone still — JTS is measuring both drivers. Follow the "
-                "phone; the measurement continues automatically."
+                "Keep the microphone still — JTS is measuring both drivers. Follow "
+                "the measurement page; it continues automatically."
             ),
             next_action=None,
             status=status,
@@ -1940,8 +1940,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             screen="measure", active_step="measure",
             verdict=(
                 "JTS is measuring from a few different spots — follow the "
-                "prompts on your phone. Moving the microphone between spots is "
-                "what lets JTS tell the speaker apart from the room."
+                "prompts on the measurement page. Moving the microphone between "
+                "spots is what lets JTS tell the speaker apart from the room."
             ),
             next_action=None,
             status=status,
@@ -1965,7 +1965,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     elif phase == PHASE_VERIFY:
         verdict = (
             "The crossover is applied. Put the microphone back where it "
-            "started and follow your phone to confirm the result"
+            "started and follow the measurement page to confirm the result"
         )
         # Express (M=1) has no post-apply cloud — this anchor is the WHOLE
         # post-apply check, not the first of several (§1.3 degraded-claims
@@ -2012,7 +2012,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             screen="verify", active_step="verify",
             verdict=(
                 "Checking the result from the same few spots — follow the "
-                "prompts on your phone."
+                "prompts on the measurement page."
             ),
             next_action=None,
             status=status,

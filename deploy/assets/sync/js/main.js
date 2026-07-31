@@ -78,7 +78,7 @@ startBtn.addEventListener('click', async () => {
     render(data);
     playBtn.disabled = false;
     applyBtn.disabled = true;
-    setStatus('Ready. Hold this phone at the listening position.');
+    setStatus('Ready. Hold the microphone at the listening position.');
   } catch (err) {
     setStatus(err.message);
   }

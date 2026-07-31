@@ -1439,12 +1439,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # to re-allow a microphone that was working.
         "The test tones didn't rise clearly above the room — it was too loud, "
         "or the speaker too quiet, for this check. Quiet the room or move the "
-        "phone closer, then try again.",
+        "microphone closer, then try again.",
     ),
     REASON_SNR_FLOOR: ReasonSpec(
         REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "The room is too loud right now, or the phone is too far away. Quiet "
-        "the room or move the phone closer, then try again.",
+        "The room is too loud right now, or the microphone is too far away. "
+        "Quiet the room or move the microphone closer, then try again.",
     ),
     REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
         REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
@@ -1567,7 +1567,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_VERIFY_LEVEL_SHIFT: ReasonSpec(
         REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2, "",
-        "Your phone's microphone levels changed between measurements — "
+        # Vocabulary only (#1941 R4): the instrument is named device-agnostically
+        # because the session mic may be a UMIK-2 or a laptop, and #1924's field
+        # evidence is a UMIK-2 session told its phone had drifted. The SECOND
+        # half of #1924 — that "re-verify to try again" cannot succeed against a
+        # deterministic shift, so the copy should route to Re-measure / Undo —
+        # is deliberately NOT changed here; it is a routing decision that issue
+        # owns, and re-authoring it inside a noun sweep would pre-empt it.
+        "The microphone's levels changed between measurements — "
         "re-verify to try again.",
     ),
     REASON_LOW_ALIGNMENT_CONFIDENCE: ReasonSpec(
@@ -8707,7 +8714,7 @@ def build_v2_verify_capture_plan(
             screen={
                 "progress": capture_progress_label(1, 1),
                 "title": REVERIFY_NO_REWALK_HEADLINE,
-                "body": "Put the phone back on the mark and hold it still.",
+                "body": "Put the microphone back on the mark and hold it still.",
                 "auto_advance": AUTO_ADVANCE_TAP,
             },
         )

@@ -1495,7 +1495,7 @@ def build_room_sweep_spec(
             ui_steps(
                 [
                     "Stand at your listening position",
-                    "Hold the phone up at ear height",
+                    "Hold the microphone up at ear height",
                     f"Tap Start, then stay quiet for about {seconds} seconds",
                 ]
             ),
@@ -1579,7 +1579,7 @@ def build_balance_burst_spec(
             ui_steps(
                 [
                     "Sit centred between the two speakers",
-                    "Hold the phone up at ear height",
+                    "Hold the microphone up at ear height",
                     "Tap Start and stay still while each side plays",
                 ]
             ),
@@ -1642,7 +1642,7 @@ def build_sync_marker_spec(
             ui_steps(
                 [
                     "Sit at your listening position",
-                    "Hold the phone up at ear height",
+                    "Hold the microphone up at ear height",
                     "Tap Start and stay quiet for the two clicks",
                 ]
             ),
@@ -2202,7 +2202,7 @@ def build_bass_nearfield_spec(
                 [
                     placement_instruction,
                     f"Tap Start, then stay quiet for about {seconds} seconds",
-                    "Keep the phone still until the sweep finishes",
+                    "Keep the microphone still until the sweep finishes",
                 ]
             ),
             ui_level_meter("mic"),

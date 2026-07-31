@@ -513,7 +513,7 @@ def test_describe_ramp_refusal_appends_the_measured_detail():
         (
             "phone feed lost (no samples for 8s)",
             "phone_feed_lost",
-            "lost the phone's microphone feed",
+            "lost the microphone feed",
         ),
         (
             "safe cap reached below target window; raise the external "

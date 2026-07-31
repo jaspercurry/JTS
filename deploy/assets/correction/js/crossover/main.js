@@ -439,11 +439,11 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
   els.relayStop.disabled = stopInFlight;
   if (!active) {
     if (relay && relay.status === 'failed') {
-      setStatus(relay.error || 'Phone capture failed. Retry this step.', 'bad');
+      setStatus(relay.error || 'Capture failed. Retry this step.', 'bad');
     } else if (relay && relay.status === 'stopped') {
       setStatus(relay.error || 'Measurement stopped safely.', 'ok');
     } else if (relay && relay.status === 'complete') {
-      setStatus('Phone capture complete.', 'ok');
+      setStatus('Capture complete.', 'ok');
     }
     return;
   }
@@ -456,13 +456,13 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
     return;
   }
   if (relay.status === 'finishing') {
-    els.relayStatus.textContent = 'The phone is finishing and uploading the measurement…';
+    els.relayStatus.textContent = 'The measurement page is finishing and uploading…';
     return;
   }
   if (suppressConnectAffordance) {
     // Phone connected — keep the section (Stop stays wired, polling
     // continues) but do not re-advertise a connect link/QR.
-    els.relayStatus.textContent = 'Your phone is connected — review and apply below.';
+    els.relayStatus.textContent = 'The measurement page is connected — review and apply below.';
     return;
   }
   if (relay.tap_link) {
@@ -471,7 +471,7 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
     els.relayStatus.textContent = 'Open the trusted capture page and follow its one next step.';
     renderRelayQr(els.relayQr, relay.tap_link);
   } else {
-    els.relayStatus.textContent = 'Creating the phone capture link…';
+    els.relayStatus.textContent = 'Creating the measurement link…';
   }
 }
 
@@ -652,7 +652,7 @@ async function runAction(action, button) {
       renderActionRow({relay: response.relay, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
-    setStatus(response && response.relay ? 'Phone capture is ready.' : 'Updated.', 'ok');
+    setStatus(response && response.relay ? 'The measurement page is ready.' : 'Updated.', 'ok');
     await refresh();
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);

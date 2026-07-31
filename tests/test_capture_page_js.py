@@ -568,7 +568,7 @@ def test_capture_page_waits_for_pi_sweep_completion():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert 'phase === "ambient_started"' in main_js
-    assert "Measuring room noise — stay quiet and keep the phone still." in main_js
+    assert "Measuring room noise — stay quiet and keep the microphone still." in main_js
     assert "fetchPhoneStatus" in main_js
     assert 'phase === "sweep_complete"' in main_js
     assert "recordWindowMs" not in main_js
@@ -775,8 +775,8 @@ def test_capture_page_level_ramp_shows_friendly_agc_suspected_copy():
 
     assert 'terminalError === "agc_suspected"' in ramp_complete
     assert (
-        "Your phone is adjusting microphone levels automatically, which "
-        "prevents accurate measurement. Try a different phone or a USB "
+        "The microphone is adjusting its own level, which prevents "
+        "accurate measurement. Try a different device or a USB "
         "measurement microphone." in ramp_complete
     )
     assert 'terminalError === "agc_indeterminate"' in ramp_complete
@@ -821,7 +821,7 @@ def test_capture_page_terminal_screens_describe_outcome_not_command_return():
     assert "Return to the speaker" not in ramp_complete
     assert (
         "Level matched. The speaker will continue on its own — "
-        "you can put this phone down." in ramp_complete
+        "you can put the microphone down." in ramp_complete
     )
     assert "The speaker page shows what happens next." in ramp_complete
 
@@ -888,7 +888,7 @@ def test_capture_page_names_the_device_instead_of_ambiguous_this_page():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert "must stay on this page" not in main_js
-    assert "this phone's screen must stay on" in main_js
+    assert "this screen must stay on" in main_js
 
 
 def test_crossover_candidate_review_collapses_provenance_hashes():

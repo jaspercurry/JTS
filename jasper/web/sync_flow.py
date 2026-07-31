@@ -615,7 +615,7 @@ async def relay_run_and_consume(
         if not analyzed:
             with _lock:
                 if _owns_session_locked(session_token, phase="measuring"):
-                    _reset_locked("phone-relay capture failed")
+                    _reset_locked("measurement capture failed")
     recommendation = recommend_channel_delays(result.delta_ms)
     with _lock:
         if not _owns_session_locked(session_token, phase="measuring"):

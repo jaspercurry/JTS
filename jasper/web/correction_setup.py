@@ -700,15 +700,15 @@ def _relay_failure_message(exc: BaseException) -> str:
         return exc.user_message
     if isinstance(exc, CapturePageIncompatible):
         return (
-            "The phone page is out of date for this speaker. "
-            "Close the phone tab and open a fresh link from this page."
+            "The measurement page is out of date for this speaker. "
+            "Close that tab and open a fresh link from this page."
         )
     if isinstance(exc, ServerOwnedNextStepMismatch):
         return exc.user_message
     if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
         return (
-            "The connection to the phone timed out mid-measurement. "
-            "Reopen the phone link and try this step again."
+            "The connection to the measurement page timed out mid-measurement. "
+            "Reopen the link and try this step again."
         )
     if isinstance(exc, CrossoverV2LocalSeamError):
         return REASON_REGISTRY[REASON_INTERNAL_ERROR].message
@@ -1079,7 +1079,7 @@ _PAGE_BODY = """
 __HEADER__
 <main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__" data-level-trust-margin-db="__LEVEL_TRUST_MARGIN_DB__">
 __TABS__
-<p class="page-sub">Measure your room with a phone and apply the result to the speaker.</p>
+<p class="page-sub">Measure your room with a microphone and apply the result to the speaker.</p>
 
 <!-- Stepped-wizard chrome (P3b). Server-computed screen envelope (GET
      /envelope) drives everything here: which step you're on, the one
@@ -1125,7 +1125,7 @@ __TABS__
 <section id="capture-handoff" data-envelope-section="capture-handoff" class="info-card hidden" aria-live="polite">
   <p id="capture-handoff-copy" class="hint"></p>
   <div id="relay-link-row" class="relay-link-row hidden">
-    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open phone capture</a>
+    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open measurement page</a>
     <div id="relay-qr" class="relay-qr"></div>
   </div>
   <p id="relay-status" class="relay-status"></p>
@@ -1133,7 +1133,7 @@ __TABS__
 
 <section id="placement" data-envelope-section="placement" class="info-card hidden">
   <h2 class="section__title">Place the microphone</h2>
-  <p id="placement-instruction">Put the phone or microphone at head height where you normally listen. For a phone, lay it flat screen up, point the bottom edge toward the speakers, and remove its case. Keep the room quiet.</p>
+  <p id="placement-instruction">Put the microphone at head height where you normally listen. If it's a phone, lay it flat screen up, point the bottom edge toward the speakers, and remove its case. Keep the room quiet.</p>
   <div id="position-prompt" class="note-box hidden">
     <p style="margin:0; font-weight:600">Move to position <span id="position-current">2</span> of <span id="position-total">__DEFAULT_ROOM_POSITION_COUNT__</span>.</p>
     <p class="hint" style="margin-top:0.3em">Move about 30 cm from the previous position, keep the microphone at ear height, then continue.</p>
@@ -1159,7 +1159,7 @@ __TABS__
 
     <label for="mic-model-select">Calibration
       <select id="mic-model-select">
-        <option value="">None / phone built-in</option>
+        <option value="">None / built-in mic</option>
         __MIC_MODEL_OPTIONS__
         <option value="other">Other calibrated mic</option>
       </select>
@@ -1939,7 +1939,7 @@ def _calibration_device_mismatch(
     label = str(input_device.get("browser_label") or input_device.get("label") or "")
     if label and _BUILTIN_MIC_LABEL_RE.search(label):
         return (
-            f'captured device "{label}" looks like the phone built-in mic, but '
+            f'captured device "{label}" looks like a built-in mic, but '
             f"a {provider} measurement-mic calibration is loaded; select the USB "
             "measurement mic before measuring"
         )
@@ -2043,9 +2043,9 @@ def _relay_device_calibration_block(
     label = (device or {}).get("label") or (device or {}).get("browser_label")
     if not label:
         return (
-            "a measurement-mic calibration is loaded, but the phone didn't report "
-            "which mic it used — update the capture page, or remove the calibration "
-            "to measure with the phone's own mic"
+            "a measurement-mic calibration is loaded, but the measurement page "
+            "didn't report which mic it used — update the capture page, or remove "
+            "the calibration to measure with the built-in mic"
         )
     return _calibration_device_mismatch(mic_calibration, device)
 
@@ -2083,15 +2083,15 @@ def _validated_relay_setup_binding(
 ) -> _RelaySetupBinding:
     """Validate a full setup without mutating the current measurement owner."""
     if not isinstance(identity, dict):
-        raise ValueError("the phone did not provide a setup identity")
+        raise ValueError("the measurement page did not provide a setup identity")
     binding_id = str(identity.get("binding_id") or "")
     digest = str(identity.get("sha256") or "").lower()
     if identity.get("schema") != 1 or binding_id != expected_binding_id:
-        raise ValueError("the phone setup belongs to a different measurement run")
+        raise ValueError("this setup belongs to a different measurement run")
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError("the phone setup identity is malformed")
+        raise ValueError("the setup identity is malformed")
     if not secrets.compare_digest(digest, _setup_digest(setup)):
-        raise ValueError("the phone setup identity does not match its contents")
+        raise ValueError("the setup identity does not match its contents")
     return _RelaySetupBinding(binding_id=binding_id, sha256=digest)
 
 
@@ -2128,7 +2128,7 @@ def _assert_relay_setup_binding(
     if not isinstance(bound, _RelaySetupBinding):
         raise ValueError("the microphone setup is no longer active; run level check")
     if not isinstance(claim, dict) or claim.get("schema") != 1:
-        raise ValueError("the phone did not provide the frozen microphone setup")
+        raise ValueError("the measurement page did not provide the frozen mic setup")
     if (
         str(claim.get("binding_id") or "") != expected_binding_id
         or str(claim.get("binding_id") or "") != bound.binding_id
@@ -2182,8 +2182,8 @@ def _assert_relay_level_identity(
     actual_key = _relay_device_key(actual)
     if expected.device_key and not actual_key:
         raise ValueError(
-            "the phone did not identify the microphone used for the sweep; "
-            "run the level check again"
+            "the measurement page did not identify the microphone used for "
+            "the sweep; run the level check again"
         )
     if expected.device_key and actual_key != expected.device_key:
         raise ValueError(
@@ -4502,7 +4502,7 @@ async def _run_relay_level_match(
                         setup = event.get("setup")
                         try:
                             if not isinstance(setup, dict):
-                                raise ValueError("the phone setup is missing")
+                                raise ValueError("the setup is missing")
                             if setup_binding_id:
                                 candidate_binding = _validated_relay_setup_binding(
                                     setup,
@@ -4567,7 +4567,9 @@ async def _run_relay_level_match(
                             "is disabled; use a supported browser or USB measurement "
                             "microphone"
                         )
-                    raise RuntimeError(f"the phone refused the level check: {reason}")
+                    raise RuntimeError(
+                        f"the measurement page refused the level check: {reason}"
+                    )
                 samples = parse_level_batch(
                     event if isinstance(event, dict) else {},
                     run_token=run_token,
@@ -4646,7 +4648,7 @@ async def _run_relay_level_match(
                     break
                 if asyncio.get_running_loop().time() >= deadline:
                     raise RuntimeError(
-                        "the phone did not provide an ambient level baseline"
+                        "the measurement page did not provide an ambient level baseline"
                     )
                 await asyncio.sleep(0.1)
 
@@ -4957,8 +4959,8 @@ class ServerOwnedNextStepMismatch(ValueError):
 
     code = "server_owned_step_mismatch"
     user_message = (
-        "This measurement step changed on the speaker before the phone "
-        "confirmed it. Reopen the phone link and try again."
+        "This measurement step changed on the speaker before the measurement "
+        "page confirmed it. Reopen the link and try again."
     )
 
 
