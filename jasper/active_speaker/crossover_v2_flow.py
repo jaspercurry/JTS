@@ -683,72 +683,129 @@ def _min_positions_for_two_wide_offsets() -> int:
     return wide[1] + 2
 
 
-# The sentences that bracket a walk preview. The pre-apply group opens with
-# CHECK and MEASURE, both on the mark; the post-apply group opens with VERIFY's
-# anchor alone — so the lead states a different count, and the tail states a
-# different next step, because after stage 1 the household decides and after
-# stage 2 the journey is over.
-CLOUD_WALK_PREVIEW_LEAD = (
-    "Start on the mark — the first two measurements happen there, with the "
-    "microphone still."
-)
-CLOUD_WALK_PREVIEW_LEAD_POST_APPLY = (
-    "Start on the mark — the first measurement happens there, with the "
-    "microphone still."
-)
-CLOUD_WALK_PREVIEW_TAIL = (
-    "That is the whole walk. JTS then works out what it heard, and you go back "
-    "to the speaker page to decide what to do about it."
-)
-CLOUD_WALK_PREVIEW_TAIL_POST_APPLY = (
-    "That is the whole walk. JTS then grades the result and the speaker page "
-    "shows how it did."
+# What happens AFTER the walk, in one clause. The pre-apply group hands the
+# household a decision; the post-apply group ends the journey. Deliberately
+# promises no tune in either case — stage 1 measures, and whether anything is
+# applied is the household's call on the next screen.
+CLOUD_WALK_SHAPE_TAIL = "Afterwards you decide what to do about what JTS heard."
+CLOUD_WALK_SHAPE_TAIL_POST_APPLY = (
+    "Afterwards the speaker page shows how the tune did."
 )
 
+# The granularity the orientation's REACH is quoted at, and the reason it is
+# rounded UP rather than quoted exactly.
+#
+# A reach that is not a true ceiling is worse than no number at all: a
+# household that cleared exactly the quoted space and is then prompted past it
+# has been mis-set by the one sentence meant to prevent that. TWO things push a
+# position's real displacement past the offset its prompt states:
+#
+#   * the wide rows' equidistance step-in (``_WIDE_LATERAL_DETAIL``) — after
+#     stepping toward the speaker the capsule sits on a CHORD, so a stated
+#     40 cm lateral move really lands ~40.9 cm from the mark at the placement
+#     copy's nominal 1 m; and
+#   * ``CLOUD_GEOMETRY_RETRY_PROMPTS``, which is deliberately "past every
+#     position in the table" (75 cm, and ~80.8 cm on rung 2).
+#
+# The first is absorbed by rounding up to the next whole step — never merely
+# to the stated maximum, which is why the arithmetic below is STRICTLY
+# greater. The second is NOT absorbed: inflating the everyday number to cover
+# a retake most sessions never see would destroy the sentence's
+# space-planning value, so the retake is acknowledged in its own short clause
+# instead. ``tests/test_crossover_v2_conductor.py`` re-derives both bounds and
+# fails if either stops holding.
+CLOUD_WALK_REACH_ROUNDING_CM = 10.0
 
-def cloud_walk_preview(
-    positions: int, *, post_apply: bool = False
-) -> tuple[str, ...]:
-    """The WHOLE walk, in order, for the pre-session orientation screen.
 
-    Work order D7 (issues #1804 + #1805): the household sees every position
-    before step 1 instead of discovering one prompt at a time. This is the
-    single derivation every preview surface reads, so a preview can never
-    describe a walk the plan will not actually prompt — it enumerates the same
-    ``[:positions - 1]`` slice :func:`build_v2_capture_plan` and
-    :func:`build_v2_verify_capture_plan` enumerate, from the same table.
+def cloud_walk_reach_cm(positions: int) -> float:
+    """The ceiling the orientation quotes for a walk of ``positions`` captures.
 
-    ``post_apply`` selects stage 2's bracketing copy; the prompted moves are
-    the same table either way, because both groups walk it from the front.
+    DERIVED from the same ``[:positions - 1]`` slice of
+    :data:`CLOUD_POSITION_PROMPTS` the walk is prompted from, then rounded UP
+    to the next whole :data:`CLOUD_WALK_REACH_ROUNDING_CM` — *strictly* up, so
+    the result is never merely equal to a stated offset and therefore absorbs
+    the wide rows' step-in chord. See that constant for why both halves matter.
+    """
+    walked = max(0, int(positions) - 1)
+    if not walked:
+        return 0.0
+    furthest = max(float(p.offset_cm) for p in CLOUD_POSITION_PROMPTS[:walked])
+    step = CLOUD_WALK_REACH_ROUNDING_CM
+    return math.floor(furthest / step) * step + step
 
-    The preview is bounded by the SAME wide-offset guarantee the plan builder
-    enforces: ``CLOUD_POSITION_PROMPTS``' rows carry their distances as data
-    and ``wide`` is computed from :data:`WIDE_OFFSET_MIN_CM`, so a narrowed
-    walk moves :func:`_min_positions_for_two_wide_offsets` (and with it
-    :data:`MIN_CLOUD_VERIFY_POSITIONS` and
-    :func:`express_cloud_measure_positions`) rather than quietly shipping a
-    one-wide cloud. There is no second copy of that rule here to drift.
+
+def cloud_geometry_retry_reach_cm() -> float:
+    """How far from the mark the geometry-locked retake can send the operator.
+
+    Rung 2 is a COMPOUND pose — :data:`GEOMETRY_RETRY_OFFSET_CM` sideways *and*
+    :data:`WIDE_OFFSET_MIN_CM` up — so its displacement is the hypotenuse, not
+    either leg. Derived here rather than inside the test so the orientation's
+    honesty clause and the prompts it is honest about read one number.
+    """
+    return max(
+        GEOMETRY_RETRY_OFFSET_CM,
+        math.hypot(GEOMETRY_RETRY_OFFSET_CM, WIDE_OFFSET_MIN_CM),
+    )
+
+
+def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
+    """The walk's SHAPE in one sentence, for the pre-session orientation screen.
+
+    **This replaces the enumerated preview** (issue #1941 R1). Work order D7
+    (issues #1804 + #1805) put the whole walk on the consent screen so a
+    household would not discover it one prompt at a time — the right intent,
+    and this keeps it. What it withdraws is D7's PRESENTATION: at the Full
+    tier, a second list of TEN items (eight prompted moves plus a lead and a
+    tail) totalling ~250 words, stacked under a 73-word placement block,
+    before the first tone. The owner's 2026-07-30 field note is the whole
+    argument — *"crazy dense with the 10 steps all spelled out. The user
+    doesn't know what's gonna happen next, let alone 10 things from now."*
+
+    So the household is told the two things that list was actually being used
+    to convey — **how far from the mark this gets** (can I do this where I am
+    standing?) and **that they will be prompted** (I do not need to hold every
+    move in my head) — and then the walk spoon-feeds itself, one position per
+    screen, which is what the per-entry screens already do.
+
+    The distance is DERIVED from the same ``[:positions - 1]`` slice of the
+    same table :func:`build_v2_capture_plan` and
+    :func:`build_v2_verify_capture_plan` prompt from, and formatted by the same
+    :func:`format_position_distance` the prompts themselves use — so the
+    orientation cannot describe a reach the walk does not have, and a reordered
+    or narrowed table moves this sentence with it. ``post_apply`` selects
+    stage 2's tail; the prompted moves are the same table either way, because
+    both groups walk it from the front.
     """
     walked = max(0, int(positions) - 1)
     if walked > len(CLOUD_POSITION_PROMPTS):
         raise CrossoverV2FlowError(
-            f"cloud walk preview needs {walked} position prompts but "
+            f"cloud walk shape needs {walked} position prompts but "
             f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
         )
     if not walked:
-        # A group with no prompted moves is not a walk and gets no preview —
+        # A group with no prompted moves is not a walk and gets no shape line —
         # Express's stage 2 is one held-still sweep at the mark, whose consent
         # screen already leads with REVERIFY_NO_REWALK_HEADLINE.
-        return ()
-    lead = (
-        CLOUD_WALK_PREVIEW_LEAD_POST_APPLY if post_apply
-        else CLOUD_WALK_PREVIEW_LEAD
-    )
+        return ""
+    reach = cloud_walk_reach_cm(positions)
     tail = (
-        CLOUD_WALK_PREVIEW_TAIL_POST_APPLY if post_apply
-        else CLOUD_WALK_PREVIEW_TAIL
+        CLOUD_WALK_SHAPE_TAIL_POST_APPLY if post_apply
+        else CLOUD_WALK_SHAPE_TAIL
     )
-    return (lead, *(p.text for p in CLOUD_POSITION_PROMPTS[:walked]), tail)
+    # The retake clause is CONDITIONAL on the retake actually reaching past the
+    # quoted ceiling, so the sentence never carries a caveat it does not need.
+    # Today it always does (75 cm / ~80.8 cm against a 50 cm walk), but a
+    # narrowed retake should drop the clause rather than keep a stale one.
+    beyond = (
+        " though a redo can ask for one step further out,"
+        if cloud_geometry_retry_reach_cm() > reach
+        else ""
+    )
+    return (
+        f"Every spot is within {format_position_distance(reach)} of the "
+        f"mark,{beyond} and you will be told each one when it is time — "
+        f"nothing to memorise now. {tail}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -9020,10 +9077,10 @@ def build_v2_verify_session_spec(
         {
             "guided_captures": plan.capture_target,
             "guided_tier": plan_shape.tier if plan_shape is not None else "",
-            # Stage 2's walk is previewed on the same terms as stage 1's (work
+            # Stage 2's walk is oriented on the same terms as stage 1's (work
             # order D7): a post-apply cloud discovered one prompt at a time is
             # the same defect, and the group walks the same table.
-            "walk_preview": cloud_walk_preview(
+            "walk_shape": cloud_walk_shape(
                 plan.capture_target, post_apply=True
             ),
         }
@@ -9269,11 +9326,11 @@ def build_v2_session_spec(
         # say "quick tune" vs "full measurement" without the spec builder
         # re-deriving a shape it does not own (§1.4 / §2.3).
         guided_tier=shape.tier,
-        # …and the whole walk up front (work order D7). Built HERE, from the
-        # same table and the same group size the per-entry screens above are
-        # built from, so the preview and the prompts cannot describe different
-        # walks.
-        walk_preview=cloud_walk_preview(shape.cloud_measure_positions),
+        # …and how far the walk reaches, in one line (work order D7's intent,
+        # #1941 R1's presentation). Derived HERE, from the same table and the
+        # same group size the per-entry screens above are built from, so the
+        # orientation and the prompts cannot describe different walks.
+        walk_shape=cloud_walk_shape(shape.cloud_measure_positions),
         **spec_kwargs,
     )
 

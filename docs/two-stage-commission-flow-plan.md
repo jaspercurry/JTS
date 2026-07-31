@@ -448,6 +448,22 @@ step 1, rather than discovered one prompt at a time. The walk reads as a
 walk: start at the mark, out to one side, out to the other, back through
 the mark at different heights.
 
+> **D7's PRESENTATION was superseded on 2026-07-31 by
+> [#1941](https://github.com/jaspercurry/JTS/issues/1941) R1; its INTENT
+> was kept.** The enumerated preview shipped as a second `ui_steps` list
+> of every position, stacked under the placement block, and the owner's
+> 2026-07-30 field run rejected it: *"a huge block of text below another
+> really big block of text… crazy dense with the 10 steps all spelled
+> out. The user doesn't know what's gonna happen next, let alone 10
+> things from now."* What replaced it is one derived sentence —
+> `cloud_walk_shape`, how far the walk reaches from the mark plus the
+> promise that each position is prompted — so "no surprises" survives
+> while the wall does not. **The adjustable-spacing half of #1805 was
+> never built and is not revived by this**; the wide-offset floor below
+> still governs if it ever is. Current consent-screen truth lives in
+> [`jasper/capture_relay/spec.py`](../jasper/capture_relay/spec.py)'s
+> `build_crossover_sweep_spec`.
+
 **Units: a recorded owner ruling is being superseded by a newer one, and
 the supersession is explicit.** The body-part register is not incidental
 copy — it is a ruling recorded in the code
@@ -515,6 +531,18 @@ from the table rather than restating it. Any narrowing therefore moves
 `_min_positions_for_two_wide_offsets()` and fails loudly, which is exactly the
 "refused by construction" this decision asked for.
 
+> **The PREVIEW half was withdrawn on 2026-07-31 by
+> [#1941](https://github.com/jaspercurry/JTS/issues/1941) R1 — see the D7
+> callout above.** The walk is no longer "previewable up front": the consent
+> screen states its derived REACH in one sentence
+> (`crossover_v2_flow.cloud_walk_shape`) and the positions arrive one screen
+> at a time. **The FLOOR half is untouched and still shipped** — `offset_cm`
+> as data, computed `wide`, the import-time `_pose()` refusal, and both
+> re-derived group floors are exactly as described above, and they are what a
+> future spacing control would still be enforced by. The deferred
+> household-facing control is likewise unaffected: it was never built, and
+> #1941 does not revive it.
+
 What is NOT shipped is a control that lets a household choose a spacing. Its
 home is a rung that owns the **conductor**, not this one: the conductor reads
 the module-level `CLOUD_POSITION_PROMPTS` at three sites (`_cloud_prompt`,
@@ -543,6 +571,13 @@ under the enforced floor, and not by a household.
   {captures} measurements the phone will ask you to move it a little
   between sweeps and to come back to the mark"* — the count is stage 1's
   now, and "come back to the mark" is stage 2's business.
+  **Superseded 2026-07-31 by [#1941](https://github.com/jaspercurry/JTS/issues/1941)
+  R1: the whole "Across about {captures} measurements…" clause is gone from
+  the source, and the function takes no capture count at all. It answers only
+  *where do I stand*, because the derived tier line one line above it already
+  states the count — saying it twice was half the density the owner
+  reported. The quoted sentence is preserved here as the pre-D7 wording this
+  item was raised against, not as live copy.**
 - `_TIER_CLAIMS`' post-apply claims (Full *"re-checks the result at
   several spots around the mark"* / Express *"confirms the result at the
   mark"*) now describe a session the household starts separately.
@@ -840,8 +875,9 @@ measurement, the proposal, the prediction, and an honest spec verdict
 before deciding; an improved-but-spec-failing fit is presented rather
 than applied; a verify-failed apply is named as such with Undo
 primary; a stage-1 session never renders "your speaker is tuned"; the
-walk is previewable up front and stated in inches and/or metres with
-its wide offsets intact; the phone states which time budget is running
+walk's reach is stated up front and its prompts are stated in inches
+and/or metres with its wide offsets intact; the phone states which time
+budget is running
 and what an expiry preserved; **the review screen refuses Apply on any
 box whose stage-2 conductor context does not resolve, and
 `handle_v2_apply` refuses the same case server-side**; and **no session
@@ -851,6 +887,14 @@ each opens its own relay session with its own TTL rather than sharing
 one.** (The last criterion replaces an earlier unfalsifiable "both
 stages fit inside the relay TTL with the interlude untimed" — they do
 not, and D2 says why: every realized wall-clock ceiling still exceeds
-900 s. What the split buys is measurable and is what is stated here.)
+900 s. What the split buys is measurable and is what is stated here.
+The walk criterion was amended on **2026-07-31** by
+[#1941](https://github.com/jaspercurry/JTS/issues/1941) R1, from "the
+walk is previewable up front" to "the walk's *reach* is stated up
+front": enumerating every position before the first tone was the
+density defect #1941 was filed to fix, so requiring it as acceptance
+would have held this ladder to a bar the product deliberately no longer
+meets. The *prompt* half — inches and/or metres, wide offsets intact —
+is unchanged and still enforced by the derived floors.)
 
 Last verified: 2026-07-30
