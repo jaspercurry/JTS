@@ -96,8 +96,9 @@ has no issue. Rung pending ratification.
 **WO-7's only stopping rule is the attempt budget** (~3 attempts, then honest
 "as good as it's gonna get" copy) — read it at
 [`attribution-stage-plan.md`](attribution-stage-plan.md) §7. It contains no
-repeatability test; the one occurrence of "repeatability" in that document is
-**WO-5's** verify-fail discriminator, a different rule.
+repeatability test; the only mentions of "repeatability" in that document sit in
+**WO-5's** paragraph, describing its verify-fail discriminator — a different
+rule.
 
 The formulation *"in-spec and within repeatability"* comes from the **panel**,
 not from WO-7 — `SYNTHESIS.md` P0 and `measurement-verdict.md` both describe
@@ -162,7 +163,10 @@ caller), #1882 + #1883 (alignment-confidence coverage; `sweep_anchor`
 derivation — **#1883 part 1 is R12**), #1652 (CHECK-SNR gate + noise-attributed
 VERIFY failures), #1672 (per-serial mic cals disagree ~4.7 dB above 8 kHz),
 #1774 (**R12** — re-baseline S0 under the corrected calibration sign), #1969
-(**R8/R9** — the banked research: certified in R8, implemented in R9).
+(**R8/R9** — the banked research: certified in R8, implemented in R9), #1983
+(`gating.py`'s detector tuning comment points the wrong way — a measured
+spin-out of #1969's certification; deliberately **untagged**, since R9 states it
+declines to carry it).
 
 ---
 
@@ -268,8 +272,10 @@ just a bug), #1876 (convergence: does a clean-slate re-run reach the same tune?)
 
 The middle layer between strategy and a session. The ladder says *what order the
 problems get solved in*; the campaign says *which round solves which, and where
-in the tree*. A round is a session-sized unit of work with one territory, one
-mission, and an exit criterion.
+in the tree*. A round is a session-sized unit of work with one mission and an
+exit criterion; **every code round** additionally owns one code territory.
+(R13 is the owner's hardware-and-rulings day — a round by scheduling, with no
+code territory and no slice to re-prove.)
 
 > **Provisional green light, honestly stated.** The owner has authorized
 > **building along the P0–P4 ladder now**, ahead of formal ratification.
@@ -465,8 +471,9 @@ prerequisite for starting); the copy-honesty set #1974 / #1978 / #1979; the
 corpus-pin trio #1774 / #1750 / #1883 (part 1); debt #1948, #1971 (design half),
 #1973, #1975, plus the nit ledgers on the #1956 and #1972 PR comments; the
 campaign reflection; and the Monday package — runbook final, rulings queued
-**with their graphs already generated** (including the Q-E frame-drag reframe
-figure), and the round-13 Monday-E2E brief.
+**with their graphs already generated** (the Q-E frame-drag reframe figure is
+already done — `captures/replay-scorecard-20260731/figures/fig-h-issue-1857-qe-frame-choice.png`,
+generated in R8; R12 confirms the rest), and the round-13 Monday-E2E brief.
 
 **Validation:** offline; UX review.
 
