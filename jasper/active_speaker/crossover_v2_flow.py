@@ -1628,20 +1628,35 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # mic may be a UMIK-2 or a laptop, and #1924's field evidence is a
         # UMIK-2 session told its phone had drifted.
         #
-        # ROUTING (#1924, the half R4 deferred). The old ending — "re-verify to
-        # try again" — named the one action that cannot clear this verdict. The
-        # copy renders on TWO surfaces, and the retry it pointed at is a
-        # different control on each: on the measurement page it is the
-        # in-session re-arm, which re-compares against the SAME frozen
-        # reference this attempt just failed against, so a level that has moved
-        # and stayed moved fails again and again until the budget dies; on the
-        # wizard it is a fresh relay session, which since #1927 re-baselines and
-        # so cannot even reach this gate on its first attempt. Neither reading
-        # makes "re-verify" the household's next move. Re-measure and Undo do
-        # resolve it, and they are exactly the two controls the verify-fail
-        # screen already offers beside the retry (``_verify_fail_envelope``).
+        # ROUTING (#1924, the half R4 deferred). ONE string renders on TWO
+        # surfaces where "try again" is a DIFFERENT control, so the copy has to
+        # be true on both without discrediting either:
+        #
+        # * measurement page (``renderPlanRetry``) — the in-session re-arm,
+        #   which re-compares against the SAME reference this attempt just
+        #   failed against. A level that moved and stayed moved repeats here
+        #   until the budget dies.
+        # * wizard (``_verify_fail_envelope``) — a FRESH relay session, which
+        #   since #1927 builds a fresh conductor and re-baselines, so this gate
+        #   is structurally unreachable on its first attempt. Retry settles it
+        #   in one capture.
+        #
+        # The old ending ("re-verify to try again") commanded the retry, which
+        # is the phone's dead end. Naming only Re-measure/Undo would have been
+        # the mirror-image error: it discredits a wizard button that works, and
+        # the screen's visible primary IS "Try again". So the sentence states
+        # the fact, CONTEXTUALIZES the retry rather than commanding or
+        # dismissing it, and names the escalation conditionally — "if it
+        # repeats" is honest on the wizard (it will not) and on the phone (it
+        # may). Both escalations are already on the verify-fail screen.
+        #
+        # NOT an owner ruling: #1924's body offers remedies explicitly labelled
+        # "not decisions", and the issue carries no ruling comment. This
+        # wording is the pipeline's call, derived from #1927's mechanics above,
+        # and is the owner's to change.
         "The microphone's levels changed between measurements, so this check "
-        "can't be trusted. Re-measure, or undo to restore the previous sound.",
+        "couldn't settle. Try again — if it repeats, re-measure, or undo to "
+        "restore the previous sound.",
     ),
     REASON_LOW_ALIGNMENT_CONFIDENCE: ReasonSpec(
         REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1, "",
@@ -7278,6 +7293,20 @@ class CrossoverV2Conductor:
             "prior_at": self._verify_pilot_prior_at,
             "step_db": step,
         }
+        # The bench's grep target. ``_log_verify_diag`` carries the
+        # WITHIN-session ``pilot_transfer_step_db``; this is the number that
+        # number can no longer be — the step across the session boundary, the
+        # one the #1870 field finding was actually measuring. Its own event so
+        # a corpus sweep can count resets without parsing every verify diag,
+        # and INFO because a reset is ordinary, not a fault.
+        log_event(
+            logger, "correction.crossover_v2_level_reference_reset",
+            level=logging.INFO,
+            session_id=self.session_id,
+            step_db=round(step, 3),
+            prior_age_s=round(time.time() - self._verify_pilot_prior_at, 1),
+            ceiling_db=VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
+        )
 
     # --- delta probe (linearization-integrity PR-L5) --------------------------
 

@@ -1668,6 +1668,29 @@ def test_verify_level_reference_reset_is_disclosed_when_material():
     assert disclosed["step_db"] == pytest.approx(0.775)
 
 
+def test_verify_level_reference_reset_is_journalled(caplog):
+    """The bench's grep target. ``pilot_transfer_step_db`` in the verify diag
+    is the WITHIN-session step; this is the cross-session one it can no longer
+    be, and #1870-style corpus sweeps want to count resets without parsing
+    every diag line. INFO — a reset is ordinary, not a fault."""
+    fakes = FakeSeams()
+    c = _rearm_conductor(
+        fakes,
+        verify_pilot_transfer_prior={
+            "values": {"summed": 0.0}, "at": time.time() - 86400.0,
+        },
+    )
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
+    )
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert "event=correction.crossover_v2_level_reference_reset" in caplog.text
+    assert "step_db=0.775" in caplog.text
+    assert "ceiling_db=0.35" in caplog.text
+    assert "prior_age_s=" in caplog.text
+
+
 def test_verify_level_reference_reset_is_silent_when_the_prior_agrees():
     """A prior the session's own chain agrees with is not news — the ceiling
     that defines "the chain moved" is the one that defines "worth saying".
@@ -1740,16 +1763,26 @@ def test_no_constructor_argument_can_seed_the_g3_comparator():
     assert c._verify_pilot_baseline is None
 
 
-def test_verify_level_shift_copy_routes_to_remeasure_and_undo():
-    """#1924's routing half: the copy names the two controls that resolve
-    this verdict, and no longer names the retry that cannot."""
+def test_verify_level_shift_copy_is_true_on_both_surfaces():
+    """#1924's routing half. One string renders on the measurement page's
+    in-session retry (which re-compares the same reference and CAN repeat)
+    and on the wizard's fresh-session retry (which since #1927 settles it in
+    one capture). So it must command neither and discredit neither: state the
+    fact, contextualize the retry, name the escalation conditionally."""
     message = REASON_REGISTRY["verify_level_shift"].message
     assert message == (
         "The microphone's levels changed between measurements, so this check "
-        "can't be trusted. Re-measure, or undo to restore the previous sound."
+        "couldn't settle. Try again — if it repeats, re-measure, or undo to "
+        "restore the previous sound."
     )
+    # The retired routing: it commanded the retry the phone cannot win.
     assert "re-verify" not in message.lower()
-    assert "try again" not in message.lower()
+    # The visible primary is named, not undermined — the sibling
+    # ``verify_out_of_tolerance`` names its primary too.
+    assert "Try again" in message
+    # …and the escalation is conditional on the retry repeating, never
+    # presented as the only way forward.
+    assert "if it repeats, re-measure, or undo" in message
 
 
 # --- alignment sign contract -----------------------------------------------------

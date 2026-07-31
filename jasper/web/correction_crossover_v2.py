@@ -1672,6 +1672,30 @@ def _predicted_spec_prior(conductor: Any) -> dict[str, Any] | None:
     return dict(report) if isinstance(report, Mapping) else None
 
 
+def pilot_transfer_prior_from_state(
+    state: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """The PREVIOUS session's G3 reference, as durable state carries it (#1927).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.pilot_transfer_reference`` — the mirror of
+    :func:`_predicted_spec_prior` above, and the whole of what
+    ``prepare_v2_verify`` seeds a fresh conductor's *history* with.
+
+    Named and module-level so the seeding PATH is drivable in a test without a
+    relay: durable state in, the ctor's ``verify_pilot_transfer_prior``
+    argument out. Whether that argument can ever become a comparator is the
+    conductor's own contract (it cannot — there is no longer an argument that
+    seeds one).
+
+    Shape checking beyond "is it a mapping" belongs to the conductor, which
+    owns the "values plus a date, or nothing" rule.
+    """
+    priors = (state or {}).get("verify_priors")
+    prior = priors.get("pilot_transfer_reference") if isinstance(priors, Mapping) else None
+    return prior if isinstance(prior, Mapping) else None
+
+
 def _finite(value: Any) -> float | None:
     """Mirrors ``crossover_envelope_v2._finite``'s exact guard (reject
     bool, reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review
@@ -2076,12 +2100,18 @@ def persist_conductor_state(
     # the wrong one (the ``cloud`` B1 bug, one field over).
     #
     # Dropped by a measuring session, because a pilot transfer is captured
-    # THROUGH the applied graph. Once a new candidate is measured and applied
-    # the two numbers answer different questions, and a disclosure computed
-    # across that boundary would report a graph change as a level-reference
-    # move — the misattribution this whole pair of issues exists to stop. So
-    # the first VERIFY of a new commission honestly has no history, and says
-    # nothing.
+    # THROUGH the applied graph: once a new candidate is applied the two
+    # numbers answer different questions, and a disclosure computed across
+    # that boundary would report a graph change as a level-reference move.
+    #
+    # State the predicate honestly: this tests "does THIS SESSION'S PLAN
+    # contain MEASURE", which is COARSER than "the graph changed". A session
+    # that measures and never applies — a refused candidate, an abandoned
+    # walk — drops the history even though nothing moved. That is the
+    # fail-silent direction and the one to be coarse in: the cost is a
+    # disclosure that goes unsaid, against a disclosure that says something
+    # untrue. Binding this to the applied candidate's fingerprint instead
+    # would be exact, and is deliberately not built for a report-only line.
     if PHASE_MEASURE in snap.session_phases:
         state["verify_priors"]["pilot_transfer_reference"] = None
     elif state["verify_priors"]["pilot_transfer_reference"] is None:
@@ -5112,19 +5142,13 @@ def prepare_v2_verify(
     # Measurement-honesty gate G3's PREVIOUS reference — read as dated
     # history, never rehydrated as this session's comparator (#1927). This
     # re-arm always establishes its own baseline from its own first usable
-    # VERIFY attempt; the only thing the record below can do is make the
-    # session SAY it reset the reference, and by how much. Absent (a state
-    # written before this key, or a session that never reached a usable VERIFY
-    # pilot) simply leaves the disclosure silent. The parsing lives in
+    # VERIFY attempt; the only thing this record can do is make the session
+    # SAY it reset the reference, and by how much. Absent (a state written
+    # before this key, or a session that never reached a usable VERIFY pilot)
+    # simply leaves the disclosure silent. Shape validation lives in
     # ``CrossoverV2Conductor.__init__`` so the "values plus a date, or
     # nothing" rule has one owner.
-    pilot_transfer_prior = (
-        priors_raw.get("pilot_transfer_reference")
-        if isinstance(priors_raw, Mapping) else None
-    )
-    pilot_transfer_prior = (
-        pilot_transfer_prior if isinstance(pilot_transfer_prior, Mapping) else None
-    )
+    pilot_transfer_prior = pilot_transfer_prior_from_state(state)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()

@@ -1360,19 +1360,21 @@ def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():
     assert "Undo (restore previous sound)" in labels
 
 
-def test_verify_level_shift_copy_names_the_two_controls_that_resolve_it():
-    """#1924's routing half: the copy points at Re-measure and Undo — both on
-    this screen — and no longer at the retry, which cannot clear the verdict
-    (in-session it re-compares against the same reference; on this screen it
-    mints a session that re-baselines and so never reaches the gate)."""
+def test_verify_level_shift_copy_matches_the_controls_on_its_own_screen():
+    """#1924's routing half, checked against the rendered action row: every
+    control the sentence names is on this screen, and the sentence names the
+    VISIBLE PRIMARY rather than routing around it. On the wizard that retry
+    mints a fresh session, which since #1927 re-baselines — so it settles this
+    verdict in one capture and must not be discredited."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", failure={"code": REASON_VERIFY_LEVEL_SHIFT},
     ))
     verdict = env["verdict_text"]
-    assert "Re-measure" in verdict
+    assert "Try again" in verdict
+    assert "re-measure" in verdict
     assert "undo" in verdict
     assert "re-verify" not in verdict.lower()
-    assert "try again" not in verdict.lower()
+    assert env["next_action"]["label"] == "Try again"
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Re-measure" in labels
     assert "Undo (restore previous sound)" in labels

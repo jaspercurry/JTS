@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import threading
@@ -2967,7 +2968,7 @@ def test_verify_rearm_persists_a_dated_pilot_transfer_reference():
     assert "pilot_transfer_baseline" not in state["verify_priors"]
 
 
-def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict):
+def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
     """A conductor of ``prepare_v2_verify``'s shape, seams stubbed — the same
     construction ``test_verify_rearm_does_not_blank_the_persisted_cloud_block``
     uses to exercise the REAL ``persist_conductor_state``."""
@@ -2990,6 +2991,7 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict):
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
         applied=True,
         index_phase_map=index_phase_map,
+        **kwargs,
     )
 
 
@@ -3014,6 +3016,39 @@ def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
     state = v2host.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
     assert state["verify_priors"]["pilot_transfer_reference"] == reference
+
+
+def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
+    """The SEEDING path end to end, minus the relay: durable state carrying a
+    previous session's reference → the value ``prepare_v2_verify`` passes as
+    ``verify_pilot_transfer_prior`` → a fresh conductor. The comparator stays
+    empty; only the history arrives (#1927)."""
+    v2host.save_v2_state({
+        "session_id": "cap_original_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "applied": True,
+        "verify_priors": {
+            "pilot_transfer_reference": {
+                "values": {"summed": -20.0}, "at": time.time() - 86400.0,
+            },
+        },
+    })
+    prior = v2host.pilot_transfer_prior_from_state(v2host.load_v2_state())
+    assert prior["values"] == {"summed": -20.0}
+    conductor = _rearm_conductor_for_persist(
+        "cap_rearm_session", {1: PHASE_VERIFY},
+        verify_pilot_transfer_prior=prior,
+    )
+    assert conductor._verify_pilot_baseline is None
+    assert conductor.verify_pilot_transfer_reference is None
+    # …and the preparer really does route it to that argument, never to a
+    # baseline. Source-read for the same reason
+    # ``test_both_session_preparers_rearm_the_walked_away_volume_ceiling``
+    # uses one: driving ``_open`` needs a live relay.
+    source = inspect.getsource(v2host.prepare_v2_verify)
+    assert "pilot_transfer_prior_from_state(state)" in source
+    assert "verify_pilot_transfer_prior=pilot_transfer_prior" in source
+    assert "verify_pilot_transfer_baseline" not in source
 
 
 def test_a_measuring_session_drops_the_prior_level_reference():
