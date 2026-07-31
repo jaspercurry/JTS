@@ -1801,11 +1801,12 @@ def build_crossover_sweep_spec(
     builder must not grow a second description of a walk it does not own.
 
     It used to be a ``Sequence[str]`` of every position, rendered as a second
-    ``ui_steps`` list. That was D7's presentation and #1941 withdrew it: ten
-    enumerated moves under a 73-word placement block is the wall the owner's
-    2026-07-30 field note describes, and a household cannot act on position 10
-    while standing at position 1. The intent it served — no surprises — is
-    kept by the sentence; the spoon-feeding is the per-entry screens' job.
+    ``ui_steps`` list. That was D7's presentation and #1941 withdrew it: a
+    ten-item enumeration under a 73-word placement block is the wall the
+    owner's 2026-07-30 field note describes, and a household cannot act on the
+    last prompted move while standing at the first. The intent it served — no
+    surprises — is kept by the sentence; the spoon-feeding is the per-entry
+    screens' job.
 
     Empty (every non-cloud caller, and Express's 1-entry stage 2) renders
     nothing. Only meaningful alongside ``guided_captures``; ignored otherwise,
@@ -2044,9 +2045,9 @@ def build_crossover_sweep_spec(
             # It replaced a ``ui_note`` lead plus a SECOND ``ui_steps`` list of
             # every prompted position. Two stacked lists is the defect the
             # owner reported: the eye cannot tell which one it is meant to act
-            # on, and the second was ten moves the household could not act on
-            # yet. Absent for every caller that passes no shape, so no screen
-            # grows an empty section.
+            # on, and the second was a walk's worth of moves the household
+            # could not act on yet. Absent for every caller that passes no
+            # shape, so no screen grows an empty section.
             *((ui_note(str(walk_shape)),) if walk and walk_shape else ()),
             # (``ui_level_meter("mic")`` used to sit here. It was dead on
             # EVERY crossover consent screen — the v2 cloud, the legacy

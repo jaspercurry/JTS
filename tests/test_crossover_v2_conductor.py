@@ -3750,10 +3750,10 @@ def test_the_orientation_states_the_walks_shape_instead_of_enumerating_it():
 
     D7 put every position on the consent screen so the walk would not be
     discovered one prompt at a time. The intent survives; the presentation does
-    not. A SECOND ``ui_steps`` list of ten moves, stacked under the first, was
-    the owner's 2026-07-30 field defect — *"crazy dense with the 10 steps all
-    spelled out"* — and a household standing at position 1 cannot act on
-    position 10 anyway.
+    not. A SECOND ten-item ``ui_steps`` list, stacked under the first, was the
+    owner's 2026-07-30 field defect — *"crazy dense with the 10 steps all
+    spelled out"* — and a household standing at the first position cannot act
+    on the last one anyway.
 
     What replaces it is one ``note`` carrying the two facts the list was
     actually being used to convey: how far from the mark this reaches, and that

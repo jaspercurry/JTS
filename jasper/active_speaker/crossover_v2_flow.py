@@ -699,17 +699,18 @@ def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
     **This replaces the enumerated preview** (issue #1941 R1). Work order D7
     (issues #1804 + #1805) put the whole walk on the consent screen so a
     household would not discover it one prompt at a time — the right intent,
-    and this keeps it. What it withdraws is D7's PRESENTATION: eleven
-    sentences and ~260 words of positions, stacked under a 73-word placement
-    block, before the first tone. The owner's 2026-07-30 field note is the
-    whole argument — *"crazy dense with the 10 steps all spelled out. The user
+    and this keeps it. What it withdraws is D7's PRESENTATION: at the Full
+    tier, a second list of TEN items (eight prompted moves plus a lead and a
+    tail) totalling ~250 words, stacked under a 73-word placement block,
+    before the first tone. The owner's 2026-07-30 field note is the whole
+    argument — *"crazy dense with the 10 steps all spelled out. The user
     doesn't know what's gonna happen next, let alone 10 things from now."*
 
-    So the household is told the two things a list of ten positions was
-    actually being used to convey — **how far from the mark this gets** (can I
-    do this where I am standing?) and **that they will be prompted** (I do not
-    need to hold ten moves in my head) — and then the walk spoon-feeds itself,
-    one position per screen, which is what the per-entry screens already do.
+    So the household is told the two things that list was actually being used
+    to convey — **how far from the mark this gets** (can I do this where I am
+    standing?) and **that they will be prompted** (I do not need to hold every
+    move in my head) — and then the walk spoon-feeds itself, one position per
+    screen, which is what the per-entry screens already do.
 
     The distance is DERIVED from the same ``[:positions - 1]`` slice of the
     same table :func:`build_v2_capture_plan` and
