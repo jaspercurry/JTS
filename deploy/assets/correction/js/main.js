@@ -254,7 +254,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     measurement_setup_invalid: {text: "The measurement setup changed. Review the microphone choices and try again.", retryable: true},
     speaker_measurement_unsafe: {text: "The speaker is not ready to measure safely. Review speaker setup, then try again.", retryable: false},
     microphone_setup_unavailable: {text: "The saved microphone setup is unavailable. Choose the microphone again.", retryable: true},
-    phone_capture_unavailable: {text: "Phone capture could not be opened. Try again or use this device.", retryable: true},
+    phone_capture_unavailable: {text: "The measurement page could not be opened. Try again or use this device.", retryable: true},
     measurement_stopped: {text: "Measurement stopped.", retryable: true},
     test_signal_unavailable: {text: "The speaker could not play the test sound. Try again.", retryable: true},
     measurement_analysis_failed: {text: "The speaker could not finish this measurement. Try measuring again.", retryable: true},
@@ -357,14 +357,14 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       renderRelayQr(relayQr, null);
     }
     if (relay.status === 'complete') {
-      setRelayStatus('Phone capture received. Wait for the next instruction on this page.', 'ok');
+      setRelayStatus('Measurement received. Wait for the next instruction on this page.', 'ok');
     } else if (relay.status === 'failed') {
       console.warn('phone capture failed', relay.error || '');
-      setRelayStatus('Phone capture stopped. Try that step again.', 'bad');
+      setRelayStatus('Capture stopped. Try that step again.', 'bad');
     } else if (relay.status === 'starting') {
-      setRelayStatus('Creating phone capture link…', 'idle');
+      setRelayStatus('Creating the measurement link…', 'idle');
     } else {
-      setRelayStatus('Open the capture page on the phone and keep it awake until the sweep finishes.', 'idle');
+      setRelayStatus('Open the measurement page and keep it awake until the sweep finishes.', 'idle');
     }
   }
 
@@ -372,13 +372,13 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     relayMode = !!enabled;
     if (captureHandoffCopy) {
       captureHandoffCopy.textContent = relayMode
-        ? 'Continue on the phone while the speaker coordinates each capture.'
+        ? 'Continue on the measurement page while the speaker coordinates each capture.'
         : 'This device will capture the microphone signal locally.';
     }
     if (localCaptureFallbackBtn) {
       localCaptureFallbackBtn.textContent = relayMode
         ? "Use this device's microphone"
-        : 'Use phone capture';
+        : 'Use the measurement page';
     }
     hideEl(localCaptureFallbackBtn, runTransportLocked || !relayConfigured);
     hideEl(autolevelLockBtn, true);
@@ -815,7 +815,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     if (prov !== 'dayton_audio' && prov !== 'minidsp') return null;
     if (!looksLikeBuiltInMic(capturedLabel)) return null;
     return 'Captured device “' + (capturedLabel || 'default') + '” looks like ' +
-      'this phone’s built-in mic, but you loaded a ' +
+      'a built-in mic, but you loaded a ' +
       selectedCalibrationMeta.label + ' calibration. Select the USB ' +
       'measurement mic under Input device, then choose Allow microphone again.';
   }
@@ -2859,7 +2859,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   }
 
   async function startRelayCaptureForCurrentPosition() {
-    setRelayStatus('Creating phone capture link…', 'idle');
+    setRelayStatus('Creating the measurement link…', 'idle');
     renderRelayCapture({status: 'starting'});
     try {
       var resp = await postJson('relay/capture', {});
@@ -3254,10 +3254,10 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       renderRelayCapture(null);
       setRelayStatus(
         'Position ' + Number(snapshot.current_position || 0) +
-          ' received. Move the phone to position ' +
+          ' received. Move the microphone to position ' +
           (Number(snapshot.current_position || 0) + 1) + ' of ' +
           Number(snapshot.total_positions || 0) +
-          ', then create the next phone capture.',
+          ', then create the next capture.',
         'ok'
       );
       return;

@@ -1453,7 +1453,7 @@ await (async () => {
   await settle();
   assert(getRelayMode() === false &&
       !transportChoice.classList.contains("hidden") &&
-      transportChoice.textContent === "Use phone capture",
+      transportChoice.textContent === "Use the measurement page",
     "local choice keeps one visible route back to phone capture");
   transportChoice.click();
   await settle();

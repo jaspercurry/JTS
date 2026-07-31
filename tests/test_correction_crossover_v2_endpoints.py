@@ -2086,7 +2086,7 @@ def test_the_held_window_is_not_the_review_screen(monkeypatch):
         "crossover_v2": block,
     })
     assert env["screen"] == "closing"
-    assert "confirm on your phone" in env["verdict_text"]
+    assert "confirm on the measurement page" in env["verdict_text"]
     assert env["busy"] is False
     # NOTHING destructive, and nothing to decide: the phone owns the only live
     # control (Retake / Continue), and every action this screen could offer
@@ -2161,7 +2161,7 @@ def test_the_eager_fit_is_invisible_to_the_speaker_page(monkeypatch):
     v2host.persist_conductor_state(conductor, failure_code=None)
 
     # …and the speaker page is byte-for-byte the held window it was before it:
-    # still "confirm on your phone", still not busy, still nothing to decide.
+    # still "confirm on the measurement page", still not busy, nothing to decide.
     block = v2host.crossover_v2_status_block()
     assert block["phase"] == "closing"
     assert block["cloud_close"] == "awaiting_confirm"
@@ -2172,7 +2172,7 @@ def test_the_eager_fit_is_invisible_to_the_speaker_page(monkeypatch):
         "crossover_v2": block,
     })
     assert env["screen"] == "closing"
-    assert "confirm on your phone" in env["verdict_text"]
+    assert "confirm on the measurement page" in env["verdict_text"]
     assert "working out your correction" not in env["verdict_text"]
     assert env["busy"] is False
     assert env["next_action"] is None

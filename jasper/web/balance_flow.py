@@ -237,21 +237,21 @@ def _floor_wait_message(meter: dict, *, final: bool) -> str:
     if frames <= 0:
         if final:
             return (
-                "phone microphone did not send level frames; allow "
+                "the microphone did not send level frames; allow "
                 "microphone access and retry"
             )
-        return "waiting for microphone level frames from this phone"
+        return "waiting for microphone level frames from this page"
     if not meter.get("live"):
         if final:
             return (
-                "phone microphone level frames stopped; keep this page "
+                "microphone level frames stopped; keep this page "
                 "open and retry"
             )
-        return "waiting for fresh microphone level frames from this phone"
+        return "waiting for fresh microphone level frames from this page"
     if final:
         return (
             "could not establish a stable background noise floor; hold "
-            "the phone still and retry"
+            "the microphone still and retry"
         )
     return "collecting a stable background noise floor"
 
@@ -788,13 +788,13 @@ _PAGE_BODY = """
   <h1>Balance speakers</h1>
   <section class="info-card bal-card">
     <p>One speaker at a time plays a test sound that starts almost
-    silent and slowly gets louder; the moment this phone hears it
+    silent and slowly gets louder; the moment the microphone hears it
     clearly, that speaker is done. Music pauses during the
     walkthrough.</p>
     <ol class="bal-steps">
       <li>Sit or stand where you normally listen.</li>
-      <li>Hold the phone still at chest height, screen up.</li>
-      <li>Tap Start and keep the phone steady.</li>
+      <li>Hold the microphone still at chest height, facing up.</li>
+      <li>Tap Start and keep the microphone steady.</li>
     </ol>
     <div class="bal-status" id="status" data-tone=""></div>
     <div class="bal-meter" id="meter" hidden>

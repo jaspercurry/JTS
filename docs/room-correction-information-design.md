@@ -243,7 +243,7 @@ The ordered visibility contract is:
 |---|---|---|
 | Ready idle | `current-correction`, `run-defaults`, optional `reports` | **Start measuring** |
 | Blocked idle | `current-correction`, `readiness-blocker`, optional `reports` | Server-owned recovery link; no Start |
-| Microphone / handoff | `run-defaults`, `capture-handoff`, `placement`; local backup additionally gets `local-certificate-warning`, `capture-setup` | **Open phone capture** or **Allow microphone** |
+| Microphone / handoff | `run-defaults`, `capture-handoff`, `placement`; local backup additionally gets `local-certificate-warning`, `capture-setup` | **Open measurement page** or **Allow microphone** |
 | Level | `capture-handoff`, `placement`, `level-check` | **Check measurement level**, **Retry level check**, or **Measure this position**, as authorized by the envelope |
 | Sweep | `capture-handoff`, `placement`, `position-capture` | **Measure this position** / **Measure next position** |
 | Review | `measurement-review`, optional `tuning` | **Apply room correction**; **Restore previous sound** when the safe design contains no filters |
@@ -283,7 +283,7 @@ small bounded set of choices without changing the meaning of the run.
 | Strategy | Balanced, cuts-only | Named in Change and the report | Nothing on the normal path |
 | Main-seat repeat | Enabled for both transports | One automatic trust-check capture at the main seat and why it exists | Nothing |
 | Mic calibration | Reuse a valid existing setup digest | Selected mic/calibration and any limitation | Act only when selection or calibration needs attention |
-| Placement | Server sequences distinct listening positions | One actionable placement at a time | Move the phone/mic, then continue |
+| Placement | Server sequences distinct listening positions | One actionable placement at a time | Move the microphone, then continue |
 | Verification | Return to the main seat | Verification is a fresh like-for-like capture | Continue when placed |
 
 The position count has one owner:
@@ -576,10 +576,10 @@ Prefer:
 - **Room correction on — 3 adjustments applied 2 days ago**
 - **Measuring 6 positions with the flat target — Change**
 - **Finish speaker setup first**
-- **Open phone capture**
+- **Open measurement page**
 - **Scan with your phone's camera**
 - **Show QR code**
-- **Put your phone at the main seat**
+- **Put the microphone at the main seat**
 - **Move to position 2 of 6**
 - **Measure this position**
 - **Apply room correction**

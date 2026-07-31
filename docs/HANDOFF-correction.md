@@ -1428,7 +1428,7 @@
   - **Calibration↔device mismatch reject.** `POST /start` returns 400 when
     a vendor measurement-mic calibration (Dayton / miniDSP — derived from
     `calibration.SUPPORTED_MODELS`) is loaded but the captured input device
-    looks like the phone built-in mic (`_calibration_device_mismatch`).
+    looks like a built-in mic (`_calibration_device_mismatch`).
     Defended in depth: a browser guard plus this server backstop a
     stale/bypassed client can't evade. Logs
     `event=correction_start_rejected reason=calibration_device_mismatch`.
@@ -2846,11 +2846,11 @@ These items can only be verified on real hardware. Deploy with
       as the recommended strategy.
 - [ ] On the normal relay path, opening Room and choosing **Start measuring**
       does not request microphone permission in the management browser. A
-      bounded level-check handoff appears; **Open phone capture** opens the
-      signed phone page, and the phone-reported position count cannot change
+      bounded level-check handoff appears; **Open measurement page** opens the
+      signed capture page, and the page-reported position count cannot change
       the Pi-owned six-position run.
 - [ ] On a desktop/tablet browser width, the same handoff also shows a QR
-      code next to **Open phone capture**, open by default; scanning it with
+      code next to **Open measurement page**, open by default; scanning it with
       a phone camera opens the identical signed capture page (the fragment
       carrying the E2E key must ride into the scanned link intact). On a
       phone-width browser the QR is present but collapsed under **Show QR
@@ -2866,7 +2866,7 @@ These items can only be verified on real hardware. Deploy with
       records and uploads the sweep cleanly, the speaker completes playback in
       roughly 10 seconds, and the management page advances only after the Pi
       accepts the capture.
-- [ ] Move the phone for each subsequent instruction. The page shows the
+- [ ] Move the microphone for each subsequent instruction. The page shows the
       correct position number out of six, and **Measure next position**
       advances positions 2 through 6. Each follow-up link carries the Pi-owned
       position/total metadata and authenticates the realized microphone

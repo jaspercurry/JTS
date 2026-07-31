@@ -532,7 +532,7 @@ function makeBondCard() {
     "Balance the pair by ear while keeping the louder side at full trim.");
   const balanceLink = h("a", {
     href: "https://" + location.hostname + "/balance/",
-  }, "Balance automatically with your phone’s microphone ↗");
+  }, "Balance automatically with a microphone ↗");
   const balanceNote = h("p.info-card__note", null,
     "Or: ", balanceLink,
     " (uses the same measurement certificate as room correction).");

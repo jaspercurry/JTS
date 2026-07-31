@@ -60,7 +60,7 @@ _FAILURE_COPY: dict[str, tuple[str, bool]] = {
         True,
     ),
     PHONE_CAPTURE_UNAVAILABLE: (
-        "Phone capture could not be opened. Try again or use this device.",
+        "The measurement page could not be opened. Try again or use this device.",
         True,
     ),
     MEASUREMENT_STOPPED: ("Measurement stopped.", True),

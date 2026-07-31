@@ -3377,7 +3377,9 @@ def test_the_recovery_re_verify_plan_is_unchanged_by_the_split():
     (entry,) = plan.entries
     assert entry.kind_label == "verify"
     assert entry.screen["title"] == REVERIFY_NO_REWALK_HEADLINE
-    assert entry.screen["body"] == "Put the phone back on the mark and hold it still."
+    assert entry.screen["body"] == (
+        "Put the microphone back on the mark and hold it still."
+    )
     assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
     # It is a recovery, not the end of a journey: no done copy, no confirm tap.
     assert "done_title" not in entry.screen
@@ -4333,6 +4335,22 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # was about. Byte lengths grew and are pinned alongside the hashes because this
 # copy sits inside the relay's 4 KiB per-screen cap — see
 # ``test_cloud_plan_stays_inside_the_relay_spec_byte_budgets`` for the margin.
+#
+# RE-DERIVED 2026-07-30 (issue #1941 stage 2, R4 — the vocabulary sweep). COPY
+# ONLY, and a single string of it: the 1-entry recovery re-verify's ``body``
+# became "Put the microphone back on the mark and hold it still." The PR-T4
+# revision above finished the sweep in the PROMPTED-position copy; this one
+# reaches the last screen in this file that still called the instrument a phone.
+#
+#   stage1-full     2918 B → 2918 B  (UNCHANGED)
+#   stage1-express  1945 B → 1945 B  (UNCHANGED)
+#   stage2-full     1939 B → 1939 B  (UNCHANGED)
+#   stage2-express   609 B →  609 B  (UNCHANGED)
+#   1-entry          324 B →  329 B  (+5 — exactly len("microphone") - len("phone"))
+#
+# FOUR unchanged digests are the load-bearing check in this revision, and the
+# +5 is the whole diff: a noun swap that reached one screen and nothing else.
+# No target, attempt budget, entry count, screen key, or program duration moved.
 _GOLDEN_V2_PLAN_BYTES = {
     "stage1-full": (
         2918,
@@ -4351,8 +4369,8 @@ _GOLDEN_V2_PLAN_BYTES = {
         "c8d6a5a908f6edc9c08ec2f9d5e3d31261f9579d2411de0d741d6c669e3ee1c6",
     ),
     "1-entry": (
-        324,
-        "4b52a50e74690a8a2f6a92b9a79c503335d1351111ed7d3a2bf62dd888cb3a06",
+        329,
+        "5289e8602bfe37469abd91cc12dff53387b512c358a616dd7e2df20d79b0fccb",
     ),
 }
 

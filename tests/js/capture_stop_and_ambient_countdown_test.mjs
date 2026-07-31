@@ -263,7 +263,7 @@ async function testAmbientCountdownRendersFromHostEventDuration() {
   );
   assert.ok(
     !statusHistory.includes(
-      "Measuring room noise — stay quiet and keep the phone still.",
+      "Measuring room noise — stay quiet and keep the microphone still.",
     ),
     "a Pi that supplies duration_s never falls back to the static copy",
   );
@@ -312,7 +312,7 @@ async function testAmbientPhaseWithoutDurationFallsBackToStaticCopy() {
 
   assert.ok(
     statusHistory.includes(
-      "Measuring room noise — keep the phone still.",
+      "Measuring room noise — keep the microphone still.",
     ),
     "missing duration_s degrades to the static copy — and with no\n     quiet_requested flag it must NOT ask for quiet (see the CHECK window)",
   );

@@ -820,7 +820,7 @@ def _derive_corrections(
             "info",
             "driver_gain_derived_from_measurement",
             (
-                "applied a measured phone level match ("
+                "applied a measured level match ("
                 + ", ".join(measured_notes)
                 + ")"
             ),
@@ -854,7 +854,7 @@ def _derive_corrections(
             "baseline_level_match_provisional",
             (
                 "per-driver level match is an unmeasured estimate; run the "
-                "guided phone level-match to measure it"
+                "guided level-match to measure it"
             ),
         ))
 
@@ -1501,7 +1501,7 @@ def _estimator_cross_check(
             continue
         notes.append(
             f"{role} crossover sweep {candidate_trims_db[role]:.1f} dB vs "
-            f"phone level match {point_trims[role]:.1f} dB "
+            f"level match {point_trims[role]:.1f} dB "
             f"({disagreement_db:.1f} dB apart)"
         )
     return notes

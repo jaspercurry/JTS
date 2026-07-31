@@ -22,7 +22,7 @@ import { importContentKey, encryptWav } from "./crypto.js";
 import {
   constraintDecision,
   verifyRealizedConstraints,
-} from "./constraints.js?v=20260711-4";
+} from "./constraints.js?v=20260731-1";
 import { safeReturnUrl } from "./return-url.js";
 import {
   acquireWakeLock,
@@ -325,7 +325,7 @@ function captureFailureMessage(err, retryAction = "Start") {
   if (message === "not_found") {
     return (
       "This one-time capture link has expired. Return to the speaker page " +
-      "and create a new phone capture link."
+      "and create a new measurement link."
     );
   }
   if (isRelayConnectivityAbort(err, message)) {
@@ -618,7 +618,7 @@ function renderLevelRampComplete(ctx, ramp) {
   const messages = {
     locked: {
       heading: "Level matched",
-      note: "Level matched. The speaker will continue on its own — you can put this phone down.",
+      note: "Level matched. The speaker will continue on its own — you can put the microphone down.",
       status: "Level matched. The speaker continues on its own.",
       kind: "done",
     },
@@ -649,11 +649,15 @@ function renderLevelRampComplete(ctx, ramp) {
   };
   const message = messages[state] || messages.error;
   if (state === "error" && terminalError === "agc_suspected") {
-    // The Pi observed a flat reported-vs-commanded staircase slope — this
-    // phone's mic chain IS adjusting gain automatically. Friendly copy
-    // instead of the raw server code.
+    // The Pi observed a flat reported-vs-commanded staircase slope — something
+    // in the recording chain IS adjusting gain automatically. The copy names
+    // the BROWSER, because that is where AGC lives: a dedicated measurement mic
+    // has none, so blaming the microphone would send the household to replace
+    // the one part that is behaving. (No model names here — this file must not
+    // embed a mic catalogue; see the Pi-registry inference contract in
+    // tests/test_capture_page_js.py.) Friendly copy instead of the raw code.
     message.note =
-      "Your phone is adjusting microphone levels automatically, which prevents accurate measurement. Try a different phone or a USB measurement microphone.";
+      "This browser is adjusting the microphone level, which prevents accurate measurement. Try a different browser or a USB measurement microphone.";
     message.status = `Level check failed — ${message.note}`;
   } else if (state === "error" && terminalError === "agc_indeterminate") {
     // The Pi could not gather enough staircase evidence to render a verdict
@@ -708,7 +712,7 @@ function renderIntro(screenEl, ctx) {
     }),
     el("ol", { class: "cap-steps" }, levelRamp
       ? [
-          el("li", { text: "Allow microphone access on this phone." }),
+          el("li", { text: "Allow microphone access in this browser." }),
           el("li", { text: "Choose the microphone and calibration." }),
           ...(collectsRoomPositions(ctx.spec)
             ? [el("li", { text: "Choose how many listening positions to measure." })]
@@ -717,14 +721,14 @@ function renderIntro(screenEl, ctx) {
           el("li", { text: "JTS will rise slowly from quiet and lock the level." }),
         ]
       : [
-          el("li", { text: "Allow microphone access on this phone." }),
+          el("li", { text: "Allow microphone access in this browser." }),
           el("li", { text: "Choose the microphone and calibration." }),
           el("li", { text: "Pick how many listening positions to measure." }),
           el("li", { text: "Stay quiet while JTS records noise and plays each sweep." }),
         ]),
     button("Continue", () => renderPermission(screenEl, ctx)),
   ]);
-  setStatus("Ready to set up the phone microphone.", "info");
+  setStatus("Ready to set up the microphone.", "info");
 }
 
 function renderPermission(screenEl, ctx) {
@@ -752,7 +756,7 @@ function renderPermission(screenEl, ctx) {
 function renderMicChoice(screenEl, ctx, inputs) {
   setupInputs = Array.isArray(inputs) ? inputs : setupInputs;
   const select = el("select", { id: "phone-mic-select" });
-  select.appendChild(el("option", { value: "", text: "Automatic / phone default" }));
+  select.appendChild(el("option", { value: "", text: "Automatic / browser default" }));
   for (const input of setupInputs) {
     if (!input.label) continue;
     select.appendChild(el("option", {
@@ -779,7 +783,7 @@ function renderMicChoice(screenEl, ctx, inputs) {
     el("h1", { class: "cap-heading", text: "Choose microphone" }),
     el("p", {
       class: "cap-note",
-      text: "If a USB-C measurement mic is plugged into the phone, choose it here. Otherwise leave Automatic.",
+      text: "If a USB-C measurement mic is plugged into this device, choose it here. Otherwise leave Automatic.",
     }),
     el("label", { class: "cap-field" }, [
       el("span", { text: "Microphone" }),
@@ -965,7 +969,7 @@ function renderCalibration(screenEl, ctx, { skipHint = false } = {}) {
     }
   }
   const mode = el("select", { id: "calibration-mode" }, [
-    el("option", { value: "none", text: "No calibration / phone built-in mic" }),
+    el("option", { value: "none", text: "No calibration / built-in mic" }),
     el("option", { value: "serial", text: "Known measurement mic serial" }),
     el("option", { value: "upload", text: "Upload calibration file" }),
   ]);
@@ -1080,7 +1084,7 @@ function renderCalibration(screenEl, ctx, { skipHint = false } = {}) {
     el("h1", { class: "cap-heading", text: "Calibration" }),
     el("p", {
       class: "cap-note",
-      text: "Calibration is applied after recording on the speaker. It is fine to continue without it when using the phone mic.",
+      text: "Calibration is applied after recording on the speaker. It is fine to continue without it when using a built-in mic.",
     }),
     el("label", { class: "cap-field" }, [
       el("span", { text: "Calibration source" }),
@@ -1188,7 +1192,7 @@ function renderPositionCount(screenEl, ctx) {
     el("h1", { class: "cap-heading", text: "Listening positions" }),
     el("p", {
       class: "cap-note",
-      text: "Five measurements across the listening area is the default. Move the phone roughly a head-width between positions.",
+      text: "Five measurements across the listening area is the default. Move the microphone roughly a head-width between positions.",
     }),
     el("label", { class: "cap-field" }, [
       el("span", { text: "Measurements" }),
@@ -1322,7 +1326,7 @@ async function onLevelRampStart(ctx) {
     } else {
       setStatus(
         reason === "backgrounded"
-          ? "Level check stopped — this phone's screen must stay on."
+          ? "Level check stopped — this screen must stay on."
           : `Level check stopped — ${reason}.`,
         "error",
       );
@@ -1350,8 +1354,8 @@ async function onLevelRampStart(ctx) {
       await recorder.close();
       recorder = null;
       setStatus(
-        `This phone can't run a clean level check (${capture.decision.reason}). ` +
-          "Try a different phone or measurement microphone.",
+        `This device can't run a clean level check (${capture.decision.reason}). ` +
+          "Try a different device or measurement microphone.",
         "error",
       );
       return;
@@ -1635,8 +1639,8 @@ async function waitForSweepComplete(client, spec, isAborted, armed = null) {
         if (!ambientDeadlineMs) {
           showPhase(
             ambientQuietRequested
-              ? "Measuring room noise — stay quiet and keep the phone still."
-              : "Measuring room noise — keep the phone still.",
+              ? "Measuring room noise — stay quiet and keep the microphone still."
+              : "Measuring room noise — keep the microphone still.",
           );
         }
       } else if (phase === "sweep_started") {
@@ -2101,7 +2105,7 @@ function makePlanController(ctx) {
     } else {
       setStatus(
         reason === "backgrounded"
-          ? "Measurement stopped — this phone's screen must stay on."
+          ? "Measurement stopped — this screen must stay on."
           : `Measurement stopped — ${reason}.`,
         "error",
       );
@@ -3446,8 +3450,8 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
       // of being swallowed by onPlanStart's re-entrancy guard (B-1).
       ctx.parkedAtRetriableFailure = true;
       setStatus(
-        `This phone can't run a clean measurement (${capture.decision.reason}). ` +
-          "Try a different phone, or use a calibrated USB mic on the speaker.",
+        `This device can't run a clean measurement (${capture.decision.reason}). ` +
+          "Try a different device, or use a calibrated USB mic on the speaker.",
         "error",
       );
       return;
@@ -3777,7 +3781,7 @@ async function onStart(ctx) {
     } else {
       setStatus(
         reason === "backgrounded"
-          ? "Measurement stopped — this phone's screen must stay on. Tap Start to try again."
+          ? "Measurement stopped — this screen must stay on. Tap Start to try again."
           : `Measurement stopped — ${reason}. Tap Start to try again.`,
         "error",
       );
@@ -3821,8 +3825,8 @@ async function onStart(ctx) {
       await recorder.close();
       recorder = null;
       setStatus(
-        `This phone can't run a clean measurement (${decision.reason}). ` +
-          "Try a different phone, or use a calibrated USB mic on the speaker.",
+        `This device can't run a clean measurement (${decision.reason}). ` +
+          "Try a different device, or use a calibrated USB mic on the speaker.",
         "error",
       );
       return;
@@ -4005,7 +4009,7 @@ async function boot() {
         el("h1", { class: "cap-heading", text: "Run the level check again" }),
         el("p", {
           class: "cap-note",
-          text: "This phone no longer has the setup identity from the safe level check. Return to the speaker and run that check again before measuring.",
+          text: "This page no longer has the setup identity from the safe level check. Return to the speaker and run that check again before measuring.",
         }),
       ];
       if (returnUrl) {

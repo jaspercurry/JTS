@@ -909,7 +909,7 @@ when it was only a timestamp. `cloud_close` on the durable state
 (`awaiting_confirm` / `running` / `""`) is what tells those moments apart from a
 session that genuinely ended with nothing, and the host persists `running`
 BEFORE the close runs so the seconds it can cost are a named state
-rather than a stale "confirm on your phone". The screen offers **no actions at
+rather than a stale "confirm on the measurement page". The screen offers **no actions at
 all** — every one it could offer destroys work in progress — and sets `busy`
 on the fit-in-flight moment, the flow's one genuinely machine-paced wait.
 

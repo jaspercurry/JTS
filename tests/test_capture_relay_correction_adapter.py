@@ -1407,8 +1407,8 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
     # "capture page is incompatible ... (expected protocol N ...)"
     # diagnostic — that stays in the journal.
     assert terminal["error"] == (
-        "The phone page is out of date for this speaker. "
-        "Close the phone tab and open a fresh link from this page."
+        "The measurement page is out of date for this speaker. "
+        "Close that tab and open a fresh link from this page."
     )
 
 

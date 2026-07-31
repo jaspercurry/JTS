@@ -66,7 +66,12 @@ export function verifyRealizedConstraints(settings, spec, capturedChannelCount =
 function describe(realized) {
   const parts = [];
   if (realized.dirtyFlags.length) {
-    parts.push(`this phone kept ${realized.dirtyFlags.join(", ")} on`);
+    // The dirty flags are BROWSER track settings (echoCancellation /
+    // autoGainControl / noiseSuppression), not anything the capsule did — the
+    // header above records WebKit ignoring `echoCancellation:false`. Naming the
+    // microphone here would accuse a dedicated measurement mic of processing it
+    // cannot do.
+    parts.push(`this browser kept ${realized.dirtyFlags.join(", ")} on`);
   }
   if (!realized.sampleRateOk) parts.push("the sample rate is wrong");
   if (!realized.channelsOk) parts.push("the channel count is wrong");

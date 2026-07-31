@@ -3099,7 +3099,7 @@ def test_the_two_level_estimators_are_cross_checked_and_disclosed(
     notes = payload["level_match"]["estimator_disagreements"]
     assert notes and "13.0 dB apart" in notes[0]
     assert "crossover sweep -25.0 dB" in notes[0]
-    assert "phone level match -12.0 dB" in notes[0]
+    assert "level match -12.0 dB" in notes[0]
     assert "driver_level_estimator_disagreement" in {
         issue["code"] for issue in payload["issues"]
     }

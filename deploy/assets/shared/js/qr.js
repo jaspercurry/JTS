@@ -1387,7 +1387,7 @@ export function renderRelayQr(container, text, opts = {}) {
   canvas.height = drawSize * modulePx;
   canvas.className = 'relay-qr__canvas';
   canvas.setAttribute('role', 'img');
-  canvas.setAttribute('aria-label', "QR code for the phone capture link");
+  canvas.setAttribute('aria-label', "QR code for the measurement page link");
   // Stashes exactly what was encoded — the load-bearing seam tests assert
   // against, since it proves the full href (fragment included) reached the
   // encoder without needing to decode rendered pixels back out.
@@ -1412,6 +1412,12 @@ export function renderRelayQr(container, text, opts = {}) {
 
   const caption = document.createElement('p');
   caption.className = 'relay-qr__caption';
+  // DELIBERATE exception to the #1941 R4 "never say phone" vocabulary: this
+  // caption is not naming the measuring instrument, it is naming the ONE
+  // affordance a QR code has. A laptop or a UMIK-2 host clicks the link beside
+  // this code; only a hand-held camera scans it. Saying "the microphone's
+  // camera" would be wrong, and dropping the device would leave the instruction
+  // unactionable. The aria-label above carries the device-agnostic noun.
   caption.textContent = "Scan with your phone's camera";
 
   const desktop = opts.desktop !== undefined ? opts.desktop : isDesktopViewport();
