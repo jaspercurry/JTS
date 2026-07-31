@@ -602,9 +602,14 @@ svg { display: block; }
 /* The transparent input IS the hit surface, so it — not the label — carries
    the 44px tap-target floor (docs/design-language.md "Touch targets"). It is
    absolutely positioned, so overflowing the 24px label adds no layout: the
-   switch still measures 44x24 and the track is untouched. Rows that hold a
-   toggle are >=44px tall (0.9rem padding around a 24px control), so the
-   grown areas of stacked toggles do not overlap. */
+   switch still measures 44x24 and the track is untouched.
+
+   Stacked toggles: the input overflows its label by 10px top and bottom, so a
+   row shorter than 44px would let two neighbours' hit areas overlap and steal
+   each other's taps. The tightest toggle row shipped is wake.css's
+   `.layer-row` — 49px with a single-line body — which measures a 5px gap
+   between grown areas. That margin is thin: a new toggle row must stay at or
+   above 44px. */
 .toggle input {
   position: absolute;
   top: 50%;
