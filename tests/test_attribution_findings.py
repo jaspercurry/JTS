@@ -719,8 +719,9 @@ def _level_frame_finding(**overrides: object):
 
 def test_a_banked_frame_disagreement_becomes_an_m7_finding() -> None:
     """The owner's 2026-07-30 ruling on #1866, as an artifact: a frame
-    disagreement the realized-level check corroborates is banked rather than
-    refused, and what is banked is an M7-class finding carrying the numbers.
+    disagreement that the realized-level check's PASS allows to proceed is
+    banked rather than refused, and what is banked is an M7-class finding
+    carrying the numbers.
 
     ``refit``, not ``eq``, and that is §4 M7's own split — ``eq`` when a
     driver's level is genuinely low, ``refit`` "when the level error is
@@ -766,8 +767,8 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     # A high-pass branch radiates to infinity; ``None`` says so and survives
     # JSON, where ``inf`` does not.
     assert evidence["radiating_band_hi_hz_tweeter"] is None
-    # The disagreement, its tolerance, and the third instrument that
-    # corroborated the trim solve.
+    # The disagreement, its tolerance, and the realized check whose pass is
+    # what let the session proceed.
     assert evidence["disagreement_db"] == 3.276
     assert evidence["tolerance_db"] == 3.0
     assert evidence["realized_difference_db"] == -0.828

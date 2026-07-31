@@ -46,8 +46,11 @@ that a mechanism becomes reachable when its *detector* does. The owner's
 2026-07-30 frame-gate ruling (#1866) produced a second way to reach one: the
 shipped level-frame gate ALREADY computes the comparison M7 is about — two
 measured estimates of where the drivers sit — and the ruling banks that
-comparison as a finding when the estimators disagree while the independent
-realized-level check corroborates one of them. So M7 is registered here with
+comparison as a finding when the estimators disagree and the realized-level
+check nonetheless PASSES on the pair the session is about to ship. The
+realized check gates that outcome; it does not arbitrate between the two
+estimates, and the fit commits the same anchor either way (ratified mechanism,
+#1866 comment 5137494519). So M7 is registered here with
 **no detector**, because none is needed for that one site: the numbers come
 from a gate the flow already runs, exactly as the carve-out promotion path
 takes numbers from a pipeline that already ran. WO-4 still owns M7's
@@ -217,9 +220,8 @@ _SEED: tuple[MechanismSpec, ...] = (
         # level relationship from a property of where the mic was; P7 bounds
         # how much of a disagreement could be measurement spread at all.
         # Neither settles which of the two frames is right. An empty tuple was
-        # the alternative and is worse — it would say "nothing helps", which is
-        # false, and it would leave an ``unsure`` M7 finding unable to
-        # construct at all (``Finding`` requires a recommended probe).
+        # the alternative and is worse: it would say "nothing helps", which is
+        # false.
         discriminating_probes=(PROBE_DESIGN_AXIS, PROBE_REPEAT_VARIANCE),
         corpus_evidence_tier=EVIDENCE_TIER_ADJUDICATED,
         corpus_citation=(

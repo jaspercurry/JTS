@@ -6741,9 +6741,9 @@ def test_an_accountability_refusal_names_itself_to_the_host():
     reads.
 
     The realized verdict is supplied for the reason its sibling above gives:
-    since the #1866 ruling a frame disagreement the realized check corroborates
-    banks a finding and proceeds, so reaching the refusal at all now needs both
-    instruments to fail."""
+    since the #1866 ruling a frame disagreement banks a finding and proceeds
+    whenever the realized check passes on the pair about to ship, so reaching
+    the refusal at all now needs both instruments to fail."""
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
     fakes = FakeSeams()
@@ -7970,7 +7970,7 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # This arm captures at ERROR, and the frame's refusal is the ERROR line —
     # its absence is the assertion that the frame banked rather than stopped.
     # (The banked line itself is a WARNING and is pinned in
-    # ``test_a_disagreeing_frame_the_realized_check_corroborates_banks_and_
+    # ``test_a_disagreeing_frame_whose_realized_check_passes_banks_and_
     # proceeds``.)
     assert "event=correction.crossover_v2_level_frame_refused" not in caplog.text
     assert before.candidate is None
@@ -8178,7 +8178,7 @@ def _tilted_woofer_fixture(fakes: FakeSeams, *, tilt_db_per_oct: float) -> None:
     )
 
 
-def test_a_disagreeing_frame_the_realized_check_corroborates_banks_and_proceeds(
+def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     caplog,
 ):
     """**The ruling, end to end** (owner, 2026-07-30 bench, #1866): "when

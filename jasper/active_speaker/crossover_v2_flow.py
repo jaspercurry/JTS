@@ -6334,11 +6334,15 @@ class CrossoverV2Conductor:
         # estimator); proceeding is the same tune, not refused; the realized
         # check gates the OUTCOME rather than selecting an estimator.** That is
         # a weaker claim than "we proceed on the corroborated estimator" and it
-        # is the true one — the corroboration is evidence that the shipped pair
-        # is level, not evidence about which estimator was right. This
-        # description differs from the ruling's, so the change is held for the
-        # owner's confirmation (requested on #1866) rather than merged under
-        # the inverted account.
+        # is the true one — the realized check's pass is evidence that the
+        # shipped pair is level, not evidence about which estimator was right.
+        #
+        # **RATIFIED.** This description differs from the ruling's original
+        # wording, so it was put to the owner rather than merged under the
+        # inverted account; the owner confirmed it on 2026-07-30 (#1866 comment
+        # 5137494519) as "the ruling's operative form". The two phrases above
+        # are retired: anything still asserting them is describing a mechanism
+        # this code does not implement.
         #
         # **What the realized check is, and is not.** It is a CLOSED-LOOP
         # check, not cross-band arbitration: its own docstring says "One
@@ -6365,7 +6369,7 @@ class CrossoverV2Conductor:
         #
         # ``match is None`` (no fit ran) falls to the refusal, and that is the
         # fail-closed direction rather than an oversight: with no realized
-        # verdict there is no corroborating instrument, so the ruling's
+        # verdict there is no outcome check to gate on, so the ruling's
         # precondition is unmet. In practice it is unreachable from here — the
         # frame is only non-zero when a fit completed, and a fit that raised
         # part-way clears both fields together — but a future path that
@@ -6558,9 +6562,9 @@ class CrossoverV2Conductor:
         carry the whole basis for that: the fit's per-driver median
         (``core_level_db_*``), the trim solve's per-driver level-match term
         (``trim_band_average_db_*``), the reconciled per-role offset that IS
-        their disagreement, and the realized-level check that corroborated the
-        trim solve. Banking only the first two would record the argument and
-        drop the tiebreaker.
+        their disagreement, and the realized-level check whose PASS is what
+        let the session proceed. Banking only the first two would record the
+        argument and drop the reason it was allowed to stand.
 
         Returns ``None`` when the frame produced no per-role bands to describe
         — unreachable on this path (the gate fired on a frame that had roles),
