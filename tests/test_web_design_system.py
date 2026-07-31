@@ -305,3 +305,137 @@ def test_cpu_stat_shows_bare_percentage():
     """CPU usage shows just the percentage; the per-core bars carry the
     breakdown, so the '% total' qualifier stays gone."""
     assert "% total" not in (SYSTEM_JS / "sections.js").read_text()
+
+
+# ---------------------------------------------------------------- #
+# docs/design-language.md — the craft rules, pinned.                 #
+# Each test below is the enforcement arm of one section of that doc; #
+# when a rule changes, change it there and here in the same PR.      #
+# ---------------------------------------------------------------- #
+
+DESIGN_LANGUAGE_DOC = ROOT / "docs" / "design-language.md"
+
+
+def test_text_ramp_has_three_real_tiers():
+    """design-language.md §4: --text / --muted / --muted-faint, and no
+    synonym alias. --muted-strong used to alias --foreground, which left two
+    real tiers and pushed pages into inventing a third with color-mix()."""
+    css = _without_css_comments(APP_CSS.read_text())
+    for token in ("--text:", "--muted:", "--muted-faint:"):
+        assert token in css, f"app.css missing text-ramp tier {token}"
+    assert "--muted-strong" not in css, (
+        "--muted-strong aliased --foreground, so it was a synonym rather than "
+        "a tier. Use --text for full-strength text and --muted-faint for the "
+        "tertiary tier (docs/design-language.md §4)."
+    )
+
+
+# A neutral text tier derived in a page: the FIRST colour of the mix is a
+# foreground/neutral token, i.e. "take our text colour and weaken it". Tinting
+# a STATUS tone toward the foreground for legibility (--status-warn mixed with
+# --text) is a different, allowed thing — it is not a ramp tier.
+_PAGE_TEXT_TIER = re.compile(
+    r"(?<![-\w])color:\s*color-mix\(\s*in\s+\w+\s*,\s*"
+    r"var\(\s*--(?:foreground|muted-foreground|text|muted)\s*\)"
+    r"([^;]*)\)"
+)
+
+
+def test_pages_do_not_invent_their_own_text_tiers():
+    """design-language.md §4: a text colour derived by weakening a foreground
+    token is a fourth tier invented in one file. Mixing belongs in the token
+    layer, where --muted-faint is defined once.
+
+    `sound.css` is a known, ledgered exception outside the measurement-flow
+    pass's surfaces; it is listed rather than migrated so this guard can stay
+    exact about what remains."""
+    ledgered = {"deploy/assets/sound-profile/sound.css"}
+    offenders: list[str] = []
+    for path in _focus_ring_css_sources():
+        if path == APP_CSS:
+            continue  # the token layer is where mixing is allowed
+        rel = str(path.relative_to(ROOT))
+        if rel in ledgered:
+            continue
+        for match in _PAGE_TEXT_TIER.finditer(_without_css_comments(path.read_text())):
+            offenders.append(f"{rel}: {match.group(0)[:72]}")
+
+    assert not offenders, (
+        "text colours come from the three-tier ramp (--text / --muted / "
+        "--muted-faint), not a page-local color-mix "
+        "(docs/design-language.md §4):\n" + "\n".join(offenders)
+    )
+
+
+# The landing page is the protected reference implementation
+# (docs/design-language.md §2), so these three off-ladder sizes are HELD for
+# owner review rather than corrected: 0.92rem -> 14px reflows the pair banner.
+# The allowlist exists so the guard can still fail a NEW off-ladder value.
+LANDING_OFF_LADDER_HELD = {"0.92rem", "0.88rem", "0.86rem"}
+TYPE_LADDER_PX = {"11px", "12px", "13px", "14px", "16px"}
+
+
+def test_landing_page_type_stays_on_the_ladder():
+    """design-language.md §3: 11/12/13/14/16 px, and no new off-ladder value."""
+    css = _without_css_comments(LANDING_HTML.read_text())
+    sizes = set(re.findall(r"font-size:\s*([^;}]+)", css))
+    unexpected = {
+        s.strip() for s in sizes
+        if s.strip() not in TYPE_LADDER_PX
+        and s.strip() not in LANDING_OFF_LADDER_HELD
+        and not s.strip().startswith("var(")
+        and "em" not in s  # relative-to-parent sizing is not a ladder step
+    }
+    assert not unexpected, (
+        "landing-page type must sit on the 11/12/13/14/16px ladder "
+        f"(docs/design-language.md §3); found {sorted(unexpected)}"
+    )
+
+
+def test_touch_targets_meet_the_floor():
+    """design-language.md §8: 44px preferred / 40px floor, grown WITHOUT
+    changing the rendered box — an absolutely-positioned overlay, or the
+    transparent input that already carries the hit.
+
+    Geometry is asserted structurally here (pytest has no browser); the
+    rendered-pixel invariance was verified by before/after capture at 375 /
+    800 / 1280 px when these landed."""
+    app = _without_css_comments(APP_CSS.read_text())
+    landing = _without_css_comments(LANDING_HTML.read_text())
+
+    # .icon-button: 32px disc, hit area grown to 44 by a -6px inset overlay.
+    icon_after = _css_body(app, ".icon-button::after")
+    assert "position: absolute" in icon_after and "inset: -6px" in icon_after, (
+        ".icon-button must keep a 44px hit area via an absolute ::after overlay"
+    )
+
+    # .toggle: 44x24 switch, but the transparent input is the hit surface.
+    toggle_input = _css_body(app, ".toggle input")
+    assert "height: 44px" in toggle_input, (
+        ".toggle's input carries the tap target and must be 44px tall"
+    )
+    assert "position: absolute" in toggle_input, (
+        "the grown input must stay absolutely positioned so the switch still "
+        "measures 44x24 and no layout moves"
+    )
+
+    # .mic-action: 30px pill on the landing page, overlay grows it to 44.
+    mic_after = _css_body(landing, ".mic-action::after")
+    assert "position: absolute" in mic_after and "inset: -7px 0" in mic_after, (
+        ".mic-action must keep a 44px hit area via an absolute ::after overlay"
+    )
+    assert "position: relative" in _css_body(landing, ".mic-action"), (
+        "the ::after overlay needs .mic-action to be a positioned ancestor"
+    )
+
+
+def test_design_language_doc_is_reachable_and_dated():
+    """Documentation paradigm rules 3 and 8: every HANDOFF-style reference
+    carries a Last verified footer and is listed in README's doc atlas."""
+    doc = DESIGN_LANGUAGE_DOC.read_text()
+    assert re.search(r"(?m)^Last verified: \d{4}-\d{2}-\d{2}$", doc), (
+        "docs/design-language.md needs a `Last verified: YYYY-MM-DD` footer"
+    )
+    assert "design-language.md" in (ROOT / "README.md").read_text(), (
+        "docs/design-language.md must be listed in README's documentation map"
+    )

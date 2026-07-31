@@ -208,6 +208,7 @@
       line-height: 1.2;
     }
     .mic-action {
+      position: relative;
       flex: 0 0 auto;
       min-height: 30px;
       padding: 0 13px;
@@ -221,6 +222,15 @@
       font-weight: 600;
       letter-spacing: 0;
       text-transform: uppercase;
+    }
+    /* Tap target. The pill keeps its 30px height so the mic row's rhythm is
+       unchanged; an invisible overlay grows the HIT area to the 44px floor
+       (docs/design-language.md "Touch targets"). Absolutely positioned and
+       paint-free — it moves no layout. Width already clears the floor. */
+    .mic-action::after {
+      content: "";
+      position: absolute;
+      inset: -7px 0;
     }
     .mic-action:hover {
       background: var(--accent-faint);
@@ -301,7 +311,7 @@
     .chevron {
       width: 16px;
       height: 16px;
-      color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
+      color: var(--muted-faint);
       flex-shrink: 0;
     }
     .setting-row:hover .row-icon {

@@ -173,7 +173,7 @@ body.stale { opacity: 0.72; }
 
 time {
   font-variant-numeric: tabular-nums;
-  color: var(--muted-strong);
+  color: var(--text);
 }
 
 @media (max-width: 720px) {
