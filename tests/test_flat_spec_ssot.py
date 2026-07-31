@@ -569,12 +569,23 @@ def test_the_gauge_the_ledger_the_spec_report_and_verify_are_one_number(monkeypa
     _assert_one_number_everywhere(_walk_every_surface(result, monkeypatch))
 
 
-def test_the_pre_apply_cloud_never_supplies_the_household_flatness_line():
+def test_the_pre_apply_cloud_never_supplies_the_post_apply_flatness_claim():
     """``cloud_measure`` carries its own gauge (it is the same construction on
-    the same footing) but the ledger line is the POST-apply claim — the same
+    the same footing) but the POST-apply claim is a different claim — the same
     pre-vs-post distinction PR-4's doctor blocker drew. A pre-apply-only
-    session says nothing rather than reporting the uncorrected baseline as
-    "how flat your speaker is"."""
+    session must never report the uncorrected baseline as "how flat your
+    speaker is".
+
+    **Was ``…_never_supplies_the_household_flatness_line``, asserting
+    ``expert_details == []``** — one of three places (with
+    ``test_crossover_envelope_v2`` and ``test_crossover_v2_cloud_pipeline``)
+    that encoded the pre-vs-post rule as SILENCE. #1965 is what that proxy
+    cost: silence was also what the FULL tier showed on its own stage-1 review
+    screen, where the pre-apply cloud is the only measured evidence there is
+    and Express was already showing it. The rule is unchanged; it is now
+    enforced by the FRAME — these numbers lead with "Measured before tuning:"
+    and are never rendered bare the way the CLOUD-VERIFY path renders them.
+    """
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
     compact = _compact_cloud_status(
@@ -588,7 +599,9 @@ def test_the_pre_apply_cloud_never_supplies_the_household_flatness_line():
             "phase": "done", "verify": {"outcome": "pass"}, "cloud": compact,
         },
     })
-    assert envelope["expert_details"] == []
+    details = envelope["expert_details"]
+    assert details[0].startswith("Measured before tuning: ")
+    assert not any(line.startswith("flatness ") for line in details)
 
 
 def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():

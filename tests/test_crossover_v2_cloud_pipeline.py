@@ -1001,11 +1001,23 @@ def test_carve_outs_reach_state_and_the_envelope_byte_identically():
     assert all("µs" in line and "reflection ratio" in line for line in expert)
 
 
-def test_the_pre_apply_cloud_never_discloses_its_carve_outs_as_the_verdict():
+def test_the_pre_apply_cloud_never_renders_as_the_post_apply_verdict():
     """Inherited from ``_flatness_details_lines``: ``cloud_measure`` is the
-    UNCORRECTED baseline that exists in order to be out of spec, so its
-    carve-outs must not render on the screen that answers "how did your speaker
-    come out". They stay on the payload for PR-7 and the artifact."""
+    UNCORRECTED baseline that exists in order to be out of spec, so nothing
+    read from it may render as the screen that answers "how did your speaker
+    come out".
+
+    **Was ``…_never_discloses_its_carve_outs_as_the_verdict``, asserting
+    ``expert_details == []``.** That enforced the rule by rendering nothing —
+    the same silence #1965 removed, because it was also what left the FULL tier
+    showing less measured evidence than Express on every screen where no
+    post-apply cloud exists. The rule itself did not move: these numbers render
+    under the explicit BEFORE-TUNING lead, never bare the way the CLOUD-VERIFY
+    path renders them. The carve-out lines ride along verbatim exactly as they
+    already did on Express (owner decision 1 — carve-outs are a
+    post-apply-persistent fact disclosed on every tier), which is why their
+    absence was never the invariant worth pinning here.
+    """
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
     from jasper.web.correction_crossover_v2 import _compact_cloud_status
@@ -1022,7 +1034,9 @@ def test_the_pre_apply_cloud_never_discloses_its_carve_outs_as_the_verdict():
             "phase": "done", "verify": {"outcome": "pass"}, "cloud": compact,
         },
     })
-    assert envelope["expert_details"] == []
+    details = envelope["expert_details"]
+    assert details[0].startswith("Measured before tuning: ")
+    assert not any(line.startswith("flatness ") for line in details)
 
 
 def test_an_unavailable_pipeline_projects_no_carve_outs():

@@ -395,11 +395,11 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
 
 
 def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
-    """The numeric flatness lines shared by both tiers' expert disclosure —
-    max/avg deviation plus the excluded-bin count. Extracted (B1 fix, adversarial
-    review of PR #1780) so the Full tier's CURRENT-STATE claim
-    (:func:`_flatness_details_lines`, reading CLOUD-VERIFY) and Express's
-    BEFORE-TUNING claim (:func:`_express_pre_apply_flatness_lines`, reading
+    """The numeric flatness lines shared by both branches of the expert
+    disclosure — max/avg deviation plus the excluded-bin count. Extracted (B1
+    fix, adversarial review of PR #1780) so the post-apply CURRENT-STATE claim
+    (:func:`_flatness_details_lines`, reading CLOUD-VERIFY) and the
+    BEFORE-TUNING claim (:func:`_pre_apply_flatness_lines`, reading
     CLOUD-MEASURE) compute the identical arithmetic from whichever compact
     ``flatness`` block they were handed — one construction, not two.
 
@@ -473,32 +473,40 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     ``_compact_cloud_status``. One construction, so the number here and the
     number in the report are the same bytes.
 
-    ``PHASE_CLOUD_VERIFY``, never ``PHASE_CLOUD_MEASURE``, for the FULL
-    tier: the pre-apply cloud is the UNCORRECTED baseline that exists in
-    order to be out of spec (the same distinction PR-4's
+    ``PHASE_CLOUD_VERIFY``, never ``PHASE_CLOUD_MEASURE``, whenever a
+    post-apply cloud EXISTS: the pre-apply cloud is the UNCORRECTED baseline
+    that exists in order to be out of spec (the same distinction PR-4's
     ``check_crossover_v2_cloud_pipeline`` blocker fix drew), so rendering it
     as "how flat is your speaker" would report a correct speaker as bad
     forever.
 
-    **Express (B1 fix, adversarial review of PR #1780) delegates to
-    :func:`_express_pre_apply_flatness_lines` instead.** Express (M=1) never
-    produces a CLOUD-VERIFY entry — not "not yet", but PERMANENTLY, by the
-    tier's own shape — so reading ``_cloud_verify_block`` for it would always
-    return empty and silently withhold the honesty-instrument disclosure
-    (spec bands, carve-outs) that owner decision 1 requires on every tier.
+    **The choice is WHICH CLOUD EXISTS, not which tier (issue #1965).** It
+    used to be a tier test — Express delegated to the pre-apply reader,
+    everything else read CLOUD-VERIFY — which was right about Express and
+    wrong about STAGE 1. A Full session's post-apply cloud does not exist
+    until stage 2, so on the stage-1 REVIEW screen (the apply decision, and
+    the household's biggest time investment) Full read an empty
+    ``_cloud_verify_block`` and rendered NOTHING, while Express rendered
+    "Measured before tuning: …" from the very same measured cloud. The tier
+    with more measurement showed less measured evidence on the one screen
+    where evidence informs a choice. Reading "post-apply cloud if there is
+    one, otherwise the pre-apply cloud" is the same rule for both tiers, and
+    it keeps Express's behaviour byte-identical: Express never produces a
+    CLOUD-VERIFY entry — not "not yet", but PERMANENTLY, by the tier's own
+    shape — so it takes the pre-apply branch on every screen exactly as it
+    did before.
+
     ``_compact_cloud_status`` already projects the SAME flatness/spec_bands/
     carve_outs shape onto the CLOUD-MEASURE entry (the pipeline runs there
-    too — see ``_close_cloud_group``), so express reads that block instead,
-    under an explicit BEFORE-TUNING frame: the pre-apply cloud is still the
-    uncorrected baseline, so its numbers are reported as "what was measured
-    before tuning", never as "how flat your speaker is now".
+    too — see ``_close_cloud_group``), so the pre-apply branch reads that
+    block under an explicit BEFORE-TUNING frame: the pre-apply cloud is still
+    the uncorrected baseline, so its numbers are reported as "what was
+    measured before tuning", never as "how flat your speaker is now".
 
-    Empty when no cloud-verify group has closed (Full) or no cloud-measure
-    group has closed (Express — cannot happen once MEASURE's cloud group is
-    reached, but the shape is defensive regardless). That is "nothing
-    measured yet", and saying nothing is the honest rendering of it; the
-    fallback vocabulary for FULL's "measured but not evaluable" states lives
-    in :func:`_flatness_unavailable_line`.
+    Empty when neither group has closed — that is "nothing measured yet", and
+    saying nothing is the honest rendering of it. The fallback vocabulary for
+    a post-apply group that closed but produced no usable gauge lives in
+    :func:`_flatness_unavailable_line`.
 
     **The carve-out lines close the sentence** (plan PR-6b, owner decision 1).
     The excluded-bin count below says how much of the spectrum left grading;
@@ -509,12 +517,12 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     since carve-outs are a post-apply-persistent fact ("EQ cannot fill
     these") regardless of which cloud measured them.
     """
-    if str(_v2(status).get("tier") or "") == TIER_EXPRESS:
-        return _express_pre_apply_flatness_lines(status)
     block = _cloud_verify_block(status)
+    if not block:
+        return _pre_apply_flatness_lines(status)
     flatness = _mapping(block.get("flatness"))
     if not flatness:
-        return _flatness_unavailable_line(status)
+        return _flatness_unavailable_line(block)
     if not flatness.get("evaluable"):
         # The gauge ran and could not measure — see
         # ``flat_spec.SpecFlatness.passed``'s own "read it with evaluable"
@@ -531,38 +539,57 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _express_pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
-    """Express's flatness/carve-out disclosure (B1 fix, adversarial review of
-    PR #1780) — the household surface :func:`_flatness_details_lines`
-    delegates to for ``TIER_EXPRESS``.
+def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
+    """The BEFORE-TUNING flatness/carve-out disclosure (B1 fix, adversarial
+    review of PR #1780) — the branch :func:`_flatness_details_lines` takes
+    whenever no post-apply cloud exists.
 
     **Design direction (coordinator ruling on the review).** Reads the
-    CLOUD-MEASURE compact block (:func:`_cloud_measure_block`) — the ONLY
-    cloud express ever produces — and frames its numbers explicitly as the
-    BEFORE-TUNING state: "Measured before tuning: …. The applied correction
-    targets these; the result was confirmed at the mark only." Never
-    presented as "how flat your speaker is now" (that claim needs a
-    post-apply cloud, which express does not make — see the degraded-claims
-    table, flow-simplification plan §1.3). Carve-out lines render VERBATIM
-    from the same block, unprefixed by the before-tuning frame, because they
-    are a distinct, post-apply-persistent fact ("EQ cannot fill these") that
-    owner decision 1 requires disclosed on every tier, not a claim about the
-    CURRENT state.
+    CLOUD-MEASURE compact block (:func:`_cloud_measure_block`) and frames its
+    numbers explicitly as the BEFORE-TUNING state — never presented as "how
+    flat your speaker is now" (that claim needs a post-apply cloud). Carve-out
+    lines render VERBATIM from the same block, unprefixed by the before-tuning
+    frame, because they are a distinct, post-apply-persistent fact ("EQ cannot
+    fill these") that owner decision 1 requires disclosed on every tier, not a
+    claim about the CURRENT state.
+
+    **Two readers now, not one (issue #1965).** Express takes this branch on
+    every screen, permanently — CLOUD-MEASURE is the only cloud it ever
+    produces. Full takes it on the STAGE-1 screens, where its post-apply cloud
+    does not exist yet; the same measured baseline, the same words.
+
+    **The scope clause is a claim about the post-apply check, so it renders
+    only where one has PASSED.** "The applied correction targets these; the
+    result was confirmed at the mark only" says two things — a correction is
+    applied, and the only confirmation of it was the single anchor sweep — and
+    a passing post-apply tracking verify is exactly the state in which both
+    are true. Reaching this branch already means no post-apply cloud closed,
+    so "at the mark only" cannot overclaim. Before #1965 the clause was
+    unconditional on Express and therefore rendered on screens where nothing
+    was applied (review, closing) and where the check had FAILED
+    (verify_fail); the numeric before-tuning lead was true on all of them and
+    still leads them now.
     """
     block = _cloud_measure_block(status)
     flatness = _mapping(block.get("flatness"))
     if not flatness:
         return []
     if not flatness.get("evaluable"):
+        # Same capitalized lead as the evaluable arm below. It was lowercase,
+        # which read as a fragment beside its sibling and let the two arms
+        # drift apart under tests that pin only one of them.
         return [
-            "measured before tuning: flatness could not be measured — every "
+            "Measured before tuning: flatness could not be measured — every "
             "spec band was excluded or out of range"
         ] + _carve_out_expert_lines(block)
     numeric = "; ".join(_flatness_lines_from_block(flatness))
-    lines = [
-        f"Measured before tuning: {numeric}. The applied correction targets "
-        "these; the result was confirmed at the mark only"
-    ]
+    line = f"Measured before tuning: {numeric}"
+    if _mapping(_v2(status).get("verify")).get("outcome") == "pass":
+        line += (
+            ". The applied correction targets these; the result was confirmed "
+            "at the mark only"
+        )
+    lines = [line]
     lines.extend(_carve_out_expert_lines(block))
     return lines
 
@@ -584,11 +611,12 @@ def _carve_out_expert_lines(block: Mapping[str, Any]) -> list[str]:
     range. This function only prefixes the band the line belongs to.
 
     Takes a compact cloud-phase BLOCK directly (B1 fix, adversarial review of
-    PR #1780) rather than ``status`` — the caller picks CLOUD-VERIFY for the
-    Full tier or CLOUD-MEASURE for Express (:func:`_flatness_details_lines`),
-    since carve-outs are a post-apply-persistent fact disclosed from
-    whichever cloud each tier actually produces, not read from one hardcoded
-    phase.
+    PR #1780) rather than ``status`` — the caller picks CLOUD-VERIFY when a
+    post-apply cloud exists and CLOUD-MEASURE when none does
+    (:func:`_flatness_details_lines`; the tier branch that used to make that
+    choice went with #1965), since carve-outs are a post-apply-persistent fact
+    disclosed from whichever cloud the session actually produced, not read
+    from one hardcoded phase.
     """
     lines: list[str] = []
     carve_outs = block.get("carve_outs")
@@ -982,8 +1010,9 @@ def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
 def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     """The compact CLOUD-MEASURE entry of the ``cloud`` block, or empty.
 
-    Express's only cloud group (B1 fix, adversarial review of PR #1780) —
-    see :func:`_express_pre_apply_flatness_lines`. ``PHASE_CLOUD_MEASURE`` is
+    Express's only cloud group, and every tier's only cloud group until the
+    post-apply walk closes (B1 fix, adversarial review of PR #1780; #1965) —
+    see :func:`_pre_apply_flatness_lines`. ``PHASE_CLOUD_MEASURE`` is
     spelled through the shared phase constant for the same reason
     :func:`_cloud_verify_block` does.
     """
@@ -1058,40 +1087,33 @@ def _done_nudges(
     return nudges
 
 
-def _flatness_unavailable_line(status: Mapping[str, Any]) -> list[str]:
-    """The honest cloud-absent rendering (plan PR-5) for the FULL tier's
-    CLOUD-VERIFY block — three distinguishable states, told apart rather
-    than collapsed into one message.
+def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
+    """The honest gauge-absent rendering (plan PR-5) for a CLOUD-VERIFY block
+    that CLOSED but carries no usable flatness — two distinguishable states,
+    told apart rather than collapsed into one message.
 
-    * **No cloud-verify entry at all** — the group has not closed (or this
-      session never had one, e.g. a verify-only re-arm whose prior cloud was
-      also absent). Nothing measured, nothing to say: empty. **On Express
-      this is not a transient "not yet" — it is PERMANENT** (M=1 never
-      produces a CLOUD-VERIFY entry, by the tier's own shape), which is why
-      :func:`_flatness_details_lines` never reaches this function for
-      Express at all: it delegates to
-      :func:`_express_pre_apply_flatness_lines`, which reads CLOUD-MEASURE
-      instead, before this "nothing to say" fallback would otherwise render
-      Express's done/verify screens permanently silent on flatness (B1 fix,
-      adversarial review of PR #1780).
-    * **The entry exists and its pipeline DID run, but carries no gauge** —
+    * **The entry's pipeline DID run, but carries no gauge** —
       a durable state written by a build between PR-4 and PR-5, read after
       an upgrade without a new session. The pipeline was fine; only the
       gauge is missing. ``overall_passed`` is the tell: ``_compact_cloud_status``
       leaves it ``None`` for an unavailable pipeline and copies the spec
       verdict otherwise. Saying "could not be analysed" here would be a
       false statement about a session that analysed fine.
-    * **The entry exists and its pipeline never became available** — a
+    * **The entry's pipeline never became available** — a
       combine or DSP-step failure. Say so, because the alternative is a
       screen that silently looks like the session with no spec claim in it.
 
-    None of the three quotes a number: the construction did not run (or its
-    result was not recorded), so there is no spec-frame figure to give,
-    fabricated or otherwise.
+    Neither quotes a number: the construction did not run (or its result was
+    not recorded), so there is no spec-frame figure to give, fabricated or
+    otherwise.
+
+    **A MISSING entry never reaches here** (issue #1965). "No post-apply cloud
+    at all" is not a gauge failure — it is stage 1, or Express, where the
+    pre-apply cloud is the measured evidence — so
+    :func:`_flatness_details_lines` routes that state to
+    :func:`_pre_apply_flatness_lines` before this function is called, and
+    hands this one the block it already read rather than re-deriving it.
     """
-    entry = _cloud_verify_block(status)
-    if not entry:
-        return []
     if entry.get("overall_passed") is not None:
         return [
             "flatness not recorded for this measurement — it predates the "
@@ -2053,12 +2075,12 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "body": {"stage": "post_apply"},
             },
             status=status,
-            # B1 fix (adversarial review of PR #1780): Express's pre-apply
-            # cloud has already closed by the time this screen renders (it
-            # walks BEFORE VERIFY), so its before-tuning flatness/carve-out
-            # disclosure is available here too, not just on the done screen.
-            # Empty for Full at this point (its post-apply cloud has not
-            # started yet) — harmless, same as before this fix.
+            # B1 fix (adversarial review of PR #1780): the pre-apply cloud has
+            # already closed by the time this screen renders (it walks BEFORE
+            # VERIFY), so its before-tuning flatness/carve-out disclosure is
+            # available here too, not just on the done screen — on BOTH tiers
+            # since #1965 (Full's post-apply cloud has not started yet, which
+            # is why it now reads the pre-apply one rather than nothing).
             expert_details=_flatness_details_lines(status),
         )
     elif phase == PHASE_CLOUD_VERIFY:
