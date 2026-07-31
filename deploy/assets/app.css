@@ -100,9 +100,15 @@
   --surface-quiet: var(--foreground-005);
   --surface-hover: color-mix(in oklab, var(--foreground) 3%, transparent);
   --border-strong: var(--foreground-015);
+  /* Text ramp — exactly three tiers, in this order. Primary (--text) is
+     the thing you came to read; secondary (--muted) is supporting text;
+     tertiary (--muted-faint) is decoration that must not compete — row
+     chevrons, disclosure arrows. Derived from the tier above it so the
+     ramp has one hue owner. Pages use these; they do NOT mix their own
+     intermediate tiers with color-mix(). See docs/design-language.md. */
   --text: var(--foreground);
   --muted: var(--muted-foreground);
-  --muted-strong: var(--foreground);
+  --muted-faint: color-mix(in oklab, var(--muted) 60%, transparent);
   --accent-strong: var(--primary);
   --accent-soft: var(--accent);
   --accent-faint: var(--primary-010);
@@ -190,7 +196,7 @@ svg { display: block; }
   margin-bottom: 0.75rem;
 }
 .status-val {
-  color: var(--muted-strong);
+  color: var(--text);
   font-family: var(--font-display);
   font-size: 12px;
   font-weight: 500;
@@ -357,6 +363,7 @@ svg { display: block; }
 }
 /* Round icon button (back chevron, etc.). */
 .icon-button {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -367,6 +374,15 @@ svg { display: block; }
   background: color-mix(in oklab, var(--secondary) 60%, transparent);
   box-shadow: inset 0 0 0 1px var(--border);
   transition: background-color 150ms ease, color 150ms ease;
+}
+/* Tap target. The disc stays 32px — it is sized to the 56px header row, not
+   to the thumb — while an invisible overlay grows the HIT area to the 44px
+   floor (docs/design-language.md "Touch targets"). Absolutely positioned and
+   paint-free, so it cannot move layout or change the rendered button. */
+.icon-button::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
 }
 .icon-button:hover {
   background: var(--surface-hover);
@@ -583,7 +599,33 @@ svg { display: block; }
    the state (keyboard + a11y for free); the .track span is the visual switch.
    The CSS lives here in app.css; the Python helper only emits markup. */
 .toggle { position: relative; display: inline-block; width: 44px; height: 24px; flex: none; }
-.toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+/* The transparent input IS the hit surface, so it — not the label — carries
+   the 44px tap-target floor (docs/design-language.md "Touch targets"). It is
+   absolutely positioned, so overflowing the 24px label adds no layout: the
+   switch still measures 44x24 and the track is untouched.
+
+   Stacked toggles need >=44px between switch CENTRES, because the input
+   overflows its label by 10px top and bottom. Below that the overlap is not
+   cosmetic: at a 35px pitch two neighbours overlap by 9px and a tap below the
+   upper switch activates the LOWER toggle (later element wins the hit test).
+   Shipped rows clear it, but not by much: the tightest is /sources/ at 53.8px
+   centre-to-centre — 9.8px of clear space between the grown boxes — stable at
+   390/520/800/1280. /bluetooth/ is roomier, and its pitch moves with whether
+   the row hint wraps. Probes 1-8px outside each track resolve to the intended
+   switch. Keep new toggle rows at or above 44px.
+   Repro: render sources_setup._index_html() against deploy/assets/ and measure
+   consecutive `.toggle input` boxes. */
+.toggle input {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  width: 100%;
+  height: 44px;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
 .toggle .track {
   position: absolute;
   inset: 0;

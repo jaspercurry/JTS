@@ -862,6 +862,12 @@ those compress to nouns.
 
 ### 6.4 Visual system
 
+> **Craft-level rules moved.** The measurable ones — type ladder, text ramp,
+> depth, concentric radii, touch targets, tabular numbers, and motion — are now
+> owned by [docs/design-language.md](design-language.md). Where this section and
+> that file disagree, that file wins; the bullets below are the 2026-05 proposal
+> that preceded it, kept for the layout/performance guidance it still owns.
+
 This should feel like a modern settings surface, not a marketing page and not
 a 1990s directory. Recommended default:
 
@@ -872,10 +878,12 @@ a 1990s directory. Recommended default:
   chevron. Two-line rows only when status genuinely needs it.
 - **Icons**: use small inline SVG icons (Lucide-style strokes are fine) with
   visible text labels. Do not use an external icon font or CDN dependency.
-- **Color**: neutral surfaces and text first. Pick one quiet accent for
-  interactive affordances, likely deep blue or blue-teal. Green is reserved
-  for healthy/on/success, amber for setup-needed/warning, red for
-  destructive/error.
+- **Color**: neutral surfaces and text first, one quiet accent for interactive
+  affordances. Green is reserved for healthy/on/success, amber for
+  setup-needed/warning, red for destructive/error. (~~likely deep blue or
+  blue-teal~~ — superseded 2026-07-31: the shipped accent is the oklch sage
+  `--primary`, and the palette is a ratified decision, not a recommendation.
+  See design-language.md §2.)
 - **Typography**: local Figtree and Outfit WOFF2 files with system fallbacks;
   no external font requests. Sentence case. Tabular numbers for percentages,
   temperatures, spend, and uptime.

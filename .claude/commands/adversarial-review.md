@@ -117,6 +117,14 @@ smallest durable shape that fits the existing system wins.
   buffer sizes, subprocess frequency, latency-sensitive voice/audio paths.
 - **Web/security:** CSRF helpers, route-before-CSRF ordering, escaped untrusted
   SSIDs/device names/metadata, no generated inline JS with untrusted strings.
+- **Visual craft:** when the diff touches `jasper/web/*`, `deploy/assets/*`,
+  `deploy/index.html`, or `capture-page/*`, additionally apply the six lenses in
+  [docs/design-language.md](../../docs/design-language.md) §12 — hierarchy,
+  type, colour, depth/shape, spacing, states/targets — and its false-positive
+  filter. They fold into the severity taxonomy above; there is no separate
+  design-review command. Note especially that §2's ratified decisions (no focus
+  rings, light-only, the tight type ladder, the protected landing page) are not
+  findings.
 - **Secrets/config:** env ownership (right file, single writer), file modes,
   redaction, no API keys/PSKs/tokens in logs, UI, diagnostics, or fixtures.
 - **Tests:** every behavior change pinned by targeted hardware-free pytest in

@@ -305,3 +305,226 @@ def test_cpu_stat_shows_bare_percentage():
     """CPU usage shows just the percentage; the per-core bars carry the
     breakdown, so the '% total' qualifier stays gone."""
     assert "% total" not in (SYSTEM_JS / "sections.js").read_text()
+
+
+# ---------------------------------------------------------------- #
+# docs/design-language.md — the craft rules, pinned.                 #
+# Each test below is the enforcement arm of one section of that doc; #
+# when a rule changes, change it there and here in the same PR.      #
+# ---------------------------------------------------------------- #
+
+DESIGN_LANGUAGE_DOC = ROOT / "docs" / "design-language.md"
+
+
+def test_text_ramp_has_three_real_tiers():
+    """design-language.md §4: --text / --muted / --muted-faint, and no
+    synonym alias. --muted-strong used to alias --foreground, which left two
+    real tiers and pushed pages into inventing a third with color-mix()."""
+    css = _without_css_comments(APP_CSS.read_text())
+    for token in ("--text:", "--muted:", "--muted-faint:"):
+        assert token in css, f"app.css missing text-ramp tier {token}"
+    assert "--muted-strong" not in css, (
+        "--muted-strong aliased --foreground, so it was a synonym rather than "
+        "a tier. Use --text for full-strength text and --muted-faint for the "
+        "tertiary tier (docs/design-language.md §4)."
+    )
+
+
+# A neutral text tier derived in a page: the FIRST colour of the mix is a
+# foreground/neutral token, i.e. "take our text colour and weaken it". Tinting
+# a STATUS tone toward the foreground for legibility (--status-warn mixed with
+# --text) is a different, allowed thing — it is not a ramp tier.
+_PAGE_TEXT_TIER = re.compile(
+    r"(?<![-\w])color:\s*color-mix\(\s*in\s+\w+\s*,\s*"
+    r"var\(\s*--(?:foreground|muted-foreground|text|muted)\s*\)"
+    r"([^;]*)\)"
+)
+
+
+def test_pages_do_not_invent_their_own_text_tiers():
+    """design-language.md §4: a text colour derived by weakening a foreground
+    token is a fourth tier invented in one file. Mixing belongs in the token
+    layer, where --muted-faint is defined once.
+
+    `sound.css` is a known, ledgered exception outside the measurement-flow
+    pass's surfaces; it is listed rather than migrated so this guard can stay
+    exact about what remains."""
+    ledgered = {"deploy/assets/sound-profile/sound.css"}
+    offenders: list[str] = []
+    for path in _focus_ring_css_sources():
+        if path == APP_CSS:
+            continue  # the token layer is where mixing is allowed
+        rel = str(path.relative_to(ROOT))
+        if rel in ledgered:
+            continue
+        for match in _PAGE_TEXT_TIER.finditer(_without_css_comments(path.read_text())):
+            offenders.append(f"{rel}: {match.group(0)[:72]}")
+
+    assert not offenders, (
+        "text colours come from the three-tier ramp (--text / --muted / "
+        "--muted-faint), not a page-local color-mix "
+        "(docs/design-language.md §4):\n" + "\n".join(offenders)
+    )
+
+
+# The landing page is the protected reference implementation
+# (docs/design-language.md §2), so these three off-ladder sizes are HELD for
+# owner review rather than corrected: 0.92rem -> 14px reflows the pair banner.
+# The allowlist exists so the guard can still fail a NEW off-ladder value.
+LANDING_OFF_LADDER_HELD = {"0.92rem", "0.88rem", "0.86rem"}
+TYPE_LADDER_PX = {"11px", "12px", "13px", "14px", "16px"}
+
+
+def _off_ladder_sizes(css: str) -> set[str]:
+    """font-size values that are neither on the ladder nor already held.
+
+    NB `em` is relative-to-parent sizing, not a ladder step, so it is skipped —
+    but the check must not also swallow `rem`, which IS an absolute size and is
+    exactly what this guard exists to catch."""
+    out: set[str] = set()
+    for raw in re.findall(r"font-size:\s*([^;}]+)", css):
+        value = raw.strip()
+        if value in TYPE_LADDER_PX or value in LANDING_OFF_LADDER_HELD:
+            continue
+        if value.startswith("var(") or value.startswith("calc("):
+            continue
+        if re.search(r"(?<![a-z])\d*\.?\d+em\b", value):
+            continue
+        out.add(value)
+    return out
+
+
+def test_landing_page_type_stays_on_the_ladder():
+    """design-language.md §3: 11/12/13/14/16 px, and no new off-ladder value."""
+    unexpected = _off_ladder_sizes(_without_css_comments(LANDING_HTML.read_text()))
+    assert not unexpected, (
+        "landing-page type must sit on the 11/12/13/14/16px ladder "
+        f"(docs/design-language.md §3); found {sorted(unexpected)}"
+    )
+
+
+def test_type_ladder_guard_actually_catches_a_new_off_ladder_value():
+    """The guard is only worth having if it fires. An earlier version excluded
+    anything containing "em", which silently swallowed `rem` too — the exact
+    case it exists to catch."""
+    assert _off_ladder_sizes("a { font-size: 0.95rem; }") == {"0.95rem"}
+    assert _off_ladder_sizes("a { font-size: 15px; }") == {"15px"}
+    # …while the genuinely-exempt shapes stay quiet.
+    assert _off_ladder_sizes("a { font-size: 0.95em; }") == set()
+    assert _off_ladder_sizes("a { font-size: 14px; }") == set()
+    assert _off_ladder_sizes("a { font-size: 0.92rem; }") == set()  # held, §3
+
+
+TARGET_PREFERRED_PX = 44
+TARGET_FLOOR_PX = 40
+
+
+def _px(body: str, prop: str) -> float | None:
+    m = re.search(rf"(?<![-\w]){prop}:\s*(-?\d+(?:\.\d+)?)px", body)
+    return float(m.group(1)) if m else None
+
+
+def _inset_expansion(body: str) -> tuple[float, float] | None:
+    """Per-axis expansion (horizontal, vertical) from an overlay's `inset`.
+
+    A negative inset grows the box by that much on each side, so the axis gains
+    twice the value. Accepts the 1- and 2-value forms we use (`-6px`,
+    `-7px 0`)."""
+    m = re.search(r"(?<![-\w])inset:\s*([^;]+);", body)
+    if not m:
+        return None
+    parts = m.group(1).split()
+    values = []
+    for part in parts:
+        pm = re.fullmatch(r"(-?\d+(?:\.\d+)?)(px)?", part.strip())
+        if not pm:
+            return None
+        values.append(float(pm.group(1)))
+    if len(values) == 1:
+        vert = horiz = values[0]
+    elif len(values) == 2:
+        vert, horiz = values
+    else:
+        return None
+    return (-horiz * 2, -vert * 2)
+
+
+def test_touch_targets_meet_the_floor():
+    """design-language.md §8: 44px preferred / 40px floor, grown WITHOUT
+    changing the rendered box — an absolutely-positioned overlay, or the
+    transparent input that already carries the hit.
+
+    Asserts the ARITHMETIC, not just the mechanism: declared size plus overlay
+    expansion must clear the floor, so shrinking a control's rendered size
+    without widening its overlay fails here. Geometry is static (pytest has no
+    browser); the rendered-pixel invariance and the real hit areas were
+    verified in-browser when these landed."""
+    app = _without_css_comments(APP_CSS.read_text())
+    landing = _without_css_comments(LANDING_HTML.read_text())
+
+    # (label, declared box, overlay body or None, axis) -> effective hit size.
+    icon_body = _css_body(app, ".icon-button")
+    icon_after = _css_body(app, ".icon-button::after")
+    toggle_input = _css_body(app, ".toggle input")
+    mic_body = _css_body(landing, ".mic-action")
+    mic_after = _css_body(landing, ".mic-action::after")
+
+    icon_grow = _inset_expansion(icon_after)
+    mic_grow = _inset_expansion(mic_after)
+    assert icon_grow, ".icon-button::after must declare a numeric inset"
+    assert mic_grow, ".mic-action::after must declare a numeric inset"
+
+    cases = [
+        (".icon-button width", _px(icon_body, "width"), icon_grow[0]),
+        (".icon-button height", _px(icon_body, "height"), icon_grow[1]),
+        # The toggle's input IS the hit surface, so its own box is the target.
+        (".toggle input width", _px(_css_body(app, ".toggle"), "width"), 0.0),
+        (".toggle input height", _px(toggle_input, "height"), 0.0),
+        (".mic-action height", _px(mic_body, "min-height"), mic_grow[1]),
+    ]
+    for label, declared, grow in cases:
+        assert declared is not None, f"{label}: could not read a declared px size"
+        effective = declared + grow
+        assert effective >= TARGET_FLOOR_PX, (
+            f"{label}: {declared}px + {grow}px overlay = {effective}px, below "
+            f"the {TARGET_FLOOR_PX}px hard floor (docs/design-language.md §8)"
+        )
+        assert effective >= TARGET_PREFERRED_PX, (
+            f"{label}: {declared}px + {grow}px overlay = {effective}px, below "
+            f"the {TARGET_PREFERRED_PX}px preferred target "
+            f"(docs/design-language.md §8)"
+        )
+
+    # …and the growth must not be able to move layout.
+    assert "position: absolute" in icon_after
+    assert "position: absolute" in mic_after
+    assert "position: absolute" in toggle_input
+    assert "position: relative" in mic_body, (
+        "the ::after overlay needs .mic-action to be a positioned ancestor"
+    )
+    assert "position: relative" in icon_body, (
+        "the ::after overlay needs .icon-button to be a positioned ancestor"
+    )
+
+
+def test_touch_target_floor_assertion_actually_fires():
+    """The floor test is only worth having if shrinking a control fails it —
+    the mechanism-only version passed a 24px .icon-button."""
+    assert _inset_expansion('inset: -6px;') == (12.0, 12.0)
+    assert _inset_expansion('inset: -7px 0;') == (0.0, 14.0)
+    # A 24px disc with the same -6px overlay is 36px: under both bars.
+    assert 24 + _inset_expansion('inset: -6px;')[1] < TARGET_FLOOR_PX
+    # …while the shipped 32px disc clears the preferred target exactly.
+    assert 32 + _inset_expansion('inset: -6px;')[1] == TARGET_PREFERRED_PX
+
+
+def test_design_language_doc_is_reachable_and_dated():
+    """Documentation paradigm rules 3 and 8: every HANDOFF-style reference
+    carries a Last verified footer and is listed in README's doc atlas."""
+    doc = DESIGN_LANGUAGE_DOC.read_text()
+    assert re.search(r"(?m)^Last verified: \d{4}-\d{2}-\d{2}$", doc), (
+        "docs/design-language.md needs a `Last verified: YYYY-MM-DD` footer"
+    )
+    assert "design-language.md" in (ROOT / "README.md").read_text(), (
+        "docs/design-language.md must be listed in README's documentation map"
+    )

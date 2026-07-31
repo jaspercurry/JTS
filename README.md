@@ -1181,6 +1181,14 @@ reference. Currently:
   The canonical design system and tighter `jts.local` layout are
   implemented; the first-run setup wizard and fuller conditional
   guidance remain future phases.
+- [`design-language.md`](docs/design-language.md) — The **craft layer**
+  under the management UI: the type ladder, three-tier text ramp, depth
+  strategy, concentric radii, tabular numbers, touch-target floor,
+  motion policy, interface-writing rules, and the visual-craft review
+  lenses the adversarial gate applies to UI diffs. Scoped to the
+  measurement-flow design pass (capture page + correction/crossover
+  surfaces), not a codebase-wide compliance program. Reads alongside
+  `HANDOFF-management-ui.md`, which owns IA and anti-patterns.
 - [`PROPOSAL-dac-profile-registry.md`](docs/PROPOSAL-dac-profile-registry.md)
   — **Proposal / implementation handoff** (updated 2026-06-11) —
   scoped design for the data-driven DAC profile registry now scaffolded
