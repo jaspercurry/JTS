@@ -159,7 +159,7 @@ frame or physical?), #1857 (worst-band pointer anchored on a full-range mean),
 slides, pulling courtesy beeps into the floor estimate), #1847 (`band_levels_dbfs`
 Hann-weights chirps — sub-bass reads ~10 dB low), #1938 (**R8** — fixture
 defaults `trim_db` from the default curves, mislabeling every custom-curve
-caller), #1882 + #1883 (alignment-confidence coverage; `sweep_anchor`
+caller, closed), #1882 + #1883 (alignment-confidence coverage; `sweep_anchor`
 derivation — **#1883 part 1 is R12**), #1652 (CHECK-SNR gate + noise-attributed
 VERIFY failures), #1672 (per-serial mic cals disagree ~4.7 dB above 8 kHz),
 #1774 (**R12** — re-baseline S0 under the corrected calibration sign), #1969
@@ -248,8 +248,9 @@ is discarded. P4 is the read path plus the render, the household-wire delta
 labeled honestly as model-vs-model, and per-speaker persistence of VERIFY's
 model error. Cheap — every piece exists; nothing reads it.
 
-**Status.** PENDING RATIFICATION; nothing merged. **Scheduled: R8** for the
-findings reader (its first rung), then **R11** for the attempts loop.
+**Status.** PENDING RATIFICATION. First rung merged — the findings reader,
+#1982, 2026-07-31; **ratification still pending**. Then **R11** for the
+attempts loop.
 
 **Reshapes.** Precedes WO-6 and WO-7. WO-7's per-attempt
 predicted-vs-measured evidence stream is **unimplementable until P4 exists** —
@@ -263,7 +264,7 @@ tier reads a block that cannot exist at stage 1 — Full shows less than Express
 #1784 (full-band honest two-panel before/after), #1927 (**R8** — VERIFY
 pilot-transfer baseline never expires — and see P0 finding 1: a fixed baseline accumulates
 drift comparable to the whole floor within ~15 attempts, so this is a rule, not
-just a bug), #1876 (convergence: does a clean-slate re-run reach the same tune?),
+just a bug, closed), #1876 (convergence: does a clean-slate re-run reach the same tune?),
 #1844 (LLM-native tuning workbench W1–W4 — the consumer the loop feeds).
 
 ---
@@ -336,7 +337,7 @@ letting a handoff quietly re-plan it.
 
 ---
 
-### R8 — spine + gating foundation *(Friday 2026-07-31, overnight into 08-01 — IN FLIGHT)*
+### R8 — spine + gating foundation *(Friday 2026-07-31, overnight into 08-01 — COMPLETE)*
 
 **Territory:** program docs and tooling (this roadmap, the harnesses,
 `captures/`) plus the findings-reader seam.
@@ -359,6 +360,17 @@ captures, then the standing fixed-mic slice pass. No new *acoustic* evidence.
 **Exit:** spine merged; detector certified against the frozen criteria; banked
 findings visible in the envelope. **Plus the standing slice exit** — deploy to
 jts3 and a mechanical fixed-mic end-to-end pass.
+
+**Closed:** ten PRs merged at 0/0 across the R7+R8 waves this session — four
+in R8 (#1980 spine, #1981 fixture-trim fix, #1982 findings reader — P4
+rung 1 LIVE, #1984 baseline lifetime) on top of R7's six landed earlier the
+same session. Detector certified offline; verdict keeps the shipped core
+(see R9 below). Deployed `1cedf9ee7`. **E2E slice check PASS**
+(`captures/r8-slice-check-20260731/` — Express stage-1 walked end-to-end on
+the live build; two real anomalies self-recovered exercising the new
+honesty copy live; state proven byte-identical; the findings line is
+legitimately absent this session, and the "checked N–M Hz" line is
+post-apply and structurally unreachable at stage-1 stop).
 
 ### R9 — the instrument round (rung P1) *(Friday 2026-07-31)*
 
@@ -525,7 +537,7 @@ only safe after the objective lands, and the tag says so.
 - **Attribution work orders** (owner: [`attribution-stage-plan.md`](attribution-stage-plan.md) §7) — #1866 (the direction and its rulings), #1933 (flow-first WO-2/WO-3), #1869 (WO-3 alignment evidence gaps), #1922 (WO-4: per-driver level-sanity gate and named-driver attribution), #1873 + #1924 (WO-5's deterministic-mismatch discriminator and its copy — **#1924 R8**), #1791 (WO-8 room-correction regime).
 - **Two-stage chassis (T1–T3)** — #1806. WO-6 and WO-7 both sit on it; the ladder does not change that.
 - **Crossover-v2 flow and product surface** — #1947, #1872, #1863, #1862, #1840, #1788, #1706, #1703, #1684, #1650, #1671, #1665, #1833, #1832, #1926, #1925, #1913, #1860, #1950.
-- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7, **plus Stage 6 built in R12 and merge-gated on the Monday hardware re-run**), #1979 (**R12**), #1978 (**R12**), #1961, #1865, #1962.
+- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7, **plus Stage 6 built in R12 and merge-gated on the Monday hardware re-run**), #1979 (**R12**), #1978 (**R12**), #1961, #1865, #1962, #1985 (Crossover review's "Leave it as it is" exits to an unrelated HTTPS interstitial — found by the R8 slice check; untagged).
 - **Capture page and relay platform** — #1792 (**R12** — the publish gate R12's UX build sits behind), #1861, #1975 (**R12**).
 - **Hardware bench sessions** — #1848 (JTS3 commissioning acceptance). The owner-attended delay/reflector bench is indexed under rung P3 instead, because its output is a P3 input.
 - **Corpus and evidence tooling** — #1884 (corpus-pin visibility in CI).
@@ -551,13 +563,18 @@ Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
 date:           2026-07-31
-jts3_sha:       5c7029b63
-active_round:   R8 — spine + gating foundation (territory: program docs/tooling)
-active_rung:    P1 groundwork (detector certification) — building under the
+jts3_sha:       1cedf9ee7 — verified deployed, jasper-doctor 0 failed / 5
+                known warnings
+active_round:   R9 — the instrument round (rung P1; territory:
+                jasper/audio_measurement/)
+active_rung:    P1 (frame discipline + gating contract) — R8 certified the
+                detector offline: both detectors fail the frozen criteria,
+                shipped core kept. R9 implements P1 itself, still under the
                 owner's provisional green light, not under ratification
-last_round:     R7 — six PRs merged (#1959 #1956 #1972 #1963 #1970 #1977)
-next_mission:   R9, the instrument round — gating contract + frame discipline,
-                then re-run the corpus replay under the new instrument
+last_round:     R7 + R8 — one continuous session, ten PRs merged at 0/0
+                (R7: #1959 #1956 #1972 #1963 #1970 #1977; R8: #1980 #1981
+                #1982 #1984)
+next_mission:   captures/NEXT-SESSION-PROMPT-round-9.md
 blocked_on:     nothing for R9. Monday-gated: ladder P0–P4 ratification, Q-E,
                 the enclosure-hole timeline (which sessions are leaky-box —
                 every cross-session comparison spanning it is unreadable
