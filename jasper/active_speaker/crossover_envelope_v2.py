@@ -94,7 +94,15 @@ logger = logging.getLogger(__name__)
 # wizard's own module is data-driven off ``verdict_text`` / ``next_action`` /
 # ``alternate_actions``, so it renders the new screen with no JS change. The
 # envelope also gains an always-present ``busy`` flag (see ``_envelope``).
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 11
+#
+# Bumped 11 → 12: the envelope gained ``findings`` — the household-readable
+# lines of what this speaker's measurement banked (WO-1's read half; the
+# first-principles panel's lens C, CC1). Populated on the review and done
+# screens only, ``[]`` everywhere else, exactly like ``prediction``'s
+# review-only rule one key over. Additive: no key removed or re-typed, and the
+# crossover wizard's module does not gate on this version, so an unredeployed
+# page ignores the key rather than refusing the envelope.
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 12
 
 # The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
 # step is gone; these five are the whole journey.
@@ -995,6 +1003,12 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         # rather than explain a fait accompli.
         expert_details=_flatness_details_lines(status),
         prediction=prediction,
+        # CC1: this is the screen the #1949 ruling took a sentence away from.
+        # The frame gate now banks its disagreement and PROCEEDS, so the
+        # proposal below it was reached over evidence two instruments read
+        # differently — and until this line the household was told nothing
+        # about that at the exact moment they were asked to decide.
+        findings=_finding_notes(status),
     )
 
 
@@ -1292,6 +1306,7 @@ def _envelope(
     advertise_relay: bool = True,
     prediction: Mapping[str, Any] | None = None,
     busy: bool = False,
+    findings: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
@@ -1368,6 +1383,13 @@ def _envelope(
         # It also leaves every shipped screen's chart byte-identical, since
         # none of them carries this key.
         "prediction": dict(prediction) if prediction else None,
+        # WO-1's read half (panel lens C, CC1): the findings this speaker's
+        # measurement banked, as household-readable lines. ``[]`` on every
+        # screen that is not the apply decision or the result — the same
+        # data-driven policy the ``prediction`` key above states: the SCREEN
+        # decides what it carries, here, and the renderer keeps one honest
+        # rule (draw the lines the envelope carries).
+        "findings": list(findings or []),
     }
 
 
@@ -1528,10 +1550,15 @@ _DURABLE_STATE_FACTS = {
 }
 
 
-def _failure_is_fresh(failure: Mapping[str, Any]) -> bool:
-    """Is this persisted failure the screen the household is on RIGHT NOW?
+def _record_is_fresh(record: Mapping[str, Any]) -> bool:
+    """Is this persisted record the moment the household is in RIGHT NOW?
 
-    A record with no ``at`` — every record written before #1942 — answers
+    Named for the RECORD rather than the failure it was written for: two kinds
+    of dated record now ask this question — the terminal failure (#1942) and a
+    banked finding (WO-1's read half) — and both want the identical answer from
+    one clock, so neither can drift into its own idea of "still current".
+
+    A record with no ``at`` — every failure record written before #1942 — answers
     False. That is the migration story and it is the fail-honest direction:
     the state file's schema version is deliberately NOT bumped for this key
     (a bump makes ``load_v2_state`` reject every deployed Pi's file, which
@@ -1543,13 +1570,13 @@ def _failure_is_fresh(failure: Mapping[str, Any]) -> bool:
     and reads as fresh, which is the safe direction: the worst case is the
     screen that ships today.
     """
-    at = _finite(failure.get("at"))
+    at = _finite(record.get("at"))
     if at is None:
         return False
     return time.time() - at <= FAILURE_FRESH_WINDOW_S
 
 
-def _failure_when_phrase(failure: Mapping[str, Any]) -> str:
+def _record_when_phrase(record: Mapping[str, Any]) -> str:
     """"yesterday" / "earlier today" / "on July 29" / "on July 29, 2025".
 
     Follows ``jasper.tools._format_relative_date``'s shape (the household-date
@@ -1563,8 +1590,12 @@ def _failure_when_phrase(failure: Mapping[str, Any]) -> str:
     ``localtime`` rejects roughly ≲ -1e16, and an uncaught ``OSError`` here is
     a 500 on the wizard's main GET) or print a nonsense year. Both resolve the
     same way, because "we cannot say when" is the honest answer to both.
+
+    Shared with the banked-finding line for the same reason
+    :func:`_record_is_fresh` is: one date vocabulary in this module, so a
+    finding and a failure never describe the same afternoon differently.
     """
-    at = _finite(failure.get("at"))
+    at = _finite(record.get("at"))
     # A negative stamp is not a clock reading this project ever produced; it
     # is a corrupt/garbage field, and the year it would render is nonsense.
     if at is None or at < 0:
@@ -1601,7 +1632,7 @@ def _failure_history_note(
     claim is not corroborated and this falls back to the generic note rather
     than asserting a change the state cannot confirm.
     """
-    when = _failure_when_phrase(failure)
+    when = _record_when_phrase(failure)
     durable = _DURABLE_STATE_FACTS.get(code)
     if durable is not None and applied:
         # Two sentences, not a third em-dash clause: the fact is the point
@@ -1614,6 +1645,62 @@ def _failure_history_note(
         else _FAILURE_HISTORY_REASON_DEFAULT
     )
     return f"Your last measurement ended {when} — {reason}."
+
+
+# --- banked findings (WO-1's read half; panel lens C, CC1) --------------------
+
+
+def _finding_notes(status: Mapping[str, Any]) -> list[dict[str, str]]:
+    """What this speaker's measurement LEARNED, one line each.
+
+    The read end of the wire ``jasper.web.correction_crossover_v2
+    ._bank_household_findings`` fills. Until it existed, the flow banked a
+    finding with validated household copy into a durable store and **nothing
+    ever read one back**: after #1949 the frame gate stopped hard-stopping and
+    started banking-and-proceeding, which took the household's disclosure from
+    one sentence to none at the exact moment the flow began proceeding on
+    disputed evidence.
+
+    **``household_copy`` and nothing else reaches this line.** The mechanism id,
+    the evidence scalars, the confidence tier and the probe lists are internal
+    taxonomy by ``jasper.attribution.findings``' own two-vocabularies rule. Two
+    independent things keep them off a household screen: the producer projects
+    only the sentence and a clock, and this reader names the two keys it reads
+    rather than passing a row through — so a future writer that adds a field to
+    the projection does not silently publish it here.
+
+    **One line per finding, never a paragraph.** The sentence is minted and
+    validated at the producer (``promotion.LEVEL_FRAME_HOUSEHOLD_COPY``, checked
+    hardware-noun-free and slug-free at construction), so this composes nothing
+    and rewrites nothing — it only decides whether the sentence needs a date in
+    front of it.
+
+    **Dated when it is not the moment the household is in** (#1944's lesson,
+    one instrument over). A finding banked minutes ago on the review screen is
+    the session the household is standing in, and prefixing it with a date
+    would be noise. The same finding read on a Monday — the review interlude is
+    untimed by construction, and the done screen persists — is HISTORY, and
+    presenting last week's diagnosis undated is the defect #1942 fixed for
+    failure records. Same clock, same vocabulary, same 30-minute window.
+
+    Empty renders as nothing at all: no heading, no "no findings" line. A clean
+    speaker has nothing to say and says it — the same rule
+    :func:`_carve_out_expert_lines` follows for a band that carved nothing.
+    """
+    rows = _v2(status).get("findings")
+    if not isinstance(rows, list):
+        return []
+    notes: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        text = row.get("household_copy")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if not _record_is_fresh(row):
+            text = f"From your measurement {_record_when_phrase(row)}: {text}"
+        notes.append({"text": text})
+    return notes
 
 
 def _aged_failure_envelope(
@@ -1977,7 +2064,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # a fall-through would invite the household to "confirm the result" of
         # a session that ended yesterday. Landing them on the entry screen is
         # the deliberate destination, not a side effect of where they were.
-        if _failure_is_fresh(failure):
+        if _record_is_fresh(failure):
             env = _failure_envelope(
                 failure_code, status, active_step, applied=applied,
             )
@@ -2219,6 +2306,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             expert_details=(
                 _verify_graded_band_lines(status) + _flatness_details_lines(status)
             ),
+            # CC1: the result screen is the OTHER place a banked finding is
+            # owed. It rides the durable projection rather than this session's
+            # bundle deliberately — stage 2 is a different session in a
+            # different bundle, so a finding the MEASURING session banked would
+            # otherwise vanish exactly when the household is told the speaker
+            # is tuned.
+            findings=_finding_notes(status),
         )
         # Terminal: mark every step done.
         env["steps"] = _step_payload("", set(_STEP_IDS))

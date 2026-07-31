@@ -816,7 +816,7 @@ ship; the later owner inherits the record and may extend it.
   research directory so every downstream citation is reviewable in-repo;
   registry seed list amended (§4). Still open: the summary issue.
 - **WO-1 — Findings schema + persistence.** The artifact of §3.1, its
-  storage, and the excluded-band promotion path. No UI yet. Acceptance:
+  storage, and the excluded-band promotion path. Acceptance:
   schema test; one golden finding round-trip; provenance marker discipline
   (old bundles without findings readable); the **stable cross-store session
   identity** of §6 (a finding cites its evidence by an id that survives every
@@ -826,6 +826,18 @@ ship; the later owner inherits the record and may extend it.
   model is stated,
   implemented, and pinned by a test (a finding must not outlive, or silently
   predecease, the evidence it cites).
+  **Read half shipped 2026-07-31** (first-principles panel lens C, CC1): the
+  publisher reopens what it wrote through `storage.read_finding_set` — the
+  strict reader, citation re-hash included — and projects `household_copy`
+  alone into the durable v2 state, which the crossover envelope renders as one
+  quiet line on the review and done screens, dated once the record is no longer
+  the moment the household is in. Before it, `read_finding_set` had zero
+  non-test callers, so #1949's *bank a finding and proceed* reduced in practice
+  to *proceed*. Scoped deliberately: the carve-out sets stay recorded and
+  unprojected, because their sentence is copied from the carve-out record and
+  `carve_outs_by_band` already renders that same fact on the same two screens.
+  The rich WO-6 report — mechanism, evidence, confidence, and the two-panel
+  visualization — is still WO-6's.
 - **WO-2 — Quick-sweep harness** (§6). Acceptance: **one scripted
   apply-capture-restore cycle** end-to-end on JTS3 (the probe program it
   carries is WO-3's business, not WO-2's), with the safety rails tested

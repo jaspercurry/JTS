@@ -80,7 +80,7 @@ def _step_statuses(env: dict) -> dict[str, str]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -95,7 +95,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = build_crossover_envelope(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
     assert env["flow"] == "v2"
 
 
@@ -829,7 +829,7 @@ def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
     assert "headroom_cost" in env["candidate_review"]
 
 
@@ -1457,7 +1457,7 @@ def test_applied_false_with_verify_phase_does_not_force_verify_fail():
 ])
 def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
-    assert env["schema_version"] == 11
+    assert env["schema_version"] == 12
     assert env["screen"]
     assert env["verdict_text"]
 
@@ -2399,10 +2399,246 @@ def test_the_before_tuning_scope_clause_renders_once_the_check_has_passed():
 def test_the_review_screen_moved_the_schema_version():
     """PR-T2's bump (9 → 10): the screen vocabulary gained ``review`` and the
     envelope gained ``prediction``. PR-T3's (10 → 11): the vocabulary gained
-    ``closing`` and the envelope gained ``busy``. Both additive — no key
-    removed or re-typed — so an unredeployed page ignores the new keys rather
-    than refusing the envelope, the same property the 8 → 9 bump had."""
+    ``closing`` and the envelope gained ``busy``. CC1's (11 → 12): the envelope
+    gained ``findings``. All additive — no key removed or re-typed — so an
+    unredeployed page ignores the new keys rather than refusing the envelope,
+    the same property the 8 → 9 bump had."""
     env = build_crossover_envelope_v2(_review_status())
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 11
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 12
     assert "prediction" in env
     assert env["busy"] is False  # present on every screen, true on one
+    # Present on EVERY screen, populated on two — the key's absence would make
+    # a renderer branch on the screen, which is what the data-driven contract
+    # exists to prevent.
+    assert env["findings"] == []
+
+
+# --- banked findings (WO-1's read half; panel lens C, CC1) --------------------
+#
+# The corpus-shaped fixture: the 2026-07-30 session's own frame-gate outcome
+# (#1949's ruling class) as the durable projection carries it — the household
+# sentence the attribution package minted and validated, plus the clock it was
+# banked on. Built from the SHIPPED constant, never a copy of it: a test that
+# retyped the sentence would keep passing while the product's own words drifted.
+
+
+def _banked_finding(*, age_s: float = 0.0) -> list[dict]:
+    from jasper.attribution.promotion import LEVEL_FRAME_HOUSEHOLD_COPY
+
+    return [{
+        "household_copy": LEVEL_FRAME_HOUSEHOLD_COPY,
+        "at": time.time() - age_s,
+    }]
+
+
+def _done_status(**overrides) -> dict:
+    v2 = {
+        "phase": "done",
+        "verify": {"outcome": "pass"},
+        "candidate": _candidate_summary(),
+    }
+    v2.update(overrides)
+    return _status(**v2)
+
+
+def test_the_banked_frame_finding_reaches_both_decision_screens():
+    """**The acceptance.** A finding the machine banked is READ BACK and shown.
+
+    Panel lens C, W1: ``read_finding_set`` had zero non-test callers, so
+    #1949's "bank a finding and proceed" was, to a household, just "proceed" —
+    the flow started proceeding on disputed evidence at the exact moment its
+    disclosure went from one sentence to none. The sentence lands on the two
+    screens that owe it: the apply DECISION, and the RESULT.
+    """
+    from jasper.attribution.promotion import LEVEL_FRAME_HOUSEHOLD_COPY
+
+    review = build_crossover_envelope_v2(_review_status(findings=_banked_finding()))
+    done = build_crossover_envelope_v2(_done_status(findings=_banked_finding()))
+    assert [f["text"] for f in review["findings"]] == [LEVEL_FRAME_HOUSEHOLD_COPY]
+    assert [f["text"] for f in done["findings"]] == [LEVEL_FRAME_HOUSEHOLD_COPY]
+    # One line, not a paragraph: the producer owns the sentence and this
+    # screen adds nothing to it while it is current.
+    assert len(review["findings"]) == 1
+
+
+def test_no_internal_finding_vocabulary_ever_reaches_the_envelope():
+    """§3.1's two vocabularies, enforced at the last hop before a household.
+
+    ``mechanism`` names physics and may name hardware; ``evidence`` is raw
+    scalars; ``confidence`` and the probe lists are the plan's internal
+    routing. All of them are ops/forensic surfaces by the artifact's own
+    definition. The projection carries none of them, so none can reach the
+    wire — asserted over the WHOLE envelope rather than the findings key,
+    because the failure that matters is a field arriving anywhere a renderer
+    can reach it.
+    """
+    status = _review_status(findings=[{
+        "household_copy": "Two measurements of this speaker disagreed.",
+        "at": time.time(),
+        # Fields a future writer might be tempted to add to the projection.
+        # They are ignored on the way through, not rendered somewhere quieter.
+        "mechanism": "M7",
+        "confidence": "unsure",
+        "fix_class": "refit",
+        "evidence": {"disagreement_db": 3.2307},
+        "probes_recommended": ["P6"],
+    }])
+    env = build_crossover_envelope_v2(status)
+    assert [f["text"] for f in env["findings"]] == [
+        "Two measurements of this speaker disagreed."
+    ]
+    assert [set(f) for f in env["findings"]] == [{"text"}]
+    rendered = repr(env)
+    for internal in ("M7", "unsure", "refit", "disagreement_db", "3.2307", "P6"):
+        assert internal not in rendered, f"{internal} reached a household surface"
+
+
+def test_a_finding_from_an_earlier_day_reads_as_history():
+    """#1944's lesson, one instrument over: history is presented AS history.
+
+    The review interlude is untimed by construction and the done screen
+    persists, so both are re-walkable days later — which is exactly how a
+    household meets a finding banked last week. Undated, last week's diagnosis
+    reads as this moment's verdict, which is the defect #1942 fixed for failure
+    records. Same clock, same window, same date vocabulary.
+    """
+    from jasper.attribution.promotion import LEVEL_FRAME_HOUSEHOLD_COPY
+
+    two_days = 2 * 24 * 60 * 60
+    env = build_crossover_envelope_v2(
+        _review_status(findings=_banked_finding(age_s=two_days))
+    )
+    line = env["findings"][0]["text"]
+    assert line.startswith("From your measurement on ")
+    # Dated, and still the producer's own sentence — never paraphrased.
+    assert line.endswith(LEVEL_FRAME_HOUSEHOLD_COPY)
+
+
+@pytest.mark.parametrize("age_s,expected", [
+    (0.0, ""),                       # this moment: no date at all
+    (29 * 60.0, ""),                 # still inside the freshness window
+    (2 * 60 * 60.0, "earlier today"),  # outside it, same day
+    (_DAY_S, "yesterday"),
+])
+def test_a_finding_is_dated_only_once_it_stops_being_this_moment(age_s, expected):
+    """The boundary is the module's ONE freshness window, shared with the
+    failure record — so a finding and a failure can never describe the same
+    afternoon differently.
+
+    The same near-midnight skip the failure-note parametrization carries, for
+    the same reason: "earlier today" is a statement about the LOCAL calendar
+    day, and a suite that runs at 00:30 would otherwise fail on a correct
+    "on July 30".
+    """
+    at = time.time() - age_s
+    if 0 < age_s < _DAY_S and time.localtime(at).tm_yday != time.localtime().tm_yday:
+        pytest.skip("clock is within 2 h of local midnight")
+    env = build_crossover_envelope_v2(
+        _review_status(findings=_banked_finding(age_s=age_s))
+    )
+    line = env["findings"][0]["text"]
+    if not expected:
+        assert not line.startswith("From your measurement")
+    else:
+        assert line.startswith(f"From your measurement {expected}:")
+
+
+def test_an_undated_finding_says_it_cannot_say_when():
+    """A projection written without a clock (or with a corrupt one) is not
+    current until proven current: it reads as history with no date CLAIM,
+    which is the honest answer to "when was this?" when the record cannot
+    say. Never a 500 on the wizard's main GET, and never a guessed date."""
+    for at in (None, "not-a-time", float("nan"), -1e18):
+        env = build_crossover_envelope_v2(_review_status(findings=[
+            {"household_copy": "Two ranges disagreed.", "at": at},
+        ]))
+        assert env["findings"][0]["text"] == (
+            "From your measurement earlier: Two ranges disagreed."
+        )
+
+
+def test_nothing_banked_renders_nothing_at_all():
+    """No heading, no "no findings" line, no empty state. A clean speaker has
+    nothing to say and says it — the same honest-silence rule the carve-out
+    lines follow for a band that carved nothing."""
+    assert build_crossover_envelope_v2(_review_status())["findings"] == []
+    assert build_crossover_envelope_v2(_done_status())["findings"] == []
+
+
+def test_a_row_without_a_readable_sentence_is_never_invented():
+    """Rehydration must not fabricate. A durable row whose copy is missing,
+    empty, or not a string is DROPPED rather than rendered as a blank line or
+    a stringified placeholder — the state file is JSON written by some build,
+    possibly not this one, and a finding a household cannot read is not a
+    finding."""
+    env = build_crossover_envelope_v2(_review_status(findings=[
+        {"at": time.time()},
+        {"household_copy": "", "at": time.time()},
+        {"household_copy": "   ", "at": time.time()},
+        {"household_copy": 42, "at": time.time()},
+        "not even an object",
+        {"household_copy": "A real one survived.", "at": time.time()},
+    ]))
+    assert [f["text"] for f in env["findings"]] == ["A real one survived."]
+
+
+def test_two_findings_both_render_in_the_order_they_were_banked():
+    """Order is the PRODUCER's, preserved, and nothing is de-duplicated.
+
+    Re-ordering here would make the envelope a second owner of a decision the
+    promotion path already made (it sorts carve-outs by band). Dropping a
+    repeat would be this screen silently deciding a banked finding does not
+    exist — "must not drop a finding" outranks a repeated sentence, and a
+    producer emitting one twice is a bug to fix at the producer.
+    """
+    now = time.time()
+    env = build_crossover_envelope_v2(_review_status(findings=[
+        {"household_copy": "Second-lowest range first.", "at": now},
+        {"household_copy": "Then the higher one.", "at": now},
+        {"household_copy": "Second-lowest range first.", "at": now},
+    ]))
+    assert [f["text"] for f in env["findings"]] == [
+        "Second-lowest range first.",
+        "Then the higher one.",
+        "Second-lowest range first.",
+    ]
+
+
+def test_findings_ride_the_decision_and_result_screens_only():
+    """Same data-driven policy as ``prediction``: the SCREEN decides what it
+    carries, here, so the renderer keeps one honest rule (draw the lines the
+    envelope carries) instead of growing an ``env.screen`` switch.
+
+    DERIVED from the phase→step map rather than hand-listed, so a phase added
+    to the vocabulary joins this assertion the moment it exists.
+    """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_DONE
+
+    others = set(_PHASE_STEP) - {PHASE_REVIEW, PHASE_DONE}
+    assert others, "the phase vocabulary must have screens other than these two"
+    for phase in sorted(others):
+        env = build_crossover_envelope_v2(_status(
+            phase=phase, candidate=_candidate_summary(),
+            verify={"outcome": "pass"}, findings=_banked_finding(),
+        ))
+        assert env["findings"] == [], phase
+
+
+def test_an_aged_resume_stays_one_quiet_line_and_carries_no_finding():
+    """#1942's entry screen is a CLEAN START plus one history note, and this
+    does not make it two.
+
+    A returning household whose last session banked something is landing on the
+    screen that starts a NEW measurement — not on a report — so the finding
+    belongs to the review/done screens they can still reach, never here. Pinned
+    because the aged branch reads the same status block the report screens do,
+    and adding a second history line to this screen would be a one-line
+    accident.
+    """
+    env = build_crossover_envelope_v2(_status(
+        failure={"code": REASON_RELAY_TIMEOUT, "at": time.time() - _DAY_S},
+        phase="verify", applied=True, findings=_banked_finding(age_s=_DAY_S),
+    ))
+    assert env["screen"] == "microphone_check"
+    assert env["findings"] == []
+    assert len(env["nudges"]) == 1

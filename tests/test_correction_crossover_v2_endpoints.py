@@ -1787,6 +1787,239 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
     assert v2host.crossover_v2_status_block()["cloud"] is None
 
 
+def _seeded_session_with_a_banked_finding(copy: str) -> None:
+    """A completed measuring session whose fit banked one household finding."""
+    v2host.save_v2_state({
+        "session_id": "cap_measuring_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": "fp-measured"},
+        "applied": True,
+        "evidence": {
+            "bundle_session_id": "bundle-stage-1",
+            v2host.FINDING_HOUSEHOLD_REFS_KEY: [
+                {"household_copy": copy, "at": time.time()},
+            ],
+        },
+    })
+
+
+def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
+    return CrossoverV2Conductor(
+        session_id=session_id,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=V2FlowSeams(
+            play=lambda *a, **k: None,
+            analyze=lambda *a, **k: None,
+            publish_check=lambda *a, **k: None,
+            publish_candidate=lambda *a, **k: None,
+            apply_complete=v2host._applied_gate,
+            apply_failed=v2host._apply_failure_gate,
+        ),
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        index_phase_map=index_phase_map,
+    )
+
+
+def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
+    """CC1: the DONE screen is in a different session from the one that banked.
+
+    ``prepare_v2_verify`` opens a NEW relay session AND a NEW evidence bundle,
+    so "read this session's bundle" cannot reach the finding the MEASURING
+    session banked — the household would be told the speaker is tuned with the
+    disclosure silently dropped somewhere between deciding and being told.
+    The projection therefore carries forward on its own predicate: a session
+    that never runs MEASURE never had the chance to bank one, so its silence is
+    a timestamp rather than a verdict.
+
+    Walks the real seam (mirroring the ``cloud`` B1 test above): seeded durable
+    state → the REAL re-arm conductor → the REAL ``persist_conductor_state`` →
+    the state, `/state`'s projection, and the done screen.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    copy = "Two measurements of how this speaker's ranges balance disagreed."
+    _seeded_session_with_a_banked_finding(copy)
+
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
+        failure_code=None,
+        evidence={"bundle_session_id": "bundle-stage-2"},
+    )
+
+    # Surface 1: the durable state — carried across the bundle hop.
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["evidence"]["bundle_session_id"] == "bundle-stage-2"
+    assert state["evidence"][v2host.FINDING_HOUSEHOLD_REFS_KEY][0][
+        "household_copy"
+    ] == copy
+
+    # Surface 2: /state's projection.
+    assert [
+        row["household_copy"]
+        for row in v2host.crossover_v2_status_block()["findings"]
+    ] == [copy]
+
+    # Surface 3: the screen the household actually reads.
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            **v2host.crossover_v2_status_block(),
+            "phase": PHASE_DONE,
+            "verify": {"outcome": "pass"},
+        },
+    })
+    assert [f["text"] for f in env["findings"]] == [copy]
+
+
+def test_a_fresh_measurement_that_banks_nothing_clears_the_old_finding():
+    """The converse, and the reason the predicate is MEASURE rather than an
+    unconditional carry: a new measuring session writes its own projection —
+    empty included — so a speaker that has since been re-measured cleanly never
+    replays a previous session's finding as if this measurement had found it.
+    """
+    _seeded_session_with_a_banked_finding("An old finding nobody re-measured.")
+
+    # A fresh full session: its own session_phases include MEASURE, so it owns
+    # the answer to "what did this measurement learn" — and it learned nothing.
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
+        failure_code=None,
+        evidence={"bundle_session_id": "bundle-fresh"},
+    )
+
+    state = v2host.load_v2_state()
+    assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in (state["evidence"] or {})
+    assert v2host.crossover_v2_status_block()["findings"] == []
+
+
+# --- the projection contract, pinned AT the projection layer ------------------
+#
+# Gate finding SF-1 (adversarial review of #1982): `_household_findings_status`
+# docstrings its whole contract — "a row without usable copy is DROPPED … an
+# unusable `at` becomes None. Fabricating neither a sentence nor a date" — and
+# nothing asserted it HERE. The gate proved the gap by weakening the copy check
+# to `str(row.get("household_copy") or "")`, which renders a fabricated "42" on
+# the household done screen end to end with the whole suite green: every
+# screen-level test hands the envelope well-formed rows, so none of them can
+# see a projection that coerces. These pin the layer that actually decides.
+
+
+def _findings_state(rows: Any) -> None:
+    """Durable state whose projection is exactly ``rows``."""
+    v2host.save_v2_state({
+        "session_id": "cap_projection",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": True,
+        "evidence": {
+            "bundle_session_id": "bundle-1",
+            v2host.FINDING_HOUSEHOLD_REFS_KEY: rows,
+        },
+    })
+
+
+@pytest.mark.parametrize("copy", [
+    42,                     # the gate's own mutation subject — `str(42)` = "42"
+    42.5,
+    True,                   # bool is an int; `str(True)` = "True"
+    None,                   # `str(None or "")` = "" — falsy, but still not text
+    ["a sentence"],
+    {"text": "a sentence"},
+    "",
+    "   ",
+    "\n\t ",
+])
+def test_a_row_without_a_real_sentence_is_dropped_never_coerced(copy):
+    """**A finding is prose or it is nothing.** Never `str()`-ed into existence.
+
+    The failure this forbids is not cosmetic: a coerced row puts a fabricated
+    sentence — "42", "True", "None" — into the one register this program
+    promises is household-readable, on the screen that tells someone their
+    speaker is tuned. Dropping is the honest answer to a row this build cannot
+    read, exactly as `read_finding_set` returning None is the honest answer to
+    a bundle that never banked one.
+    """
+    _findings_state([{"household_copy": copy, "at": time.time()}])
+    assert v2host.crossover_v2_status_block()["findings"] == []
+
+
+def test_a_good_row_survives_beside_every_unusable_one():
+    """Guards the guard: the drops above are a FILTER, not this layer refusing
+    to project at all. A test suite where every projection came back empty
+    would pass the assertions above while shipping nothing."""
+    _findings_state([
+        {"household_copy": 42, "at": time.time()},
+        {"household_copy": "A real one.", "at": 1_700_000_000.0},
+        "not even an object",
+        {"household_copy": "", "at": time.time()},
+    ])
+    assert v2host.crossover_v2_status_block()["findings"] == [
+        {"household_copy": "A real one.", "at": 1_700_000_000.0},
+    ]
+
+
+@pytest.mark.parametrize("at", [
+    None,
+    "2026-07-29T10:00:00Z",   # an ISO string is not this file's clock
+    True,                     # bool is an int, and it is not a timestamp
+    [1_700_000_000.0],
+    float("nan"),
+    float("inf"),
+    float("-inf"),
+    10 ** 400,                # nit 1: `float()` RAISES OverflowError here
+])
+def test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it(at):
+    """**The date is dropped; the sentence is not.** An unreadable ``at`` means
+    "we cannot say when", which the envelope renders as "From your measurement
+    earlier: …" — a real disclosure with no date CLAIM. Losing the whole finding
+    over a bad byte in its timestamp would trade a missing date for a missing
+    diagnosis.
+
+    ``10 ** 400`` is the nit-1 case and it is reachable through the file, not
+    theoretical: JSON integers are unbounded, `json` round-trips one happily,
+    and `float()` on it RAISES `OverflowError` rather than returning `inf` — on
+    the wizard's 1.5 s poll path, where an escape is a 500 on a plain page load.
+    """
+    _findings_state([{"household_copy": "A real one.", "at": at}])
+    assert v2host.crossover_v2_status_block()["findings"] == [
+        {"household_copy": "A real one.", "at": None},
+    ]
+
+
+def test_the_projection_reads_only_its_two_fields():
+    """A durable row written by a later build — one that persists the mechanism
+    beside the copy — must not leak that field onto `/state`. The reader NAMES
+    what it takes rather than passing a row through, so a field added upstream
+    cannot publish itself here."""
+    _findings_state([{
+        "household_copy": "A real one.",
+        "at": 1_700_000_000.0,
+        "mechanism": "M7",
+        "evidence": {"disagreement_db": 3.2307},
+    }])
+    assert v2host.crossover_v2_status_block()["findings"] == [
+        {"household_copy": "A real one.", "at": 1_700_000_000.0},
+    ]
+
+
+@pytest.mark.parametrize("rows", [None, {}, "findings", 7, [None, 5, "x"]])
+def test_a_malformed_projection_block_reads_as_no_findings(rows):
+    """A whole projection key that is not a list of objects is "nothing banked",
+    never a crash on the poll path."""
+    _findings_state(rows)
+    assert v2host.crossover_v2_status_block()["findings"] == []
+
+
 def test_a_corrupt_session_phases_list_never_reads_as_done():
     """S5: ``session_phases`` filters to the empty tuple on garbage, and a
     zero-length walk falls through to PHASE_DONE — i.e. a garbled state file

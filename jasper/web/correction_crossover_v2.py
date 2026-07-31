@@ -75,6 +75,15 @@ DEFAULT_V2_STATE_PATH = Path(
 V2_RELAY_KIND_SESSION = "crossover_v2:session"
 V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 
+# Where the household-readable projection of a banked finding set rides inside
+# the durable state's ``evidence`` refs: a list of ``{household_copy, at}``
+# rows, written by :func:`_bank_household_findings` and read by
+# :func:`_household_findings_status`. Up here with the other state vocabulary
+# rather than beside its writer, because THREE places name it — the writer, the
+# reader, and ``persist_conductor_state``'s carry-forward — and a key three
+# functions spell is a name, not a local detail.
+FINDING_HOUSEHOLD_REFS_KEY = "household_findings"
+
 # Downsample ceiling for the persisted predicted-sum verify prior — enough
 # resolution for the ±1.5 dB [Fc/2, 2Fc] comparison at 1/6-octave smoothing
 # while keeping the durable state file small. Reduction to this ceiling is a
@@ -1438,9 +1447,72 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # to skip curve-shaped data, and nothing reads the prediction that way.
         # ``None`` until a candidate's close has stored a prediction.
         "prediction": _prediction_status(state),
+        # WO-1's read half (CC1): what this speaker's measurement LEARNED, in
+        # the one register a household may read. ``[]`` means "nothing was
+        # banked" — never "nothing was looked for", which is the store's own
+        # absent-vs-empty distinction and stays where it belongs, in the
+        # bundle artifact.
+        "findings": _household_findings_status(state),
     }
     block["post_apply_grade"] = _post_apply_grade(block)
     return block
+
+
+def _household_findings_status(state: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The banked findings a household may read, from the durable projection.
+
+    Reads what :func:`_bank_household_findings` wrote — never the bundle, and
+    never ``os``-anything: this runs on every wizard poll, and the read that
+    costs (reopen + re-hash the artifact and its citation) already happened
+    once, at publish.
+
+    **Validated, not trusted.** The state file is JSON written by some build,
+    possibly an older or newer one, so every row is checked rather than passed
+    through: a row without usable copy is DROPPED (an empty or non-string
+    sentence is not a finding a household can read), and an unusable ``at``
+    becomes ``None`` — which the envelope renders as "we cannot say when",
+    exactly as an undated failure record does. Fabricating neither a sentence
+    nor a date is the whole contract here, and it is pinned at THIS layer
+    (``tests/test_correction_crossover_v2_endpoints.py``'s projection-contract
+    tests) rather than only through the envelope: a weakened copy check here —
+    ``str(row.get("household_copy") or "")`` — renders a fabricated ``"42"`` on
+    the done screen end to end, and every screen-level assertion stays green
+    while it does.
+
+    Never raises. ``float`` on an unbounded JSON integer raises
+    ``OverflowError`` rather than returning ``inf``, and this runs on the
+    wizard's 1.5 s poll path, so an escaping conversion would be a 500 on a
+    plain page load — the same failure ``_record_when_phrase`` catches one
+    module over for the same reason.
+    """
+    evidence = (state or {}).get("evidence")
+    rows = (
+        evidence.get(FINDING_HOUSEHOLD_REFS_KEY)
+        if isinstance(evidence, Mapping)
+        else None
+    )
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        copy = row.get("household_copy")
+        if not isinstance(copy, str) or not copy.strip():
+            continue
+        at = row.get("at")
+        try:
+            stamp = (
+                float(at)
+                if isinstance(at, (int, float)) and not isinstance(at, bool)
+                else None
+            )
+        except (TypeError, ValueError, OverflowError):
+            stamp = None
+        if stamp is not None and not math.isfinite(stamp):
+            stamp = None
+        out.append({"household_copy": copy, "at": stamp})
+    return out
 
 
 # The vocabulary of ``crossover_v2.post_apply_grade.state`` (PR-L4 item 4).
@@ -2003,7 +2075,7 @@ def persist_conductor_state(
     # its own session is left alone: ``_cloud_summary``'s own ``None`` there
     # honestly means "this session's group has not closed yet" and must not
     # be papered over with a stale prior verdict.
-    from jasper.active_speaker.crossover_v2_flow import GROUP_PHASES
+    from jasper.active_speaker.crossover_v2_flow import GROUP_PHASES, PHASE_MEASURE
 
     conductor_session_phases = set(getattr(conductor, "session_phases", ()) or ())
     if not (conductor_session_phases & GROUP_PHASES):
@@ -2023,6 +2095,32 @@ def persist_conductor_state(
             merged_evidence = dict(state["evidence"] or {})
             merged_evidence.setdefault(
                 "cloud_artifacts", prior_evidence["cloud_artifacts"]
+            )
+            state["evidence"] = merged_evidence
+    # The household-readable findings projection (CC1), carried forward on its
+    # OWN predicate rather than the group-phase one above. A finding is banked
+    # by the fit, which runs in MEASURE; a session that does not run MEASURE
+    # never had the chance to produce one, so its empty projection is a
+    # timestamp rather than a verdict — the same distinction ``cloud``'s carry
+    # forward draws one block up, keyed on the phase that actually produces the
+    # value. This is what puts the measuring session's finding on the DONE
+    # screen: stage 2 is a different session in a different bundle
+    # (``prepare_v2_verify`` opens a new one), and without this the result
+    # screen would silently lose what the measurement learned.
+    #
+    # The converse matters just as much: a session that DOES run MEASURE writes
+    # its own projection, empty included, so a fresh measurement that banks
+    # nothing clears a previous session's finding instead of replaying it.
+    if PHASE_MEASURE not in conductor_session_phases:
+        prior_evidence = prior.get("evidence")
+        if (
+            isinstance(prior_evidence, Mapping)
+            and FINDING_HOUSEHOLD_REFS_KEY in prior_evidence
+        ):
+            merged_evidence = dict(state["evidence"] or {})
+            merged_evidence.setdefault(
+                FINDING_HOUSEHOLD_REFS_KEY,
+                prior_evidence[FINDING_HOUSEHOLD_REFS_KEY],
             )
             state["evidence"] = merged_evidence
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
@@ -2775,12 +2873,123 @@ def _publish_findings(
         )
         return
     refs.setdefault("finding_artifacts", {})[phase] = artifact.fingerprint
+    # No household projection here, deliberately — see
+    # :func:`_bank_household_findings`. A carve-out finding's ``household_copy``
+    # is COPIED from the carve-out record (``promote_carve_outs`` rule 3) rather
+    # than minted, so the copy has an owner already: ``carve_outs_by_band``,
+    # whose ``disclosure`` register is the chart callout's plain-language
+    # headline (``cloud.js``'s ``buildCallout``) and whose ``expert`` register is
+    # the τ/r line ``_carve_out_expert_lines`` folds into ``expert_details``.
+    # Both render on both screens this would reach. The store keeps the full
+    # record either way.
     log_event(
         logger,
         "correction.crossover_v2_findings_published",
         relay_session_id=relay_session_id,
         phase=phase,
         findings=len(findings),
+    )
+
+
+def _bank_household_findings(
+    store: Any, *, relay_session_id: str, phase: str, refs: dict[str, Any],
+) -> None:
+    """Reopen the finding set just published and project what a household reads.
+
+    WO-1's **read** half (first-principles panel lens C, CC1): the flow banks a
+    finding with validated household copy and, until this, nothing ever read one
+    back — ``read_finding_set`` had zero non-test callers, so #1949's "bank a
+    finding and proceed" was, in the household's experience, "proceed".
+
+    **The read happens HERE, at publish, not at render, and that is a
+    saturation decision.** The screens that show a finding are polled every
+    1.5 s (``crossover/main.js``'s ``POLL_MS``), and a render-time read would
+    re-open and re-hash the finding artifact AND its cited ``candidate.json``
+    on every one of those polls, forever, on a Pi. It would also fail to reach
+    the DONE screen at all: stage 2 opens a **new** bundle under a **new**
+    relay session id (``prepare_v2_verify`` → ``open_v2_evidence_store``), so
+    by the time the household sees the result screen, "this session's bundle"
+    no longer holds the set the measuring session banked. Reading once and
+    projecting the compact result into the durable state is the same shape
+    ``_compact_cloud_status`` already uses for the cloud's numbers: the bundle
+    artifact stays the record; the state carries what a screen renders.
+
+    **The read-back is itself the honesty check.** Going out through
+    ``publish_finding_set`` and straight back in through ``read_finding_set``
+    means only a set that survives the strict reopen — schema, session binding,
+    and (``verify_evidence`` defaults True) a re-hash of every bundle citation
+    — reaches a household. A finding whose support could not be confirmed
+    raises ``FindingEvidenceMissing`` and is logged rather than rendered.
+
+    **Order is the producer's, and nothing is de-duplicated.** The set's own
+    order is preserved as persisted (``promote_carve_outs`` sorts by band;
+    the level-frame path yields one), because re-ordering here would make this
+    a second owner of a decision the producer already made. Two findings whose
+    copy happens to read identically both render: dropping one would be this
+    function silently deciding a banked finding does not exist, and "must not
+    drop a finding" outranks a repeated sentence — a producer emitting the same
+    sentence twice is a bug to fix at the producer.
+
+    **Called from the level-frame path only.** ``_publish_findings``' carve-out
+    sets are not projected: their ``household_copy`` is the carve-out record's
+    own ``reason`` (``promote_carve_outs`` rule 3 copies it rather than minting
+    it), so ``carve_outs_by_band`` is already that copy's owner and already
+    renders the fact on both these screens — its ``disclosure`` register as the
+    chart callout's plain-language headline (``cloud.js``'s ``buildCallout``),
+    its ``expert`` register as the τ/r line ``_carve_out_expert_lines`` folds
+    into ``expert_details``. Projecting it again would put one fact on one
+    screen twice from two owners. When a producer mints copy that no other
+    surface owns — as the level-frame path does, and as WO-4's detectors will —
+    it calls this.
+
+    Fail-soft, like every other findings path (plan §3.4: "a session with no
+    findings behaves exactly as it does today"). A lost projection is a lost
+    disclosure, never a lost tune.
+    """
+
+    from jasper.attribution.storage import read_finding_set
+
+    try:
+        finding_set = read_finding_set(
+            store, relay_session_id=relay_session_id, phase=phase,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        log_event(
+            logger,
+            "correction.crossover_v2_findings_readback_failed",
+            level=logging.WARNING,
+            relay_session_id=relay_session_id,
+            phase=phase,
+            exc_info=True,
+        )
+        return
+    if finding_set is None:
+        return
+    # ONE stamp for the whole set: every finding in it was banked by the same
+    # publish, and the household-facing rendering of it is a date (see
+    # ``crossover_envelope_v2._record_when_phrase``), so a per-finding clock
+    # would be a precision the copy never spends and a second number to keep
+    # honest. The store carries no timestamp of its own — this is the
+    # finding's own clock, on the same epoch-float footing as
+    # ``failure["at"]`` one level up.
+    banked_at = time.time()
+    projected = refs.setdefault(FINDING_HOUSEHOLD_REFS_KEY, [])
+    for finding in finding_set.findings:
+        projected.append({
+            # ``household_copy`` and nothing else. The mechanism id, the
+            # evidence scalars, the confidence tier, and the probe lists are
+            # INTERNAL taxonomy by ``findings.py``'s own two-vocabularies rule;
+            # they stay in the bundle artifact and the journal, where an
+            # operator reads them, and never cross onto a household wire.
+            "household_copy": finding.household_copy,
+            "at": banked_at,
+        })
+    log_event(
+        logger,
+        "correction.crossover_v2_findings_readback",
+        relay_session_id=relay_session_id,
+        phase=phase,
+        findings=len(finding_set.findings),
     )
 
 
@@ -2887,6 +3096,16 @@ def bind_findings_publisher(
             relay_session_id=relay_session_id,
             phase=PHASE_MEASURE,
             findings=1,
+        )
+        # The read half (CC1). Deliberately AFTER the publish log and outside
+        # the try above: the set is durable at this point, so a read-back
+        # failure must be reported as its own event rather than making a
+        # successful publish look like a failed one.
+        _bank_household_findings(
+            store,
+            relay_session_id=relay_session_id,
+            phase=PHASE_MEASURE,
+            refs=refs,
         )
 
     return publish_findings
