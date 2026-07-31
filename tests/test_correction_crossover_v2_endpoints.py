@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import threading
@@ -2915,13 +2916,15 @@ def test_verify_rearm_session_runs_exactly_one_capture():
     assert volume.events == ["open", "close"]
 
 
-def test_verify_rearm_persists_pilot_transfer_baseline_for_a_later_rearm():
+def test_verify_rearm_persists_a_dated_pilot_transfer_reference():
     """Measurement-honesty gate G3's reference threads through
     persist_conductor_state's verify_priors exactly like gate_window_ms
     above — written (through the REAL production ``consume()`` closure,
     ``persist_conductor_state`` runs after every capture) once the
-    conductor's own first usable VERIFY attempt sets it, so a LATER
-    prepare_v2_verify re-arm could inherit it."""
+    conductor's own first usable VERIFY attempt sets it.
+
+    It travels DATED (#1927), because the only thing a later re-arm may do
+    with it is disclose it, and a disclosure has to say when."""
     backend = FakePlanRelayBackend()
     spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec)
@@ -2955,9 +2958,122 @@ def test_verify_rearm_persists_pilot_transfer_baseline_for_a_later_rearm():
 
     assert conductor.current_phase == PHASE_DONE
     # transfer = level_hi_dbfs(-20.0) - programmed_hi_gain_db(-20.0) = 0.0.
-    assert conductor.verify_pilot_transfer_baseline == {"summed": 0.0}
+    assert conductor.verify_pilot_transfer_reference["values"] == {"summed": 0.0}
     state = v2host.load_v2_state()
-    assert state["verify_priors"]["pilot_transfer_baseline"] == {"summed": 0.0}
+    reference = state["verify_priors"]["pilot_transfer_reference"]
+    assert reference["values"] == {"summed": 0.0}
+    assert reference["at"] > 0.0
+    # The flat, undated key the rehydrating baseline used is gone from the
+    # writer — nothing can read a previous session's numbers as a comparator.
+    assert "pilot_transfer_baseline" not in state["verify_priors"]
+
+
+def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
+    """A conductor of ``prepare_v2_verify``'s shape, seams stubbed — the same
+    construction ``test_verify_rearm_does_not_blank_the_persisted_cloud_block``
+    uses to exercise the REAL ``persist_conductor_state``."""
+    return CrossoverV2Conductor(
+        session_id=session_id,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=V2FlowSeams(
+            play=lambda *a, **k: None,
+            analyze=lambda *a, **k: None,
+            publish_check=lambda *a, **k: None,
+            publish_candidate=lambda *a, **k: None,
+            apply_complete=v2host._applied_gate,
+            apply_failed=v2host._apply_failure_gate,
+        ),
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        index_phase_map=index_phase_map,
+        **kwargs,
+    )
+
+
+def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
+    """#1927: the history the disclosure reads must survive the opening
+    persist of a re-arm, which runs BEFORE any usable VERIFY attempt has set
+    this session's own reference. Same carry-forward shape as ``tier`` and
+    ``cloud`` — a re-arm runs under a brand-new relay session id, so a
+    session-id guard would drop it on the first "Try again"."""
+    reference = {"values": {"summed": -20.0}, "at": 1_700_000_000.0}
+    v2host.save_v2_state({
+        "session_id": "cap_original_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "applied": True,
+        "verify_priors": {"pilot_transfer_reference": reference},
+    })
+    conductor = _rearm_conductor_for_persist(
+        "cap_rearm_session", {1: PHASE_VERIFY},
+    )
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["verify_priors"]["pilot_transfer_reference"] == reference
+
+
+def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
+    """The SEEDING path end to end, minus the relay: durable state carrying a
+    previous session's reference → the value ``prepare_v2_verify`` passes as
+    ``verify_pilot_transfer_prior`` → a fresh conductor. The comparator stays
+    empty; only the history arrives (#1927)."""
+    v2host.save_v2_state({
+        "session_id": "cap_original_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "applied": True,
+        "verify_priors": {
+            "pilot_transfer_reference": {
+                "values": {"summed": -20.0}, "at": time.time() - 86400.0,
+            },
+        },
+    })
+    prior = v2host.pilot_transfer_prior_from_state(v2host.load_v2_state())
+    assert prior["values"] == {"summed": -20.0}
+    conductor = _rearm_conductor_for_persist(
+        "cap_rearm_session", {1: PHASE_VERIFY},
+        verify_pilot_transfer_prior=prior,
+    )
+    assert conductor._verify_pilot_baseline is None
+    assert conductor.verify_pilot_transfer_reference is None
+    # …and the preparer really does route it to that argument, never to a
+    # baseline. Source-read for the same reason
+    # ``test_both_session_preparers_rearm_the_walked_away_volume_ceiling``
+    # uses one: driving ``_open`` needs a live relay.
+    source = inspect.getsource(v2host.prepare_v2_verify)
+    assert "pilot_transfer_prior_from_state(state)" in source
+    assert "verify_pilot_transfer_prior=pilot_transfer_prior" in source
+    assert "verify_pilot_transfer_baseline" not in source
+
+
+def test_a_measuring_session_drops_the_prior_level_reference():
+    """A pilot transfer is captured THROUGH the applied graph, so once a new
+    candidate is measured the previous reference answers a different question.
+    A measuring session drops it rather than letting the next stage-2 verify
+    report a graph change as a level-reference move — the misattribution
+    #1924 and #1927 both exist to stop."""
+    v2host.save_v2_state({
+        "session_id": "cap_original_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "applied": True,
+        "verify_priors": {
+            "pilot_transfer_reference": {
+                "values": {"summed": -20.0}, "at": 1_700_000_000.0,
+            },
+        },
+    })
+    conductor = _rearm_conductor_for_persist(
+        "cap_measure_session", {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
+    )
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    state = v2host.load_v2_state()
+    assert state["verify_priors"]["pilot_transfer_reference"] is None
 
 
 # --- endpoint gates (recovery) ----------------------------------------
@@ -6222,7 +6338,8 @@ class _StubConductor:
     delta_probe = None
     measure_predicted_sum = None
     measure_gate_window_ms = None
-    verify_pilot_transfer_baseline = None
+    verify_pilot_transfer_reference = None
+    verify_level_reference_reset = None
     session_phases: tuple = ()
 
     def __init__(self, session_id: str = "s1", *, applied: bool = True) -> None:

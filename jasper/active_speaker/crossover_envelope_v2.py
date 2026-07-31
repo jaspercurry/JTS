@@ -358,6 +358,51 @@ def _verify_graded_band_lines(status: Mapping[str, Any]) -> list[str]:
     return [f"checked {lo:.0f}–{hi:.0f} Hz"]
 
 
+def _verify_level_reference_lines(status: Mapping[str, Any]) -> list[str]:
+    """"level reference reset for this session…" — the #1927 disclosure.
+
+    **One owner, rendered on every outcome**, exactly like
+    :func:`_verify_graded_band_lines` beside it and for the same reason: a
+    PASS is precisely when an unstated reset would let a household read
+    cross-day identity into a claim that only ever covered this sitting.
+
+    Since #1927 every verify session establishes its own G3 pilot-transfer
+    reference rather than inheriting the previous one, so a day-later verify
+    can no longer dead-end against a stale number. What the household gives up
+    is cross-session comparability, and this line is where that is said out
+    loud instead of being quietly true.
+
+    **Dated, and inform-not-berate.** The date is what keeps this history
+    rather than a verdict about the room (#1942): it names when the previous
+    reference was taken, using the same phrasing the aged-failure note uses.
+    Nothing here accuses the microphone — a re-placed mic and a different
+    recording device both produce this step, and the line claims only what it
+    measured.
+
+    Phrased as one terse parenthetical because of WHERE it lands: the wizard
+    joins ``expert_details`` with "; " inside a single collapsed "Expert
+    details" paragraph (``crossover/main.js``'s ``renderNudges``), beside
+    "level error 0.42 dB (limit 1.0 dB)" and "checked 2000–4000 Hz". A
+    sentence would read as an interruption in that list.
+
+    Empty when there was nothing to disclose: no previous reference, or one
+    this session's own chain agreed with.
+    """
+    reset = _mapping(_mapping(_v2(status).get("verify")).get("level_reference"))
+    step_db = _finite(reset.get("step_db"))
+    if step_db is None:
+        return []
+    # ``_record_when_phrase`` reads one ``at`` key and already answers
+    # "earlier" for a stamp it cannot place on a calendar, so every dated
+    # surface phrases a date the same way rather than growing a second
+    # formatter.
+    when = _record_when_phrase({"at": reset.get("prior_at")})
+    return [
+        "level reference reset for this session "
+        f"(the previous one, {when}, was {step_db:.2f} dB away)"
+    ]
+
+
 def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     """The verify_fail screen's collapsed expert numbers (#1605): the gated
     level error against its limit, the average error, and the band checked.
@@ -1827,7 +1872,11 @@ def _verify_fail_envelope(
         # the integration-verify numbers above, distinctly labeled — both
         # travel in the same collapsed disclosure since this screen only
         # has the one "Expert details" mechanism.
-        expert_details=_verify_expert_details(status) + _flatness_details_lines(status),
+        expert_details=(
+            _verify_expert_details(status)
+            + _verify_level_reference_lines(status)
+            + _flatness_details_lines(status)
+        ),
     )
 
 
@@ -2304,7 +2353,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # inside tolerance a pass landed is not a claim the household
             # needs adjudicated, but how WIDE the claim is, is.
             expert_details=(
-                _verify_graded_band_lines(status) + _flatness_details_lines(status)
+                _verify_graded_band_lines(status)
+                + _verify_level_reference_lines(status)
+                + _flatness_details_lines(status)
             ),
             # CC1: the result screen is the OTHER place a banked finding is
             # owed. It rides the durable projection rather than this session's

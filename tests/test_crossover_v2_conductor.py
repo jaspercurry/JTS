@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 import math
 import re
+import time
 import types
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -1601,14 +1603,9 @@ def test_verify_pilot_level_shift_baseline_does_not_rebaseline():
     assert verdict3["code"] == "verify_level_shift"
 
 
-def test_verify_pilot_transfer_baseline_rehydrates_from_a_prior_session():
-    """A verify-only re-arm session (``prepare_v2_verify``) supplies the
-    PRIOR session's frozen baseline through the constructor — exactly like
-    ``measure_gate_window_ms`` (see ``__init__``'s comment). This conductor's
-    OWN first VERIFY attempt then compares against the SUPPLIED baseline
-    rather than treating itself as attempt 1."""
-    fakes = FakeSeams()
-    c = CrossoverV2Conductor(
+def _rearm_conductor(fakes, **kwargs):
+    """A verify-only re-arm's conductor — ``prepare_v2_verify``'s shape."""
+    return CrossoverV2Conductor(
         session_id="verify_rearm_session",
         source_preset=_preset(),
         roles_bands=_roles(),
@@ -1622,17 +1619,170 @@ def test_verify_pilot_transfer_baseline_rehydrates_from_a_prior_session():
         gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
         index_phase_map={1: PHASE_VERIFY},
         measure_gate_window_ms=8.0,
-        verify_pilot_transfer_baseline={"summed": -20.0},
+        **kwargs,
     )
-    assert c.verify_pilot_transfer_baseline == {"summed": -20.0}
+
+
+def test_verify_pilot_reference_is_session_scoped_not_inherited():
+    """#1927: a prior session's reference is HISTORY, never the comparator.
+
+    This is the 2026-07-30 bench shape (#1870 finding 1): the day-later verify
+    reads 0.775 dB away from yesterday's reference — over 2× the ceiling, and
+    deterministic. Before the ruling that rehydrated baseline refused the
+    attempt outright; now the attempt establishes its OWN reference and is
+    graded on its merits."""
+    fakes = FakeSeams()
+    c = _rearm_conductor(
+        fakes,
+        verify_pilot_transfer_prior={
+            "values": {"summed": -20.0}, "at": time.time() - 86400.0,
+        },
+    )
+    # Nothing to compare against yet — the prior did not become a baseline.
+    assert c.verify_pilot_transfer_reference is None
     fakes.verify = lambda program: _verify_analysis(
-        program, pilot_hi_dbfs=-20.0 + 0.56, max_db=0.5,
+        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
     )
     verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is True
+    reference = c.verify_pilot_transfer_reference
+    assert reference["values"]["summed"] == pytest.approx(0.775)
+    assert reference["at"] > 0.0
+
+
+def test_verify_level_reference_reset_is_disclosed_when_material():
+    """The reset is reported (dated, with the step) — never enforced."""
+    fakes = FakeSeams()
+    prior_at = time.time() - 86400.0
+    c = _rearm_conductor(
+        fakes,
+        verify_pilot_transfer_prior={"values": {"summed": 0.0}, "at": prior_at},
+    )
+    assert c.verify_level_reference_reset is None
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
+    )
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    disclosed = c.verify_level_reference_reset
+    assert disclosed["prior_at"] == prior_at
+    assert disclosed["step_db"] == pytest.approx(0.775)
+
+
+def test_verify_level_reference_reset_is_journalled(caplog):
+    """The bench's grep target. ``pilot_transfer_step_db`` in the verify diag
+    is the WITHIN-session step; this is the cross-session one it can no longer
+    be, and #1870-style corpus sweeps want to count resets without parsing
+    every diag line. INFO — a reset is ordinary, not a fault."""
+    fakes = FakeSeams()
+    c = _rearm_conductor(
+        fakes,
+        verify_pilot_transfer_prior={
+            "values": {"summed": 0.0}, "at": time.time() - 86400.0,
+        },
+    )
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
+    )
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert "event=correction.crossover_v2_level_reference_reset" in caplog.text
+    assert "step_db=0.775" in caplog.text
+    assert "ceiling_db=0.35" in caplog.text
+    assert "prior_age_s=" in caplog.text
+
+
+def test_verify_level_reference_reset_is_silent_when_the_prior_agrees():
+    """A prior the session's own chain agrees with is not news — the ceiling
+    that defines "the chain moved" is the one that defines "worth saying".
+    0.30 dB, comfortably inside the 0.35 dB ceiling rather than exactly on it:
+    this test is about agreement, and the boundary itself is pinned (with the
+    float care it needs) by
+    ``test_verify_pilot_level_shift_boundary_exact_passes_just_above_fires``."""
+    fakes = FakeSeams()
+    c = _rearm_conductor(
+        fakes,
+        verify_pilot_transfer_prior={
+            "values": {"summed": 0.0}, "at": time.time() - 86400.0,
+        },
+    )
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.30, max_db=0.5,
+    )
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert c.verify_level_reference_reset is None
+
+
+def test_verify_level_reference_reset_needs_a_dated_prior():
+    """An undated record cannot be shown as history (#1942's rule), so it is
+    not carried as one — the constructor drops it rather than inventing a
+    date, and it never reaches the comparator either way."""
+    fakes = FakeSeams()
+    c = _rearm_conductor(
+        fakes, verify_pilot_transfer_prior={"values": {"summed": 0.0}},
+    )
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=0.5,
+    )
+    assert _run_phase(c, 1, 1)["accepted"] is True
+    assert c.verify_level_reference_reset is None
+
+
+def test_verify_level_shift_still_fires_within_one_session():
+    """The gate keeps its stated purpose: a chain that moves DURING a sitting
+    still refuses to grade. Attempt 1 fails independently (out of tolerance),
+    attempt 2 moves 0.775 dB from it — the round-5 number, now measured
+    against a reference this session set itself."""
+    fakes = FakeSeams()
+    c = _rearm_conductor(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    assert _run_phase(c, 1, 1)["code"] == "verify_out_of_tolerance"
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.775, max_db=5.0,
+    )
+    verdict = _run_phase(c, 1, 2)
     assert verdict["accepted"] is False
     assert verdict["code"] == "verify_level_shift"
-    # The supplied baseline is untouched — this attempt did not overwrite it.
-    assert c.verify_pilot_transfer_baseline == {"summed": -20.0}
+
+
+def test_no_constructor_argument_can_seed_the_g3_comparator():
+    """The #1927 negative, engineered rather than checked: there is no longer
+    an argument through which a previous session's numbers can become this
+    session's baseline. The prior travels ONLY as dated history."""
+    params = inspect.signature(CrossoverV2Conductor.__init__).parameters
+    assert "verify_pilot_transfer_baseline" not in params
+    assert "verify_pilot_transfer_prior" in params
+    fakes = FakeSeams()
+    c = _rearm_conductor(
+        fakes,
+        verify_pilot_transfer_prior={
+            "values": {"summed": -20.0}, "at": time.time() - 86400.0,
+        },
+    )
+    assert c._verify_pilot_baseline is None
+
+
+def test_verify_level_shift_copy_is_true_on_both_surfaces():
+    """#1924's routing half. One string renders on the measurement page's
+    in-session retry (which re-compares the same reference and CAN repeat)
+    and on the wizard's fresh-session retry (which since #1927 settles it in
+    one capture). So it must command neither and discredit neither: state the
+    fact, contextualize the retry, name the escalation conditionally."""
+    message = REASON_REGISTRY["verify_level_shift"].message
+    assert message == (
+        "The microphone's levels changed between measurements, so this check "
+        "couldn't settle. Try again — if it repeats, re-measure, or undo to "
+        "restore the previous sound."
+    )
+    # The retired routing: it commanded the retry the phone cannot win.
+    assert "re-verify" not in message.lower()
+    # The visible primary is named, not undermined — the sibling
+    # ``verify_out_of_tolerance`` names its primary too.
+    assert "Try again" in message
+    # …and the escalation is conditional on the retry repeating, never
+    # presented as the only way forward.
+    assert "if it repeats, re-measure, or undo" in message
 
 
 # --- alignment sign contract -----------------------------------------------------

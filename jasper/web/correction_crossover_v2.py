@@ -1672,6 +1672,30 @@ def _predicted_spec_prior(conductor: Any) -> dict[str, Any] | None:
     return dict(report) if isinstance(report, Mapping) else None
 
 
+def pilot_transfer_prior_from_state(
+    state: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """The PREVIOUS session's G3 reference, as durable state carries it (#1927).
+
+    The read side of :func:`persist_conductor_state`'s
+    ``verify_priors.pilot_transfer_reference`` — the mirror of
+    :func:`_predicted_spec_prior` above, and the whole of what
+    ``prepare_v2_verify`` seeds a fresh conductor's *history* with.
+
+    Named and module-level so the seeding PATH is drivable in a test without a
+    relay: durable state in, the ctor's ``verify_pilot_transfer_prior``
+    argument out. Whether that argument can ever become a comparator is the
+    conductor's own contract (it cannot — there is no longer an argument that
+    seeds one).
+
+    Shape checking beyond "is it a mapping" belongs to the conductor, which
+    owns the "values plus a date, or nothing" rule.
+    """
+    priors = (state or {}).get("verify_priors")
+    prior = priors.get("pilot_transfer_reference") if isinstance(priors, Mapping) else None
+    return prior if isinstance(prior, Mapping) else None
+
+
 def _finite(value: Any) -> float | None:
     """Mirrors ``crossover_envelope_v2._finite``'s exact guard (reject
     bool, reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review
@@ -1888,6 +1912,8 @@ def persist_conductor_state(
     which of ``program_unplayable``'s several causes actually fired, which the
     old single-code collapse erased.
     """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+
     snap = conductor.snapshot()
     verify_outcome = conductor.verify_outcome
     state: dict[str, Any] = {
@@ -1940,6 +1966,18 @@ def persist_conductor_state(
                 **(
                     {"graded_band_hz": list(conductor.verify_graded_band_hz)}
                     if conductor.verify_graded_band_hz
+                    else {}
+                ),
+                # The level-reference reset this session performed, when the
+                # previous session's reference differed enough to be worth
+                # saying (#1927). Same every-outcome shape as the graded band
+                # above: a pass is exactly when an unstated reset would let a
+                # household read cross-day identity into a same-session claim.
+                # Absent means there was nothing to disclose, never "we did not
+                # reset" — the reset is now unconditional.
+                **(
+                    {"level_reference": dict(conductor.verify_level_reference_reset)}
+                    if conductor.verify_level_reference_reset
                     else {}
                 ),
                 # (A "flatness" key lived here until the flat-linearization
@@ -2015,21 +2053,29 @@ def persist_conductor_state(
             # a re-grade of the decimation the line above just wrote.
             # ``None`` means ungradeable, which is not a pass.
             #
-            # Threaded through exactly like ``gate_window_ms`` and
-            # ``pilot_transfer_baseline`` below, and rehydrated by
-            # ``prepare_v2_verify`` for the same reason: a verify-only re-arm
-            # builds a fresh conductor that never runs a fit, so a verdict that
-            # did not travel that route would be dropped on the first
-            # "Try again" — the ``cloud`` B1 bug shape, one field over.
+            # Threaded through exactly like ``gate_window_ms`` below, and
+            # rehydrated by ``prepare_v2_verify`` for the same reason: a
+            # verify-only re-arm builds a fresh conductor that never runs a
+            # fit, so a verdict that did not travel that route would be
+            # dropped on the first "Try again" — the ``cloud`` B1 bug shape,
+            # one field over.
             "predicted_spec": _predicted_spec_prior(conductor),
             "gate_window_ms": conductor.measure_gate_window_ms,
-            # Measurement-honesty gate G3's reference (crossover_v2_flow's
-            # ``verify_pilot_transfer_baseline`` property) — threaded through
-            # exactly like ``gate_window_ms`` above so a verify-only re-arm
-            # session (``prepare_v2_verify``) can inherit it instead of
-            # silently starting a fresh baseline every time the household
-            # taps "Try again".
-            "pilot_transfer_baseline": conductor.verify_pilot_transfer_baseline,
+            # Measurement-honesty gate G3's reference, DATED — history, not a
+            # comparator (#1927). ``prepare_v2_verify`` hands it to the next
+            # conductor as ``verify_pilot_transfer_prior``, which may only
+            # disclose it; the constructor argument that used to make it that
+            # session's live baseline is gone. Carried forward below when this
+            # session set no reference of its own, so a re-arm that dies before
+            # its first usable VERIFY attempt does not erase the history.
+            #
+            # The retired flat ``pilot_transfer_baseline`` key is deliberately
+            # NOT read anywhere any more: it carried no date, so it can be
+            # neither compared against (the ruling) nor shown as history
+            # (#1942). No migration is needed — this whole ``verify_priors``
+            # dict is rebuilt on every persist, so an older build's key is
+            # inert until the first write of the next session drops it.
+            "pilot_transfer_reference": conductor.verify_pilot_transfer_reference,
         },
         "evidence": dict(evidence) if evidence else None,
     }
@@ -2042,6 +2088,38 @@ def persist_conductor_state(
     # id, so a session-scoped guard would drop it on the first "Try again".
     if not state["tier"] and prior.get("tier"):
         state["tier"] = str(prior["tier"])
+    # G3's dated reference (#1927) carries forward across the writes of a
+    # VERIFY-ONLY session, and is dropped by any session that MEASURES.
+    #
+    # Carried, because every capture of a verify session persists and the
+    # first writes run BEFORE any usable VERIFY attempt has set this session's
+    # own reference: without this the opening write of a re-arm would blank
+    # the history the disclosure reads, and a session that died before its
+    # first tone would erase it for good. Same shape as ``tier`` above — the
+    # re-arm runs under a brand-new relay session id, so a session-id guard is
+    # the wrong one (the ``cloud`` B1 bug, one field over).
+    #
+    # Dropped by a measuring session, because a pilot transfer is captured
+    # THROUGH the applied graph: once a new candidate is applied the two
+    # numbers answer different questions, and a disclosure computed across
+    # that boundary would report a graph change as a level-reference move.
+    #
+    # State the predicate honestly: this tests "does THIS SESSION'S PLAN
+    # contain MEASURE", which is COARSER than "the graph changed". A session
+    # that measures and never applies — a refused candidate, an abandoned
+    # walk — drops the history even though nothing moved. That is the
+    # fail-silent direction and the one to be coarse in: the cost is a
+    # disclosure that goes unsaid, against a disclosure that says something
+    # untrue. Binding this to the applied candidate's fingerprint instead
+    # would be exact, and is deliberately not built for a report-only line.
+    if PHASE_MEASURE in snap.session_phases:
+        state["verify_priors"]["pilot_transfer_reference"] = None
+    elif state["verify_priors"]["pilot_transfer_reference"] is None:
+        prior_reference = (prior.get("verify_priors") or {}).get(
+            "pilot_transfer_reference"
+        )
+        if isinstance(prior_reference, Mapping):
+            state["verify_priors"]["pilot_transfer_reference"] = dict(prior_reference)
     # The applied flag is host-durable (set by the apply endpoint) — never
     # regressed by a conductor snapshot that predates it.
     if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
@@ -5061,24 +5139,16 @@ def prepare_v2_verify(
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
-    # Measurement-honesty gate G3's reference, rehydrated exactly like
-    # gate_ms above — absent (a pre-G3 persisted state, or a session that
-    # never reached a usable VERIFY pilot) leaves it None, so this re-arm
-    # starts a fresh baseline itself (acceptable — see
-    # CrossoverV2Conductor.__init__'s comment on verify_pilot_transfer_baseline).
-    baseline_raw = (
-        priors_raw.get("pilot_transfer_baseline")
-        if isinstance(priors_raw, Mapping) else None
-    )
-    pilot_transfer_baseline = (
-        {
-            str(role): float(value)
-            for role, value in baseline_raw.items()
-            if isinstance(value, (int, float))
-        }
-        if isinstance(baseline_raw, Mapping)
-        else None
-    ) or None
+    # Measurement-honesty gate G3's PREVIOUS reference — read as dated
+    # history, never rehydrated as this session's comparator (#1927). This
+    # re-arm always establishes its own baseline from its own first usable
+    # VERIFY attempt; the only thing this record can do is make the session
+    # SAY it reset the reference, and by how much. Absent (a state written
+    # before this key, or a session that never reached a usable VERIFY pilot)
+    # simply leaves the disclosure silent. Shape validation lives in
+    # ``CrossoverV2Conductor.__init__`` so the "values plus a date, or
+    # nothing" rule has one owner.
+    pilot_transfer_prior = pilot_transfer_prior_from_state(state)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
@@ -5181,7 +5251,7 @@ def prepare_v2_verify(
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),
-            verify_pilot_transfer_baseline=pilot_transfer_baseline,
+            verify_pilot_transfer_prior=pilot_transfer_prior,
         )
         # Keep the durable candidate/applied facts; rebind the session id.
         persist_conductor_state(conductor, failure_code=None, evidence=refs)

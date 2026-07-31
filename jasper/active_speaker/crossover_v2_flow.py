@@ -1624,15 +1624,39 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_VERIFY_LEVEL_SHIFT: ReasonSpec(
         REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2, "",
-        # Vocabulary only (#1941 R4): the instrument is named device-agnostically
-        # because the session mic may be a UMIK-2 or a laptop, and #1924's field
-        # evidence is a UMIK-2 session told its phone had drifted. The SECOND
-        # half of #1924 — that "re-verify to try again" cannot succeed against a
-        # deterministic shift, so the copy should route to Re-measure / Undo —
-        # is deliberately NOT changed here; it is a routing decision that issue
-        # owns, and re-authoring it inside a noun sweep would pre-empt it.
-        "The microphone's levels changed between measurements — "
-        "re-verify to try again.",
+        # The instrument is named device-agnostically (#1941 R4): the session
+        # mic may be a UMIK-2 or a laptop, and #1924's field evidence is a
+        # UMIK-2 session told its phone had drifted.
+        #
+        # ROUTING (#1924, the half R4 deferred). ONE string renders on TWO
+        # surfaces where "try again" is a DIFFERENT control, so the copy has to
+        # be true on both without discrediting either:
+        #
+        # * measurement page (``renderPlanRetry``) — the in-session re-arm,
+        #   which re-compares against the SAME reference this attempt just
+        #   failed against. A level that moved and stayed moved repeats here
+        #   until the budget dies.
+        # * wizard (``_verify_fail_envelope``) — a FRESH relay session, which
+        #   since #1927 builds a fresh conductor and re-baselines, so this gate
+        #   is structurally unreachable on its first attempt. Retry settles it
+        #   in one capture.
+        #
+        # The old ending ("re-verify to try again") commanded the retry, which
+        # is the phone's dead end. Naming only Re-measure/Undo would have been
+        # the mirror-image error: it discredits a wizard button that works, and
+        # the screen's visible primary IS "Try again". So the sentence states
+        # the fact, CONTEXTUALIZES the retry rather than commanding or
+        # dismissing it, and names the escalation conditionally — "if it
+        # repeats" is honest on the wizard (it will not) and on the phone (it
+        # may). Both escalations are already on the verify-fail screen.
+        #
+        # NOT an owner ruling: #1924's body offers remedies explicitly labelled
+        # "not decisions", and the issue carries no ruling comment. This
+        # wording is the pipeline's call, derived from #1927's mechanics above,
+        # and is the owner's to change.
+        "The microphone's levels changed between measurements, so this check "
+        "couldn't settle. Try again — if it repeats, re-measure, or undo to "
+        "restore the previous sound.",
     ),
     REASON_LOW_ALIGNMENT_CONFIDENCE: ReasonSpec(
         REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1, "",
@@ -4226,7 +4250,7 @@ class CrossoverV2Conductor:
         measure_predicted_spec_report: Mapping[str, Any] | None = None,
         measure_commanded_delta: Any = None,
         measure_gate_window_ms: float | None = None,
-        verify_pilot_transfer_baseline: Mapping[str, float] | None = None,
+        verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         tweeter_measurement_band_hz: tuple[float, float] | None = None,
     ) -> None:
@@ -4566,28 +4590,63 @@ class CrossoverV2Conductor:
         # off ``group_cloud_result(PHASE_CLOUD_VERIFY)["flatness"]`` — no
         # per-attempt stash, because it is not a per-attempt claim.)
         self._last_failure_code: str | None = None
-        # G3 (measurement-honesty gate, 2026-07-22): the FIRST usable VERIFY
-        # attempt's per-role pilot transfer becomes the reference every LATER
-        # attempt is compared against — never re-baselined once set (see
-        # ``_verify_verdict``). A verify-only re-arm session
-        # (``prepare_v2_verify``) rehydrates this from the prior session's
-        # persisted ``verify_priors``, exactly like ``measure_gate_window_ms``
-        # above; a fresh CHECK→MEASURE walk (``prepare_v2_session``) never
-        # threads it, so a genuinely new measurement starts with no VERIFY
-        # history to compare against (acceptable — see the property below).
-        # Known limitation: the persisted baseline never expires or
-        # re-baselines across verify-only re-arm sessions, so a PERSISTENT
-        # (not transient) post-first-verify setup shift re-fires
-        # verify_level_shift on every "Try again" until the household
-        # re-measures or undoes — matching ``verify_out_of_tolerance``'s
-        # pre-existing perpetual-retry shape when the speaker itself is
-        # genuinely out of tolerance; the household-facing copy is
-        # deliberately unchanged for this.
-        self._verify_pilot_baseline: dict[str, float] | None = (
-            dict(verify_pilot_transfer_baseline)
-            if verify_pilot_transfer_baseline
-            else None
-        )
+        # G3 (measurement-honesty gate, 2026-07-22) — SESSION-SCOPED since
+        # #1927. The FIRST usable VERIFY attempt of THIS conductor's own
+        # lifetime records its per-role pilot transfer here, and every LATER
+        # attempt of the same session is compared against it. Nothing else
+        # ever writes this field: a prior session's numbers have no path into
+        # it, by construction rather than by a check.
+        #
+        # Why (owner ruling, 2026-07-31, option (b) on #1927). Until then a
+        # verify-only re-arm (``prepare_v2_verify``) REHYDRATED this from the
+        # previous session's persisted ``verify_priors``, so the reference
+        # never expired. The gate then conflated two different quantities:
+        # within-session chain consistency (its stated purpose — VERIFY
+        # replays the identical program through the identical graph, so 0.35
+        # dB is a sane ceiling there) and cross-day setup identity, where an
+        # ordinary mic re-placement alone plausibly exceeds it. The 2026-07-30
+        # bench (#1870 finding 1) measured exactly that: a day-later owed
+        # verify stepped 0.775 / 0.777 dB against a rehydrated baseline —
+        # deterministic to 0.002 dB, and unescapable, because every retry
+        # re-compared against the same frozen number. Re-baselining per
+        # session keeps the within-session protection and surrenders the
+        # cross-session comparability the gate could never honestly claim.
+        self._verify_pilot_baseline: dict[str, float] | None = None
+        # WHEN this session set the reference above (epoch float, the same
+        # clock and type as the host's persisted ``failure.at``). Stamped in
+        # the same statement that sets the baseline, so the two cannot
+        # disagree about which attempt the reference came from.
+        self._verify_pilot_baseline_at: float | None = None
+        # The PREVIOUS session's reference, as dated HISTORY — never a
+        # comparator. ``prepare_v2_verify`` threads it so this session can
+        # DISCLOSE that it reset the reference and by how much; it is read by
+        # ``_verify_verdict`` only to compute that disclosure, and by nothing
+        # else. Shape: ``{"values": {role: dB}, "at": epoch}``; absent, empty,
+        # or undated leaves the disclosure silent, because an undated record
+        # cannot be presented as history without inventing a date (#1942's
+        # rule, one field over).
+        self._verify_pilot_prior: dict[str, float] | None = None
+        self._verify_pilot_prior_at: float | None = None
+        if isinstance(verify_pilot_transfer_prior, Mapping):
+            prior_values = verify_pilot_transfer_prior.get("values")
+            prior_at = verify_pilot_transfer_prior.get("at")
+            if isinstance(prior_values, Mapping) and isinstance(prior_at, (int, float)):
+                values = {
+                    str(role): float(value)
+                    for role, value in prior_values.items()
+                    if isinstance(value, (int, float))
+                }
+                # Values AND a date, together or not at all — a half-record
+                # would render a disclosure that cannot say when.
+                if values:
+                    self._verify_pilot_prior = values
+                    self._verify_pilot_prior_at = float(prior_at)
+        # The disclosure itself, set once by the attempt that establishes this
+        # session's reference and only when the prior one differed by more
+        # than the gate's own ceiling — one threshold, not a second definition
+        # of "materially". ``None`` means there is nothing to say: no prior, no
+        # reference yet, or a prior this session's own chain agrees with.
+        self._verify_level_reference_reset: dict[str, float] | None = None
         # Transient, recomputed on every VERIFY attempt (never carried
         # forward itself) — this attempt's step vs the baseline above, or
         # ``None`` when there is nothing to compare (no usable pilots this
@@ -4932,12 +4991,37 @@ class CrossoverV2Conductor:
         return self._measure_gate_window_ms
 
     @property
-    def verify_pilot_transfer_baseline(self) -> Mapping[str, float] | None:
-        """The frozen G3 reference (host persistence reads it, mirroring
-        ``measure_gate_window_ms`` above — see ``__init__``'s comment)."""
+    def verify_pilot_transfer_reference(self) -> Mapping[str, Any] | None:
+        """This session's own G3 reference, DATED, for the host to persist.
+
+        ``{"values": {role: dB}, "at": epoch}``, or ``None`` when no usable
+        VERIFY attempt established one. The date is what lets the NEXT
+        session's disclosure name when this reference was taken; a record that
+        travels without it cannot be shown as history (#1942), so the two are
+        one value rather than two keys that could be written apart.
+
+        The next session receives this as ``verify_pilot_transfer_prior`` and
+        may only DISCLOSE it. There is no longer a constructor argument that
+        can make a previous session's numbers this session's comparator.
+        """
+        if self._verify_pilot_baseline is None or self._verify_pilot_baseline_at is None:
+            return None
+        return {
+            "values": dict(self._verify_pilot_baseline),
+            "at": self._verify_pilot_baseline_at,
+        }
+
+    @property
+    def verify_level_reference_reset(self) -> Mapping[str, float] | None:
+        """This session's level-reference reset, when it is worth disclosing.
+
+        ``{"prior_at": epoch, "step_db": float}`` when this session set its own
+        reference and the previous one differed by more than the gate ceiling;
+        ``None`` otherwise. Report-only — see ``_note_level_reference_reset``.
+        """
         return (
-            dict(self._verify_pilot_baseline)
-            if self._verify_pilot_baseline is not None
+            dict(self._verify_level_reference_reset)
+            if self._verify_level_reference_reset is not None
             else None
         )
 
@@ -7096,10 +7180,17 @@ class CrossoverV2Conductor:
         # usable attempt of this conductor's own lifetime (never pilots
         # absent, never a legacy program missing ``programmed_hi_gain_db``)
         # only records the reference; it never rejects on this attempt.
+        #
+        # Since #1927 that is the ONLY attempt that can record it — no prior
+        # session's number can arrive here (``__init__``), so a first attempt
+        # is structurally unable to fire this gate, and what the gate means is
+        # exactly what it measures: the chain moved DURING this sitting.
         transfer = _pilot_transfer_by_role(analysis)
         if transfer:
             if self._verify_pilot_baseline is None:
                 self._verify_pilot_baseline = dict(transfer)
+                self._verify_pilot_baseline_at = time.time()
+                self._note_level_reference_reset(transfer)
             else:
                 shared = [r for r in transfer if r in self._verify_pilot_baseline]
                 if shared:
@@ -7172,6 +7263,49 @@ class CrossoverV2Conductor:
                     if self._delta_probe is not None else {}
                 ),
             }
+        )
+
+    def _note_level_reference_reset(self, transfer: Mapping[str, float]) -> None:
+        """Record that this session set its own G3 reference, if that is news.
+
+        Runs once, in the same statement block that establishes the baseline
+        (#1927). The comparison it makes is with the PREVIOUS session's dated
+        record and is **reported, never enforced** — no verdict reads it. That
+        separation is the whole point of the per-session lifetime: the number
+        it computes is exactly the one that used to refuse a day-later verify.
+
+        Silent unless the step clears :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB`
+        — the gate's own definition of a level move, reused rather than
+        restated, so "materially different" can never drift from "would have
+        fired".
+        """
+        if self._verify_pilot_prior is None or self._verify_pilot_prior_at is None:
+            return
+        shared = [r for r in transfer if r in self._verify_pilot_prior]
+        if not shared:
+            return
+        step = max(
+            abs(transfer[r] - self._verify_pilot_prior[r]) for r in shared
+        )
+        if step <= VERIFY_PILOT_TRANSFER_STEP_CEILING_DB:
+            return
+        self._verify_level_reference_reset = {
+            "prior_at": self._verify_pilot_prior_at,
+            "step_db": step,
+        }
+        # The bench's grep target. ``_log_verify_diag`` carries the
+        # WITHIN-session ``pilot_transfer_step_db``; this is the number that
+        # number can no longer be — the step across the session boundary, the
+        # one the #1870 field finding was actually measuring. Its own event so
+        # a corpus sweep can count resets without parsing every verify diag,
+        # and INFO because a reset is ordinary, not a fault.
+        log_event(
+            logger, "correction.crossover_v2_level_reference_reset",
+            level=logging.INFO,
+            session_id=self.session_id,
+            step_db=round(step, 3),
+            prior_age_s=round(time.time() - self._verify_pilot_prior_at, 1),
+            ceiling_db=VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
         )
 
     # --- delta probe (linearization-integrity PR-L5) --------------------------

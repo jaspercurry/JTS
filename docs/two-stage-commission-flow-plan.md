@@ -241,8 +241,10 @@ seams**, explicitly because *"this session's `index_phase_map` is
 Stage 2 at Full needs `{1: VERIFY, 2..M: CLOUD_VERIFY}`, both cloud
 seams re-threaded, the group's floor honoured
 (`MIN_CLOUD_VERIFY_POSITIONS`), and the same verify-priors rehydration
-(`predicted_sum`, `gate_window_ms`, `pilot_transfer_baseline`) the
-1-entry path already does.
+(`predicted_sum`, `gate_window_ms`) the 1-entry path already does. (At
+plan time that list also carried the G3 pilot-transfer baseline; #1927
+made that reference session-scoped, so it now travels as dated history
+only — see `HANDOFF-crossover-measurement-v2.md`.)
 
 **Capture arithmetic (corrected — an earlier draft said 11/6).** The
 Full plan is 16 entries: CHECK 1 + MEASURE 1 + `N−1` = 8 cloud-measure

@@ -372,8 +372,9 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
     from jasper.correction.failures import PHONE_CAPTURE_UNAVAILABLE, public_failure
 
     assert "microphone" in REASON_REGISTRY[REASON_SNR_FLOOR].message
-    # #1924 owns the ROUTING half of this reason ("re-verify to try again"
-    # cannot succeed against a deterministic shift). R4 owns only the noun.
+    # R4 owns the noun here; #1924's routing half (the remedy clause) landed
+    # separately and is pinned in tests/test_crossover_v2_conductor.py. Both
+    # halves of the sentence have to survive, so this keeps asserting the noun.
     assert "microphone" in REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
     assert "measurement page" in CAPTURE_INCOMPATIBLE_USER_MESSAGE
     assert "measurement page" in public_failure(PHONE_CAPTURE_UNAVAILABLE)["text"]
