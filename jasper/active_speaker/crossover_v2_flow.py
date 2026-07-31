@@ -2325,6 +2325,103 @@ def _verify_graded_band_from_tracking(
     return [float(lo), float(hi)]
 
 
+def _rounded(value: Any, digits: int) -> float | None:
+    """``round(value, digits)`` for a real number, ``None`` for anything else.
+
+    Keeps a diagnostic line's absent values as ``None`` rather than letting a
+    missing field become ``0.0`` — the same unknown-is-not-a-value rule every
+    other field on that line follows.
+    """
+    return round(float(value), digits) if isinstance(value, (int, float)) else None
+
+
+def _verify_frame_from_tracking(
+    tracking: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The FRAME VERIFY's comparison spanned, and the residual both ways.
+
+    Rung P1. VERIFY differences an ON-AXIS two-branch model against an IN-ROOM
+    gated measurement — two instruments, and on the 2026-07-29 corpus a single
+    −0.79 dB/octave tilt between them was 84 % of the flow's reported
+    prediction error. ``program_analysis._analyze_verify`` fits that frame and
+    reports the residual with it removed beside the raw one; this lifts both
+    for the durable record. **Nothing is recomputed here** — every value is one
+    of that analysis's own, exactly like :func:`_verify_evidence_from_tracking`
+    beside it.
+
+    Rendered on EVERY outcome, like :func:`_verify_graded_band_from_tracking`
+    and for the same class of reason: a PASS is exactly the case where an
+    unstated tilt lets a reader take instrument agreement for model agreement.
+
+    ``None`` when no tracking comparison ran, or when it ran and the frame
+    could not be fitted — absent means "no frame was measured", never "the
+    frames matched". The tilt-removed keys are omitted individually rather than
+    defaulted to their raw twins: a beside-number equal to its raw twin would
+    read as "removing the frame changed nothing", which is a measurement, not
+    an absence.
+
+    ``max_db_tilt_removed`` is the twin of the NOTCH-EXCLUDED max, matching
+    what :func:`_verify_evidence_from_tracking` already calls ``max_db`` on
+    this same surface — on a household-facing record "the level error" has one
+    meaning, the one the tolerance gates on, and a second spelling for it here
+    would invite a reader to compare two numbers taken over different bin sets.
+
+    **``pivot_hz``/``n_bins``/``band_hz`` travel too.** They are not decoration:
+    a two-parameter fit over few bins or a narrow span is ill-conditioned, and
+    :mod:`jasper.audio_measurement.frame_fit` deliberately reports that span
+    rather than inventing a confidence policy — so a record that dropped them
+    would state a tilt with no way to judge it. They also disclose WHICH bins
+    the frame was estimated from: the span is the notch-excluded, validity-floor
+    clamped set, narrower than the graded band whenever the prediction has a
+    deep notch in it.
+    """
+    frame = tracking.get("frame")
+    if not isinstance(frame, Mapping):
+        return None
+    offset_db = frame.get("offset_db")
+    tilt = frame.get("tilt_db_per_octave")
+    if not isinstance(offset_db, (int, float)) or not isinstance(tilt, (int, float)):
+        return None
+    out: dict[str, Any] = {
+        "offset_db": float(offset_db),
+        "tilt_db_per_octave": float(tilt),
+    }
+    pivot_hz = frame.get("pivot_hz")
+    if isinstance(pivot_hz, (int, float)):
+        out["pivot_hz"] = float(pivot_hz)
+    n_bins = frame.get("n_bins")
+    if isinstance(n_bins, int):
+        out["n_bins"] = n_bins
+    band_hz = frame.get("band_hz")
+    if (
+        isinstance(band_hz, (list, tuple))
+        and len(band_hz) == 2
+        and all(isinstance(edge, (int, float)) for edge in band_hz)
+    ):
+        out["band_hz"] = [float(band_hz[0]), float(band_hz[1])]
+    tilt_removed = frame.get("tilt_removed")
+    if isinstance(tilt_removed, Mapping):
+        for key, source in (
+            ("rms_db_tilt_removed", "rms_db"),
+            ("max_db_tilt_removed", "max_db"),
+        ):
+            value = tilt_removed.get(source)
+            if isinstance(value, (int, float)):
+                out[key] = float(value)
+    # The RAW pair the tilt-removed numbers sit beside (should-fix 1). Carried
+    # here because the durable ``verify.evidence`` block — the other place these
+    # live — is persisted only on a NON-pass outcome, so a passing screen would
+    # otherwise render the frame-removed half of a comparison with nothing to
+    # compare it to: the flattering number alone.
+    raw = frame.get("raw")
+    if isinstance(raw, Mapping):
+        for key, source in (("rms_db_raw", "rms_db"), ("max_db_raw", "max_db")):
+            value = raw.get(source)
+            if isinstance(value, (int, float)):
+                out[key] = float(value)
+    return out
+
+
 # (``_flatness_evidence_from_tracking`` lived here until the
 # flat-linearization plan's PR-5. It repackaged one VERIFY capture's own
 # grid-and-band-mean flatness number for the RESULT/verify_fail screens; that
@@ -4605,6 +4702,11 @@ class CrossoverV2Conductor:
         # EVERY outcome, because a pass is exactly when an unstated band
         # overclaims. See ``_verify_graded_band_from_tracking``.
         self._verify_graded_band_hz: list[float] | None = None
+        # The FRAME that comparison spanned — one offset, one tilt (rung P1).
+        # Same lifecycle and same every-outcome surfacing rule as the graded
+        # band above, and for the same class of reason: the band bounds how
+        # WIDE the claim is, this bounds how much of it was the instrument.
+        self._verify_frame: dict[str, Any] | None = None
         # (``_flatness_evidence`` lived here until PR-5. The flatness a
         # household sees is now the cloud-verify group's spec verdict, read
         # off ``group_cloud_result(PHASE_CLOUD_VERIFY)["flatness"]`` — no
@@ -4965,6 +5067,17 @@ class CrossoverV2Conductor:
         :func:`_verify_graded_band_from_tracking`.
         """
         return list(self._verify_graded_band_hz) if self._verify_graded_band_hz else None
+
+    @property
+    def verify_frame(self) -> dict[str, Any] | None:
+        """The frame VERIFY's comparison spanned, or None (rung P1).
+
+        Surfaced on every outcome for the same reason the graded band is (see
+        :func:`_verify_frame_from_tracking`): a PASS is precisely when an
+        undisclosed tilt would let a household — or the next iterate loop —
+        read model agreement into what was partly instrument.
+        """
+        return dict(self._verify_frame) if self._verify_frame else None
 
     @property
     def applied(self) -> bool:
@@ -7170,6 +7283,7 @@ class CrossoverV2Conductor:
         # this capture graded a span it never reached.
         self._verify_evidence = None
         self._verify_graded_band_hz = None
+        self._verify_frame = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.pilot_snr_ok is False:
@@ -7230,6 +7344,7 @@ class CrossoverV2Conductor:
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
         self._verify_graded_band_hz = _verify_graded_band_from_tracking(tracking)
+        self._verify_frame = _verify_frame_from_tracking(tracking)
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
         # max — and both are now computed over `tracking["tracking_band_hz"]`,
@@ -7752,6 +7867,11 @@ class CrossoverV2Conductor:
         # the mutated conductor state) and the step vs baseline
         # ``_verify_verdict`` already computed and stashed transiently.
         pilot_transfer_db = _pilot_transfer_by_role(analysis).get(VERIFY_PILOT_ROLE)
+        # Frame discipline (rung P1): the journal line an operator greps for
+        # "did apply do what we predicted" is also where the answer "84 % of
+        # that was the instrument" has to be readable. Lifted, never
+        # recomputed — ``_verify_frame_from_tracking`` already reduced it.
+        frame = self._verify_frame or {}
         log_event(
             logger, "correction.crossover_v2_verify_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
@@ -7770,6 +7890,12 @@ class CrossoverV2Conductor:
             tracking_band_lo_hz=tracking_band_lo_hz,
             tracking_band_hi_hz=tracking_band_hi_hz,
             rms_db=tracking.get("rms_db"),
+            # The frame those two numbers were measured ACROSS, and the same
+            # two numbers with its tilt removed — beside, never instead of.
+            frame_offset_db=_rounded(frame.get("offset_db"), 3),
+            frame_tilt_db_per_octave=_rounded(frame.get("tilt_db_per_octave"), 3),
+            rms_db_tilt_removed=_rounded(frame.get("rms_db_tilt_removed"), 4),
+            max_db_tilt_removed=_rounded(frame.get("max_db_tilt_removed"), 4),
             pilot_transfer_db=(
                 round(pilot_transfer_db, 3) if pilot_transfer_db is not None else None
             ),

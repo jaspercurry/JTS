@@ -11,6 +11,7 @@ from jasper.audio_measurement.analysis import (
     THIRD_OCTAVE_BASS_BANDS_HZ,
     band_levels_from_magnitude,
     compression_curve,
+    notch_excluded_band_mask,
     notch_excluded_tracking_error_db,
     thd_curve,
     tracking_error_db,
@@ -318,3 +319,86 @@ def test_full_interference_inversion_still_fails():
     )
     assert rms > 1.5
     assert max_abs > 1.5
+
+
+# --------------------------------------------------------------------------- #
+# the notch-excluded bin set, as a value (rung P1)
+# --------------------------------------------------------------------------- #
+
+
+def _notched_prediction(freqs, *, center_hz, depth_db=25.0, width_oct=1.0 / 12.0):
+    octaves = np.log2(freqs / center_hz)
+    return -depth_db * np.exp(-((octaves / width_oct) ** 2))
+
+
+def test_the_mask_is_the_bin_set_the_notch_excluded_comparator_grades():
+    """One owner for the bin choice, pinned by identity, not by inspection.
+
+    ``notch_excluded_band_mask`` was extracted so a second consumer — rung P1's
+    frame fit — can estimate its ``(offset, tilt)`` from the bins this
+    comparison TRUSTS, without re-deriving the exclusion rule. If the two ever
+    disagree the frame would be fitted on bins the gate refuses to grade, which
+    is exactly the defect the extraction exists to prevent. So: grading the
+    masked bins by hand must reproduce the comparator's own answer exactly.
+    """
+    freqs = np.geomspace(500.0, 8000.0, 3000)
+    band = (800.0, 6000.0)
+    predicted_db = _notched_prediction(freqs, center_hz=2000.0)
+    rng = np.random.default_rng(4)
+    measured_db = predicted_db + rng.normal(0.0, 0.7, freqs.size)
+
+    keep = notch_excluded_band_mask(
+        freqs, predicted_db, band, notch_exclusion_db=12.0,
+    )
+    rms, max_abs = notch_excluded_tracking_error_db(
+        freqs, measured_db, predicted_db, band, notch_exclusion_db=12.0,
+    )
+    by_hand_rms, by_hand_max = tracking_error_db(
+        freqs[keep], measured_db[keep], predicted_db[keep],
+        (float(freqs[keep].min()), float(freqs[keep].max())),
+    )
+    assert rms == pytest.approx(by_hand_rms)
+    assert max_abs == pytest.approx(by_hand_max)
+
+    # It really excluded something, and only inside the band.
+    in_band = (freqs >= band[0]) & (freqs <= band[1])
+    assert int(keep.sum()) < int(in_band.sum())
+    assert not np.any(keep & ~in_band)
+
+
+def test_the_mask_reads_the_raw_reference_when_one_is_supplied():
+    """Same asymmetry as the comparator: the exclusion keys on the PREDICTED
+    level, and on the UNSMOOTHED prediction when the caller supplies it, so a
+    smoothing pass cannot erase a modelled notch's identity."""
+    freqs = np.geomspace(500.0, 8000.0, 3000)
+    band = (800.0, 6000.0)
+    raw_predicted_db = _notched_prediction(freqs, center_hz=2000.0, width_oct=1.0 / 96.0)
+    smoothed_predicted_db = np.zeros_like(freqs)  # the notch smoothed away
+
+    without_reference = notch_excluded_band_mask(
+        freqs, smoothed_predicted_db, band, notch_exclusion_db=12.0,
+    )
+    with_reference = notch_excluded_band_mask(
+        freqs, smoothed_predicted_db, band,
+        notch_exclusion_db=12.0, notch_reference_db=raw_predicted_db,
+    )
+    in_band = (freqs >= band[0]) & (freqs <= band[1])
+    assert int(without_reference.sum()) == int(in_band.sum())
+    assert int(with_reference.sum()) < int(in_band.sum())
+
+
+def test_an_all_notch_band_falls_back_to_the_whole_band_never_to_nothing():
+    """The comparator's documented degenerate case, as a bin set: every bin
+    excluded means the caller gets the band back, never an empty selection —
+    a frame fitted on nothing is not a frame, and a grade over nothing raises."""
+    freqs = np.geomspace(500.0, 8000.0, 500)
+    band = (800.0, 6000.0)
+    # A ramp steep enough that most of the band sits >12 dB under its median.
+    predicted_db = -100.0 * np.log2(freqs / 800.0)
+
+    keep = notch_excluded_band_mask(
+        freqs, predicted_db, band, notch_exclusion_db=12.0,
+    )
+    in_band = (freqs >= band[0]) & (freqs <= band[1])
+    assert int(keep.sum()) >= 1
+    assert np.array_equal(keep & ~in_band, np.zeros_like(keep))

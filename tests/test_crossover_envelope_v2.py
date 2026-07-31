@@ -1183,6 +1183,136 @@ def test_done_screen_claims_no_band_when_verify_graded_none():
     assert not any("checked" in line for line in env["expert_details"])
 
 
+_FRAME = {
+    "offset_db": -0.75,
+    "tilt_db_per_octave": -0.79,
+    "pivot_hz": 2828.4,
+    "n_bins": 400,
+    "band_hz": [2000.0, 4000.0],
+    "rms_db_raw": 1.90,
+    "max_db_raw": 2.40,
+    "rms_db_tilt_removed": 1.34,
+    "max_db_tilt_removed": 0.62,
+}
+
+
+def test_done_screen_states_the_frame_and_BOTH_grades():
+    """Rung P1 — the screen that says "Verified." must say how much of that
+    was the instrument, AND must never show only the flattering half.
+
+    VERIFY differences an on-axis MODEL against an in-room MEASUREMENT. On the
+    2026-07-29 corpus a single −0.79 dB/octave tilt between those frames was
+    84 % of the flow's apparent prediction error, and the household would have
+    read the pass as "the model was right".
+
+    The done screen has no ``evidence`` block — the host persists that only for
+    a NON-pass outcome — so unless the frame lines carry the raw pair
+    themselves, a passing household would read the tilt-removed grade with
+    nothing beside it: the smaller number, alone, presented as the result. That
+    is the exact over-claim this rung exists to stop, so the raw pair rides
+    here too.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "graded_band_hz": [2000.0, 4000.0],
+                "frame": _FRAME},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == "done"
+    assert "frame offset -0.75 dB, tilt -0.79 dB/oct" in env["expert_details"]
+    assert (
+        "raw: level error 2.40 dB, tracking average error 1.90 dB"
+        in env["expert_details"]
+    )
+    assert (
+        "tilt-removed: level error 0.62 dB, tracking average error 1.34 dB"
+        in env["expert_details"]
+    )
+    # The ordering is the claim: raw first, then what removing the frame did.
+    details = env["expert_details"]
+    assert details.index("raw: level error 2.40 dB, tracking average error 1.90 dB") < (
+        details.index(
+            "tilt-removed: level error 0.62 dB, tracking average error 1.34 dB"
+        )
+    )
+
+
+def test_verify_fail_states_the_frame_without_repeating_the_raw_numbers():
+    """The beside-grade is BESIDE — and on THIS screen the raw pair is already
+    above it, stated against its limit by the evidence block that owns it. So
+    the frame lines add only what is missing: the frame, and the tilt-removed
+    pair. Printing "raw:" here as well would be the same two numbers twice in
+    one collapsed paragraph."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={
+            "outcome": "fail",
+            "evidence": {"max_db": 2.4, "rms_db": 1.9, "tolerance_db": 1.5},
+            "graded_band_hz": [2000.0, 4000.0],
+            "frame": _FRAME,
+        },
+    ))
+    assert env["screen"] == "verify_fail"
+    assert "level error 2.40 dB (limit 1.5 dB)" in env["expert_details"]
+    assert "tracking average error 1.90 dB" in env["expert_details"]
+    assert "frame offset -0.75 dB, tilt -0.79 dB/oct" in env["expert_details"]
+    assert (
+        "tilt-removed: level error 0.62 dB, tracking average error 1.34 dB"
+        in env["expert_details"]
+    )
+    assert not any(line.startswith("raw: ") for line in env["expert_details"])
+
+
+def test_a_tilt_removed_grade_is_never_rendered_without_a_raw_one():
+    """The invariant behind should-fix 1, stated as a property rather than as
+    two screen-specific cases: whenever a tilt-removed number is on screen, a
+    raw one is on screen too. A record carrying only the tilt-removed half
+    therefore renders the frame alone rather than the friendlier grade
+    unaccompanied."""
+    frame = dict(_FRAME)
+    del frame["rms_db_raw"]
+    del frame["max_db_raw"]
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "frame": frame},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert "frame offset -0.75 dB, tilt -0.79 dB/oct" in env["expert_details"]
+    assert not any("tilt-removed" in line for line in env["expert_details"])
+
+
+def test_a_frame_with_no_beside_grades_states_the_frame_alone():
+    """The lines have different presence conditions — a frame can be fitted
+    while the analysis reported no grades at all — and the first must not be
+    gated behind the others."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass",
+                "frame": {"offset_db": 0.1, "tilt_db_per_octave": -0.2}},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert "frame offset +0.10 dB, tilt -0.20 dB/oct" in env["expert_details"]
+    assert not any("tilt-removed" in line for line in env["expert_details"])
+    assert not any(line.startswith("raw: ") for line in env["expert_details"])
+
+
+def test_no_frame_is_stated_when_none_was_measured():
+    """Absence stays absence: a screen with no fitted frame says nothing about
+    one, rather than printing a flat frame nobody measured."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "graded_band_hz": [2000.0, 4000.0]},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert not any("frame offset" in line for line in env["expert_details"])
+    assert not any("tilt-removed" in line for line in env["expert_details"])
+
+
 def test_done_expert_details_empty_when_no_cloud_group_closed():
     """No cloud-verify entry at all — a session still walking, or one that
     never had a group. Nothing measured, so nothing is said: PR-5's
