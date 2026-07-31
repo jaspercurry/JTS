@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from jasper.audio_measurement.correction_lane import (
+    DEFAULT_ALSA_DEVICE as DEFAULT_ALSA_DEVICE,
+)
 from jasper.audio_measurement.playback import (
     PlaybackCleanupState as PlaybackCleanupState,
     PlaybackError as PlaybackError,
@@ -30,7 +33,6 @@ from jasper.audio_measurement.playback import (
 
 
 DEFAULT_TONE_DIR = Path("/var/lib/jasper/correction/tones")
-DEFAULT_ALSA_DEVICE = "correction_substream"
 
 
 def _raise_legacy_error(error: PlaybackError, *, missing_label: str) -> None:

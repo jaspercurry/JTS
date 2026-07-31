@@ -87,6 +87,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.audio_measurement.correction_lane import (
+    DEFAULT_ALSA_DEVICE as VOLUME_FLOOR_TONE_ALSA_DEVICE,
+)
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
@@ -194,7 +197,6 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
 MAX_JSON_BYTES = 64 * 1024
 LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC = 30.0
-VOLUME_FLOOR_TONE_ALSA_DEVICE = "correction_substream"
 VOLUME_FLOOR_TONE_FREQS_HZ = (125.0, 500.0, 2000.0)
 VOLUME_FLOOR_TONE_SOURCE_DBFS = -12.0
 VOLUME_FLOOR_TONE_CHUNK_DURATION_S = 8.0

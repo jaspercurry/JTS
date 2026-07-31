@@ -48,6 +48,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
+from ...audio_measurement.correction_lane import DEFAULT_ALSA_DEVICE
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
 from ...install_profile import (
@@ -799,7 +800,7 @@ def probe_aec_ref_path() -> list[CheckResult]:
     # Play the sine through the dedicated correction/test fan-in lane.
     # Its plug wrapper handles format/rate conversion before fanin.
     play = _run(
-        ["aplay", "-q", "-D", "correction_substream", _PROBE_SINE_PATH],
+        ["aplay", "-q", "-D", DEFAULT_ALSA_DEVICE, _PROBE_SINE_PATH],
         timeout=_PROBE_SINE_DURATION_S + 5.0,
     )
     try:
