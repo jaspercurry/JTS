@@ -55,6 +55,18 @@ def test_every_handoff_has_a_last_verified_footer():
     )
 
 
+def _prose_only(text: str) -> str:
+    """Drop markdown link targets and inline code from `text`.
+
+    What is left is what a reader actually reads. Without this, an
+    anchor slug that happens to end in `-historical` satisfies the
+    orientation-note check on its own.
+    """
+
+    text = re.sub(r"\]\([^)]*\)", "]", text)
+    return re.sub(r"`[^`]*`", "", text)
+
+
 def _tag_placement_ok(lines: list[str]) -> bool:
     """True when every historical tag warns a reader before its content.
 
@@ -62,8 +74,9 @@ def _tag_placement_ok(lines: list[str]) -> bool:
 
     * whole-doc — the tag opens the line immediately under the H1;
     * appendix — the tag opens the line immediately under a section
-      heading, and the H1 orientation note (the first non-empty line
-      after the title) says part of the file is historical.
+      heading, and the H1 orientation note (the blockquote under the
+      title) tells the reader in PROSE that part of the file is
+      historical, and links to where the boundary is.
 
     Anything else is a tag a reader can walk straight past.
     """
@@ -81,7 +94,18 @@ def _tag_placement_ok(lines: list[str]) -> bool:
         if not ln.startswith(">"):
             break
         note.append(ln)
-    if not note or "historical" not in " ".join(note).lower():
+    if not note:
+        return False
+    note_text = " ".join(note)
+    # The word must be in PROSE the reader sees. An anchor slug like
+    # `#appendix-...-historical` is machine text, and a note whose only
+    # "historical" is inside a link target warns nobody -- so strip link
+    # targets and inline code before the substring test.
+    if "historical" not in _prose_only(note_text).lower():
+        return False
+    # ...and it must say WHERE the boundary is, which in practice means
+    # linking to the historical section rather than merely alluding to it.
+    if "](" not in note_text:
         return False
     return all(
         lines[i - 1].startswith("#")
@@ -119,7 +143,7 @@ def test_a_mid_file_tag_under_no_heading_still_fails():
     historical somewhere."
     """
 
-    orientation = "> Part of this file is **historical**; see the appendix."
+    orientation = "> Part of this file is **historical**; see [the appendix](#a)."
     assert _tag_placement_ok(["# T", orientation, "## Appendix", _HISTORICAL_TAG])
     # Same doc, tag floating in prose rather than opening a section.
     assert not _tag_placement_ok(
@@ -128,4 +152,29 @@ def test_a_mid_file_tag_under_no_heading_still_fails():
     # Appendix shape without the H1 warning is still a buried tag.
     assert not _tag_placement_ok(
         ["# T", "> An ordinary note.", "## Appendix", _HISTORICAL_TAG]
+    )
+
+
+def test_an_anchor_slug_cannot_stand_in_for_the_prose_warning():
+    """The slug loophole: machine text is not a reader warning.
+
+    A note whose only occurrence of "historical" sits inside a link
+    target or inline code satisfied the naive substring test while
+    telling the reader nothing. Both must fail; the prose version of
+    the same note must still pass.
+    """
+
+    slug_only = "> See [the appendix](#appendix-2026-07-12-plan-historical) below."
+    assert not _tag_placement_ok(["# T", slug_only, "## Appendix", _HISTORICAL_TAG])
+
+    code_only = "> See `docs/thing-historical.md` and [the appendix](#a)."
+    assert not _tag_placement_ok(["# T", code_only, "## Appendix", _HISTORICAL_TAG])
+
+    # Prose says it AND a link says where: the shape rule 10 admits.
+    prose = "> The appendix below is **historical**; see [the appendix](#a)."
+    assert _tag_placement_ok(["# T", prose, "## Appendix", _HISTORICAL_TAG])
+
+    # Prose without a link does not say where the boundary is.
+    assert not _tag_placement_ok(
+        ["# T", "> Part of this file is historical.", "## Appendix", _HISTORICAL_TAG]
     )

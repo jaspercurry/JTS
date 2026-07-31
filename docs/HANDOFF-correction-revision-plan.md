@@ -50,6 +50,13 @@ It is not a complete work taxonomy — it reshapes the order of work that alread
 had a home (chiefly WO-4/WO-6/WO-7), and program work that no rung touches is
 listed honestly under [Not on a rung](#not-on-a-rung--program-work-with-another-owner).
 
+**Work orders the ladder does NOT touch**, stated so their absence below is
+read as a finding rather than an omission: **WO-0** (reported 2026-07-29),
+**WO-1** (shipped — `jasper/attribution/` holds the findings artifact, registry,
+vocabulary, promotion, per-position evidence, session identity, and storage),
+**WO-2** (the quick-sweep harness), and **WO-8** (room-line adoption). Their
+text stands as written.
+
 > **RATIFICATION STATUS — read this before acting on the ladder.**
 > **The ladder as a whole is PENDING OWNER RATIFICATION** (it is decision 1 of
 > the panel's check-in, and sits in the Monday rulings queue). One arm of one
@@ -58,7 +65,7 @@ listed honestly under [Not on a rung](#not-on-a-rung--program-work-with-another-
 > implementation has merged** as of `5c7029b63`.
 >
 > The owner has since given a **provisional green light to build along the
-> ladder** ahead of ratification (see [the campaign](#the-campaign--rounds-to-monday-2026-08-04-and-beyond)).
+> ladder** ahead of ratification (see [the campaign](#the-campaign--rounds-to-monday-2026-08-03-and-beyond)).
 > That authorizes *work*, not *conclusions*: a round may ship a rung's code, and
 > still no rung is settled until Monday's ratification and measurement
 > validation.
@@ -85,20 +92,34 @@ three loop-shaping findings in `captures/repeat-floor-20260731/README.md`.
 the dominant cross-session term and needs hands; it is on the Monday runbook and
 has no issue. Rung pending ratification.
 
-**Reshapes.** **WO-7's early-stop rule is superseded-pending.** WO-7 stops when a
-result is "in-spec and within repeatability"; that repeatability term was an
-unmeasured constant, and P0 replaces it with a measured floor plus a
-**re-baselining rule** — the floor against a *fixed* baseline walks with drift,
-against the *predecessor* it does not, so the loop must compare consecutive
-attempts or re-baseline. WO-7's attempt budget and stopping copy are unaffected.
-P0 also supplies what the appendix's **P-track H1** was chartered to supply (the
-repeatability numbers behind the P-track P2/P4 constants) for the VERIFY
-instrument specifically.
+**Reshapes.** Nothing in WO-7 is contradicted; a **constraint is added**.
+**WO-7's only stopping rule is the attempt budget** (~3 attempts, then honest
+"as good as it's gonna get" copy) — read it at
+[`attribution-stage-plan.md`](attribution-stage-plan.md) §7. It contains no
+repeatability test; the one occurrence of "repeatability" in that document is
+**WO-5's** verify-fail discriminator, a different rule.
+
+The formulation *"in-spec and within repeatability"* comes from the **panel**,
+not from WO-7 — `SYNTHESIS.md` P0 and `measurement-verdict.md` both describe
+"WO-7's early-stop rule" in those words. Treat it as the panel's **proposal for
+a rule WO-7 does not yet have**, and cite it to the panel artifact rather than
+to the work order. (An earlier revision of this row quoted it as WO-7's own
+language, which would have made the owning document mis-describe itself.)
+
+So: **P0 adds a floor-aware stopping constraint to WO-7's budget-only loop** —
+a measured per-bin/per-band floor, plus a **re-baselining rule** the bench
+produced: the floor against a *fixed* baseline walks with drift, against the
+*predecessor* it does not, so the loop must compare consecutive attempts or
+re-baseline. Marked **superseded-pending** because adopting the constraint
+changes WO-7's stopping behaviour, not because any WO-7 text is wrong today.
+P0 also supplies, for the VERIFY instrument specifically, the repeatability
+numbers the appendix's **P-track H1** was chartered to supply behind the
+P-track P2/P4 constants.
 
 **Research inputs.** None — P0 is a measurement, not a reading.
 
 **Issues.** None open. The remaining arm is a hands item scheduled in **R13**;
-see `captures/MONDAY-RUNBOOK-2026-08-04.md`.
+see `captures/MONDAY-RUNBOOK-2026-08-03.md`.
 
 ---
 
@@ -243,7 +264,7 @@ just a bug), #1876 (convergence: does a clean-slate re-run reach the same tune?)
 
 ---
 
-## The campaign — rounds to Monday (2026-08-04) and beyond
+## The campaign — rounds to Monday (2026-08-03) and beyond
 
 The middle layer between strategy and a session. The ladder says *what order the
 problems get solved in*; the campaign says *which round solves which, and where
@@ -267,12 +288,13 @@ as a **replacement behind a working flow** — and where a capability is not rea
 for households, it lands lab-gated on the production rails, per #1866's
 flow-first ruling, never on a parallel path.
 
-The consequence is an exit criterion every round carries, on top of its own:
-**the round closes with a deploy to jts3 and a mechanical end-to-end pass with
-the fixed mic** — the browser flow clicked through, a measurement taken, a
+The consequence is an exit criterion **every code round** carries, on top of its
+own: **the round closes with a deploy to jts3 and a mechanical end-to-end pass
+with the fixed mic** — the browser flow clicked through, a measurement taken, a
 verdict rendered — proving the slice still works. This is a per-round ritual,
 not a milestone; R11 additionally owns the *deep* version of that E2E as a
-deliverable.
+deliverable. **R13 is exempt**: it is the owner's hardware-and-rulings day and
+ships no code, so it has no slice to re-prove.
 
 **2. The 80/20 lens — the standing question.** Every round-open and every work
 order asks: *is this the most effective way to prove this out — the cheapest
@@ -308,7 +330,7 @@ letting a handoff quietly re-plan it.
 
 ---
 
-### R8 — spine + gating foundation *(2026-07-31 night — IN FLIGHT)*
+### R8 — spine + gating foundation *(Friday 2026-07-31, overnight into 08-01 — IN FLIGHT)*
 
 **Territory:** program docs and tooling (this roadmap, the harnesses,
 `captures/`) plus the findings-reader seam.
@@ -332,7 +354,7 @@ captures, then the standing fixed-mic slice pass. No new *acoustic* evidence.
 findings visible in the envelope. **Plus the standing slice exit** — deploy to
 jts3 and a mechanical fixed-mic end-to-end pass.
 
-### R9 — the instrument round (rung P1) *(Friday)*
+### R9 — the instrument round (rung P1) *(Friday 2026-07-31)*
 
 **Territory:** the measurement/analysis layer — `jasper/audio_measurement/`
 (`gating.py`, `program_analysis.py`) and the frame/level math analysis consumes,
@@ -340,10 +362,31 @@ plus their tests.
 
 **Mission:** make the instrument incapable of overstating what it measured.
 
-**Deliverables.** The gating contract implemented on the certified detector core
-— `source_of_bound` and the pre/post-gate delta persisted *and* surfaced, the
-trusted floor (≈2.5/T) disclosed beside the nominal 1/T, and E5's eval-band ∩
-radiated-band correction. Lens A's **frame discipline**: fit and disclose
+**Deliverables.** The gating contract — `source_of_bound` and the pre/post-gate
+delta persisted *and* surfaced, the trusted floor (≈2.5/T) disclosed beside the
+nominal 1/T, and E5's eval-band ∩ radiated-band correction.
+
+> **Detector plan revised by R8's certification** (source: the detector-
+> certification comment on #1969, 2026-07-31; artifacts
+> `captures/detector-certification-20260801/`, criteria frozen before any run).
+> **Both** detectors fail the frozen criteria, and the research-recommended
+> running-local-kurtosis challenger **loses to the shipped core** (AUC 0.331 vs
+> 0.625) for a structural reason: kurtosis is blind to band-limited reflections.
+> The reports are hypothesis sources, never authorities — the bench overruled
+> one, which is the system working. So R9 **keeps the conservative shipped
+> core** and ships: (1) the measured **peak-reporting fix** (strict-ToA
+> 0.464 → 0.609, byte-identical detection decisions — free); (2) the
+> **asymmetric-cost classification guard** — a false detection on a DUT-internal
+> feature is catastrophic where a miss is merely optimistic (the challenger fired
+> 13/13 on the horn's 646 µs internal feature, which would set the trusted floor
+> to 3870 Hz and destroy the whole 2 kHz crossover evidence band), so any
+> τ below the minimum gate **classifies and never gates**; (3) the early-fire
+> mechanism fix **only if** a variant improves the criteria **on our own ESS
+> deconvolution chain** — our-chain certification precedes any swap, because the
+> corpus chain's absolute numbers do not transfer. `gating.py`'s
+> wrong-way tuning comment is filed as #1983, not carried here.
+
+Lens A's **frame discipline**: fit and disclose
 (offset, tilt) before differencing, and grade the tilt-removed residual beside
 the raw one. Then re-run the corpus replay under the new instrument, so the
 honest numbers become the product's numbers.
@@ -355,7 +398,7 @@ standing slice exit** — deploy to jts3 and a mechanical fixed-mic end-to-end
 pass, which here also confirms the new disclosure renders rather than only
 persists.
 
-### R10 — the objective round (rung P3, offline) *(Saturday)*
+### R10 — the objective round (rung P3, offline) *(Saturday 2026-08-01)*
 
 **Territory:** the fit/prescription layer — `jasper/correction/`
 (`linearization_fit`, `peq`, `strategy`) and the fit/trim/alignment code in
@@ -383,7 +426,7 @@ working flow**, never beside it.
 > **target + guards** half precedes the **alignment + emit** half — never the
 > reverse, since the emit loop is only interpretable once the objective is right.
 
-### R11 — the loop round (rung P4 / WO-7 chassis + live fixed-mic validation) *(Saturday night / Sunday)*
+### R11 — the loop round (rung P4 / WO-7 chassis + live fixed-mic validation) *(Saturday night 08-01 / Sunday 2026-08-02)*
 
 **Territory:** the conductor/report layer — `crossover_v2_flow`,
 `crossover_envelope_v2`, and the household wire / journal / sidecar surfaces;
@@ -407,20 +450,23 @@ evidence.
 geometry, and stops correctly. The standing slice exit is subsumed here by the
 round's own deeper E2E — every screen, screenshots banked.
 
-### R12 — polish + convergence *(Sunday / Monday-am buffer)*
+### R12 — polish + convergence *(Sunday 2026-08-02 / Monday-am buffer)*
 
 **Territory:** copy and UX surfaces — `capture_relay/spec`, `capture-page/`,
 the `jasper/web/` wizards, and docs.
 
 **Mission:** make Monday need only the owner's hands and ears.
 
-**Deliverables.** #1941 stages 4-5-7 built (publishing gated behind #1792); the
-copy-honesty set #1974 / #1978 / #1979; the corpus-pin trio #1774 / #1750 /
-#1883 (part 1); debt #1948, #1971 (design half), #1973, #1975, plus the nit
-ledgers on the #1956 and #1972 PR comments; the campaign reflection; and the
-Monday package — runbook final, rulings queued **with their graphs already
-generated** (including the Q-E frame-drag reframe figure), and the round-13
-Monday-E2E brief.
+**Deliverables.** #1941 stages 4-5-7 built (publishing gated behind #1792);
+**#1941 Stage 6 BUILD — the walk reorder — merge-gated on the Monday hardware
+re-run** (no other round builds it, and its acceptance requires "hardware re-run
+on 08-04 before merge"; build it here so Monday's re-run is a *gate*, not a
+prerequisite for starting); the copy-honesty set #1974 / #1978 / #1979; the
+corpus-pin trio #1774 / #1750 / #1883 (part 1); debt #1948, #1971 (design half),
+#1973, #1975, plus the nit ledgers on the #1956 and #1972 PR comments; the
+campaign reflection; and the Monday package — runbook final, rulings queued
+**with their graphs already generated** (including the Q-E frame-drag reframe
+figure), and the round-13 Monday-E2E brief.
 
 **Validation:** offline; UX review.
 
@@ -431,11 +477,11 @@ speaker the owner walks up to on Monday is the one the round left working.
 > **Slip rule.** If anything slips past Monday it is **R12's UX half** — never
 > the P1 → P3 → P4 chain.
 
-### R13 — measure-and-validate day *(Monday, owner)*
+### R13 — measure-and-validate day *(Monday 2026-08-03, owner)*
 
 **Territory:** hardware and rulings; no code territory.
 
-The hands-required checklist is `captures/MONDAY-RUNBOOK-2026-08-04.md` — the
+The hands-required checklist is `captures/MONDAY-RUNBOOK-2026-08-03.md` — the
 owner's first hour back. It carries the rulings queue (ladder ratification, Q-E,
 H3-swap scheduling), the mic-replacement repeat-floor arm, the horn A/B, and the
 full re-walk.
@@ -472,7 +518,7 @@ only safe after the objective lands, and the tag says so.
 - **Attribution work orders** (owner: [`attribution-stage-plan.md`](attribution-stage-plan.md) §7) — #1866 (the direction and its rulings), #1933 (flow-first WO-2/WO-3), #1869 (WO-3 alignment evidence gaps), #1922 (WO-4: per-driver level-sanity gate and named-driver attribution), #1873 + #1924 (WO-5's deterministic-mismatch discriminator and its copy — **#1924 R8**), #1791 (WO-8 room-correction regime).
 - **Two-stage chassis (T1–T3)** — #1806. WO-6 and WO-7 both sit on it; the ladder does not change that.
 - **Crossover-v2 flow and product surface** — #1947, #1872, #1863, #1862, #1840, #1788, #1706, #1703, #1684, #1650, #1671, #1665, #1833, #1832, #1926, #1925, #1913, #1860, #1950.
-- **Measurement UX and copy line** — #1941 (**R12**, stages 4-5-7), #1979 (**R12**), #1978 (**R12**), #1961, #1865, #1962.
+- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7, **plus Stage 6 built in R12 and merge-gated on the Monday hardware re-run**), #1979 (**R12**), #1978 (**R12**), #1961, #1865, #1962.
 - **Capture page and relay platform** — #1792 (**R12** — the publish gate R12's UX build sits behind), #1861, #1975 (**R12**).
 - **Hardware bench sessions** — #1848 (JTS3 commissioning acceptance). The owner-attended delay/reflector bench is indexed under rung P3 instead, because its output is a P3 input.
 - **Corpus and evidence tooling** — #1884 (corpus-pin visibility in CI).
@@ -482,15 +528,18 @@ only safe after the objective lands, and the tag says so.
 
 Named so the boundary is visible, not indexed: #1973 (**R12**, debt), #1952,
 #1948 (**R12**, debt), #1789, #1852, #1842, #1843, #1718, #1717, #1716, #1715,
-#1709, #1678. These are CI, test-infra, multiroom, Rust, and voice issues — they
-have their own owners and do not hang off a rung. Two are pulled into R12 as
-debt because that round's territory already touches them; that schedules the
-work, it does not adopt them into the program.
+#1709, #1678 — enumerated by owner so the boundary can be audited: CI and
+test-infra (#1973, #1716, #1715, #1709), multiroom (#1852, #1842, #1678), Rust
+(#1718, #1717), voice (#1843), daemon runtime (#1952), method tooling (#1948),
+and one correction-subsystem constant with no measurement behaviour (#1789).
+Each has its own owner and none hangs off a rung. Two
+are pulled into R12 as debt because that round's territory already touches
+them; that schedules the work, it does not adopt them into the program.
 
 ## CURRENT POSITION
 
 Update **this block** at the end of every round, together with re-scoping the
-remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-04-and-beyond).
+remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-and-beyond).
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
@@ -503,7 +552,10 @@ last_round:     R7 — six PRs merged (#1959 #1956 #1972 #1963 #1970 #1977)
 next_mission:   R9, the instrument round — gating contract + frame discipline,
                 then re-run the corpus replay under the new instrument
 blocked_on:     nothing for R9. Monday-gated: ladder P0–P4 ratification, Q-E,
-                the mic-replacement repeat-floor arm, H3-swap scheduling
+                the enclosure-hole timeline (which sessions are leaky-box —
+                every cross-session comparison spanning it is unreadable
+                until it is pinned), the mic-replacement repeat-floor arm,
+                H3-swap scheduling
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1170,11 +1222,23 @@ Follows the JTS orchestrator pattern (memory: `orchestrator-pattern-default`).
 
 ---
 
-**Verification scope.** The spine (charter, ladder, research index, issue index,
-CURRENT POSITION, the handoff/issue contract) was verified 2026-07-31 against
-`5c7029b63`: every issue number re-read from `gh`, every research artifact
-re-read at its banked path, the WO reconciliation re-read against
-[`attribution-stage-plan.md`](attribution-stage-plan.md) §7–§8. **The appendix
+**Shape note.** The spine runs past the documentation paradigm's "<400 lines"
+guidance for a HANDOFF's current-state half. The overrun is the phase→issue
+index and the campaign, both of which are the owner-required payload and both
+of which scale with the program rather than with the prose. Splitting either
+into a second file would defeat the one-spine purpose, so the length is a
+deliberate, recorded exception — not licence for the spine's *prose* to grow.
+
+**Verification scope.** The spine (charter, ladder, campaign, research index,
+issue index, CURRENT POSITION, the handoff/issue contract) was verified
+2026-07-31 against `5c7029b63`: every issue number re-read from `gh`, every
+research artifact re-read at its banked path, and every WO claim re-read in
+[`attribution-stage-plan.md`](attribution-stage-plan.md) §7–§8. That last check
+was **added after the first revision failed it** — rung P0's row had quoted
+"in-spec and within repeatability" as WO-7's own language when the phrase is
+the panel's, which the review gate caught. The correction is in P0's Reshapes
+paragraph; the lesson is recorded here because a reconciliation document is
+exactly where an unverified quotation does the most damage. **The appendix
 below the spine is an unchanged 2026-07-12 snapshot and was NOT re-verified** —
 per the documentation paradigm, historical sections are deliberately not kept in
 sync with code. Do not read the date below as a warranty on appendix facts.
