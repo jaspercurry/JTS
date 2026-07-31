@@ -1080,9 +1080,11 @@ def test_a_carve_out_set_is_recorded_but_never_projected(tmp_path: Path) -> None
     wire holds only sentences no other surface already owns.
 
     A carve-out finding's ``household_copy`` is COPIED from the carve-out record
-    (``promote_carve_outs`` rule 3), and ``carve_outs_by_band``'s
-    ``disclosure``/``expert`` registers already render that same fact on the
-    review and done screens through ``_carve_out_expert_lines``. Projecting it
+    (``promote_carve_outs`` rule 3), so ``carve_outs_by_band`` already owns that
+    copy and already renders the fact on both those screens: its ``disclosure``
+    register is the chart callout's plain-language headline (``cloud.js``'s
+    ``buildCallout``) and its ``expert`` register is the τ/r line
+    ``_carve_out_expert_lines`` folds into ``expert_details``. Projecting it
     again would put one fact on one screen twice, from two owners — the
     single-source-of-truth failure this program is most careful about. Pinned so
     a future edit that "completes" the projection has to argue with this test

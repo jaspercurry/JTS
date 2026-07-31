@@ -1472,7 +1472,18 @@ def _household_findings_status(state: Mapping[str, Any] | None) -> list[dict[str
     sentence is not a finding a household can read), and an unusable ``at``
     becomes ``None`` — which the envelope renders as "we cannot say when",
     exactly as an undated failure record does. Fabricating neither a sentence
-    nor a date is the whole contract here.
+    nor a date is the whole contract here, and it is pinned at THIS layer
+    (``tests/test_correction_crossover_v2_endpoints.py``'s projection-contract
+    tests) rather than only through the envelope: a weakened copy check here —
+    ``str(row.get("household_copy") or "")`` — renders a fabricated ``"42"`` on
+    the done screen end to end, and every screen-level assertion stays green
+    while it does.
+
+    Never raises. ``float`` on an unbounded JSON integer raises
+    ``OverflowError`` rather than returning ``inf``, and this runs on the
+    wizard's 1.5 s poll path, so an escaping conversion would be a 500 on a
+    plain page load — the same failure ``_record_when_phrase`` catches one
+    module over for the same reason.
     """
     evidence = (state or {}).get("evidence")
     rows = (
@@ -1490,16 +1501,17 @@ def _household_findings_status(state: Mapping[str, Any] | None) -> list[dict[str
         if not isinstance(copy, str) or not copy.strip():
             continue
         at = row.get("at")
-        out.append({
-            "household_copy": copy,
-            "at": (
+        try:
+            stamp = (
                 float(at)
-                if isinstance(at, (int, float))
-                and not isinstance(at, bool)
-                and math.isfinite(float(at))
+                if isinstance(at, (int, float)) and not isinstance(at, bool)
                 else None
-            ),
-        })
+            )
+        except (TypeError, ValueError, OverflowError):
+            stamp = None
+        if stamp is not None and not math.isfinite(stamp):
+            stamp = None
+        out.append({"household_copy": copy, "at": stamp})
     return out
 
 
@@ -2863,9 +2875,13 @@ def _publish_findings(
     refs.setdefault("finding_artifacts", {})[phase] = artifact.fingerprint
     # No household projection here, deliberately — see
     # :func:`_bank_household_findings`. A carve-out finding's ``household_copy``
-    # is COPIED from the carve-out record (``promote_carve_outs`` rule 3), and
-    # ``carve_outs_by_band`` already renders that same fact on both screens this
-    # would reach. The store keeps the full record either way.
+    # is COPIED from the carve-out record (``promote_carve_outs`` rule 3) rather
+    # than minted, so the copy has an owner already: ``carve_outs_by_band``,
+    # whose ``disclosure`` register is the chart callout's plain-language
+    # headline (``cloud.js``'s ``buildCallout``) and whose ``expert`` register is
+    # the τ/r line ``_carve_out_expert_lines`` folds into ``expert_details``.
+    # Both render on both screens this would reach. The store keeps the full
+    # record either way.
     log_event(
         logger,
         "correction.crossover_v2_findings_published",
@@ -2917,9 +2933,11 @@ def _bank_household_findings(
     **Called from the level-frame path only.** ``_publish_findings``' carve-out
     sets are not projected: their ``household_copy`` is the carve-out record's
     own ``reason`` (``promote_carve_outs`` rule 3 copies it rather than minting
-    it), and ``carve_outs_by_band``'s ``disclosure``/``expert`` registers
-    already render that fact on the review and done screens through
-    ``_carve_out_expert_lines``. Projecting it again would put one fact on one
+    it), so ``carve_outs_by_band`` is already that copy's owner and already
+    renders the fact on both these screens — its ``disclosure`` register as the
+    chart callout's plain-language headline (``cloud.js``'s ``buildCallout``),
+    its ``expert`` register as the τ/r line ``_carve_out_expert_lines`` folds
+    into ``expert_details``. Projecting it again would put one fact on one
     screen twice from two owners. When a producer mints copy that no other
     surface owns — as the level-frame path does, and as WO-4's detectors will —
     it calls this.
