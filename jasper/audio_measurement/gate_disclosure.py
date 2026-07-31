@@ -378,9 +378,13 @@ def describe_gate(block: Mapping[str, Any] | None) -> str:
     if d.gated_anything:
         delay = d.reflection_delay_ms
         toa = f" at {delay:.2f} ms" if delay is not None else ""
+        # "to its ONSET", not "to it": the window ends where the reflection
+        # begins, which is EARLIER than the arrival reported beside it. Say
+        # which of the two the gate used, or the two numbers read as a
+        # contradiction.
         head = (
             f"reflection measured{toa} after the direct arrival; window "
-            f"gated to it at {d.gate_ms:.2f} ms{floors}"
+            f"gated to its onset at {d.gate_ms:.2f} ms{floors}"
             if d.gate_ms is not None
             else f"reflection measured{toa} after the direct arrival{floors}"
         )

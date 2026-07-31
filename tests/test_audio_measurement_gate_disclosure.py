@@ -254,6 +254,11 @@ def test_describe_gate_says_reflection_measured_on_the_measured_bound():
     assert "reflection measured" in text
     assert "no reflection found" not in text
     assert "nothing was gated out" not in text
+    # The window ends at the ONSET, which is earlier than the arrival printed
+    # beside it. Unless the copy says which one the gate used, the two numbers
+    # read as a contradiction.
+    assert "gated to its onset" in text
+    assert fragment["reflection_onset_ms"] <= fragment["first_reflection_ms"]
 
 
 def test_describe_gate_says_nothing_was_gated_out_on_the_ceiling_bound():
