@@ -3367,6 +3367,69 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     assert session_wall_clock_ceiling_s(express_stage1) == 2160.0
 
 
+def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
+    """#1964: every word of the phone's END screen is written when stage 2 is
+    ARMED — before the first tone plays — so it may not assert an outcome the
+    session has not measured.
+
+    Full's copy read "Verified and applied.", selected only by
+    ``plan_shape.has_cloud_verify_group``. The post-apply cloud's SPEC verdict
+    is computed from the LAST capture and can FAIL while the tracking
+    comparator passes; on such a session jts.local said "Your speaker is
+    tuned, **but** the result still measures further from flat than the
+    target…" while the phone in the household's hand said "Verified and
+    applied." Two surfaces, one session, and the phone always optimistic.
+
+    Two halves are pinned, because either alone is re-breakable:
+
+    * **Structural** — this builder's entire input is a crossover frequency
+      and a plan SHAPE. There is no measured outcome in scope to bind copy to,
+      so a future "Verified" here would be as unearned as this one was.
+    * **Cross-surface** — whatever the phone bakes has to hold under BOTH spec
+      outcomes. It does so by being exactly the claim jts.local's own verdict
+      OPENS with, pass or fail; jts.local owns the divergence, as the only
+      surface whose component vocabulary can carry it.
+    """
+    import inspect
+
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    assert set(inspect.signature(build_v2_verify_capture_plan).parameters) == {
+        "fc_hz", "plan_shape",
+    }
+
+    done = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=resolve_plan_shape(),
+    ).entries[-1].screen
+    body = done["done_body"]
+    # No verdict vocabulary: the instrument that grades flatness has not
+    # reported when these bytes are written.
+    assert "verified" not in body.lower()
+    assert "spec" not in body.lower()
+    # It names the surface that DOES own the verdict instead of guessing it.
+    assert "speaker page" in body
+
+    def _verdict(spec_passed: bool) -> str:
+        return build_crossover_envelope_v2({
+            "active": True,
+            "setup": {"active": True, "status": "ready"},
+            "crossover_v2": {
+                "phase": "done",
+                "tier": TIER_FULL,
+                "verify": {"outcome": "pass"},
+                "cloud": {PHASE_CLOUD_VERIFY: {"overall_passed": spec_passed}},
+            },
+        })["verdict_text"]
+
+    passed, failed = _verdict(True), _verdict(False)
+    assert passed != failed, "jts.local must be the outcome-bound surface"
+    assert "further from flat than the target" in failed
+    assert passed.startswith(done["done_title"])
+    assert failed.startswith(done["done_title"])
+
+
 def test_the_recovery_re_verify_plan_is_unchanged_by_the_split():
     """The 1-entry recovery re-arm is byte-identical to what it always was
     (work order D2: "the 1-entry form remains what it is today"), so a failed
@@ -4361,9 +4424,11 @@ _GOLDEN_V2_PLAN_BYTES = {
         1945,
         "259c69948dc954b28a408335419336f312f9045aa9307820999f19db6a2b4ff7",
     ),
+    # Moved by #1964: Full's done_body no longer pre-commits "Verified and
+    # applied." before the first tone plays.
     "stage2-full": (
-        1939,
-        "030d2e94158566a315c8792c24f558d909c2306c3ea357cca5b960fd2ba8f031",
+        1942,
+        "575ae0cb9e0a43a9f24492c43bc1e6192740164f96d9e9b7eb639d1bba629446",
     ),
     "stage2-express": (
         609,

@@ -834,9 +834,13 @@ gate-validity clamp → `flat_spec.evaluate_flat_spec` →
 (`/state` + the envelope's `cloud` block), the doctor's
 `check_crossover_v2_cloud_pipeline` detail, and
 `crossover_envelope_v2._flatness_details_lines`, which renders it into
-`expert_details` on the verify_fail and "done"/RESULT screens from
-`PHASE_CLOUD_VERIFY` only (`cloud_measure` is the uncorrected pre-apply
-baseline — rendering it would report a corrected speaker as bad forever).
+`expert_details` on the review, closing, verify, verify_fail and
+"done"/RESULT screens. It reads `PHASE_CLOUD_VERIFY` **whenever a post-apply
+cloud exists**, and falls back to `PHASE_CLOUD_MEASURE` under an explicit
+`"Measured before tuning: …"` lead when none does — which is Express on every
+screen (M = 1 never produces one) and every tier at stage 1 (issue #1965).
+`cloud_measure` is the uncorrected pre-apply baseline, so it is never rendered
+bare, which would report a corrected speaker as bad forever.
 Logged once per closed group as `event=correction.crossover_v2_cloud_spec`.
 The tolerances are the spec table's own per-band values
 (`flat_spec.SPEC_BANDS`) rather than one provisional constant. Contract test:
@@ -1005,8 +1009,10 @@ view for counting. Two copy registers per band, both owned in
 expert disclosure cannot diverge: a plain-language `disclosure` headline, and an
 `expert` line carrying τ and both r estimates. The rows ride the same chain the
 gauge does (`_compact_cloud_status` → `/state` + the envelope's `cloud` block →
-`_flatness_details_lines`' `expert_details`), `PHASE_CLOUD_VERIFY` only for the
-rendered lines, for the same pre-apply-baseline reason. **The spec table is not
+`_flatness_details_lines`' `expert_details`), from whichever cloud that
+function read — carve-outs are a post-apply-persistent fact ("EQ cannot fill
+these") disclosed on every tier, so they ride the pre-apply block too when no
+post-apply cloud exists. **The spec table is not
 changed by any of this** — 8–16 kHz still reads ±2.5 dB, applied to whatever
 survives the carve-out. `carve_outs` is the largest key on a `/state` cloud
 entry (3162 of 4056 JSON bytes on the S0 ten-position cloud, measured
@@ -1263,6 +1269,17 @@ before, you can undo.") with the measured numbers (trims/delay/polarity/
 confidence/ripple) folded into a collapsed "Technical details" disclosure,
 and Undo given the PRIMARY button on the wizard so the safety net is the
 most visible thing on the screen.
+
+**The wizard owns the VERDICT; the phone owns only the shared headline**
+(issue #1964). The phone's end copy is the `done_title`/`done_body` baked into
+the stage-2 capture plan when stage 2 is ARMED — before the first tone — so it
+cannot know the post-apply cloud's spec verdict, which is computed from the
+last capture and can fail while tracking passes. Full's copy therefore states
+"Your speaker is tuned" (the claim both wizard verdicts open with) and points
+at the speaker page, rather than pre-committing "Verified and applied." The
+relay cannot repair this late: its host-event slot is last-write-wins, and
+`capture_set_complete` routinely overwrites the final `capture_result` before
+the page's ~250 ms poll reads it.
 
 ## File map
 
