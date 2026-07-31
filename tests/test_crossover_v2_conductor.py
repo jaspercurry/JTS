@@ -5694,8 +5694,10 @@ def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
     return woofer_db, tweeter_db
 
 
-def _solve_fixture_raw_trim() -> dict[str, float]:
-    """The raw trim these two branches actually call for.
+def _solve_fixture_raw_trim(
+    woofer_db: np.ndarray | None = None, tweeter_db: np.ndarray | None = None,
+) -> dict[str, float]:
+    """The raw trim a pair of branch curves actually call for.
 
     **Why this is solved and not written down** (PR-L4). The fixture carried a
     hand-written ``{"woofer": 0.0, "tweeter": -2.211}`` chosen to exercise the
@@ -5707,16 +5709,41 @@ def _solve_fixture_raw_trim() -> dict[str, float]:
     derives ``candidate.trim_db`` from its own branches via
     ``solve_branch_trims``, so this fixture now does the same and cannot drift
     from its own physics again.
+
+    **Why it takes optional curves instead of only reading the default pair**
+    (#1938). ``_eligible_measure_analysis`` reuses this exact solve for
+    whichever ``woofer_db``/``tweeter_db`` a call is actually using, default or
+    custom. Defaulting a custom-curve call's trim to a constant solved from the
+    DEFAULT curves (below) hands the conductor one speaker's branches and
+    another speaker's trim — the identical incoherence this function was
+    written to remove for the default curves in PR-L4, reintroduced through
+    the custom-curve parameters (#1938). Arguments default to
+    :func:`_fixture_branch_db`'s pair, so ``_FIXTURE_RAW_TRIM_DB`` below is
+    unaffected by this generalization.
+
+    **Why the woofer trim is returned too, not hardcoded to 0.0** (#1938
+    gate follow-up). Before this generalization, the woofer trim was always
+    ``0.0`` by construction: the one fixed pair this function ever solved had
+    a quieter woofer, so ``solve_branch_trims``'s "attenuate the louder
+    branch" rule always left the woofer untouched. That stopped being true
+    the moment this function started solving ARBITRARY curve pairs — a pair
+    whose woofer is louder in its own band needs a nonzero woofer trim, and
+    hardcoding it to 0.0 silently drops that attenuation. Returning both
+    solved values is the same fix this function exists for, applied to
+    itself.
     """
     freqs = _LINEARIZABLE_FREQS_HZ
-    woofer_db, tweeter_db = _fixture_branch_db()
-    _trim_w, trim_t, _lw, _lt = solve_branch_trims(
+    if woofer_db is None or tweeter_db is None:
+        default_woofer_db, default_tweeter_db = _fixture_branch_db()
+        woofer_db = default_woofer_db if woofer_db is None else woofer_db
+        tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(
         freqs,
-        (10.0 ** (woofer_db / 20.0)).astype(complex),
-        (10.0 ** (tweeter_db / 20.0)).astype(complex),
+        (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
+        (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
         _FIXTURE_FC_HZ,
     )
-    return {"woofer": 0.0, "tweeter": round(float(trim_t), 3)}
+    return {"woofer": round(float(trim_w), 3), "tweeter": round(float(trim_t), 3)}
 
 
 _FIXTURE_RAW_TRIM_DB = _solve_fixture_raw_trim()
@@ -5733,13 +5760,21 @@ def _fixture_raw_predicted_sum(
     which claimed the uncorrected speaker was already perfect and made every
     correction score as a regression — the same "a fixture field nobody derived
     from the fixture" shape as the hand-written raw trim above.
+
+    #1938 gate follow-up: an omitted ``trim_db`` is derived from THESE curves
+    (default or custom), never from ``_FIXTURE_RAW_TRIM_DB`` — the same
+    default-curves-constant trap ``_eligible_measure_analysis`` had, closed
+    here too even though every current caller already passes matching
+    curves/trim together (no caller today hits this branch with an
+    incoherent pair — this is closing the trap-door, not fixing an observed
+    incoherence).
     """
     if woofer_db is None or tweeter_db is None:
         default_woofer_db, default_tweeter_db = _fixture_branch_db()
         woofer_db = default_woofer_db if woofer_db is None else woofer_db
         tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
     if trim_db is None:
-        trim_db = dict(_FIXTURE_RAW_TRIM_DB)
+        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
     summed = predicted_branch_sum(
         (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
         (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
@@ -5761,7 +5796,17 @@ def _eligible_measure_analysis(
     if tweeter_db is None:
         tweeter_db = default_tweeter_db
     if trim_db is None:
-        trim_db = dict(_FIXTURE_RAW_TRIM_DB)
+        # #1938: derive the trim from THESE branches (default or custom) —
+        # never default to a constant solved from a DIFFERENT pair. A caller
+        # that hands the conductor custom woofer_db/tweeter_db but inherits
+        # _FIXTURE_RAW_TRIM_DB (solved from the DEFAULT curves) hands it one
+        # speaker's branches and another speaker's trim — the exact defect
+        # _solve_fixture_raw_trim's docstring documents for the default curves,
+        # closed here for every curve pair. A caller that deliberately wants an
+        # incoherent pair passes trim_db= explicitly (the level gates' own
+        # branch-forcers, e.g.
+        # test_the_level_frame_refusal_names_the_levels_and_bands_it_read).
+        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
     if trim_band_average_db is None:
         # Production always sets it (`_build_candidate`), and it COINCIDES with
         # the applied trim whenever the ripple polish did not move it. Splitting
@@ -5802,6 +5847,64 @@ def _eligible_measure_analysis(
         ),
         glitch_detected=False,
     )
+
+
+@pytest.mark.parametrize("woofer_level_db,tweeter_level_db,expected_trim", [
+    # The tweeter is louder, so IT is the one attenuated. This direction
+    # already worked even under the original hardcoded-woofer-0.0 helper,
+    # because the fixture's one shipped pair always happened to have the
+    # quieter woofer.
+    (0.0, 20.0, {"woofer": 0.0, "tweeter": -20.0}),
+    # #1938 gate follow-up (SF-1): the direction that was SILENTLY BROKEN by
+    # the woofer-trim hardcode. The woofer is louder here, so the WOOFER must
+    # be the one attenuated — but `_solve_fixture_raw_trim` used to return
+    # {"woofer": 0.0, "tweeter": round(trim_t, 3)} unconditionally, and for a
+    # louder woofer the solved `trim_t` is itself 0.0 (the tweeter needs no
+    # attenuation), so the whole dict silently came back {0.0, 0.0} — a no-op
+    # that left both branches at their original, still-mismatched levels.
+    (20.0, 0.0, {"woofer": -20.0, "tweeter": 0.0}),
+])
+def test_eligible_measure_analysis_derives_trim_from_its_own_custom_curves(
+    woofer_level_db, tweeter_level_db, expected_trim,
+):
+    """#1938 regression guard, both directions.
+
+    A caller handing ``_eligible_measure_analysis`` CUSTOM ``woofer_db``/
+    ``tweeter_db`` curves, with no explicit ``trim_db``, must get a trim
+    SOLVED from those curves — never the module constant
+    ``_FIXTURE_RAW_TRIM_DB``, which is solved from the DEFAULT curves and is a
+    different pair. That silent fallback is the "one speaker's branches,
+    another speaker's trim" incoherence :func:`_solve_fixture_raw_trim`'s own
+    docstring documents for the default curves, reintroduced through the
+    custom-curve parameters (#1938's finding, discovered via
+    ``test_prediction_gate_logs_the_improved_path_with_both_terms`` /
+    PR #1934 and the two call sites this issue's fix corrected —
+    ``test_linearized_ripple_polish_is_skipped_on_a_one_sided_band`` and
+    ``test_prediction_gate_refuses_a_correction_that_does_not_improve``).
+
+    Two FLAT curves 20 dB apart, in each direction, make the expected trim a
+    closed form — attenuate whichever branch is louder by exactly the gap —
+    rather than a number this test would have to take on faith from the
+    solver under test.
+    """
+    freqs = _LINEARIZABLE_FREQS_HZ
+    flat_woofer_db = np.full_like(freqs, woofer_level_db)
+    flat_tweeter_db = np.full_like(freqs, tweeter_level_db)
+    program = types.SimpleNamespace(program_id="fixture_trim_guard")
+
+    analysis = _eligible_measure_analysis(
+        program, woofer_db=flat_woofer_db, tweeter_db=flat_tweeter_db,
+    )
+
+    assert analysis.candidate.trim_db == expected_trim
+    # Not the default-curve constant: the regression this guards against is a
+    # fixture that silently returns it regardless of the curves it was
+    # actually handed.
+    assert analysis.candidate.trim_db != dict(_FIXTURE_RAW_TRIM_DB)
+    # _eligible_measure_analysis defaults trim_band_average_db to trim_db
+    # when omitted, so it must agree too — a caller reading either field
+    # sees the same coherent trim.
+    assert analysis.candidate.trim_band_average_db == analysis.candidate.trim_db
 
 
 def test_non_reference_tier_falls_back_byte_identical_to_trims_only():
@@ -6019,7 +6122,14 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     assert "event=correction.crossover_v2_linearization_ripple_trim_skipped" in caplog.text
     assert "reason=ripple_band_one_sided" in caplog.text
     # The applied trim is the anchored give-back, untouched by any scan.
-    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
+    # #1938: the raw trim has to be derived from THIS fixture's own curves —
+    # the default woofer paired with the one-sided tweeter above — not from
+    # _FIXTURE_RAW_TRIM_DB, which is solved from the DEFAULT tweeter and is a
+    # different pair. Before this fix, `_eligible_measure_analysis` silently
+    # defaulted to that mismatched constant too, and this assertion agreed
+    # with it only because both sides shared the same wrong number.
+    default_woofer_db, _default_tweeter_db = _fixture_branch_db()
+    raw_trim = _solve_fixture_raw_trim(default_woofer_db, _one_sided_tweeter_db)
     giveback = {
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
@@ -8345,9 +8455,13 @@ def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
 # recorded on #1870 — so it is CITED and never replayed. What is replayed is a
 # fixture with the same SHAPE: an extra −1.6 dB/octave of woofer passband tilt,
 # an ordinary driver in baffle-step territory, which lands the frame at
-# 3.276 dB against the 3.0 tolerance while the realized-level instrument reads
+# 3.209 dB against the 3.0 tolerance while the realized-level instrument reads
 # −0.828 dB and passes. Both numbers are asserted below, so a change that moves
-# either has to argue with these tests.
+# either has to argue with these tests. (3.209, not the 3.276 an earlier
+# revision of this fixture read: #1938 gate follow-up fixed
+# _solve_fixture_raw_trim's hardcoded-woofer-0.0 return, and at this tilt the
+# woofer is the louder branch, so the coherent trim attenuates it by 0.067 dB
+# — see _tilted_woofer_fixture's docstring.)
 _LEVEL_FRAME_FINDING_TILT_DB_PER_OCT = -1.6
 
 
@@ -8364,13 +8478,13 @@ def _tilted_woofer_fixture(fakes: FakeSeams, *, tilt_db_per_oct: float) -> None:
     woofer_db = base_woofer_db + tilt_db_per_oct * np.log2(
         np.maximum(freqs, 1.0) / _FIXTURE_FC_HZ
     )
-    _trim_w, trim_t, _lw, _lt = solve_branch_trims(
-        freqs,
-        (10.0 ** (woofer_db / 20.0)).astype(complex),
-        (10.0 ** (tweeter_db / 20.0)).astype(complex),
-        _FIXTURE_FC_HZ,
-    )
-    trim_db = {"woofer": 0.0, "tweeter": round(float(trim_t), 3)}
+    # #1938 gate follow-up (SF-1): this used to hand-roll the same
+    # hardcoded-woofer-0.0 solve _solve_fixture_raw_trim had, which was a
+    # silent no-op at production tilt (-1.6 dB/oct) — that tilt makes the
+    # WOOFER the louder branch (level_w 1.4467 > level_t 1.3797), so the true
+    # trim is {"woofer": -0.067, "tweeter": 0.0}, not {"woofer": 0.0, ...}.
+    # Reusing the now-general helper instead of a second hand-rolled copy.
+    trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
     fakes.measure = lambda program: _eligible_measure_analysis(
         program, woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
     )
@@ -8400,11 +8514,30 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     committed inter-driver placement is set by the CORE-MEDIAN frame — the
     *disputed* estimator. This fixture measures that directly: committed
     −0.674 is the core-median value, anchoring on the trim solve's placement
-    would give +2.602, and the two differ by 3.276 — exactly the banked
+    would give +2.535, and the two differ by 3.209 — exactly the banked
     disagreement. What proceeding buys is that the session is not refused; it
     does not switch estimators, and the realized check grades the outcome
     rather than picking a winner. The gate comment in ``_assert_accountable``
     derives all of this.
+
+    **Why −0.674 is unchanged but +2.535/3.209 moved** (#1938 gate
+    follow-up). ``_tilted_woofer_fixture`` used to hand a coherent-looking but
+    silently wrong trim to this fixture at this exact tilt. This is about the
+    TRIM-SOLVE estimator specifically (``solve_branch_trims``'s own mirrored
+    ±1-octave band-power average, NOT the fit's core-median above) — on that
+    estimator the woofer is the louder branch at this tilt (level_w 1.447 >
+    level_t 1.380), so the true trim attenuates the WOOFER by 0.067 dB, not
+    the tweeter by 0.0 (the old hardcoded-woofer-0.0 helper's answer,
+    regardless of which branch the solve said was louder). The committed
+    placement (−0.674) is untouched, because the trim term genuinely cancels
+    out of ``anchor_base + giveback + level_frame_offset`` as this docstring
+    already claimed — that identity is what this fixture was built to
+    demonstrate, and it holds under either trim. The trim-solve anchor
+    (`+2.535` vs the old `+2.602`) and the disagreement it produces (`3.209`
+    vs the old `3.276`) both shift by exactly the new woofer trim's 0.067 dB,
+    because both terms carry ``trims["woofer"]`` directly while the
+    core-median frame (level_w 3.276 vs level_t 0.0, the OTHER estimator)
+    never reads the raw trim at all.
 
     Why the tilt is the right provocation rather than a contrivance: #1929
     removed a structural bias from one estimator, it did not make the two
@@ -8446,7 +8579,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # The two instruments, and the fact that they disagree about a speaker
     # whose OUTPUT is fine. This is the whole premise of the ruling, so it is
     # asserted as magnitudes rather than as booleans.
-    assert c._last_level_frame_disagreement_db == pytest.approx(3.276, abs=0.02)
+    assert c._last_level_frame_disagreement_db == pytest.approx(3.209, abs=0.02)
     assert (
         c._last_level_frame_disagreement_db > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
@@ -8458,7 +8591,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # 2 — one finding banked, carrying all three instruments and both bands.
     assert len(banked) == 1
     record = banked[0]
-    assert record["disagreement_db"] == pytest.approx(3.276, abs=0.02)
+    assert record["disagreement_db"] == pytest.approx(3.209, abs=0.02)
     assert record["tolerance_db"] == LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     assert record["realized_difference_db"] == pytest.approx(-0.828, abs=0.02)
     for role in ("woofer", "tweeter"):
@@ -8515,7 +8648,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     )
     assert placed == pytest.approx(core_frame, abs=1e-3)
     assert placed == pytest.approx(-0.674, abs=0.02)
-    assert trim_frame == pytest.approx(2.602, abs=0.02)
+    assert trim_frame == pytest.approx(2.535, abs=0.02)
     assert abs(trim_frame - core_frame) == pytest.approx(
         c._last_level_frame_disagreement_db, abs=1e-3
     )
@@ -8681,7 +8814,7 @@ def test_a_retaken_eager_fit_banks_its_finding_exactly_once():
     assert _confirm_cloud(c)["candidate_fingerprint"]
     assert len(fakes.banked_findings) == 1
     assert fakes.banked_findings[0]["disagreement_db"] == pytest.approx(
-        3.276, abs=0.02
+        3.209, abs=0.02
     )
     # A re-delivered confirm signal cannot double-publish it.
     assert c.confirm_cloud_measure_group() is None
@@ -8704,7 +8837,7 @@ def test_a_gate_that_refuses_after_the_frame_banked_persists_nothing():
     )
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    # This fixture clears item 2 by 0.99 dB against the shipped 0.5 dB floor
+    # This fixture clears item 2 by 0.983 dB against the shipped 0.5 dB floor
     # (``reason=improved``), so raising the floor is the smallest change that
     # makes a LATER gate refuse while the frame gate above still banks. The
     # constant itself is not under test here — the ordering is.
