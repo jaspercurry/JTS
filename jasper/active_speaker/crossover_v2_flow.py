@@ -2243,6 +2243,11 @@ def _gate_disclosure(response: Any) -> str | None:
     ``jasper.audio_measurement.gate_disclosure.describe_gate``, so the
     per-position evidence file and the retained-capture sidecar cannot
     describe the same gate two different ways.
+
+    Imported inside the function, matching how this module reaches its
+    other cross-package helpers — it deliberately does not import
+    :mod:`~jasper.audio_measurement.gating` at module scope either, and
+    reads a gating block purely as data.
     """
     if response is None or not getattr(response, "gating", None):
         return None
