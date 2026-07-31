@@ -527,6 +527,21 @@ right place. Read this before adding or restructuring docs.
    > operational truth lives in [<linked doc>](<path>).
    ```
 
+   **Hybrid docs — live spine, historical appendix.** A file may be
+   operational at the top and carry a frozen campaign below it (see
+   [`docs/HANDOFF-correction-revision-plan.md`](docs/HANDOFF-correction-revision-plan.md)).
+   Then the `Status: historical` callout opens the **appendix's own
+   heading** instead of the H1, and the H1 orientation note must say
+   part of the file is historical and where the boundary is — the
+   reader still meets the warning before any content. The `Last
+   verified:` footer keeps its single-footer shape
+   (`scripts/doc-freshness.sh` reads the last match) and states its
+   **scope** in the line above: what was re-verified, and that the
+   appendix was not. Both shapes are pinned by
+   [`tests/test_docs_handoff_freshness.py`](tests/test_docs_handoff_freshness.py).
+   Do not reach for this shape to avoid splitting a doc — it is for a
+   file whose history is genuinely the archaeology of its live half.
+
    When in doubt about whether a doc is "operational" vs
    "historical": if you'd reach for it to answer "what does this
    subsystem currently do?", it's operational. If you'd reach for
