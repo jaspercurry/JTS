@@ -131,7 +131,9 @@ carries the hit), never with padding, which reflows the layout you liked:
 No grandfathered-exceptions list: the three controls that were under the floor
 — `.mic-action` (30px), `.icon-button` (32×32), `.toggle` (44×24) — were
 brought to 44px this way, rendered pixels unchanged. Check that stacked
-controls sit 44px apart so grown areas can't overlap.
+controls sit ≥44px apart **centre to centre** — below that, grown areas
+overlap and a tap near the boundary reaches the wrong control. The tightest
+shipped case is `/sources/` at 53.8px.
 
 ## 9. Motion
 

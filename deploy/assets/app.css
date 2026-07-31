@@ -604,16 +604,17 @@ svg { display: block; }
    absolutely positioned, so overflowing the 24px label adds no layout: the
    switch still measures 44x24 and the track is untouched.
 
-   Stacked toggles need >=44px between switches, because the input overflows
-   its label by 10px top and bottom. Measured below that threshold, the
-   overlap is not merely cosmetic: in a 35px row two neighbours overlap by 9px
-   and a tap below the upper switch activates the LOWER toggle. The real
-   stacked case shipped today — /bluetooth/'s two `.toggle-row`s, 60px and
-   80px — measures a 38.7px switch-to-switch gap at 520/800/1280px, so it
-   clears the threshold with room to spare, and taps resolve to the intended
-   switch. (An earlier version of this comment quoted "49px" from a synthetic
-   single-line row; that was a model, not a measurement.) Keep new toggle rows
-   at or above 44px. */
+   Stacked toggles need >=44px between switch CENTRES, because the input
+   overflows its label by 10px top and bottom. Below that the overlap is not
+   cosmetic: at a 35px pitch two neighbours overlap by 9px and a tap below the
+   upper switch activates the LOWER toggle (later element wins the hit test).
+   Shipped rows clear it, but not by much: the tightest is /sources/ at 53.8px
+   centre-to-centre — 9.8px of clear space between the grown boxes — stable at
+   390/520/800/1280. /bluetooth/ is roomier, and its pitch moves with whether
+   the row hint wraps. Probes 1-8px outside each track resolve to the intended
+   switch. Keep new toggle rows at or above 44px.
+   Repro: render sources_setup._index_html() against deploy/assets/ and measure
+   consecutive `.toggle input` boxes. */
 .toggle input {
   position: absolute;
   top: 50%;
