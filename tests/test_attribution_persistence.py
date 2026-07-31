@@ -400,6 +400,11 @@ def _records(n: int = 3) -> list[dict]:
             # The 2026-07-30 corpus's own state: the window is the SEARCH
             # CEILING, not a found reflection (#1966).
             "gate_floor_source": "search_span_bound",
+            "gate_disclosure": (
+                "no reflection found; window capped at the 7.00 ms search "
+                "ceiling, so nothing was gated out, valid above 143 Hz and "
+                "trusted above 357 Hz"
+            ),
             "validity_floor_hz": 142.9,
             "gating_applied": True,
             "summed_ripple_db": 3.1,
@@ -543,6 +548,24 @@ def test_each_position_says_why_its_gate_window_is_what_it_is() -> None:
     assert grid_source != rows[0]["gate_floor_source"]
     # Both fields are described where a reader will look for them.
     assert "gate_floor_source" in FIELD_DESCRIPTIONS
+
+
+def test_each_position_carries_the_gate_provenance_as_a_sentence_too() -> None:
+    """#1966 at the surface: the enum fixed the record for a machine.
+
+    A person opening this file should not have to know that
+    ``search_span_bound`` means "nothing was gated out" — the allowlist
+    therefore projects the rendered sentence beside the enum, and it must
+    say so in words.
+    """
+    block = position_evidence_block(
+        _combined(), position_records=_records(), validity_floor_hz=142.9
+    )
+    rows = block["positions"]
+    assert all("nothing was gated out" in r["gate_disclosure"] for r in rows)
+    assert all("reflection measured" not in r["gate_disclosure"] for r in rows)
+    assert "gate_disclosure" in FIELD_DESCRIPTIONS
+    assert "gate_disclosure" in block["field_descriptions"]
 
 
 def test_the_accepted_attempt_is_recoverable_per_position() -> None:

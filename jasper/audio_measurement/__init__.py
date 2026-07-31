@@ -24,7 +24,13 @@ Modules:
     (impulse-response extraction) + magnitude response.
   - :mod:`~jasper.audio_measurement.gating` — impulse-response gating (first-
     reflection detection, the reflection-free window) and the low-frequency
-    validity floor it implies.
+    validity floor it implies, plus the classification ledger of early
+    features that are structurally un-gateable.
+  - :mod:`~jasper.audio_measurement.gate_disclosure` — the gating contract's
+    other half: what the gate actually bought, priced over the intersection
+    of its trusted validity range with the band the DUT radiates, and the
+    single writer of the sentence that distinguishes "a reflection was found
+    and removed" from "nothing was found; the window was capped".
   - :mod:`~jasper.audio_measurement.analysis` — fractional-octave smoothing,
     log resampling, spatial averaging, deviation metrics.
   - :mod:`~jasper.audio_measurement.calibration` — measurement-mic calibration

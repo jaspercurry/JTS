@@ -9216,6 +9216,56 @@ def test_verify_diag_names_which_floor_the_gate_landed_on(caplog):
     assert gating.FLOOR_SEARCH_BOUND != gating.FLOOR_MEASURED
 
 
+def test_every_retained_position_carries_its_gate_provenance_as_a_sentence():
+    """#1966 at the surface. The enum landed first and fixed the record for a
+    machine; a person opening the per-position evidence file still had to know
+    that ``search_span_bound`` means "nothing was gated out".
+
+    So the sentence rides beside the enum on every retained take — and it is
+    RENDERED, not composed here: the copy has exactly one writer, so this
+    file and the retained-capture sidecar cannot describe the same gate two
+    different ways.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _gate_disclosure
+    from jasper.audio_measurement import gate_disclosure as gd
+
+    retained: list = []
+    fakes = FakeSeams()
+    c = CrossoverV2Conductor(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(
+            fakes.seams(),
+            retain_position=lambda pid, r, meta: retained.append(dict(meta)),
+        ),
+        index_phase_map=CLOUD_MAP,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    assert retained, "the walk must have retained positions to check"
+    # The allowlist must project it; absent, the field is silently dropped.
+    assert all("gate_disclosure" in meta for meta in retained)
+
+    # And the helper renders the two states as opposite claims.
+    capped = _gate_disclosure(_driver_response_diag(
+        "summed", window_ms=7.0, floor_hz=142.9,
+        floor_source=gating.FLOOR_SEARCH_BOUND,
+    ))
+    found = _gate_disclosure(_driver_response_diag(
+        "summed", window_ms=4.0, floor_hz=250.0,
+        floor_source=gating.FLOOR_MEASURED,
+    ))
+    assert "nothing was gated out" in capped
+    assert "reflection measured" in found
+    assert "nothing was gated out" not in found
+    # Rendered by the single writer, byte for byte.
+    assert capped == gd.describe_gate(
+        {"applied": True, "window_ms": 7.0,
+         "floor_source": gating.FLOOR_SEARCH_BOUND}
+    )
+    assert _gate_disclosure(None) is None
+
+
 def test_measure_diag_names_the_binding_gate_and_its_floor_source(caplog):
     """#1966 — MEASURE reports the SHORTEST driver window, so it must report
     that same response's floor source, never another response's."""

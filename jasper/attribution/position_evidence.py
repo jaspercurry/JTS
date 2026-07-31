@@ -94,6 +94,7 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "role",
     "gate_window_ms",
     "gate_floor_source",
+    "gate_disclosure",
     "validity_floor_hz",
     "gating_applied",
     "summed_ripple_db",
@@ -156,6 +157,14 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "removed'. null means the capture was ungateable. This field is "
         "distinct from curve_grid.floor_source, which names where the GRID "
         "starts, not what the gate found."
+    ),
+    "gate_disclosure": (
+        "gate_window_ms, gate_floor_source, both validity floors, the "
+        "classification ledger, and what the gate did to the spectrum — as "
+        "one sentence, written by exactly one function so this file and the "
+        "retained-capture sidecar cannot describe the same gate two "
+        "different ways. Read this rather than reassembling the numbers; the "
+        "numbers beside it are for machines."
     ),
     "summed_ripple_db": "This capture's own summed-response ripple, dB.",
     "wav_sha256": (

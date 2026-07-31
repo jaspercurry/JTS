@@ -55,7 +55,7 @@ import numpy as np
 
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import calibration as calibration_mod
-from jasper.audio_measurement import deconv, gating, snr_policy
+from jasper.audio_measurement import deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     KIND_PILOT,
@@ -1133,9 +1133,13 @@ def _locate(
 
 
 def _analytic_envelope(x: np.ndarray) -> np.ndarray:
-    from scipy.signal import hilbert
+    """Delegates to :func:`gating.analytic_envelope` — one implementation.
 
-    return np.abs(hilbert(np.asarray(x, dtype=np.float64)))
+    R9's gate needs the same ETC envelope this module's correlation
+    refinement does. Rather than let a second copy exist, the lower-level
+    module owns it and this stays a name local callers already use.
+    """
+    return gating.analytic_envelope(x)
 
 
 def _parabolic_peak(values: np.ndarray, idx: int) -> float:
@@ -1934,6 +1938,25 @@ def _gate_floor_hz(fragment: Mapping[str, Any]) -> float | None:
     return float(floor) if isinstance(floor, (int, float)) else None
 
 
+def _radiated_band_hz(segment: Any) -> tuple[float, float] | None:
+    """The band a sweep segment actually drove, for the gate's disclosure.
+
+    A call-site seam, not policy: the band POLICY (intersecting this with
+    the gate's trusted floor) belongs to
+    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz`.
+    This only reads what the excitation program already declares, and
+    returns ``None`` for a segment that declares no sweep bounds so the
+    delta is omitted rather than computed over a made-up band.
+    """
+    lo, hi = getattr(segment, "f1_hz", None), getattr(segment, "f2_hz", None)
+    if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        return None
+    lo, hi = float(lo), float(hi)
+    if not (math.isfinite(lo) and math.isfinite(hi)) or lo >= hi:
+        return None
+    return lo, hi
+
+
 def _driver_response(
     role: str,
     full_ir: np.ndarray,
@@ -1943,7 +1966,18 @@ def _driver_response(
     ambient_report: Mapping[str, Any] | None,
     fc_hz: float | None,
     n_fft: int,
+    radiated_band_hz: tuple[float, float] | None = None,
 ) -> DriverResponse:
+    """One role's gated, calibrated response plus the gate's own disclosure.
+
+    ``radiated_band_hz`` is the band this capture's excitation actually
+    drove — the caller's segment sweep bounds. It is the ONLY input the
+    pre/post-gate delta needs beyond the IR, and it is threaded from here
+    rather than guessed downstream because guessing it is precisely the
+    over-report E5 measured (see
+    :mod:`jasper.audio_measurement.gate_disclosure`). Absent, the delta is
+    simply not reported — never defaulted.
+    """
     peak_idx = int(np.argmax(np.abs(full_ir)))
     window = deconv.direct_arrival_window(
         full_ir, sample_rate, direct_peak_idx=peak_idx,
@@ -1952,10 +1986,16 @@ def _driver_response(
     ir = deconv.apply_arrival_window(full_ir, window)
     gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
     applied = fragment["floor_source"] is not None
+    delta = gate_disclosure.pre_post_gate_delta(
+        ir, gated_ir, sample_rate,
+        trusted_floor_hz=fragment["f_trusted_hz"],
+        radiated_band_hz=radiated_band_hz,
+    )
     gating_block = {
         "applied": applied,
         "exempt_reason": None,
         **fragment,
+        "pre_post_gate_delta": delta,
     }
     validity_floor_hz = _gate_floor_hz(fragment)
 
@@ -3590,6 +3630,7 @@ def _repeat_driver_responses(
             role, full_ir, sample_rate,
             calibration=calibration, ambient_report=ambient_report,
             fc_hz=fc_hz, n_fft=n_fft,
+            radiated_band_hz=_radiated_band_hz(seg),
         )
         out.append(replace(resp, repeat_index=repeat_index))
     return tuple(out)
@@ -3644,11 +3685,13 @@ def _analyze_measure(
                 seg_w.role, woofer_full_ir, sample_rate,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
+                radiated_band_hz=_radiated_band_hz(seg_w),
             ),
             _driver_response(
                 seg_t.role, tweeter_full_ir, sample_rate,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
+                radiated_band_hz=_radiated_band_hz(seg_t),
             ),
         )
     )
@@ -3918,6 +3961,7 @@ def _analyze_verify(
     summed = _driver_response(
         "summed", full_ir, sample_rate,
         calibration=calibration, ambient_report=None, fc_hz=fc_hz, n_fft=n_fft,
+        radiated_band_hz=_radiated_band_hz(seg),
     )
     # INTERPRETATION CALL (B), flat-linearization productization plan: the
     # tracking comparator below — measured-vs-``priors.predicted_sum`` on THIS
@@ -4067,6 +4111,19 @@ def _gate_floor_source_of(response: "DriverResponse | None") -> str | None:
     return str(source) if isinstance(source, str) else None
 
 
+def _gate_disclosure_of(response: "DriverResponse | None") -> str | None:
+    """The gate's provenance as a SENTENCE, for the retained sidecar (#1966).
+
+    The enum beside it (:func:`_gate_floor_source_of`) is the machine
+    answer; this is the one a person reading the dump gets, and it is
+    rendered — never composed — here: the copy has exactly one writer,
+    :func:`jasper.audio_measurement.gate_disclosure.describe_gate`.
+    """
+    if response is None or not response.gating:
+        return None
+    return gate_disclosure.describe_gate(response.gating)
+
+
 def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     """Flat, JSON-safe numeric diagnostics from one :class:`ProgramAnalysis`.
 
@@ -4159,6 +4216,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         role = resp.role
         out[f"{role}_gate_window_ms"] = _gate_window_ms_of(resp)
         out[f"{role}_gate_floor_source"] = _gate_floor_source_of(resp)
+        out[f"{role}_gate_disclosure"] = _gate_disclosure_of(resp)
         out[f"{role}_validity_floor_hz"] = resp.validity_floor_hz
         if resp.snr is not None:
             worst = resp.snr.get("worst_relevant") or {}
@@ -4199,6 +4257,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     if summed_response is not None:
         out["verify_gate_window_ms"] = _gate_window_ms_of(summed_response)
         out["verify_gate_floor_source"] = _gate_floor_source_of(summed_response)
+        out["verify_gate_disclosure"] = _gate_disclosure_of(summed_response)
         out["verify_validity_floor_hz"] = summed_response.validity_floor_hz
 
     tracking = getattr(analysis, "verify_tracking", None)

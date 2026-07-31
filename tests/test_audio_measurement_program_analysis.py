@@ -36,7 +36,7 @@ import pytest
 from scipy.signal import fftconvolve, resample_poly
 
 from jasper.audio_measurement import analysis as analysis_mod
-from jasper.audio_measurement import deconv, gating, program_analysis
+from jasper.audio_measurement import deconv, gate_disclosure, gating, program_analysis
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_SWEEP,
@@ -657,6 +657,77 @@ def test_diagnostic_summary_says_WHY_the_gate_window_is_what_it_is():
     assert summary["woofer_validity_floor_hz"] == pytest.approx(
         1000.0 / gating.SEARCH_T_MAX_MS, rel=0.02
     )
+
+
+def test_diagnostic_summary_SAYS_the_ceiling_cap_in_words_not_only_an_enum():
+    """#1966's other half: persisting ``floor_source`` fixed the record for a
+    machine; a person reading the dump still had to know the vocabulary.
+
+    The sidecar therefore carries the sentence too, and on the corpus's own
+    state — a clean, reflection-free capture — that sentence must say
+    "nothing was gated out" rather than anything a reader could take as
+    "reflections removed".
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    summary = analysis_diagnostic_summary(res)
+
+    for role in ("woofer", "tweeter"):
+        text = summary[f"{role}_gate_disclosure"]
+        assert "no reflection found" in text
+        assert "nothing was gated out" in text
+        assert "reflection measured" not in text
+    # Rendered by the ONE writer, never re-phrased here: the sentence must be
+    # byte-identical to what gate_disclosure produces for the same block.
+    assert summary["woofer_gate_disclosure"] == gate_disclosure.describe_gate(
+        res.driver_responses[0].gating
+    )
+
+
+def test_driver_response_prices_the_gate_over_the_band_it_actually_drove():
+    """E5's eval-band correction, at the seam that supplies the band.
+
+    ``_driver_response`` threads the segment's own sweep bounds into the
+    delta. Evaluating a high-passed branch from its trusted floor instead —
+    where it has no output — is what over-reported 4.045 dB against an
+    honest 1.368 dB on the banked corpus.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    for resp, segment_id in zip(res.driver_responses, ("sweep_w", "sweep_t")):
+        delta = resp.gating["pre_post_gate_delta"]
+        assert delta is not None, "the delta must be reported, not skipped"
+        segment = prog.segment(segment_id)
+        # The evaluation band is the intersection, never the full range.
+        assert delta["radiated_band_hz"] == [segment.f1_hz, segment.f2_hz]
+        assert delta["eval_band_hz"][0] == pytest.approx(
+            max(resp.gating["f_trusted_hz"], segment.f1_hz)
+        )
+        assert delta["eval_band_hz"][1] == pytest.approx(segment.f2_hz)
+        # Both readings are recorded so the correction stays auditable.
+        assert delta["literal_band_hz"][1] == 20000.0
 
 
 def test_diagnostic_summary_reports_a_measured_reflection_as_such():
