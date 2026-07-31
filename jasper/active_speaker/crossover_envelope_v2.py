@@ -323,11 +323,47 @@ def _candidate_review_payload(
     return payload
 
 
+def _verify_graded_band_lines(status: Mapping[str, Any]) -> list[str]:
+    """"checked X–Y Hz" — the span VERIFY's tracking comparison graded.
+
+    **One owner, rendered on every outcome** (issue #1868). This line used to
+    be produced inside :func:`_verify_expert_details` from the ``evidence``
+    block, which the host persists only on a NON-pass outcome — so the done
+    screen's "Verified." badge, the single place the household is told the
+    result is good, was also the only place that never said what was
+    checked. The band is materially narrower than the crossover region a
+    reader assumes: its lower edge is clamped up to the tweeter's actual
+    sweep floor and again to the capture's validity floor.
+
+    Empty when no tracking comparison was reached — an early verify refusal
+    graded nothing, and saying nothing is the honest rendering of that.
+    """
+    graded = _mapping(_v2(status).get("verify")).get("graded_band_hz")
+    lo = _finite(graded[0]) if isinstance(graded, (list, tuple)) and graded else None
+    hi = (
+        _finite(graded[1])
+        if isinstance(graded, (list, tuple)) and len(graded) == 2
+        else None
+    )
+    if lo is None or hi is None:
+        return []
+    return [f"checked {lo:.0f}–{hi:.0f} Hz"]
+
+
 def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     """The verify_fail screen's collapsed expert numbers (#1605): the gated
     level error against its limit, the average error, and the band checked.
-    Empty when the conductor persisted no tracking evidence (an early-return
-    verify verdict — locate/agc/gate/level-shift — never reaches them).
+    Empty when the conductor persisted neither tracking evidence nor a graded
+    band (an early-return verify verdict — locate/agc/gate/level-shift —
+    reaches neither).
+
+    The band line comes from :func:`_verify_graded_band_lines`, which the
+    done screen renders too — see there for why it is not an evidence-block
+    field any more. It is appended INDEPENDENTLY of the evidence block rather
+    than inside its guard: the two now have different presence conditions
+    (the evidence needs a numeric notch-excluded max, the band needs only
+    that a tracking comparison ran), and a screen that has the band should
+    print it even when the numbers beside it are missing.
 
     **Flat-linearization plan PR-5/N-4 framing.** These lines and
     :func:`_flatness_details_lines`'s are two DIFFERENT constructions that
@@ -343,22 +379,18 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     re-derivation of either number.
     """
     evidence = _mapping(_mapping(_v2(status).get("verify")).get("evidence"))
-    if not evidence:
-        return []
     lines: list[str] = []
-    max_db = _finite(evidence.get("max_db"))
-    tolerance_db = _finite(evidence.get("tolerance_db"))
-    if max_db is not None and tolerance_db is not None:
-        lines.append(f"level error {max_db:.2f} dB (limit {tolerance_db:.1f} dB)")
-    elif max_db is not None:
-        lines.append(f"level error {max_db:.2f} dB")
-    rms_db = _finite(evidence.get("rms_db"))
-    if rms_db is not None:
-        lines.append(f"tracking average error {rms_db:.2f} dB")
-    lo = _finite(evidence.get("tracking_band_lo_hz"))
-    hi = _finite(evidence.get("tracking_band_hi_hz"))
-    if lo is not None and hi is not None:
-        lines.append(f"checked {lo:.0f}–{hi:.0f} Hz")
+    if evidence:
+        max_db = _finite(evidence.get("max_db"))
+        tolerance_db = _finite(evidence.get("tolerance_db"))
+        if max_db is not None and tolerance_db is not None:
+            lines.append(f"level error {max_db:.2f} dB (limit {tolerance_db:.1f} dB)")
+        elif max_db is not None:
+            lines.append(f"level error {max_db:.2f} dB")
+        rms_db = _finite(evidence.get("rms_db"))
+        if rms_db is not None:
+            lines.append(f"tracking average error {rms_db:.2f} dB")
+    lines.extend(_verify_graded_band_lines(status))
     return lines
 
 
@@ -369,7 +401,19 @@ def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
     (:func:`_flatness_details_lines`, reading CLOUD-VERIFY) and Express's
     BEFORE-TUNING claim (:func:`_express_pre_apply_flatness_lines`, reading
     CLOUD-MEASURE) compute the identical arithmetic from whichever compact
-    ``flatness`` block they were handed — one construction, not two."""
+    ``flatness`` block they were handed — one construction, not two.
+
+    **The line NAMES its reference frame** (issue #1857). "From the spec
+    reference" left the most load-bearing half of the claim unstated: the
+    zero is a power mean pooled over ``reference_band_hz``, and on a speaker
+    with one dark driver that frame sits materially below a driver-anchored
+    one — enough to flip the worst-band pointer's sign and move it to a
+    different driver. A reader who cannot see the frame cannot tell "the
+    woofer is proud" from "the tweeter is dark", and those call for opposite
+    corrections. A block without the key (written by an older build) keeps
+    the previous unqualified wording rather than naming a frame this code
+    would only be guessing at.
+    """
     lines: list[str] = []
     max_db = _finite(flatness.get("max_db"))
     max_hz = _finite(flatness.get("max_hz"))
@@ -379,6 +423,11 @@ def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
     band_hi = (
         _finite(band[1]) if isinstance(band, (list, tuple)) and len(band) == 2 else None
     )
+    ref = flatness.get("reference_band_hz")
+    ref_lo = _finite(ref[0]) if isinstance(ref, (list, tuple)) and ref else None
+    ref_hi = (
+        _finite(ref[1]) if isinstance(ref, (list, tuple)) and len(ref) == 2 else None
+    )
     if max_db is not None:
         where = f" at {max_hz:.0f} Hz" if max_hz is not None else ""
         against = (
@@ -386,7 +435,12 @@ def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
             if band_lo is not None and band_hi is not None and tolerance_db is not None
             else ""
         )
-        lines.append(f"flatness {max_db:+.2f} dB from the spec reference{where}{against}")
+        frame = (
+            f"the {ref_lo:.0f}–{ref_hi:.0f} Hz reference mean"
+            if ref_lo is not None and ref_hi is not None
+            else "the spec reference"
+        )
+        lines.append(f"flatness {max_db:+.2f} dB from {frame}{where}{against}")
     rms_db = _finite(flatness.get("rms_db"))
     if rms_db is not None:
         lines.append(f"flatness average error {rms_db:.2f} dB across the spec bands")
@@ -2133,7 +2187,16 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # it rides the same collapsed disclosure as the integration
             # numbers would on a fail — this screen has none of those (a
             # PASS never showed verify_evidence, unchanged by this fix).
-            expert_details=_flatness_details_lines(status),
+            #
+            # Issue #1868 adds ONE of those numbers back, and only one: the
+            # band the tracking comparator graded. The screen's badge says
+            # "Verified."; the band is what bounds that word. The rest of the
+            # evidence block stays off a passing screen as before — how far
+            # inside tolerance a pass landed is not a claim the household
+            # needs adjudicated, but how WIDE the claim is, is.
+            expert_details=(
+                _verify_graded_band_lines(status) + _flatness_details_lines(status)
+            ),
         )
         # Terminal: mark every step done.
         env["steps"] = _step_payload("", set(_STEP_IDS))

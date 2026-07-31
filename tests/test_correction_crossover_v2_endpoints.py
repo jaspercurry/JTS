@@ -5985,6 +5985,7 @@ class _StubConductor:
     candidate = None
     verify_outcome = None
     verify_evidence = None
+    verify_graded_band_hz = None
     delta_probe = None
     measure_predicted_sum = None
     measure_gate_window_ms = None
@@ -6093,6 +6094,36 @@ def test_the_probe_verdict_is_persisted_even_on_a_pass():
     plain.verify_outcome = "pass"
     v2host.persist_conductor_state(plain, failure_code=None)
     assert "delta_probe" not in (v2host.load_v2_state() or {})["verify"]
+
+
+def test_the_graded_band_is_persisted_even_on_a_pass():
+    """#1868: what VERIFY actually graded, on every outcome.
+
+    It used to ride ``verify.evidence``, which is persisted only when the
+    outcome is NOT a pass — so the state behind the "Verified." screen, the
+    one place the household is told the result is good, was the one place
+    that never carried the band bounding that word. Same always-persisted
+    shape as ``delta_probe`` above, for the same reason.
+    """
+    conductor = _StubConductor("s1")
+    conductor.verify_outcome = "pass"
+    conductor.verify_evidence = {"max_db": 0.9, "rms_db": 0.4, "tolerance_db": 1.5}
+    conductor.verify_graded_band_hz = [2000.0, 4000.0]
+    v2host.save_v2_state({"session_id": "s1"})
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    verify = (v2host.load_v2_state() or {})["verify"]
+    assert verify["graded_band_hz"] == [2000.0, 4000.0]
+    # The evidence block's pass-only suppression is UNCHANGED — a pass keeps
+    # its lean shape; only the band, which bounds the claim, is added.
+    assert "evidence" not in verify
+
+    # A verify that reached no tracking comparison writes no key rather than
+    # an empty claim — absent means "graded nothing", never "graded all".
+    plain = _StubConductor("s1")
+    plain.verify_outcome = "fail"
+    v2host.persist_conductor_state(plain, failure_code=None)
+    assert "graded_band_hz" not in (v2host.load_v2_state() or {})["verify"]
 
 
 def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():

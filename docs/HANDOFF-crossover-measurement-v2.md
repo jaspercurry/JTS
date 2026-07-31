@@ -1686,7 +1686,9 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
 - `correction.crossover_v2_measure_diag` — `session_id`, `accepted`, `code`,
   `alignment_confidence`, `alignment_confidence_source`,
   `alignment_seed_delay_us`, `alignment_refinement_delta_us`,
-  `gate_window_ms`, `validity_floor_hz`,
+  `gate_window_ms`, `gate_floor_source` (WHY that window — a measured
+  reflection onset vs the search ceiling with nothing found; both print the
+  same window, issue #1966), `validity_floor_hz`,
   `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
   `woofer_repeat_epsilon_ppm`, `tweeter_repeat_epsilon_ppm`,
   `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`,
@@ -1712,12 +1714,22 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   fit ran with no cloud terms.
 - `correction.crossover_v2_verify_diag` — `accepted`, `code`,
   `max_db_notch_excluded` (the number the tolerance actually gates on),
-  `verify_tolerance_db`, `verify_gate_window_ms`, `measure_gate_window_ms`
+  `verify_tolerance_db`, `verify_gate_window_ms`, `verify_gate_floor_source`,
+  `measure_gate_window_ms`
   (the comparability pair behind `verify_inconclusive`), `validity_floor_hz`,
-  `tracking_band_lo_hz`/`tracking_band_hi_hz`, `rms_db`.
+  `tracking_band_lo_hz`/`tracking_band_hi_hz`, `rms_db`. There is
+  deliberately no `measure_gate_floor_source` beside `measure_gate_window_ms`:
+  that window is RESTORED from persisted state on a resumed session and the
+  floor source is not persisted, so the pair could only be reported as a real
+  window beside a null source. MEASURE's own source is on its own diag line
+  and in the retained sidecar.
 - `correction.crossover_v2_cloud_spec` — the spec verdict, once per CLOSED
   group (not per capture): `phase`, `available`, `reason`, `spec_passed`,
-  `spec_evaluable`, `flatness_max_db`, `flatness_max_hz`, `flatness_rms_db`,
+  `spec_evaluable`, `flatness_max_db`, `flatness_max_hz`,
+  `flatness_reference_band_lo_hz`/`flatness_reference_band_hi_hz` (the frame
+  the deviation is stated against — a power mean over `REFERENCE_BAND_HZ`;
+  the pointer moves in sign and frequency under a different frame, issue
+  #1857), `flatness_rms_db`,
   `spec_n_excluded`, `validity_floor_hz`. Emitted from `_run_cloud_pipeline`,
   and since the flat-linearization plan's PR-5 it is the ONLY place a
   flatness number is logged (see "Flatness" above).
@@ -2257,15 +2269,27 @@ no retries-as-bodge). Treat these as regression fences.
     is restricting the ambient level to the covered slice, which would err
     QUIET — before bench data asks for one.
 
-    **The acceptance session is flying without one instrument.**
-    `DriverResponse.snr` — the per-driver band-SNR block that would most
-    directly answer "did the quieter sweep still clear the floor?" — is
-    structurally `None` on the whole v2 path: nothing threads an
-    `ambient_report` into `MeasurementPriors` for MEASURE, so the field has
-    never been populated here (issue #1830; it predates #1825 and is not
-    caused by it). Until that lands, judge a quieter MEASURE by: the
-    disclosure event's `bound_by` + `solved_gain_db` + `ambient_dbfs` as the
-    primary readout (it states what the solve believed and why), then
+    **That instrument is live again (issue #1830, fixed).**
+    `DriverResponse.snr` — the per-driver band-SNR block that most directly
+    answers "did the quieter sweep still clear the floor?" — was structurally
+    `None` on the whole v2 path for as long as the path existed: nothing
+    threaded an `ambient_report` into `MeasurementPriors` for MEASURE, so the
+    verdict never computed even though CHECK had already measured the room
+    floor and written it to `check.json`. `_check_verdict` now holds that
+    report at CHECK's accept and `_measure_priors` passes it, so the verdict
+    populates — read it as `woofer_snr_db` / `woofer_snr_verdict` (and the
+    tweeter pair) on `correction.crossover_v2_measure_diag`, and as
+    `<role>_snr_db` / `<role>_snr_verdict` in the retained sidecar. It is a
+    REPORTED verdict, not a gate: nothing in the v2 flow fails a capture on
+    it, so a session that starts saying `reduced` or `insufficient` is the
+    instrument working, not a new rejection.
+    It is deliberately absent (not guessed) on a conductor rehydrated past
+    CHECK, which has no ambient of its own — the report is not persisted
+    across that boundary because a noise floor measured at another mic
+    position is a stale claim about this one.
+    The corroborating readouts remain what they were, and are still the
+    right cross-check: the disclosure event's `bound_by` + `solved_gain_db` +
+    `ambient_dbfs` (what the solve believed and why), then
     `DriverResponse.validity_floor_hz` and the gate window, the alignment
     estimate's `confidence` / `status`, and VERIFY's own tracking residual.
     A capture that got too quiet degrades those visibly — a rising validity

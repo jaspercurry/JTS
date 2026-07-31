@@ -968,10 +968,12 @@ def test_verify_fail_folds_tracking_numbers_behind_expert_details():
             "evidence": {
                 "max_db": 2.34,
                 "rms_db": 0.81,
-                "tracking_band_lo_hz": 1000.0,
-                "tracking_band_hi_hz": 4000.0,
                 "tolerance_db": 1.5,
             },
+            # #1868 hoisted the band out of ``evidence`` (which is persisted
+            # only on a non-pass) into a sibling key persisted on every
+            # outcome. The fail screen still renders it, from here.
+            "graded_band_hz": [1000.0, 4000.0],
         },
     ))
     assert env["screen"] == "verify_fail"
@@ -1003,6 +1005,9 @@ def test_verify_fail_folds_tracking_numbers_behind_expert_details():
 def _cloud_flatness_status(**overrides):
     flatness = {
         "max_db": -4.85, "max_hz": 11480.0, "max_band_hz": [8000.0, 16000.0],
+        # The frame the deviation is stated against (#1857) — production's
+        # ``spec_flatness_gauge`` always emits it, so the fixtures do too.
+        "reference_band_hz": [250.0, 8000.0],
         "tolerance_db": 2.5, "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
         "evaluable": True, "passed": False,
     }
@@ -1023,6 +1028,9 @@ def _cloud_flatness_status(**overrides):
 def _cloud_measure_flatness_status(*, carve_outs=None, **overrides):
     flatness = {
         "max_db": -4.85, "max_hz": 11480.0, "max_band_hz": [8000.0, 16000.0],
+        # The frame the deviation is stated against (#1857) — production's
+        # ``spec_flatness_gauge`` always emits it, so the fixtures do too.
+        "reference_band_hz": [250.0, 8000.0],
         "tolerance_db": 2.5, "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
         "evaluable": True, "passed": False,
     }
@@ -1051,9 +1059,9 @@ def test_verify_fail_folds_spec_flatness_alongside_integration_evidence():
             "outcome": "fail",
             "evidence": {
                 "max_db": 2.34, "rms_db": 0.81,
-                "tracking_band_lo_hz": 1000.0, "tracking_band_hi_hz": 4000.0,
                 "tolerance_db": 1.5,
             },
+            "graded_band_hz": [1000.0, 4000.0],
         },
         cloud=_cloud_flatness_status(),
     ))
@@ -1066,9 +1074,12 @@ def test_verify_fail_folds_spec_flatness_alongside_integration_evidence():
     # appearing twice.
     assert "tracking average error 0.81 dB" in details
     assert "flatness average error 1.37 dB across the spec bands" in details
-    # Flatness: spec-framed, signed, located — and never says "limit".
+    # Flatness: spec-framed, signed, located — and never says "limit". The
+    # reference frame is NAMED (#1857): the "spec 8000–16000 Hz" in the
+    # parenthetical is the tolerance row being judged, not the zero the
+    # deviation is measured from, and readers conflated the two.
     assert (
-        "flatness -4.85 dB from the spec reference at 11480 Hz "
+        "flatness -4.85 dB from the 250–8000 Hz reference mean at 11480 Hz "
         "(spec 8000–16000 Hz, tolerance ±2.5 dB)"
     ) in details
     assert (
@@ -1095,9 +1106,81 @@ def test_done_folds_spec_flatness_on_a_pass():
     assert env["screen"] == "done"
     details = env["expert_details"]
     assert (
-        "flatness +1.21 dB from the spec reference at 402 Hz "
+        "flatness +1.21 dB from the 250–8000 Hz reference mean at 402 Hz "
         "(spec 250–2000 Hz, tolerance ±1.5 dB)"
     ) in details
+
+
+def test_flatness_copy_names_no_frame_when_the_record_carries_none():
+    """#1857 — a state file written by an older build has no
+    ``reference_band_hz``, and the line must NOT invent one. It keeps the
+    previous unqualified wording instead: vaguer, but not a claim about a
+    frame this code would be guessing at."""
+    flatness = _cloud_flatness_status()[PHASE_CLOUD_VERIFY]["flatness"]
+    del flatness["reference_band_hz"]
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass"},
+        cloud={PHASE_CLOUD_VERIFY: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_passed": False,
+            "excluded_interval_count": 3, "flatness": flatness,
+        }},
+        candidate=_candidate_summary(),
+    ))
+    details = env["expert_details"]
+    assert any("from the spec reference at 11480 Hz" in line for line in details)
+    assert not any("reference mean" in line for line in details)
+
+
+def test_done_screen_states_the_band_verify_graded():
+    """#1868 — the screen that says "Verified." must say over what.
+
+    The graded band used to ride ``verify.evidence``, which the host persists
+    only on a NON-pass outcome, so this screen — the household's one "the
+    result is good" moment — never named it. On the 2026-07-30 corpus that
+    band was [2000, 4000] Hz while the crossover defect under investigation
+    sat at 1919 Hz, below its floor and structurally ungradeable.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "graded_band_hz": [2000.0, 4000.0]},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == "done"
+    assert "checked 2000–4000 Hz" in env["expert_details"]
+
+
+def test_verify_fail_states_the_band_even_when_the_numbers_are_missing():
+    """#1868 — the band and the evidence block have DIFFERENT presence
+    conditions, so the band must not be gated behind the numbers.
+
+    ``_verify_evidence_from_tracking`` returns nothing unless the
+    notch-excluded max is a real number, while the band exists whenever a
+    tracking comparison ran — and a tracking dict with a band but no usable
+    max is exactly what a ``verify_out_of_tolerance`` refusal can carry.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={"outcome": "fail", "graded_band_hz": [2000.0, 4000.0]},
+    ))
+    assert env["screen"] == "verify_fail"
+    assert "checked 2000–4000 Hz" in env["expert_details"]
+
+
+def test_done_screen_claims_no_band_when_verify_graded_none():
+    """#1868 — absence stays absence. A done screen reached without a
+    tracking comparison (express confirms at the mark by a different route)
+    must not manufacture a band."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass"},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert not any("checked" in line for line in env["expert_details"])
 
 
 def test_done_expert_details_empty_when_no_cloud_group_closed():
@@ -1209,7 +1292,9 @@ def test_express_done_discloses_before_tuning_flatness_from_measure_cloud():
     assert "confirmed at the mark only" in combined
     # The same numeric arithmetic the full tier's CLOUD-VERIFY path reports —
     # one construction (_flatness_lines_from_block), not two.
-    assert "flatness -4.85 dB from the spec reference at 11480 Hz" in combined
+    assert (
+        "flatness -4.85 dB from the 250–8000 Hz reference mean at 11480 Hz"
+    ) in combined
     assert "flatness average error 1.37 dB across the spec bands" in combined
     assert (
         "42 of 942 spec-band bins excluded from grading (interference, or "
@@ -1390,9 +1475,8 @@ _PRIOR_SESSION_EVIDENCE = {
         "max_db": 3.82,
         "tolerance_db": 1.5,
         "rms_db": 1.46,
-        "tracking_band_lo_hz": 2000.0,
-        "tracking_band_hi_hz": 4000.0,
     },
+    "graded_band_hz": [2000.0, 4000.0],
 }
 
 # The SECOND numbers surface (gate finding on the first round of this fix).

@@ -1856,6 +1856,20 @@ def persist_conductor_state(
                     if (verify_outcome != "pass" and conductor.verify_evidence)
                     else {}
                 ),
+                # WHAT SPAN was graded, on EVERY outcome including a pass
+                # (#1868). This rode ``evidence`` above until now, i.e. it
+                # reached a surface only once the verdict had already failed —
+                # so the one screen that says "Verified." was the one screen
+                # that never said over what. The band is not the nominal
+                # Fc±1 octave: two clamps move its lower edge up, and on the
+                # 2026-07-30 corpus it sat at [2000, 4000] Hz while the
+                # crossover defect under investigation sat at 1919 Hz. Same
+                # shape as ``delta_probe`` below, and for the same reason.
+                **(
+                    {"graded_band_hz": list(conductor.verify_graded_band_hz)}
+                    if conductor.verify_graded_band_hz
+                    else {}
+                ),
                 # (A "flatness" key lived here until the flat-linearization
                 # plan's PR-5, carrying the retired per-VERIFY-capture
                 # construction. It is gone rather than repointed: the spec

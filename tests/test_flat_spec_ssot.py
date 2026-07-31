@@ -40,6 +40,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     cloud_validity_floor_hz,
 )
 from jasper.active_speaker.flat_spec import (
+    REFERENCE_BAND_HZ,
     SPEC_BANDS,
     evaluate_flat_spec,
     spec_convergence_residual,
@@ -137,6 +138,61 @@ def test_every_gauge_figure_is_a_figure_from_the_report():
     assert gauge.n_excluded == residual.n_excluded
     assert gauge.passed == report.overall_passed
     assert gauge.evaluable is True
+
+
+def test_the_gauge_names_the_frame_its_worst_band_is_stated_against():
+    """#1857 — a worst-band pointer without its reference frame is half a
+    claim, and the missing half is the one that decides which driver gets
+    blamed.
+
+    Every deviation on every spec surface is ``curve - reference_db``, where
+    ``reference_db`` is a power mean pooled over ``REFERENCE_BAND_HZ``
+    (250 Hz-8 kHz). On the 2026-07-30 corpus a dark tweeter pulls that
+    full-range mean ~2.7 dB below a woofer-anchored one, and the SAME
+    persisted curve's 250-2000 Hz pointer reads +5.44 dB @ 428 Hz in the
+    shipped frame but -5.86 dB @ 1901 Hz woofer-anchored — a sign flip and a
+    different band. The gauge carried the pointer and not the frame, so no
+    reader downstream could tell which of those two readings they had.
+
+    WHICH frame should win is a separate, deliberately open question (Q-E).
+    This pins only that the gauge states the one it used.
+    """
+    report = _tilted_report()
+    gauge = spec_flatness_gauge(report)
+
+    assert gauge.reference_band_hz == REFERENCE_BAND_HZ
+    assert gauge.to_dict()["reference_band_hz"] == list(REFERENCE_BAND_HZ)
+    # It is not the band the worst bin lives in — conflating the two is the
+    # mistake the issue is about.
+    assert gauge.reference_band_hz != gauge.max_band_hz
+
+
+def test_the_frame_is_named_even_when_no_band_could_be_graded():
+    """#1857 — which frame WOULD have been used is knowable even when the
+    gauge is unevaluable, and a reader comparing two sessions needs it
+    either way."""
+    from dataclasses import replace
+
+    report = _tilted_report()
+    # Same hand-built every-band-lost-its-bins shape the unevaluable-gauge
+    # test above uses — evaluate_flat_spec cannot produce it directly.
+    blanked = replace(
+        report,
+        bands=tuple(
+            replace(
+                b, evaluable=False, passed=None, max_deviation_db=None,
+                max_deviation_hz=None, rms_deviation_db=None,
+                n_excluded=b.n_bins,
+            )
+            for b in report.bands
+        ),
+        overall_passed=False,
+    )
+    gauge = spec_flatness_gauge(blanked)
+
+    assert gauge.evaluable is False
+    assert gauge.max_band_hz is None
+    assert gauge.reference_band_hz == REFERENCE_BAND_HZ
 
 
 def test_the_gauge_keeps_the_sign_of_the_worst_bin():

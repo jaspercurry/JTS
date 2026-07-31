@@ -2117,6 +2117,37 @@ def _gate_window_ms(response: Any) -> float | None:
     return float(window) if isinstance(window, (int, float)) else None
 
 
+def _band_edge(band: Any, index: int) -> float | None:
+    """One edge of a persisted ``[lo, hi]`` band pair, or ``None``.
+
+    For log lines that carry a band as two scalars (the shape
+    ``_log_verify_diag``'s ``tracking_band_lo_hz``/``_hi_hz`` established)
+    rather than one bracketed value logfmt would have to quote.
+    """
+    if not isinstance(band, (list, tuple)) or len(band) != 2:
+        return None
+    edge = band[index]
+    return float(edge) if isinstance(edge, (int, float)) else None
+
+
+def _gate_floor_source(response: Any) -> str | None:
+    """WHY ``_gate_window_ms`` is what it is — travels beside it everywhere.
+
+    ``gating.FLOOR_MEASURED`` = a reflection onset was found and the window
+    stops at it; ``gating.FLOOR_SEARCH_BOUND`` = the search reached
+    ``gating.SEARCH_T_MAX_MS`` without finding one and the window was CAPPED
+    there. Both print as the same ``gate_window_ms`` number, and the whole
+    2026-07-30 corpus was the second state while every consumer read it as
+    the first (issue #1966). ``None`` is an ungateable capture, never a
+    guess. See ``program_analysis._gate_floor_source_of``, which does the
+    same job for the retained-capture sidecar.
+    """
+    if response is None:
+        return None
+    source = response.gating.get("floor_source") if response.gating else None
+    return str(source) if isinstance(source, str) else None
+
+
 def _capture_wav_sha256(result: Any) -> str | None:
     """SHA-256 of a capture's WAV bytes, or ``None`` when there are none.
 
@@ -2136,24 +2167,54 @@ def _verify_evidence_from_tracking(
     tracking: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """The verify_fail expert-disclosure numbers (#1605): the notch-excluded
-    max the tolerance gates on, the RMS, the tracking band, and the tolerance
-    itself. Returns None when the gated max is not a real number — nothing
-    meaningful to show behind the disclosure."""
+    max the tolerance gates on, the RMS, and the tolerance itself. Returns
+    None when the gated max is not a real number — nothing meaningful to show
+    behind the disclosure.
+
+    **The graded band is NOT here** — it moved to
+    :func:`_verify_graded_band_from_tracking` (issue #1868). It used to ride
+    this block, which is persisted only for a NON-pass outcome, so the one
+    fact that bounds what "Verified." actually means was visible on exactly
+    the screens where the verdict had already failed. One owner, one place:
+    the band is a property of the comparison, not of its failure.
+    """
     max_db = tracking.get("max_db_notch_excluded")
     if not isinstance(max_db, (int, float)):
         return None
     rms_db = tracking.get("rms_db")
-    band = tracking.get("tracking_band_hz")
-    lo = hi = None
-    if isinstance(band, (list, tuple)) and len(band) == 2:
-        lo, hi = band
     return {
         "max_db": float(max_db),
         "rms_db": float(rms_db) if isinstance(rms_db, (int, float)) else None,
-        "tracking_band_lo_hz": float(lo) if isinstance(lo, (int, float)) else None,
-        "tracking_band_hi_hz": float(hi) if isinstance(hi, (int, float)) else None,
         "tolerance_db": float(VERIFY_TOLERANCE_DB),
     }
+
+
+def _verify_graded_band_from_tracking(
+    tracking: Mapping[str, Any],
+) -> list[float] | None:
+    """The frequency span VERIFY's tracking comparison actually graded.
+
+    ``[lo, hi]``, or ``None`` when this capture never reached a tracking
+    comparison (an early locate/level/gate refusal) — absent means "nothing
+    was graded", never "graded everywhere".
+
+    **Why it is disclosed on a PASS too** (issue #1868, panel item O5): the
+    band is not the nominal Fc±1 octave. ``overlap_band_hz`` clamps its lower
+    edge UP to the tweeter's actual MEASURE sweep floor, and
+    ``_analyze_verify`` clamps it up again to the capture's own gate-derived
+    validity floor. On the 2026-07-30 corpus that landed at
+    ``[2000, 4000] Hz`` while the crossover-region defect the forensics
+    locate sits at 1919 Hz — 81 Hz below the floor, structurally ungradeable.
+    A "Verified." badge over an unstated band reads as "verified everywhere";
+    stating the band makes the claim exactly as wide as the measurement.
+    """
+    band = tracking.get("tracking_band_hz")
+    if not isinstance(band, (list, tuple)) or len(band) != 2:
+        return None
+    lo, hi = band
+    if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        return None
+    return [float(lo), float(hi)]
 
 
 # (``_flatness_evidence_from_tracking`` lived here until the
@@ -4149,6 +4210,25 @@ class CrossoverV2Conductor:
         self._accepted = set(accepted_phases)
         self._applied = bool(applied)
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
+        # CHECK's measured room floor, held from CHECK's accept until MEASURE
+        # reads it in ``_measure_priors`` (issue #1830).
+        #
+        # **In-memory only — deliberately neither a constructor argument nor
+        # part of the snapshot**, unlike ``_gain_plan_db`` beside it. The
+        # ordinary path is one conductor per run consuming CHECK then
+        # MEASURE, so the field is simply there. A conductor REHYDRATED past
+        # an accepted CHECK (same session id, gain plan restored — the shape
+        # that can compose a MEASURE program without re-running CHECK) has no
+        # ambient of its own, and MEASURE's SNR verdict is then honestly
+        # ABSENT rather than graded against a floor this conductor never
+        # measured. That is the deliberate trade: an ambient report is a claim
+        # about this room at this mic position, and §5.6's binding rule
+        # invalidates CHECK/MEASURE evidence across sessions for exactly that
+        # reason — so a persisted floor could outlive the position it
+        # describes. A missing verdict says "not measured"; a stale one would
+        # say something false. Pinned by
+        # ``test_measure_priors_carry_no_ambient_when_check_never_ran``.
+        self._check_ambient_report: dict[str, Any] | None = None
         # Relay capture-plan index → phase. The standard 3-entry session uses
         # the default; a verify-only re-arm session (§5.2 "Re-verify") maps its
         # single entry {1: PHASE_VERIFY}.
@@ -4411,6 +4491,12 @@ class CrossoverV2Conductor:
         # verdicts (locate/agc/gate/level-shift) leave it None so no half-empty
         # disclosure renders.
         self._verify_evidence: dict[str, Any] | None = None
+        # The span that comparison actually graded (issue #1868). Same
+        # lifecycle as the evidence beside it — set only when a tracking
+        # comparison was reached — but unlike the evidence it is surfaced on
+        # EVERY outcome, because a pass is exactly when an unstated band
+        # overclaims. See ``_verify_graded_band_from_tracking``.
+        self._verify_graded_band_hz: list[float] | None = None
         # (``_flatness_evidence`` lived here until PR-5. The flatness a
         # household sees is now the cloud-verify group's spec verdict, read
         # off ``group_cloud_result(PHASE_CLOUD_VERIFY)["flatness"]`` — no
@@ -4590,6 +4676,16 @@ class CrossoverV2Conductor:
         return MeasurementPriors(
             crossover_fc_hz=self._fc_hz,
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
+            # CHECK's measured room floor, carried forward so MEASURE can grade
+            # its own per-driver SNR (issue #1830). Without it
+            # ``program_analysis._driver_response`` skips the verdict entirely
+            # and ``DriverResponse.snr`` is None on every v2 session — a shipped
+            # instrument reading nothing while the evidence to compute it sat
+            # in the same session's check.json. ``None`` only when CHECK never
+            # accepted (no MEASURE can run then) or produced no ambient report,
+            # in which case the verdict stays honestly absent rather than
+            # guessed.
+            ambient_report=self._check_ambient_report,
         )
 
     def _verify_priors(self) -> MeasurementPriors:
@@ -4717,6 +4813,15 @@ class CrossoverV2Conductor:
     def verify_evidence(self) -> dict[str, Any] | None:
         """The verify_fail expert-disclosure numbers (#1605), or None."""
         return dict(self._verify_evidence) if self._verify_evidence else None
+
+    @property
+    def verify_graded_band_hz(self) -> list[float] | None:
+        """``[lo, hi]`` VERIFY's tracking comparison graded, or None (#1868).
+
+        Surfaced on every outcome, including a pass — see
+        :func:`_verify_graded_band_from_tracking`.
+        """
+        return list(self._verify_graded_band_hz) if self._verify_graded_band_hz else None
 
     @property
     def applied(self) -> bool:
@@ -5148,6 +5253,14 @@ class CrossoverV2Conductor:
         # Accept: keep the solved gains + ambient, compose the MEASURE program,
         # publish CHECK evidence.
         self._gain_plan_db = dict(gain_plan.gain_db)
+        # HOLD the ambient report, don't just publish it (issue #1830). Until
+        # now the only thing done with it was the publish one line below —
+        # it crossed the seam to check.json and was dropped, so MEASURE's
+        # per-driver SNR verdict had no noise floor to grade against. See
+        # ``_measure_priors``.
+        self._check_ambient_report = (
+            dict(analysis.ambient_report) if analysis.ambient_report else None
+        )
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.publish_check(gain_plan, analysis.ambient_report or {})
         return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
@@ -5493,6 +5606,12 @@ class CrossoverV2Conductor:
             "captured_at": position.captured_at,
             "session_id": self.session_id,
             "gate_window_ms": _gate_window_ms(position.response),
+            # WHY that window (issue #1966). ``gating_applied`` below only says
+            # a window was applied at all; it cannot distinguish a window that
+            # stops at a found reflection from one capped at the search bound
+            # because none was found. Every position of the 2026-07-30 corpus
+            # was the second, and this record could not say so.
+            "gate_floor_source": _gate_floor_source(position.response),
             "validity_floor_hz": getattr(
                 position.response, "validity_floor_hz", None
             ),
@@ -6803,6 +6922,17 @@ class CrossoverV2Conductor:
             spec_evaluable=flatness.get("evaluable"),
             flatness_max_db=flatness.get("max_db"),
             flatness_max_hz=flatness.get("max_hz"),
+            # WHICH FRAME the deviation above is stated against (issue
+            # #1857). ``flatness_max_db``/``_max_hz`` name a worst point
+            # without naming its zero, and the pointer moves — sign and
+            # frequency — under a different reference band. Two scalars, the
+            # same shape ``_log_verify_diag`` uses for its tracking band.
+            flatness_reference_band_lo_hz=_band_edge(
+                flatness.get("reference_band_hz"), 0
+            ),
+            flatness_reference_band_hi_hz=_band_edge(
+                flatness.get("reference_band_hz"), 1
+            ),
             flatness_rms_db=flatness.get("rms_db"),
             spec_n_excluded=flatness.get("n_excluded"),
             validity_floor_hz=result.get("validity_floor_hz"),
@@ -6836,6 +6966,7 @@ class CrossoverV2Conductor:
             accepted=verdict.accepted, code=verdict.code or "",
             positions_in=len(self._group_positions.get(phase, ())),
             gate_window_ms=_gate_window_ms(response),
+            gate_floor_source=_gate_floor_source(response),
             validity_floor_hz=getattr(response, "validity_floor_hz", None),
             summed_ripple_db=analysis.summed_ripple_db,
             linearity_ok=analysis.linearity_ok,
@@ -6862,9 +6993,12 @@ class CrossoverV2Conductor:
         # returns and would otherwise misreport it as fresh.
         self._verify_pilot_transfer_step_db = None
         # Same reset discipline: only a verdict that reaches the tracking
-        # comparison below carries expert-disclosure evidence (#1605); the
-        # early returns must not surface a prior attempt's numbers.
+        # comparison below carries expert-disclosure evidence (#1605) or a
+        # graded band (#1868); the early returns must not surface a prior
+        # attempt's numbers — or a prior attempt's band, which would claim
+        # this capture graded a span it never reached.
         self._verify_evidence = None
+        self._verify_graded_band_hz = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.pilot_snr_ok is False:
@@ -6917,6 +7051,7 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
+        self._verify_graded_band_hz = _verify_graded_band_from_tracking(tracking)
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
         # max — and both are now computed over `tracking["tracking_band_hz"]`,
@@ -7285,6 +7420,7 @@ class CrossoverV2Conductor:
                 if align and align.seed_delay_us is not None else None
             ),
             gate_window_ms=self._measure_gate(analysis),
+            gate_floor_source=self._measure_gate_floor_source(analysis),
             validity_floor_hz=_measure_validity_floor_hz(analysis),
             epsilon_ppm=round(float(drift.epsilon_ppm), 3) if drift else None,
             max_residual_samples=round(float(drift.max_residual_samples), 3) if drift else None,
@@ -7401,6 +7537,13 @@ class CrossoverV2Conductor:
             max_db_notch_excluded=tracking.get("max_db_notch_excluded"),
             verify_tolerance_db=VERIFY_TOLERANCE_DB,
             verify_gate_window_ms=_gate_window_ms(analysis.summed_response),
+            verify_gate_floor_source=_gate_floor_source(analysis.summed_response),
+            # (No ``measure_gate_floor_source`` beside ``measure_gate_window_ms``
+            # here on purpose: that window is RESTORED from persisted state on a
+            # resumed session, and the floor source is not persisted, so the
+            # pair could only be reported as a real window beside a null source.
+            # MEASURE's own source is disclosed where it is computed — the
+            # ``crossover_v2_measure_diag`` line and the retained sidecar.)
             measure_gate_window_ms=self._measure_gate_window_ms,
             validity_floor_hz=validity_floor_hz,
             tracking_band_lo_hz=tracking_band_lo_hz,
@@ -7433,12 +7576,32 @@ class CrossoverV2Conductor:
                 self._gain_plan_db, extra_backoff_db=extra_backoff_db
             )
 
-    def _measure_gate(self, analysis: ProgramAnalysis) -> float | None:
-        windows = [
-            _gate_window_ms(resp) for resp in analysis.driver_responses
+    def _measure_binding_response(self, analysis: ProgramAnalysis) -> Any | None:
+        """The driver response whose gate window BINDS the MEASURE phase — the
+        shortest (most restrictive) of them.
+
+        One owner for "which response binds", so ``_measure_gate``'s window and
+        ``_measure_gate_floor_source``'s provenance always describe the SAME
+        capture. Two independent min-selections could drift into reporting one
+        response's window beside another's floor source, which is the
+        frame-mismatch class issue #1966 exists to close.
+        """
+        gated = [
+            (window, resp)
+            for resp, window in (
+                (r, _gate_window_ms(r)) for r in analysis.driver_responses
+            )
+            if window is not None
         ]
-        finite = [w for w in windows if w is not None]
-        return min(finite) if finite else None
+        if not gated:
+            return None
+        return min(gated, key=lambda pair: pair[0])[1]
+
+    def _measure_gate(self, analysis: ProgramAnalysis) -> float | None:
+        return _gate_window_ms(self._measure_binding_response(analysis))
+
+    def _measure_gate_floor_source(self, analysis: ProgramAnalysis) -> str | None:
+        return _gate_floor_source(self._measure_binding_response(analysis))
 
     def _build_candidate(
         self, analysis: ProgramAnalysis, cloud: _CloudFitEvidence | None = None,

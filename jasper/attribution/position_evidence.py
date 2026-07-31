@@ -93,6 +93,7 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "take_id",
     "role",
     "gate_window_ms",
+    "gate_floor_source",
     "validity_floor_hz",
     "gating_applied",
     "summed_ripple_db",
@@ -145,6 +146,17 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "evidence."
     ),
     "gate_window_ms": "The reflection gate actually applied to this capture.",
+    "gate_floor_source": (
+        "WHY gate_window_ms is what it is, and the two answers are not the "
+        "same claim. measured_reflection: a reflection onset was found and "
+        "the window stops at it. search_span_bound: the search reached its "
+        "ceiling without finding one, so the window was CAPPED there and "
+        "nothing was gated out — read a window equal to the ceiling with "
+        "this value as 'no reflection found', never as 'reflections "
+        "removed'. null means the capture was ungateable. This field is "
+        "distinct from curve_grid.floor_source, which names where the GRID "
+        "starts, not what the gate found."
+    ),
     "summed_ripple_db": "This capture's own summed-response ripple, dB.",
     "wav_sha256": (
         "SHA-256 of this position's captured WAV bytes. The VERIFIER for a "
