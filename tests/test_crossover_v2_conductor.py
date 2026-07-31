@@ -5694,8 +5694,10 @@ def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
     return woofer_db, tweeter_db
 
 
-def _solve_fixture_raw_trim() -> dict[str, float]:
-    """The raw trim these two branches actually call for.
+def _solve_fixture_raw_trim(
+    woofer_db: np.ndarray | None = None, tweeter_db: np.ndarray | None = None,
+) -> dict[str, float]:
+    """The raw trim a pair of branch curves actually call for.
 
     **Why this is solved and not written down** (PR-L4). The fixture carried a
     hand-written ``{"woofer": 0.0, "tweeter": -2.211}`` chosen to exercise the
@@ -5707,9 +5709,23 @@ def _solve_fixture_raw_trim() -> dict[str, float]:
     derives ``candidate.trim_db`` from its own branches via
     ``solve_branch_trims``, so this fixture now does the same and cannot drift
     from its own physics again.
+
+    **Why it takes optional curves instead of only reading the default pair**
+    (#1938). ``_eligible_measure_analysis`` reuses this exact solve for
+    whichever ``woofer_db``/``tweeter_db`` a call is actually using, default or
+    custom. Defaulting a custom-curve call's trim to a constant solved from the
+    DEFAULT curves (below) hands the conductor one speaker's branches and
+    another speaker's trim — the identical incoherence this function was
+    written to remove for the default curves in PR-L4, reintroduced through
+    the custom-curve parameters (#1938). Arguments default to
+    :func:`_fixture_branch_db`'s pair, so ``_FIXTURE_RAW_TRIM_DB`` below is
+    unaffected by this generalization.
     """
     freqs = _LINEARIZABLE_FREQS_HZ
-    woofer_db, tweeter_db = _fixture_branch_db()
+    if woofer_db is None or tweeter_db is None:
+        default_woofer_db, default_tweeter_db = _fixture_branch_db()
+        woofer_db = default_woofer_db if woofer_db is None else woofer_db
+        tweeter_db = default_tweeter_db if tweeter_db is None else tweeter_db
     _trim_w, trim_t, _lw, _lt = solve_branch_trims(
         freqs,
         (10.0 ** (woofer_db / 20.0)).astype(complex),
@@ -5761,7 +5777,17 @@ def _eligible_measure_analysis(
     if tweeter_db is None:
         tweeter_db = default_tweeter_db
     if trim_db is None:
-        trim_db = dict(_FIXTURE_RAW_TRIM_DB)
+        # #1938: derive the trim from THESE branches (default or custom) —
+        # never default to a constant solved from a DIFFERENT pair. A caller
+        # that hands the conductor custom woofer_db/tweeter_db but inherits
+        # _FIXTURE_RAW_TRIM_DB (solved from the DEFAULT curves) hands it one
+        # speaker's branches and another speaker's trim — the exact defect
+        # _solve_fixture_raw_trim's docstring documents for the default curves,
+        # closed here for every curve pair. A caller that deliberately wants an
+        # incoherent pair passes trim_db= explicitly (the level gates' own
+        # branch-forcers, e.g.
+        # test_the_level_frame_refusal_names_the_levels_and_bands_it_read).
+        trim_db = _solve_fixture_raw_trim(woofer_db, tweeter_db)
     if trim_band_average_db is None:
         # Production always sets it (`_build_candidate`), and it COINCIDES with
         # the applied trim whenever the ripple polish did not move it. Splitting
@@ -5802,6 +5828,46 @@ def _eligible_measure_analysis(
         ),
         glitch_detected=False,
     )
+
+
+def test_eligible_measure_analysis_derives_trim_from_its_own_custom_curves():
+    """#1938 regression guard.
+
+    A caller handing ``_eligible_measure_analysis`` CUSTOM ``woofer_db``/
+    ``tweeter_db`` curves, with no explicit ``trim_db``, must get a trim
+    SOLVED from those curves — never the module constant
+    ``_FIXTURE_RAW_TRIM_DB``, which is solved from the DEFAULT curves and is a
+    different pair. That silent fallback is the "one speaker's branches,
+    another speaker's trim" incoherence :func:`_solve_fixture_raw_trim`'s own
+    docstring documents for the default curves, reintroduced through the
+    custom-curve parameters (#1938's finding, discovered via
+    ``test_prediction_gate_logs_the_improved_path_with_both_terms`` /
+    PR #1934 and the two call sites this issue's fix corrected —
+    ``test_linearized_ripple_polish_is_skipped_on_a_one_sided_band`` and
+    ``test_prediction_gate_refuses_a_correction_that_does_not_improve``).
+
+    Two FLAT curves 20 dB apart make the expected trim a closed form —
+    attenuate the louder (tweeter) branch by exactly the gap — rather than a
+    number this test would have to take on faith from the solver under test.
+    """
+    freqs = _LINEARIZABLE_FREQS_HZ
+    flat_woofer_db = np.zeros_like(freqs)
+    flat_tweeter_db = np.full_like(freqs, 20.0)
+    program = types.SimpleNamespace(program_id="fixture_trim_guard")
+
+    analysis = _eligible_measure_analysis(
+        program, woofer_db=flat_woofer_db, tweeter_db=flat_tweeter_db,
+    )
+
+    assert analysis.candidate.trim_db == {"woofer": 0.0, "tweeter": -20.0}
+    # Not the default-curve constant: the regression this guards against is a
+    # fixture that silently returns it regardless of the curves it was
+    # actually handed.
+    assert analysis.candidate.trim_db != dict(_FIXTURE_RAW_TRIM_DB)
+    # _eligible_measure_analysis defaults trim_band_average_db to trim_db
+    # when omitted, so it must agree too — a caller reading either field
+    # sees the same coherent trim.
+    assert analysis.candidate.trim_band_average_db == analysis.candidate.trim_db
 
 
 def test_non_reference_tier_falls_back_byte_identical_to_trims_only():
@@ -6019,7 +6085,14 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     assert "event=correction.crossover_v2_linearization_ripple_trim_skipped" in caplog.text
     assert "reason=ripple_band_one_sided" in caplog.text
     # The applied trim is the anchored give-back, untouched by any scan.
-    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
+    # #1938: the raw trim has to be derived from THIS fixture's own curves —
+    # the default woofer paired with the one-sided tweeter above — not from
+    # _FIXTURE_RAW_TRIM_DB, which is solved from the DEFAULT tweeter and is a
+    # different pair. Before this fix, `_eligible_measure_analysis` silently
+    # defaulted to that mismatched constant too, and this assertion agreed
+    # with it only because both sides shared the same wrong number.
+    default_woofer_db, _default_tweeter_db = _fixture_branch_db()
+    raw_trim = _solve_fixture_raw_trim(default_woofer_db, _one_sided_tweeter_db)
     giveback = {
         role: c.candidate.linearization[role]["correction_giveback_db"]
         for role in ("woofer", "tweeter")
