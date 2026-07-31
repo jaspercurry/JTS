@@ -30,8 +30,8 @@ A session that proposes a new palette, a typeface pairing, a per-screen
 - **Palette and fonts** — the oklch sage/beige tokens, Figtree (body) and
   Outfit (display), declared once in
   [`deploy/assets/app.css`](../deploy/assets/app.css), the single source of
-  truth. `tests/test_web_design_system.py` fails any page that re-declares the
-  tokens or `@font-face` rules.
+  truth. `tests/test_web_design_system.py` fails the landing page if it
+  re-declares the tokens or `@font-face` rules.
 - **Radius scale** — `--radius` 10px, `-sm` 6px / `-md` 8px / `-lg` 10px.
 - **Light only** — `color-scheme: light`. No dark mode, none planned.
 - **One accent** — `--primary` carries interaction; status colour comes from
