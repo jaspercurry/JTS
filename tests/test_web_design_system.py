@@ -375,21 +375,44 @@ LANDING_OFF_LADDER_HELD = {"0.92rem", "0.88rem", "0.86rem"}
 TYPE_LADDER_PX = {"11px", "12px", "13px", "14px", "16px"}
 
 
+def _off_ladder_sizes(css: str) -> set[str]:
+    """font-size values that are neither on the ladder nor already held.
+
+    NB `em` is relative-to-parent sizing, not a ladder step, so it is skipped —
+    but the check must not also swallow `rem`, which IS an absolute size and is
+    exactly what this guard exists to catch."""
+    out: set[str] = set()
+    for raw in re.findall(r"font-size:\s*([^;}]+)", css):
+        value = raw.strip()
+        if value in TYPE_LADDER_PX or value in LANDING_OFF_LADDER_HELD:
+            continue
+        if value.startswith("var(") or value.startswith("calc("):
+            continue
+        if re.search(r"(?<![a-z])\d*\.?\d+em\b", value):
+            continue
+        out.add(value)
+    return out
+
+
 def test_landing_page_type_stays_on_the_ladder():
     """design-language.md §3: 11/12/13/14/16 px, and no new off-ladder value."""
-    css = _without_css_comments(LANDING_HTML.read_text())
-    sizes = set(re.findall(r"font-size:\s*([^;}]+)", css))
-    unexpected = {
-        s.strip() for s in sizes
-        if s.strip() not in TYPE_LADDER_PX
-        and s.strip() not in LANDING_OFF_LADDER_HELD
-        and not s.strip().startswith("var(")
-        and "em" not in s  # relative-to-parent sizing is not a ladder step
-    }
+    unexpected = _off_ladder_sizes(_without_css_comments(LANDING_HTML.read_text()))
     assert not unexpected, (
         "landing-page type must sit on the 11/12/13/14/16px ladder "
         f"(docs/design-language.md §3); found {sorted(unexpected)}"
     )
+
+
+def test_type_ladder_guard_actually_catches_a_new_off_ladder_value():
+    """The guard is only worth having if it fires. An earlier version excluded
+    anything containing "em", which silently swallowed `rem` too — the exact
+    case it exists to catch."""
+    assert _off_ladder_sizes("a { font-size: 0.95rem; }") == {"0.95rem"}
+    assert _off_ladder_sizes("a { font-size: 15px; }") == {"15px"}
+    # …while the genuinely-exempt shapes stay quiet.
+    assert _off_ladder_sizes("a { font-size: 0.95em; }") == set()
+    assert _off_ladder_sizes("a { font-size: 14px; }") == set()
+    assert _off_ladder_sizes("a { font-size: 0.92rem; }") == set()  # held, §3
 
 
 def test_touch_targets_meet_the_floor():
