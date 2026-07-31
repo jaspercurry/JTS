@@ -1133,9 +1133,13 @@ def _locate(
 
 
 def _analytic_envelope(x: np.ndarray) -> np.ndarray:
-    from scipy.signal import hilbert
+    """Delegates to :func:`gating.analytic_envelope` — one implementation.
 
-    return np.abs(hilbert(np.asarray(x, dtype=np.float64)))
+    R9's gate needs the same ETC envelope this module's correlation
+    refinement does. Rather than let a second copy exist, the lower-level
+    module owns it and this stays a name local callers already use.
+    """
+    return gating.analytic_envelope(x)
 
 
 def _parabolic_peak(values: np.ndarray, idx: int) -> float:
