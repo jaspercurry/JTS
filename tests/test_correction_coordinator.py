@@ -303,8 +303,20 @@ def test_mux_gate_abort_ladder_fires_before_mux_lease_expiry():
     * **Safety.** The check before the aborting one was under the deadline by
       definition, and the step that follows costs at most one back-off plus
       one full mux round trip. So for *every* failure schedule the abort
-      fires strictly before ``ABORT + RETRY + COMMAND_TIMEOUT``, and that
-      sum must clear mux's availability lease.
+      fires strictly before ``ABORT + RETRY + COMMAND_TIMEOUT`` — measured
+      from the coordinator's ``last_confirmed``.
+
+      That is not yet the property we need. mux starts its lease *before*
+      it replies (``jasper/mux.py``: ``_test_fanin_expires_at`` is set ahead
+      of ``_fanin_select_label``, deliberately, so a lost response still
+      leaves a recoverable claim), while ``last_confirmed`` is stamped only
+      once the reply lands. mux's lease is therefore already ageing by up to
+      one round trip before the coordinator's clock starts. So the sum that
+      has to clear the lease carries ``COMMAND_TIMEOUT`` **twice**: once for
+      the acquire that carries the abort past the deadline, once for the
+      renewal round trip that set the reference point. Budget only one and
+      ``ABORT = 50`` stays green here while the real lease age reaches
+      60.6 s against a 60 s lease.
 
     This test pins the arithmetic. Its sibling below,
     ``test_gate_abort_ladder_stays_inside_its_modelled_bound``, pins the other
@@ -323,7 +335,9 @@ def test_mux_gate_abort_ladder_fires_before_mux_lease_expiry():
     assert refresh + command < abort
 
     # Safety: the latest possible abort still precedes mux reopening music.
-    assert abort + retry + command < mux_module.FANIN_TEST_LEASE_SEC
+    # Two COMMAND_TIMEOUTs: the aborting acquire, and the renewal round trip
+    # during which mux's lease was already running (see the docstring).
+    assert abort + retry + 2 * command < mux_module.FANIN_TEST_LEASE_SEC
 
 
 def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float:

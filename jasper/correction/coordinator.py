@@ -98,6 +98,9 @@ VOICE_MEASURE_PAUSE_TIMEOUT_SEC = 3.0
 MEASUREMENT_FANIN_LABEL = "correction"
 MEASUREMENT_GATE_OWNER = "correction-measurement"
 MEASUREMENT_GATE_REFRESH_SEC = 20.0
+# Inter-attempt sleep for _release_measurement_gate's confirm loop on the way
+# OUT — not the refresh loop above, which backs off on MEASUREMENT_LEASE_RETRY_SEC.
+# The adjacency makes that easy to misread; the abort ladder budgets the other one.
 MEASUREMENT_GATE_RETRY_SEC = 0.1
 # Deadline for one jasper-mux control round trip. _mux_socket_command wraps
 # the whole exchange — connect, send, reply, close — so a wedged UDS cannot
@@ -114,9 +117,12 @@ MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC = 3.0
 # The check before that one was under the deadline by definition, and the step
 # that follows costs at most one MEASUREMENT_LEASE_RETRY_SEC back-off plus one
 # MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC acquire, so the real worst case is
-# bounded by the sum of those three. That SUM is what has to clear mux's
-# lease, and that is what the test pins — bare ordering stays green while the
-# abort lands after mux has already let music back in.
+# bounded by the sum of those three — measured from OUR last_confirmed. mux's
+# lease starts earlier than that: it stamps _test_fanin_expires_at before
+# replying, so it is already ageing by up to one round trip when we stamp
+# last_confirmed. What has to clear mux's lease therefore counts the command
+# timeout twice, and that is what the test pins — bare ordering stays green
+# while the abort lands after mux has already let music back in.
 MEASUREMENT_GATE_ABORT_SEC = 40.0
 
 # Mutual-exclusion flag for measurement_window(). Only one window may be open
