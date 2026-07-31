@@ -176,6 +176,12 @@ def _unbounded_waits(fn: ast.AsyncFunctionDef) -> list[int]:
         # cancelled explicitly. That is the idiom, not the bug.
         if isinstance(func.value, ast.Call):
             continue
+        # A call carrying its own `timeout=` is bounded by construction —
+        # `asyncio.wait({task}, timeout=...)` is the shape that matched here
+        # only because it shares the name `wait`. `asyncio.Event.wait()`
+        # takes no arguments at all, so this cannot excuse the real hazard.
+        if any(kw.arg == "timeout" for kw in call.keywords):
+            continue
         if id(node) in bounded:
             continue
         lines.append(node.lineno)
@@ -266,10 +272,27 @@ def test_guard_accepts_bounded_and_idiomatic_waits() -> None:
         "        await asyncio.Event().wait()\n"  # parks until cancelled
         "    await wait_signalled(started, 'started')\n"
         "    await asyncio.wait_for(other.wait(), timeout=1.0)\n"
+        "    await asyncio.wait({task}, timeout=1.0)\n"  # bounded by its own kwarg
     )
     fn = tree.body[0]
     assert isinstance(fn, ast.AsyncFunctionDef)
     assert _unbounded_waits(fn) == []
+
+
+def test_guard_still_flags_an_unbounded_wait_named_like_asyncio_wait() -> None:
+    """Relaxing for `timeout=` must not relax for a bare event wait.
+
+    `asyncio.Event.wait()` accepts no arguments, so no true instance of the
+    hazard can carry a `timeout=` keyword — but pin it rather than assume it.
+    """
+
+    tree = ast.parse(
+        "async def test_x():\n"
+        "    await gate.wait()\n"
+    )
+    fn = tree.body[0]
+    assert isinstance(fn, ast.AsyncFunctionDef)
+    assert _unbounded_waits(fn) == [2]
 
 
 async def test_wait_signalled_returns_once_the_event_fires() -> None:
