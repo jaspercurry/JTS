@@ -32,6 +32,18 @@ implementer's own worktree still holds the branch, fetch
 `pull/<n>/head` instead and check out `FETCH_HEAD` in detached-HEAD
 state.
 
+**UI diffs get the visual-craft lenses too.** When the diff touches
+`jasper/web/*`, `deploy/assets/*`, `deploy/index.html`, or
+`capture-page/*`, additionally apply
+[docs/design-language.md](../../docs/design-language.md) §12 — the six
+craft lenses (hierarchy, type, colour, depth/shape, spacing,
+states/targets) and, just as importantly, its false-positive filter.
+This is one gate with one vocabulary: those lenses fold into the same
+Blocker / Should-fix / Nit taxonomy and the same 0/0 bar, and there is
+no separate design-review command. Note especially that §2's ratified
+decisions — no focus rings, light-only, the tight type ladder, the
+protected landing page — are not findings.
+
 **Verify, don't trust.** The implementer's summary describes what they
 intended, not necessarily what they did. Re-derive every load-bearing
 claim empirically: run the actual tests, re-derive any reported numbers
