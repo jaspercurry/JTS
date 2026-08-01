@@ -6492,17 +6492,44 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     assert call["trim_w_db"] == pytest.approx(expected_anchored["woofer"])
     assert call["seed_trim_db"] == pytest.approx(expected_anchored["tweeter"])
 
-    # The call's own return value is exactly what the conductor applied
-    # (modulo the sanity guard, which this fixture's default does not trip
-    # -- see test_eligible_candidate_fits_both_roles_and_moves_trim_toward_
-    # ripple_optimal).
+    # What ships is one of the TWO pairs `_fit_linearization` grades — the
+    # anchor, or the scan's ripple polish — never the raw trim ("Never the RAW
+    # trim, whichever pair wins"). WHICH of the two wins is the PR-L4 level
+    # adjudication's business, not this test's: it commits whichever pair the
+    # realized inter-driver level instrument scores better, and both branches of
+    # that choice have their own pins (test_eligible_candidate_fits_both_roles_
+    # and_moves_trim_toward_ripple_optimal for the polish, test_a_disagreeing_
+    # frame_whose_realized_check_passes_banks_and_proceeds for the grading).
+    #
+    # This fixture used to land on the polish and now lands on the anchor, for a
+    # reason worth recording rather than papering over: R10b (panel CC-2(b))
+    # made the
+    # fit's `correction_giveback_db` grade the REALIZED biquad cascade instead
+    # of `predicted_response`'s Lorentzian, which moved this pair's anchor by
+    # +0.124 dB (tweeter -1.383 -> -1.260). BOTH graded pairs moved with it (the
+    # polish is seeded from the anchor), in opposite directions: the anchor's
+    # realized level error |-0.258| -> |-0.134| dB, the polish's |0.142| ->
+    # |0.166| dB. That is what crossed them over. No filter moved.
     resolved_trim_t, _ripple, _seed = real_solve(
         call["freqs"], call["w_tf"], call["t_tf"], FC_HZ,
         lo_hz=call["lo_hz"], hi_hz=call["hi_hz"],
         seed_trim_db=call["seed_trim_db"], trim_w_db=call["trim_w_db"],
         sign=call["sign"],
     )
-    assert c.candidate.role_attenuations_db["tweeter"] == pytest.approx(resolved_trim_t)
+    committed_t = c.candidate.role_attenuations_db["tweeter"]
+    # The durable invariant, asserted first because it holds whichever way the
+    # adjudication goes and on every fixture: what ships is a graded pair, and
+    # the raw trim is not one of them.
+    assert committed_t in (
+        pytest.approx(expected_anchored["tweeter"]),
+        pytest.approx(resolved_trim_t),
+    )
+    assert committed_t != pytest.approx(raw_trim["tweeter"])
+    # …and the fixture-specific outcome, stated precisely rather than hedged, so
+    # a future flip back is visible here rather than silent. The scan did move
+    # (0.300 dB off its seed) — it simply did not level better.
+    assert committed_t == pytest.approx(expected_anchored["tweeter"])
+    assert resolved_trim_t != pytest.approx(expected_anchored["tweeter"])
 
 
 def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Conductor:
@@ -8981,16 +9008,22 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # …and the MECHANISM that makes them agree, so the line above reads as a
     # measured rescue rather than a coincidence. Four graded pairs, two per arm,
     # ``(resolved, anchored)`` each: the pre-#1929 arm's anchor is mislevelled by
-    # the frame's full error and the ripple-optimal scan walks the tweeter 5.4 dB
+    # the frame's full error and the ripple-optimal scan walks the tweeter 5.6 dB
     # to undo it; the shipped arm's anchor is already right and the scan moves it
-    # 0.2 dB. That walk is what the flat target used to prevent, by burying ~9 dB
+    # 0.4 dB. That walk is what the flat target used to prevent, by burying ~9 dB
     # of spurious cut in the very branch the scan reads.
+    #
+    # Both walks grew 0.2 dB at R10b (5.4 -> 5.6 and 0.2 -> 0.4) because
+    # the anchor each is measured FROM now carries the realized biquad cascade's
+    # give-back rather than `predicted_response`'s Lorentzian. The ratio the
+    # claim rests on survives with room to spare, and the two arms' realized
+    # level match — the actual subject above — moved by under 0.04 dB.
     assert len(graded) == 4, graded
     (pre_resolved, pre_anchored, post_resolved, post_anchored) = graded
     pre_walk_db = abs(pre_resolved["tweeter"] - pre_anchored["tweeter"])
     post_walk_db = abs(post_resolved["tweeter"] - post_anchored["tweeter"])
-    assert pre_walk_db == pytest.approx(5.4, abs=0.1)
-    assert post_walk_db == pytest.approx(0.2, abs=0.1)
+    assert pre_walk_db == pytest.approx(5.6, abs=0.1)
+    assert post_walk_db == pytest.approx(0.4, abs=0.1)
     assert pre_walk_db > 10.0 * post_walk_db
 
 
@@ -9220,8 +9253,8 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     cancels out of ``anchor_base + giveback + level_frame_offset``, so the
     committed inter-driver placement is set by the CORE-MEDIAN frame — the
     *disputed* estimator. This fixture measures that directly: the anchor
-    places the pair 0.883 dB apart, which is the core-median frame's own value;
-    anchoring on the trim solve's placement instead would give 4.776; and the
+    places the pair 0.756 dB apart, which is the core-median frame's own value;
+    anchoring on the trim solve's placement instead would give 4.650; and the
     two differ by 3.894 — exactly the banked disagreement. What proceeding buys
     is that the session is not refused; it does not switch estimators, and the
     realized check grades the outcome rather than picking a winner. The gate
@@ -9236,11 +9269,22 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     unconditionally, and commits whichever LEVELS better ("inter-driver level is
     the load-bearing property, summed ripple is the polish"). Once the fit stops
     burying the pair under crossover-fighting cuts the linearized branches
-    differ, the scan finds a genuinely better ripple point 0.500 dB off its
-    seed, and that pair levels better as well (|−0.978| against |−1.478| dB), so
+    differ, the scan finds a genuinely better ripple point 0.400 dB off its
+    seed, and that pair levels better as well (|−0.952| against |−1.352| dB), so
     it is what ships. The polish sits well inside the 6.0 dB sanity margin, so
     no guard runs. The claim itself is unchanged and is asserted below in the
     form it always had: the placement follows the core median.
+
+    **Why every magnitude here moved ~0.03-0.13 dB at R10b** (the claim-seam
+    change; first-principles panel CC-2(b)).
+    ``correction_giveback_db`` is the anchor's own input, and it now measures
+    the level the REALIZED biquad cascade removes rather than the level
+    ``peq.predicted_response``'s Lorentzian bell said it would. The anchor, the
+    placement, the scan's walk and both realized differences all ride on it, so
+    all of them shifted together; the DISAGREEMENT (3.894 dB) did not, because
+    the give-back cancels out of it. No filter moved, and every verdict — the
+    session completes, the finding banks, the polish ships, no guard fires — is
+    the same. The numbers in this docstring are the post-R10b ones.
 
     **Why the trim-solve estimator's own number moved once before** (#1938 gate
     follow-up). ``_tilted_woofer_fixture`` used to hand a coherent-looking but
@@ -9303,7 +9347,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
         c._last_level_frame_disagreement_db > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
     assert c._last_realized_level_match.difference_db == pytest.approx(
-        -0.978, abs=0.02
+        -0.952, abs=0.02
     )
     assert c._last_realized_level_match.matched is True
 
@@ -9312,7 +9356,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     record = banked[0]
     assert record["disagreement_db"] == pytest.approx(3.894, abs=0.02)
     assert record["tolerance_db"] == LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-    assert record["realized_difference_db"] == pytest.approx(-0.978, abs=0.02)
+    assert record["realized_difference_db"] == pytest.approx(-0.952, abs=0.02)
     for role in ("woofer", "tweeter"):
         # estimator 1 (the fit's median) and estimator 2 (the trim solve's
         # own level-match term) — the two numbers that disagreed
@@ -9342,12 +9386,12 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     assert set(anchored) == set(committed) == set(resolved)
     # The scan's ripple polish is what ships here, because the adjudication
     # commits whichever pair LEVELS better and this one does. That is the
-    # ordinary trusted path, not a fallback: the polish is 0.500 dB off its own
+    # ordinary trusted path, not a fallback: the polish is 0.400 dB off its own
     # seed, an order of magnitude inside the sanity margin, so no guard ran.
     for role, value in resolved.items():
         assert committed[role] == pytest.approx(value, abs=1e-9)
     drift_db = max(abs(resolved[role] - anchored[role]) for role in anchored)
-    assert drift_db == pytest.approx(0.500, abs=0.02)
+    assert drift_db == pytest.approx(0.400, abs=0.02)
     assert drift_db < LINEARIZATION_TRIM_SANITY_MARGIN_DB
     assert "event=correction.crossover_v2_linearization_trim_rejected" not in (
         caplog.text
@@ -9359,7 +9403,7 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # leaving ``giveback + system − core``, so the anchored inter-driver
     # placement follows the CORE MEDIAN — the disputed estimator. Read off the
     # ANCHOR and not off ``committed`` because the ripple polish above moves the
-    # committed pair by its own 0.500 dB, which is the scan's business and not
+    # committed pair by its own 0.400 dB, which is the scan's business and not
     # the frame's; the anchor is the number the frame produced. Asserted as the
     # identity rather than as a magic number: the placement the trim solve would
     # have produced differs from the anchored one by exactly the banked
@@ -9381,8 +9425,8 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # each core level to 3 dp, so ``core_frame`` carries up to a half-step of
     # rounding on each of its two terms.
     assert placed == pytest.approx(core_frame, abs=1e-3)
-    assert placed == pytest.approx(0.883, abs=0.02)
-    assert trim_frame == pytest.approx(4.776, abs=0.02)
+    assert placed == pytest.approx(0.756, abs=0.02)
+    assert trim_frame == pytest.approx(4.650, abs=0.02)
     assert abs(trim_frame - core_frame) == pytest.approx(
         c._last_level_frame_disagreement_db, abs=1e-3
     )

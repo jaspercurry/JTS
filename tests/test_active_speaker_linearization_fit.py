@@ -40,6 +40,7 @@ from jasper.active_speaker.linearization_fit import (
     PER_FILTER_BOOST_CAP_DB,
     PER_FILTER_CUT_CAP_DB,
     _CUT_REDUCTION_EPS_DB,
+    _ENVELOPE_NONZERO_EPS_DB,
     _MIN_FILTER_GAIN_DB,
     FitVocabulary,
     LinearizationFilter,
@@ -49,6 +50,7 @@ from jasper.active_speaker.linearization_fit import (
     _core_or_fallback_mask,
     _highshelf_response_db,
     _ladder_smooth,
+    _power_band_average_db,
     _shelf_stage,
     complex_correction_response,
     core_level_band_hz,
@@ -60,6 +62,7 @@ from jasper.active_speaker.linearization_fit import (
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
+from jasper.correction.peq import PEQ, predicted_response
 
 _NATIVE_FREQS_HZ = np.linspace(100.0, 22_000.0, 4096)
 
@@ -655,6 +658,204 @@ def test_verify_residual_uses_same_residual_math_as_fit_over_its_own_band():
     assert fit.fit_band_hz != (0.0, 0.0)
     # verify_max is the max ABS residual over a superset band -> never smaller.
     assert fit.verify_residual_max_db >= fit.residual_max_db - 1e-9
+
+
+def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
+    """R10b (first-principles panel CC-2(b)): the reported numbers are graded
+    on the CURVE the graph emits, not on a model of it.
+
+    The peaking stage folds itself into the working curve with
+    :func:`jasper.correction.peq.predicted_response`, a Lorentzian in
+    log-frequency whose HALF-WIDTH matches the RBJ peaking biquad but whose
+    skirts do not ("the far skirts are still a Lorentzian approximation" —
+    ``_bell_response_db``'s own docstring), and which knows nothing of the
+    bilinear warping that reshapes a biquad near the top of the band. Using it
+    to fit is fine — a search heuristic may be approximate. Using it to GRADE
+    is the shelf-Q defect class of 2026-07-27 in peaking form: a fit auditing
+    itself with an evaluator the hardware does not run
+    (see :mod:`jasper.active_speaker.delta_probe`'s docstring).
+
+    Under the default CUT-ONLY vocabulary the lift stage is inert, so before
+    R10b the whole-cascade rebuild never fired and every claim below was the
+    Lorentzian's opinion.
+
+    The fixture is chosen for a KNOWN skirt gap — four HF peaks corrected by
+    Peaking filters only — and the assertion is deliberately TWO-SIDED: pinning
+    only "matches the exact evaluator" would pass vacuously on a fixture where
+    the two evaluators happen to agree, so the gap is asserted to be real.
+
+    **Scope, so this is not read as more than it pins (issue #2013).** It pins
+    the residual's CURVE, not its FRAME. On this fixture the CD-horn stage does
+    not fire, so ``hf.spend_db`` is 0 and ``frame_target_db`` is just the flat
+    target — which is exactly why the fixture is clean for the curve rule. Where
+    that stage DOES fire, the frame carries a spend sized on the pre-seam
+    Lorentzian-folded curve (0.143 dB on the banked corpus). A frame-rule pin
+    needs a fixture where the stage fires; #2013 owns that.
+    """
+    db = (
+        _bell(_NATIVE_FREQS_HZ, 3000.0, 6.0, 0.12)
+        + _bell(_NATIVE_FREQS_HZ, 6000.0, 6.0, 0.12)
+        + _bell(_NATIVE_FREQS_HZ, 11000.0, 7.0, 0.12)
+        + _bell(_NATIVE_FREQS_HZ, 17000.0, 8.0, 0.12)
+    )
+    resp = _driver_response("tweeter", db)
+    envelope = _envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0), driver_class="unknown",
+    )
+    fit = fit_driver_linearization(resp, envelope)  # CUT_ONLY_VOCABULARY default
+
+    assert fit.fit_band_hz != (0.0, 0.0)
+    assert fit.filters, "fixture must place filters for the evaluators to differ"
+    assert all(f.biquad_type == "Peaking" for f in fit.filters), (
+        "this fixture is the peaking path; a shelf would fold in exactly and "
+        "dilute what the test is pinning"
+    )
+    # The docstring's scope note, pinned rather than asserted in prose: with the
+    # CD-horn stage inert the FRAME is just the flat target, so what follows
+    # isolates the curve rule cleanly. If this ever fires, the numbers below
+    # stop being a pure curve claim (see #2013).
+    assert fit.hf_continuation_spend_db == 0.0
+
+    grid_hz = envelope.freqs_hz
+    smoothed_db = _ladder_smooth(
+        grid_hz, np.interp(grid_hz, resp.freqs_hz, resp.magnitude_db)
+    )
+    # The two evaluators, over the WHOLE cascade, on the fit's own grid.
+    exact_db = smoothed_db + 20.0 * np.log10(
+        np.maximum(np.abs(complex_correction_response(fit.filters, grid_hz)), 1e-12)
+    )
+    lorentzian_db = smoothed_db + predicted_response(
+        [PEQ(freq=f.freq, q=f.q, gain=f.gain) for f in fit.filters], grid_hz
+    )
+    # The gap is real and materially larger than the tolerances asserted below.
+    assert np.max(np.abs(lorentzian_db - exact_db)) > 0.5
+
+    fit_lo_hz, fit_hi_hz = fit.fit_band_hz
+    band_mask = (
+        (grid_hz >= fit_lo_hz)
+        & (grid_hz <= fit_hi_hz)
+        & (envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB)
+    )
+    verify_mask = (grid_hz >= fit.verify_band_hz[0]) & (
+        grid_hz <= fit.verify_band_hz[1]
+    )
+    target_db = fit.target_level_db  # no BranchTarget supplied -> flat target
+
+    def rms_max(curve, mask):
+        r = (curve - target_db)[mask]
+        return float(np.sqrt(np.mean(r ** 2))), float(np.max(np.abs(r)))
+
+    exact_rms, exact_max = rms_max(exact_db, band_mask)
+    lorentzian_rms, lorentzian_max = rms_max(lorentzian_db, band_mask)
+
+    # 1. What is reported IS the realized cascade's residual.
+    assert fit.residual_rms_db == pytest.approx(exact_rms, abs=1e-9)
+    assert fit.residual_max_db == pytest.approx(exact_max, abs=1e-9)
+    # 2. ...and is NOT the Lorentzian's, which pre-R10b it was.
+    assert abs(lorentzian_rms - exact_rms) > 0.05
+    assert abs(lorentzian_max - exact_max) > 0.05
+
+    # Same rule for the VERIFY rung. Its gap is asserted on the MAX, not the
+    # RMS: verify spans an octave past the fit band, so an RMS over ~83 bins
+    # dilutes a localized skirt error down to ~0.02 dB here. The worst bin is
+    # where the two evaluators actually disagree, and it is the number a
+    # reader would act on.
+    v_exact_rms, v_exact_max = rms_max(exact_db, verify_mask)
+    _v_lor_rms, v_lor_max = rms_max(lorentzian_db, verify_mask)
+    assert fit.verify_residual_rms_db == pytest.approx(v_exact_rms, abs=1e-9)
+    assert fit.verify_residual_max_db == pytest.approx(v_exact_max, abs=1e-9)
+    assert abs(v_lor_max - v_exact_max) > 0.05
+
+    # ...and for the give-back, which is NOT report-only: it is the SSOT
+    # crossover_v2_flow anchors each branch's linearized trim on, so grading it
+    # with the wrong evaluator moved an emitted TRIM.
+    level_mask = _core_or_fallback_mask(
+        envelope, envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB,
+    )
+    exact_giveback = (
+        _power_band_average_db(smoothed_db, level_mask)
+        - _power_band_average_db(exact_db, level_mask)
+    )
+    lorentzian_giveback = (
+        _power_band_average_db(smoothed_db, level_mask)
+        - _power_band_average_db(lorentzian_db, level_mask)
+    )
+    assert fit.correction_giveback_db == pytest.approx(exact_giveback, abs=1e-9)
+    assert abs(lorentzian_giveback - exact_giveback) > 0.05
+
+
+def test_every_stage_combination_reports_the_realized_cascades_residual():
+    """The R10b rule holds for every path through the fit, not one fixture.
+
+    Eight runs — four shapes x both vocabularies — reaching the shelf, peaking,
+    CD-horn and lift stages in their various combinations. In each, the reported
+    ``residual_rms_db`` is recomputed from ``complex_correction_response`` over
+    the fit's own band and give-back frame, and must match.
+
+    **What this does NOT prove**, stated so the name is not read as more:
+    that the fix leaves the emitted filters alone. A single-revision test cannot
+    show that. The no-filter-moves claim rests on the seam's structure (the
+    rebuild is the last write to ``working_db``; no filter-producing stage runs
+    after it) and on the two-revision measurement in
+    ``captures/r10b-alignment-20260801/lorentzian_gap_probe.py``, which compares
+    the emitted sets across revisions on a real corpus. What this test adds is
+    that no stage combination leaves an approximate claim behind.
+    """
+    fixtures = (
+        ("woofer", (150.0, 4000.0), _bell(_NATIVE_FREQS_HZ, 1000.0, 8.0, 0.15)),
+        ("woofer", (150.0, 4000.0),
+         _bell(_NATIVE_FREQS_HZ, 400.0, 6.0, 0.2)
+         + _bell(_NATIVE_FREQS_HZ, 1800.0, 7.0, 0.18)),
+        ("tweeter", (2000.0, 20000.0),
+         _bell(_NATIVE_FREQS_HZ, 3000.0, 6.0, 0.12)
+         + _bell(_NATIVE_FREQS_HZ, 11000.0, 7.0, 0.12)),
+        # A downward-sloping tweeter: reaches the CD-horn and lift stages.
+        ("tweeter", (2000.0, 20000.0),
+         -6.0 * np.log2(_NATIVE_FREQS_HZ / 2000.0)),
+    )
+    boost = FitVocabulary(allow_boost=True)
+    graded = 0
+    for role, band, db in fixtures:
+        resp = _driver_response(role, db)
+        envelope = _envelope(role, resp, excited_band_hz=band, driver_class="unknown")
+        for vocabulary in (CUT_ONLY_VOCABULARY, boost):
+            fit = fit_driver_linearization(
+                resp, envelope, vocabulary=vocabulary,
+            )
+            # Every emitted filter is a real biquad the emitter can realize,
+            # and the reported residual is that cascade's own.
+            for f in fit.filters:
+                assert f.biquad_type in {"Peaking", "Highshelf", "Lowshelf"}
+            if not fit.filters or fit.fit_band_hz == (0.0, 0.0):
+                continue
+            grid_hz = envelope.freqs_hz
+            smoothed_db = _ladder_smooth(
+                grid_hz, np.interp(grid_hz, resp.freqs_hz, resp.magnitude_db)
+            )
+            exact_db = smoothed_db + 20.0 * np.log10(
+                np.maximum(
+                    np.abs(complex_correction_response(fit.filters, grid_hz)), 1e-12,
+                )
+            )
+            lo, hi = fit.fit_band_hz
+            mask = (
+                (grid_hz >= lo) & (grid_hz <= hi)
+                & (envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB)
+            )
+            frame_db = fit.target_level_db - fit.hf_continuation_spend_db
+            residual = (exact_db - frame_db)[mask]
+            assert fit.residual_rms_db == pytest.approx(
+                float(np.sqrt(np.mean(residual ** 2))), abs=1e-9,
+            ), f"{role}/{band}/{vocabulary}"
+            graded += 1
+
+    # The `continue` above means a fixture set that stopped producing filters
+    # would leave this test asserting nothing at all while still passing. Pin
+    # the count so that failure is loud.
+    assert graded == 2 * len(fixtures), (
+        f"only {graded} of {2 * len(fixtures)} runs placed filters — the "
+        "fixtures no longer exercise what this test claims to cover"
+    )
 
 
 def test_empty_fit_has_degenerate_honesty_ladder_placeholders():
