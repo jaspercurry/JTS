@@ -477,7 +477,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/balance/reset",
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/relay-capture", "/sync/apply", "/sync/stop", "/sync/reset",
-        "/crossover/level-match", "/crossover/relay-cancel",
+        "/crossover/relay-cancel",
         "/crossover/reset", "/crossover/recover-volume",
         # v2 conductor flow (Wave 5a) — the only crossover-measurement flow
         # since W5b retired the legacy per-driver flow and the
@@ -982,106 +982,6 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
     correction_setup._claim_crossover_state_owners()
 
     assert claims == ["level", "commissioning"]
-
-
-def test_comparison_start_publishes_repeat_then_commissioning_authority(monkeypatch):
-    from jasper.active_speaker import measurement, repeat_admission
-    from jasper.web import correction_crossover_backend
-
-    comparison = {
-        "bundle_session_id": "session-1",
-        "fingerprint": "a" * 64,
-    }
-    calls = []
-    monkeypatch.setattr(
-        repeat_admission,
-        "activate",
-        lambda value: calls.append(("repeat", value)),
-    )
-    monkeypatch.setattr(
-        correction_crossover_backend,
-        "begin_commissioning_run",
-        lambda value: calls.append(("commissioning", value)),
-    )
-    monkeypatch.setattr(
-        measurement,
-        "clear_active_comparison_set",
-        lambda _topology: calls.append(("clear", None)),
-    )
-    monkeypatch.setattr(
-        repeat_admission,
-        "invalidate",
-        lambda: calls.append(("invalidate", None)),
-    )
-
-    correction_setup._activate_crossover_comparison_authorities(
-        object(), comparison
-    )
-
-    assert calls == [("repeat", comparison), ("commissioning", comparison)]
-
-
-def test_comparison_start_without_bundle_keeps_lifecycle_unstarted(monkeypatch):
-    from jasper.active_speaker import repeat_admission
-    from jasper.web import correction_crossover_backend
-
-    comparison = {"bundle_session_id": None, "fingerprint": "a" * 64}
-    calls = []
-    monkeypatch.setattr(
-        repeat_admission,
-        "activate",
-        lambda value: calls.append(("repeat", value)),
-    )
-    monkeypatch.setattr(
-        correction_crossover_backend,
-        "begin_commissioning_run",
-        lambda _value: calls.append(("commissioning", None)),
-    )
-
-    correction_setup._activate_crossover_comparison_authorities(
-        object(), comparison
-    )
-
-    assert calls == [("repeat", comparison)]
-
-
-def test_commissioning_run_start_failure_revokes_comparison_authority(monkeypatch):
-    from jasper.active_speaker import measurement, repeat_admission
-    from jasper.web import correction_crossover_backend
-
-    comparison = {
-        "bundle_session_id": "session-1",
-        "fingerprint": "a" * 64,
-    }
-    calls = []
-    topology = object()
-    monkeypatch.setattr(
-        repeat_admission,
-        "activate",
-        lambda _value: calls.append("repeat"),
-    )
-    monkeypatch.setattr(
-        correction_crossover_backend,
-        "begin_commissioning_run",
-        lambda _value: (_ for _ in ()).throw(OSError("disk full")),
-    )
-    monkeypatch.setattr(
-        measurement,
-        "clear_active_comparison_set",
-        lambda value: calls.append("clear") if value is topology else None,
-    )
-    monkeypatch.setattr(
-        repeat_admission,
-        "invalidate",
-        lambda: calls.append("invalidate"),
-    )
-
-    with pytest.raises(OSError, match="disk full"):
-        correction_setup._activate_crossover_comparison_authorities(
-            topology, comparison
-        )
-
-    assert calls == ["repeat", "clear", "invalidate"]
 
 
 # ---------------------------------------------------------------------------

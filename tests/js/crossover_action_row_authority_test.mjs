@@ -118,7 +118,7 @@ const { render, runAction, stopRelay } = await import(dataUrl);
 const nextAction = {
   id: "level_match",
   label: "Continue",
-  endpoint: "/correction/crossover/level-match",
+  endpoint: "/correction/crossover/v2/some-action",
   body: {},
   enabled: true,
 };
@@ -415,7 +415,7 @@ assertSinglePrimary("(f) verify_fail during a live relay");
 const clickAction = {
   id: "level_match",
   label: "Continue",
-  endpoint: "/correction/crossover/level-match",
+  endpoint: "/correction/crossover/v2/some-action",
   body: {},
   enabled: true,
 };

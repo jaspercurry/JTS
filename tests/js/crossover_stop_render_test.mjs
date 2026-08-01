@@ -187,7 +187,7 @@ assert.equal(
 );
 
 const actionPromise = runAction(
-  { endpoint: "/correction/crossover/level-match", body: {} },
+  { endpoint: "/correction/crossover/v2/some-action", body: {} },
   element("level-match-button"),
 );
 // A poll re-render arrives while the unrelated action's POST is still in
@@ -240,7 +240,7 @@ nextEnvelope = {
   next_action: {
     id: "level_match",
     label: "Restart driver and alignment measurements",
-    endpoint: "/correction/crossover/level-match",
+    endpoint: "/correction/crossover/v2/some-action",
     body: {},
   },
 };

@@ -13,8 +13,10 @@
 > Pi does not silently fall back to local HTTPS.
 >
 > **Kinds wired today:** room correction (`POST /relay/level-match` then
-> `/relay/capture`), active crossover (`POST /crossover/level-match` then
-> `/crossover/relay-capture`), and **sync**
+> `/relay/capture`), active crossover (`POST /crossover/v2/session` opens the
+> relay — the only crossover-measurement flow; the legacy
+> `/crossover/level-match` route this line used to cite was deleted as dead
+> code by #1862), and **sync**
 > (`POST /sync/relay-capture`) — both ride one kind-agnostic seam
 > (`RelayCaptureKind` + `_run_relay_capture` in `correction_setup.py`); a new kind
 > is a descriptor, not a new handler. **A USB-C measurement mic plugged into the

@@ -1503,8 +1503,8 @@ async def _load_applied_summed_measurement_config(
                     "reapply the speaker profile before playing audio."
                 ),
             )
-            # Lead with the hardware-safety action: playback_issue_text and the
-            # wizard render the first blocker as the operator-facing refusal.
+            # Lead with the hardware-safety action: the wizard renders the
+            # first blocker as the operator-facing refusal.
             issues.insert(0, rollback_issue)
             log_event(
                 logger,

@@ -761,15 +761,19 @@ def test_room_level_ramp_releases_the_idle_hold_when_the_ramp_fails(monkeypatch)
 
 
 def test_room_and_crossover_level_ramp_dispatch_read_idle_hold_from_cfg():
-    """Both #1860 ramp routes must read idle_hold off the handler cfg, the
-    same seam #1856 pinned for /crossover/v2/* — anchored on each route's OWN
+    """The #1860 ramp route must read idle_hold off the handler cfg, the
+    same seam #1856 pinned for /crossover/v2/* — anchored on the route's OWN
     ``if path ==`` dispatch (not just "the substring exists somewhere in
-    _make_handler") so a regression at either specific call site is caught.
+    _make_handler") so a regression at the specific call site is caught.
+
+    Originally covered both /relay/level-match and the legacy
+    /crossover/level-match; the latter route/handler was deleted as
+    confirmed dead code by #1862 (superseded by the v2 conductor flow), so
+    only the still-live room route remains parametrized here.
     """
     dispatch = inspect.getsource(correction_setup._make_handler)
     for route, handler_name in (
         ('"/relay/level-match"', "_handle_relay_level_match"),
-        ('"/crossover/level-match"', "_handle_crossover_relay_level_match"),
     ):
         anchor = f"if path == {route}:"
         route_at = dispatch.index(anchor)
@@ -1032,31 +1036,6 @@ def test_relay_failure_message_sanitizes_local_seam_oserror_to_internal_error_co
     assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     assert "Errno" not in message
     assert "/etc/camilladsp" not in message
-
-
-def test_server_owned_step_mismatch_message_is_plain_not_the_raw_guard_string():
-    """Hardware run 21: the envelope-derivation guard's own raw ValueError
-    ("...is not the server-owned next step") reached the wizard status line
-    unchanged before this mapping existed. It stays reachable on the v2/
-    wizard-initiated path (a stale tab racing a fresher server-driven step),
-    so it must translate to plain, actionable copy — never the programmer
-    string — and log a stable, non-exception-class reason."""
-
-    exc = correction_setup.ServerOwnedNextStepMismatch(
-        "the requested driver capture is not the server-owned next step"
-    )
-    message = correction_setup._relay_failure_message(exc)
-    assert "server-owned next step" not in message
-    assert "reopen the link" in message.lower()
-
-    assert (
-        correction_setup._relay_failure_reason(exc) == "server_owned_step_mismatch"
-    )
-    assert correction_setup._relay_failure_reason(exc) != "ServerOwnedNextStepMismatch"
-
-    # Still a ValueError -- every existing except ValueError / except
-    # (RuntimeError, OSError, ValueError) upstream keeps working unchanged.
-    assert isinstance(exc, ValueError)
 
 
 def test_relay_failure_reason_names_config_rejected_not_camilla_unavailable():

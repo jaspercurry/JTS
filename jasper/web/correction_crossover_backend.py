@@ -1003,11 +1003,16 @@ class CrossoverLevelLease:
         ``preserve_solve_corrections=True`` is the BETWEEN-SET RESTART
         (W2.3, hardware run 19; discriminator revised W2.4, hardware run 20)
         -- the household's only mechanical path out of both the
-        completed-insufficient terminal and the placement refusal is
-        restarting the level check, and both restarts arrive through the
-        SAME endpoint/body (``_handle_crossover_relay_level_match``'s
-        non-continuing branch, the single production caller passing this
-        flag). The two are distinguished by STORED STATE, never by request
+        completed-insufficient terminal and the placement refusal was
+        restarting the level check, and both restarts arrived through the
+        SAME endpoint/body: the legacy ``/crossover/level-match`` route's
+        non-continuing branch, the sole production caller that ever passed
+        this flag. That route and its handler were removed by #1862 as
+        confirmed dead code (superseded by the v2 conductor flow); this
+        parameter and the branch it guards are unreachable in production as
+        of that removal and are left in place because #1862 scoped itself to
+        the route/handler cluster, not to this lease's reset contract. The
+        two are distinguished by STORED STATE, never by request
         shape, via ``_target_refusal_pending``, which reads the same TWO
         stored facts (``self._solve_refusal`` and the
         ``_correction_budget_exhausted`` write count) that the envelope's
@@ -2877,17 +2882,6 @@ async def apply_profile(
         refusal_reason=(issue_codes[0] if payload.get("status") == "blocked" else None),
     )
     return payload
-
-
-async def apply_measured_profile(
-    *, expected_candidate_fingerprint: str, camilla_factory: CamillaFactory
-) -> dict[str, Any]:
-    """Compatibility wrapper for callers that explicitly apply measurements."""
-    return await apply_profile(
-        tuning_owner="automatic",
-        expected_candidate_fingerprint=expected_candidate_fingerprint,
-        camilla_factory=camilla_factory,
-    )
 
 
 async def start_driver_test(

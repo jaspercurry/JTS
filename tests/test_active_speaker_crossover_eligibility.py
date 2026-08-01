@@ -473,9 +473,12 @@ def test_repeat_progress_completed_is_false_for_every_other_status(status):
 def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
     tmp_path,
 ):
-    """Verifies the invalidation machinery a driver-level-check restart relies
-    on (``jasper.web.correction_setup._handle_crossover_relay_level_match``'s
-    inner ``_run()``, the "not fixed_axis_request and not continuing" branch:
+    """Verifies the invalidation machinery a driver-level-check restart relied
+    on (the legacy ``jasper.web.correction_setup._handle_crossover_relay_level_match``'s
+    inner ``_run()``, the "not fixed_axis_request and not continuing" branch —
+    that route/handler was deleted as confirmed dead code by #1862, but the
+    general-purpose machinery it drove is exercised directly below and
+    remains real, in-use library code):
     ``repeat_admission.invalidate()`` then
     ``measurement.clear_active_comparison_set()`` before a fresh comparison
     set is minted, logged as ``event=correction.crossover_comparison_set_invalidated

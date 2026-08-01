@@ -1923,8 +1923,6 @@ POST /sync/relay-capture     phone-mic relay transport for the sync marker
 POST /sync/apply             persist the accepted positive-only pair delay
 POST /sync/stop              stop playback and reset the sync walkthrough
 POST /sync/reset             reset the sync walkthrough (same safe stop path)
-POST /crossover/level-match  guided mic/calibration + server-selected per-driver
-                             near-field or fixed-reference-axis automatic level
 POST /crossover/recover-volume recover a durable unconfirmed listening volume;
                               exact prior level first, then confirmed −60 dB
 POST /crossover/relay-cancel cooperatively stop the active crossover level/sweep
