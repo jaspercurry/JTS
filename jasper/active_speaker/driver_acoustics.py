@@ -724,6 +724,74 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     ``_capture_to_magnitude`` produces: an SNR verdict compares captured
     broadband energy against measured ambient noise in the same band, so both
     sides must be in the same (raw dBFS) units to be physically meaningful.
+
+    **This Hann-windows a non-stationary sweep, and that bias is measured
+    (issue #2010, 2026-08-01) — but nothing in production reaches this
+    function, which is why the Hann default was left in place rather than
+    mirrored from #1847's ``window="rectangular"`` fix.** All three parts
+    matter to anyone changing this:
+
+    *What it costs.* A Hann window re-weights a swept sine's frequencies by
+    WHEN they occur in the capture, so the reported band split is wrong by a
+    band-dependent amount. Rendered through
+    :func:`jasper.audio_measurement.sweep.synchronized_swept_sine` and
+    compared against the analytical dwell-time law
+    (:func:`jasper.audio_measurement.program_analysis.sweep_band_crest_factor_db`),
+    a BARE sweep at this module's OWN defaults (:data:`DEFAULT_F1_HZ` 20 Hz,
+    :data:`DEFAULT_F2_HZ` 20 kHz, :data:`DEFAULT_DURATION_S` 6 s) reads
+    sub_bass -11.57 dB, bass -1.57, upper_bass +2.44, transition +4.09,
+    mid +1.76, treble -7.62 against the law. Those figures hold for that shape
+    only. The LIVE summed-crossover sweep is much narrower — bounded to one
+    octave either side of the crossover, clamped to
+    :data:`~jasper.active_speaker.test_signal_plan.MIN_DRIVER_TEST_FREQUENCY_HZ`
+    and
+    :data:`~jasper.active_speaker.test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ`
+    (``commissioning_capture_producer``'s ``_prepare_sweep``) — and was NOT
+    characterised band-by-band, so those per-band figures do not describe it.
+
+    *What actually drives it: capture LAYOUT, not sweep range or duration.*
+    Holding the sweep fixed and varying only the leading quiet from 0 to 20 s
+    moved every band by more than 13 dB — treble across a 27 dB span, and
+    five of the six bands CHANGED SIGN along the way (a band reading too
+    quiet at one layout reads too loud at another). Varying sweep duration
+    from 2.07 s to 20.03 s instead moved it by under 0.1 dB. So the bias is
+    not a fixed per-band offset that could be calibrated out once; it is a
+    function of where the sweep happens to sit inside the recording.
+
+    *Why it is nonetheless dead today.* Both call sites are unreachable in
+    the sense that matters:
+
+    * :func:`analyze_driver_capture` — reachable only through the retired
+      raw-WAV ``POST /crossover/driver-capture`` route, which W5b removed. It
+      is absent from ``jasper.web.correction_setup``'s route allowlist and
+      pinned at 404 by ``test_web_correction_setup``'s route-inventory test.
+    * :func:`analyze_summed_crossover` — live, but its sole production
+      caller (``commissioning_capture_producer``'s
+      ``analyze_summed_crossover`` call) always passes ``ambient_duration_s``
+      and passes NEITHER ``noise_band_report`` NOR ``noise_floor_dbfs``. That
+      builds the paired ambient report, stamped ``domain="deconvolved"``, so
+      the capture side is measured by ``snr_policy.magnitude_band_levels``
+      instead. Reaching this function needs ``paired_ambient is None`` AND
+      one of those two kwargs set; with neither set the SNR block is skipped
+      entirely. Pinned by
+      ``test_summed_production_shape_never_reads_the_hann_capture_band_levels``.
+
+    *Reviving either caller re-arms this immediately.* Adding a
+    driver-capture upload route, or passing ``noise_band_report`` /
+    ``noise_floor_dbfs`` on a capture whose paired ambient did not build,
+    puts a layout-dependent error straight into the SC-1 SNR gate — a
+    decision, not a disclosure. ``window="rectangular"`` is the likely fix: it
+    tracks the same law to within 0.2 dB everywhere in the 2.07-20.03 s family
+    above. That residual is a smooth function of sweep LENGTH, not a constant
+    (about 0.18 dB at 2.07 s, 0.10 dB at the 6 s default, 0.05 dB at 20.03 s,
+    worst band ``sub_bass`` throughout), so any single decimal is an artifact
+    of the duration it was sampled at — re-derive at the length you actually
+    ship. Even so it is not a validated drop-in here: on a PADDED capture,
+    which driver captures are by design, it carries a band-independent
+    duty-cycle offset of ``10*log10(sweep_len/capture_len)`` — 5.93 dB across
+    that same 0-to-20 s lead sweep. Characterise that term against whatever
+    the noise side is measured over before switching, or the gate trades one
+    bias for another.
     """
     import numpy as np
 

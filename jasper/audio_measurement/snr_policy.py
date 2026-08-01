@@ -164,9 +164,12 @@ def band_levels_dbfs(
     ``window="rectangular"`` for exactly this reason; every OTHER caller —
     the ambient/noise reports here, and
     ``driver_acoustics._capture_band_levels``'s own sweep-capture SC-1 SNR
-    gate — still reads a sweep through the Hann default, a SEPARATE,
-    not-yet-measured bias tracked apart from #1847's bounded fix (issue
-    #2010).
+    gate — still reads through the Hann default. That gate's bias has since
+    been MEASURED (issue #2010, 2026-08-01) and is real, but no production
+    caller reaches it, so it keeps the Hann default deliberately rather than
+    trading a characterised dead error for an uncharacterised one. The
+    numbers, the reachability evidence, and what reviving it would need live
+    at that consumer, in ``_capture_band_levels``'s own docstring.
 
     Bounds the FFT input the same way
     :func:`~jasper.audio_measurement.deconv.deconvolve` does

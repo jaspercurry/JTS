@@ -770,6 +770,61 @@ async def test_quality_refusal_retains_replayable_analysis_and_decision(
 
 
 @pytest.mark.asyncio
+async def test_summed_analysis_call_supplies_ambient_and_no_noise_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #2010: pin the CALLER half of the SC-1 Hann-path claim.
+
+    ``driver_acoustics._capture_band_levels`` Hann-windows a non-stationary
+    sweep, which is a measured and strongly capture-layout-dependent bias. It
+    is safe today only because THIS call supplies ``ambient_duration_s`` and
+    supplies neither ``noise_band_report`` nor ``noise_floor_dbfs`` — which
+    builds the paired ambient report and routes the capture side through
+    ``snr_policy.magnitude_band_levels`` instead.
+
+    The companion analyzer-side test lives in
+    ``tests/test_active_speaker_driver_acoustics.py``
+    (``test_summed_production_shape_never_reads_the_hann_capture_band_levels``)
+    but calls the analyzer with hardcoded kwargs, so it structurally cannot
+    see a change made here. The mutation this guards is realistic: dropping
+    ``ambient_duration_s`` removes a ~14 s wait from every capture (an
+    obvious future optimisation) and substituting a noise report from
+    elsewhere looks like an upgrade, yet together they silently re-arm the
+    bias underneath the SC-1 SNR gate — a decision, not a disclosure. Nothing
+    downstream would catch it: the producer's own ``_quality_issues`` checks
+    only ``decision_class`` and ``verdict``, never the band ``method``, so a
+    Hann-derived reading still passes as ``verdict == "ok"``.
+
+    ``analyze_summed_crossover`` is keyword-only after ``sweep_meta``, so
+    inspecting ``kwargs`` covers every way those two arguments could arrive.
+    """
+    harness = _harness(tmp_path)
+    monkeypatch.setattr(admitted_playback, "play_verified_wav", _fake_playback)
+    observed: list[dict] = []
+
+    def analyze(*args, **kwargs):
+        observed.append(kwargs)
+        return _refused_acoustic()
+
+    monkeypatch.setattr(producer_module, "analyze_summed_crossover", analyze)
+
+    async def transport(play):
+        await play()
+        return RawCaptureResult(b"synthetic-admitted-wav", {"fixture": "ambient"})
+
+    with pytest.raises(SummedCaptureProducerError):
+        await harness.producer(transport).capture(
+            harness.operation, _context(harness.guarded_raw)
+        )
+
+    assert len(observed) == 1
+    kwargs = observed[0]
+    assert kwargs["ambient_duration_s"] == producer_module.CROSSOVER_AMBIENT_DURATION_S
+    assert "noise_band_report" not in kwargs
+    assert "noise_floor_dbfs" not in kwargs
+
+
+@pytest.mark.asyncio
 async def test_never_returning_transport_is_cancelled_at_code_owned_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

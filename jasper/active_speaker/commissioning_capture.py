@@ -797,11 +797,13 @@ def _record_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
     is ``None`` because the only evidence supplied was a scalar noise floor
     (or no relevant band was covered at all). The spec rejects a scalar
     reading as alignment evidence ("Level control and SNR"), so that case is
-    indistinguishable from no evidence at all and must not degrade — this
-    matters live, not just in theory: today's shipped flow
-    (``jasper/web/correction_crossover_flow.py``) bolts a scalar
-    ``noise_floor_dbfs`` onto every summed record and never supplies
-    ``noise_band_report``, so every real summed capture hits this branch.
+    indistinguishable from no evidence at all and must not degrade. This branch
+    was once the one every real summed capture took, because the legacy
+    crossover flow bolted a scalar ``noise_floor_dbfs`` onto every summed
+    record; W5b (``9666ff836``) deleted that flow, and no production caller
+    reaches it today (issue #2010, 2026-08-01 — see
+    ``driver_acoustics._capture_band_levels``'s docstring for the reachability
+    evidence and why it is load-bearing).
     ``alignment_snr_ok`` is ``False`` ONLY when a real per-band reading
     produced a non-"ok" ``worst_relevant`` (i.e. "insufficient" — confirmed
     inadequate overlap-band SNR); ``True`` only on a confident ("ok") overlap
