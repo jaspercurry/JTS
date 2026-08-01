@@ -75,7 +75,19 @@ async def _mux_socket_command(
     # One deadline covers connect, send, response, and close. In particular,
     # correction's lease-renewal deadline cannot be defeated by a wedged UDS
     # connect or writer drain while mux's safety lease continues to age.
-    line = await asyncio.wait_for(exchange(), timeout=timeout)
+    #
+    # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11 wait_for
+    # SWALLOWS a CancelledError that arrives in the same tick its awaited
+    # future completes (Lib/asyncio/tasks.py: `except CancelledError: if
+    # fut.done(): return fut.result()`). correction/coordinator.py's
+    # _refresh_measurement_gate_lease calls this from a cancellation-only
+    # `while True:` that measurement_window()'s finally cancels and then
+    # awaits unboundedly -- a swallowed cancel here makes that task immortal
+    # and wedges the whole window teardown (#1952, same class as #1935's
+    # Mux.run() patrol wait). Do not "simplify" this back to wait_for while
+    # 3.11 is supported.
+    async with asyncio.timeout(timeout):
+        line = await exchange()
     if not line:
         raise RuntimeError("jasper-mux returned no response")
     payload = json.loads(line.decode("utf-8"))

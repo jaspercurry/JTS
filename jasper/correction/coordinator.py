@@ -272,7 +272,18 @@ async def _voice_uds_command(
     try:
         writer.write((cmd + "\n").encode("ascii"))
         await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+        # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11
+        # wait_for SWALLOWS a CancelledError that arrives in the same tick
+        # its awaited future completes (Lib/asyncio/tasks.py: `except
+        # CancelledError: if fut.done(): return fut.result()`). This call is
+        # on the body path of _refresh_voice_lease's cancellation-only
+        # `while True:` (below), which measurement_window()'s finally
+        # cancels and then awaits unboundedly -- so a swallowed cancel here
+        # makes that task immortal and wedges the whole window teardown
+        # (#1952, same class as #1935's Mux.run() patrol wait). Do not
+        # "simplify" this back to wait_for while 3.11 is supported.
+        async with asyncio.timeout(timeout):
+            line = await reader.readline()
     finally:
         try:
             writer.close()
