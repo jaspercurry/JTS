@@ -54,6 +54,8 @@ from .crossover_v2_flow import (
     PHASE_VERIFY,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_REGISTRY,
+    REASON_VERIFY_INCONCLUSIVE,
+    ReasonSpec,
     TEMPLATE_HARD_STOP,
     TEMPLATE_SESSION_RESTART,
     TEMPLATE_SILENT_AUTO_RETRY,
@@ -61,6 +63,8 @@ from .crossover_v2_flow import (
     TIER_EXPRESS,
     TIER_FULL,
     tier_display_info,
+    verify_inconclusive_cause,
+    verify_inconclusive_message,
 )
 from .delta_probe import VERDICT_LEVEL_MISMATCH
 
@@ -418,6 +422,56 @@ def _verify_frame_lines(
     return lines
 
 
+def _verify_gate(status: Mapping[str, Any]) -> Mapping[str, Any]:
+    """VERIFY's persisted gate record (``{"disclosure", "reflection_measured"}``).
+
+    Empty when the state carries none: a legacy file written before #1974, or a
+    capture that could not be gated at all. Both are "the record does not say",
+    which every caller here renders as silence.
+    """
+    return _mapping(_mapping(_v2(status).get("verify")).get("gate"))
+
+
+def _verify_gate_lines(status: Mapping[str, Any]) -> list[str]:
+    """What the gate did, in the one sentence that owns saying it (#1966).
+
+    **One owner, rendered on every outcome**, like
+    :func:`_verify_graded_band_lines` and :func:`_verify_frame_lines` beside
+    it. This is the disclosure's first household surface: until now
+    ``describe_gate``'s sentence reached only an off-by-default operator
+    sidecar and a bundle artifact, so the screens said "checked 2000-4000 Hz"
+    over a window whose validity floor and provenance were invisible.
+
+    **Rendered verbatim, never re-phrased.** The string is
+    :func:`~jasper.audio_measurement.gate_disclosure.describe_gate`'s, composed
+    at verdict time and persisted; that function's own docstring is explicit
+    that consumers do not re-word the fields, because re-wording is precisely
+    how "a reflection was measured at X ms" and "no reflection found; window
+    capped at the ceiling" started printing identically. So this function
+    passes the sentence through and adds nothing — no prefix, no label, no
+    reformatted number.
+
+    Empty when no gate was recorded, since silence is the honest rendering of
+    an unrecorded gate.
+    """
+    disclosure = _verify_gate(status).get("disclosure")
+    if not isinstance(disclosure, str) or not disclosure:
+        return []
+    return [disclosure]
+
+
+def _verify_gate_reflection_measured(status: Mapping[str, Any]) -> bool | None:
+    """Whether VERIFY's gate actually found a reflection — or ``None``, unknown.
+
+    The one fact the inconclusive copy branches on (#1974). ``None`` is a
+    third state, not a falsy second one: a state file written before this
+    shipped does not say, and the copy owner answers an unknown cause by
+    naming no cause at all rather than by assuming the safer-sounding branch.
+    """
+    measured = _verify_gate(status).get("reflection_measured")
+    return measured if isinstance(measured, bool) else None
+
+
 def _verify_level_reference_lines(status: Mapping[str, Any]) -> list[str]:
     """"level reference reset for this session…" — the #1927 disclosure.
 
@@ -515,6 +569,11 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     # that has a frame should say so even when the raw numbers beside it are
     # missing.
     lines.extend(_verify_frame_lines(status, raw_already_shown=raw_already_shown))
+    # And WHAT THE COMPARISON COULD SEE (#1966), last of the three: the band
+    # says how wide the claim is, the frame says how much of it was the
+    # instrument, and the gate says how much of the sound the measurement had
+    # to work from in the first place. Same independent-presence rule.
+    lines.extend(_verify_gate_lines(status))
     return lines
 
 
@@ -1951,6 +2010,24 @@ def _verify_fail_envelope(
     )
 
 
+def _verify_fail_message(
+    code: str, spec: ReasonSpec, status: Mapping[str, Any],
+) -> str:
+    """The verify_fail screen's sentence: the registry's, or its live rendering.
+
+    SELECTION, never composition (issue #1974). ``verify_inconclusive`` is the
+    one code whose honest copy depends on a fact only the record holds —
+    whether the gate that came up short actually found a reflection — so the
+    registry cannot hold a single literal for it and stay true. It holds the
+    cause-unknown rendering; this asks the same single writer for the rendering
+    that matches what was persisted. Every other code renders its registry copy
+    unchanged, and no sentence is built here.
+    """
+    if code == REASON_VERIFY_INCONCLUSIVE:
+        return verify_inconclusive_message(_verify_gate_reflection_measured(status))
+    return spec.message
+
+
 def _failure_envelope(
     code: str, status: Mapping[str, Any], active_step: str, *, applied: bool,
 ) -> dict[str, Any]:
@@ -2070,7 +2147,9 @@ def _failure_envelope(
         # One default — "Try again" (internally re-verify once, then re-measure)
         # — plus "Undo (restore previous sound)"; the explicit trio lives behind
         # the expert disclosure (§5.2).
-        return _verify_fail_envelope(code, spec.message, status)
+        return _verify_fail_envelope(
+            code, _verify_fail_message(code, spec, status), status,
+        )
     # TEMPLATE_FIX_AND_RETRY (the default decision screen).
     nudges = [{"code": code, "severity": "warn", "text": spec.message}]
     if active_step == "apply":
@@ -2368,16 +2447,36 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             grade_state = str(
                 _mapping(v2.get("post_apply_grade")).get("state") or ""
             )
-            done_verdict = (
-                "Your speaker is tuned, but the check that confirms it could "
-                "not tell either way — the room reflection cut the window "
-                "short. Re-verify to try again, or undo to restore the "
-                "previous sound."
-                if grade_state == "inconclusive"
-                else "Your speaker is tuned, but the check that confirms it "
-                "never finished, so this result is unverified. Re-verify to "
-                "confirm it, or undo to restore the previous sound."
-            )
+            if grade_state == "inconclusive":
+                # WHY it could not tell, from the verdict that produced the
+                # outcome (issue #1974). This sentence used to assert "the room
+                # reflection cut the window short" on BOTH paths that reach
+                # here — including the pilot level-shift path, which involves
+                # no reflection and no window at all — and even on the gate
+                # path it named a mechanism nothing had checked. The clause now
+                # has one writer, shared with the verify_fail screen, so the
+                # two surfaces cannot drift apart again the way they did.
+                #
+                # An empty clause is a state file that does not record the
+                # cause (written before this shipped, or a capture that could
+                # not be gated). It leaves the outcome stated and the cause
+                # unnamed, which is what the record supports.
+                cause = verify_inconclusive_cause(
+                    str(_mapping(v2.get("verify")).get("code") or "") or None,
+                    _verify_gate_reflection_measured(status),
+                )
+                done_verdict = (
+                    "Your speaker is tuned, but the check that confirms it "
+                    f"could not tell either way{f' — {cause}' if cause else ''}. "
+                    "Re-verify to try again, or undo to restore the previous "
+                    "sound."
+                )
+            else:
+                done_verdict = (
+                    "Your speaker is tuned, but the check that confirms it "
+                    "never finished, so this result is unverified. Re-verify to "
+                    "confirm it, or undo to restore the previous sound."
+                )
         alternate_actions = [
             {
                 "id": "room",
@@ -2435,9 +2534,15 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # household reads as "it worked" would show the tilt-removed grade
             # alone — the smaller number, unaccompanied, which is precisely the
             # over-claim rung P1 exists to stop.
+            # R9 adds the third, on the same terms: what the gate DID. A screen
+            # that reports a window without reporting whether anything was
+            # gated out reads as "reflections removed" to every household that
+            # has ever seen one — and on the 2026-07-30 corpus that reading was
+            # wrong on every capture (#1966).
             expert_details=(
                 _verify_graded_band_lines(status)
                 + _verify_frame_lines(status, raw_already_shown=False)
+                + _verify_gate_lines(status)
                 + _verify_level_reference_lines(status)
                 + _flatness_details_lines(status)
             ),

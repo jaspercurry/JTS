@@ -1945,6 +1945,36 @@ def persist_conductor_state(
         "verify": (
             {
                 "outcome": verify_outcome,
+                # WHICH VERDICT produced that outcome (issue #1974). "inconclusive"
+                # is reached by two verdicts sharing no mechanism — a VERIFY gate
+                # shorter than MEASURE's, and the recording chain moving between
+                # attempts — and the done screen must name the right one long
+                # after the terminal failure screen has aged out of the render
+                # path. It is NOT read from ``failure.code`` below: that is the
+                # most recent rejection of ANY phase, and a later persist with
+                # ``failure_code=None`` nulls it while this outcome still stands,
+                # so the two are only coincidentally equal. Written by the
+                # conductor with the outcome in one call (``_set_verify_outcome``),
+                # so the pair cannot disagree.
+                **(
+                    {"code": conductor.verify_code}
+                    if conductor.verify_code
+                    else {}
+                ),
+                # WHAT THE GATE DID, on EVERY outcome (issues #1974 / #1966).
+                # Same shape and same argument as the frame and the graded band
+                # below: the sentence is
+                # ``gate_disclosure.describe_gate``'s, composed once at verdict
+                # time and rendered verbatim — a record that prints a 7 ms
+                # window and nothing else reads as "reflections removed" to
+                # every consumer, and across the 2026-07-30 corpus it meant "no
+                # reflection found; window capped". ``reflection_measured``
+                # beside it is the one fact the household copy branches on.
+                **(
+                    {"gate": dict(conductor.verify_gate)}
+                    if conductor.verify_gate
+                    else {}
+                ),
                 # The verify_fail expert-disclosure numbers (#1605) — persisted
                 # only for a NON-pass outcome (the only one that renders a
                 # verify_fail screen). A pass shows the candidate_review card,

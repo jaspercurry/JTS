@@ -46,9 +46,14 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_RELAY_TIMEOUT,
     REASON_SNR_FLOOR,
     REASON_USER_STOPPED,
+    REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
+    verify_inconclusive_cause,
+    verify_inconclusive_message,
 )
+from jasper.audio_measurement import gating
+from jasper.audio_measurement.gate_disclosure import describe_gate
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "apply", "verify")
 
@@ -1311,6 +1316,223 @@ def test_no_frame_is_stated_when_none_was_measured():
     ))
     assert not any("frame offset" in line for line in env["expert_details"])
     assert not any("tilt-removed" in line for line in env["expert_details"])
+
+
+# --- #1966 / #1974: the gate disclosure, and the copy it corrects ----------------
+#
+# Until R9 ``describe_gate``'s sentence reached no household surface at all: the
+# analysis summary's copy dead-ended in an off-by-default operator sidecar, and
+# the position-evidence copy dead-ended in bundle artifacts and a durable
+# sub-key every projection dropped. Meanwhile the two screens below asserted
+# "the room reflection cut the window short" over a corpus in which no reflection
+# had ever been found. These tests pin both halves — the sentence rendering, and
+# each path's copy telling the truth about its own path.
+
+
+def _gate_block(floor_source: str) -> dict:
+    """A gating block of the shape ``describe_gate`` reads, as gating writes it."""
+    return {
+        "applied": True,
+        "window_ms": 7.0 if floor_source == gating.FLOOR_SEARCH_BOUND else 4.19,
+        "window": "half_hann_tail",
+        "floor_source": floor_source,
+        "f_valid_floor_hz": 357.1,
+        "f_trusted_hz": 892.9,
+        "direct_peak_ms": 1.02,
+        "first_reflection_ms": 5.33 if floor_source == gating.FLOOR_MEASURED else None,
+    }
+
+
+def _gate_record(floor_source: str) -> dict:
+    """What the conductor persists — ``crossover_v2_flow._gate_record``'s shape,
+    built here through the SAME single writer the conductor calls."""
+    block = _gate_block(floor_source)
+    return {
+        "disclosure": describe_gate(block),
+        "reflection_measured": floor_source == gating.FLOOR_MEASURED,
+    }
+
+
+_GATE_CEILING = _gate_record(gating.FLOOR_SEARCH_BOUND)
+_GATE_MEASURED = _gate_record(gating.FLOOR_MEASURED)
+
+
+@pytest.mark.parametrize("phase, extra", [
+    ("verify", {"failure": {"code": REASON_VERIFY_INCONCLUSIVE}}),
+    ("done", {"candidate": _candidate_summary()}),
+])
+def test_the_gate_sentence_renders_verbatim_on_the_household_screens(phase, extra):
+    """The render slot, and the single-writer provenance of what lands in it.
+
+    ``describe_gate`` owns this sentence and its own docstring says consumers
+    render it rather than re-phrasing the fields — re-phrasing is how "a
+    reflection was measured" and "no reflection found; window capped" started
+    printing identically (#1966). So this asserts EQUALITY against that
+    function's output on both screens: a line that merely contained the same
+    numbers, or carried a helpful prefix, would fail.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase=phase,
+        verify={"outcome": "inconclusive", "code": REASON_VERIFY_INCONCLUSIVE,
+                "gate": _GATE_CEILING},
+        **extra,
+    ))
+    expected = describe_gate(_gate_block(gating.FLOOR_SEARCH_BOUND))
+    assert env["expert_details"].count(expected) == 1
+    # And the sentence is the one that says the ceiling case out loud, which is
+    # what the whole 2026-07-30 corpus actually was.
+    assert "no reflection found" in expected
+    assert "nothing was gated out" in expected
+
+
+def test_the_gate_sentence_rides_a_passing_verify_too():
+    """On EVERY outcome, like the graded band and the frame it sits beside: the
+    screen that says "Verified." is exactly the one where an unstated validity
+    floor lets a household read the claim as wider than it is."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "graded_band_hz": [2000.0, 4000.0],
+                "gate": _GATE_MEASURED},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert describe_gate(_gate_block(gating.FLOOR_MEASURED)) in env["expert_details"]
+
+
+def test_no_gate_sentence_when_the_record_carries_none():
+    """Absence stays absence — the #1987 rule applied to this record. A state
+    file written before R9 renders no gate line at all rather than a fabricated
+    one, and nothing on the screen claims a window."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "pass", "graded_band_hz": [2000.0, 4000.0]},
+        cloud=_cloud_flatness_status(passed=True),
+        candidate=_candidate_summary(),
+    ))
+    assert not any("reflection" in line for line in env["expert_details"])
+    assert not any("window" in line for line in env["expert_details"])
+
+
+# --- #1974: the inconclusive copy, per path --------------------------------------
+
+
+def test_verify_fail_inconclusive_blames_a_reflection_only_when_one_was_found():
+    """The #1974 fix at the screen that raised it. This copy asserted "the room
+    reflection cut the window short" on every capture that reached it, without
+    ever consulting whether a reflection had been found — and across the whole
+    2026-07-30 corpus none had."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_INCONCLUSIVE},
+        verify={"outcome": "inconclusive", "code": REASON_VERIFY_INCONCLUSIVE,
+                "gate": _GATE_MEASURED},
+    ))
+    assert env["screen"] == "verify_fail"
+    assert env["verdict_text"] == verify_inconclusive_message(True)
+    assert "a reflection reached the microphone sooner" in env["verdict_text"]
+
+
+def test_verify_fail_inconclusive_claims_no_reflection_when_the_window_was_capped():
+    """The state the corpus was actually in: the search ran to its ceiling and
+    found nothing, so the window was capped rather than cut. Nothing was proven
+    about reflections and the sentence must not imply otherwise."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_INCONCLUSIVE},
+        verify={"outcome": "inconclusive", "code": REASON_VERIFY_INCONCLUSIVE,
+                "gate": _GATE_CEILING},
+    ))
+    assert env["verdict_text"] == verify_inconclusive_message(False)
+    assert "reflection" not in env["verdict_text"]
+    assert "room" not in env["verdict_text"]
+
+
+def test_the_registry_holds_the_cause_unknown_rendering_not_a_literal():
+    """SSOT: the sentence has ONE writer, and the registry entry is that
+    writer's cause-unknown output rather than a second copy of the words that
+    could drift from it. Any reader of REASON_REGISTRY therefore gets copy that
+    is true, not copy that guesses."""
+    assert (
+        REASON_REGISTRY[REASON_VERIFY_INCONCLUSIVE].message
+        == verify_inconclusive_message(None)
+    )
+    assert "reflection" not in REASON_REGISTRY[REASON_VERIFY_INCONCLUSIVE].message
+
+
+@pytest.mark.parametrize("code, gate, expected_fragment", [
+    (REASON_VERIFY_INCONCLUSIVE, _GATE_MEASURED,
+     "a reflection reached the microphone sooner than it did during tuning, "
+     "so there was less of the sound to compare"),
+    (REASON_VERIFY_INCONCLUSIVE, _GATE_CEILING,
+     "this measurement had less usable sound to compare than the tuning did"),
+    (REASON_VERIFY_LEVEL_SHIFT, _GATE_CEILING,
+     "the microphone's levels changed between measurements"),
+])
+def test_the_done_screen_names_the_cause_of_its_own_path(
+    code, gate, expected_fragment,
+):
+    """The household-visible half of #1974. This screen carried its OWN
+    paraphrase of the reflection claim, and rendered it for BOTH roads to
+    "inconclusive" — including the pilot level-shift road, where no reflection
+    and no window are involved at all.
+
+    The clause now comes from the same single writer the verify_fail screen
+    uses, so the two surfaces cannot drift apart again the way they did.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "inconclusive", "code": code, "gate": gate},
+        candidate=_candidate_summary(),
+        post_apply_grade={"state": "inconclusive", "graded": False},
+    ))
+    verdict = env["verdict_text"]
+    assert env["screen"] == "done"
+    assert "could not tell either way" in verdict
+    assert expected_fragment in verdict
+    assert verdict.endswith(
+        "Re-verify to try again, or undo to restore the previous sound."
+    )
+    assert verify_inconclusive_cause(
+        code, gate["reflection_measured"],
+    ) == expected_fragment
+    if code == REASON_VERIFY_LEVEL_SHIFT or gate is _GATE_CEILING:
+        assert "reflection" not in verdict
+
+
+def test_the_done_screen_names_no_cause_a_legacy_record_cannot_support():
+    """A durable state written before #1974 records neither the verdict nor the
+    gate. The outcome is still stated — it is the household's own screen — but
+    the cause is left unnamed rather than guessed, which is the same
+    absent-is-absent rule the gate line above follows."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "inconclusive"},
+        candidate=_candidate_summary(),
+        post_apply_grade={"state": "inconclusive", "graded": False},
+    ))
+    verdict = env["verdict_text"]
+    assert verdict == (
+        "Your speaker is tuned, but the check that confirms it could not tell "
+        "either way. Re-verify to try again, or undo to restore the previous "
+        "sound."
+    )
+    assert "reflection" not in verdict
+    assert "—" not in verdict
+
+
+def test_the_never_finished_verdict_is_untouched_by_the_inconclusive_fix():
+    """The sibling branch, pinned so the #1974 restructure cannot bleed into
+    it: "never finished" and "could not tell either way" are different things
+    to tell someone and point at different fixes."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={"outcome": "fail"},
+        candidate=_candidate_summary(),
+        post_apply_grade={"state": "unverified", "graded": False},
+    ))
+    assert "never finished" in env["verdict_text"]
+    assert "unverified" in env["verdict_text"]
+    assert "could not tell either way" not in env["verdict_text"]
 
 
 def test_done_expert_details_empty_when_no_cloud_group_closed():
