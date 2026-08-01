@@ -28,7 +28,6 @@ from jasper.active_speaker.branch_chain import (
 from jasper.active_speaker.branch_target import (
     SIGNIFICANT_GAIN_DB,
     STOPBAND_GAIN_MARGIN_OCTAVES,
-    BranchTarget,
     branch_target,
 )
 from jasper.active_speaker.linearization_fit import (
@@ -430,23 +429,80 @@ def test_every_lift_suppression_reason_is_enumerated():
     assert guarded.suppressed_reason in LIFT_SUPPRESSION_REASONS
 
 
-def test_contribution_weighting_shrinks_a_stopband_deficit_not_a_passband_one():
-    """#1968's contribution weighting, gain side only.
-
-    A deficit deep in the passband is asked for in full; the same deficit where
-    the crossover has already taken the branch out of the sum is asked for in
-    proportion. Cuts are deliberately NOT weighted — #1809 measured that case
-    and ruled the other way (a cut out there still removes leakage that reaches
-    the sum, and spends no headroom), which is a departure from the research
-    this test records.
-    """
+def _lift_with(*, deficit_hz: float, contribution: bool):
+    """One lift-stage run against a single dip at ``deficit_hz``, with the
+    contribution weight supplied or withheld. Everything else identical."""
     grid_hz = np.geomspace(150.0, 20_000.0, 512)
     target = branch_target(_LOWPASS, grid_hz)
     assert target is not None
+    shape_db = crossover_response_db(grid_hz, _LOWPASS)
+    dip = -6.0 * np.exp(-0.5 * ((np.log2(grid_hz / deficit_hz) / 0.25) ** 2))
+    band_mask = (grid_hz >= 150.0) & (grid_hz <= 6000.0)
 
-    def contribution_at(hz: float) -> float:
-        return float(target.contribution[int(np.argmin(np.abs(grid_hz - hz)))])
+    class _Env:
+        allowed_depth_db = np.full_like(grid_hz, 12.0)
 
-    # Passband: essentially unweighted. Past the edge: heavily discounted.
-    assert contribution_at(400.0) > 0.99
-    assert contribution_at(1.5 * _FC_HZ) < 0.25
+    return _lift_stage(
+        grid_hz, shape_db + dip, target.target_curve_db(0.0), _Env(),
+        band_mask, (), FitVocabulary(allow_boost=True),
+        lift_mask=band_mask,
+        contribution=target.contribution if contribution else None,
+        gain_permitted=target.gain_permitted,
+    )
+
+
+def test_contribution_weighting_shrinks_a_low_contribution_deficit():
+    """#1968's contribution weighting, gain side only — as BEHAVIOUR, not as
+    an array of numbers.
+
+    The same 6 dB dip is placed twice: once deep in the passband, once out
+    where the crossover has already taken this branch mostly out of the sum.
+    In the passband the weight is inert (the branch is at full output, so
+    there is nothing to discount). Out at the edge it materially shrinks what
+    the stage asks for — which is the whole point: headroom spent where the
+    listener barely hears it is headroom wasted.
+    """
+    passband_on = _lift_with(deficit_hz=400.0, contribution=True)
+    passband_off = _lift_with(deficit_hz=400.0, contribution=False)
+    assert passband_on.requested_db == pytest.approx(
+        passband_off.requested_db, rel=0.02
+    ), "in the passband the weight should be ~inert"
+
+    edge_on = _lift_with(deficit_hz=1500.0, contribution=True)
+    edge_off = _lift_with(deficit_hz=1500.0, contribution=False)
+    assert edge_off.requested_db > 0.0
+    assert edge_on.requested_db < 0.8 * edge_off.requested_db, (
+        f"weighted {edge_on.requested_db:.3f} dB vs unweighted "
+        f"{edge_off.requested_db:.3f} dB — the weight is not biting"
+    )
+
+
+def test_cuts_are_deliberately_not_contribution_weighted():
+    """The documented departure from #1968, pinned so it cannot be "tidied"
+    into agreement with the research later.
+
+    Read literally, weighting the whole least-squares error would also shrink
+    CUT authority outside the passband. #1809 measured that case and ruled the
+    other way: a cut there is ordinary useful work — the crossover attenuated
+    the band but did not silence it, whatever leaks through still reaches the
+    sum, and a cut spends no headroom. So the fit must still place cuts past
+    the radiating edge.
+    """
+    magnitude_db = crossover_response_db(_FREQS_HZ, _LOWPASS) + _bell(2600.0, 6.0, 0.25)
+    resp = _driver_response("woofer", magnitude_db)
+    envelope = compose_envelope(
+        "woofer", resp, excited_band_hz=(150.0, 6000.0),
+        mic_tier="reference", driver_class="unknown",
+    )
+    fit = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(allow_boost=True),
+        radiating_band_hz=radiating_band_hz(_LOWPASS),
+        target=branch_target(_LOWPASS, envelope.freqs_hz),
+    )
+    edge_hz = radiating_band_hz(_LOWPASS)[1]
+    beyond = [f for f in fit.filters if f.freq > edge_hz and f.gain < 0.0]
+    assert beyond, (
+        "a bump past the radiating edge must still attract a CUT; only GAIN "
+        f"is bounded out there (filters: {fit.filters})"
+    )
