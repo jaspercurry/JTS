@@ -2071,11 +2071,46 @@ is the summed ripple AT the anchor, `flatness_improvement_db` is
 for lobe-correctness, not ripple), and `anchor_delay_us` / `snap_delta_us` /
 `snap_found` record the fine step. `flatness_at_bound` is retired.
 
-VERIFY compares the applied response with the independently aligned
-zero-residual target sum. Do not phase that reference by a candidate-specific
+VERIFY compares the applied response with the summed model **at the committed
+delay** (rung P3 / R10b, 2026-08-01): the two measured branches at the trim AND
+the delay this candidate commits, so the tracking comparison grades model
+FIDELITY — did the emitted graph do what was modelled — against a curve some
+delay selection actually realizes. Until R10b the reference was the
+independently aligned *zero-residual* target sum, which no selection realizes;
+on the banked 2026-07-30 JTS3 capture the two references differ by up to
+0.688 dB over the tracking band (1/6-octave smoothed, `numbers.json` in
+`captures/r10b-alignment-20260801/`) against a 1.5 dB `VERIFY_TOLERANCE_DB` —
+that gap was being spent as tracking error.
+
+**This is a deliberate reversal of a prohibition, and here is why it is safe.**
+The retired rule read "do not phase that reference by a candidate-specific
 delay: doing so lets a wrong comb-lobe apply explain itself and recreates the
-fix-2 false-pass class. The selected applied delay is what proves the correction
-realizes the aligned target in the original physical frame.
+fix-2 false-pass class." Four things make the delay-carrying model a different
+proposition from fix-2 (`0b7ab5eb7`, reverted 2026-07-21):
+
+1. **It is the residual, not the applied delay.** Fix-2 phased by the FULL
+   `alignment.delay_us`, double-counting the peak gap `_aligned_branch_tf` had
+   already removed. The term now is `selected − anchor`
+   (`program_analysis.summed_model_residual_delay_us`), which the ±(period/6)
+   snap radius bounds structurally — a neighbouring comb lobe is a FULL period
+   away, so the model cannot reach one and cannot describe an apply that landed
+   on one.
+2. **Flatness no longer selects.** Fix-2 was contemporary with the flatness
+   search choosing the delay, so the search could pick a lobe and the
+   prediction would agree with it — a closed loop. Since #1649 the delay is
+   selected by the physical peak-gap anchor plus a gated local-peak snap, and
+   summed flatness is evidence only. The loop is gone.
+3. **The veto a candidate could formerly talk past is still on the old
+   instrument.** `CrossoverCandidate.predicted_ripple_db` — the sole input to
+   the G1 `MEASURE_PREDICTED_RIPPLE_CEILING_DB` capture-quality gate — is still
+   measured on the independently aligned sum, deliberately. A candidate cannot
+   use its own delay term to lower it.
+4. **Fix 3's plausibility rail is unchanged**: the applied delay still has to
+   sit inside the preset's declared `delay_range_ms` ± margin.
+
+The selected applied delay is still what proves the correction realizes the
+physical alignment in the original time origin — that is the anchor's job, and
+`test_snap_production_path_preserves_parallax_contract` still closes that loop.
 
 Both measured and predicted magnitude curves receive the same 1/6-octave
 smoothing before tracking error is computed. The unsmoothed prediction is used

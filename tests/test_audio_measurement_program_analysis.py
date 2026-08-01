@@ -111,6 +111,7 @@ from jasper.audio_measurement.program_analysis import (
     realized_branch_level_match,
     solve_branch_trims,
     solve_ripple_optimal_trim,
+    summed_model_residual_delay_us,
 )
 from tests._flat_lin_corpus import (
     CDHORN_CALIBRATION,
@@ -1201,6 +1202,220 @@ def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
     assert candidate.predicted_ripple_db < 0.1
 
 
+# --------------------------------------------------------------------------- #
+# the summed model carries the COMMITTED delay (rung P3 / R10b)
+# --------------------------------------------------------------------------- #
+
+
+_IMPULSE_GAP_SAMPLES = 11
+# The anchor an aligner with NO inter-sweep drift and NO parallax reports for
+# `_impulse_branches`: the raw argmax gap, negated into the signed candidate
+# convention. Building it from the fixture rather than quoting a number is what
+# lets the physics-loop test below be exact — with either correction non-zero,
+# `−anchor` is deliberately NOT the gap the argmax frame removed.
+_IMPULSE_ANCHOR_US = -_IMPULSE_GAP_SAMPLES / SR * 1e6
+
+
+def _impulse_branches(*, woofer_idx=1000, gap_samples=_IMPULSE_GAP_SAMPLES, n=8192):
+    """Two ideal, coincident-bandwidth branches whose argmax gap is known."""
+    woofer_ir = np.zeros(n)
+    tweeter_ir = np.zeros(n)
+    woofer_ir[woofer_idx] = 1.0
+    tweeter_ir[woofer_idx + gap_samples] = 1.0
+    return woofer_ir, tweeter_ir
+
+
+def test_summed_model_residual_delay_us_is_applied_minus_anchor():
+    """The ONE derivation of the model's delay term, and its two boundaries.
+
+    ``anchor_delay_us`` is ``(D_w − D_t)`` in the signed candidate convention
+    (positive ⇒ tweeter EARLIER), so ``−anchor`` is the ``(D_t − D_w)`` the
+    argmax-referenced frame already removed and the residual is
+    ``applied − anchor``. AT the anchor it is exactly zero, which is what makes
+    the anchor the frame the branch pair is already in; a refused estimate
+    (no anchor) carries no delay term at all, matching
+    ``crossover_v2_flow.alignment_to_candidate_fields``, which applies no delay
+    for that same status.
+    """
+    assert summed_model_residual_delay_us(120.0, 120.0) == 0.0
+    assert summed_model_residual_delay_us(120.0, 180.0) == pytest.approx(60.0)
+    assert summed_model_residual_delay_us(120.0, 60.0) == pytest.approx(-60.0)
+    # Sign is carried through the negative (woofer-delayed) lobe unchanged.
+    assert summed_model_residual_delay_us(-120.0, -180.0) == pytest.approx(-60.0)
+    # No trustworthy anchor ⇒ no term, whatever delay is quoted.
+    assert summed_model_residual_delay_us(None, 999.0) == 0.0
+
+
+def test_predicted_sum_carries_the_committed_delay_and_ripple_does_not():
+    """**The R10b change.** The persisted ``predicted_sum`` models the sum the
+    speaker will actually produce under the COMMITTED delay; the candidate's
+    ``predicted_ripple_db`` deliberately stays on the independently-aligned
+    instrument the G1 capture-quality ceiling was calibrated against.
+
+    Both curves are rebuilt here from the same public primitives, so this pins
+    the exact residual (``selected − anchor``, i.e. ``snap_delta_us``) rather
+    than merely "something changed".
+    """
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _impulse_branches()
+    n_fft = 16_384
+    anchor_us = _IMPULSE_ANCHOR_US
+    # A snap the aligner found 60 us off the anchor — inside the +/-(period/6)
+    # radius at Fc (83.3 us), so this is a reachable production selection.
+    snapped_us = anchor_us + 60.0
+    alignment = AlignmentEstimate(
+        delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=anchor_us, snapped_delay_us=snapped_us,
+    )
+    candidate, (pred_freqs, pred_db) = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+    )
+    assert candidate.delay_us == pytest.approx(snapped_us, abs=1e-9)
+    assert candidate.snap_delta_us == pytest.approx(60.0, abs=1e-9)
+
+    freqs, W, gate_w = _aligned_branch_tf(woofer_ir, SR, n_fft, calibration=None)
+    _f2, T, gate_t = _aligned_branch_tf(tweeter_ir, SR, n_fft, calibration=None)
+    trim_w = candidate.trim_db["woofer"]
+    trim_t = candidate.trim_db["tweeter"]
+    aligned = predicted_branch_sum(W, T, trim_w, trim_t, 1)
+    applied = predicted_branch_sum(
+        W, T, trim_w, trim_t, 1,
+        freqs_hz=freqs, residual_delay_us=candidate.snap_delta_us,
+    )
+
+    # (1) The persisted curve is the APPLIED model, exactly.
+    np.testing.assert_array_equal(pred_freqs, freqs)
+    np.testing.assert_allclose(
+        pred_db, 20.0 * np.log10(np.maximum(np.abs(applied), 1e-12)), atol=1e-12,
+    )
+    # ...and it is genuinely a different curve from the pre-R10b one, so the
+    # term is not a silent no-op on this path.
+    aligned_db = 20.0 * np.log10(np.maximum(np.abs(aligned), 1e-12))
+    assert not np.allclose(pred_db, aligned_db, atol=1e-6)
+
+    # (2) `predicted_ripple_db` — G1's instrument — did NOT move onto it.
+    lo, hi = overlap_band_hz(fc_hz)
+    branch_floor_hz = max(
+        (f for f in (_gate_floor_hz(gate_w), _gate_floor_hz(gate_t)) if f is not None),
+        default=None,
+    )
+    lo_clamped = max(lo, branch_floor_hz) if branch_floor_hz is not None else lo
+    assert candidate.predicted_ripple_db == pytest.approx(
+        _ripple_db(freqs, aligned, lo_clamped, hi), abs=1e-12,
+    )
+    # And the two instruments really do disagree here, so (2) is a live
+    # assertion rather than one satisfied by both curves being the same.
+    assert candidate.predicted_ripple_db != pytest.approx(
+        _ripple_db(freqs, applied, lo_clamped, hi), abs=0.5,
+    )
+
+
+def test_zero_residual_predicted_sum_is_bit_identical_to_the_pre_r10b_model():
+    """The reduction that keeps every anchor-selected session unchanged.
+
+    When the snap is not taken the selection IS the anchor, the residual is
+    exactly ``0.0``, and the persisted curve must be bit-for-bit the
+    zero-residual sum this module built before R10b — not merely close. The
+    same reduction is what leaves an aligner-refused (no-anchor) analysis
+    untouched.
+    """
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _impulse_branches()
+    n_fft = 16_384
+    anchor_us = _IMPULSE_ANCHOR_US
+    for snapped_us, anchor in ((None, anchor_us), (None, None)):
+        alignment = AlignmentEstimate(
+            delay_us=anchor_us if anchor is not None else -650.0,
+            raw_delay_us=-650.0, parallax_us=0.0,
+            polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+            confidence=0.9,
+            status=ALIGNMENT_OK if anchor is not None
+            else ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
+            anchor_delay_us=anchor, snapped_delay_us=snapped_us,
+        )
+        candidate, (_pred_freqs, pred_db) = _build_candidate(
+            woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+            alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+        )
+        freqs, W, _gw = _aligned_branch_tf(woofer_ir, SR, n_fft, calibration=None)
+        _f2, T, _gt = _aligned_branch_tf(tweeter_ir, SR, n_fft, calibration=None)
+        legacy = predicted_branch_sum(
+            W, T, candidate.trim_db["woofer"], candidate.trim_db["tweeter"], 1,
+        )
+        np.testing.assert_array_equal(
+            pred_db, 20.0 * np.log10(np.maximum(np.abs(legacy), 1e-12)),
+        )
+
+
+def test_committed_delay_model_tracks_the_real_applied_sum_better():
+    """The reason this is an improvement and not just a change.
+
+    The speaker will emit the two branches under the committed delay, in the
+    ORIGINAL physical time origin. Rebuild that sum from the raw IRs and score
+    both models against it on one mean-centred ruler: the applied model has to
+    be materially closer than the independently-aligned one it replaced,
+    because the aligned one describes a delay no selection realizes.
+    """
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _impulse_branches()
+    n_fft = 16_384
+    # Zero drift, zero parallax ⇒ the anchor IS the negated argmax gap, so the
+    # model's residual and the physical sum's residual are the SAME number and
+    # the loop can be closed exactly rather than approximately.
+    anchor_us = _IMPULSE_ANCHOR_US
+    snapped_us = anchor_us + 60.0
+    alignment = AlignmentEstimate(
+        delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=anchor_us, snapped_delay_us=snapped_us,
+    )
+    candidate, (freqs, applied_model_db) = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+    )
+    _f, W, _gw = _aligned_branch_tf(woofer_ir, SR, n_fft, calibration=None)
+    _f2, T, _gt = _aligned_branch_tf(tweeter_ir, SR, n_fft, calibration=None)
+    aligned_model_db = 20.0 * np.log10(np.maximum(np.abs(predicted_branch_sum(
+        W, T, candidate.trim_db["woofer"], candidate.trim_db["tweeter"], 1,
+    )), 1e-12))
+
+    # Truth: the raw branches, each delayed by the side of the committed delay
+    # it actually carries (the same construction
+    # `test_snap_production_path_preserves_parallax_contract` closes its
+    # physics loop with).
+    g_w = 10.0 ** (candidate.trim_db["woofer"] / 20.0)
+    g_t = 10.0 ** (candidate.trim_db["tweeter"] / 20.0)
+    applied_us = candidate.delay_us
+    physical = (
+        np.fft.rfft(woofer_ir, n=n_fft) * g_w
+        * np.exp(-1j * 2.0 * np.pi * freqs * max(0.0, -applied_us) * 1e-6)
+        + np.fft.rfft(tweeter_ir, n=n_fft) * g_t
+        * np.exp(-1j * 2.0 * np.pi * freqs * max(0.0, applied_us) * 1e-6)
+    )
+    physical_db = 20.0 * np.log10(np.maximum(np.abs(physical), 1e-12))
+
+    lo, hi = overlap_band_hz(fc_hz)
+    band = (freqs >= lo) & (freqs <= hi)
+
+    def _centred_rms(model_db):
+        err = model_db[band] - physical_db[band]
+        return float(np.sqrt(np.mean((err - np.mean(err)) ** 2)))
+
+    applied_err = _centred_rms(applied_model_db)
+    aligned_err = _centred_rms(aligned_model_db)
+    # The loop CLOSES: on an exact frame the applied model is not merely
+    # closer, it is the physical sum (0.0 dB to float precision).
+    assert applied_err == pytest.approx(0.0, abs=1e-6)
+    # And the model it replaced was materially wrong about the same speaker —
+    # 0.750 dB rms here, against a VERIFY tracking tolerance of 1.5 dB. So this
+    # is a real slice of the tracking budget, not a rounding-scale change.
+    assert aligned_err > 0.5
+
+
 @pytest.mark.parametrize(
     ("d_w", "d_t"),
     [
@@ -1311,6 +1526,10 @@ def test_snap_production_path_preserves_parallax_contract(
         if response.validity_floor_hz is not None
     ]
     lo_hz = max([lo_hz, *floors])
+    # `predicted_ripple_db` reads the INDEPENDENTLY ALIGNED sum — the
+    # capture-quality instrument the G1 ripple ceiling was calibrated on, which
+    # deliberately did not follow the persisted curve onto the committed-delay
+    # model at rung P3 / R10b. So this reconstruction stays five-argument.
     predicted_aligned = predicted_branch_sum(
         responses["woofer"].complex_tf,
         responses["tweeter"].complex_tf,
@@ -1326,6 +1545,44 @@ def test_snap_production_path_preserves_parallax_contract(
             hi_hz,
         ),
         abs=1e-9,
+    )
+    # ...while the PERSISTED prediction — VERIFY's tracking reference — is the
+    # same branches under the delay this candidate commits (rung P3 / R10b).
+    # The residual is `selected − anchor`, which on this path is exactly the
+    # candidate's own `snap_delta_us`; the sub-sample snap makes it small but
+    # non-zero, so the two curves below are genuinely different objects.
+    #
+    # It is pinned by CONSTRUCTION here rather than against a hand-built
+    # physical sum, because this fixture carries a deliberate inter-sweep drift
+    # AND a parallax correction: `−anchor_delay_us` is then the drift-corrected,
+    # parallax-corrected gap rather than the raw argmax gap the branch frame
+    # removed, so the model's residual and a raw-time-origin physical residual
+    # are not the same number by construction. The exact closure lives in
+    # `test_committed_delay_model_tracks_the_real_applied_sum_better`, on a
+    # zero-drift zero-parallax frame where they are.
+    assert result.candidate.snap_delta_us != pytest.approx(0.0, abs=1e-6)
+    predicted_applied = predicted_branch_sum(
+        responses["woofer"].complex_tf,
+        responses["tweeter"].complex_tf,
+        result.candidate.trim_db["woofer"],
+        result.candidate.trim_db["tweeter"],
+        result.alignment.polarity_sign,
+        freqs_hz=responses["woofer"].freqs_hz,
+        residual_delay_us=summed_model_residual_delay_us(
+            result.alignment.anchor_delay_us, result.candidate.delay_us,
+        ),
+    )
+    persisted_freqs, persisted_db = result.predicted_sum
+    np.testing.assert_array_equal(persisted_freqs, responses["woofer"].freqs_hz)
+    np.testing.assert_allclose(
+        persisted_db,
+        20.0 * np.log10(np.maximum(np.abs(predicted_applied), 1e-12)),
+        atol=1e-12,
+    )
+    assert not np.allclose(
+        persisted_db,
+        20.0 * np.log10(np.maximum(np.abs(predicted_aligned), 1e-12)),
+        atol=1e-6,
     )
 
     # Close the physics loop in the fixture's original common time origin.

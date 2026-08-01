@@ -483,9 +483,8 @@ ProgramAnalysis`:
    argmax-referenced, the raw IR peak gap is corrected by removing only its
    inter-sweep clock-drift contribution — the remaining physical peak gap plus
    the deterministic parallax term (√(r²+d²)−r at the prescribed ~1 m) is that
-   anchor. VERIFY's reference is the independently aligned zero-residual target
-   sum, not a candidate-specific model that could explain away a wrong-lobe
-   apply. Polarity comes from the correlation sign, cross-checked against the
+   anchor. VERIFY's reference is the summed model at the COMMITTED delay
+   (see item 6). Polarity comes from the correlation sign, cross-checked against the
    flatter predicted sum. The confidence gate remains explicitly GCC-seed
    capture confidence; summed-magnitude flatness is retained as evidence only
    (anchor ripple + anchor→snap improvement + the snap delta/found flags),
@@ -495,9 +494,23 @@ ProgramAnalysis`:
    prediction/evidence evaluates
    `W_xo·g_w + s·T_xo·g_t·e^(−jω(physical_gap + parallax + τ))` at the anchor and
    the snapped selection; the selected τ is the applied correction that drives
-   the argmax-referenced residual toward the aligned target. VERIFY therefore compares the applied response with the fixed
-   independently aligned target `W_xo·g_w + s·T_xo·g_t`, not with a
-   candidate-specific response. Measured and predicted magnitude receive the
+   the argmax-referenced residual toward the aligned target. **Since rung P3 /
+   R10b (2026-08-01) the persisted prediction is that same expression AT the
+   committed τ** — the model of what the emitted graph will do, carrying the
+   committed trim (already true) and the committed delay (new). VERIFY's
+   tracking comparison therefore grades model fidelity against a curve a real
+   selection realizes, rather than against the fixed
+   `W_xo·g_w + s·T_xo·g_t` zero-residual target no selection produces.
+   The delay enters only as the RESIDUAL `selected − anchor`
+   (`program_analysis.summed_model_residual_delay_us`) because
+   `_aligned_branch_tf` has already removed the measured peak gap from both
+   branches — phasing by the full applied τ double-counts it, which is the
+   reverted fix-2 failure mode. Two safety properties the old fixed target
+   carried are retained by other owners rather than by this curve:
+   `predicted_ripple_db` (the G1 capture-quality ceiling) stays on the
+   independently aligned sum, and the ±(period/6) snap radius bounds the
+   residual below one comb period, so a candidate cannot describe — let alone
+   excuse — a wrong-lobe apply. Measured and predicted magnitude receive the
    same 1/6-octave smoothing; the raw prediction is retained only as the
    modeled-notch mask key.
 

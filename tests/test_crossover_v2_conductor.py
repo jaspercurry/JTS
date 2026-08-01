@@ -157,6 +157,7 @@ from jasper.audio_measurement.program_analysis import (
     SegmentLocation,
     predicted_branch_sum,
     solve_branch_trims,
+    summed_model_residual_delay_us,
 )
 from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
@@ -315,11 +316,18 @@ def _check_analysis(
 
 def _alignment(
     *, delay_us=150.0, status=ALIGNMENT_OK, polarity="normal", confidence=0.8,
+    anchor_delay_us=None,
 ) -> AlignmentEstimate:
+    """The fixture alignment. ``anchor_delay_us`` defaults to ``None`` — the
+    shape every pre-R10b test was written against, in which the summed model's
+    residual delay is 0.0 and the prediction is byte-identical to the
+    independently-aligned sum. Pass it to exercise the committed-delay model.
+    """
     return AlignmentEstimate(
         delay_us=delay_us, raw_delay_us=delay_us, parallax_us=11.0,
         polarity=polarity, polarity_sign=1 if polarity == "normal" else -1,
         polarity_agrees_with_sum=True, confidence=confidence, status=status,
+        anchor_delay_us=anchor_delay_us,
     )
 
 
@@ -7807,6 +7815,92 @@ def test_measure_predicted_sum_uses_linearized_branches_when_fitted(monkeypatch)
     # analysis.predicted_sum -- proves the override changed the persisted
     # value, not merely happened to already agree with it.
     assert not np.allclose(db_used, 0.0)
+
+
+def test_measure_predicted_sum_carries_the_committed_delay(monkeypatch):
+    """**The R10b change, linearized lane.** The persisted VERIFY prediction is
+    the linearized branch pair at the committed trim AND the committed delay,
+    so it models what the emitted graph will actually do.
+
+    The default fixture alignment carries no anchor, so its residual is 0.0 and
+    every sibling test above is byte-identical to the pre-R10b behaviour. This
+    one supplies the anchor an aligner reports and pins that the delay term is
+    live: the persisted curve equals the residual-carrying model and differs
+    from the five-argument one the siblings reconstruct.
+
+    The fixture's RAW ``predicted_sum`` is rebuilt with the same residual,
+    because in production ``program_analysis._build_candidate`` puts it there —
+    keeping the raw and linearized models one model apart (the correction
+    filters) is what the improvement gate and ``_commanded_delta`` depend on.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    # A 20 us residual: comfortably inside the +/-(period/6) snap radius
+    # (83.3 us at a 2 kHz Fc) and several times the ~5.5 us snap deltas the
+    # synthetic MEASURE fixtures actually produce, so it is a realistic
+    # selection that still moves the curve visibly.
+    anchor_delay_us = 130.0
+    delay_us = 150.0
+    expected_residual_us = 20.0
+    assert summed_model_residual_delay_us(
+        anchor_delay_us, delay_us,
+    ) == pytest.approx(expected_residual_us)
+
+    captured: dict = {}
+    real_solve = flow_mod.solve_ripple_optimal_trim
+
+    def _spy(*args, **kwargs):
+        freqs, w_tf, t_tf, fc_hz = args
+        captured.update(freqs=freqs, w_tf=w_tf, t_tf=t_tf, fc_hz=fc_hz, **kwargs)
+        return real_solve(*args, **kwargs)
+
+    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+
+    def _anchored(program):
+        analysis = _eligible_measure_analysis(program)
+        raw_freqs, _raw_db = analysis.predicted_sum
+        woofer_db, tweeter_db = _fixture_branch_db()
+        trim = _solve_fixture_raw_trim(woofer_db, tweeter_db)
+        raw_complex = predicted_branch_sum(
+            (10.0 ** (np.asarray(woofer_db) / 20.0)).astype(complex),
+            (10.0 ** (np.asarray(tweeter_db) / 20.0)).astype(complex),
+            float(trim["woofer"]), float(trim["tweeter"]), 1,
+            freqs_hz=raw_freqs, residual_delay_us=expected_residual_us,
+        )
+        return replace(
+            analysis,
+            alignment=_alignment(
+                delay_us=delay_us, anchor_delay_us=anchor_delay_us,
+            ),
+            predicted_sum=(
+                raw_freqs,
+                20.0 * np.log10(np.maximum(np.abs(raw_complex), 1e-12)),
+            ),
+        )
+
+    fakes = FakeSeams()
+    fakes.measure = _anchored
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert _run_phase(c, 2, 2)["accepted"] is True
+    assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+
+    resolved_w = c.candidate.role_attenuations_db["woofer"]
+    resolved_t = c.candidate.role_attenuations_db["tweeter"]
+    expected_db = 20.0 * np.log10(np.maximum(np.abs(predicted_branch_sum(
+        captured["w_tf"], captured["t_tf"], resolved_w, resolved_t, 1,
+        freqs_hz=captured["freqs"], residual_delay_us=expected_residual_us,
+    )), 1e-12))
+    freqs_used, db_used = c.measure_predicted_sum
+    np.testing.assert_allclose(freqs_used, captured["freqs"])
+    np.testing.assert_allclose(db_used, expected_db)
+
+    # The delay term is not a no-op: the five-argument (pre-R10b) model of the
+    # SAME linearized branches at the SAME trim is a different curve.
+    zero_residual_db = 20.0 * np.log10(np.maximum(np.abs(predicted_branch_sum(
+        captured["w_tf"], captured["t_tf"], resolved_w, resolved_t, 1,
+    )), 1e-12))
+    assert not np.allclose(db_used, zero_residual_db, atol=1e-6)
 
 
 def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monkeypatch):
