@@ -370,6 +370,7 @@ def _capture_to_magnitude(
     calibration: "CalibrationCurve | None" = None,
     capture_geometry: str = "near_field",
     ambient_duration_s: float | None = None,
+    snr_bands: Sequence[tuple[str, float, float]] | None = None,
 ):
     """Shared capture → (quality, freqs, smoothed_magnitude_db, gating) pipeline.
 
@@ -397,6 +398,18 @@ def _capture_to_magnitude(
     and returns the SC-2 gating block describing what was done; the returned
     ``gating`` dict is always populated (exempt or applied) whenever an IR
     exists at all.
+
+    ``snr_bands`` selects the band table the paired-ambient report is measured
+    on. ``None`` keeps
+    :data:`~jasper.audio_measurement.snr_policy.CROSSOVER_SNR_BANDS_HZ` — the
+    canonical acoustic bands, correct for the WIDE per-driver near-field sweep
+    this path was built for, and byte-identical to before this parameter
+    existed. :func:`analyze_summed_crossover` passes a table derived from the
+    sweep's own ``[f1, f2]`` instead, because its sweep is too narrow to cover
+    a canonical band; see
+    :func:`~jasper.audio_measurement.snr_policy.sweep_excitation_bands`. The
+    caller MUST measure its signal side on the same table it passes here — the
+    two are subtracted per ``band_id``.
     """
     if capture_geometry not in {"near_field", "reference_axis"}:
         raise DriverAcousticsError(
@@ -571,15 +584,24 @@ def _capture_to_magnitude(
             )
         from jasper.audio_measurement import snr_policy
 
-        noise_bands = snr_policy.magnitude_band_levels(noise_freqs, noise_smoothed)
+        # One band table for every term below. The signal side (measured by the
+        # caller) must use this same table: the two are subtracted per band_id.
+        bands = (
+            snr_policy.CROSSOVER_SNR_BANDS_HZ if snr_bands is None else tuple(snr_bands)
+        )
+        noise_bands = snr_policy.magnitude_band_levels(
+            noise_freqs, noise_smoothed, bands
+        )
         robust = snr_policy.framed_ambient_band_report(
             robust_ambient_source,
             sr,
+            bands,
             percentile=95,
         )
         baseline = snr_policy.framed_ambient_band_report(
             ambient_source,
             sr,
+            bands,
             percentile=50,
         )
         # A band the reference sweep never excited (or barely reaches, at its
@@ -590,7 +612,7 @@ def _capture_to_magnitude(
         # spectrum at all and is grounded truth for what the room actually
         # did.
         covered = snr_policy.excitation_covered_bands(
-            snr_policy.CROSSOVER_SNR_BANDS_HZ,
+            bands,
             f1_hz=float(sweep_meta["f1"]),
             f2_hz=float(sweep_meta["f2"]),
         )
@@ -1219,7 +1241,7 @@ def analyze_summed_crossover(
     calibration: "CalibrationCurve | None" = None,
     noise_band_report: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     noise_floor_dbfs: float | None = None,
-    capture_geometry: str = "near_field",
+    capture_geometry: str,
     ambient_duration_s: float | None = None,
 ) -> SummedAcousticResult:
     """Measure the cancellation null at the crossover in a summed-speaker capture.
@@ -1254,7 +1276,15 @@ def analyze_summed_crossover(
     ``null_depth_capped=True``); the verdict below is always decided from the
     raw, uncapped measured depth — a capped-but-still-deep null is safely "at
     least that deep".
-    ``capture_geometry`` — see :func:`_capture_to_magnitude`. When gating
+    ``capture_geometry`` — see :func:`_capture_to_magnitude`. It is REQUIRED
+    here, with no default. The two geometries analyse the capture differently
+    enough (a gated vs an ungated impulse response, and so a different null
+    depth and a different validity floor) that there is no answer that is
+    right when the caller has not thought about it; the previous
+    ``"near_field"`` default made the un-gated reading the silent one. Both
+    production callers already state their geometry, so requiring it costs
+    them nothing and makes the un-gated path impossible to select by
+    omission. When gating
     applies and reports a floor, and either ``crossover_fc_hz`` or its lower
     shoulder (``crossover_fc_hz / 2``, one of the two points the null depth is
     measured from) sits below it, the reference-axis capture cannot decide
@@ -1270,10 +1300,25 @@ def analyze_summed_crossover(
             f"crossover_fc_hz must be positive, got {crossover_fc_hz}"
         )
 
+    from jasper.audio_measurement import snr_policy
+
+    # This capture's sweep is one octave either side of Fc, too narrow to cover
+    # a canonical acoustic band, so the SNR band table is derived from the sweep
+    # itself. That keeps both sides of every band subtraction in the one gated
+    # deconvolved domain instead of silently pairing a deconvolved signal level
+    # against a raw dBFS ambient one (SC-1 SNR units defect, 2026-08-01).
+    snr_bands = (
+        snr_policy.sweep_excitation_bands(
+            f1_hz=float(sweep_meta["f1"]), f2_hz=float(sweep_meta["f2"])
+        )
+        if ambient_duration_s is not None
+        else None
+    )
+
     report, freqs, mag_db, gating_block, paired_ambient = _capture_to_magnitude(
         captured_wav, sweep_meta, has_mic_calibration=has_mic_calibration,
         calibration=calibration, capture_geometry=capture_geometry,
-        ambient_duration_s=ambient_duration_s,
+        ambient_duration_s=ambient_duration_s, snr_bands=snr_bands,
     )
     quality_dict = report.to_dict()
     mic_clipping = report.clipped_fraction >= 1e-4
@@ -1369,13 +1414,48 @@ def analyze_summed_crossover(
     null_depth_capped = False
     effective_noise_report = paired_ambient or noise_band_report
     if effective_noise_report or noise_floor_dbfs is not None:
-        from jasper.audio_measurement import snr_policy
-
         noise_domain, noise_bands = snr_policy.unwrap_noise_report(
             effective_noise_report
         )
+        # The paired ambient we just measured is keyed on the sweep-derived
+        # table; an externally supplied report is keyed on the canonical one it
+        # was built with. Subtracting across two tables would match no band_id.
+        paired_is_source = (
+            paired_ambient is not None and effective_noise_report is paired_ambient
+        )
+        capture_band_table = (
+            snr_bands
+            if paired_is_source and snr_bands is not None
+            else snr_policy.CROSSOVER_SNR_BANDS_HZ
+        )
+        # Fail closed rather than subtract across domains. This applies to
+        # EITHER route into the gate — the paired ambient we measured, and an
+        # externally supplied report — because a raw-ambient band is never a
+        # legitimate noise term for this decision: it is a band-integrated
+        # dBFS RMS over ungated 1 s frames, and the signal side it would be
+        # subtracted from is a gated transfer-function level. On the paired
+        # route a sweep-derived table makes it unreachable by construction; on
+        # the external route nothing constrains the caller, which is exactly
+        # why the check cannot be conditional on the paired route. Without it
+        # the gate's correctness would rest on the reflection gate having
+        # run — a fact this subtraction has no way to see (SC-1 SNR units
+        # defect, 2026-08-01).
+        fallback_bands = sorted(
+            str(band.get("band_id"))
+            for band in (noise_bands or ())
+            if isinstance(band, Mapping)
+            and band.get("basis") == "raw_ambient_fallback"
+        )
+        if fallback_bands:
+            raise DriverAcousticsError(
+                "summed-crossover SNR requires every ambient band in the "
+                "deconvolved domain, but these took the raw-ambient "
+                f"fallback: {fallback_bands}"
+            )
         if noise_domain == "deconvolved":
-            capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
+            capture_bands = snr_policy.magnitude_band_levels(
+                freqs, mag_db, capture_band_table
+            )
             band_method = (
                 str(effective_noise_report.get("method") or "")
                 if isinstance(effective_noise_report, Mapping)

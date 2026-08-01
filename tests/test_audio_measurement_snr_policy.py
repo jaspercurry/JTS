@@ -960,3 +960,68 @@ def test_apply_noise_band_fallback_keeps_deconvolved_value_when_raw_is_floor_cla
     )
     assert adjusted[0]["basis"] == "deconvolved"
     assert adjusted[0]["level_dbfs"] == pytest.approx(-88.62)
+
+
+# ---------- sweep_excitation_bands ------------------------------------------
+# The summed-crossover capture sweeps only [fc/2, fc*2], which is too narrow to
+# cover any canonical band at the shipped crossover frequencies. Deriving the
+# band table from the sweep is what keeps both sides of the SNR subtraction in
+# one domain; these pin that the derivation cannot silently stop doing so.
+
+
+@pytest.mark.parametrize("fc_hz", [800.0, 1250.0, 1600.0, 2000.0, 2500.0, 3000.0])
+def test_sweep_excitation_bands_are_covered_by_construction(fc_hz):
+    """Every derived band lies ENTIRELY inside the sweep, so
+    apply_noise_band_fallback's raw-ambient branch is unreachable for them.
+
+    This is the property the summed-crossover SNR gate's correctness rests on.
+    Widening a band past f1/f2 — or adding one — re-opens the raw-vs-deconvolved
+    units mismatch that read up to 22 dB wrong (SC-1 SNR units defect,
+    2026-08-01), so this fails rather than let that happen quietly.
+    """
+    f1_hz, f2_hz = fc_hz / 2.0, fc_hz * 2.0
+    bands = snr_policy.sweep_excitation_bands(f1_hz=f1_hz, f2_hz=f2_hz)
+
+    # The count and the ids are both load-bearing, and neither is implied by
+    # the coverage check below (which derives its keys from this function's own
+    # output, so ANY contiguous table would satisfy it).
+    #
+    # THREE bands, not one: the alignment gate takes the WORST band, and a
+    # single band spanning [f1, f2] averages across two octaves — it would
+    # clear a capture whose lower shoulder cannot support the null being
+    # certified. Collapsing to one band is a silent loss of protective power.
+    #
+    # These ids: `band_id` is written into the persisted summed-analysis
+    # artifact and byte-compared when that artifact is reopened, so renaming
+    # one is an evidence-format change, not a cosmetic edit.
+    assert len(bands) == 3
+    assert tuple(band_id for band_id, _lo, _hi in bands) == (
+        "sweep_low", "sweep_mid", "sweep_high",
+    )
+
+    covered = snr_policy.excitation_covered_bands(bands, f1_hz=f1_hz, f2_hz=f2_hz)
+    assert covered == {band_id: True for band_id, _lo, _hi in bands}
+
+    # Contiguous, in order, and spanning exactly the sweep: no gap where a
+    # band edge could drift outside [f1, f2] while each band stayed "covered".
+    edges = [bands[0][1]] + [hi for _id, _lo, hi in bands]
+    assert edges[0] == pytest.approx(f1_hz)
+    assert edges[-1] == pytest.approx(f2_hz)
+    assert edges == sorted(edges)
+    for (_id, lo, hi), expected_lo in zip(bands, edges):
+        assert lo == pytest.approx(expected_lo)
+        assert hi > lo
+
+
+def test_sweep_excitation_bands_rejects_a_degenerate_range():
+    """A zero-width, inverted, or non-finite sweep has no honest band table."""
+    for f1_hz, f2_hz in [
+        (4000.0, 1000.0),
+        (1000.0, 1000.0),
+        (0.0, 1000.0),
+        (-10.0, 1000.0),
+        (float("nan"), 1000.0),
+        (1000.0, float("inf")),
+    ]:
+        with pytest.raises(ValueError, match="0 < f1_hz < f2_hz"):
+            snr_policy.sweep_excitation_bands(f1_hz=f1_hz, f2_hz=f2_hz)

@@ -541,6 +541,7 @@ def test_summed_blend_ok_calls_record_with_outcome_and_acoustic():
         summed_test_id="st1",
         analyze=lambda *a, **k: _summed_result("blend_ok"),
         record=spy_record,
+        capture_geometry="near_field",
     )
     assert out["recorded"] is True
     assert out["outcome"] == "blend_ok"
@@ -597,6 +598,7 @@ def test_summed_capture_threads_noise_band_report_into_analyzer_and_record():
         noise_floor_dbfs=-70.0,
         analyze=fake_analyze,
         record=lambda topology, raw, **kw: {"summed_validations": [dict(raw)]},
+        capture_geometry="near_field",
     )
     assert seen["noise_band_report"] == noise_report
     assert seen["noise_floor_dbfs"] == -70.0
@@ -726,6 +728,7 @@ def test_summed_capture_persists_verified_full_graph_excitation():
         excitation=ledger,
         analyze=lambda *a, **k: _summed_result("blend_ok"),
         record=record,
+        capture_geometry="near_field",
     )
 
     assert out["excitation"] == ledger
@@ -741,6 +744,7 @@ def test_summed_polarity_problem_maps_through():
         sweep_meta={"sample_rate": 48000, "n_samples": 4096},
         analyze=lambda *a, **k: _summed_result("polarity_or_delay_problem"),
         record=lambda topology, raw, **kw: {"summed_validations": [dict(raw)]},
+        capture_geometry="near_field",
     )
     assert out["outcome"] == "polarity_or_delay_problem"
 
@@ -760,6 +764,7 @@ def test_summed_unusable_records_nothing():
         sweep_meta={"sample_rate": 48000, "n_samples": 4096},
         analyze=lambda *a, **k: _summed_result("unusable_capture"),
         record=spy_record,
+        capture_geometry="near_field",
     )
     assert out["recorded"] is False
     assert out["skipped_reason"] == "unusable_capture"
@@ -786,6 +791,7 @@ def test_summed_no_crossover_region_records_nothing():
         sweep_meta={"sample_rate": 48000, "n_samples": 4096},
         analyze=lambda *a, **k: pytest.fail("analyze must not run without a crossover"),
         record=lambda *a, **k: pytest.fail("record must not run without a crossover"),
+        capture_geometry="near_field",
     )
     assert out["recorded"] is False
     assert out["skipped_reason"] == "no_crossover_region"
@@ -1699,6 +1705,7 @@ def test_summed_capture_accepted_emits_exactly_one_lifecycle_event(caplog):
             summed_test_id="st1",
             analyze=lambda *a, **k: _summed_result("blend_ok"),
             record=lambda topology, raw, **kw: {"summed_validations": [dict(raw)]},
+            capture_geometry="near_field",
         )
     assert out["recorded"] is True
     accepted = _events(caplog, "correction.crossover_capture_accepted")
@@ -1720,6 +1727,7 @@ def test_summed_capture_unusable_emits_exactly_one_rejected_event(caplog):
             sweep_meta={"sample_rate": 48000, "n_samples": 4096},
             analyze=lambda *a, **k: _summed_result("unusable_capture"),
             record=lambda *a, **k: pytest.fail("record must not run"),
+            capture_geometry="near_field",
         )
     assert out["recorded"] is False
     rejected = _events(caplog, "correction.crossover_capture_rejected")
@@ -1739,6 +1747,7 @@ def test_summed_capture_no_crossover_region_emits_exactly_one_rejected_event(cap
             sweep_meta={"sample_rate": 48000, "n_samples": 4096},
             analyze=lambda *a, **k: pytest.fail("analyze must not run"),
             record=lambda *a, **k: pytest.fail("record must not run"),
+            capture_geometry="near_field",
         )
     assert out["recorded"] is False
     rejected = _events(caplog, "correction.crossover_capture_rejected")
@@ -2668,3 +2677,24 @@ def test_summed_alignment_snr_pair_either_capped_is_capped():
     assert capped is True
     _, capped = _summed_alignment_snr(capped_record, ok_record)
     assert capped is True
+
+
+def test_record_summed_acoustic_capture_requires_an_explicit_capture_geometry():
+    """No silent default on the outer recorder either.
+
+    This function forwards BOTH ``capture_geometry`` and ``ambient_duration_s``
+    to ``analyze_summed_crossover``, so it can reach the paired-ambient
+    analysis where the two geometries differ in more than the reflection gate.
+    Leaving it defaulted to ``near_field`` would reintroduce, one level up, the
+    silent un-gated choice that was removed from the analyzer itself.
+    """
+    with pytest.raises(TypeError, match="capture_geometry"):
+        record_summed_acoustic_capture(
+            _topology(),
+            _two_way(),
+            speaker_group_id="mono",
+            captured_wav="cap.wav",
+            sweep_meta={"sample_rate": 48000, "n_samples": 4096},
+            analyze=lambda *a, **k: _summed_result("blend_ok"),
+            record=lambda *a, **k: {"summed_validations": []},
+        )

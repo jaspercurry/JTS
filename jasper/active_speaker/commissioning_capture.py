@@ -532,7 +532,7 @@ def record_summed_acoustic_capture(
     bundle_ref: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
     now: str | None = None,
-    capture_geometry: str = "near_field",
+    capture_geometry: str,
     analyze: Callable[..., SummedAcousticResult] = analyze_summed_crossover,
     record: Callable[..., dict[str, Any]] = record_summed_validation,
 ) -> dict[str, Any]:
@@ -554,8 +554,14 @@ def record_summed_acoustic_capture(
     shoulder sits below the IR-gating validity floor — see
     :func:`jasper.active_speaker.driver_acoustics.analyze_summed_crossover`).
 
-    ``capture_geometry`` (``"near_field"`` default, or ``"reference_axis"``)
-    passes straight through to ``analyze``.
+    ``capture_geometry`` (``"near_field"`` or ``"reference_axis"``) passes
+    straight through to ``analyze``, and is REQUIRED — it has no default. This
+    function also forwards ``ambient_duration_s``, so it can reach the paired
+    ambient analysis where the two geometries differ in more than the gate: in
+    ``near_field`` the reflection gate is exempt, which is the geometry where
+    a raw-vs-deconvolved noise substitution would flip sign and INFLATE the
+    reported SNR. There is no answer here that is right when the caller has
+    not thought about it, so it must say (SC-1 SNR units defect, 2026-08-01).
     ``bundle_ref`` is forwarded verbatim to ``record`` — see
     :func:`record_driver_acoustic_capture`'s docstring.
     The analyzed ``fc`` is resolved back to its preset crossover region

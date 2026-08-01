@@ -668,6 +668,18 @@ create a second retention system.
   path produced it). Full detail, the ground-truth validation
   table, and doc cross-reference in
   active-crossover-information-design.md "Level control and SNR".
+- **The fallback belongs to the WIDE per-driver sweep only (SC-1 SNR units
+  defect, 2026-08-01).** The substitution above swaps a band's UNITS, not
+  just its value, so it is only safe where the bands it replaces are ones
+  the gate does not read. That holds for the per-driver near-field sweep it
+  was built for. It did not hold for the SUMMED crossover capture, whose
+  `[fc/2, fc*2]` sweep covers no canonical band at any shipped crossover
+  frequency; `analyze_summed_crossover` now derives its band table from the
+  sweep instead (`snr_policy.sweep_excitation_bands`). Measured error,
+  the false-refusal rate, the Fc = 2000 shift, the evidence-fingerprint
+  blast radius, and the remaining calibration gap are all in
+  active-crossover-information-design.md "Level control and SNR" — that
+  section owns this concept; do not restate its numbers here.
 - **Lane B fixed-axis admission contract (2026-07-12).** Driver analysis no
   longer accepts `capture_geometry` from the browser. It derives near-field vs
   reference-axis from a complete relay proof revalidated against the active

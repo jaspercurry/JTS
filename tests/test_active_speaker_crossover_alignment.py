@@ -523,9 +523,12 @@ def test_calibration_curve_is_applied_to_the_null_depth(tmp_path):
         freqs_hz=[20.0, fc * 1.4, fc * 1.6, 20000.0],
         correction_db=[0.0, 0.0, 12.0, 12.0],
     )
-    without = da.analyze_summed_crossover(path, meta, crossover_fc_hz=fc)
+    without = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=fc, capture_geometry="near_field",
+    )
     withcal = da.analyze_summed_crossover(
-        path, meta, crossover_fc_hz=fc, calibration=step
+        path, meta, crossover_fc_hz=fc, calibration=step,
+        capture_geometry="near_field",
     )
     assert without.calibrated is False
     assert withcal.calibrated is True
@@ -549,6 +552,7 @@ def test_reverse_polarity_deep_null_is_a_pass(tmp_path):
 
     result = da.analyze_summed_crossover(
         path, meta, crossover_fc_hz=2000.0, expect_null=True,
+        capture_geometry="near_field",
     )
     assert result.expect_null is True
     assert result.null_depth_db >= da.DEFAULT_NULL_THRESHOLD_DB
@@ -564,6 +568,7 @@ def test_reverse_polarity_shallow_null_is_a_problem(tmp_path):
 
     result = da.analyze_summed_crossover(
         path, meta, crossover_fc_hz=2000.0, expect_null=True,
+        capture_geometry="near_field",
     )
     assert result.verdict == da.SUMMED_POLARITY_OR_DELAY_PROBLEM
 

@@ -856,6 +856,105 @@ window must still read "insufficient") are pinned in
 `tests/test_audio_measurement_snr_policy.py` and
 `tests/test_active_speaker_driver_acoustics.py`.
 
+**The fallback belongs to the WIDE per-driver sweep only (SC-1 SNR units
+defect, 2026-08-01).** This subsection owns that concept; other docs link here
+rather than restate it.
+
+Substituting the raw reading changes a band's UNITS, not just its value — a
+covered band is a gated transfer-function level, a fallback band is a
+band-integrated dBFS RMS over ungated 1 s frames — and those two do not
+subtract. That is harmless in the case the fix was built for, where a
+per-driver near-field sweep covers most bands and the uncovered ones are not
+the ones the gate reads. It is not harmless for the SUMMED crossover capture:
+its sweep is only `[fc/2, fc*2]`, so at the shipped crossover frequencies NO
+canonical band is covered and EVERY band deciding the alignment verdict took
+the fallback.
+
+**All numbers below are from synthetic reference-axis captures at an 8 s
+sweep** — 162 cases across six crossover frequencies, three ambient spectra,
+three capture levels, two seeds, plus a 54-case adversarial corner.
+
+**8 s is the CEILING, not "the production length", and the distinction is
+load-bearing.** The summed sweep runs for
+`min(SUMMED_SWEEP_DURATION_S, maximum_duration_s)`
+(`commissioning_capture_producer._bounded_sweep_meta`), where
+`maximum_duration_s` is the minimum across BOTH adjacent drivers'
+operator-declared `max_sweep_duration_s`, then decremented until it fits.
+`MAX_TWEETER_SWEEP_DURATION_S = 4.0`, so a real two-way runs a **4 s** summed
+sweep — between the two lengths measured here, covered by neither.
+
+That matters because duration controls the SIGN: the raw substitute gets no
+sweep processing gain while the deconvolved side does, so the substitution
+understates noise at short sweeps and overstates it at long ones.
+
+At 8 s the pre-fix error ran **−22.08 to +11.11 dB** and refused **43 of 162**
+captures whose whole-sweep SNR was genuinely sufficient. It is predominantly
+deflation, but it stays **bidirectional** — 6 of 162 read HIGH, up to
++11.11 dB, the false-`ok` direction. No sampled 8 s case converted that into an
+outright false PASS. The same code at 1 s runs −13.32 to +27.44 dB and DOES
+produce false passes (3 of 156). **Read that as "the false-pass regime is the
+short-sweep regime", not as "the old bug was never dangerous"** — shipped
+4 s configurations lie between the measured points and were not tested.
+
+`analyze_summed_crossover` therefore derives its band table from the sweep
+itself (`snr_policy.sweep_excitation_bands`: three log-uniform bands spanning
+exactly `[f1, f2]`, ids `sweep_low`/`sweep_mid`/`sweep_high`). Every band is
+then covered by construction, the fallback is structurally unreachable on that
+path, and both sides of every subtraction stay in one gated deconvolved
+domain. Post-fix error at 8 s: **−0.64 to +0.05 dB**, zero bands on the
+fallback.
+
+Captures refused despite a whole-sweep SNR above the floor fall from 43/162 to
+5/162 — but that whole-sweep yardstick suits the PRE-fix gate (which reported a
+canonical band roughly equal to the whole sweep) and not the post-fix one,
+which deliberately reports the worst sub-band. Inspecting the 5: **four are
+correct per-band refusals**, where the reported value is within 1 dB of its own
+sub-band's truth and that sub-band is genuinely below the floor (e.g. Fc 1250,
+reported 31.90, sub-band truth 32.14, whole-sweep 35.92) — exactly the
+under-supported shoulder the three-band split exists to catch. **One** (Fc 1600:
+reported 34.80, sub-band truth 35.26) is a real boundary flip, where the
+sub-dB non-stationarity residual moved a just-passing band to just-failing. So
+the honest post-fix count is one marginal false refusal, not five.
+
+Three bands rather than one keeps per-band granularity **on the refusal
+path** — any one band verdicting `insufficient` outranks its `ok` siblings, so
+a capture whose lower shoulder cannot support the null is refused rather than
+cleared by a two-octave average. It does **not** tighten the null-depth cap:
+`worst_band_verdict` breaks equal-verdict ties by table order, not by SNR, so
+among all-`ok` bands the cap is taken against `sweep_low`. That tie-break is
+pre-existing and is tracked separately (issue #2026).
+
+Coverage is asserted rather than assumed, and the analyzer fails closed if a
+`raw_ambient_fallback` band reaches the subtraction by EITHER route — the
+paired ambient it measures itself, or an externally supplied
+`noise_band_report` — so the gate's correctness no longer rests on the
+reflection gate having run, a fact the subtraction has no way to see. The
+per-driver path is untouched and still reports canonical band ids.
+
+**Fc = 2000 Hz changed too, and "it already read correctly" does not mean
+"unchanged".** It is the one frequency where the canonical `mid` band
+(1000-4000 Hz) exactly equals its sweep, so the pre-fix number was already
+accurate and still is.
+
+That also makes it the one frequency with **no deflation to remove** — so the
+"removing a deflation must raise the number" reasoning that explains every
+other Fc does not apply here. Its shift is purely the granularity change from
+one two-octave average to the worst of three sub-bands, and **that shift has no
+single sign**. It tracks ambient tilt: with a flat ambient the worst sub-band
+sits ABOVE the two-octave mean, with a steeply low-frequency-weighted one it
+sits below. On this reference-axis corpus it runs **−2.0 to +5.7 dB (median
++1.3)**; an independent measurement over shallower ambient slopes reported a
+negative median over roughly −6.6 to +4.0 dB. **Quote the range and the
+dependence, never the median alone** — two competent measurements of the same
+code differ by several dB purely through ambient sampling, so a bare median
+travels badly.
+
+Across all frequencies the reported value moves by a median of +7.80 dB (range
+−11.20 to +24.90, same corpus and caveat) and **143 of 162 cases move the LESS
+conservative way** — which is the point, since the old number was deflated, but
+it is not a neutral change, and the 35 dB floor has not been re-derived for the
+new semantics (issue #2027).
+
 ### Measurement validity: gating and the low-frequency floor
 
 A domestic room contaminates a far-field capture with reflections a few
