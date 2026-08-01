@@ -314,6 +314,12 @@ CLASS_GATEABLE = "gateable"
 # (captures/detector-certification-20260801/harness/detectors.py
 # ``shipped_peak_refined``); reproducing its number requires reproducing
 # this one.
+#
+# TWO CONSUMERS, one number, deliberately: this also bounds how far past a
+# crossing :func:`_candidate_prominence_db` looks for the candidate's peak.
+# The certified variant likewise uses one ``refine_ms`` for both, so
+# splitting them would de-couple the product from §WO-6's measurement.
+# Changing this for ToA reasons alone therefore moves the vote too.
 TOA_REFINE_MS = 0.5
 
 FLOOR_MEASURED = "measured_reflection"
