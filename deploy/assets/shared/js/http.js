@@ -62,6 +62,44 @@ export function isControlTokenRequired(err) {
             err.body.error === "control_token_required");
 }
 
+// True when a failed response is the mutating chokepoint's stale-session
+// rejection — jasper.web._common.reject_csrf (a stale/missing CSRF token) or
+// guard_mutating_host (a Host/Origin the allowlist no longer accepts). Both
+// answer with a tiny HTML page, not JSON, most commonly because the page sat
+// idle long enough for the socket-activated wizard process to idle-exit and
+// respawn fresh (jasper/web/_systemd.py IdleShutdownTracker) before the next
+// click. `err.body === null` (JSON parsing failed) is what distinguishes this
+// from isControlTokenRequired's JSON shape above, and from any route's own
+// JSON {error:"..."} 403 (which keeps its own message via parseResponse's
+// first branch, untouched by this). A reload re-fetches the page fresh,
+// which mints a valid token, so "reload" genuinely fixes it (issue #1926).
+export function isStaleSessionRejection(err) {
+  return !!(err && err.status === 403 && err.body === null);
+}
+
+const STALE_SESSION_MESSAGE = "This page went stale while idle — reloading…";
+
+// Show the stale-session copy and reload, so the next attempt runs against a
+// fresh page with a valid token. Returns the copy so the caller can also set
+// it as the thrown error's message, in case a page's own catch renders
+// err.message before the reload takes effect. Guarded for the non-browser
+// test harness (no document/location) and a body-less document mid-load.
+function reloadForStaleSession() {
+  if (typeof document !== "undefined" && document.body) {
+    try {
+      const banner = document.createElement("div");
+      banner.className = "banner banner--info";
+      banner.setAttribute("role", "status");
+      banner.textContent = STALE_SESSION_MESSAGE;
+      document.body.prepend(banner);
+    } catch (_) { /* defensive — reload still proceeds */ }
+  }
+  if (typeof location !== "undefined" && typeof location.reload === "function") {
+    location.reload();
+  }
+  return STALE_SESSION_MESSAGE;
+}
+
 // Add the X-CSRF-Token header (when a token is present) to an existing
 // headers object, returning it. Pass nothing to start from a bare object.
 // Also attaches X-JTS-Token from localStorage when the browser has stored
@@ -141,6 +179,10 @@ export async function postJSON(path, body) {
   try {
     return await parseResponse(await send());
   } catch (err) {
+    if (isStaleSessionRejection(err)) {
+      err.message = reloadForStaleSession();
+      throw err;
+    }
     if (!isControlTokenRequired(err)) throw err;
     const token = await promptForControlToken();
     if (!token) throw err;        // user dismissed the prompt — original error
