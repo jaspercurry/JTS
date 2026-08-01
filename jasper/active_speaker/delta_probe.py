@@ -21,6 +21,17 @@ is a measurement of what the hardware actually did, compared against what the
 filters were told to do. That is this module. PR-L2 fixed the specific Q bug;
 this catches the whole class, permanently, including the next one.
 
+**This is the IN-ROOM instrument. It has an offline twin.**
+:mod:`jasper.active_speaker.bench` asks the same question of the same defect
+class before anything is applied and without a microphone: it renders the
+emitted config through the real pinned CamillaDSP binary and grades the result
+against the fit's claim. It reuses this module's verdict vocabulary and
+:func:`classify_delta_probe` itself rather than defining a parallel one. The two
+are complementary, not redundant — the offline one sees only what the DSP does
+to a signal, and this one is the only thing that can see what a driver in a room
+did with it. If you are about to build a third, one of these two is the one to
+extend.
+
 **What "realized" and "commanded" are, exactly** (read this before trusting a
 verdict — the algebra matters):
 

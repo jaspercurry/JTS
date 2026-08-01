@@ -30,6 +30,7 @@
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
 | Diagnose one correction level/sweep run with synchronized UMIK audio and speaker gain state | [Correction capture diagnostic](#correction-capture-diagnostic) |
+| Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
@@ -959,6 +960,111 @@ stored in the manifest and consumed by the analyzer rather than re-guessed.
 
 See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
 guessing" for the canonical recipes.
+
+---
+
+## Offline emit loop
+
+`jasper-active-speaker-emit-bench`
+([`jasper/cli/active_speaker_emit_bench.py`](../jasper/cli/active_speaker_emit_bench.py),
+library in [`jasper/active_speaker/bench/`](../jasper/active_speaker/bench/))
+answers one question: **does the DSP realize a linearization the way the fit
+claims it will?** It emits the preset twice through the real emitter — once with
+the linearization under test, once with none — renders both through the real
+pinned CamillaDSP binary as one-shot file-to-file batch passes, and grades the
+difference against
+`linearization_fit.complex_correction_response`. The difference is the
+instrument: everything the two configs share (crossover, delay, per-driver gain,
+split mixer, fader, stimulus) cancels exactly, so nothing has to be modelled to
+grade the filters under test.
+
+This is the offline twin of
+[`jasper/active_speaker/delta_probe.py`](../jasper/active_speaker/delta_probe.py),
+whose verdict vocabulary and classifier it reuses rather than duplicating. The
+probe catches a realization defect **in the room**, after an apply, from a
+household's post-apply sweep; this catches the same class **before** anything is
+applied and without a microphone. It exists because a model cannot audit itself:
+on 2026-07-27 a shipped shelf realized at Q 0.476 while every gate in the fit
+evaluated it at 0.707, missing its design by up to 1.70 dB with nothing in the
+loop able to see it.
+
+The bench itself runs **on the speaker** — the binary's identity is resolved
+from the running `jasper-camilla.service` unit and there is deliberately no
+`--binary` override. Invoke it **from your laptop checkout**, though:
+`pi-run-diagnostic.sh` is a laptop-side wrapper that SSHes to `$PI_HOST` (typed
+on the Pi it would SSH from the Pi to itself). Every path in the command below
+is therefore **Pi-side** — `--linearization` and `--out` are resolved on the
+speaker, not on your laptop.
+
+```sh
+# from the laptop checkout; paths are on the Pi
+bash scripts/pi-run-diagnostic.sh -- \
+  /opt/jasper/.venv/bin/jasper-active-speaker-emit-bench \
+    --linearization /var/tmp/fits.json \
+    --playback-device "$(...)" \
+    --out /var/tmp/emit-loop
+```
+
+**Run it through the bounded runner, not bare.** The renders are bounded in
+their own child processes, but the deconvolution and FFTs run in the CLI's own
+process and are not: a production-length run measures 221 MiB parent-only peak
+RSS (235 MiB on an independent measurement during review), a real fraction of a
+1 GB Pi. `pi-run-diagnostic.sh` gives the kernel an obvious thing to kill before
+it reaches a product daemon.
+
+**Expect to raise the runner's memory ceiling for a longer sweep.** Its defaults
+(`MemoryHigh=256M`, `MemoryMax=384M`, `RuntimeMaxSec=10min`) fit the measured
+221–235 MiB with little headroom, and the dominant term — the deconvolution's
+zero-padded FFT — scales with `--sweep-seconds`. A longer sweep will be
+OOM-killed by the cgroup, which looks exactly like a bench bug and is not one.
+Raise it deliberately:
+
+```sh
+JTS_DIAG_MEMORY_HIGH=512M JTS_DIAG_MEMORY_MAX=768M \
+  bash scripts/pi-run-diagnostic.sh -- ...
+```
+
+`--linearization` is a JSON object of persisted per-role `LinearizationFit`
+records (`{role: {"filters": [...], ...}}`), the shape
+`linearization_fit.linearization_filters_by_role` reduces.
+
+**Exit codes are three-state, because the evidence is.** `0` — every branch that
+could be graded matched, and at least one was. `1` — a graded branch did not
+match; the finding. `2` — no verdict was reached: either the run refused, or it
+completed and nothing in it was gradeable. A role the fit left alone commands
+nothing, so its comparison reaches no verdict at all
+(`delta_probe`'s `unavailable`: "not a pass … no evidence to refuse on, and no
+permission granted either") — those branches are listed in the report's
+`unavailable_roles`, never counted as passes or failures. `report.json` carries
+`outcome` alongside the per-branch records.
+
+The bundle keeps both arms' configs, **four `.raw` renders** (each arm's render
+and its determinism repeat — the repeat's SHA-256 is what the receipt asserts
+against, so both are retained as evidence), the stimulus WAV, and `report.json`.
+
+`--dry-run` runs the real emitter and the real derivation for both arms and
+writes both derived configs, without resolving a binary or rendering anything.
+That makes it a genuine preflight rather than an echo of the arguments: an
+emitter validation refusal, a stage outside the offline allowlist, a hard-clip
+limiter, or a stimulus past the deconvolution's FFT cap all surface on a laptop
+instead of after an SSH round trip. It does not write the (multi-megabyte)
+stimulus — the derivation validates the header it is handed, not the file.
+
+Read `band_max_error_db` per branch, not just the verdict: the classifier's
+tolerances are calibrated for a microphone (1.5 dB below 10 kHz) and are
+generous by orders of magnitude offline. On the stand-in-binary suite an exact
+render lands at 0.003–0.013 dB while the 2026-07-27 shelf-Q defect reads
+1.705 dB.
+
+Hardware-free coverage lives in
+[`tests/test_active_speaker_emit_bench_derivation.py`](../tests/test_active_speaker_emit_bench_derivation.py),
+[`..._compare.py`](../tests/test_active_speaker_emit_bench_compare.py),
+[`..._loop.py`](../tests/test_active_speaker_emit_bench_loop.py), and
+[`..._cli.py`](../tests/test_active_speaker_emit_bench_cli.py), against the
+stand-in binary [`tests/_fake_camilladsp.py`](../tests/_fake_camilladsp.py).
+Those prove the plumbing and that the comparison catches a mis-realized filter;
+they cannot prove what the real binary does with an emitted biquad, which is the
+whole question and needs the on-device run.
 
 ---
 
