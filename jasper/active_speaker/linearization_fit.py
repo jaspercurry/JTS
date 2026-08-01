@@ -1982,10 +1982,23 @@ def _lift_stage(
     has SKIRTS. A boost centred just inside the radiating edge puts real gain
     a half-octave past it — gain the branch's own crossover then attenuates,
     which is #1809's pathology arriving by a route #1809's mask cannot see.
-    The pre-existing realization gate below could not catch it either: it
-    tests ``realized_db[band_mask]``, and the stopband is outside
-    ``band_mask`` by construction. So the guard has to read the emitted
-    cascade over the WHOLE grid, which is what it does.
+    **Why the WHOLE grid and not ``band_mask``.** The stage's existing
+    realization gate below reads ``realized_db[band_mask]``, and reusing that
+    idiom here is the plausible-looking mistake. It is wrong because
+    ``band_mask``'s overlap with the stopband is **incidental, not
+    guaranteed**: the mask is whatever :func:`_adaptive_band_trim` walked out
+    to, which depends on the driver's own curve. Measured on the 2026-07-30
+    JTS3 session (``captures/r10a-objective-20260801``), the two branches of
+    ONE speaker disagree about it — the woofer's fit band runs to 2597.9 Hz
+    against a gain band ending at 2266.8 Hz, so its stopband is partly inside
+    the mask and partly above it, while the tweeter's fit band starts at
+    873.1 Hz against a gain band starting at 1764.6 Hz, putting that whole
+    stretch inside. A mask-limited guard would therefore catch this defect on
+    some branches and some sessions and not others, which is worse than one
+    that never fired: it would look like coverage. Reading the emitted cascade
+    over the whole grid has no such dependency.
+    ``test_a_mask_limited_guard_would_miss_these_bins_entirely`` pins the
+    distinction.
 
     Suppressed (named, never silent) when no filter slots remain, when
     ``design_peq`` cannot realize the residue, when the realized cascade
@@ -2089,9 +2102,11 @@ def _lift_stage(
 
     # #1968's hard rule, enforced on the cascade that will actually be
     # emitted: no significant gain more than half an octave past this
-    # branch's acoustic passband edge. Read over the WHOLE grid, not
-    # ``band_mask`` — the stopband is outside the fit band by construction, so
-    # a mask-limited test is exactly the one that cannot see this.
+    # branch's acoustic passband edge. Read over the WHOLE grid, NOT
+    # ``band_mask`` — the mask's overlap with the stopband is incidental
+    # rather than guaranteed, so a mask-limited test has coverage that varies
+    # by branch and by session. See this function's docstring for the measured
+    # case where one speaker's two branches disagree about it.
     if gain_permitted is not None and np.any(
         realized_db[~gain_permitted] > SIGNIFICANT_GAIN_DB
     ):

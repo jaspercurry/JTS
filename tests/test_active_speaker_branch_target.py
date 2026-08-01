@@ -336,12 +336,28 @@ def test_no_target_is_the_pre_r10a_fit_byte_for_byte():
 # --------------------------------------------------------------------------- #
 
 
+#: Where this fixture's fit band stops, Hz. Load-bearing — see
+#: :func:`_lift_inputs`.
+_FIXTURE_BAND_HI_HZ = 2000.0
+
+
 def _lift_inputs():
     """A branch whose deficit sits right at its radiating edge — the shape that
     makes a boost's SKIRT reach into the stopband.
 
     The dip is centred at the -3 dB edge itself (0.801*Fc = 1602.9 Hz) and is
     broad, so the bell the designer answers it with is low-Q and wide.
+
+    **``band_mask`` stops at 2000 Hz, and that is the whole point of the
+    fixture.** The gain band ends at 2266.8 Hz, so every bin the guard must
+    refuse lies ABOVE the fit band — which is what makes this fixture able to
+    tell the shipped whole-grid guard apart from a mask-limited one. An earlier
+    version of this fixture ran the mask to 6000 Hz; the offending bins then sat
+    INSIDE it, ``realized_db[band_mask & ~gain_permitted]`` saw them too, and
+    the test passed against the very mutation it exists to forbid (caught by
+    adversarial review of PR #1999, 2026-08-01).
+    ``test_a_mask_limited_guard_would_miss_these_bins_entirely`` is the
+    counterfactual that keeps it that way.
     """
     grid_hz = np.geomspace(150.0, 20_000.0, 512)
     shape_db = crossover_response_db(grid_hz, _LOWPASS)
@@ -351,7 +367,7 @@ def _lift_inputs():
 
     target = branch_target(_LOWPASS, grid_hz)
     assert target is not None
-    band_mask = (grid_hz >= 150.0) & (grid_hz <= 6000.0)
+    band_mask = (grid_hz >= 150.0) & (grid_hz <= _FIXTURE_BAND_HI_HZ)
     lift_mask = band_mask & (grid_hz <= edge_hz)
 
     class _Env:
@@ -362,7 +378,7 @@ def _lift_inputs():
 
 def _run_lift(*, guarded: bool):
     grid_hz, working_db, target, band_mask, lift_mask, env = _lift_inputs()
-    return grid_hz, target, _lift_stage(
+    return grid_hz, target, band_mask, _lift_stage(
         grid_hz, working_db, target.target_curve_db(0.0), env,
         band_mask, (), FitVocabulary(allow_boost=True),
         lift_mask=lift_mask,
@@ -391,11 +407,12 @@ def test_the_guard_is_load_bearing_a_boost_skirt_does_reach_the_stopband():
     by the one route #1809's own mask cannot see, because that mask bounds
     where the deficit is READ, not where the emitted filter reaches.
 
-    The pre-existing realization gate cannot catch it either: it tests
-    ``realized_db[band_mask]``, and the stopband is outside ``band_mask`` by
-    construction.
+    The pre-existing realization gate cannot be relied on to catch it either:
+    it tests ``realized_db[band_mask]``, and whether the stopband falls inside
+    ``band_mask`` is not guaranteed — see
+    :func:`test_a_mask_limited_guard_would_miss_these_bins_entirely`.
     """
-    grid_hz, target, unguarded = _run_lift(guarded=False)
+    grid_hz, target, band_mask, unguarded = _run_lift(guarded=False)
     assert unguarded.filters, "the fixture must emit a boost to mean anything"
 
     realized_db = _realized_db(unguarded.filters, grid_hz)
@@ -407,6 +424,40 @@ def test_the_guard_is_load_bearing_a_boost_skirt_does_reach_the_stopband():
     )
 
 
+def test_a_mask_limited_guard_would_miss_these_bins_entirely():
+    """**The counterfactual, carried in the test rather than left to a
+    reviewer's mutation.**
+
+    The shipped guard reads ``realized_db[~gain_permitted]`` — the WHOLE grid.
+    The plausible-looking alternative is to reuse the stage's existing
+    band-limited idiom, ``realized_db[band_mask & ~gain_permitted]``. This
+    asserts the two are not the same test: on this fixture the offending bins
+    lie entirely ABOVE the fit band, so the mask-limited form sees **zero** of
+    them and would let the boost through.
+
+    Without this, the suite could not tell the two apart. The first version of
+    this fixture ran ``band_mask`` to 6000 Hz, which put every offending bin
+    inside it; the mask-limited mutation then passed all twenty tests in this
+    module (adversarial review of PR #1999, 2026-08-01). The fixture is now
+    built so that it cannot.
+    """
+    grid_hz, target, band_mask, unguarded = _run_lift(guarded=False)
+    realized_db = _realized_db(unguarded.filters, grid_hz)
+    stopband = ~target.gain_permitted
+
+    shipped = realized_db[stopband] > SIGNIFICANT_GAIN_DB
+    mask_limited = realized_db[band_mask & stopband] > SIGNIFICANT_GAIN_DB
+
+    assert int(shipped.sum()) > 0, "the fixture must offend for this to mean anything"
+    assert int(mask_limited.sum()) == 0, (
+        "the offending bins must lie OUTSIDE band_mask, or this fixture cannot "
+        "distinguish the shipped guard from a mask-limited one"
+    )
+    # …and the reason is geometric, stated so a future edit to either bound
+    # trips here rather than silently un-discriminating the fixture.
+    assert float(np.max(grid_hz[band_mask])) < target.gain_band_hz[1]
+
+
 def test_the_guard_refuses_the_cascade_that_would_have_put_gain_there():
     """The same inputs WITH the mask: the stage refuses, names why, and emits
     no boost at all rather than a trimmed one.
@@ -416,7 +467,7 @@ def test_the_guard_refuses_the_cascade_that_would_have_put_gain_there():
     guard rejects is one the designer built against the wrong constraint, and
     re-deriving it under the constraint is a search this stage does not run.
     """
-    _grid_hz, _target, guarded = _run_lift(guarded=True)
+    _grid_hz, _target, _band_mask, guarded = _run_lift(guarded=True)
     assert guarded.suppressed_reason == "stopband_gain"
     assert guarded.from_boost_db == 0.0
     assert all(f.gain <= 0.0 for f in guarded.filters)
@@ -426,7 +477,7 @@ def test_every_lift_suppression_reason_is_enumerated():
     """The new reason joins the pinned set, so a suppression path cannot ship
     an un-enumerated string (the same rule the set already held)."""
     assert "stopband_gain" in LIFT_SUPPRESSION_REASONS
-    _grid_hz, _target, guarded = _run_lift(guarded=True)
+    _grid_hz, _target, _band_mask, guarded = _run_lift(guarded=True)
     assert guarded.suppressed_reason in LIFT_SUPPRESSION_REASONS
 
 
