@@ -30,6 +30,7 @@
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
 | Diagnose one correction level/sweep run with synchronized UMIK audio and speaker gain state | [Correction capture diagnostic](#correction-capture-diagnostic) |
+| Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
@@ -959,6 +960,69 @@ stored in the manifest and consumed by the analyzer rather than re-guessed.
 
 See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
 guessing" for the canonical recipes.
+
+---
+
+## Offline emit loop
+
+`jasper-active-speaker-emit-bench`
+([`jasper/cli/active_speaker_emit_bench.py`](../jasper/cli/active_speaker_emit_bench.py),
+library in [`jasper/active_speaker/bench/`](../jasper/active_speaker/bench/))
+answers one question: **does the DSP realize a linearization the way the fit
+claims it will?** It emits the preset twice through the real emitter — once with
+the linearization under test, once with none — renders both through the real
+pinned CamillaDSP binary as one-shot file-to-file batch passes, and grades the
+difference against
+`linearization_fit.complex_correction_response`. The difference is the
+instrument: everything the two configs share (crossover, delay, per-driver gain,
+split mixer, fader, stimulus) cancels exactly, so nothing has to be modelled to
+grade the filters under test.
+
+This is the offline twin of
+[`jasper/active_speaker/delta_probe.py`](../jasper/active_speaker/delta_probe.py),
+whose verdict vocabulary and classifier it reuses rather than duplicating. The
+probe catches a realization defect **in the room**, after an apply, from a
+household's post-apply sweep; this catches the same class **before** anything is
+applied and without a microphone. It exists because a model cannot audit itself:
+on 2026-07-27 a shipped shelf realized at Q 0.476 while every gate in the fit
+evaluated it at 0.707, missing its design by up to 1.70 dB with nothing in the
+loop able to see it.
+
+Run it **on the speaker** — the binary's identity is resolved from the running
+`jasper-camilla.service` unit and there is deliberately no `--binary` override:
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-active-speaker-emit-bench \
+  --linearization /path/to/fits.json \
+  --playback-device "$(...)" \
+  --out /var/tmp/emit-loop
+```
+
+`--linearization` is a JSON object of persisted per-role `LinearizationFit`
+records (`{role: {"filters": [...], ...}}`), the shape
+`linearization_fit.linearization_filters_by_role` reduces. Exit `0` when every
+branch matched, `1` when one did not, `2` on a refusal. The bundle carries both
+arms' configs, both renders, and `report.json`.
+
+`--dry-run` emits and derives both arms and prints the plan without resolving a
+binary or rendering — the useful preflight on a laptop, where no
+`jasper-camilla.service` exists.
+
+Read `band_max_error_db` per branch, not just the verdict: the classifier's
+tolerances are calibrated for a microphone (1.5 dB below 10 kHz) and are
+generous by orders of magnitude offline. On the stand-in-binary suite an exact
+render lands at 0.003–0.013 dB while the 2026-07-27 shelf-Q defect reads
+1.705 dB.
+
+Hardware-free coverage lives in
+[`tests/test_active_speaker_emit_bench_derivation.py`](../tests/test_active_speaker_emit_bench_derivation.py),
+[`..._compare.py`](../tests/test_active_speaker_emit_bench_compare.py),
+[`..._loop.py`](../tests/test_active_speaker_emit_bench_loop.py), and
+[`..._cli.py`](../tests/test_active_speaker_emit_bench_cli.py), against the
+stand-in binary [`tests/_fake_camilladsp.py`](../tests/_fake_camilladsp.py).
+Those prove the plumbing and that the comparison catches a mis-realized filter;
+they cannot prove what the real binary does with an emitted biquad, which is the
+whole question and needs the on-device run.
 
 ---
 
