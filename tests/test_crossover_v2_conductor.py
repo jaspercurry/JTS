@@ -6041,7 +6041,32 @@ def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
     Split out from ``_eligible_measure_analysis`` so ``_FIXTURE_RAW_TRIM_DB``
     below can be SOLVED from the same curves the fixture hands the conductor
     (see that constant for why a hand-written trim stopped being acceptable).
+
+    **Each branch carries its own crossover (R10a, #1817).** These curves stand
+    in for a per-driver MEASUREMENT, and a real one is captured through the
+    graph the speaker is running — so the woofer's low-pass and the tweeter's
+    high-pass belong in them. Verified on the banked 2026-07-30 bench session
+    rather than assumed (``captures/r10a-objective-20260801/premise_probe.py``):
+    against its own passband median the real JTS3 woofer measures **-3.22 dB at
+    0.79*Fc, -7.32 dB at Fc and -32.62 dB at 2*Fc**, and the real tweeter
+    **-38.81 dB at 0.79*Fc**, both tracking their committed LR4 sections (and
+    falling faster still, since the driver's natural rolloff adds to the
+    electrical one).
+
+    Before R10a they did NOT, and it did not show: a flat target and a
+    crossover-free curve are self-consistent, so the fixture modelled an
+    impossible speaker without contradicting anything. The crossover-shaped
+    target is what makes the omission observable — a fit graded against the
+    shape of a crossover its own measurement never went through would be asked
+    to CUT its passband edges into existence. Two tests in this file
+    (``test_..._one_set_of_crossover_sections``'s neighbours at the
+    ``crossover_response_db`` call sites below) had already adopted the
+    faithful shape locally; this makes it the fixture's own.
     """
+    from jasper.active_speaker.branch_chain import (
+        CrossoverSection, crossover_response_db,
+    )
+
     freqs = _LINEARIZABLE_FREQS_HZ
     # A mild, monotonic -1.5 dB/octave tilt around Fc (capped at +/-6 dB
     # at the band extremes) -- NOT a perfectly flat 0 dB reference.
@@ -6070,10 +6095,38 @@ def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
     woofer_db = woofer_db - 6.0 * np.exp(
         -0.5 * ((np.log2(freqs / 400.0) / 0.3) ** 2)
     )
-    # A +6 dB bump inside the [800, 3200] Hz overlap band (Fc=1600) —
-    # validated offline (PR-C sanity pass) to survive envelope/fit and
-    # move the re-solved trim measurably vs the raw candidate.
-    tweeter_db = 6.0 * np.exp(-0.5 * ((np.log2(freqs / 1500.0) / 0.25) ** 2))
+    # A bump inside the [800, 3200] Hz overlap band (Fc=1600) — validated
+    # offline (PR-C sanity pass) to survive envelope/fit and move the
+    # re-solved trim measurably vs the raw candidate.
+    #
+    # **+3 dB at 2400 Hz since R10a; it was +6 dB at 1500 Hz.** Both numbers
+    # moved for the same reason — the fixture became faithful above — and both
+    # were measured rather than guessed
+    # (``captures/r10a-objective-20260801/fixture_sweep.txt``):
+    #
+    # * 1500 -> 2400 Hz, because the bump has to sit in the tweeter's OWN
+    #   radiating band (LR4 high-passed at 1600 Hz, so 1997 Hz up) to be a
+    #   driver defect at all. At 1500 Hz the branch's own crossover is ~7 dB
+    #   down, so a faithful fixture attenuates the bump before it reaches the
+    #   sum and the fit is asked to correct something the graph already
+    #   removed. 2400 Hz keeps it inside the overlap band the trim scans.
+    # * 6 -> 3 dB, because a bump that big in the tweeter's own passband
+    #   drives the ripple-optimal trim to -3.9 dB, which puts the shared level
+    #   frame 4.361 dB apart — past its frozen 3.0 dB tolerance, so the gate
+    #   (correctly) refuses before any of this file's other assertions run.
+    #   The sweep is monotonic and unambiguous: at 2400 Hz the disagreement is
+    #   2.643 dB at +3, 3.275 at +4, 3.760 at +5, 4.361 at +6. +3 dB is a
+    #   realistic driver defect that still moves the trim measurably
+    #   (-2.267 dB) and still lands the fixture's boost at +3.72 dB / 399 Hz.
+    tweeter_db = 3.0 * np.exp(-0.5 * ((np.log2(freqs / 2400.0) / 0.25) ** 2))
+    # …each behind its own committed section, so the curve the fixture hands
+    # the conductor is the one a measurement would have produced.
+    woofer_db = woofer_db + crossover_response_db(
+        freqs, (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=False),),
+    )
+    tweeter_db = tweeter_db + crossover_response_db(
+        freqs, (CrossoverSection(fc_hz=_FIXTURE_FC_HZ, order=4, highpass=True),),
+    )
     return woofer_db, tweeter_db
 
 
@@ -6884,7 +6937,13 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
+    # Item 2 refuses this session downstream (see the note below). The guard
+    # runs — and logs its decision — inside ``_fit_linearization``, well before
+    # ``_publish_measure_candidate`` grades the prediction, so every assertion
+    # this test makes is already in the journal when the refusal arrives.
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        _run_phase(c, 2, 2)
+    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
 
     # The guard FIRED (drift 7 dB > the 6 dB margin) and still committed the
     # SCAN, because the scan levels better than the anchor it would have fallen
@@ -6893,14 +6952,29 @@ def test_wild_trim_fallback_follows_levels_not_drift(caplog, monkeypatch):
     assert "committed=resolved" in caplog.text
     assert "anchored_level_error_db=2.5" in caplog.text
     assert "resolved_level_error_db=0.2" in caplog.text
-    # This fixture USED to also refuse downstream on PR-L4 item 2, which its
-    # own comment called out as the ladder working rather than this test's
-    # subject. It no longer does, and the reason is #1809: once the fit stops
-    # spending gain against the woofer's own crossover, this fixture's
-    # correction genuinely improves its predicted model, so a deliberately-wild
-    # trim is not enough to make it a regression. The guard's DECISION — commit
-    # on levels, not on drift — is what this test pins, and it is unchanged.
-    # (Item 2's refusal keeps its own dedicated test.)
+    # **Why item 2 refuses again (R10a, #1817), and why that is the gate
+    # getting its teeth back rather than this test's subject moving.** This
+    # fixture refused here before #1809, stopped refusing after it, and refuses
+    # again now — but the third state is not a return to the first. Measured on
+    # the faithful fixture by sweeping the forced drift and reading
+    # ``event=correction.crossover_v2_prediction_gate`` (baseline 0.957 dB rms
+    # in every row; the floor is 0.5 dB):
+    #
+    #   drift dB     0      1      2      3       4       5       6      7      8
+    #   improve  +0.657 +0.657 +0.657 +0.657  -0.324  -0.688  -1.087 -1.524 -1.998
+    #   verdict   accept accept accept accept  refuse  refuse  refuse refuse refuse
+    #
+    # So the gate now DISCRIMINATES on this fixture: a correct trim ships, and a
+    # mistrim of 4 dB or more is caught as the regression it is. Under the flat
+    # target it refused at every drift including 0.0 (-0.293 dB), because the
+    # fit's own crossover-fighting cuts made even an untouched trim fail to beat
+    # its baseline — the gate could not tell a wild trim from a good one.
+    #
+    # There is no drift that both fires the guard and clears the floor: the
+    # guard needs > 6.0 dB and the floor is lost above 3 dB. That is physics,
+    # not a fixture limit — a pair mistrimmed past the guard's own margin does
+    # not measure better. The guard's DECISION — commit on levels, not on drift
+    # — is what this test pins, and it is unchanged.
 
 
 def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
@@ -6951,24 +7025,49 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
 def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     """The normalize step: when a branch's own give-back exceeds its raw
     attenuation the unnormalized anchor would be POSITIVE; the shared shift must
-    pull every role non-positive while preserving their RELATIVE leveling."""
+    pull every role non-positive while preserving their RELATIVE leveling.
+
+    **The raw-trim override this test used to carry is gone (R10a, #1817), and
+    re-deriving it is what showed it had never done anything.** It forced
+    ``{"woofer": 0.0, "tweeter": 0.0}`` on the reasoning that "any positive
+    give-back pushes the unnormalized anchor above 0 and forces the shift" —
+    but PR-L5's frame offset is ``system − trim − core``, so the raw trim
+    CANCELS out of ``raw + giveback + level_frame_offset``. Measured across a
+    raw-tweeter-trim sweep on this fixture, the anchor and everything
+    downstream of it are byte-identical at every value:
+    ``unnormalized = {woofer: 3.4743, tweeter: 2.0908}``, ``shift = 3.4743``,
+    ``committed = {woofer: 0.0, tweeter: -1.3835}`` at −0.0, −0.5, −1.0, −1.5,
+    −1.773 (the fixture's own solved trim), −2.0 and −3.0 dB. The shift fires
+    on the fixture's own trim, and always did.
+
+    What the override DID do was starve a gate this test is not about. It moves
+    the RAW predicted sum, which is item 2's baseline, so a zeroed trim leaves
+    less than the 0.5 dB of headroom the improvement floor needs. Same sweep,
+    reading ``event=correction.crossover_v2_prediction_gate`` (``after`` is
+    0.300 dB rms in every row):
+
+        raw tweeter trim dB   0.0    -0.5   -1.0   -1.5  -1.773   -2.0   -3.0
+        baseline rms dB     0.647   0.708  0.792  0.895   0.957  1.012  1.284
+        improvement dB      0.347   0.408  0.492  0.595   0.657  0.712  0.984
+        verdict            refuse  refuse refuse accept  accept accept accept
+
+    So the honest value for a fixture field nobody had derived is: don't
+    override it. Using ``_FIXTURE_RAW_TRIM_DB`` — solved from the same branch
+    curves the conductor is handed — keeps this test's subject bit-for-bit and
+    stops it riding a floor it has nothing to say about.
+    """
     from jasper.active_speaker import crossover_v2_flow as flow_mod
 
-    captured: dict = {}
-
     def _spy(*args, **kwargs):
-        captured.update(kwargs)
         # Commit the anchor itself (no scan drift) so the committed pair is the
         # normalized anchor verbatim.
         return kwargs["seed_trim_db"], 0.0, kwargs["seed_trim_db"]
 
     monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
 
-    # Raw trims at 0 dB for BOTH roles -> any positive give-back pushes the
-    # unnormalized anchor above 0 and forces the shift.
-    zero_raw = {"woofer": 0.0, "tweeter": 0.0}
+    raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=zero_raw)
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
@@ -6983,8 +7082,13 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
         for role in ("woofer", "tweeter")
     }
     unnormalized = {
-        r: zero_raw[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
+        r: raw_trim[r] + giveback[r] + frame_offset[r] for r in ("woofer", "tweeter")
     }
+    # The premise this test is built on: the woofer's own give-back (3.4743 dB)
+    # exceeds its raw attenuation (0.0 dB), so its unnormalized anchor is a
+    # BOOST the emitter would refuse.
+    assert giveback["woofer"] > -raw_trim["woofer"]
+    assert unnormalized["woofer"] > 0.0
     assert max(unnormalized.values()) > 0.0, "fixture must actually need the shift"
     shift = max(unnormalized.values())
     expected = {r: v - shift for r, v in unnormalized.items()}
@@ -8543,19 +8647,42 @@ def _healthy_crossed_over_pair(dip_db: float = 7.0):
     branches are the SAME flat driver behind mirrored halves of one crossover,
     so they sit at the same level and a level gate has nothing to find. The
     dips (400 Hz on the woofer, 6 kHz on the tweeter) are inside each driver's
-    own radiating band and give the fit something real to flatten, so the
-    session walks the whole journey instead of stopping at a later gate for a
-    reason that has nothing to do with the level frame.
+    own radiating band, so whatever the fit does about them is driver work
+    rather than crossover work.
 
-    **The 7 dB depth is chosen, not arbitrary.** At the 6 dB it shipped with,
-    the post-fix arm cleared item 2's 0.5 dB improvement floor by 0.0003 dB —
-    so the test's headline result rode a gate it was not testing, by a margin
-    smaller than a rounding step, and any unrelated fit change could flip it
-    into a confusing failure. Depth was swept: 6 dB leaves 0.0003 dB of margin,
-    8 dB leaves the PRE arm only 0.016 dB, and at 9 dB the pre arm stops
-    refusing altogether and the comparison collapses. 7 dB maximizes the
-    smaller of the two margins (pre 0.132 dB below the floor, post 0.091 dB
-    above it), which is what makes both arms mean what they say.
+    **The depth no longer selects an outcome, and the sweep that says so is
+    below (R10a, #1817).** It used to: the depth was tuned so the two arms
+    straddled item 2's 0.5 dB improvement floor, 7 dB being the value that
+    maximised the smaller margin (pre 0.132 dB below the floor, post 0.091 dB
+    above it). That straddle is gone. Re-swept against the shaped target,
+    reading ``event=correction.crossover_v2_prediction_gate`` (floor 0.5 dB;
+    ``pre`` is the pre-#1929 arm, ``post`` the shipped one):
+
+        depth dB        3        5        7        9       11       15
+        pre  improve  -0.044   +0.023   +0.036   +0.045   +0.062   +0.106
+        post improve  -0.011   +0.024   +0.035   +0.046   +0.062   +0.105
+        pre  frame     7.886    6.916    6.156    5.509    5.566    6.389
+        post frame     0.947    0.973    0.988    1.058    0.919    0.951
+
+    Both arms are refused at every depth, and the two arms' improvements never
+    differ by more than 0.001 dB. The cause is #1809's own doctrine rather than
+    a fixture that needs more amplitude: **a cut-only fit cannot fill a dip.**
+    Under the old flat target the fit generated large spurious cuts instead —
+    the tweeter drew about 9 dB of broadband cut, because a level mask spanning
+    the crossover dragged its ``target_level_db`` to −9.80 dB for a driver whose
+    passband is ~0 dB — and those cuts moved the predicted sum enough to clear
+    the floor. With the shaped target the tweeter draws ZERO filters and the
+    woofer's residual halves (3.4308 → 1.7063 dB rms), so what is left to grade
+    is a speaker a cut-only correction genuinely cannot improve. Flipping the
+    sign does not restore the straddle either: at +5/+7/+9/+11 dB bumps BOTH
+    arms complete.
+
+    7 dB is retained because nothing selects a depth any more, and moving it
+    would churn the two frame numbers the caller pins for no gain. What still
+    binds at 7 dB, and is what the caller reads: the pre-#1929 frame is over
+    the 3.0 dB tolerance while its realized check passes (so #1866's
+    finding-and-proceed path is the one exercised, not the hard refusal), and
+    the shipped frame is well under it.
 
     The declared sweep spans (``_roles()``: woofer 150-6000, tweeter
     300-20000) both cross the 1600 Hz Fc, which is the #1929 premise and the
@@ -8603,14 +8730,48 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
 
     **What the #1866 ruling changed about the pre-#1929 arm, and what it did
     not.** That arm used to die at the frame gate. It no longer does — its
-    6.53 dB disagreement is now banked as a finding and the session continues
-    — but it still does not COMPLETE, and the gate that stops it is the more
-    damning one: a frame that mislevelled the fit by 6.53 dB makes the
-    correction fail to improve its own model, so item 2 refuses it as
-    ``correction_not_an_improvement``. The claim this test makes is unchanged
-    and is now made about the product rather than about one gate: with the
-    declared span, this healthy speaker gets no correction; with the radiating
-    band, the identical session ships one.
+    6.16 dB disagreement is banked as a finding and the session continues — but
+    it still does not COMPLETE: item 2 refuses it as
+    ``correction_not_an_improvement``.
+
+    **What R10a (#1817) changed, and what it did not — read this before
+    trusting the older account.** Two of this test's claims were true only
+    because the fit was grading each branch against a FLAT target, and both are
+    now retired rather than restated:
+
+    * *"with the radiating band, the identical session ships one."* **No longer
+      true, and its failure is not #1929's.** The correction the shipped arm
+      used to apply was made largely of the spurious cuts #1817 filed — with a
+      level mask spanning the crossover the tweeter's ``target_level_db`` sat at
+      −9.80 dB for a driver whose passband is ~0 dB, and it drew ~9 dB of
+      broadband cut to reach it. With the shaped target the tweeter draws ZERO
+      filters, and what is left is a pair whose only defects are two in-band
+      DIPS a cut-only fit cannot fill (#1809's own doctrine). So the improvement
+      gate refuses both arms — at 0.036 dB (pre) and 0.035 dB (post) against a
+      0.5 dB floor — and it is right to. The full depth sweep, and the bump
+      variant that does not restore the straddle either, are in
+      ``_healthy_crossed_over_pair``'s docstring. The honest reading is that
+      this fixture can no longer separate the two arms on the OUTCOME, because
+      a gate downstream of #1929 now decides both of them identically.
+    * *"the committed trim lands the two branches 0.32 dB apart where the
+      pre-#1929 trim left them 2.85 dB apart."* **No longer true, and the reason
+      is a genuine improvement.** Those were 2.847 and −0.321 dB under the flat
+      target; they are now 0.973 and 1.005 dB — the two arms land within 0.04 dB
+      of each other and both pass. **R10a made the pipeline robust to the
+      pre-#1929 frame error.** The frame still mislevels the ANCHOR by its full
+      6.16 dB, but the ripple-optimal scan now walks it back: 5.4 dB in the
+      pre-#1929 arm against 0.2 dB in the shipped one, asserted below. Under the
+      flat target the scan could not, because the fit had already buried ~9 dB
+      of spurious cut in the branch it was scanning, and the mislevel survived
+      into the shipped pair. So the realized instrument no longer corroborates
+      #1929 — it now says the frame error does not reach the household at all.
+
+    **What this test still pins, and why it is not vacuous.** #1929's own
+    instrument, on the identical session: 6.16 dB over the declared span against
+    0.99 dB over the radiating band, and with it the difference that still
+    reaches a household — the pre-#1929 arm mints a finding telling the owner
+    their two matched drivers sit 6.16 dB apart, and the shipped arm mints none.
+    Reverting #1929 fails this test on both.
     """
     import jasper.active_speaker.crossover_v2_flow as flow
 
@@ -8625,8 +8786,23 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
         _run_phase(conductor, 1, 1)
         return conductor
 
+    # Both candidate trim pairs the level adjudication grades, in the order
+    # ``_fit_linearization`` grades them (resolved, then anchored) — two per
+    # arm. This is what makes the scan's rescue readable instead of inferred.
+    graded: list[dict] = []
+    real_match = flow.CrossoverV2Conductor._realized_level_match
+
+    def _spy(self, freqs, w_tf, t_tf, trims_db, *args, **kwargs):
+        graded.append(dict(trims_db))
+        return real_match(self, freqs, w_tf, t_tf, trims_db, *args, **kwargs)
+
     # --- pre-#1929: the whole declared span, and a healthy speaker refused ---
-    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    #
+    # WARNING, not ERROR: the frame's refusal is an ERROR line and is still
+    # caught by its absence below, and capturing one level lower also makes the
+    # WARNING finding line readable — which is the difference between the arms
+    # that still reaches a household.
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     # Both lambdas swallow **kwargs on purpose: they exist to drop the
     # radiating band specifically, and dropping any FUTURE keyword the same way
     # is the behaviour that keeps this arm a faithful pre-#1929 call rather
@@ -8645,56 +8821,83 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
         mp.setattr(
             flow, "core_level_band_hz", lambda env, **_band: whole_band_span(env),
         )
+        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _spy)
         before = session()
         with pytest.raises(CaptureBeginRefused) as excinfo:
             _run_phase(before, 2, 2)
     # Still refused, and still on this session's own evidence — but since the
-    # #1866 ruling the frame BANKS its 6.53 dB rather than stopping on it, and
-    # the refusal comes from the prediction gate: the mislevelled frame makes
-    # the correction fail to beat its own baseline.
+    # #1866 ruling the frame BANKS its 6.16 dB rather than stopping on it, and
+    # the refusal comes from the prediction gate.
     assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
     assert before._last_level_frame_disagreement_db == pytest.approx(6.16, abs=0.1)
     assert (
         before._last_level_frame_disagreement_db
         > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
-    # This arm captures at ERROR, and the frame's refusal is the ERROR line —
-    # its absence is the assertion that the frame banked rather than stopped.
-    # (The banked line itself is a WARNING and is pinned in
+    # The frame's refusal is the ERROR line — its absence is the assertion that
+    # the frame banked rather than stopped. The banked line is the WARNING
+    # beside it, and IS asserted here rather than only in
     # ``test_a_disagreeing_frame_whose_realized_check_passes_banks_and_
-    # proceeds``.)
+    # proceeds``: since R10a it is the difference between the arms that still
+    # reaches a household, so it has to be read on both.
     assert "event=correction.crossover_v2_level_frame_refused" not in caplog.text
+    assert "event=correction.crossover_v2_level_frame_finding" in caplog.text
     assert before.candidate is None
 
-    # --- and with the radiating band: the same session completes -------------
-    after = session()
-    verdict = _run_phase(after, 2, 2)
-    assert verdict["accepted"] is True
+    # --- and with the radiating band: the identical session, judged fairly ---
+    caplog.clear()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow.CrossoverV2Conductor, "_realized_level_match", _spy)
+        after = session()
+        # Refused too, since R10a — and NOT for anything the level frame said;
+        # see this test's docstring for the measured account and
+        # ``_healthy_crossed_over_pair``'s for the depth sweep. A cut-only fit
+        # cannot fill this pair's two in-band dips, so there is no material
+        # improvement to grade, at any depth, in either arm.
+        with pytest.raises(CaptureBeginRefused) as after_excinfo:
+            _run_phase(after, 2, 2)
+    assert after_excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
     assert after._last_level_frame_disagreement_db == pytest.approx(0.99, abs=0.1)
     assert after._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+    # THE DIFFERENCE THAT STILL REACHES A HOUSEHOLD, and the reason this test is
+    # not vacuous now that both arms end the same way. Over the declared span
+    # the owner of two matched drivers is told they sit 6.16 dB apart; over the
+    # radiating band nothing is minted at all, because there is nothing to
+    # report. Reverting #1929 flips both of these, not just the magnitude above.
+    assert "event=correction.crossover_v2_level_frame_finding" not in caplog.text
+    assert "event=correction.crossover_v2_level_frame_refused" not in caplog.text
 
-    # THE CORROBORATION, and it has to be read as a magnitude. PR-L4 item 1
-    # reads different inputs (the post-fit branches), a different band
-    # (mirrored ±1 octave), and a different statistic (power mean) from the
-    # fit's median — so if #1929 had bought the frame's pass by mislevelling
-    # the pair, this is what would say so. It does not: the committed trim
-    # lands the two branches 0.32 dB apart where the pre-#1929 trim left them
-    # 2.85 dB apart, a 2.53 dB move toward zero on an instrument this change
-    # does not touch. (It is not a fully independent third opinion — it is
-    # ``solve_branch_trims`' own estimator re-read on the trimmed pair, "One
-    # estimator, not a second opinion" per its own docstring — which is why the
-    # claim here is scoped to "not mislevelled", not "independently confirmed".)
-    #
-    # ``matched`` alone cannot make that claim — it is True in BOTH arms (2.85
-    # is inside the 3.0 dB tolerance, barely), so a boolean assertion here
-    # would pass identically against the defect it exists to catch.
+    # THE REALIZED INSTRUMENT, which since R10a says something different from
+    # what it used to — and it is the better news. PR-L4 item 1 reads different
+    # inputs (the post-fit branches), a different band (mirrored ±1 octave) and
+    # a different statistic (power mean) from the fit's median, so it is where a
+    # frame error would show up in the shipped pair. It does not show up: the
+    # two arms land within 0.04 dB of each other and both pass, where under the
+    # flat target they read 2.847 and −0.321 dB. (It is not a fully independent
+    # third opinion — it is ``solve_branch_trims``' own estimator re-read on the
+    # trimmed pair, "One estimator, not a second opinion" per its own docstring.)
     before_difference_db = before._last_realized_level_match.difference_db
     after_difference_db = after._last_realized_level_match.difference_db
-    assert before_difference_db == pytest.approx(2.847, abs=0.05)
-    assert after_difference_db == pytest.approx(-0.321, abs=0.05)
-    assert abs(after_difference_db) < 0.5
-    assert abs(after_difference_db) < abs(before_difference_db) - 2.0
+    assert before_difference_db == pytest.approx(0.973, abs=0.05)
+    assert after_difference_db == pytest.approx(1.005, abs=0.05)
+    assert abs(before_difference_db - after_difference_db) < 0.1
+    assert before._last_realized_level_match.matched is True
     assert after._last_realized_level_match.matched is True
+
+    # …and the MECHANISM that makes them agree, so the line above reads as a
+    # measured rescue rather than a coincidence. Four graded pairs, two per arm,
+    # ``(resolved, anchored)`` each: the pre-#1929 arm's anchor is mislevelled by
+    # the frame's full error and the ripple-optimal scan walks the tweeter 5.4 dB
+    # to undo it; the shipped arm's anchor is already right and the scan moves it
+    # 0.2 dB. That walk is what the flat target used to prevent, by burying ~9 dB
+    # of spurious cut in the very branch the scan reads.
+    assert len(graded) == 4, graded
+    (pre_resolved, pre_anchored, post_resolved, post_anchored) = graded
+    pre_walk_db = abs(pre_resolved["tweeter"] - pre_anchored["tweeter"])
+    post_walk_db = abs(post_resolved["tweeter"] - post_anchored["tweeter"])
+    assert pre_walk_db == pytest.approx(5.4, abs=0.1)
+    assert post_walk_db == pytest.approx(0.2, abs=0.1)
+    assert pre_walk_db > 10.0 * post_walk_db
 
 
 def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():
@@ -8725,10 +8928,20 @@ def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():
     Completing that field session needs the frame-gate semantics change ruled
     on #1866, not a further estimator fix.
 
-    This fixture cannot complete the journey — two perfect branches give a
-    correction nothing to improve, so it stops at the prediction gate — which
-    is why the assertion is on the frame's own stashed number and the refusal
-    code is asserted NOT to be the level frame's.
+    **This fixture COMPLETES the journey since R10a, and that is the point of
+    the second half of this test.** It used to stop at the prediction gate:
+    against a FLAT target the fit read each branch's own crossover rolloff as
+    a deficit, placed filters fighting it, and made the predicted sum WORSE
+    than no correction at all — so a *perfect* speaker was refused. Against
+    the crossover-shaped target (#1817) the same pair draws **zero filters on
+    both branches** and 0.000 dB of headroom cost, the prediction stays in
+    spec, and the session is accepted. A speaker with nothing wrong with it
+    now gets nothing done to it.
+
+    The frame number is asserted either way, because it is this test's actual
+    subject and it did NOT move: 0.910 dB before R10a and 0.910 dB after, which
+    is also the evidence that the shaped target left ``target_level_db``'s
+    meaning alone (it is re-centred to add no level).
     """
     from jasper.active_speaker.branch_chain import (
         CrossoverSection, crossover_response_db,
@@ -8756,14 +8969,19 @@ def test_the_frame_still_disagrees_on_a_pair_that_is_perfect_by_construction():
     )
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        _run_phase(c, 2, 2)
+    accepted = _run_phase(c, 2, 2)["accepted"]
 
-    # Refused, but NOT by the level frame — the frame cleared, and the residual
-    # below is what it cleared by.
-    assert excinfo.value.code != REASON_DRIVER_LEVELS_DISAGREE
+    # #1929's own number, unmoved by R10a's shaped target.
     assert c._last_level_frame_disagreement_db == pytest.approx(0.910, abs=0.02)
     assert c._last_level_frame_disagreement_db < LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
+
+    # R10a: a pair that is perfect by construction is left ALONE and accepted.
+    # Both halves matter — zero filters is the #1817 claim, and `accepted` is
+    # what proves the old objective's refusal of a perfect speaker is gone.
+    assert accepted is True
+    for role, fit in c.candidate.linearization.items():
+        assert fit["filters"] == [], (role, fit["filters"])
+        assert fit["headroom_cost_db"] == 0.0, role
 
 
 def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
@@ -8838,13 +9056,23 @@ def test_the_level_frame_refusal_names_the_levels_and_bands_it_read(caplog):
 # recorded on #1870 — so it is CITED and never replayed. What is replayed is a
 # fixture with the same SHAPE: an extra −1.6 dB/octave of woofer passband tilt,
 # an ordinary driver in baffle-step territory, which lands the frame at
-# 3.209 dB against the 3.0 tolerance while the realized-level instrument reads
-# −0.828 dB and passes. Both numbers are asserted below, so a change that moves
-# either has to argue with these tests. (3.209, not the 3.276 an earlier
-# revision of this fixture read: #1938 gate follow-up fixed
-# _solve_fixture_raw_trim's hardcoded-woofer-0.0 return, and at this tilt the
-# woofer is the louder branch, so the coherent trim attenuates it by 0.067 dB
-# — see _tilted_woofer_fixture's docstring.)
+# 3.894 dB against the 3.0 tolerance while the realized-level instrument reads
+# −0.978 dB and passes. Both numbers are asserted below, so a change that moves
+# either has to argue with these tests.
+#
+# The tilt is the fixture's physical premise and has never moved; these two
+# numbers are its CONSEQUENCE and have, twice:
+#
+#  * 3.276 → 3.209 (#1938 gate follow-up) — _solve_fixture_raw_trim's
+#    hardcoded-woofer-0.0 return was fixed, and at this tilt the woofer is the
+#    louder branch, so the coherent trim attenuates it by 0.067 dB. See
+#    _tilted_woofer_fixture's docstring.
+#  * 3.209 → 3.894 (R10a, #1817) — _fixture_branch_db became faithful, so the
+#    curves this fixture tilts now carry each branch's own crossover, as a real
+#    per-driver measurement does. Both of the frame's estimators read the
+#    MEASUREMENT, so a truer measurement moves them; neither reads the fit's
+#    target, and the value is 3.894 with the shaped target and with a flat one
+#    alike (measured both ways).
 _LEVEL_FRAME_FINDING_TILT_DB_PER_OCT = -1.6
 
 
@@ -8888,39 +9116,53 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     2. a finding is banked carrying both estimators, both bands, and the
        realized difference;
     3. **proceeding is the same tune, not refused** — the committed trims are
-       byte-for-byte the anchor the fit already computed;
+       the pair the fit's own level adjudication picked out of the two IT
+       computed, and the inter-driver placement they carry is the fit's
+       anchor's, not the trim solve's;
     4. the decision is visible in the journal under its own event.
 
     **Claim 3 is deliberately NOT "proceeds on the near-Fc anchor (the trim
     solve)", which is the ruling's wording and is inverted.** The trim term
     cancels out of ``anchor_base + giveback + level_frame_offset``, so the
     committed inter-driver placement is set by the CORE-MEDIAN frame — the
-    *disputed* estimator. This fixture measures that directly: committed
-    −0.674 is the core-median value, anchoring on the trim solve's placement
-    would give +2.535, and the two differ by 3.209 — exactly the banked
-    disagreement. What proceeding buys is that the session is not refused; it
-    does not switch estimators, and the realized check grades the outcome
-    rather than picking a winner. The gate comment in ``_assert_accountable``
-    derives all of this.
+    *disputed* estimator. This fixture measures that directly: the anchor
+    places the pair 0.883 dB apart, which is the core-median frame's own value;
+    anchoring on the trim solve's placement instead would give 4.776; and the
+    two differ by 3.894 — exactly the banked disagreement. What proceeding buys
+    is that the session is not refused; it does not switch estimators, and the
+    realized check grades the outcome rather than picking a winner. The gate
+    comment in ``_assert_accountable`` derives all of this.
 
-    **Why −0.674 is unchanged but +2.535/3.209 moved** (#1938 gate
+    **Where claim 3's old "byte-for-byte the anchor" wording went (R10a,
+    #1817).** Before R10a the ripple-optimal scan returned its own seed on this
+    fixture, so committed, anchored and resolved were one number and the claim
+    could be written as an identity on the anchor. It never was one:
+    ``_fit_linearization`` grades BOTH candidate pairs — the anchor and the
+    scan's ripple polish — against the realized-level instrument
+    unconditionally, and commits whichever LEVELS better ("inter-driver level is
+    the load-bearing property, summed ripple is the polish"). Once the fit stops
+    burying the pair under crossover-fighting cuts the linearized branches
+    differ, the scan finds a genuinely better ripple point 0.500 dB off its
+    seed, and that pair levels better as well (|−0.978| against |−1.478| dB), so
+    it is what ships. The polish sits well inside the 6.0 dB sanity margin, so
+    no guard runs. The claim itself is unchanged and is asserted below in the
+    form it always had: the placement follows the core median.
+
+    **Why the trim-solve estimator's own number moved once before** (#1938 gate
     follow-up). ``_tilted_woofer_fixture`` used to hand a coherent-looking but
-    silently wrong trim to this fixture at this exact tilt. This is about the
-    TRIM-SOLVE estimator specifically (``solve_branch_trims``'s own mirrored
-    ±1-octave band-power average, NOT the fit's core-median above) — on that
-    estimator the woofer is the louder branch at this tilt (level_w 1.447 >
-    level_t 1.380), so the true trim attenuates the WOOFER by 0.067 dB, not
-    the tweeter by 0.0 (the old hardcoded-woofer-0.0 helper's answer,
-    regardless of which branch the solve said was louder). The committed
-    placement (−0.674) is untouched, because the trim term genuinely cancels
-    out of ``anchor_base + giveback + level_frame_offset`` as this docstring
-    already claimed — that identity is what this fixture was built to
-    demonstrate, and it holds under either trim. The trim-solve anchor
-    (`+2.535` vs the old `+2.602`) and the disagreement it produces (`3.209`
-    vs the old `3.276`) both shift by exactly the new woofer trim's 0.067 dB,
-    because both terms carry ``trims["woofer"]`` directly while the
-    core-median frame (level_w 3.276 vs level_t 0.0, the OTHER estimator)
-    never reads the raw trim at all.
+    silently wrong trim to this fixture at this exact tilt. This is about
+    ``solve_branch_trims``'s mirrored ±1-octave band-power average, NOT the
+    fit's core median — on that estimator the woofer is the louder branch at
+    this tilt, so the true trim attenuates the WOOFER rather than the tweeter by
+    0.0 (the old hardcoded-woofer-0.0 helper's answer, regardless of which
+    branch the solve said was louder). The placement identity was untouched by
+    it, because the trim term genuinely cancels out of ``anchor_base + giveback
+    + level_frame_offset`` as this docstring already claimed; the trim-solve
+    anchor and the disagreement it produces both shifted by exactly the new
+    woofer trim, because both carry ``trims["woofer"]`` directly while the
+    core-median frame never reads the raw trim at all. R10a then moved all three
+    again, for the unrelated reason recorded above
+    ``_LEVEL_FRAME_FINDING_TILT_DB_PER_OCT``.
 
     Why the tilt is the right provocation rather than a contrivance: #1929
     removed a structural bias from one estimator, it did not make the two
@@ -8962,21 +9204,21 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     # The two instruments, and the fact that they disagree about a speaker
     # whose OUTPUT is fine. This is the whole premise of the ruling, so it is
     # asserted as magnitudes rather than as booleans.
-    assert c._last_level_frame_disagreement_db == pytest.approx(3.209, abs=0.02)
+    assert c._last_level_frame_disagreement_db == pytest.approx(3.894, abs=0.02)
     assert (
         c._last_level_frame_disagreement_db > LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
     )
     assert c._last_realized_level_match.difference_db == pytest.approx(
-        -0.828, abs=0.02
+        -0.978, abs=0.02
     )
     assert c._last_realized_level_match.matched is True
 
     # 2 — one finding banked, carrying all three instruments and both bands.
     assert len(banked) == 1
     record = banked[0]
-    assert record["disagreement_db"] == pytest.approx(3.209, abs=0.02)
+    assert record["disagreement_db"] == pytest.approx(3.894, abs=0.02)
     assert record["tolerance_db"] == LEVEL_FRAME_AGREEMENT_TOLERANCE_DB
-    assert record["realized_difference_db"] == pytest.approx(-0.828, abs=0.02)
+    assert record["realized_difference_db"] == pytest.approx(-0.978, abs=0.02)
     for role in ("woofer", "tweeter"):
         # estimator 1 (the fit's median) and estimator 2 (the trim solve's
         # own level-match term) — the two numbers that disagreed
@@ -8996,31 +9238,43 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     assert record["f_hi_hz"] == record["core_band_hi_hz_tweeter"]
     assert record["core_band_hi_hz_woofer"] < record["core_band_lo_hz_tweeter"]
 
-    # 3 — proceeding is the SAME TUNE, not refused: the committed trims are
-    # the anchor the fit already computed, taken from the fit's OWN call
-    # rather than recomputed here (``graded`` records both candidate pairs the
-    # level adjudication weighed, in the order ``_fit_linearization`` grades
-    # them: resolved, then anchored).
+    # 3 — proceeding is the SAME TUNE, not refused: the committed trims are one
+    # of the two pairs the fit itself computed and graded, taken from the fit's
+    # OWN call rather than recomputed here (``graded`` records both, in the
+    # order ``_fit_linearization`` grades them: resolved, then anchored).
     assert len(graded) == 2, graded
     committed = dict(c.candidate.role_attenuations_db)
-    anchored = graded[1]
-    assert set(anchored) == set(committed)
-    for role, value in anchored.items():
+    resolved, anchored = graded[0], graded[1]
+    assert set(anchored) == set(committed) == set(resolved)
+    # The scan's ripple polish is what ships here, because the adjudication
+    # commits whichever pair LEVELS better and this one does. That is the
+    # ordinary trusted path, not a fallback: the polish is 0.500 dB off its own
+    # seed, an order of magnitude inside the sanity margin, so no guard ran.
+    for role, value in resolved.items():
         assert committed[role] == pytest.approx(value, abs=1e-9)
+    drift_db = max(abs(resolved[role] - anchored[role]) for role in anchored)
+    assert drift_db == pytest.approx(0.500, abs=0.02)
+    assert drift_db < LINEARIZATION_TRIM_SANITY_MARGIN_DB
+    assert "event=correction.crossover_v2_linearization_trim_rejected" not in (
+        caplog.text
+    )
 
-    # …and WHICH estimator that anchor places on, because the ruling's own
+    # …and WHICH estimator the ANCHOR places on, because the ruling's own
     # wording ("the trim solve") says the opposite of what the code does. The
     # trim term cancels out of ``anchor_base + giveback + level_frame_offset``,
-    # leaving ``giveback + system − core``, so the committed inter-driver
-    # placement follows the CORE MEDIAN — the disputed estimator. Asserted as
-    # the identity rather than as a magic number: the placement the trim solve
-    # would have produced differs from the committed one by exactly the banked
+    # leaving ``giveback + system − core``, so the anchored inter-driver
+    # placement follows the CORE MEDIAN — the disputed estimator. Read off the
+    # ANCHOR and not off ``committed`` because the ripple polish above moves the
+    # committed pair by its own 0.500 dB, which is the scan's business and not
+    # the frame's; the anchor is the number the frame produced. Asserted as the
+    # identity rather than as a magic number: the placement the trim solve would
+    # have produced differs from the anchored one by exactly the banked
     # disagreement.
     lin = c.candidate.linearization
     giveback = {role: lin[role]["correction_giveback_db"] for role in lin}
     cores = {r: v["level_db"] for r, v in c._last_level_frame_cores.items()}
     trims = dict(c._last_level_frame_trims)
-    placed = committed["woofer"] - committed["tweeter"]
+    placed = anchored["woofer"] - anchored["tweeter"]
     core_frame = (
         (giveback["woofer"] - cores["woofer"])
         - (giveback["tweeter"] - cores["tweeter"])
@@ -9029,9 +9283,12 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
         (giveback["woofer"] + trims["woofer"])
         - (giveback["tweeter"] + trims["tweeter"])
     )
+    # 1e-3 is the disclosure's own rounding: ``_last_level_frame_cores`` reports
+    # each core level to 3 dp, so ``core_frame`` carries up to a half-step of
+    # rounding on each of its two terms.
     assert placed == pytest.approx(core_frame, abs=1e-3)
-    assert placed == pytest.approx(-0.674, abs=0.02)
-    assert trim_frame == pytest.approx(2.535, abs=0.02)
+    assert placed == pytest.approx(0.883, abs=0.02)
+    assert trim_frame == pytest.approx(4.776, abs=0.02)
     assert abs(trim_frame - core_frame) == pytest.approx(
         c._last_level_frame_disagreement_db, abs=1e-3
     )
@@ -9196,8 +9453,11 @@ def test_a_retaken_eager_fit_banks_its_finding_exactly_once():
     # The confirm refits, re-mints, and commits — once.
     assert _confirm_cloud(c)["candidate_fingerprint"]
     assert len(fakes.banked_findings) == 1
+    # 3.894 since R10a made _fixture_branch_db faithful — the frame's own
+    # consequence of a truer measurement, derived in the section comment above
+    # _LEVEL_FRAME_FINDING_TILT_DB_PER_OCT rather than restated here.
     assert fakes.banked_findings[0]["disagreement_db"] == pytest.approx(
-        3.209, abs=0.02
+        3.894, abs=0.02
     )
     # A re-delivered confirm signal cannot double-publish it.
     assert c.confirm_cloud_measure_group() is None
