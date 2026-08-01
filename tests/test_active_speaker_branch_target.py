@@ -32,6 +32,7 @@ from jasper.active_speaker.branch_target import (
 )
 from jasper.active_speaker.linearization_fit import (
     _MIN_FILTER_GAIN_DB,
+    SHELF_SLOPE_THRESHOLD_DB_PER_OCT,
     LIFT_SUPPRESSION_REASONS,
     FitVocabulary,
     _lift_stage,
@@ -475,6 +476,40 @@ def test_contribution_weighting_shrinks_a_low_contribution_deficit():
         f"weighted {edge_on.requested_db:.3f} dB vs unweighted "
         f"{edge_off.requested_db:.3f} dB — the weight is not biting"
     )
+
+
+def test_the_shelf_slope_gate_reads_the_crossover_not_the_driver():
+    """The shelf stage's own instance of #1817, pinned to the numbers.
+
+    A FLAT tweeter behind a 2 kHz LR4 high-pass has no slope of its own. Its
+    high-pass drags the bottom of the fit band down, and a regression over the
+    raw curve reads that as the DRIVER rising steeply — arming a gate whose
+    threshold is 3.0 dB/oct with 5.70 dB/oct of pure crossover.
+
+    Deliberately asserts the SLOPE, not an emitted filter: in this
+    configuration no shelf results anyway (the corner selection takes the low
+    side, whose drop below target is negative). The stage is being asked the
+    wrong question and saved by an unrelated downstream test, which is worth
+    fixing but is not worth over-claiming — see ``_shelf_stage``'s docstring.
+    """
+    grid_hz = np.geomspace(150.0, 20_000.0, 512)
+    measured_db = crossover_response_db(grid_hz, _HIGHPASS)
+    level_mask = (grid_hz >= radiating_band_hz(_HIGHPASS)[0]) & (grid_hz <= 18_000.0)
+    target = branch_target(_HIGHPASS, grid_hz)
+    assert target is not None
+    shape_db = target.centred_on(level_mask).shape_db
+
+    band = (grid_hz >= 800.0) & (grid_hz <= 18_000.0)
+    log2f = np.log2(grid_hz[band])
+    raw_slope = float(np.polyfit(log2f, measured_db[band], 1)[0])
+    deshaped_slope = float(
+        np.polyfit(log2f, (measured_db - shape_db)[band], 1)[0]
+    )
+
+    assert raw_slope == pytest.approx(5.6957, abs=0.01)
+    assert raw_slope > SHELF_SLOPE_THRESHOLD_DB_PER_OCT
+    assert deshaped_slope == pytest.approx(0.0, abs=0.01)
+    assert deshaped_slope < SHELF_SLOPE_THRESHOLD_DB_PER_OCT
 
 
 def test_cuts_are_deliberately_not_contribution_weighted():

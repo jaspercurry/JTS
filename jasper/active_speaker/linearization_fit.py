@@ -1390,12 +1390,22 @@ def _shelf_stage(
 
     ``shape_db`` (R10a, #1817) is the branch's re-centred crossover shape, and
     the regression runs on ``smoothed_db - shape_db`` — the branch's OWN
-    slope, with its crossover's contribution removed. This is the shelf's own
-    instance of #1817 and it is the one that bites hardest on a TWEETER: its
-    high-pass drags the bottom of the fit band down, which reads as a RISING
-    band slope and can arm a whole-band cut-only shelf that exists purely to
-    fight the crossover. Removing the shape first asks the question the stage
-    means to ask. ``None`` regresses the raw curve, exactly as before R10a.
+    slope, with its crossover's contribution removed.
+
+    **What is measured, and what is not.** On a FLAT tweeter behind a 2 kHz
+    LR4 high-pass, regressed over [800, 18000] Hz, the raw band slope is
+    **+5.6957 dB/oct** and the shape-removed slope is **0.0000** — so the
+    slope gate (threshold 3.0) is armed by the crossover alone, on a driver
+    with nothing wrong with it. That much is demonstrated
+    (``test_the_shelf_slope_gate_reads_the_crossover_not_the_driver``).
+
+    What is NOT claimed is that this reaches an emitted shelf. It does not, in
+    that case: with the band's low edge deep in the high-pass rolloff the
+    corner selection takes the LOW side, whose drop below target is negative,
+    and the stage returns ``None`` anyway. The gate is being asked the wrong
+    question and is saved by an unrelated downstream test — which is a reason
+    to fix the question, not to rely on the rescue. ``None`` regresses the raw
+    curve, exactly as before R10a.
     """
     if int(band_mask.sum()) < 2:
         return None
