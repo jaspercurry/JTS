@@ -6497,9 +6497,10 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # reason worth recording rather than papering over: R10b (#1988) made the
     # fit's `correction_giveback_db` grade the REALIZED biquad cascade instead
     # of `predicted_response`'s Lorentzian, which moved this pair's anchor by
-    # +0.124 dB (tweeter -1.383 -> -1.260) and its realized level error with it
-    # (|-0.258| -> |-0.134| dB, against the polish's |0.166| dB, which is
-    # unchanged). The adjudication then picks the anchor. No filter moved.
+    # +0.124 dB (tweeter -1.383 -> -1.260). BOTH graded pairs moved with it (the
+    # polish is seeded from the anchor), in opposite directions: the anchor's
+    # realized level error |-0.258| -> |-0.134| dB, the polish's |0.142| ->
+    # |0.166| dB. That is what crossed them over. No filter moved.
     resolved_trim_t, _ripple, _seed = real_solve(
         call["freqs"], call["w_tf"], call["t_tf"], FC_HZ,
         lo_hz=call["lo_hz"], hi_hz=call["hi_hz"],
