@@ -608,7 +608,7 @@ class LinearizationFit:
     pass/fail." All four are REPORT-ONLY in this PR; nothing gates on them
     yet (design doc build-order step 2, closed-loop verify, is a later PR).
 
-    **Every one of those numbers grades the REALIZED cascade** (R10b;
+    **Every one of those numbers is measured on the REALIZED cascade** (R10b;
     first-principles panel CC-2(b),
     ``captures/first-principles-panel-20260731/objective-verdict.md``) — the
     measurement plus :func:`complex_correction_response`, the exact RBJ biquads
@@ -617,17 +617,18 @@ class LinearizationFit:
     :attr:`correction_giveback_db`. Pinned by
     ``test_reported_residual_grades_the_realized_biquad_not_the_lorentzian``.
 
-    **That is the CURVE, not the whole ruler — issue #2013.** The residual is
-    ``working_db - frame_target_db``, and the FRAME still carries one pre-seam
-    term: ``frame_target_db = target_curve_db - hf.spend_db``, where
-    ``hf.spend_db`` is sized inside :func:`_hf_continuation_stage` against a
-    ``working_db`` that has not been rebuilt yet. So does
-    :attr:`measured_deficit_at_ceiling_db`. Measured on the banked 2026-07-30
-    JTS3 session (``captures/r10b-alignment-20260801/lorentzian_gap_probe.py``,
+    **That is the CURVE being measured, not the ruler it is measured against —
+    issue #2013.** The residual is ``working_db - frame_target_db``, and the
+    FRAME still carries one pre-seam term: ``frame_target_db = target_curve_db -
+    hf.spend_db``, where ``hf.spend_db`` is sized inside
+    :func:`_hf_continuation_stage` against a ``working_db`` the seam has not
+    rebuilt yet. :attr:`measured_deficit_at_ceiling_db` comes from the same
+    place. Measured on the banked 2026-07-30 JTS3 session
+    (``captures/r10b-alignment-20260801/lorentzian_gap_probe.py``,
     ``exact_fold_counterfactual``): the spend moves 0.143 dB under an exact fold
-    and the committed trim up to 0.162 dB. Do not read the sentence above as
-    "no Lorentzian reaches any reported number" — it reaches the frame, and
-    #2013 owns closing it.
+    and the committed trim up to 0.162 dB — more than the seam itself moves. So
+    do not read the paragraph above as "no Lorentzian reaches any reported
+    number". It reaches the frame; #2013 owns closing it.
 
     **All three ladder levels are FIT DIAGNOSTICS, and the flat-linearization
     plan's PR-5 fixed how they are labeled downstream.** Every one of them is
