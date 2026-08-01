@@ -11,6 +11,7 @@ binary, no real systemctl. Deterministic, no sleeps, no network.
 from __future__ import annotations
 
 import os
+import resource
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -855,10 +856,11 @@ def test_binary_identity_tap_implementation_id_excludes_binary_path() -> None:
 # the module's failure contract: OSError never escapes as itself
 # --------------------------------------------------------------------------- #
 
-#: Permission triggers are no-ops for root, which containerized CI often is.
-#: Two conversion sites are reachable ONLY through an unsearchable directory,
-#: so those cases skip rather than pass vacuously and claim coverage they do
-#: not have.
+#: Three conversion sites are reachable only through an unsearchable directory,
+#: and root ignores the mode bits — so under root these do NOT pass vacuously,
+#: they FAIL: the operation succeeds, and the case either matches the wrong
+#: refusal or gets no refusal at all. A false red is as costly as a false
+#: green, so they skip. (JTS CI runs unprivileged, so they do execute there.)
 _NEEDS_UNPRIVILEGED = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="chmod-based permission triggers do not apply to root",
@@ -967,6 +969,44 @@ def test_an_unsearchable_bundle_makes_the_slot_check_a_render_error(
 
 
 @_NEEDS_UNPRIVILEGED
+def test_a_child_that_cannot_apply_the_bounds_is_a_render_error(
+    tmp_path: Path,
+) -> None:
+    """A ``preexec_fn`` failure is ``SubprocessError``, NOT ``OSError``.
+
+    CPython's ``_posixsubprocess`` deliberately declines to report the child's
+    failure as an ``OSError``, so an ``except OSError`` alone never sees it and
+    it escaped to the emit-bench CLI as exit 1 — the same inversion #2020
+    exists to close, one exception type over.
+
+    The trigger is real, not stubbed: ``nice=-5`` makes ``os.nice()`` inside
+    the actual ``_rlimit_preexec`` raise ``PermissionError`` in the actual
+    child, because lowering niceness requires privilege on every POSIX. So this
+    exercises the whole path — real ``subprocess.run``, real ``preexec_fn``,
+    real fork — rather than asserting the handler against a hand-thrown
+    exception. It needs no camilladsp: the child dies in ``preexec_fn``, before
+    ``exec``.
+    """
+
+    bounds = render.RenderBounds(
+        timeout_s=30.0,
+        rlimit_as_bytes=resource.RLIM_INFINITY,
+        rlimit_cpu_s=600,
+        nice=-5,
+    )
+    with pytest.raises(
+        render.RenderError, match="could not apply the render bounds"
+    ):
+        render.render_config(
+            "/bin/echo",
+            tmp_path / "config.yml",
+            output_path=tmp_path / "out.raw",
+            bounds=bounds,
+            fader_db=0.0,
+        )
+
+
+@_NEEDS_UNPRIVILEGED
 def test_an_unstattable_render_binary_is_a_render_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1000,10 +1040,12 @@ def test_an_uninspectable_render_output_is_a_render_error(
 ) -> None:
     """The result block: ``is_file()``/``stat()`` after the binary exited 0.
 
-    The bundle goes unsearchable DURING the render, which is the only way to
-    reach this handler — the destination-prep block ran while the directory was
-    still fine, and a plain missing file is reported as "produced no output
-    file" rather than as an OS failure.
+    The bundle goes unsearchable DURING the render, which is the only trigger
+    that can be constructed hardware-free: the destination-prep block ran while
+    the directory was still fine, and a plain missing file is reported as
+    "produced no output file" rather than as an OS failure. It is not the only
+    trigger that exists — ``stat`` also fails on EIO from failing media, on
+    ESTALE over NFS, and on a symlink loop introduced during the render window.
     """
 
     bundle = tmp_path / "bundle"

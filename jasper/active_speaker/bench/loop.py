@@ -595,14 +595,15 @@ def _render_arm(
 
     # Clear OUR two preserved slots so a second run into the same work directory
     # is not refused by its own leftovers. This does not defeat the helper's
-    # slot guard, it scopes it: that guard defends the bass-extension campaign,
-    # which renders MANY shapes into one bundle under caller-chosen names, so a
-    # collision there means two different shapes are fighting over one file — a
-    # real bug. This loop renders exactly two shapes and derives both names from
-    # the arm, so a collision here only ever means "this directory was used
-    # before". `render_config` already unlinks its own declared destination for
-    # precisely that reason; this restores the same parity for the two paths the
-    # determinism helper adds on top of it.
+    # slot guard, it scopes it: that guard knows only that a bundle path was
+    # used before, and it defends the bass-extension campaign, where MANY
+    # shapes share one bundle under caller-chosen names — so there the caller
+    # is the only one who can say whether a collision is reuse or two shapes
+    # fighting over a name. This loop renders exactly two shapes and derives
+    # both names from the arm, so here the answer is always reuse.
+    # `render_config` already unlinks its own declared destination for the same
+    # reason; this restores that parity for the two paths the determinism
+    # helper adds on top of it.
     for slot in (first_output_path, repeat_output_path):
         try:
             slot.unlink(missing_ok=True)

@@ -97,13 +97,18 @@ _FORBIDDEN_ARGV_TOKENS = frozenset({"--statefile", "-p", "--port", "-a", "--addr
 class RenderError(RuntimeError):
     """A binary resolution, render invocation, or determinism check failed.
 
-    **This module's whole failure surface.** Every filesystem operation here
-    converts ``OSError`` into this type, so a caller that handles
-    ``RenderError`` has handled the module. That is load-bearing rather than
-    tidy: callers refuse on ``RenderError`` and map it to a "no verdict was
-    reached" exit, while a bare ``OSError`` escapes them and lands as "a graded
-    branch did not match" — a finding reported for a run that never rendered a
-    sample. Anything added here that touches the filesystem converts too;
+    **This module's whole failure surface.** Every filesystem operation
+    converts ``OSError``, and every subprocess call converts ``OSError``,
+    ``TimeoutExpired``, and ``SubprocessError`` — the last because an exception
+    inside ``preexec_fn`` reaches the parent as ``SubprocessError`` rather than
+    ``OSError``, so an ``except OSError`` alone leaves a hole. A caller that
+    handles ``RenderError`` has therefore handled the module.
+
+    That is load-bearing rather than tidy: callers refuse on ``RenderError``
+    and map it to a "no verdict was reached" exit, while anything escaping them
+    lands as "a graded branch did not match" — a finding reported for a run
+    that never rendered a sample. Anything added here that touches the
+    filesystem or spawns a child converts too;
     ``tests/test_bass_extension_bench_render.py`` pins the sites.
     """
 
@@ -236,6 +241,12 @@ def resolve_render_binary(
             "refusing rather than silently preferring the override (R5)"
         )
     binary_path = Path(resolved_path)
+    # The `raise RenderError` NESTED inside this `try` propagates rather than
+    # being caught by the `except OSError` below it — RenderError subclasses
+    # RuntimeError, never OSError. Three sites in this module take that shape
+    # (here, and both blocks in `render_config`) because hoisting the check out
+    # would cost more in readability than it buys. It is not a latent bug; do
+    # not "fix" it, and do not reorder it into one by widening the except.
     try:
         if not binary_path.is_file():
             raise RenderError(f"resolved render binary does not exist: {binary_path}")
@@ -376,8 +387,26 @@ def render_config(
             preexec_fn=_rlimit_preexec(bounds),
         )
     except subprocess.TimeoutExpired as exc:
+        # MUST stay ahead of the SubprocessError arm below — TimeoutExpired
+        # SUBCLASSES SubprocessError, so swapping these two silently relabels
+        # every timeout as a bounds-setup failure. A swap is caught by
+        # tests/test_bass_extension_bench_render.py::
+        # test_render_config_refuses_on_timeout, which matches on "timed out".
         raise RenderError(
             f"render timed out after {bounds.timeout_s}s: argv={argv!r}"
+        ) from exc
+    except subprocess.SubprocessError as exc:
+        # An exception inside `preexec_fn` reaches the parent as
+        # SubprocessError, NOT OSError: CPython's _posixsubprocess deliberately
+        # declines to report the child's failure as an OSError, so the arm
+        # below never sees it. With check=False that makes this the only way
+        # this arm fires in practice — the child could not apply the bounds,
+        # typically because an ambient hard rlimit is already below the one
+        # requested, or because the platform refuses that limit outright
+        # (macOS rejects a finite RLIMIT_AS at any value).
+        raise RenderError(
+            f"could not apply the render bounds in the child process: {exc} "
+            f"(requested {bounds})"
         ) from exc
     except OSError as exc:
         raise RenderError(f"could not start render subprocess: {exc}") from exc
@@ -465,10 +494,20 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
 
     ``Path.rename`` overwrites silently on POSIX, so an occupied slot would be
     replaced without a word. What that silence would cost is **an operator
-    signal, not measurement integrity**: a ``.first`` sitting in a bundle is
-    evidence that a campaign died partway through, and it is worth stopping to
-    say so rather than quietly paving over. Checking up front costs no render
-    at all, which is what makes refusing the cheap answer.
+    signal, not measurement integrity** — and the signal is narrower than it
+    looks. All this guard knows is that **the bundle path has been used
+    before**. It cannot tell which of these it found, and does not claim to:
+
+    * a campaign that died partway through;
+    * a campaign that finished CLEANLY and left its artifacts behind — the
+      ordinary case, since nothing here ever deletes a preserved output and
+      the bench's ``--bundle-dir`` defaults to a fixed path, so a plain re-run
+      lands right back on these names;
+    * two different shapes colliding on one caller-chosen name.
+
+    The remediation is identical for all three, which is what lets the message
+    stay honest without diagnosing. Checking up front costs no render at all,
+    which is what makes refusing the cheap answer.
 
     It is specifically NOT protection against a stale file reaching a reader.
     Rename's overwrite is total: a slot that gets written ends up holding the
@@ -478,8 +517,8 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
 
     The check has two call sites, defending different things:
 
-    * **Up front, before any render** — the one that fires in practice, for the
-      died-partway campaign above.
+    * **Up front, before any render** — the one that fires in practice, for any
+      of the reused-directory cases above.
     * **Immediately before each move.** Nothing inside
       :func:`render_with_determinism_receipt` can occupy a preserved slot
       between those two moments: the three paths are proved distinct, and the
@@ -499,9 +538,10 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
     if occupied:
         raise RenderError(
             f"the {label} render's preserved output path already exists: {path} "
-            "— refusing rather than silently overwriting it, because a file "
-            "already sitting here is evidence that an earlier campaign did not "
-            "finish. Delete it, or render into a fresh bundle directory."
+            "— refusing rather than silently overwriting it. A file here means "
+            "this bundle path has been used before; whether by a run that "
+            "finished or one that did not, this check cannot tell. "
+            "Delete it, or render into a fresh bundle directory."
         )
 
 
