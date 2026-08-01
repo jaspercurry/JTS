@@ -60,10 +60,12 @@ import resource
 import shutil
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 
@@ -376,9 +378,30 @@ def render_config(
 
 @dataclass(frozen=True, slots=True)
 class DeterminismReceipt:
-    """R8: one config shape, rendered twice, proved SHA-identical."""
+    """R8: one config shape, rendered twice, proved SHA-identical.
+
+    ``config_sha256`` is the CANONICAL shape — the pass whose output the
+    campaign keeps, extracts, and measures. ``repeat_config_sha256`` is the
+    second pass's shape. The two texts are identical except for
+    ``devices.playback.filename``, and R8 defines a shape as the exact byte
+    content of a derived config, so by R8's own definition they are two
+    DISTINCT shapes. The repeat's SHA is recorded rather than elided
+    precisely so the evidence says that out loud, instead of leaving a
+    reader to assume one byte-identical text was rendered twice.
+
+    Why the repeat cannot be byte-identical: a render's destination is not
+    an argv flag, it is a field inside the config (see :class:`RenderPass`).
+    Two renders whose outputs must BOTH survive on disk to be compared must
+    therefore name two destinations, which means two config texts. What the
+    receipt proves is R8's actual claim — that the pipeline is
+    deterministic — under the only experiment the pinned binary permits.
+    :func:`render_with_determinism_receipt` refuses unless the two texts
+    agree everywhere else, so the destination is the only admitted
+    difference.
+    """
 
     config_sha256: str
+    repeat_config_sha256: str
     first: RenderInvocation
     second: RenderInvocation
 
@@ -393,33 +416,189 @@ def config_shape_sha256(yaml_text: str) -> str:
     return hashlib.sha256(yaml_text.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class RenderPass:
+    """One render: the config to run, its exact text, and where it writes.
+
+    A CamillaDSP render's destination is **not** a command-line argument.
+    :func:`render_config` builds argv as exactly
+    ``[binary_path, "--gain=<db>", <config_path>]``; the destination is
+    ``devices.playback.filename`` INSIDE the config — the field
+    :func:`~jasper.bass_extension.bench.derivation.derive_truncated_config`'s
+    R3 device swap emits for the derived ``type: File`` playback device.
+    ``output_path`` is therefore not an instruction to the binary — it is
+    this pass's claim about where that config will write, and it is all
+    :func:`render_config` uses to unlink a stale file, assert the output
+    appeared, and hash it.
+
+    Binding the three values together is what makes R8's repeat
+    representable at all: rendering a shape to two destinations requires two
+    configs, so no caller can hand one config two destinations and expect
+    two files. (That was a real defect — the render helper took one
+    ``config_path`` and two output paths, and against a real binary both
+    renders wrote to the single destination the config named, so the first
+    render's output assertion failed.)
+
+    ``yaml_text`` must be the exact text living at ``config_path``: it is
+    what :func:`config_shape_sha256` fingerprints, so a divergence would
+    make the receipt name a shape that never ran. This module does not
+    re-read the file to verify that; writing one from the other is the
+    caller's obligation.
+    """
+
+    config_path: Path
+    yaml_text: str
+    output_path: Path
+
+
+# Chosen so it cannot occur in a YAML-serialized config: `yaml.safe_dump`
+# never emits a raw NUL byte (it escapes it as `\0` inside a quoted scalar),
+# so this string cannot appear in either text by accident and be mistaken
+# for a normalized destination.
+_DESTINATION_SENTINEL = "\x00<render-destination>\x00"
+
+
+def _declared_destination(yaml_text: str, *, label: str) -> str:
+    """The destination the config itself names: ``devices.playback.filename``."""
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        raise RenderError(
+            f"the {label} render pass's config text is not parseable YAML: {exc}"
+        ) from exc
+    devices = parsed.get("devices") if isinstance(parsed, Mapping) else None
+    playback = devices.get("playback") if isinstance(devices, Mapping) else None
+    filename = playback.get("filename") if isinstance(playback, Mapping) else None
+    if not isinstance(filename, str):
+        raise RenderError(
+            f"the {label} render pass's config declares no "
+            "devices.playback.filename — a render writes only where its own "
+            "config says, so there is nothing for this pass to render into"
+        )
+    return filename
+
+
+def _assert_pass_declares_its_own_destination(pass_: RenderPass, *, label: str) -> None:
+    """Refuse a pass whose ``output_path`` is not what its config will write.
+
+    :func:`render_config` watches ``output_path`` while the binary writes
+    wherever the config says. When those disagree the render "succeeds" and
+    the assertion still fails — or worse, an unrelated stale file at
+    ``output_path`` gets hashed as if it were this render's output.
+    """
+
+    declared = _declared_destination(pass_.yaml_text, label=label)
+    if declared != str(pass_.output_path):
+        raise RenderError(
+            f"the {label} render pass claims it writes to {pass_.output_path} "
+            f"but its config declares devices.playback.filename={declared!r} — "
+            "a render's destination lives inside the config, so this pass "
+            "would watch a file the binary never writes"
+        )
+
+
+def _assert_same_shape_but_for_the_destination(
+    canonical: RenderPass, repeat: RenderPass
+) -> None:
+    """Refuse unless the two texts agree everywhere but their destinations.
+
+    Without this the helper would happily render two genuinely different
+    graphs and report a receipt — which proves "two different configs
+    happened to agree", not R8's claim that one config repeats.
+
+    The comparison is TEXTUAL, matching R8's byte-level definition of a
+    shape: each text has its own destination string replaced by a fixed
+    sentinel and the results must be equal. Comparing parsed mappings
+    instead would accept two texts that differ only in whitespace, quoting,
+    or key order — genuinely distinct shapes under R8, with distinct SHAs.
+    The replacement is global, so a destination string that also appeared
+    elsewhere in its own text (a config naming the same path as both its
+    capture and playback file) would be normalized there too; that shape is
+    nonsensical for a render and is not defended against here.
+    """
+
+    canonical_normalized = canonical.yaml_text.replace(
+        str(canonical.output_path), _DESTINATION_SENTINEL
+    )
+    repeat_normalized = repeat.yaml_text.replace(
+        str(repeat.output_path), _DESTINATION_SENTINEL
+    )
+    if canonical_normalized != repeat_normalized:
+        raise RenderError(
+            "the two determinism render passes are not the same config shape "
+            "apart from their destinations — a receipt over these would prove "
+            "that two DIFFERENT configs happened to agree, not that one config "
+            f"repeats (canonical shape {config_shape_sha256(canonical.yaml_text)}, "
+            f"repeat shape {config_shape_sha256(repeat.yaml_text)})"
+        )
+
+
 def render_with_determinism_receipt(
     binary_path: str,
-    config_path: Path,
     *,
-    yaml_text: str,
-    first_output_path: Path,
-    second_output_path: Path,
+    canonical: RenderPass,
+    repeat: RenderPass,
     bounds: RenderBounds,
     fader_db: float,
 ) -> DeterminismReceipt:
-    """R8: render ``config_path`` twice; refuse on any byte mismatch.
+    """R8: render one config shape twice; refuse on any byte mismatch.
+
+    Takes two complete render passes rather than one config and two output
+    paths, because a render's destination lives inside its config (see
+    :class:`RenderPass`) — "the same shape, written somewhere else" is
+    necessarily a second derivation. ``canonical`` is the pass whose output
+    the campaign keeps and measures; ``repeat`` exists only to be compared
+    against it and is not otherwise admitted as evidence.
+
+    What this receipt claims, stated plainly: the pinned binary, run twice
+    on two configs that differ in nothing but their destination, produced
+    byte-identical output. What it does NOT claim: that a single byte-identical
+    config text was rendered twice (impossible while both outputs must
+    survive to be compared), nor anything about shapes other than these two.
+    Both texts' SHAs are recorded on the receipt so the distinction is
+    auditable rather than implied.
+
+    Refuses before the first subprocess starts if either pass's
+    ``output_path`` is not the destination its own config declares, if the
+    two passes share a destination, or if the two texts differ anywhere but
+    there.
 
     ``fader_db`` is threaded to both renders via ``--gain`` (R4(c)/R9) — see
-    :func:`render_config`. Establishes determinism only for the shape
-    rendered here — it makes no claim about untested shapes. Callers key
-    their receipt cache by :func:`config_shape_sha256` so a shape already
+    :func:`render_config`. Callers key their receipt cache by
+    :func:`config_shape_sha256` of the CANONICAL text, so a shape already
     receipted this campaign is never re-rendered twice more.
     """
 
+    _assert_pass_declares_its_own_destination(canonical, label="canonical")
+    _assert_pass_declares_its_own_destination(repeat, label="repeat")
+    if canonical.output_path == repeat.output_path:
+        raise RenderError(
+            "both determinism render passes name the same destination "
+            f"({canonical.output_path}) — the second render would unlink and "
+            "overwrite the first, leaving nothing to compare against"
+        )
+    _assert_same_shape_but_for_the_destination(canonical, repeat)
+
     first = render_config(
-        binary_path, config_path, output_path=first_output_path, bounds=bounds, fader_db=fader_db
+        binary_path,
+        canonical.config_path,
+        output_path=canonical.output_path,
+        bounds=bounds,
+        fader_db=fader_db,
     )
     second = render_config(
-        binary_path, config_path, output_path=second_output_path, bounds=bounds, fader_db=fader_db
+        binary_path,
+        repeat.config_path,
+        output_path=repeat.output_path,
+        bounds=bounds,
+        fader_db=fader_db,
     )
     receipt = DeterminismReceipt(
-        config_sha256=config_shape_sha256(yaml_text), first=first, second=second
+        config_sha256=config_shape_sha256(canonical.yaml_text),
+        repeat_config_sha256=config_shape_sha256(repeat.yaml_text),
+        first=first,
+        second=second,
     )
     if not receipt.deterministic:
         raise RenderError(
@@ -547,6 +726,7 @@ __all__ = [
     "RenderBounds",
     "RenderError",
     "RenderInvocation",
+    "RenderPass",
     "check_free_space",
     "config_shape_sha256",
     "estimate_render_bytes",

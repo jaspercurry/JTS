@@ -478,6 +478,15 @@ class BenchRoleExecutor:
         determinism receipt), and return the derived config, the first
         render's output path, and the live pipeline's playback channel count.
 
+        The config is derived TWICE — once per render destination. A render's
+        destination is ``devices.playback.filename`` inside the config, never
+        an argv flag (see ``render.RenderPass``), so two renders whose outputs
+        must both survive to be compared need two configs. The two derivations
+        differ in that one field and nothing else:
+        ``derive_truncated_config`` is pure — it reads no clock, no uuid, no
+        randomness, and no environment, so the same inputs always yield the
+        same text.
+
         ``fader_db`` (R4(a)'s bracketed, locked-measurement-level main-volume
         reading — or ``0.0`` for the fully-synthetic, no-live-playback
         ``digital_transfer_probe``) is threaded into ``--gain`` (R4(c)/R9):
@@ -490,24 +499,36 @@ class BenchRoleExecutor:
         capture_path = target_dir / f"{role_tag}-{boundary}-input.wav"
         capture_path.write_bytes(padded.wav_bytes)
         playback_path = target_dir / f"{role_tag}-{boundary}-output.raw"
+        first_output = playback_path.with_suffix(".first")
+        second_output = playback_path.with_suffix(".second")
 
-        derived = derivation.derive_truncated_config(
-            live_active_config_raw,
-            boundary=boundary,
-            limiter_name=self.target.limiter_name,
-            owner_channels=self.target.owner_channels,
-            profile_summary=self.target.profile_summary,
-            expected_clip_limit_dbfs=expected_clip_limit_dbfs,
-            capture_header=derivation.ArtifactHeader(
-                sample_rate_hz=padded.sample_rate_hz,
-                channels=padded.channels,
-                bits_per_sample=padded.sample_width_bytes * 8,
-            ),
-            capture_filename=str(capture_path),
-            playback_filename=str(playback_path),
-            processing_precision=render.DEPLOYED_PROCESSING_PRECISION,
-        )
+        def _derive(playback_filename: Path) -> derivation.DerivedConfig:
+            return derivation.derive_truncated_config(
+                live_active_config_raw,
+                boundary=boundary,
+                limiter_name=self.target.limiter_name,
+                owner_channels=self.target.owner_channels,
+                profile_summary=self.target.profile_summary,
+                expected_clip_limit_dbfs=expected_clip_limit_dbfs,
+                capture_header=derivation.ArtifactHeader(
+                    sample_rate_hz=padded.sample_rate_hz,
+                    channels=padded.channels,
+                    bits_per_sample=padded.sample_width_bytes * 8,
+                ),
+                capture_filename=str(capture_path),
+                playback_filename=str(playback_filename),
+                processing_precision=render.DEPLOYED_PROCESSING_PRECISION,
+            )
+
+        # Both derivations run before any side effect, so a refusal in either
+        # leaves no half-written config and no spent free-space budget.
+        derived = _derive(first_output)
+        repeat_derived = _derive(second_output)
         playback_channels = int(derived.receipt["device_diff"]["playback_channels"])
+        # One derivation receipt: `playback_filename` reaches only
+        # `devices.playback.filename`, and the receipt's `device_diff` records
+        # device types, channel counts, and formats — never the filename — so
+        # the repeat's receipt is identical to this one.
         sink.write_json(
             f"{self.target.target_id}/{role_tag}-{boundary}-derivation.json",
             derived.receipt,
@@ -516,6 +537,8 @@ class BenchRoleExecutor:
 
         config_path = target_dir / f"{role_tag}-{boundary}-config.yml"
         config_path.write_text(derived.yaml_text, encoding="utf-8")
+        repeat_config_path = target_dir / f"{role_tag}-{boundary}-config-repeat.yml"
+        repeat_config_path.write_text(repeat_derived.yaml_text, encoding="utf-8")
 
         total_frames = padded.lead_in_frames + padded.body_frames + padded.lead_out_frames
         render.check_free_space(
@@ -527,21 +550,26 @@ class BenchRoleExecutor:
         )
         self.renders_outstanding = max(0, self.renders_outstanding - 1)
 
-        first_output = playback_path.with_suffix(".first")
-        second_output = playback_path.with_suffix(".second")
         determinism = render.render_with_determinism_receipt(
             self.binary.path,
-            config_path,
-            yaml_text=derived.yaml_text,
-            first_output_path=first_output,
-            second_output_path=second_output,
+            canonical=render.RenderPass(
+                config_path=config_path,
+                yaml_text=derived.yaml_text,
+                output_path=first_output,
+            ),
+            repeat=render.RenderPass(
+                config_path=repeat_config_path,
+                yaml_text=repeat_derived.yaml_text,
+                output_path=second_output,
+            ),
             bounds=bounds,
             fader_db=fader_db,
         )
         sink.write_json(
             f"{self.target.target_id}/{role_tag}-{boundary}-determinism.json",
             {
-                "config_sha256": render.config_shape_sha256(derived.yaml_text),
+                "config_sha256": determinism.config_sha256,
+                "repeat_config_sha256": determinism.repeat_config_sha256,
                 "deterministic": determinism.deterministic,
                 "first_sha256": determinism.first.output_sha256,
                 "second_sha256": determinism.second.output_sha256,
