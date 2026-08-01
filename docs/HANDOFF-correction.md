@@ -2545,7 +2545,11 @@ Concrete changes:
   per-filter floor cannot bound a stack — and the design report's
   `spatial_variance_cap` block states both the ceiling (bins capped, depth
   forgone) and what enforcement measured on the shipped filters
-  (`filters_depth_trimmed`, `max_overshoot_db`).
+  (`filters_depth_trimmed`, `max_overshoot_db`). The centre rule is exact at
+  centres and says nothing between them: a bell's skirt can still put a
+  protected bin past its allowance, by as much as 11.6 dB in an adversarial
+  search. That residue is **not bounded** — which is why every design publishes
+  its own `max_overshoot_db` rather than relying on a swept figure.
 - YAML emit (live apply path): `jasper/correction/session.py` asks
   `jasper.sound.graph_carrier` to re-emit the currently loaded topology with
   fresh room PEQs and the saved sound profile. For ordinary stereo this still

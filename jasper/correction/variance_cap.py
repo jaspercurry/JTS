@@ -242,10 +242,15 @@ def realized_overshoot_db(
 
     Why a residual can exist at all, and why it is disclosed rather than
     designed away: ``strategy._enforce_variance_depth_cap`` binds the allowance
-    at protected filter **centres**, because a bell centred on a stable mode
-    inevitably spills into a neighbouring protected bin and forbidding that
-    would forbid correcting the stable mode. What lands between centres is
-    therefore real, bounded, and stated here instead of asserted away.
+    at protected filter **centres**, because a bell centred on one bin
+    inevitably spills into its neighbours and forbidding that would forbid
+    correcting the first bin. What lands between centres is real, is **not
+    bounded by anything this module knows**, and is stated per design here
+    instead of asserted away — a search over 3360 designs has found it as large
+    as 11.6 dB, and that search is a description of what has been looked at,
+    not a limit (see ``strategy._enforce_variance_depth_cap``). **This function
+    IS the protection**: whatever the residue is on a given design, that design
+    publishes its own number.
     """
     cap = np.asarray(depth_cap_db, dtype=np.float64)
     realized = np.asarray(realized_shift_db, dtype=np.float64)

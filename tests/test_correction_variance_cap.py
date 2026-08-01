@@ -60,18 +60,20 @@ def _swept_design(
     stable_hz: float,
     unstable_hz: float,
     scales: tuple[float, ...],
+    amps: tuple[float, float] = (8.0, 10.0),
 ) -> tuple[strategy.CorrectionDesign, strategy.CorrectionStrategy, _Cap]:
     """One design from the sweep grid, with the allowance it was built against.
 
     Two modes: one every position agrees about, one whose level swings across
     them by `scales`. Both share `q`, so the grid sweeps bell width — which is
     what governs how far a legitimate cut's skirt reaches into a neighbouring
-    protected bin.
+    protected bin. `amps` is the (stable, unstable) mode height in dB; varying
+    it is what a delta review showed the first grid was missing.
     """
     freqs = _log_freqs()
     correction = strategy.CORRECTION_STRATEGIES[strategy_id]
-    stable = peq._bell_response_db(freqs, stable_hz, q, 8.0)
-    unstable = peq._bell_response_db(freqs, unstable_hz, q, 10.0)
+    stable = peq._bell_response_db(freqs, stable_hz, q, amps[0])
+    unstable = peq._bell_response_db(freqs, unstable_hz, q, amps[1])
     positions = [stable + scale * unstable for scale in scales]
     measured = np.mean(positions, axis=0)
     design = strategy.design_correction(
@@ -85,36 +87,55 @@ def _swept_design(
     return design, correction, _Cap(freqs=freqs, depth_db=depth_db)
 
 
-#: The sweep grid — 3 strategies x 7 bell widths x 6 mode pairs x 5 spread
-#: shapes = 630 designs, in ~0.4 s. Deliberately the SAME grid the PR's
-#: characterisation run used, so the numbers the docstrings state and the
-#: numbers these tests pin cannot drift apart. Q is swept because bell width
-#: governs how far a legitimate cut's skirt reaches into a neighbouring
-#: protected bin, which is what the residual bound is sensitive to; the mode
-#: pairs range from well separated (45/160 Hz) to nearly co-located (80/85 Hz).
-_SWEEP_Q = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
+#: The search grid — 3 strategies x 8 bell widths x 7 mode pairs x 5 spread
+#: shapes x 4 amplitude pairs = 3360 designs, in ~1.5 s. Deliberately the SAME
+#: grid the PR quotes, so the numbers in the docstrings and the numbers these
+#: tests pin cannot drift apart.
+#:
+#: **It is a search, not a proof.** An earlier version of this grid held the
+#: mode amplitudes fixed at (8, 10) dB and omitted Q=2.5; a reviewer beat its
+#: worst finding by ~3x in minutes of adversarial search, purely by varying
+#: amplitude. The amplitude dimension and the reviewer's Q/mode-pair are in
+#: here now — but the lesson is that no finite grid of this shape bounds
+#: anything, which is why nothing downstream calls its result a bound. The
+#: real protection is the per-design published `max_overshoot_db`, which held
+#: exactly on every design the reviewer built.
+_SWEEP_Q = (1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0)
 _SWEEP_MODES = (
-    (45.0, 160.0), (60.0, 90.0), (110.0, 130.0),
-    (35.0, 220.0), (80.0, 85.0), (50.0, 65.0),
+    (45.0, 160.0), (60.0, 90.0), (110.0, 130.0), (35.0, 220.0),
+    (80.0, 85.0), (50.0, 65.0), (120.0, 168.0),
 )
 _SWEEP_SCALES = (
     (2.0, 1.5, -1.0), (3.0, 1.0, -2.0), (1.4, 1.0, 0.2),
     (5.0, 0.0, -4.0), (1.1, 1.0, 0.9),
 )
+_SWEEP_AMPS = ((8.0, 10.0), (18.0, 16.0), (14.0, 6.0), (6.0, 14.0))
+
+_SWEEP_CACHE: list | None = None
 
 
 def _sweep_cases():
-    for strategy_id in ("safe", "balanced", "assertive"):
-        for q in _SWEEP_Q:
-            for stable_hz, unstable_hz in _SWEEP_MODES:
-                for scales in _SWEEP_SCALES:
-                    design, correction, cap = _swept_design(
-                        strategy_id, q=q, stable_hz=stable_hz,
-                        unstable_hz=unstable_hz, scales=scales,
-                    )
-                    if not design.report["spatial_variance_cap"]["available"]:
-                        continue
-                    yield design, correction, cap
+    """Every admissible design on the grid. Built once; both callers reuse it."""
+    global _SWEEP_CACHE
+    if _SWEEP_CACHE is None:
+        cases = []
+        for strategy_id in ("safe", "balanced", "assertive"):
+            for q in _SWEEP_Q:
+                for stable_hz, unstable_hz in _SWEEP_MODES:
+                    for scales in _SWEEP_SCALES:
+                        for amps in _SWEEP_AMPS:
+                            case = _swept_design(
+                                strategy_id, q=q, stable_hz=stable_hz,
+                                unstable_hz=unstable_hz, scales=scales,
+                                amps=amps,
+                            )
+                            if not case[0].report[
+                                "spatial_variance_cap"
+                            ]["available"]:
+                                continue
+                            cases.append(case)
+        _SWEEP_CACHE = cases
+    return _SWEEP_CACHE
 
 
 def _deepest_cut_near(design: strategy.CorrectionDesign, freq_hz: float) -> float:
@@ -332,10 +353,24 @@ def test_clamp_never_touches_a_centre_the_spread_left_alone():
 
     # Two co-located cuts at the STABLE centre — the stacking shape the clamp
     # exists to catch — plus one at the capped centre so the cap is engaged.
+    #
+    # **The depths are the whole point of this fixture.** They must stack PAST
+    # the strategy's own floor, or the round-1 clamp passes this test too and
+    # the pin proves nothing: -6.0/-6.0 stacks to -11.93 dB at the second
+    # centre, past the -10 dB floor, where the round-1 clamp trims the second
+    # filter to -4.067 dB. An earlier -5.0/-4.0 pair stacked to only -8.94 dB,
+    # inside the floor, and was vacuous for exactly that reason (caught in
+    # delta review; both numbers re-derived here against the round-1 clamp
+    # reconstructed from 624b2794a).
     stable_pair = [
-        peq.PEQ(freq=STABLE_HZ, q=4.0, gain=-5.0),
-        peq.PEQ(freq=STABLE_HZ + 0.6, q=4.0, gain=-4.0),
+        peq.PEQ(freq=STABLE_HZ, q=4.0, gain=-6.0),
+        peq.PEQ(freq=STABLE_HZ + 0.6, q=4.0, gain=-6.0),
     ]
+    at_second = np.asarray([STABLE_HZ + 0.6], dtype=np.float64)
+    assert float(peq.predicted_response(stable_pair, at_second)[0]) < (
+        correction.max_cut_db
+    ), "fixture must stack PAST the floor or the round-1 clamp passes too"
+
     filters = [*stable_pair, peq.PEQ(freq=UNSTABLE_HZ, q=4.0, gain=-9.0)]
     kept, n_trimmed = strategy._enforce_variance_depth_cap(
         filters, depth_cap_db, freqs, correction,
@@ -378,47 +413,56 @@ def test_clamp_holds_every_protected_centre_to_its_allowance():
     assert worst == pytest.approx(0.0, abs=1e-9)
 
 
-def test_realized_overshoot_stays_within_the_measured_bound():
-    """What the CENTRE-bound clamp leaves between centres — measured, swept,
-    and pinned as a bound rather than as one flattering fixture.
+def test_realized_overshoot_is_published_and_tracks_the_worst_found_so_far():
+    """What the CENTRE-bound clamp leaves between centres — searched, and
+    quoted as **worst-found-so-far on this grid, never as a bound.**
 
     A bell centred on a bin whose own allowance is generous inevitably spills
     into a neighbouring bin whose allowance is tighter; refusing that would
-    forbid correcting the first bin at all. So a residue exists. Across the
-    full sweep (630 designs: 3 strategies x 7 Q x 6 mode pairs x 5 spread
-    shapes) its worst value is 1.600 dB (safe) / 2.477 dB (balanced) /
-    2.354 dB (assertive), median 0.000 — and it is published per design as
-    `max_overshoot_db`, so no design hides its own number.
+    forbid correcting the first bin at all. So a residue exists, and it is
+    **not small**: over this 3360-design search its worst is 11.625 dB (safe) /
+    11.474 dB (balanced) / 9.231 dB (assertive) — up to 219% of the bin's own
+    allowance — with a median of 0.000 and any residue at all in 1523 designs.
+
+    **This is a search result, not a limit.** A previous, narrower grid put the
+    worst at 2.477 dB and a reviewer beat it ~3x in minutes by varying mode
+    amplitude, which this grid now sweeps. Treating any such number as a bound
+    is exactly the mistake that produced it. The real protection is that every
+    design publishes its OWN `max_overshoot_db`, measured on its own filters —
+    which is what this test pins hardest.
     """
     by_strategy: dict[str, list[float]] = {}
     for design, correction, _cap in _sweep_cases():
         block = design.report["spatial_variance_cap"]
+        # The load-bearing assertion: EVERY design publishes its own measured
+        # number. This is the protection; the grid statistics below are only
+        # a description of what has been looked at so far.
         assert block["max_overshoot_db"] is not None
+        assert block["max_overshoot_db"] >= 0.0
         by_strategy.setdefault(correction.strategy_id, []).append(
             block["max_overshoot_db"]
         )
 
-    assert sum(len(v) for v in by_strategy.values()) == 630
-    # Per strategy, so a regression in one cannot hide behind another's max.
-    # Bounds sit a little above each measured worst — enough for ordinary
-    # numeric drift, far below the shallowest strategy's whole 6 dB budget.
-    measured_worst = {"safe": 1.600, "balanced": 2.477, "assertive": 2.354}
+    assert sum(len(v) for v in by_strategy.values()) == 3360
+    # Worst FOUND on this grid, per strategy so a regression in one cannot hide
+    # behind another. Asserted as a window, not a ceiling: moving in either
+    # direction means the residue's character changed and the prose that quotes
+    # these numbers — in `_enforce_variance_depth_cap` and the PR — is stale.
+    worst_found = {"safe": 11.625, "balanced": 11.474, "assertive": 9.231}
     for strategy_id, values in by_strategy.items():
-        assert min(values) >= 0.0, strategy_id
         # Typical designs pay nothing: the residue is the exception, not the
-        # rule — 215 of the 630 designs show any at all.
+        # rule — 1523 of the 3360 designs show any at all.
         assert float(np.median(values)) == 0.0, strategy_id
         assert max(values) == pytest.approx(
-            measured_worst[strategy_id], abs=0.05
+            worst_found[strategy_id], abs=0.05
         ), strategy_id
-        assert max(values) <= measured_worst[strategy_id] + 0.5, strategy_id
 
-    # And the specific worst-case shape reproduces its measured value, so a
-    # change in EITHER direction is caught rather than only a blow-out.
-    design = _swept_design("balanced", q=2.0, stable_hz=60.0, unstable_hz=90.0,
-                           scales=(3.0, 1.0, -2.0))[0]
+    # And a named shape reproduces its measured value, so a change in EITHER
+    # direction is caught rather than only a blow-out.
+    design = _swept_design("safe", q=6.0, stable_hz=80.0, unstable_hz=85.0,
+                           scales=(2.0, 1.5, -1.0), amps=(14.0, 6.0))[0]
     assert design.report["spatial_variance_cap"][
-        "max_overshoot_db"] == pytest.approx(2.477, abs=0.05)
+        "max_overshoot_db"] == pytest.approx(11.625, abs=0.05)
 
 
 def test_cumulative_trim_is_a_no_op_without_a_cap():

@@ -551,24 +551,37 @@ def _enforce_variance_depth_cap(
     correcting the first bin at all. So a residue can land off-centre. It is
     neither asserted away nor estimated: the caller MEASURES it on every design
     (:func:`jasper.correction.variance_cap.realized_overshoot_db`) and publishes
-    it as ``max_overshoot_db``.
+    it as ``max_overshoot_db``. **That per-design number is the protection** —
+    not the search statistics below, which only describe what has been looked
+    at.
 
-    Swept over 630 designs — 3 strategies x 7 bell widths x 6 mode pairs x 5
-    spread shapes — the worst residue is **1.600 dB (safe) / 2.477 dB
-    (balanced) / 2.354 dB (assertive)**, median **0.000** in all three, with any
-    residue at all in 215 of the 630. The grid and the numbers are pinned
-    together by ``test_realized_overshoot_stays_within_the_measured_bound``, and
-    the at-centre guarantee above by
-    ``test_clamp_holds_every_protected_centre_to_its_allowance``.
+    Searched over 3360 designs — 3 strategies x 8 bell widths x 7 mode pairs x
+    5 spread shapes x 4 amplitude pairs — the **worst found so far** is
+    **11.625 dB (safe) / 11.474 dB (balanced) / 9.231 dB (assertive)**, up to
+    **219 %** of the offending bin's own allowance, median **0.000** in all
+    three, with any residue at all in 1523 of the 3360.
 
-    **Known, and deliberately not fixed here:** 174 of those 215 residues are
-    dominated (>90%) by a *protected* centre's own bell reaching a neighbouring
-    protected bin — only 13 by a stable centre's. So binding the allowance at
+    **These are worst-found-so-far on a finite grid; they are NOT a bound, and
+    must never be quoted as one.** The first version of this characterisation
+    swept fixed mode amplitudes and reported 2.477 dB as the worst; a reviewer
+    beat it roughly 3x within minutes by varying amplitude alone. The grid now
+    sweeps amplitude — and the lesson stands regardless: a number a short
+    adversarial search can triple is a description, not a limit. The grid and
+    the numbers live together in
+    ``test_realized_overshoot_is_published_and_tracks_the_worst_found_so_far``
+    so they cannot drift; the at-centre guarantee above (which IS exact) is
+    pinned by ``test_clamp_holds_every_protected_centre_to_its_allowance``.
+
+    **Known, and deliberately not fixed here — the open question for the
+    bins-vs-centres ruling.** Of the 1523 residues, 855 are dominated (>90 %)
+    by a *protected* centre's own bell reaching a neighbouring protected bin,
+    255 by a *stable* centre's, and 413 are mixed. So binding the allowance at
     protected BINS rather than centres would mostly tighten filters already
-    under this cap's authority, not punish stable-mode corrections, which is
-    the objection that scoped this rule to centres. That is a design change
-    beyond this rung's brief; the evidence is recorded so it can be ruled on
-    rather than rediscovered.
+    under this cap's authority — though not exclusively, and the stable share
+    (~17 %) is the real cost of that change. Given the magnitudes above, this
+    is a bigger open question than the first, narrower characterisation
+    suggested. It is a design change beyond this rung's brief; the evidence is
+    recorded so it can be ruled on rather than rediscovered.
     """
     if depth_cap_db is None:
         return filters, 0
