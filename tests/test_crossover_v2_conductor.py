@@ -6507,10 +6507,19 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
         sign=call["sign"],
     )
     committed_t = c.candidate.role_attenuations_db["tweeter"]
-    assert committed_t == pytest.approx(expected_anchored["tweeter"]) or (
-        committed_t == pytest.approx(resolved_trim_t)
+    # The durable invariant, asserted first because it holds whichever way the
+    # adjudication goes and on every fixture: what ships is a graded pair, and
+    # the raw trim is not one of them.
+    assert committed_t in (
+        pytest.approx(expected_anchored["tweeter"]),
+        pytest.approx(resolved_trim_t),
     )
     assert committed_t != pytest.approx(raw_trim["tweeter"])
+    # …and the fixture-specific outcome, stated precisely rather than hedged, so
+    # a future flip back is visible here rather than silent. The scan did move
+    # (0.300 dB off its seed) — it simply did not level better.
+    assert committed_t == pytest.approx(expected_anchored["tweeter"])
+    assert resolved_trim_t != pytest.approx(expected_anchored["tweeter"])
 
 
 def _one_sided_conductor(fakes: FakeSeams) -> CrossoverV2Conductor:
