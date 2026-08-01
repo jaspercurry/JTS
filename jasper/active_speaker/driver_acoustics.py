@@ -754,7 +754,7 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     moved every band by more than 13 dB — treble across a 27 dB span, and
     five of the six bands CHANGED SIGN along the way (a band reading too
     quiet at one layout reads too loud at another). Varying sweep duration
-    from 2.07 s to 20.03 s instead moved it by under 0.05 dB. So the bias is
+    from 2.07 s to 20.03 s instead moved it by under 0.1 dB. So the bias is
     not a fixed per-band offset that could be calibrated out once; it is a
     function of where the sweep happens to sit inside the recording.
 
@@ -782,19 +782,16 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     puts a layout-dependent error straight into the SC-1 SNR gate — a
     decision, not a disclosure. ``window="rectangular"`` is the likely fix: it
     tracks the same law to within 0.2 dB everywhere in the 2.07-20.03 s family
-    above — even that worst case is smaller than the Hann readings'
-    1.57-11.57 dB by a factor of at least 8, and by ~65x against the widest
-    of them. Do not quote a tighter figure than the 0.2 from here — the
-    residual is a smooth function of sweep LENGTH, not a constant (about
-    0.18 dB at 2.07 s, 0.10 dB at the 6 s default, 0.05 dB at 20.03 s, worst
-    band ``sub_bass`` throughout), so any single decimal is an artifact of the
-    duration it was sampled at. Re-derive at the length you actually ship.
-    Even so it is not a validated drop-in here: on a PADDED capture, which
-    driver captures are by design, it carries a band-independent duty-cycle
-    offset of ``10*log10(sweep_len/capture_len)`` — 5.93 dB across that same
-    0-to-20 s lead sweep. Characterise that term against whatever the noise
-    side is measured over before switching, or the gate trades one bias for
-    another.
+    above. That residual is a smooth function of sweep LENGTH, not a constant
+    (about 0.18 dB at 2.07 s, 0.10 dB at the 6 s default, 0.05 dB at 20.03 s,
+    worst band ``sub_bass`` throughout), so any single decimal is an artifact
+    of the duration it was sampled at — re-derive at the length you actually
+    ship. Even so it is not a validated drop-in here: on a PADDED capture,
+    which driver captures are by design, it carries a band-independent
+    duty-cycle offset of ``10*log10(sweep_len/capture_len)`` — 5.93 dB across
+    that same 0-to-20 s lead sweep. Characterise that term against whatever
+    the noise side is measured over before switching, or the gate trades one
+    bias for another.
     """
     import numpy as np
 
