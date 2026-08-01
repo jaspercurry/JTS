@@ -636,6 +636,40 @@ def test_stale_relay_capacity_refusal_is_a_clean_400_not_a_500(monkeypatch, capl
     )
 
 
+def test_synchronous_flow_error_maps_to_a_classified_500_not_raw_text(monkeypatch):
+    """#1833: ``CrossoverV2FlowError`` raised synchronously inside
+    ``prepare_v2_session``'s ``_open`` (or its verify-mode sibling) is a
+    ``RuntimeError``, so it escapes the dispatcher's ``ValueError`` arm above
+    and lands in the generic ``except (OSError, RuntimeError, TypeError)`` ->
+    500 arm. That arm used to echo ``str(e)`` verbatim — resolve_plan_shape's
+    raw validation text reaching the DOM at 500 the same way an unclassified
+    refusal reached it at 400 (see
+    test_stale_relay_capacity_refusal_is_a_clean_400_not_a_500 for the sibling
+    400 shape). It must now answer the SAME classified copy every other
+    program-family exception already gets via ``_relay_failure_message``.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_PROGRAM_UNPLAYABLE,
+        REASON_REGISTRY,
+        CrossoverV2FlowError,
+    )
+
+    def _raise(*_a, **_k):
+        raise CrossoverV2FlowError("cloud_measure_positions must be 3..7, got 9")
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(correction_setup, "_handle_crossover_v2_relay", _raise)
+
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+
+    assert b"500" in resp.split(b"\r\n", 1)[0]
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+    assert body["error"] == REASON_REGISTRY[REASON_PROGRAM_UNPLAYABLE].message
+    assert "cloud_measure_positions" not in body["error"]
+
+
 def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
     """Finding N (a): a blocked apply must not read as success. Before this
     fix, /crossover/v2/apply always answered 200 regardless of payload

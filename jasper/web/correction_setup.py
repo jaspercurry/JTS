@@ -616,6 +616,15 @@ def _relay_failure_reason(exc: BaseException) -> str:
 def _relay_failure_message(exc: BaseException) -> str:
     """The phone/operator-facing text for a relay-capture-lifecycle failure.
 
+    Issue #1833: also reused (unchanged) by ``_dispatch_crossover``'s
+    ``/crossover/v2/session`` + ``/crossover/v2/verify`` catch-all
+    ``except (OSError, RuntimeError, TypeError)`` arm — a synchronous
+    ``CrossoverV2FlowError`` from deep inside ``prepare_v2_session``'s
+    ``_open`` (or its verify-mode sibling) is a ``RuntimeError`` and lands
+    there before any relay session exists, but it is a member of the exact
+    exception family this function already classifies, so the same mapping
+    applies whether the failure happened before or during a relay capture.
+
     ``ServerOwnedNextStepMismatch`` (hardware run 21) is the
     envelope-derivation guard's own refusal
     (``_assert_crossover_reference_axis_level_action`` in this module) — a
@@ -6646,8 +6655,22 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         status=HTTPStatus.BAD_REQUEST,
                     )
                 except (OSError, RuntimeError, TypeError) as e:
+                    # Issue #1833: prepare_v2_session's _open (and its
+                    # verify-mode sibling) can raise a bare CrossoverV2FlowError
+                    # synchronously, before any ValueError-shaped refusal exists
+                    # to catch it above — CrossoverV2FlowError IS a RuntimeError,
+                    # so it lands here. _relay_failure_message is the SAME
+                    # classifier the relay-capture failure path already routes
+                    # this exact exception family through (classify_program_failure
+                    # + REASON_REGISTRY), so this 500 stops echoing
+                    # resolve_plan_shape's raw validation text (e.g.
+                    # "cloud_measure_positions must be 3..7, got 9") onto the
+                    # DOM. Any other exception falls through to str(e) unchanged
+                    # — that function's own documented, tested behavior.
                     logger.exception("%s failed", path)
-                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                    self._send_json(
+                        {"ok": False, "error": _relay_failure_message(e)}, status=500
+                    )
                 return
 
             if path == "/crossover/v2/apply":

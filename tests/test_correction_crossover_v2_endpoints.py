@@ -56,6 +56,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_ROLES,
     REASON_APPLY_FAILED,
     REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_PROGRAM_UNPLAYABLE,
+    REASON_REGISTRY,
     TIER_EXPRESS,
     CrossoverV2Conductor,
     V2FlowSeams,
@@ -2849,6 +2851,22 @@ def test_an_unknown_verify_stage_is_refused_rather_than_guessed():
     assert "unknown verify stage" in str(excinfo.value)
 
 
+def test_verify_stage_2_refuses_an_unknown_durable_tier_with_household_safe_copy():
+    """#1833's second site: _verify_plan_shape's own
+    ``except CrossoverV2FlowError`` rewrap used the exact same raw-text
+    pattern as prepare_v2_session's (see
+    test_prepare_refuses_an_unknown_tier_before_touching_anything) — an
+    unrecognized tier persisted in durable state (never possible from the
+    tier chooser itself, but a state file some other build or a manual edit
+    could leave behind) must not echo resolve_plan_shape's raw validation
+    text onto the DOM either."""
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host._verify_plan_shape({"stage": "post_apply"}, {"tier": "turbo"})
+    assert str(excinfo.value) == REASON_REGISTRY[REASON_PROGRAM_UNPLAYABLE].message
+    assert "turbo" not in str(excinfo.value)
+    assert excinfo.value.code == REASON_PROGRAM_UNPLAYABLE
+
+
 def test_the_failed_screens_re_verify_still_asks_for_the_recovery():
     """The shipped ``verify_retry`` action posts no ``stage``, so a failed
     post-apply check still offers ONE cheap sweep rather than re-walking the
@@ -3096,6 +3114,14 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything():
     An id this build does not have must be refused BEFORE any relay
     registration or volume mutation, not silently measured as something else —
     so the gate runs ahead of every other one in the preparer.
+
+    #1833: the refusal's message used to be resolve_plan_shape's raw
+    validation text ("unknown commission tier 'turbo' (expected one of
+    express, full)") rewrapped verbatim into CrossoverV2Refused — internal
+    jargon reaching the browser's DOM unchanged. It now routes through the
+    SAME classifier (classify_program_failure + REASON_REGISTRY) every other
+    program-family exception already uses, and carries that reason's code so
+    a next_action can ride the 400 too.
     """
     class _Ready:
         needs_recovery = False
@@ -3105,7 +3131,10 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything():
         v2host.prepare_v2_session(
             {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None
         )
-    assert "unknown commission tier" in str(excinfo.value)
+    assert str(excinfo.value) == REASON_REGISTRY[REASON_PROGRAM_UNPLAYABLE].message
+    assert "turbo" not in str(excinfo.value)
+    assert "unknown commission tier" not in str(excinfo.value)
+    assert excinfo.value.code == REASON_PROGRAM_UNPLAYABLE
 
 
 def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
