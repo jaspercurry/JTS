@@ -427,20 +427,36 @@ def _declared_playback_destination(config_text: str, *, config_path: Path) -> st
 def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
     """Refuse to place a preserved render output over an existing file.
 
-    ``Path.rename`` overwrites silently on POSIX, so a leftover ``.first``
-    from an earlier campaign run would be replaced without a word — and a
-    leftover that survived a skipped move could be read as this run's
-    output. Both preserved paths are checked up front, so a stale file costs
-    no render at all, and each is checked again immediately before its move,
-    which is the check that actually guards the rename.
+    ``Path.rename`` overwrites silently on POSIX. This check has two call
+    sites, defending different things:
+
+    * **Up front, before any render** — the one that fires in practice. A
+      ``.first`` left behind by a campaign that died partway would otherwise
+      be replaced without a word. Checking here costs no render at all.
+    * **Immediately before each move.** Nothing inside
+      :func:`render_with_determinism_receipt` can occupy a preserved slot
+      between those two moments: the three paths are proved distinct, and the
+      only file created in between is the one at the declared destination. So
+      this call defends against a writer OUTSIDE this function touching the
+      bundle directory during the render window — real, but not the ordinary
+      case.
+
+    Why a stale file matters more than it looks: the receipt's hashes come
+    from the :class:`RenderInvocation` computed BEFORE the move, while the
+    campaign reads the preserved file afterwards. Those are decoupled, so a
+    surviving stale file would let the receipt truthfully report
+    "deterministic" about two renders while the measurement used bytes from a
+    different run.
     """
 
     if path.exists():
         raise RenderError(
             f"the {label} render's preserved output path already exists: {path} "
-            "— refusing rather than silently overwriting it, so a leftover "
-            "file from an earlier campaign run cannot masquerade as this "
-            "run's output"
+            "— refusing rather than silently overwriting it. This receipt's "
+            "hashes are computed before the file is moved here, while the "
+            "campaign reads the file afterwards, so a stale file would make "
+            "the receipt describe different bytes than the measurement used. "
+            "Delete it, or render into a fresh bundle directory."
         )
 
 
@@ -488,6 +504,21 @@ def render_with_determinism_receipt(
     Refuses before the first subprocess starts if ``config_path`` does not
     actually declare ``declared_output_path``, if the three paths are not
     distinct, or if either preserved-output path is already occupied.
+
+    ``declared_output_path`` is not redundant with the config, and its
+    strongest justification is easy to miss: requiring the config's declared
+    filename to equal a path the CALLER chose inside the bundle is what
+    transitively enforces R9's "renders write only inside the bundle
+    directory". Delete the parameter and that containment check has nowhere
+    left to live — and the move-aside would then make a wrong destination
+    invisible to the caller, since the output would be preserved under the
+    expected name either way. The comparison is a strict string compare on
+    purpose: :meth:`Path.resolve` would touch the filesystem (I/O inside a
+    guard that must complete before any subprocess starts, and a raise on a
+    broken symlink) and would follow symlinks, so a ``/tmp`` versus
+    ``/private/tmp`` pair would be ACCEPTED even though CamillaDSP opens the
+    literal string. That trades a loud false positive for a quiet false
+    negative, which is the wrong direction for a guard.
 
     ``config_sha256`` is computed from ``config_path``'s own bytes, read
     here, so the recorded shape identity provably fingerprints the text that

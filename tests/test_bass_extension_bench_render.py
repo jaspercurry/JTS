@@ -614,9 +614,13 @@ def test_determinism_receipt_refuses_non_distinct_output_paths(
 def test_determinism_receipt_refuses_a_preserved_output_path_already_in_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Path.rename overwrites silently on POSIX. A leftover .first from an
-    earlier campaign run must not be replaced without a word, nor survive to
-    masquerade as this run's output."""
+    """Pins the UP-FRONT slot check — the one that fires in practice.
+
+    Path.rename overwrites silently on POSIX, so a .first left behind by a
+    campaign that died partway must not be replaced without a word. The
+    ``written == []`` assertion is what pins this to the up-front call site
+    rather than the pre-move one: the refusal must cost no render.
+    """
 
     written = _stub_faithful_render_binary(monkeypatch)
     config_path, declared = _write_render_config(tmp_path)
@@ -635,6 +639,46 @@ def test_determinism_receipt_refuses_a_preserved_output_path_already_in_use(
     # Refused before any render, and the stale file is untouched.
     assert written == []
     assert stale.read_bytes() == b"stale-from-an-earlier-run"
+
+
+def test_determinism_receipt_refuses_a_slot_taken_during_the_render_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins the PRE-MOVE slot check, which the up-front one cannot cover.
+
+    Nothing inside the helper can occupy a preserved slot between the
+    up-front check and the move — the three paths are proved distinct and
+    the only file created in between is the one at the declared destination.
+    So the pre-move check exists for a writer OUTSIDE this function touching
+    the bundle directory while a render is running, which is what this
+    responder simulates. Without that check, ``Path.rename`` would overwrite
+    the intruding file in silence.
+    """
+
+    first_output = tmp_path / "out.first"
+
+    def _responder(argv, kwargs):  # type: ignore[no-untyped-def]
+        parsed = yaml.safe_load(Path(argv[-1]).read_text(encoding="utf-8"))
+        Path(parsed["devices"]["playback"]["filename"]).write_bytes(b"rendered")
+        # Something else drops a file into the slot this run intends to move
+        # its output into — after the up-front check has already passed.
+        first_output.write_bytes(b"not ours")
+        return _FakeCompleted(returncode=0)
+
+    _stub_subprocess_run(monkeypatch, _responder)
+    config_path, declared = _write_render_config(tmp_path)
+    with pytest.raises(render.RenderError, match="already exists"):
+        render.render_with_determinism_receipt(
+            "/opt/camilladsp/camilladsp",
+            config_path,
+            declared_output_path=declared,
+            first_output_path=first_output,
+            second_output_path=tmp_path / "out.second",
+            bounds=_BOUNDS,
+            fader_db=0.0,
+        )
+    # The intruding file was refused, not silently replaced.
+    assert first_output.read_bytes() == b"not ours"
 
 
 # --------------------------------------------------------------------------- #
