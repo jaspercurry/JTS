@@ -96,8 +96,10 @@ A bare hysteresis crossing is a *confident* answer with no confidence
 behind it, and measurement says that is where the detector actually fails:
 on our own ESS chain, 18.1% of criteria-region positives fired EARLY —
 typically at the search-window open — against 12.4% that found nothing
-(``captures/detector-certification-20260801`` §R9.0, §WO-6). The product
-has met this in the field: the S0 gating incident (#1790) is one capture
+(``captures/detector-certification-20260801`` §WO-6.4's shipped-today row;
+§R9.0 established the mechanism against the onset report, where the same
+split reads 19.4 / 12.4). The product has met this in the field: the S0
+gating incident (#1790) is one capture
 "finding" a reflection 3 samples past the search-start offset and
 collapsing its window to 1778 Hz.
 
@@ -186,9 +188,11 @@ WINDOW_KIND = "half_hann_tail"
 # directive is unchanged by the vote.)
 #
 # K is ALSO bounded below by the hardware: at Q = 7.5 the real jts3 woofer
-# reflection is found 13/13 at K = 12 but only 10/13 at K = 11 and 0/13 at
-# K = 10 (§WO-6.4). K = 12 is the floor of the range that reproduces this
-# speaker's established anatomy, not merely a corpus optimum.
+# reflection is found 13/13 at K = 12, but only 10/13 at K = 11 and 0/13 at
+# K = 10 (§WO-6's `results-wo6-20260731/README.md`, "K is bounded from below
+# by the same screen"). K = 12 is the FLOOR of the range that reproduces
+# this speaker's established anatomy, not merely a corpus optimum — and it
+# is the K whose reported delay matches §5's 1.2708 ms most exactly.
 #
 # (Earlier revisions of this comment advised "raise K, not lower it, if
 # field corpora show misses". That is backwards above the shipped default
