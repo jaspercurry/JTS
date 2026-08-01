@@ -17,7 +17,9 @@ This module does no I/O and holds no state:
 
 * :func:`detect_first_reflection` finds the first strong reflection after
   the direct-arrival peak using an energy-envelope threshold with
-  hysteresis (drop below the threshold, then rise back above it).
+  hysteresis (drop below the threshold, then rise back above it), and
+  accepts a crossing only if it clears a prominence vote (see "The
+  prominence vote" below).
 * :func:`gate_impulse_response` windows an IR to its reflection-free span
   (rectangular head through the peak, half-Hann taper into the reflection)
   and returns the :data:`~jasper.active_speaker.driver_acoustics` SC-2
@@ -87,11 +89,56 @@ identically and mean opposite things, which is exactly the defect #1966
 filed (the whole 2026-07-30 corpus sat at the ceiling while the record read
 as "reflections removed").
 
+The prominence vote (R9 WO-6, issue #1969)
+------------------------------------------
+
+A bare hysteresis crossing is a *confident* answer with no confidence
+behind it, and measurement says that is where the detector actually fails:
+on our own ESS chain, 18.1% of criteria-region positives fired EARLY —
+typically at the search-window open — against 12.4% that found nothing
+(``captures/detector-certification-20260801`` §WO-6.4's shipped-today row;
+§R9.0 established the mechanism against the onset report, where the same
+split reads 19.4 / 12.4). The product has met this in the field: the S0
+gating incident (#1790) is one capture
+"finding" a reflection 3 samples past the search-start offset and
+collapsing its window to 1778 Hz.
+
+So a crossing must now also *stand out*: its envelope peak must rise
+:data:`REFLECTION_PROMINENCE_DB` above the envelope's own minimum between
+the direct peak and the crossing. A candidate that fails does not end the
+search — the scan resumes past that excursion and the next crossing is
+voted on in turn. That resumption is what makes this a fix rather than a
+trade: measured, it raises detection (P_D 0.674 -> 0.712) while cutting
+early fires 31%, because the crossing a false early trigger was masking is
+often the real reflection.
+
+**This CHANGES gate decisions**, deliberately: it is the certified
+early-fire mechanism fix R9 gated on measurement, and it is the first thing
+to move a window since the module shipped. Per capture the direction is
+one-way at a fixed threshold — a vote can only reject a candidate the old
+scan accepted — but the scan's resumption means a capture can also end up
+gating LATER rather than not at all.
+
+**The operating point is bounded by hardware, not by the corpus.** Picked on
+corpus statistics alone the vote wants ~13.5 dB, and 13.5 dB rejects this
+speaker's one independently corroborated room reflection on 13 of 13 real
+captures. :data:`REFLECTION_PROMINENCE_DB` carries that measurement and the
+mechanism behind it; read it before moving the number.
+
 Schema version 2 (was 1): ``first_reflection_ms`` now reports the
 reflection's envelope PEAK rather than its onset, and three fields were
 added. See :func:`detect_first_reflection` for the peak-reporting
 rationale and :data:`GATING_SCHEMA_VERSION` for what a reader must do
 with the difference.
+
+The vote did NOT bump the schema, because this version tracks what a
+persisted FIELD means and no field changed meaning. The cost of that
+choice is real and is recorded rather than argued away: a pre-vote and a
+post-vote block are indistinguishable in a bundle. `docs/gating-v2-plan.md`
+D3 already owes the record a ``detector`` provenance field for exactly
+this reason, and whether a behaviour change should also move the schema
+version is that work order's decision to make; this change left the
+version at 2 and said so in both places.
 """
 
 from __future__ import annotations
@@ -126,13 +173,26 @@ WINDOW_KIND = "half_hann_tail"
 # false-trigger.
 #
 # DO NOT RAISE K (issue #1983; measured, `captures/detector-certification-
-# 20260801/` §4.2, criteria frozen before the run). K=12 is at the measured
-# P_D maximum and raising it is STRICTLY DOMINATED — both error rates get
-# worse together over 12 -> 20 dB:
+# 20260801/` §WO-6, criteria frozen before the run). Raising K past the
+# P_D maximum is STRICTLY DOMINATED — both error rates get worse together.
+# Measured on our own ESS chain at the shipped vote (Q = 7.5 dB), over the
+# complete frozen criteria region (12,750 positive / 6,000 negative):
 #
-#     K  (dB)    1      4      6     10    *12*    14     16     20     30     40
-#     P_D     0.095  0.305  0.446  0.638  0.662  0.601  0.482  0.277  0.021  0.000
-#     P_FA    0.001  0.009  0.046  0.184  0.302  0.410  0.556  0.641  0.243  0.013
+#     K  (dB)    4      8     10     11   *12*    13     14     16     20
+#     P_D     0.304  0.533  0.650  0.674  0.712  0.719  0.706  0.650  0.479
+#     P_FA    0.008  0.096  0.162  0.210  0.268  0.304  0.331  0.417  0.492
+#
+# K = 13 buys 0.007 P_D for 0.036 more P_FA and is not worth it; above it,
+# P_D falls while P_FA keeps climbing. (§4.2's original table is the same
+# walk with the vote OFF, where the P_D maximum sat at K = 12 itself. The
+# directive is unchanged by the vote.)
+#
+# K is ALSO bounded below by the hardware: at Q = 7.5 the real jts3 woofer
+# reflection is found 13/13 at K = 12, but only 10/13 at K = 11 and 0/13 at
+# K = 10 (§WO-6's `results-wo6-20260731/README.md`, "K is bounded from below
+# by the same screen"). K = 12 is the FLOOR of the range that reproduces
+# this speaker's established anatomy, not merely a corpus optimum — and it
+# is the K whose reported delay matches §5's 1.2708 ms most exactly.
 #
 # (Earlier revisions of this comment advised "raise K, not lower it, if
 # field corpora show misses". That is backwards above the shipped default
@@ -149,9 +209,53 @@ WINDOW_KIND = "half_hann_tail"
 #     would set the window to 0.646 ms: a 1548 Hz validity floor and a
 #     3870 Hz trusted floor, destroying the entire evidence band around the
 #     2 kHz crossover the tuner depends on (certification §5).
-# The asymmetric-cost guard below (:data:`SEARCH_T_MIN_MS`) encodes exactly
-# that: sub-minimum-gate features are classified and never gate.
+# Two guards encode exactly that: :data:`SEARCH_T_MIN_MS` classifies
+# sub-minimum-gate features so they can never gate, and
+# :data:`REFLECTION_PROMINENCE_DB` makes a crossing inside the span earn its
+# window.
 REFLECTION_THRESHOLD_DB = 12.0
+# Q: how far a candidate's envelope peak must rise above the envelope's own
+# minimum between the direct peak and the crossing, for that crossing to
+# become a window bound. The early-fire mechanism fix (see the module
+# docstring); a noise-floor or direct-tail excursion crosses the threshold
+# without standing out, a real reflection does both.
+#
+# 7.5 dB is measured, not assumed: `captures/detector-certification-
+# 20260801/` §WO-6, selected from a 315-cell (K, Q) grid on our own ESS chain
+# over the complete frozen criteria region. Against the no-vote detector at
+# the same K = 12 it is better on every measured axis, on two independent
+# draws: P_D 0.674 -> 0.712, strict P_D 0.634 -> 0.673, P_FA 0.279 -> 0.268,
+# and the early-fire rate it targets 0.181 -> 0.124 (-31%). Detection is not
+# traded away to buy that — captures finding nothing move only 0.124 ->
+# 0.130 — because a voted-down candidate does not end the search: the scan
+# resumes and often finds the REAL reflection the early trigger was masking.
+#
+# DO NOT RAISE Q. This ceiling is set by hardware, not by the corpus, and
+# the corpus alone points the wrong way — its best P_FA is at Q = 13.5, and
+# 13.5 REJECTS this speaker's real 1.275 ms environmental reflection on
+# 13/13 captures. Measured walk at the shipped K = 12, corpus beside the
+# jts3 anatomy reproduction (§5's established 13/13 woofer / 0/13 tweeter):
+#
+#     Q  (dB)     0      3     6   *7.5*   9    10.5    12    13.5
+#     P_D      0.674  0.678 0.693 0.712  0.727  0.724  0.702  0.667
+#     P_FA     0.279  0.278 0.275 0.268  0.234  0.158  0.084  0.043
+#     woofer   13/13  13/13 13/13 13/13  12/13   0/13   0/13   0/13
+#
+# 7.5 dB is the largest swept value that still reproduces the anatomy, and
+# the margin is thin — the real reflection's own prominence is 9.25 dB
+# median, 8.86 dB minimum across those 13 captures, so Q = 9 already loses
+# one. Why the corpus disagrees, mechanically: a 150-2000 Hz branch has a
+# ~500 us-wide direct impulse, so a 1.3 ms reflection sits on the direct
+# arrival's own skirt and its envelope prominence is small. The corpus
+# average runs 12-30 dB because it is dominated by longer delays and by
+# narrow-direct-arrival templates; its own woofer-at-1.25 ms cell measures
+# 9.1-11.0 dB and agrees with the hardware.
+#
+# Lower Q -> the early false detects come back (0.181 with no vote at all).
+# Higher Q -> real reflections are rejected, their captures fall back to the
+# 7 ms ceiling, and the record over-claims low-frequency validity. Read the
+# asymmetry note above before moving this number in either direction.
+REFLECTION_PROMINENCE_DB = 7.5
 # Search span after the direct peak, in ms. t_min skips the direct arrival's
 # own tail; t_max bounds the search (and is the fallback window when no
 # reflection is found) and must stay >= a domestic floor-bounce arrival
@@ -210,6 +314,12 @@ CLASS_GATEABLE = "gateable"
 # (captures/detector-certification-20260801/harness/detectors.py
 # ``shipped_peak_refined``); reproducing its number requires reproducing
 # this one.
+#
+# TWO CONSUMERS, one number, deliberately: this also bounds how far past a
+# crossing :func:`_candidate_prominence_db` looks for the candidate's peak.
+# The certified variant likewise uses one ``refine_ms`` for both, so
+# splitting them would de-couple the product from §WO-6's measurement.
+# Changing this for ToA reasons alone therefore moves the vote too.
 TOA_REFINE_MS = 0.5
 
 FLOOR_MEASURED = "measured_reflection"
@@ -394,31 +504,80 @@ def _refine_to_envelope_peak(
     return onset_idx + int(np.argmax(envelope[onset_idx : n1 + 1]))
 
 
+def _candidate_prominence_db(
+    envelope: np.ndarray,
+    *,
+    direct_peak_idx: int,
+    crossing_idx: int,
+    search_end_idx: int,
+    refine_samples: int,
+) -> float:
+    """How far a threshold crossing stands above the valley it rose out of.
+
+    The prominence vote's statistic, in decibels: the SMOOTHED envelope's
+    maximum within ``refine_samples`` of the crossing, over that same
+    envelope's minimum anywhere between the direct peak and the crossing.
+
+    Reads the same smoothed RMS envelope the hysteresis search runs on —
+    deliberately, not the analytic one: the vote's job is to price the
+    detector's own decision surface, so a crossing and its prominence are
+    computed from one signal. The certified variant
+    (``captures/detector-certification-20260801/harness/ourchain/variants.py``
+    ``shipped_family``) does exactly this, and reproducing its numbers
+    requires reproducing that choice.
+
+    Units: dB. Non-negative by construction — ``envelope[crossing_idx]``
+    lies in both the top window and the valley window, so the maximum can
+    never fall below the minimum. Owns the statistic only; the accept /
+    reject decision and the scan belong to
+    :func:`detect_first_reflection`.
+    """
+    hi = min(search_end_idx, crossing_idx + refine_samples)
+    top = float(np.max(envelope[crossing_idx : hi + 1]))
+    valley = envelope[direct_peak_idx + 1 : crossing_idx + 1]
+    floor = (
+        float(np.min(valley)) if valley.size else float(envelope[crossing_idx])
+    )
+    return 20.0 * np.log10(max(top, 1e-300) / max(floor, 1e-300))
+
+
 def detect_first_reflection(
     ir: np.ndarray,
     sample_rate: int,
     *,
     direct_peak_idx: int | None = None,
     threshold_db: float = REFLECTION_THRESHOLD_DB,
+    prominence_db: float = REFLECTION_PROMINENCE_DB,
     t_min_ms: float = SEARCH_T_MIN_MS,
     t_max_ms: float = SEARCH_T_MAX_MS,
     smooth_ms: float = ENVELOPE_SMOOTH_MS,
 ) -> ReflectionDetection:
     """Find the first strong reflection after the direct-arrival peak.
 
-    Energy-envelope threshold with hysteresis: the smoothed envelope must
-    first drop below ``peak - threshold_db`` (the end of the direct
-    arrival's own tail) and then rise back above that same threshold (the
-    reflection onset), searched only in
-    ``[direct_peak + t_min_ms, direct_peak + t_max_ms]``. Vectorized over
-    that bounded search span — not a Python loop over the full IR.
+    Energy-envelope threshold with hysteresis, then a prominence vote. The
+    smoothed envelope must first drop below ``peak - threshold_db`` (the end
+    of the direct arrival's own tail) and then rise back above that same
+    threshold (a candidate onset), searched only in
+    ``[direct_peak + t_min_ms, direct_peak + t_max_ms]``. A candidate is
+    accepted only if :func:`_candidate_prominence_db` clears
+    ``prominence_db``; a rejected one does NOT end the search — the scan
+    resumes past that above-threshold excursion and votes on the next
+    crossing. ``prominence_db <= 0`` disables the vote, which recovers the
+    pre-WO-6 first-crossing-wins behaviour exactly (that equivalence is
+    what the certification harness asserts against this function).
+
+    Bounded by construction: every iteration advances the cursor past a
+    strictly longer prefix of the search span, so the scan runs at most
+    ``t_max_ms`` samples' worth of iterations (336 at 48 kHz) and each does
+    O(span) numpy work over that same span. It is a loop over CANDIDATES
+    inside a bounded window, never over the IR.
 
     ``direct_peak_idx`` defaults to ``argmax(|ir|)``. Returns a
     :class:`ReflectionDetection` with ``floor_source=None`` (ungateable) for
     a silent/NaN capture or a search span with no room to search;
     :data:`FLOOR_SEARCH_BOUND` when the direct arrival never separates from
-    the noise floor or no reflection crosses back above threshold before the
-    search bound; :data:`FLOOR_MEASURED` when a reflection onset is found.
+    the noise floor, or no crossing before the search bound survived the
+    vote; :data:`FLOOR_MEASURED` when a reflection onset is accepted.
 
     Two things ride alongside that decision without changing it:
     ``reflection_peak_idx`` reports the reflection's envelope peak rather
@@ -468,29 +627,55 @@ def detect_first_reflection(
     ledger = _classification_ledger(analytic, p, sr, t_min_ms=t_min_ms)
 
     seg = env[p + t_min : end + 1]
-    rel = np.arange(p + t_min, end + 1)
+    seg_lo = p + t_min
     below = seg < thr
-    if not bool(np.any(below)):
-        # The direct arrival's tail never separates from threshold within
-        # the search span — report the conservative span-bound floor.
-        return ReflectionDetection(
-            p, None, FLOOR_SEARCH_BOUND, internal_reflections=ledger
-        )
-    first_below = int(np.argmax(below))
-    after = seg[first_below:] >= thr
-    if not bool(np.any(after)):
-        # Separated but nothing rose back above threshold before the bound.
-        return ReflectionDetection(
-            p, None, FLOOR_SEARCH_BOUND, internal_reflections=ledger
-        )
-    reflection_idx = int(rel[first_below + int(np.argmax(after))])
-    return ReflectionDetection(
-        p,
-        reflection_idx,
-        FLOOR_MEASURED,
-        reflection_peak_idx=_refine_to_envelope_peak(analytic, reflection_idx, sr),
-        internal_reflections=ledger,
+    refine_n = max(1, int(round(TOA_REFINE_MS * 1e-3 * sr)))
+    bound = ReflectionDetection(
+        p, None, FLOOR_SEARCH_BOUND, internal_reflections=ledger
     )
+
+    cursor = 0
+    while True:
+        rest_below = below[cursor:]
+        if not bool(np.any(rest_below)):
+            # The direct arrival's tail never separates from threshold in
+            # what is left of the span — report the span-bound floor.
+            return bound
+        first_below = cursor + int(np.argmax(rest_below))
+        after = seg[first_below:] >= thr
+        if not bool(np.any(after)):
+            # Separated but nothing rose back above threshold before the bound.
+            return bound
+        crossing = first_below + int(np.argmax(after))
+        reflection_idx = seg_lo + crossing
+
+        # Extent of this contiguous at-or-above-threshold excursion; where
+        # the scan resumes if the candidate is voted down. It is strictly
+        # past `crossing` (whose sample is above threshold by definition),
+        # which is what bounds the loop.
+        run_end = crossing
+        while run_end < seg.size and seg[run_end] >= thr:
+            run_end += 1
+
+        if prominence_db > 0.0 and _candidate_prominence_db(
+            env,
+            direct_peak_idx=p,
+            crossing_idx=reflection_idx,
+            search_end_idx=end,
+            refine_samples=refine_n,
+        ) < prominence_db:
+            cursor = run_end
+            continue
+
+        return ReflectionDetection(
+            p,
+            reflection_idx,
+            FLOOR_MEASURED,
+            reflection_peak_idx=_refine_to_envelope_peak(
+                analytic, reflection_idx, sr
+            ),
+            internal_reflections=ledger,
+        )
 
 
 def _fragment(
@@ -546,6 +731,7 @@ def gate_impulse_response(
     direct_peak_idx: int | None = None,
     taper_fraction: float = TAPER_FRACTION,
     threshold_db: float = REFLECTION_THRESHOLD_DB,
+    prominence_db: float = REFLECTION_PROMINENCE_DB,
     t_min_ms: float = SEARCH_T_MIN_MS,
     t_max_ms: float = SEARCH_T_MAX_MS,
     smooth_ms: float = ENVELOPE_SMOOTH_MS,
@@ -580,6 +766,7 @@ def gate_impulse_response(
         sample_rate,
         direct_peak_idx=direct_peak_idx,
         threshold_db=threshold_db,
+        prominence_db=prominence_db,
         t_min_ms=t_min_ms,
         t_max_ms=t_max_ms,
         smooth_ms=smooth_ms,

@@ -28,11 +28,15 @@ targets) at 30-40 dB delta-vs-noise-floor SNR, with zero failures across a
 50-seed sweep. -12 dB (exactly at K) is a genuine coin-flip boundary by
 construction (hysteresis has to cross back above a threshold equal to the
 reflection's own level), and weaker reflections or 20 dB SNR are, BY DESIGN,
-not reliably caught by a delta-only synthetic test — see the module
-docstring's "missing a reflection is the dangerous direction; raise K, not
-lower it" note. This file pins the reliable envelope and separately pins the
-graceful (never-silent, never-wrong-applied) fallback when nothing crosses
-threshold.
+not reliably caught by a delta-only synthetic test. This file pins the
+reliable envelope and separately pins the graceful (never-silent,
+never-wrong-applied) fallback when nothing crosses threshold.
+
+(An earlier version of this docstring cited "missing a reflection is the
+dangerous direction; raise K, not lower it" as standing guidance. That was
+measured backwards and corrected in #1983 — see
+``test_the_threshold_tuning_guidance_does_not_point_the_wrong_way``, which
+pins the correction in the module the guidance actually lives in.)
 """
 from __future__ import annotations
 
@@ -148,6 +152,55 @@ def test_gating_contract_constants_pinned():
     assert gating.LEDGER_MAX_ENTRIES == 6
     assert gating.CLASS_DUT_INTERNAL == "DUT_internal_ungateable"
     assert gating.CLASS_GATEABLE == "gateable"
+
+
+# ---------- the prominence vote's constants (R9 WO-6) ---------------------
+
+
+def test_prominence_vote_operating_point_pinned():
+    """Q is a measured operating point, not a tuning default.
+
+    7.5 dB was selected from a 315-cell (K, Q) grid on our own ESS
+    deconvolution chain, over the complete frozen criteria region, screened
+    against this speaker's established anatomy
+    (``captures/detector-certification-20260801`` §WO-6). Changing it
+    silently de-couples the product from the measurement that justified it,
+    and — because the ceiling is set by real hardware rather than by the
+    corpus — a plausible-looking increase is the specific failure mode.
+    """
+    assert gating.REFLECTION_PROMINENCE_DB == 7.5
+    # K did NOT move. The vote is additive; #1983's K analysis still stands.
+    assert gating.REFLECTION_THRESHOLD_DB == 12.0
+
+
+def test_the_prominence_ceiling_records_that_hardware_set_it():
+    """#1969 / WO-6 — the corpus alone points the wrong way on this knob.
+
+    Picked on corpus statistics alone the vote wants ~13.5 dB, which
+    measured 6.6x fewer false alarms — and rejects this speaker's one
+    independently corroborated room reflection (1.275 ms, woofer branch) on
+    **13 of 13** real captures. A future reader looking only at the corpus
+    table would raise Q and break the instrument on real hardware, so the
+    reason lives in the source beside the number.
+
+    Asserted on the source text because a comment is the only artifact that
+    can carry the "why" to whoever edits the constant — the same rule
+    ``test_the_threshold_tuning_guidance_does_not_point_the_wrong_way``
+    applies to K.
+    """
+    source = inspect.getsource(gating)
+    upper = source.upper()
+
+    assert "DO NOT RAISE Q" in upper, (
+        "the prominence ceiling's directive is missing — see WO-6"
+    )
+    # The measurement that sets the ceiling, not just an assertion of it.
+    assert "13/13" in source
+    assert "1.275" in source
+    # Both failure directions, as with K: naming only one is what makes a
+    # one-sided rule look reasonable.
+    assert "LOWER Q" in upper and "HIGHER Q" in upper
+    assert "CAPTURES/DETECTOR-CERTIFICATION-20260801" in upper
 
 
 # ---------- f_valid_floor_hz formula ------------------------------------------
@@ -526,19 +579,28 @@ def _band_limited_ir(
     return ir / np.abs(ir).max() + rng.normal(0, 10 ** (noise_db / 20), n)
 
 
-# --- byte-identity: the contract changed reporting, never a decision ------
+# --- byte-identity: no UNINTENDED decision change --------------------------
 
 #: Captured from the PRE-CONTRACT ``gate_impulse_response`` (commit
 #: ``5e7efd268``) and asserted against the current one. These four fields
 #: ARE the gate's decisions: whether a capture gates, where its window ends,
 #: where the direct arrival was, and the low-frequency floor that follows.
-#: Nothing the R9 contract added may move any of them.
 #:
-#: The same comparison was run out of band over a wider corpus — 34
+#: **Read this table for what it is.** The R9 disclosure contract (#1969)
+#: could not move any of them — it added reporting only. The WO-6 prominence
+#: vote CAN, and does so deliberately; it simply does not on these seven,
+#: because their reflections are strong deltas that clear the vote easily.
+#: So this table's job changed: it was proof that nothing moved, and it is
+#: now the tripwire for a decision moving when nobody meant it to. The vote's
+#: own intended change is pinned separately, on a fixture built for it
+#: (``test_the_vote_rejects_the_early_fire_the_bare_threshold_accepts``).
+#:
+#: The same comparison was re-run out of band over the wider corpus — 34
 #: fixtures including 10 real jts3 per-branch IRs — comparing the full
 #: fragment plus a SHA-256 of the gated float32 samples, and came back
-#: byte-identical. Those IRs are untracked session artifacts and cannot
-#: live here, so this table is the tracked subset. See the PR body.
+#: byte-identical across the WO-6 change too: 34/34 unchanged, including
+#: all 13 real jts3 branch IRs. Those IRs are untracked session artifacts
+#: and cannot live here, so this table is the tracked subset. See the PR body.
 _PRE_CONTRACT_GATE_DECISIONS = {
     # name: (floor_source, window_ms, direct_peak_ms, f_valid_floor_hz)
     "measured_3.6ms_-6dB": ("measured_reflection", 3.5208333333333335,
@@ -579,11 +641,13 @@ def _decision_fixture(name: str) -> np.ndarray:
 
 @pytest.mark.parametrize("name", sorted(_PRE_CONTRACT_GATE_DECISIONS))
 def test_gate_decisions_are_unchanged_by_the_disclosure_contract(name):
-    """R9 added disclosure. Disclosure must not be able to gate differently.
+    """The tripwire for an unintended decision change.
 
     Spans all three states a capture can end in — measured reflection,
     ceiling fallback, ungateable — against values recorded from the
-    pre-contract code.
+    pre-contract code. R9's disclosure contract could not move these
+    (reporting only); WO-6's prominence vote can, and deliberately does not
+    here — see :data:`_PRE_CONTRACT_GATE_DECISIONS`.
     """
     expected = _PRE_CONTRACT_GATE_DECISIONS[name]
     _gated, fragment = gating.gate_impulse_response(_decision_fixture(name), SR)
@@ -594,8 +658,9 @@ def test_gate_decisions_are_unchanged_by_the_disclosure_contract(name):
         fragment["f_valid_floor_hz"],
     )
     assert got == pytest.approx(expected, rel=1e-12, abs=1e-12), (
-        f"{name}: gate DECISION moved. Expected {expected}, got {got}. The "
-        "R9 contract may only add reporting fields."
+        f"{name}: gate DECISION moved. Expected {expected}, got {got}. If "
+        "that was deliberate, it needs the measurement to justify it and a "
+        "fixture that pins the new behaviour, not a golden refresh."
     )
 
 
@@ -719,6 +784,193 @@ def test_ledger_is_a_list_even_when_empty_never_none():
     which is a different claim from "nothing looked"."""
     _gated, fragment = gating.gate_impulse_response(np.zeros(2000), SR)
     assert fragment["internal_reflection_ledger"] == []
+
+
+# --- the prominence vote (R9 WO-6) ----------------------------------------
+
+
+def test_a_prominent_candidate_passes_the_vote():
+    """The vote must not simply suppress detection.
+
+    A clean, strong reflection stands far out of the valley before it, so
+    the vote is a no-op on exactly the material the detector was already
+    right about.
+    """
+    n = int(0.030 * SR)
+    ir, _refl = _delta_ir_with_reflection(n, 500, 4.0, -6.0)
+    voted = gating.detect_first_reflection(ir, SR)
+    unvoted = gating.detect_first_reflection(ir, SR, prominence_db=0.0)
+    assert voted.floor_source == gating.FLOOR_MEASURED
+    assert voted.reflection_idx == unvoted.reflection_idx
+
+
+def _early_fire_ir(
+    *,
+    floor_db: float = -26.0,
+    bump_db: float = -22.0,
+    bump_ms: tuple[float, float] = (0.55, 1.10),
+    reflection_ms: float = 4.0,
+    reflection_db: float = -6.0,
+    seed: int = 1,
+) -> np.ndarray:
+    """The measured early-fire shape: a shallow noise rise, not a discrete blip.
+
+    A direct arrival on a shaped noise floor, with a broad low bump just
+    past the search open that crosses ``peak - K`` without standing out of
+    its own surroundings, and a real reflection later. This is the shape the
+    certification measured as the shipped detector's dominant failure —
+    18.1% of criteria-region positives firing EARLY, typically at the
+    search-window open — and the shape the S0 incident (#1790) is a field
+    instance of.
+    """
+    rng = np.random.default_rng(seed)
+    n, p = int(0.030 * SR), 500
+    gain = np.full(n, 10 ** (floor_db / 20))
+    lo = p + int(round(bump_ms[0] * 1e-3 * SR))
+    hi = p + int(round(bump_ms[1] * 1e-3 * SR))
+    gain[lo:hi] = 10 ** (bump_db / 20)
+    ir = rng.standard_normal(n) * gain
+    ir[p] = 1.0
+    ir[p + int(round(reflection_ms * 1e-3 * SR))] += 10 ** (reflection_db / 20)
+    return ir
+
+
+def test_the_vote_rejects_the_early_fire_the_bare_threshold_accepts():
+    """The regression this change exists for, end to end.
+
+    Without the vote the detector fires at ~0.52 ms — a confident wrong
+    answer that collapses the window and puts the validity floor near
+    1.9 kHz, destroying the crossover evidence band. With it, the candidate
+    is voted down, the scan RESUMES, and the real 4 ms reflection is found:
+    the same capture goes from a 0.5 ms window to a ~3.9 ms one.
+
+    That resumption is why the fix raises detection rather than trading it:
+    measured on our chain, P_D 0.674 -> 0.712 while early fires fall
+    0.181 -> 0.124 (``captures/detector-certification-20260801`` §WO-6).
+    """
+    ir = _early_fire_ir()
+
+    unvoted = gating.detect_first_reflection(ir, SR, prominence_db=0.0)
+    assert unvoted.floor_source == gating.FLOOR_MEASURED
+    unvoted_ms = (unvoted.reflection_idx - unvoted.direct_peak_idx) / SR * 1000
+    assert unvoted_ms < 1.0, "fixture must reproduce the early fire"
+
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    assert fragment["floor_source"] == gating.FLOOR_MEASURED
+    assert fragment["window_ms"] == pytest.approx(4.0, abs=0.2), (
+        "the vote must not merely reject — the scan resumes and finds the "
+        "real reflection"
+    )
+    # And the disclosed floors follow the honest window, not the collapsed one.
+    assert fragment["f_valid_floor_hz"] < 300.0
+    assert fragment["f_trusted_hz"] < 750.0
+
+
+def test_a_voted_down_candidate_does_not_end_the_search():
+    """The scan resumes past a rejected excursion — the property that makes
+    the vote a fix rather than a miss-rate trade.
+
+    Stated separately from the end-to-end regression above because it is the
+    load-bearing structural claim: a first-crossing-wins detector with a
+    vote bolted on would return ``search_span_bound`` here.
+    """
+    ir = _early_fire_ir()
+    det = gating.detect_first_reflection(ir, SR)
+    assert det.floor_source == gating.FLOOR_MEASURED
+    assert det.reflection_idx is not None
+    tau_ms = (det.reflection_idx - det.direct_peak_idx) / SR * 1000
+    assert tau_ms == pytest.approx(4.0, abs=0.2)
+
+
+def test_disabling_the_vote_recovers_the_pre_wo6_detector_exactly():
+    """``prominence_db <= 0`` is the null, and the null is the old detector.
+
+    The certification harness leans on this: its variant family at null
+    parameters is asserted against this function, so every number WO-6
+    selected on is only comparable if the null really is a no-op. Checked
+    across the three states a capture can end in.
+    """
+    n = int(0.030 * SR)
+    cases = {
+        "measured": _delta_ir_with_reflection(n, 500, 4.0, -6.0)[0],
+        "ceiling": _delta_ir(2000, 200),
+        "ungateable": np.zeros(2000, dtype=np.float64),
+        "early_fire": _early_fire_ir(),
+    }
+    for name, ir in cases.items():
+        for k in (6.0, 12.0, 20.0):
+            a = gating.detect_first_reflection(
+                ir, SR, threshold_db=k, prominence_db=0.0
+            )
+            b = gating.detect_first_reflection(
+                ir, SR, threshold_db=k, prominence_db=-1.0
+            )
+            assert a == b, f"{name} at K={k}: a non-positive Q must not vote"
+
+
+def test_the_vote_cannot_resurrect_a_sub_minimum_gate_feature():
+    """The asymmetric-cost guard outranks the vote, both directions.
+
+    A DUT-internal feature before ``SEARCH_T_MIN_MS`` is un-gateable by
+    construction, and the vote is a REJECTION filter applied inside the
+    search span — it can never admit something the span excludes. Pinned
+    because "we added a second acceptance stage" is exactly the change that
+    could, if mis-wired, widen what gates.
+    """
+    ir = _band_limited_ir(2500.0, 18000.0)
+    _gated, fragment = gating.gate_impulse_response(ir, SR)
+    assert fragment["floor_source"] == gating.FLOOR_SEARCH_BOUND
+    internal = [
+        e for e in fragment["internal_reflection_ledger"]
+        if e["classification"] == gating.CLASS_DUT_INTERNAL
+    ]
+    assert internal, "the fixture must still carry sub-min-gate features"
+    assert fragment["first_reflection_ms"] is None
+
+
+def test_the_candidate_scan_terminates_on_an_envelope_that_never_stands_out():
+    """Bounded work, on the input designed to make the scan loop longest.
+
+    Broadband noise with no discrete arrival crosses the threshold many
+    times and every crossing is voted down, so this exercises the maximum
+    number of resume-scan iterations. The loop is bounded because each
+    iteration advances the cursor past a strictly longer prefix of the
+    search span; this pins that it actually returns, and returns the
+    conservative bound rather than an invented reflection.
+    """
+    rng = np.random.default_rng(11)
+    n = int(0.030 * SR)
+    ir = rng.standard_normal(n) * 10 ** (-20 / 20)
+    ir[500] = 1.0
+    det = gating.detect_first_reflection(ir, SR)
+    assert det.floor_source in (gating.FLOOR_SEARCH_BOUND, gating.FLOOR_MEASURED)
+
+
+def test_candidate_prominence_is_non_negative_and_reads_the_smoothed_envelope():
+    """The vote's statistic, in isolation.
+
+    Non-negative by construction (the crossing's own sample is in both the
+    top window and the valley window), and monotone in how far the peak
+    stands above the valley — so a shallow rise scores low and a spike
+    scores high, which is the whole discriminator.
+    """
+    env = np.full(400, 0.1)
+    env[200] = 0.1          # crossing on a flat floor: no prominence at all
+    flat = gating._candidate_prominence_db(
+        env, direct_peak_idx=0, crossing_idx=200, search_end_idx=399,
+        refine_samples=24,
+    )
+    assert flat == pytest.approx(0.0, abs=1e-9)
+
+    env2 = np.full(400, 0.1)
+    env2[150:160] = 0.01    # a deep valley before the candidate
+    env2[205] = 1.0         # a strong peak just after the crossing
+    tall = gating._candidate_prominence_db(
+        env2, direct_peak_idx=0, crossing_idx=200, search_end_idx=399,
+        refine_samples=24,
+    )
+    assert tall == pytest.approx(40.0, abs=1e-6)
+    assert tall > flat
 
 
 # --- the disclosed floors --------------------------------------------------

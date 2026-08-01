@@ -37,7 +37,20 @@ that fix, plus the detector and policy work around it.
   envelope must drop below `peak − 12 dB` (`REFLECTION_THRESHOLD_DB`)
   then rise back above it, searched in `[direct+0.5 ms, direct+7 ms]`
   (`SEARCH_T_MIN_MS`/`SEARCH_T_MAX_MS`). This is the STA/LTA-class
-  energy picker whose spike false-trigger mode is the incident.
+  energy picker whose spike false-trigger mode is the incident —
+  **partially mitigated in v1 since R9 WO-6**, which is a change to
+  this bullet's baseline, not a replacement for D3. A crossing is now
+  also voted on: its envelope peak must rise
+  `REFLECTION_PROMINENCE_DB = 7.5 dB` above the envelope's own minimum
+  between the direct peak and the crossing, and a voted-down candidate
+  does **not** end the search — the scan resumes past that excursion.
+  Measured on the product's own ESS chain
+  (`captures/detector-certification-20260801` §WO-6), that cuts the
+  early-fire rate 0.181 → 0.124 while *raising* detection (P_D
+  0.674 → 0.712). It does not remove the mode: 0.124 is not 0, so the
+  incident class remains reachable and D2/D3 keep their warrant.
+  **Q's ceiling is set by hardware, not by the corpus** — corpus-optimal
+  Q ≈ 13.5 dB rejects the jts3 woofer's real 1.275 ms reflection 13/13.
 - Window: rectangular + half-Hann tail, `TAPER_FRACTION = 0.25`,
   `WINDOW_KIND = "half_hann_tail"`, `GATING_SCHEMA_VERSION = 2`
   (bumped 1 → 2 by R9's gating contract, which changed
@@ -262,6 +275,25 @@ picks, not as the primary. Provenance: the gating fragment gains a
 indistinguishable in a bundle; INV-4 asserts it for comparisons, and
 `GATING_SCHEMA_VERSION` bumps if field semantics change.
 
+> **D3 owes a third era, and the boundary has already been crossed
+> once.** R9 WO-6 changed v1's decision surface (the prominence vote,
+> "Current state" above) without a fragment marker and without a schema
+> bump — deliberately, since no field changed meaning, but the
+> consequence is that pre-vote and post-vote v1 blocks *are*
+> indistinguishable in a bundle, which is exactly what this paragraph
+> says must not happen. When `detector` lands it needs at least
+> `"v1"`/`"v1-vote"`/`"v2"`, or an equivalent, and the retroactive
+> ambiguity for records written before it should be stated rather than
+> papered over. Whether a behaviour change (as opposed to a field-meaning
+> change) should itself bump `GATING_SCHEMA_VERSION` is D3's call to
+> make, not WO-6's; WO-6 left the version at 2 and recorded the choice in
+> `gating.py`'s module docstring.
+>
+> Prediction 1 below is also affected: its v1 baseline now carries its
+> own early-fire guard, so v1 and v2 may both reject `cloud_04`'s event
+> and the prediction stops discriminating between them. Re-derive the
+> baseline before grading it.
+
 **D4 — Graded validity band. ADOPT (research Q5), as
 disclosure-only.** Hard floor stays `f_valid = 1/T` (k=1, continuity
 with every recorded floor). Between `1/T` and `2/T`, derived
@@ -349,9 +381,11 @@ file — `JTS_FLAT_LIN_S0` alone is necessary, not sufficient).
 - **PR-G2 — anomaly policy (D2) + INV-3 + suspicion guard.** Conductor
   policy, retake wiring, invariant-family short-circuit, retained-
   anomalous provenance annotation + evidence note, disclosure copy,
-  `event=` logs. Corpus (pinned to the **v1 detector** explicitly —
-  G3 changing the detector later moves this assertion to prediction-1
-  grading, it does not silently break it): replay the incident
+  `event=` logs. Corpus (pinned to the **v1 detector as of the PR that
+  writes the pin** — record which, since R9 WO-6 moved v1's decision
+  surface once already; G3 changing the detector later moves this
+  assertion to prediction-1 grading, it does not silently break it):
+  replay the incident
   session — `cloud_04` must be flagged anomalous and (absent a live
   retake) retained-with-mask + disclosed, with the graded floor
   recovered; the S0 desk-edge sessions must produce zero anomaly

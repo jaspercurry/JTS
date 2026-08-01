@@ -165,8 +165,9 @@ VERIFY failures), #1672 (per-serial mic cals disagree ~4.7 dB above 8 kHz),
 #1774 (**R12** — re-baseline S0 under the corrected calibration sign), #1969
 (**R8/R9** — the banked research: certified in R8, implemented in R9), #1983
 (`gating.py`'s detector tuning comment points the wrong way — a measured
-spin-out of #1969's certification; deliberately **untagged**, since R9 states it
-declines to carry it).
+spin-out of #1969's certification; the R9 block below says R9 declines to carry
+it, but #1989 **did** carry it, and WO-6 then re-derived the same K walk at the
+shipped vote).
 
 ---
 
@@ -403,6 +404,15 @@ nominal 1/T, and E5's eval-band ∩ radiated-band correction.
 > deconvolution chain** — our-chain certification precedes any swap, because the
 > corpus chain's absolute numbers do not transfer. `gating.py`'s
 > wrong-way tuning comment is filed as #1983, not carried here.
+>
+> **All three landed.** (1) and (2) in #1989, with #1983's comment carried
+> after all rather than deferred. (3) in the WO-6 PR: the conditional was met
+> on our chain (a prominence vote on the shipped candidate), so **R9 does move
+> gate decisions** — unlike (1) and (2), which were byte-identical. The
+> operating point is `REFLECTION_PROMINENCE_DB = 7.5 dB` at the unchanged
+> `REFLECTION_THRESHOLD_DB = 12 dB`, selected on a 315-cell grid and then
+> screened against jts3's established anatomy, which overruled the
+> corpus-optimal point (`captures/detector-certification-20260801` §WO-6).
 
 Lens A's **frame discipline**: fit and disclose
 (offset, tilt) before differencing, and grade the tilt-removed residual beside
@@ -517,7 +527,7 @@ their content.** All five live in the gitignored, laptop-durable `captures/`.
 | Dirac paper digest | Correction is a mixed-phase, position-stability problem: invert only what is stable across positions; magnitude-only inversion is the common error. Evidence tier: reasoned argument by an interested expert (Dirac's founder) | `captures/paper-digest-20260731.md` | rung P3 (#1954, #1955) |
 | ToF survey + v1 design | Absolute time-of-flight is unrecoverable in a browser chain, but the **intra-capture differential arrival** between two driven drivers cancels the unknown start latency exactly — an angle ruler, not a range ruler, from one position | `captures/DEEP-RESEARCH-tof-report-2026-07-31.md`; issue #1877 (closed) | rung P2 (the observable only — **not** ToF v1) |
 | Crossover decision framework | Directivity matching is the automatable Fc rule; reverse-null depth quantifies alignment by vector math (valid for in-phase/even-order only); the dominant failure is EQ undoing its own crossover, guarded by a passband-edge bound | `captures/DEEP-RESEARCH-crossover-report-2026-07-31.md`; issue #1968 | rung P3 |
-| Gating and quasi-anechoic measurement | The fixed 7 ms gate is behaving correctly: sub-millisecond DUT-internal energy is un-gateable in principle, so the fix is a gating **contract** that proves and discloses what it did — not a smarter search | `captures/DEEP-RESEARCH-gating-report-2026-07-31.md`; issue #1969 | rung P1 |
+| Gating and quasi-anechoic measurement | The fixed 7 ms gate is behaving correctly: sub-millisecond DUT-internal energy is un-gateable in principle, so the fix is a gating **contract** that proves and discloses what it did — not a smarter search. **Amended by measurement:** R9's own-chain certification found the shipped detector's dominant failure is firing EARLY (18.1% of criteria-region positives) and that a prominence vote fixes it, so R9 shipped the contract *and* a smarter search (§WO-6) | `captures/DEEP-RESEARCH-gating-report-2026-07-31.md`; issue #1969 | rung P1 |
 | Gating follow-ups | Detector certification is adoptable (running-local-kurtosis core, dEchorate + synthetic injection, ROC); FDW is an HF enhancer with per-frequency disclosure, never LF validity; two-mic field separation declined | `captures/DEEP-RESEARCH-gating-followups-report-2026-07-31.md`; #1969 follow-ups comment | rung P1 |
 
 ## The phase → issue index
