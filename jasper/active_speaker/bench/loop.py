@@ -89,9 +89,8 @@ from jasper.bass_extension.bench.render import (
     RenderBounds,
     RenderError,
     check_free_space,
-    config_shape_sha256,
     estimate_render_bytes,
-    render_config,
+    render_with_determinism_receipt,
 )
 from jasper.log_event import log_event
 
@@ -435,8 +434,6 @@ class EmitLoopPlan:
 
     roles: tuple[str, ...]
     work_dir: Path
-    treated_text: str
-    control_text: str
     treated: DerivedRenderConfig
     control: DerivedRenderConfig
     geometry: DeviceGeometry
@@ -526,8 +523,6 @@ def plan_emit_loop(
     return EmitLoopPlan(
         roles=tuple(roles),
         work_dir=work_dir,
-        treated_text=treated_text,
-        control_text=control_text,
         treated=arms["treated"],
         control=arms["control"],
         geometry=geometry,
@@ -545,60 +540,95 @@ def _render_arm(
     name: str,
     plan: EmitLoopPlan,
     derived: DerivedRenderConfig,
-    emitted_text: str,
     *,
     binary: BinaryIdentity,
     bounds: RenderBounds,
 ) -> RenderArm:
     """Render one arm twice, proving the render repeats byte-for-byte.
 
-    Two derivations of one emitted text — ``derived`` (built by
-    :func:`plan_emit_loop`) and a second built here — differing in nothing but
-    where the samples land, because a CamillaDSP render's destination is not an
-    argument: it is ``devices.playback.filename`` INSIDE the config. Same
-    binary, same stimulus, same graph, so byte-identical output, or the
-    instrument does not repeat and nothing measured with it is a measurement.
+    ONE derivation — ``derived``, built by :func:`plan_emit_loop` and written to
+    ``<name>.yml`` — rendered twice by
+    :func:`~jasper.bass_extension.bench.render.render_with_determinism_receipt`,
+    the same helper the sibling bass-extension campaign renders through, so the
+    determinism proof has one implementation rather than two that can drift.
 
-    **A note for whoever touches this next.** This was written when
-    :func:`~jasper.bass_extension.bench.render.render_with_determinism_receipt`
-    could not be used: it took one config path and two output paths, which no
-    binary would honour. PR #2011 fixed that helper, and fixed it *better* than
-    this — it renders the SAME config text twice to its declared destination and
-    moves each output aside between runs, so render 2 starts with that
-    destination absent, which is a stronger proof than two configs that differ
-    by one string. Folding this onto that helper is the right follow-up and
-    would delete the second derivation above; it is not done here only because
-    that fix landed mid-review of this branch and a determinism-path swap is not
-    a change to make unreviewed.
+    **Why ONE config and not two.** R8 defines a *shape* as the exact byte
+    content of a derived config, keyed by its SHA-256, and asks that each shape
+    be rendered twice. An earlier version of this function derived the emitted
+    text a second time so the repeat could write somewhere else — a CamillaDSP
+    render's destination is not an argument, it is
+    ``devices.playback.filename`` INSIDE the config, so a second destination
+    meant a second config. Those two configs differed by that one line, which
+    made them two distinct shapes with two distinct SHA-256s: the receipt
+    recorded the first shape's hash and the first config's argv while the second
+    render consumed the OTHER shape, so it asserted that shape X repeats on
+    evidence that included a render of shape Y. Rendering one config twice is
+    what actually satisfies R8 — and it, not the move-aside below, is the whole
+    of the improvement.
+
+    Both renders therefore write to the single ``<name>.raw`` that one config
+    declares, and the helper moves each output aside — to ``<name>.first.raw``,
+    then ``<name>.repeat.raw``. That move PRESERVES render 1's bytes so the two
+    can be compared at all; it proves nothing on its own, because
+    :func:`~jasper.bass_extension.bench.render.render_config` already unlinks
+    its destination before every render, so the destination is absent when
+    either render starts and was equally absent under the two-config design.
+    Same binary, same stimulus, same graph, same config bytes: byte-identical
+    output, or the instrument does not repeat and nothing measured with it is a
+    measurement.
+
+    :attr:`RenderArm.output_path` is therefore the preserved FIRST render,
+    ``<name>.first.raw``; the declared ``<name>.raw`` has been moved away by the
+    time this returns and does not exist on a completed run.
+
+    The helper raises :class:`~jasper.bass_extension.bench.render.RenderError`
+    for a guard failure, a failed render, AND a non-deterministic one, so all
+    three refuse here as a single ``stage="render"`` refusal carrying the
+    helper's own message — which names non-determinism explicitly when that is
+    what happened.
     """
 
     work_dir = plan.work_dir
-    output_path = work_dir / f"{name}.raw"
-    repeat_output_path = work_dir / f"{name}.repeat.raw"
-    repeat_derived = _derive(
-        name,
-        emitted_text,
-        roles=plan.roles,
-        stimulus_path=plan.stimulus_path,
-        capture_header=plan.capture_header,
-        playback_path=repeat_output_path,
-    )
     config_path = work_dir / f"{name}.yml"
-    repeat_config_path = work_dir / f"{name}.repeat.yml"
-    repeat_config_path.write_text(repeat_derived.yaml_text, encoding="utf-8")
+    first_output_path = work_dir / f"{name}.first.raw"
+    repeat_output_path = work_dir / f"{name}.repeat.raw"
+
+    # Clear OUR two preserved slots so a second run into the same work directory
+    # is not refused by its own leftovers. This does not defeat the helper's
+    # slot guard, it scopes it: that guard defends the bass-extension campaign,
+    # which renders MANY shapes into one bundle under caller-chosen names, so a
+    # collision there means two different shapes are fighting over one file — a
+    # real bug. This loop renders exactly two shapes and derives both names from
+    # the arm, so a collision here only ever means "this directory was used
+    # before". `render_config` already unlinks its own declared destination for
+    # precisely that reason; this restores the same parity for the two paths the
+    # determinism helper adds on top of it.
+    for slot in (first_output_path, repeat_output_path):
+        try:
+            slot.unlink(missing_ok=True)
+        except OSError as exc:
+            # `missing_ok` suppresses only FileNotFoundError; anything else
+            # (a directory in the slot, a read-only mount) would otherwise
+            # escape as a bare OSError, past run_emit_loop and past the CLI's
+            # refusal handler — surfacing as exit 1, "a graded branch did not
+            # match", for a run that never rendered anything. Refusing here
+            # keeps it exit 2, "no verdict was reached", which is true.
+            log_event(
+                logger, "emit_loop.refused", arm=name, stage="prepare",
+                slot=str(slot), reason=str(exc),
+            )
+            raise EmitLoopError(
+                f"{name} arm's preserved output slot {slot} could not be "
+                f"cleared: {exc}"
+            ) from exc
 
     try:
-        first = render_config(
+        receipt = render_with_determinism_receipt(
             binary.path,
             config_path,
-            output_path=output_path,
-            bounds=bounds,
-            fader_db=RENDER_FADER_DB,
-        )
-        second = render_config(
-            binary.path,
-            repeat_config_path,
-            output_path=repeat_output_path,
+            declared_output_path=work_dir / f"{name}.raw",
+            first_output_path=first_output_path,
+            second_output_path=repeat_output_path,
             bounds=bounds,
             fader_db=RENDER_FADER_DB,
         )
@@ -606,35 +636,24 @@ def _render_arm(
         log_event(logger, "emit_loop.refused", arm=name, stage="render", reason=str(exc))
         raise EmitLoopError(f"{name} arm could not be rendered: {exc}") from exc
 
-    deterministic = first.output_sha256 == second.output_sha256
-    if not deterministic:
-        log_event(
-            logger, "emit_loop.refused", arm=name, stage="determinism",
-            first=first.output_sha256[:12], second=second.output_sha256[:12],
-        )
-        raise EmitLoopError(
-            f"{name} arm did not render deterministically "
-            f"({first.output_sha256} != {second.output_sha256}) — the A/B's "
-            "difference would carry that instead of the filters under test"
-        )
-
+    first, second = receipt.first, receipt.second
     log_event(
         logger,
         "emit_loop.render",
         arm=name,
-        config_sha256=config_shape_sha256(derived.yaml_text)[:12],
+        config_sha256=receipt.config_sha256[:12],
         output_sha256=first.output_sha256[:12],
-        deterministic=deterministic,
+        deterministic=receipt.deterministic,
         duration_s=round(first.duration_s, 3),
     )
     return RenderArm(
         name=name,
         config_path=config_path,
-        output_path=output_path,
+        output_path=first_output_path,
         derived=derived,
         determinism_receipt={
-            "config_sha256": config_shape_sha256(derived.yaml_text),
-            "deterministic": deterministic,
+            "config_sha256": receipt.config_sha256,
+            "deterministic": receipt.deterministic,
             "argv": list(first.argv),
             "output_sha256": first.output_sha256,
             "repeat_output_sha256": second.output_sha256,
@@ -716,12 +735,8 @@ def run_emit_loop(
     except RenderError as exc:
         raise EmitLoopError(str(exc)) from exc
 
-    control = _render_arm(
-        "control", plan, plan.control, plan.control_text, binary=binary, bounds=bounds
-    )
-    treated = _render_arm(
-        "treated", plan, plan.treated, plan.treated_text, binary=binary, bounds=bounds
-    )
+    control = _render_arm("control", plan, plan.control, binary=binary, bounds=bounds)
+    treated = _render_arm("treated", plan, plan.treated, binary=binary, bounds=bounds)
 
     band_hz = analysis_band_hz(meta)
     branches = tuple(

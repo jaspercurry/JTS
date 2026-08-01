@@ -264,6 +264,76 @@ def test_both_arms_render_deterministically(exact_report) -> None:
         assert receipt["output_byte_size"] > 0
 
 
+def test_a_second_run_into_the_same_work_directory_still_grades(tmp_path) -> None:
+    """Re-running the bench into one bundle must not refuse on its own leftovers.
+
+    The determinism helper refuses when a preserved-output path is occupied.
+    That guard is right for the bass-extension campaign, which renders many
+    shapes into one bundle under caller-chosen names — but this loop renders
+    exactly two shapes under names it derives from the arm, so its OWN previous
+    run is not a collision worth refusing. Every other case here uses a fresh
+    ``tmp_path``, so none of them would notice: before the slots were cleared,
+    run 2 died with "preserved output path already exists" and took run 1's
+    verdict down with it, since the CLI's default ``--out`` is a fixed
+    directory.
+
+    Run 2 carries a DIFFERENT fit, and that is what makes the byte assertions
+    below able to discriminate at all: the treated arm must come back with
+    different bytes than run 1 produced, and the retained file must hash to
+    what run 2's own receipt records. Run the same fit twice and the two runs
+    render byte-identically — that is what determinism means — so neither
+    assertion could tell a fresh render from a leftover. The CONTROL arm
+    carries no filters in either run, so it renders identically by
+    construction and is deliberately not part of the difference assertion.
+    """
+
+    import copy
+    import hashlib
+
+    varied = copy.deepcopy(DESIGNED)
+    varied["tweeter"][1]["gain"] -= 1.0
+
+    first = _run(tmp_path)
+    second = _run(tmp_path, linearization=varied)
+
+    for report in (first, second):
+        assert report.outcome == loop.OUTCOME_MATCHED
+    work = tmp_path / "work"
+    assert sorted(p.name for p in work.glob("*.raw")) == [
+        "control.first.raw",
+        "control.repeat.raw",
+        "treated.first.raw",
+        "treated.repeat.raw",
+    ]
+    treated_before = first.treated.determinism_receipt["output_sha256"]
+    treated_after = second.treated.determinism_receipt["output_sha256"]
+    assert treated_before != treated_after
+    on_disk = hashlib.sha256(Path(second.treated.output_path).read_bytes()).hexdigest()
+    assert on_disk == treated_after
+
+
+def test_an_unclearable_output_slot_refuses_instead_of_escaping_as_an_oserror(
+    tmp_path,
+) -> None:
+    """A slot that cannot be cleared is a refusal, not a traceback.
+
+    ``unlink(missing_ok=True)`` suppresses only ``FileNotFoundError``. Anything
+    else — a directory sitting in the slot, a read-only mount — would escape as
+    a bare ``OSError``, past ``run_emit_loop`` and past the CLI's refusal
+    handler, and land as exit 1: "a graded branch did not match". That inverts
+    the CLI's three-state contract, reporting a realization defect for a run
+    that never rendered a sample. It must be an ``EmitLoopError``, which the CLI
+    maps to REFUSED and exit 2.
+    """
+
+    work = tmp_path / "work"
+    work.mkdir(parents=True)
+    (work / "control.first.raw").mkdir()
+
+    with pytest.raises(EmitLoopError, match="could not be cleared"):
+        _run(tmp_path, sweep_seconds=0.5)
+
+
 def test_the_two_arms_differ_only_by_the_filters_under_test(exact_report) -> None:
     """Everything the A/B cancels is byte-identically present in both configs."""
 
@@ -444,7 +514,11 @@ def test_a_stimulus_past_the_fft_cap_refuses_instead_of_being_truncated(
 
     with pytest.raises(EmitLoopError, match="FFT cap"):
         _run(tmp_path, sweep_seconds=loop.MAX_STIMULUS_SECONDS + 10.0)
-    assert not (tmp_path / "work" / "control.raw").exists()
+    # ``control.first.raw``, not ``control.raw``: the determinism helper moves
+    # each render off the declared destination, so ``control.raw`` is absent
+    # after a SUCCESSFUL run too and asserting on it would prove nothing. The
+    # preserved first render is the artifact only a real render leaves behind.
+    assert not (tmp_path / "work" / "control.first.raw").exists()
 
 
 def test_the_default_stimulus_fits_inside_the_fft_cap() -> None:

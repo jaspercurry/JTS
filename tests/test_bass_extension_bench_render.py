@@ -514,10 +514,13 @@ def test_determinism_receipt_renders_the_same_config_twice_and_preserves_both(
 def test_determinism_receipt_second_render_must_recreate_the_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Moving render 1's output away is what makes render 2's proof real: the
-    declared destination does not exist when render 2 starts, so a binary
-    that wrote nothing the second time is caught rather than passing on a
-    leftover file."""
+    """A binary that writes nothing on the second render is caught, not passed.
+
+    The catch belongs to :func:`render_config`, which unlinks its destination
+    before every render and asserts a file appeared afterwards — so it holds
+    whether or not render 1's output was moved aside. What the move-aside
+    contributes is preservation: both outputs survive to be compared. This
+    case pins the catch."""
 
     calls = {"n": 0}
 

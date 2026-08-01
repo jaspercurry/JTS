@@ -1038,9 +1038,11 @@ permission granted either") — those branches are listed in the report's
 `unavailable_roles`, never counted as passes or failures. `report.json` carries
 `outcome` alongside the per-branch records.
 
-The bundle keeps both arms' configs, **four `.raw` renders** (each arm's render
-and its determinism repeat — the repeat's SHA-256 is what the receipt asserts
-against, so both are retained as evidence), the stimulus WAV, and `report.json`.
+The bundle keeps both arms' configs (`control.yml` and `treated.yml`, one
+derivation each — each is rendered twice), **four `.raw` renders**
+(`<arm>.first.raw` and `<arm>.repeat.raw`; the repeat's SHA-256 is what the
+determinism receipt asserts against, so both are retained as evidence), the
+stimulus WAV, and `report.json`.
 
 `--dry-run` runs the real emitter and the real derivation for both arms and
 writes both derived configs, without resolving a binary or rendering anything.
