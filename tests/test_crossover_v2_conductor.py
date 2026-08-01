@@ -4126,8 +4126,14 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
     # singleton — the write-once store refuses a write whose bytes differ
     # from what is already there (this retake's recomputed bytes normally
     # do), so the guard skips the attempt outright rather than spend it on
-    # a call that would be refused.
+    # a call that would be refused. The skip itself is journalled (the one
+    # fact nothing else states — the artifact now lags the fresh pipeline
+    # result above).
     assert len(published) == 1, "a second close must not attempt a second publish"
+    assert (
+        caplog.text.count("event=correction.crossover_v2_cloud_publish_skipped")
+        == 1
+    )
 
     # End-to-end: the FIT itself, and the candidate it produces, must also
     # see the retaken cloud — not just the pipeline's own bookkeeping.
@@ -4137,6 +4143,52 @@ def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publi
     evidence = c.candidate.exclusion_evidence
     assert evidence["validity_floor_hz"] == pytest.approx(400.0)
     assert evidence["validity_floor_hz"] == second_pipeline["validity_floor_hz"]
+
+
+def test_a_failed_publish_is_retried_on_the_next_close_not_locked_out():
+    """#1872 resilience, pinned: ``_group_cloud_published`` marks a phase
+    only on a SUCCESSFUL publish, not a bare attempt — stated three times
+    (the ``__init__`` field comment, the publish guard's own comment, and
+    the HANDOFF doc) and asserted nowhere until this test. Marking on the
+    attempt instead (so a FAILED publish also marks) would leave every
+    other conductor test green, because none of them drives a publish
+    failure followed by a second close.
+
+    A transient failure — a full disk, not a write-once conflict — must not
+    permanently lock the phase out of ever publishing for the rest of the
+    session: the group's next close (another voluntary retake of the final
+    position) has to retry.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+
+    calls = {"n": 0}
+
+    def _flaky_publish(phase, result):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("synthetic full disk")
+
+    c._seams = replace(c._seams, publish_cloud=_flaky_publish)
+
+    # First close's publish attempt fails — fail-soft (the capture is still
+    # accepted), and NOT marked published.
+    first_close = _run_phase(c, last, attempt)
+    attempt += 1
+    assert first_close["accepted"] is True
+    assert calls["n"] == 1
+    assert PHASE_CLOUD_MEASURE not in c._group_cloud_published
+
+    # A second close (another voluntary retake) retries the publish — and
+    # this time it succeeds, so it IS marked.
+    second_close = _run_phase(c, last, attempt)
+    assert second_close["accepted"] is True
+    assert calls["n"] == 2, "a failed first attempt must not lock out the retry"
+    assert PHASE_CLOUD_MEASURE in c._group_cloud_published
 
 
 def test_the_tier_rides_the_snapshot_and_the_pipeline_payload():

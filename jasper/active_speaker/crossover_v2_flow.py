@@ -7617,10 +7617,19 @@ class CrossoverV2Conductor:
         # (a full disk, not a write-once conflict) still gets a chance on
         # the group's next close rather than being locked out for the rest
         # of the session.
-        if (
-            self._seams.publish_cloud is not None
-            and phase not in self._group_cloud_published
-        ):
+        if phase in self._group_cloud_published:
+            # The skip itself is the one fact nothing else states: everything
+            # ABOVE this line just recomputed and re-logged fresh
+            # (``_group_cloud_result``, ``cloud_spec``), but the durable
+            # artifact this phase already published now LAGS that fresh
+            # result — a reader would otherwise have to infer the gap from
+            # counting ``cloud_spec`` lines. INFO, not WARNING: this is the
+            # retake contract working as designed, not a failure.
+            log_event(
+                logger, "correction.crossover_v2_cloud_publish_skipped",
+                session_id=self.session_id, phase=phase,
+            )
+        elif self._seams.publish_cloud is not None:
             try:
                 self._seams.publish_cloud(
                     phase, self._group_cloud_result[phase]
@@ -8310,8 +8319,9 @@ class CrossoverV2Conductor:
         )
         # (The ``flatness_*`` fields this line carried until PR-5 came from
         # the retired per-capture construction. The spec verdict is logged
-        # once per closed group instead — ``correction.crossover_v2_cloud_spec``
-        # in ``_run_cloud_pipeline``.)
+        # on every close of the group instead — ``correction.
+        # crossover_v2_cloud_spec`` in ``_run_cloud_pipeline``, once per
+        # close rather than once per capture.)
         # Measurement-honesty gate G3's own diagnostics: the current
         # attempt's raw pilot transfer (re-derived fresh, read-only — never
         # the mutated conductor state) and the step vs baseline

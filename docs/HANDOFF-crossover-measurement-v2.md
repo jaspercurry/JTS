@@ -1735,10 +1735,13 @@ Key `event=` lines (via `jasper.log_event`):
 # Conductor phase walk (the /correction/ wizard runs under jasper-correction-web).
 # cloud_group_complete and cloud_spec both fire on EVERY close of a cloud
 # group, including a retake's re-close (issue #1872) — seeing either twice
-# for one phase is the retake contract working, not a bug; publish_cloud
-# (not journalled directly, but see cloud_publish_failed below) is the one
-# part of a close that is a per-phase singleton:
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry|cloud_spec)'
+# for one phase is the retake contract working, not a bug. publish_cloud is
+# the one part of a close that is a per-phase singleton: a successful
+# publish is not journalled directly (see cloud_publish_failed for a failed
+# attempt), but a SKIPPED one — a re-close whose phase already published —
+# is, via cloud_publish_skipped, which is the line to grep for "the durable
+# artifact now lags the candidate":
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry|cloud_spec|cloud_publish_skipped)'
 # Session volume lifecycle (fail-closed). ``persist_failed`` is CRITICAL and
 # means the durable intent could not be written — it belongs in any sweep of
 # this family, not just the happy three:
@@ -1906,13 +1909,24 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   attempted; `_run_cloud_pipeline` skips that attempt outright once a phase
   has one successful publish recorded, rather than spend it on a call that
   cannot succeed.
-- `correction.crossover_v2_cloud_publish_failed` (WARNING) — the skipped
-  case above still failed once: the phase's FIRST publish attempt raised
-  (a full disk, a write-once conflict against evidence this session did not
-  write, or similar). `phase`, `exc_info`. Fail-soft by design — the
-  group's own accept is decided before this seam ever runs (see the S4/N1
-  review-finding comments on `_close_cloud_group`), so a publish failure
-  never costs the accept. Its sibling
+- `correction.crossover_v2_cloud_publish_failed` (WARNING) — a publish
+  ATTEMPT failed: `phase`, `exc_info` (a full disk, a write-once conflict
+  against evidence this session did not write, or similar). Only fires on a
+  phase's FIRST attempt — a failure does not mark `_group_cloud_published`,
+  so the group's next close retries rather than being locked out for the
+  rest of the session. Fail-soft by design — the group's own accept is
+  decided before this seam ever runs (see the S4/N1 review-finding comments
+  on `_close_cloud_group`), so a publish failure never costs the accept.
+- `correction.crossover_v2_cloud_publish_skipped` (INFO) — a re-close's
+  publish was skipped outright, because an EARLIER close of this phase
+  already published successfully: `phase`. This is the retake contract
+  working as designed, not a failure — but it is the one fact nothing else
+  in the journal states directly: everything above it in `_run_cloud_pipeline`
+  (`_group_cloud_result`, the `cloud_spec` line) just recomputed fresh, so
+  from this line on, the durable evidence artifact this phase already
+  published LAGS that fresh result until the session ends. Without this
+  line a reader can only infer the gap by counting `cloud_spec` lines
+  against `cloud_publish_failed`'s absence.
   `correction.crossover_v2_cloud_pipeline_call_failed` (WARNING) names the
   broader case: any named-family exception anywhere in
   `_run_cloud_pipeline`, not just the publish seam.
