@@ -22,6 +22,17 @@ MEDIUM_CONFIDENCE_STD_DB = 6.0
 # this many positions before "high" is allowed.
 MIN_POSITIONS_FOR_HIGH = 3
 
+# The fewest completed positions ANY cross-position spread claim needs. One
+# curve has no spread to report — its std is zero by construction, not by
+# stability — so every surface that speaks about seat-to-seat variation
+# (band_summary, point_summary, and the variance depth cap) refuses below
+# this rather than reporting a confident-looking zero.
+MIN_POSITIONS_FOR_SPREAD = 2
+
+# The single wording for that refusal, so the summaries and the depth cap
+# say the same sentence instead of three copies drifting apart.
+TOO_FEW_POSITIONS_REASON = "need at least two completed positions"
+
 
 @dataclass(frozen=True)
 class SpatialMatrix:
@@ -122,10 +133,10 @@ def band_summary(
         return out
 
     out["n_points"] = int(mask.sum())
-    if matrix.position_count < 2:
+    if matrix.position_count < MIN_POSITIONS_FOR_SPREAD:
         out.update({
             "available": False,
-            "reason": "need at least two completed positions",
+            "reason": TOO_FEW_POSITIONS_REASON,
         })
         return out
 
@@ -155,12 +166,12 @@ def point_summary(
     """Return spatial spread at the nearest measured frequency."""
     idx = int(np.argmin(np.abs(matrix.freqs_hz - freq_hz)))
     out: dict[str, Any] = {
-        "available": matrix.position_count >= 2,
+        "available": matrix.position_count >= MIN_POSITIONS_FOR_SPREAD,
         "position_count": matrix.position_count,
         "freq_hz": round(float(matrix.freqs_hz[idx]), 2),
     }
-    if matrix.position_count < 2:
-        out["reason"] = "need at least two completed positions"
+    if matrix.position_count < MIN_POSITIONS_FOR_SPREAD:
+        out["reason"] = TOO_FEW_POSITIONS_REASON
         return out
     std_db = float(matrix.std_db[idx])
     out.update({

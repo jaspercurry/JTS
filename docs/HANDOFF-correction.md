@@ -2400,6 +2400,8 @@ jasper/
 │   │                                    audio_measurement.ramp
 │   ├── spatial.py                       shared spatial-spread helpers for
 │   │                                    multi-position measurements
+│   ├── variance_cap.py                  cross-position spread -> per-frequency
+│   │                                    ceiling on designed cut depth (#1954)
 │   ├── strategy.py                      correction strategy and target-profile
 │   │                                    orchestration (raw math -> product policy)
 │   └── session.py                       measurement state machine + DSP/replay orchestration
@@ -2531,7 +2533,23 @@ Concrete changes:
 - `jasper/audio_measurement/analysis.py`: 1/48-octave magnitude smoothing
   → JSON-serializable curve (frequency, dB).
 - `jasper/correction/peq.py`: greedy peak-fit on 20-350 Hz residual
-  vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB.
+  vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB —
+  a *ceiling*, not a fixed depth: on a multi-position capture
+  `jasper/correction/variance_cap.py` lowers it per frequency wherever the
+  positions disagree about the level, so the design never inverts a feature
+  that moves across the sampled region (#1954; the flow samples a ~30 cm
+  cluster around the listening point, so that region is roughly a listener's
+  head). Every frequency inside the room layer's own repeatability tolerance
+  keeps the full -10 dB. `strategy._enforce_variance_depth_cap` then holds the
+  *realized* chain to that allowance at every protected filter centre — a
+  per-filter floor cannot bound a stack — and the design report's
+  `spatial_variance_cap` block states both the ceiling (bins capped, depth
+  forgone) and what enforcement measured on the shipped filters
+  (`filters_depth_trimmed`, `max_overshoot_db`). The centre rule is exact at
+  centres and says nothing between them: a bell's skirt can still put a
+  protected bin past its allowance, by as much as 11.6 dB in an adversarial
+  search. That residue is **not bounded** — which is why every design publishes
+  its own `max_overshoot_db` rather than relying on a swept figure.
 - YAML emit (live apply path): `jasper/correction/session.py` asks
   `jasper.sound.graph_carrier` to re-emit the currently loaded topology with
   fresh room PEQs and the saved sound profile. For ordinary stereo this still

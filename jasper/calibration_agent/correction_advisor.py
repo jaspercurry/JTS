@@ -183,13 +183,14 @@ def build_correction_advisor_context(session: Any) -> dict[str, Any]:
     packet is a curated, quantized VIEW, not a recomputation. It contains
     NO raw audio, NO device identifiers, NO absolute paths: only derived
     curves/summaries, the design report's residual + modes, the P4
-    acceptance verdict, the P5 crossover annotation, and confidence
-    findings.
+    acceptance verdict, the P5 crossover annotation, the cross-position depth
+    cap, and confidence findings.
     """
     design = getattr(session, "design_report", None) or {}
     confidence = getattr(session, "confidence_report", None) or {}
     acceptance = getattr(session, "acceptance", None)
     crossover = design.get("crossover_region")
+    variance_cap_block = design.get("spatial_variance_cap")
 
     measured = getattr(session, "measured_curve", None)
     target = getattr(session, "target_curve", None)
@@ -225,6 +226,7 @@ def build_correction_advisor_context(session: Any) -> dict[str, Any]:
             "predicted_metrics": _predicted_metrics(design),
             "filter_count": len(getattr(session, "peqs", []) or []),
             "crossover_region": _crossover_summary(crossover),
+            "spatial_variance_cap": _variance_cap_summary(variance_cap_block),
         },
         "acceptance": acceptance,
         "verify_before_after": _verify_summary(verify_before_after),
@@ -275,6 +277,39 @@ def _crossover_summary(crossover: Any) -> dict[str, Any] | None:
             _round_opt(x, 1) for x in (crossover.get("no_boost_band_hz") or [])
         ],
         "excluded_boost_count": len(crossover.get("excluded_boosts") or []),
+    }
+
+
+def _variance_cap_summary(cap: Any) -> dict[str, Any] | None:
+    """The cross-position depth cap, quantized for the tuning model.
+
+    Load-bearing for the model rather than decorative: without it the packet
+    shows residual error the design did not correct and no reason for it, and
+    the obvious advice — correct harder — is precisely the advice the cap
+    exists to refuse. ``note`` keeps the two registers apart rather than
+    labelling the whole block one way: the bin counts describe the CEILING the
+    designer worked under, while ``filters_depth_trimmed`` and
+    ``max_overshoot_db`` are measured facts about the filters that shipped.
+    """
+    if not isinstance(cap, dict):
+        return None
+    return {
+        "available": cap.get("available"),
+        "reason": cap.get("reason"),
+        "position_count": cap.get("position_count"),
+        "n_bins": cap.get("n_bins"),
+        "n_bins_capped": cap.get("n_bins_capped"),
+        "n_bins_no_cut": cap.get("n_bins_no_cut"),
+        "max_depth_forgone_db": _round_opt(cap.get("max_depth_forgone_db")),
+        "worst_freq_hz": _round_opt(cap.get("worst_freq_hz"), 1),
+        "filters_depth_trimmed": cap.get("filters_depth_trimmed"),
+        "max_overshoot_db": _round_opt(cap.get("max_overshoot_db")),
+        "note": (
+            "n_bins_* and max_depth_forgone_db are the depth ALLOWED at these "
+            "frequencies, limited by seat-to-seat spread — not a count of "
+            "filters removed. filters_depth_trimmed and max_overshoot_db are "
+            "measured on the filters that shipped."
+        ),
     }
 
 
