@@ -259,22 +259,31 @@ order's plain reading and are recorded here rather than only in the code:
      it is emitted into, and the topology-agnostic core knows neither the
      crossover nor the trim.
 
-  **Open items on this ledger, both deferred deliberately:**
+  **Open items on this ledger:**
 
   - *The physical pad is invisible to the emitter* (#1808). The JTS3 tweeter
     carries a −14.4 dB L-pad that no graph filter expresses, so a padded
     branch's real headroom is not credited and the charge for it is
     conservative by that much.
-  - *The fit still flattens a crossover-shaped branch against a FLAT target*
-    (#1817). #1809's bound stops a driver spending gain OUTSIDE its radiating
-    band; inside it, the fit still lifts the last few dB before the edge — a
-    flat driver behind an LR4 attracts +2.379 dB at 0.79·Fc. Cheap and
-    bounded (the same crossover eats 2.27 dB of it, so the chain peaks at
-    +0.111 dB and the charge is 1.11 dB), and disclosed like any other spend.
-    The real fix is a crossover-shaped fit target, which changes what
-    `target_level_db` MEANS — it is a scalar read by the residual, VERIFY,
-    OBSERVE, the shared level frame, and the trim anchor — and so is its own
-    piece of work rather than a wider bound.
+
+  - ~~*The fit still flattens a crossover-shaped branch against a FLAT
+    target* (#1817).~~ **CLOSED in R10a (2026-08-01).** The fit is handed its
+    branch's own committed crossover shape as the target
+    (`jasper/active_speaker/branch_target.py`), so no filter fights the
+    crossover anywhere rather than only outside the radiating band. The
+    +2.379 dB at 0.79·Fc this bullet recorded is reproduced to four decimals
+    on the flat arm and goes to zero filters on the shaped one
+    (`tests/test_active_speaker_branch_target.py`); on the banked 2026-07-30
+    JTS3 session the real instance was **+2.8079 dB at 1485.2 Hz** and is
+    likewise gone, with the crossover-region residual dropping 43 % (woofer)
+    and 47 % (tweeter) — `captures/r10a-objective-20260801/`.
+
+    The anticipated cost did not materialise: `target_level_db` did **not**
+    change meaning. The shape is re-centred to add no level over the very
+    band that scalar is the median of, so the residual claim, VERIFY, OBSERVE,
+    the shared level frame and the trim anchor all read the number they always
+    did. Level questions and shape questions stayed separate — the same seam
+    #1809 and #1929 each found from their own side.
 
   **Cross-era disclosure.** A candidate persisted BEFORE this amendment
   carries a `headroom_cost_db` stamped under the sum-of-positives rule, so it

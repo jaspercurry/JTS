@@ -85,7 +85,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 import numpy as np
 
@@ -112,6 +112,7 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
     sections_by_role,
 )
+from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
     complex_correction_response,
@@ -4048,6 +4049,158 @@ def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None
     return max(usable) if usable else None
 
 
+def _crossover_region_null_registry(
+    combined: Any,
+    *,
+    echo_band_hz: tuple[float, float],
+    crossover_region_hz: tuple[float, float] | None,
+    identify: Any,
+) -> dict[str, Any] | None:
+    """Ask the null registry about the CROSSOVER REGION — and never let the
+    answer gate anything (#1967, #1867).
+
+    The defect, in the panel's own words: the registry "did not return
+    'unknown,' it was **never asked** — its band excludes the region." The
+    gating band's lower edge is floored at
+    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so on a 2 kHz crossover the
+    one region that dominates the residual is structurally unreachable by the
+    one instrument built to explain it, while the cloud screen separately
+    carves it out of grading. #1867 adds the mechanism that makes this
+    concrete: the τ ≈ 303 µs comb's own model puts rungs at 1649 Hz and
+    4948 Hz, and neither is visible from above 4 kHz.
+
+    **What the 4 kHz floor protects, stated before it is touched.** It is not
+    a round number: ``ECHO_BAND_HF_REGIME_FLOOR_HZ``'s comment pins a six-band
+    sweep of this same corpus in which the detector's signal-presence screen
+    catches the band-below-passband condition by 10.46 dB at a 4 kHz edge, by
+    only 1.53 dB at 3 kHz, and **fails outright at 2 kHz — a false NEGATIVE,
+    not a narrowed gap**, precisely because at that edge the woofer's own
+    passband sits inside the analysed band. #1763 then falsified the original
+    disclose-and-proceed design in the field: a correctly declared
+    [2000, 18000] window fired the designed warning, proceeded, and left that
+    session's τ/r/registry outputs carrying an uncalibrated-regime asterisk on
+    the one measurement that mattered. Disclosure did not keep the session
+    inside a calibrated regime; the clamp did.
+
+    **So the floor does not move.** ``echo_band_hz`` is unchanged, the gating
+    registry still runs on it, and this function's output is unioned into
+    NOTHING — not ``merged_mask``, not ``spec_mask``, not the trusted floor,
+    not a verdict. What changes is only that the question gets asked and the
+    answer gets published.
+
+    **Why that is sound, and it is the same argument R9 already ships.** The
+    failure the clamp prevents is a screen whose deficit statistic is
+    uncalibrated in this regime — i.e. the band's outputs are not trustworthy
+    enough to *decide* on. It is not that the detector produces nothing there.
+    Classification that can never reach a decision cannot be corrupted by a
+    mis-calibrated screen; the worst case is a finding a reader discounts.
+    ``gating.SEARCH_T_MIN_MS`` made exactly this trade for exactly this reason
+    — a candidate below it "is recorded in the ``internal_reflection_ledger``,
+    and it NEVER gates" — after the R9 certification found a challenger that
+    fired 13/13 on the horn's own internal feature. Asymmetric cost: a false
+    *detection* that gates is catastrophic, a false detection that only
+    classifies is noise.
+
+    **And this is where R10a's objective is the enabling context, not
+    decoration.** A finding here used to be uninterpretable: nothing in the
+    flow could say whether energy at 1649 Hz was a room null, a driver
+    feature, or the two branches summing. The committed crossover now answers
+    that — ``crossover_region_hz`` comes from the shipped graph's own
+    committed regions, and the per-branch objective knows what each branch is
+    *supposed* to be doing across that span. The finding is published WITH the
+    band that produced it, so a reader gets "a null inside the committed
+    handoff" rather than an unattributed anomaly. That is why this ships in
+    the objective round and not before it.
+
+    Returns ``None`` — never an empty dict — when there is no committed
+    crossover to name a region with, or when the gating band already reaches
+    the region (nothing was hidden, so there is nothing to disclose), or when
+    the extension would be degenerate.
+    """
+    if crossover_region_hz is None:
+        return None
+    region_lo_hz = float(crossover_region_hz[0])
+    gating_lo_hz, gating_hi_hz = float(echo_band_hz[0]), float(echo_band_hz[1])
+    if region_lo_hz >= gating_lo_hz:
+        return None
+    if region_lo_hz <= 0.0 or region_lo_hz >= gating_hi_hz:
+        return None
+
+    # The SAME upper edge as the gating band, lowered to reach the region.
+    # Extending rather than carving a narrow window keeps the detector's own
+    # width constraints satisfied (its quefrency step is 1e6 / bandwidth), so
+    # the extension is not a differently-resolved instrument reporting in the
+    # same units as the gating one.
+    band_hz = (region_lo_hz, gating_hi_hz)
+    try:
+        report = identify(combined, band_hz=band_hz)
+    except Exception:  # noqa: BLE001 - a classify-only surface may never
+        # break a session. The gating registry above has already run and is
+        # unaffected; an extension that cannot be computed is simply absent.
+        log_event(
+            logger, "correction.crossover_v2_crossover_region_registry_failed",
+            level=logging.WARNING, band_hz=list(band_hz),
+        )
+        return None
+
+    block = _null_registry_to_dict(report)
+    block.update({
+        "band_hz": list(band_hz),
+        # The two load-bearing flags, spelled out rather than implied by
+        # absence from a mask a reader cannot see from here.
+        "gating": False,
+        "regime": "uncalibrated_below_hf_floor",
+        "hf_regime_floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+        "crossover_region_hz": [
+            float(crossover_region_hz[0]), float(crossover_region_hz[1]),
+        ],
+        "why": (
+            "Classification only. Below "
+            f"{ECHO_BAND_HF_REGIME_FLOOR_HZ:.0f} Hz the detector's "
+            "signal-presence screen is uncalibrated for a band that spans the "
+            "committed crossover, so a finding here is evidence to read, "
+            "never a reason to exclude a band or move a verdict."
+        ),
+    })
+    log_event(
+        logger, "correction.crossover_v2_crossover_region_registry",
+        band_hz=list(band_hz),
+        crossover_region_hz=list(crossover_region_hz),
+        classification=str(block.get("classification", "")),
+        n_candidates=int(block.get("n_candidates", 0) or 0),
+        gating=False,
+    )
+    return block
+
+
+def committed_crossover_region_hz(
+    regions: Iterable[Any], *, octaves: float = 1.0,
+) -> tuple[float, float] | None:
+    """The band the COMMITTED crossover hands off in — ``Fc ± octaves`` across
+    every committed region, or ``None`` when nothing is committed.
+
+    Derived from the preset's own ``crossover_regions`` (the same objects
+    :func:`~jasper.active_speaker.branch_chain.sections_by_role` walks), never
+    from the session's working Fc, because this band's whole purpose is to say
+    where the SHIPPED graph divides the spectrum. A speaker with no committed
+    region has no handoff and gets ``None`` — the same "invent nothing" rule
+    ``sections_by_role`` follows.
+
+    One octave because that is the span the crossover report (#1968 Q4) uses
+    for correction-authority tapering and the span R10a's own bench scores the
+    crossover-region residual over; keeping one number for "the crossover
+    region" is why it is a default here rather than three literals.
+    """
+    fcs = [
+        float(getattr(r, "fc_hz", 0.0)) for r in regions
+        if float(getattr(r, "fc_hz", 0.0)) > 0.0
+    ]
+    if not fcs:
+        return None
+    span = 2.0 ** octaves
+    return (min(fcs) / span, max(fcs) * span)
+
+
 def assemble_cloud_group_result(
     combined: Any,
     *,
@@ -4056,6 +4209,7 @@ def assemble_cloud_group_result(
     validity_floor_hz: float | None = None,
     tier: str = "",
     position_records: Sequence[Mapping[str, Any]] = (),
+    crossover_region_hz: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
     consumes the exclusion mask, ``geometry.locked``, and the null registry
@@ -4215,9 +4369,17 @@ def assemble_cloud_group_result(
         from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
         null_report = identify_interference_nulls(combined, band_hz=echo_band_hz)
+        crossover_registry = _crossover_region_null_registry(
+            combined, echo_band_hz=echo_band_hz,
+            crossover_region_hz=crossover_region_hz,
+            identify=identify_interference_nulls,
+        )
         merged_mask = np.asarray(combined.excluded, dtype=bool) | np.asarray(
             null_report.excluded, dtype=bool
         )
+        # NOTE: ``crossover_registry`` is deliberately absent from this union
+        # and from ``spec_mask`` below. See its builder for why classification
+        # there may never become gating.
         # The honesty mask is what the instruments found; the spec mask adds
         # the gate-validity clamp on top (see this function's docstring for
         # why the two stay distinguishable).
@@ -4249,6 +4411,12 @@ def assemble_cloud_group_result(
                 list(b) for b in merged_true_intervals(combined.freqs_hz, merged_mask)
             ],
             "null_registry": _null_registry_to_dict(null_report),
+            # #1967/#1867: the crossover region, ASKED. Classification only —
+            # never unioned into any mask above. ``None`` when there is no
+            # committed crossover to name a region with, or when the gating
+            # band already reached it. See
+            # :func:`_crossover_region_null_registry`.
+            "null_registry_crossover_region": crossover_registry,
             "spec": spec_report.to_dict(),
             # PR-6b: owner decision 1's disclosure half — the SAME registry
             # and the SAME spec report above, re-read per band as "what was
@@ -7353,6 +7521,13 @@ class CrossoverV2Conductor:
             ),
             validity_floor_hz=cloud_validity_floor_hz(positions),
             tier=self._tier,
+            # #1967: where the SHIPPED graph divides the spectrum, from the
+            # preset's committed regions — the context that makes a
+            # crossover-region finding interpretable rather than an
+            # unattributed anomaly.
+            crossover_region_hz=committed_crossover_region_hz(
+                getattr(self._preset, "crossover_regions", ()) or ()
+            ),
         )
         self._group_cloud_result[phase] = result
         # PR-5: the spec verdict a session's journal carries. It replaces the
@@ -8683,6 +8858,15 @@ class CrossoverV2Conductor:
                 resp, envelopes[role],
                 vocabulary=vocabulary, level_frame=level_frame,
                 radiating_band_hz=radiating_bands[role],
+                # The branch's own committed crossover as the fit's target
+                # SHAPE (#1817, R10a) — built from the SAME ``sections`` the
+                # radiating band above and the emitter's own filters come
+                # from, so the shape the fit aims at and the filter the graph
+                # runs cannot disagree. ``None`` for a role with no committed
+                # region, which is the pre-R10a flat target exactly.
+                target=branch_target(
+                    sections[role], envelopes[role].freqs_hz,
+                ),
             )
             fits[role] = fit
             # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
