@@ -1428,27 +1428,30 @@ def analyze_summed_crossover(
             if paired_is_source and snr_bands is not None
             else snr_policy.CROSSOVER_SNR_BANDS_HZ
         )
-        if paired_is_source:
-            # Fail closed rather than subtract across domains. Every band of a
-            # sweep-derived table is covered by construction, so this cannot
-            # trip today; it exists so that a future edit which re-opens the
-            # raw-ambient fallback on this path is refused loudly instead of
-            # quietly changing what the alignment gate means. Without it the
-            # gate's safety would rest on the reflection gate having run — a
-            # fact this subtraction has no way to see (SC-1 SNR units
-            # defect, 2026-08-01).
-            fallback_bands = sorted(
-                str(band.get("band_id"))
-                for band in (noise_bands or ())
-                if isinstance(band, Mapping)
-                and band.get("basis") == "raw_ambient_fallback"
+        # Fail closed rather than subtract across domains. This applies to
+        # EITHER route into the gate — the paired ambient we measured, and an
+        # externally supplied report — because a raw-ambient band is never a
+        # legitimate noise term for this decision: it is a band-integrated
+        # dBFS RMS over ungated 1 s frames, and the signal side it would be
+        # subtracted from is a gated transfer-function level. On the paired
+        # route a sweep-derived table makes it unreachable by construction; on
+        # the external route nothing constrains the caller, which is exactly
+        # why the check cannot be conditional on the paired route. Without it
+        # the gate's correctness would rest on the reflection gate having
+        # run — a fact this subtraction has no way to see (SC-1 SNR units
+        # defect, 2026-08-01).
+        fallback_bands = sorted(
+            str(band.get("band_id"))
+            for band in (noise_bands or ())
+            if isinstance(band, Mapping)
+            and band.get("basis") == "raw_ambient_fallback"
+        )
+        if fallback_bands:
+            raise DriverAcousticsError(
+                "summed-crossover SNR requires every ambient band in the "
+                "deconvolved domain, but these took the raw-ambient "
+                f"fallback: {fallback_bands}"
             )
-            if fallback_bands:
-                raise DriverAcousticsError(
-                    "summed-crossover SNR requires every ambient band in the "
-                    "deconvolved domain, but these took the raw-ambient "
-                    f"fallback: {fallback_bands}"
-                )
         if noise_domain == "deconvolved":
             capture_bands = snr_policy.magnitude_band_levels(
                 freqs, mag_db, capture_band_table

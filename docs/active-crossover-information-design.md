@@ -857,34 +857,72 @@ window must still read "insufficient") are pinned in
 `tests/test_active_speaker_driver_acoustics.py`.
 
 **The fallback belongs to the WIDE per-driver sweep only (SC-1 SNR units
-defect, 2026-08-01).** Substituting the raw reading changes a band's UNITS,
-not just its value — a covered band is a gated transfer-function level, a fallback
-band is a band-integrated dBFS RMS over ungated 1 s frames — and those two do
-not subtract. That is harmless in the case the fix was built for, where a
+defect, 2026-08-01).** This subsection owns that concept; other docs link here
+rather than restate it.
+
+Substituting the raw reading changes a band's UNITS, not just its value — a
+covered band is a gated transfer-function level, a fallback band is a
+band-integrated dBFS RMS over ungated 1 s frames — and those two do not
+subtract. That is harmless in the case the fix was built for, where a
 per-driver near-field sweep covers most bands and the uncovered ones are not
 the ones the gate reads. It is not harmless for the SUMMED crossover capture:
 its sweep is only `[fc/2, fc*2]`, so at the shipped crossover frequencies NO
 canonical band is covered and EVERY band deciding the alignment verdict took
-the fallback. The measured consequence was an SNR error of −19.7 to +22.5 dB
-— mostly deflation, causing false refusals of good captures (a true 54 dB
-overlap SNR reported as 33), but bidirectional: at a steeply
-low-frequency-weighted ambient the number can read 22 dB HIGH, and a false
-PASS was reproduced. `analyze_summed_crossover` therefore derives its band
-table from the sweep itself (`snr_policy.sweep_excitation_bands`: three
-log-uniform bands spanning exactly `[f1, f2]`, ids
-`sweep_low`/`sweep_mid`/`sweep_high`). Every band is then covered by
-construction, the fallback is structurally unreachable on that path, and both
-sides of every subtraction stay in one gated deconvolved domain. Three bands
-rather than one keeps the per-band granularity this section's split policy
-depends on: a null read at `fc` from shoulders at `fc/2` and `fc*2` should
-not be cleared by an average that hides an under-supported shoulder.
+the fallback.
+
+**All numbers below are from synthetic captures at the production sweep
+length** (`SUMMED_SWEEP_DURATION_S = 8.0`), 162 cases across six crossover
+frequencies, three ambient spectra, three capture levels, two seeds, plus a
+54-case adversarial corner. **The sweep length is load-bearing and must be
+quoted with any figure here**: the raw substitute gets no sweep processing
+gain while the deconvolved side does, so the substitution understates noise
+at short sweeps and overstates it at long ones. Numbers measured at a 1 s
+sweep do not transfer.
+
+At the production 8 s length the pre-fix error ran **−22.08 to +11.11 dB** and
+falsely refused **43 of 162** captures whose overlap SNR was genuinely
+sufficient. It is predominantly deflation, but it stays **bidirectional** — 6
+of 162 read HIGH, up to +11.11 dB, the false-`ok` direction. No sampled 8 s
+case converted that into an outright false PASS. The same code at a 1 s sweep
+runs −13.32 to +27.44 dB and DOES produce false passes (3 of 156), which is
+why the length has to be stated.
+
+`analyze_summed_crossover` therefore derives its band table from the sweep
+itself (`snr_policy.sweep_excitation_bands`: three log-uniform bands spanning
+exactly `[f1, f2]`, ids `sweep_low`/`sweep_mid`/`sweep_high`). Every band is
+then covered by construction, the fallback is structurally unreachable on that
+path, and both sides of every subtraction stay in one gated deconvolved
+domain. Post-fix error at 8 s: **−0.64 to +0.05 dB**, zero bands on the
+fallback, false refusals down from 43/162 to 5/162.
+
+Three bands rather than one keeps per-band granularity **on the refusal
+path** — any one band verdicting `insufficient` outranks its `ok` siblings, so
+a capture whose lower shoulder cannot support the null is refused rather than
+cleared by a two-octave average. It does **not** tighten the null-depth cap:
+`worst_band_verdict` breaks equal-verdict ties by table order, not by SNR, so
+among all-`ok` bands the cap is taken against `sweep_low`. That tie-break is
+pre-existing and is tracked separately (issue #2026).
+
 Coverage is asserted rather than assumed, and the analyzer fails closed if a
-`raw_ambient_fallback` band ever reaches the subtraction — so the gate's
-safety no longer rests on the reflection gate having run, a fact the
-subtraction has no way to see. The per-driver path is untouched and still
-reports canonical band ids. Fc = 2000 Hz, the one frequency that already read
-correctly (`mid` is 1000-4000 Hz and its sweep is exactly 1000-4000 Hz),
-still does.
+`raw_ambient_fallback` band reaches the subtraction by EITHER route — the
+paired ambient it measures itself, or an externally supplied
+`noise_band_report` — so the gate's correctness no longer rests on the
+reflection gate having run, a fact the subtraction has no way to see. The
+per-driver path is untouched and still reports canonical band ids.
+
+**Fc = 2000 Hz changed too, and "it already read correctly" does not mean
+"unchanged".** It is the one frequency where the canonical `mid` band
+(1000-4000 Hz) exactly equals its sweep, so the pre-fix number was already
+accurate, and it still is. But the band it reports is now the worst of three
+sub-bands rather than one two-octave average, so **the reported value shifts
+by a median of +1.30 dB (range −2.00 to +5.70)** on identical captures. The
+direction depends on the ambient spectrum: with a flat ambient the worst
+sub-band sits ABOVE the two-octave mean, with a steeply low-frequency-weighted
+one it sits below. Across all frequencies the reported value moves by a median
+of +7.80 dB (range −11.20 to +24.90) and **143 of 162 cases move the LESS
+conservative way** — which is the point, since the old number was deflated,
+but it is not a neutral change and the 35 dB floor has not been re-derived for
+the new semantics (issue #2027).
 
 ### Measurement validity: gating and the low-frequency floor
 

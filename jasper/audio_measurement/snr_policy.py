@@ -359,20 +359,44 @@ def sweep_excitation_bands(
     octave either side of the crossover
     (``[fc/2, fc*2]``, ``commissioning_capture_producer._prepare_sweep``), so
     at the shipped crossover frequencies NO canonical band is fully covered and
-    every band that decides the alignment verdict takes the raw fallback. The
-    resulting error was measured (SC-1 SNR units defect, 2026-08-01) at
-    -19.7 to +22.5 dB — mostly toward false refusal, but bidirectional,
-    and a false PASS was reproduced.
+    every band that decides the alignment verdict takes the raw fallback.
+    Measured through the production analyzer at the production sweep length
+    (``SUMMED_SWEEP_DURATION_S = 8.0``; synthetic captures, 162 cases) the
+    resulting SNR error ran **-22.08 to +11.11 dB** and falsely refused
+    **43 of 162** captures whose overlap SNR was genuinely sufficient
+    (SC-1 SNR units defect, 2026-08-01).
+
+    Sweep duration matters and must be stated with any number here: the raw
+    substitute gets no sweep processing gain while the deconvolved side does,
+    so the substitution understates noise at short sweeps and overstates it at
+    long ones. The same code on a 1 s sweep runs -13.32 to +27.44 dB and
+    produced 3 outright false PASSES; at the production 8 s length none of the
+    162 cases became a false pass, though 6 still read HIGH (up to +11.11 dB).
 
     Deriving the table from ``[f1_hz, f2_hz]`` removes the mismatch at its
     source rather than correcting for it: every band is covered by
     construction, so the fallback is structurally unreachable and both sides
-    of every subtraction stay in the one gated deconvolved domain. Three bands
-    keeps the per-band granularity the split SNR policy depends on — a null
-    read at ``fc`` from shoulders at ``fc/2`` and ``fc*2`` should not be
-    cleared by an average that hides a noisy shoulder — at a resolution
-    (two thirds of an octave for a full-width sweep) comparable to the
-    canonical table's own bands.
+    of every subtraction stay in the one gated deconvolved domain.
+
+    Three bands rather than one keeps per-band granularity **on the REFUSAL
+    path**, where it is real: :func:`band_snr_verdicts` reduces with
+    :func:`worst_band_verdict`, any one band verdicting ``insufficient``
+    outranks its ``ok`` siblings, and a capture whose lower shoulder cannot
+    support the null it is about to certify is refused instead of cleared by a
+    two-octave average. Resolution is two thirds of an octave for a
+    full-width sweep, comparable to the canonical table's own bands.
+
+    It does NOT extend to the null-depth CAP, and the distinction matters
+    because the function names invite the wrong reading.
+    :func:`worst_band_verdict` replaces its incumbent only on a STRICTLY
+    greater verdict rank, so among bands that are all ``ok`` it returns the
+    FIRST in table order — ``sweep_low`` — not the lowest-SNR one.
+    :func:`cap_null_depth_db` then caps against that band, which can be far
+    more permissive than the true worst (17 dB apart on a hand-built example
+    where the reported band reads 55 dB and the lowest reads 38 dB). That
+    tie-break is PRE-EXISTING — the canonical table behaved identically — and
+    is not this function's to fix; it is tracked separately. Do not read the
+    three-band split as tightening the cap.
 
     Coverage is ASSERTED, not assumed: this raises rather than return a table
     that would re-open the fallback. That assertion is what makes "covered by
@@ -451,8 +475,12 @@ def apply_noise_band_fallback(
     Three things differ — the division by ``|X(f)|``, the per-bin-mean vs
     band-sum statistic, and the observation window (a <=7 ms gated impulse
     response vs 1 s of room) — so the substitution is not a constant offset
-    and its sign is not stable. Measured on the summed-crossover capture
-    (SC-1 SNR units defect, 2026-08-01) the resulting SNR error ran -19.7 to +22.5 dB.
+    and its sign is not stable. It is not even stable in the SWEEP LENGTH: on
+    the summed-crossover capture the error ran -22.08 to +11.11 dB at the
+    production 8 s sweep and -13.32 to +27.44 dB at 1 s, because the raw
+    substitute gets no sweep processing gain while the deconvolved side does
+    (SC-1 SNR units defect, 2026-08-01). Any number quoted for this
+    substitution has to name the sweep length it was measured at.
 
     This is a correct substitution for the case it was built for (issue #1563:
     a WIDE per-driver near-field sweep, where the uncovered bands are the ones

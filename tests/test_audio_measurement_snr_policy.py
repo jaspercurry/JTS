@@ -982,6 +982,23 @@ def test_sweep_excitation_bands_are_covered_by_construction(fc_hz):
     f1_hz, f2_hz = fc_hz / 2.0, fc_hz * 2.0
     bands = snr_policy.sweep_excitation_bands(f1_hz=f1_hz, f2_hz=f2_hz)
 
+    # The count and the ids are both load-bearing, and neither is implied by
+    # the coverage check below (which derives its keys from this function's own
+    # output, so ANY contiguous table would satisfy it).
+    #
+    # THREE bands, not one: the alignment gate takes the WORST band, and a
+    # single band spanning [f1, f2] averages across two octaves — it would
+    # clear a capture whose lower shoulder cannot support the null being
+    # certified. Collapsing to one band is a silent loss of protective power.
+    #
+    # These ids: `band_id` is written into the persisted summed-analysis
+    # artifact and byte-compared when that artifact is reopened, so renaming
+    # one is an evidence-format change, not a cosmetic edit.
+    assert len(bands) == 3
+    assert tuple(band_id for band_id, _lo, _hi in bands) == (
+        "sweep_low", "sweep_mid", "sweep_high",
+    )
+
     covered = snr_policy.excitation_covered_bands(bands, f1_hz=f1_hz, f2_hz=f2_hz)
     assert covered == {band_id: True for band_id, _lo, _hi in bands}
 

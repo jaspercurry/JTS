@@ -273,11 +273,8 @@ def test_flat_summed_capture_reads_blend_ok(tmp_path):
     path = _write_capture(tmp_path, "flat.wav", captured)
 
     result = da.analyze_summed_crossover(
-
         path, meta, crossover_fc_hz=2000.0,
-
         capture_geometry="near_field",
-
     )
     assert result.verdict == "blend_ok"
     assert abs(result.null_depth_db) < da.DEFAULT_NULL_THRESHOLD_DB
@@ -295,11 +292,8 @@ def test_crossover_null_reads_polarity_or_delay_problem(tmp_path):
     path = _write_capture(tmp_path, "null.wav", captured)
 
     result = da.analyze_summed_crossover(
-
         path, meta, crossover_fc_hz=2000.0,
-
         capture_geometry="near_field",
-
     )
     assert result.verdict == "polarity_or_delay_problem"
     assert result.null_depth_db >= da.DEFAULT_NULL_THRESHOLD_DB
@@ -1030,11 +1024,8 @@ def test_summed_near_field_default_gating_is_exempt(tmp_path):
     path = _write_capture(tmp_path, "flat.wav", captured)
 
     result = da.analyze_summed_crossover(
-
         path, meta, crossover_fc_hz=2000.0,
-
         capture_geometry="near_field",
-
     )
     assert result.verdict == "blend_ok"
     assert result.gating is not None
@@ -1185,11 +1176,8 @@ def test_summed_snr_block_is_none_without_any_noise_input(tmp_path):
     path = _write_capture(tmp_path, "null.wav", captured)
 
     result = da.analyze_summed_crossover(
-
         path, meta, crossover_fc_hz=2000.0,
-
         capture_geometry="near_field",
-
     )
     assert result.snr is None
     assert result.null_depth_capped is False
@@ -1206,11 +1194,8 @@ def test_summed_null_depth_capped_by_insufficient_overlap_snr(tmp_path):
     path = _write_capture(tmp_path, "null.wav", captured)
 
     plain = da.analyze_summed_crossover(
-
         path, meta, crossover_fc_hz=2000.0,
-
         capture_geometry="near_field",
-
     )
     mid_dbfs = next(
         b["level_dbfs"]
@@ -1306,11 +1291,8 @@ def test_summed_null_depth_uncapped_with_scalar_only_noise(tmp_path):
     path = _write_capture(tmp_path, "null.wav", captured)
 
     plain = da.analyze_summed_crossover(
-
         path, meta, crossover_fc_hz=2000.0,
-
         capture_geometry="near_field",
-
     )
     scalar_only = da.analyze_summed_crossover(
         path, meta, crossover_fc_hz=2000.0, noise_floor_dbfs=-80.0,
@@ -1461,9 +1443,20 @@ def test_capture_geometry_reference_axis_calls_real_gating_module(tmp_path):
 # table that covers NO band at the shipped crossover frequencies, so every band
 # the alignment gate reads took apply_noise_band_fallback's raw-ambient branch
 # and was subtracted from a gated, deconvolved signal level — different units.
-# Measured error ran -19.7 to +22.5 dB, and a false PASS was reproduced.
-# analyze_summed_crossover now derives its band table from the sweep, so the
-# fallback is unreachable and both sides stay in the gated deconvolved domain.
+# At the production sweep length (SUMMED_SWEEP_DURATION_S = 8.0) the measured
+# error ran -22.08 to +11.11 dB and falsely refused 43 of 162 synthetic
+# captures. analyze_summed_crossover now derives its band table from the sweep,
+# so the fallback is unreachable and both sides stay in the gated deconvolved
+# domain.
+#
+# NOTE for anyone extending these fixtures: `_summed_relay_capture` uses a SHORT
+# sweep to keep the suite fast, and sweep length changes the SIGN of the pre-fix
+# error (the raw substitute gets no sweep processing gain, the deconvolved side
+# does). These tests assert STRUCTURE — which basis each band took, which table
+# was used — never a dB figure, precisely because a dB figure measured here
+# would not transfer to production. Quantitative claims belong in
+# docs/active-crossover-information-design.md "Level control and SNR", measured
+# at 8 s.
 
 
 def _summed_relay_capture(tmp_path, name, *, fc_hz, gain=0.05, seed=17):
@@ -1617,6 +1610,42 @@ def test_summed_crossover_refuses_to_subtract_across_domains(tmp_path):
             )
     finally:
         monkeypatch.undo()
+
+
+def test_summed_crossover_refuses_an_external_raw_ambient_band(tmp_path):
+    """The same refusal on the OTHER route in, which nothing constrains.
+
+    A caller can hand `noise_band_report` straight to the analyzer with
+    `domain="deconvolved"` and bands stamped `basis: "raw_ambient_fallback"`
+    — no `ambient_duration_s`, so there is no paired ambient at all. That is
+    the identical units mix (a band-integrated dBFS RMS differenced against a
+    gated transfer-function level) and must be refused identically. Before the
+    guard was dedented this route produced a ~67 dB "SNR" with no complaint.
+    """
+    sig, meta = _reference_sweep()
+    ir = np.zeros(256, dtype=np.float64)
+    ir[10] = 1.0
+    captured = fftconvolve(sig.astype(np.float64), ir)
+    path = _write_capture(tmp_path, "external.wav", captured)
+
+    external = {
+        "schema_version": 2,
+        "domain": "deconvolved",
+        "method": "paired_signal_window_deconvolution",
+        "bands": [
+            {
+                "band_id": band_id, "band_hz": [lo, hi],
+                "level_dbfs": -95.0, "basis": "raw_ambient_fallback",
+            }
+            for band_id, lo, hi in snr_policy.CROSSOVER_SNR_BANDS_HZ
+        ],
+    }
+
+    with pytest.raises(da.DriverAcousticsError, match="raw-ambient"):
+        da.analyze_summed_crossover(
+            path, meta, crossover_fc_hz=2000.0,
+            capture_geometry="reference_axis", noise_band_report=external,
+        )
 
 
 def test_summed_crossover_fc_2000_covered_case_is_not_regressed(tmp_path):
