@@ -1911,12 +1911,18 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   cannot succeed.
 - `correction.crossover_v2_cloud_publish_failed` (WARNING) — a publish
   ATTEMPT failed: `phase`, `exc_info` (a full disk, a write-once conflict
-  against evidence this session did not write, or similar). Only fires on a
-  phase's FIRST attempt — a failure does not mark `_group_cloud_published`,
-  so the group's next close retries rather than being locked out for the
-  rest of the session. Fail-soft by design — the group's own accept is
-  decided before this seam ever runs (see the S4/N1 review-finding comments
-  on `_close_cloud_group`), so a publish failure never costs the accept.
+  against evidence this session did not write, or similar). Fires on EVERY
+  failed attempt, not just the first — a failure does not mark
+  `_group_cloud_published`, so the group's next close retries, and if the
+  underlying problem persists (the disk is still full) the retry fails too
+  and this logs again. That is the opposite reading from
+  `cloud_group_complete`/`cloud_spec` above, where seeing either twice for
+  one phase is the retake contract working as designed: a REPEATED
+  `cloud_publish_failed` for one phase is not noise, it means the problem
+  is still there. Fail-soft either way by design — the group's own accept
+  is decided before this seam ever runs (see the S4/N1 review-finding
+  comments on `_close_cloud_group`), so a publish failure never costs the
+  accept.
 - `correction.crossover_v2_cloud_publish_skipped` (INFO) — a re-close's
   publish was skipped outright, because an EARLIER close of this phase
   already published successfully: `phase`. This is the retake contract
@@ -1927,9 +1933,9 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   published LAGS that fresh result until the session ends. Without this
   line a reader can only infer the gap by counting `cloud_spec` lines
   against `cloud_publish_failed`'s absence.
-  `correction.crossover_v2_cloud_pipeline_call_failed` (WARNING) names the
+- `correction.crossover_v2_cloud_pipeline_call_failed` (WARNING) — the
   broader case: any named-family exception anywhere in
-  `_run_cloud_pipeline`, not just the publish seam.
+  `_run_cloud_pipeline`, not just the publish seam. `phase`, `exc_info`.
 
 Source: the `_log_check_diag` / `_log_measure_diag` / `_log_verify_diag`
 methods on `CrossoverV2Conductor` in `crossover_v2_flow.py`, called from thin
