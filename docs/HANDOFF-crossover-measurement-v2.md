@@ -1560,7 +1560,7 @@ unready setup.
 | `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18) |
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 | `driver_levels_disagree` | confirm seam | 0 (hard stop) | **TWO gates share this code** — the household's remedy is identical, so one sentence serves both, and `event=` separates them in the journal (`_assert_accountable` runs the frame gate first, as the more specific diagnosis). (a) `event=…_level_frame_refused` — linearization-integrity PR-L5's shared level FRAME: the two measured estimates of where the drivers sit relative to each other (`solve_branch_trims`' mirrored ±1-octave power average and the fit's `driver_core_level_db` median) disagree by more than `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, so no trim derived from them can be trusted. Since #1929 that median is read over each driver's **radiating band** — declared `measurement_band_hz` spans routinely reach past Fc, and a median that counts a driver's own crossover stopband refused healthy speakers (2026-07-30 field session, 3.395 dB). **Since the #1866 frame-gate ruling (2026-07-30) the frame gate no longer refuses on a disagreement alone**: it consults gate (b)'s realized-level verdict for the same candidate, and when THAT passes it banks the disagreement as an M7 finding (`event=…_level_frame_finding`, WARNING, carrying both estimators' per-role levels, both bands, and the realized difference; persisted to the bundle as `findings_measure.json`) and the session **proceeds — the same tune, not refused**. Read "proceeds" precisely: it commits the anchor the fit always computed, which is `giveback + system − core` (the trim term cancels), so the committed inter-driver placement is set by the CORE-MEDIAN frame — the *disputed* estimator — and gate (b) grades the OUTCOME rather than picking a winner between the two frames. The ruling's own wording ("proceeds on the near-Fc anchor (the trim solve)") describes the opposite; the corrected mechanism above is the **ratified** one (owner confirmed 2026-07-30, #1866 comment 5137494519). `event=…_level_frame_refused` therefore now means both instruments failed — or, on a path that is fail-closed and today unreachable, that no realized verdict existed at all. Why: #1929 removed a structural bias from one estimator but not the residual, which scales with ordinary driver shape (a pair identical by construction reads 0.910 dB apart; ~1.33 dB per dB/octave of woofer passband tilt on top), so the gate was refusing healthy speakers whose OUTPUT every other instrument graded fine. (b) `event=…_level_match_refused` — PR-L4 item 1: after the committed trim the two drivers' *realized* levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Both refuse BEFORE the apply thread starts, so the speaker is untouched |
-| `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply |
+| `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply. **Since rung P3 / R10b both of its terms carry the committed residual delay, which does not cancel between them and narrows the margin as the residual grows** — see "VERIFY compares the applied response with the summed model at the committed delay" below for the measured curve and why the onset is capture-specific |
 | `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself |
 | `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back |
 | `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
@@ -2071,11 +2071,68 @@ is the summed ripple AT the anchor, `flatness_improvement_db` is
 for lobe-correctness, not ripple), and `anchor_delay_us` / `snap_delta_us` /
 `snap_found` record the fine step. `flatness_at_bound` is retired.
 
-VERIFY compares the applied response with the independently aligned
-zero-residual target sum. Do not phase that reference by a candidate-specific
+VERIFY compares the applied response with the summed model **at the committed
+delay** (rung P3 / R10b, 2026-08-01): the two measured branches at the trim AND
+the delay this candidate commits, so the tracking comparison grades model
+FIDELITY — did the emitted graph do what was modelled — against a curve some
+delay selection actually realizes. Until R10b the reference was the
+independently aligned *zero-residual* target sum, which no selection realizes;
+on the banked 2026-07-30 JTS3 capture the two references differ by 0.250 dB rms
+and up to 0.653 dB over the band the tracking check actually differences
+(1/6-octave smoothed, [2000, 4000] Hz;
+`captures/r10b-alignment-20260801/committed_delay_numbers.json`)
+against a 1.5 dB `VERIFY_TOLERANCE_DB` —
+that gap was being spent as tracking error.
+
+**This is a deliberate reversal of a prohibition, and here is why it is safe.**
+The retired rule read "do not phase that reference by a candidate-specific
 delay: doing so lets a wrong comb-lobe apply explain itself and recreates the
-fix-2 false-pass class. The selected applied delay is what proves the correction
-realizes the aligned target in the original physical frame.
+fix-2 false-pass class." Four things make the delay-carrying model a different
+proposition from fix-2 (`0b7ab5eb7`, reverted 2026-07-21):
+
+1. **It is the residual, not the applied delay.** Fix-2 phased by the FULL
+   `alignment.delay_us`, double-counting the peak gap `_aligned_branch_tf` had
+   already removed. The term now is `selected − anchor`
+   (`program_analysis.summed_model_residual_delay_us`), which the ±(period/6)
+   snap radius bounds structurally — a neighbouring comb lobe is a FULL period
+   away, so the model cannot reach one and cannot describe an apply that landed
+   on one.
+2. **Flatness no longer selects.** Fix-2 was contemporary with the flatness
+   search choosing the delay, so the search could pick a lobe and the
+   prediction would agree with it — a closed loop. Since #1649 the delay is
+   selected by the physical peak-gap anchor plus a gated local-peak snap, and
+   summed flatness is evidence only. The loop is gone.
+3. **The veto a candidate could formerly talk past is still on the old
+   instrument.** `CrossoverCandidate.predicted_ripple_db` — the sole input to
+   the G1 `MEASURE_PREDICTED_RIPPLE_CEILING_DB` capture-quality gate — is still
+   measured on the independently aligned sum, deliberately, so a candidate
+   cannot use its own delay term to lower it. This is a real evasion path, not
+   a theoretical one: sweeping the residual across the ±(period/6) radius on
+   the banked 2026-07-30 capture, **32 of 84** sampled residuals score BELOW
+   the zero-residual 14.8831 dB, bottoming at 14.0744 dB — and that capture
+   sits 0.12 dB under the 15.0 dB ceiling.
+4. **Fix 3's plausibility rail is unchanged**: the applied delay still has to
+   sit inside the preset's declared `delay_range_ms` ± margin.
+
+The selected applied delay is still what proves the correction realizes the
+physical alignment in the original time origin — that is the anchor's job, and
+`test_snap_production_path_preserves_parallax_contract` still closes that loop.
+
+**One gate's verdict DOES move: the predicted-spec improvement gate**
+(`correction_not_an_improvement`, in the refusal table above). The residual now
+enters BOTH of its terms — the raw pre-fit prediction and the linearized one —
+and does not cancel between them, because a comb costs the corrected, flatter
+model more than the already-rippled uncorrected one. So `improvement_db` falls
+monotonically as the residual grows: **0.643 → 0.238 dB across 0 → 83.3 µs** on
+the conductor fixture, against a 0.5 dB requirement. The refusal ONSET is
+fixture-specific — it scales with each capture's own improvement headroom — so
+read the ~50 µs figure from that sweep as an illustration, not a threshold.
+Residuals this large are reachable on real hardware (a 30.023 µs `snap_delta_us`
+is recorded in `docs/research/2026-07-29-attribution/04-mechanism-frequency.md`).
+This is the gate becoming honest — the pre-R10b model flattered every correction
+by assuming the committed delay was perfect — and whether
+`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` should be re-sized against
+delay-carrying models is **deferred**, not answered here.
 
 Both measured and predicted magnitude curves receive the same 1/6-octave
 smoothing before tracking error is computed. The unsmoothed prediction is used

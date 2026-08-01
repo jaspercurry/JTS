@@ -24,12 +24,17 @@ Pipeline (per phase):
 4. **Per-driver response** — deconvolve → direct-arrival window + first-reflection
    gate → complex TF + magnitude (mic cal applied if given); band-SNR verdicts.
 5. **Alignment (MEASURE)** — band-limited GCC-PHAT supplies an ×16-upsampled,
-   ε/parallax-corrected seed, polarity, and capture confidence; a
-   declaration-bounded summed-flatness search selects the applied delay.
-6. **Candidate + target** — as-crossed branches (design §5.4) ⇒ trims level-
-   match the branches through the crossover. The selected delay should realize
-   the fixed independently aligned target ``W_xo·g_w + s·T_xo·g_t``; its
-   Fc±1-octave ripple is reported and VERIFY compares against that target.
+   ε/parallax-corrected seed, polarity, and capture confidence; the applied
+   delay is selected from the drift-corrected physical peak-gap ANCHOR plus a
+   ±(period/6) gated local-peak snap (methodology §10, 2026-07-22). Summed
+   flatness has been evidence only, never the selector, since #1649.
+6. **Candidate + prediction** — as-crossed branches (design §5.4) ⇒ trims level-
+   match the branches through the crossover. Two sums come out of this, on
+   purpose (rung P3 / R10b): ``predicted_sum``, the branches at the COMMITTED
+   trim and delay — what the emitted graph will do, and what VERIFY's tracking
+   comparison grades against — and the independently aligned
+   ``W_xo·g_w + s·T_xo·g_t``, whose Fc±1-octave ripple is reported as
+   ``predicted_ripple_db``, a capture-quality number the delay must not move.
 
 CHECK additionally returns the ambient band floor, per-pilot captured levels +
 the behavioral linearity verdict (§3.4), channel-map sanity, and the solved
@@ -811,7 +816,24 @@ class CrossoverCandidate:
     the snap radius. ``alignment_seed_ripple_db`` is the summed ripple evaluated
     AT the anchor and ``flatness_improvement_db`` is ``anchor_ripple −
     selected_ripple`` — evidence only, so a slightly negative value is honest
-    (the snap is chosen for comb-lobe correctness, not ripple).
+    (the snap is chosen for comb-lobe correctness, not ripple). Since
+    ``snap_delta_us`` is ``selected − anchor``, it is also exactly the residual
+    delay the model carries on this path
+    (:func:`summed_model_residual_delay_us`) — one number, not two.
+
+    ``predicted_ripple_db`` is measured on the INDEPENDENTLY ALIGNED
+    (zero-residual) branch sum, and is the one quantity here that deliberately
+    did NOT follow ``ProgramAnalysis.predicted_sum`` onto the committed-delay
+    model at rung P3 / R10b. It asks a capture-quality question — how
+    coherently can these two branches sum at all — which is a property of the
+    measurement and not of the delay selection, and it is the sole input to
+    ``crossover_v2_flow``'s G1 ``MEASURE_PREDICTED_RIPPLE_CEILING_DB``, whose
+    threshold that constant documents as calibrated against a fixed hardware
+    corpus scored on THIS metric. Moving it onto the delay-carrying curve would
+    let a candidate's own alignment lower its own veto number — see
+    ``_build_candidate``'s comment at the two calls for the measured evasion
+    margin. The two ripples that DO carry the residual are the snap-evidence
+    pair above, which is what makes them a comparison.
 
     ``trim_db`` is the APPLIED trim (#1667: ripple-optimal where the polish
     ran and the sanity guard trusts it, otherwise the band-average fallback);
@@ -1079,11 +1101,22 @@ class ProgramAnalysis:
     # PR-5 — see the retired-constants comment near ANALYSIS_KIND. A single
     # capture cannot answer "is the speaker flat"; the spatial cloud's spec
     # evaluation does, and it is the only owner of that claim now.)
-    # MEASURE-predicted aligned target magnitude ``(freqs_hz, magnitude_db)`` —
-    # the flattest-achievable zero-residual sum (design §5.6.6). The
-    # v2 conductor hands this to the VERIFY analysis as
+    # MEASURE-predicted summed magnitude ``(freqs_hz, magnitude_db)`` — the two
+    # measured branches at the candidate's COMMITTED trim AND committed delay
+    # (rung P3 / R10b; ``_build_candidate``'s ``predicted_applied``). The v2
+    # conductor hands this to the VERIFY analysis as
     # ``MeasurementPriors.predicted_sum`` so VERIFY's PASS is |measured −
     # predicted| ≤ ±1.5 dB (design §5.2), not merely the summed ripple.
+    #
+    # It carries the delay since R10b, so the tracking comparison grades model
+    # FIDELITY — did the emitted graph do what was modelled — against a target
+    # a realizable delay actually produces. Before that it was the
+    # zero-residual "flattest-achievable, independently aligned" sum of design
+    # §5.6.6, which no delay selection realizes; §5.6.6's intent is
+    # deliberately superseded. Quality is graded separately and elsewhere:
+    # ``crossover_v2_flow.spec_report_for_predicted_sum`` against the flat
+    # spec, and ``CrossoverCandidate.predicted_ripple_db`` (still the
+    # independently-aligned instrument) at the G1 capture-quality ceiling.
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     glitch_detected: bool = False
 
@@ -2259,6 +2292,9 @@ def predicted_branch_sum(
     the exact model of what the emitted graph will do — reusing this SAME
     machinery rather than a second implementation. No logic changed in this
     rename.
+
+    Callers do not compute the residual themselves: it has ONE owner,
+    :func:`summed_model_residual_delay_us`.
     """
     g_w = 10.0 ** (trim_w_db / 20.0)
     g_t = 10.0 ** (trim_t_db / 20.0)
@@ -2268,6 +2304,43 @@ def predicted_branch_sum(
             -1j * 2.0 * np.pi * np.asarray(freqs_hz) * residual_delay_us * 1e-6
         )
     return W * g_w + sign * tweeter
+
+
+def summed_model_residual_delay_us(
+    anchor_delay_us: float | None, applied_delay_us: float
+) -> float:
+    """The ONE derivation of :func:`predicted_branch_sum`'s ``residual_delay_us``.
+
+    ``(D_t − D_w) + applied_signed_delay``, expressed in the two numbers the
+    aligner owns. :class:`AlignmentEstimate`'s ``anchor_delay_us`` is the
+    drift-corrected physical peak gap negated into the signed delay frame, so
+    ``−anchor_delay_us`` IS ``(D_t − D_w)`` and the residual is simply
+    ``applied − anchor``. At the bare anchor it is exactly ``0.0``, which is
+    what makes the anchor the frame the argmax-referenced branch pair is
+    already in.
+
+    Why a residual and not the applied delay itself: :func:`_aligned_branch_tf`
+    references each branch to its OWN direct peak, so the measured peak gap is
+    already OUT of ``W``/``T``. Phasing by the full applied delay counts that
+    gap twice and — in the revert commit's own words — "injects a deep comb
+    into the predicted sum on good measurements and fails VERIFY". That is the
+    fix-2 failure mode, backed out in ``0b7ab5eb7`` (2026-07-21) BEFORE the
+    #1647 branch it lived on merged, so it never reached a shipped build; the
+    same commit deferred "the residual version" to hardware evidence, which is
+    the shape rung P3 / R10b finally adopted.
+
+    ``anchor_delay_us`` is ``None`` exactly when the aligner refused the
+    estimate (:data:`ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW`): there is then no
+    trustworthy argmax-frame reference AND, by the same status,
+    ``crossover_v2_flow.alignment_to_candidate_fields`` applies no delay at
+    all. Both facts point the same way, so the model keeps the
+    independently-aligned frame it is already in and returns ``0.0`` — a
+    fabricated gap from an estimate the aligner itself refused would be worse
+    than none.
+    """
+    if anchor_delay_us is None:
+        return 0.0
+    return float(applied_delay_us) - float(anchor_delay_us)
 
 
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
@@ -3888,7 +3961,6 @@ def _build_candidate(
         # residual base FROM it — never recompute the argmax here, which would be
         # a parallel computation of one load-bearing frame decision.
         anchor_delay_us = float(alignment.anchor_delay_us)
-        objective_reference_gap_us = -anchor_delay_us
         # Gated local-peak snap owns the fine step: the aligner already snapped
         # this anchor to the nearest local maximum of the SAME GCC-PHAT
         # correlation within ±(period/6) at Fc, or ruled one out. No local peak
@@ -3904,8 +3976,8 @@ def _build_candidate(
         snap_delta_us = delay_us - anchor_delay_us
         # Flatness demoted to evidence (methodology §10): the summed ripple AT
         # the anchor and AT the snapped selection, in the argmax-referenced frame
-        # (residual = objective_reference_gap + candidate; the anchor residual is
-        # exactly 0). Never a selector, so `flatness_improvement_db` can be
+        # (`summed_model_residual_delay_us`; the anchor residual is exactly 0).
+        # Never a selector, so `flatness_improvement_db` can be
         # slightly negative — the snap is chosen for lobe-correctness, not ripple.
         band = (freqs >= lo_clamped) & (freqs <= hi)
         if np.any(band):
@@ -3917,7 +3989,9 @@ def _build_candidate(
                 summed = predicted_branch_sum(
                     W_band, T_band, trim_w, trim_t, alignment.polarity_sign,
                     freqs_hz=freqs_band,
-                    residual_delay_us=objective_reference_gap_us + candidate_delay_us,
+                    residual_delay_us=summed_model_residual_delay_us(
+                        anchor_delay_us, candidate_delay_us,
+                    ),
                 )
                 return _ripple_db(freqs_band, summed, lo_clamped, hi)
 
@@ -3926,19 +4000,80 @@ def _build_candidate(
             if math.isfinite(anchor_ripple_db) and math.isfinite(selected_ripple_db):
                 seed_ripple_db = anchor_ripple_db
                 flatness_improvement_db = anchor_ripple_db - selected_ripple_db
-    # VERIFY's reference is the flattest-achievable, independently aligned sum
-    # (design §5.6.6), not a candidate-specific model that can explain away a
-    # wrong comb lobe. The selected applied delay above proves which correction
-    # realizes this zero-residual target in the original physical frame.
-    predicted = predicted_branch_sum(
+    # TWO sums, two questions, two owners. They were one call until rung P3
+    # (R10b), which conflated a capture-quality measure with a model of the
+    # speaker.
+    #
+    # `predicted_aligned` — the flattest-achievable, INDEPENDENTLY ALIGNED sum
+    # (the old design §5.6.6 reference). It answers "how coherently can this
+    # capture's two branches sum at all?", which is a property of the
+    # measurement and not of the delay selection. It is the ONLY input to
+    # `predicted_ripple_db`, and therefore to `crossover_v2_flow`'s G1
+    # `MEASURE_PREDICTED_RIPPLE_CEILING_DB` gate, whose threshold that constant
+    # documents as calibrated against a fixed 2026-07-22 hardware corpus scored
+    # on THIS metric — the zero-residual ripple, not the delay-carrying one.
+    #
+    # Why the gate keeps this frame: a candidate's own committed delay can LOWER
+    # its ripple, so pointing the veto at a delay-carrying curve would let a
+    # capture whose branches sum incoherently be carried under the ceiling by
+    # its own alignment. Measured on the banked 2026-07-30 JTS3 capture
+    # (`captures/r10b-alignment-20260801/ripple_vs_residual_sweep.py`): sweeping
+    # the residual across the ±(period/6) snap radius, 32 of 84 sampled
+    # residuals come in BELOW the zero-residual 14.8831 dB, bottoming at
+    # 14.0744 dB — and that capture sits 0.12 dB under the 15.0 dB ceiling, so
+    # the 0.81 dB an alignment could buy is not a hypothetical margin. (An
+    # earlier draft of this comment asserted the opposite — that a residual can
+    # only ADD ripple, making the move merely "stricter". The sweep refutes it;
+    # the real reason is evasion, not strictness.) Keeping the veto on a frame
+    # no candidate parameter can move is what closes that path, and it is also
+    # why this PR changes no adoption decision here.
+    predicted_aligned = predicted_branch_sum(
         W,
         T,
         trim_w,
         trim_t,
         alignment.polarity_sign,
     )
-    ripple = _ripple_db(freqs, predicted, lo_clamped, hi)
-    predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12))
+    ripple = _ripple_db(freqs, predicted_aligned, lo_clamped, hi)
+    # `predicted_applied` — the same two branches under the delay this
+    # candidate actually COMMITS (rung P3: "make the summed model carry the
+    # committed delay and trim"). This is what gets persisted as
+    # `ProgramAnalysis.predicted_sum` and becomes VERIFY's tracking reference,
+    # so that comparison finally grades measured-vs-the-applied-model — model
+    # fidelity — instead of measured-against-a-target no realizable delay
+    # produces. The trim was already carried; the delay was not.
+    #
+    # The term is the RESIDUAL relative to the argmax-referenced frame, never
+    # the applied delay itself — `summed_model_residual_delay_us` owns that
+    # derivation and its docstring carries the double-count hazard. On the
+    # anchor-primary path this is exactly `snap_delta_us`; at the bare anchor
+    # it is 0.0 and this call is bit-identical to `predicted_aligned`.
+    #
+    # Read off `alignment` rather than the local `anchor_delay_us`, and gated
+    # on the aligner's own status rather than the snap block's condition: a
+    # trustworthy anchor is available whenever `status == ALIGNMENT_OK`, while
+    # the snap block additionally needs the DECLARED plausibility bounds. Those
+    # are different questions, and a preset that declares no `delay_range_ms`
+    # still applies `alignment.delay_us` (`MeasurementPriors.
+    # alignment_delay_bounds_us`: "None keeps GCC as the applied-delay
+    # estimate"), so its model should carry that delay too. The status gate is
+    # what keeps a direct caller's hand-built refused estimate — which
+    # `crossover_v2_flow.alignment_to_candidate_fields` turns into a
+    # trims-only, NO-delay apply — from being modelled as though a delay ran.
+    residual_delay_us = summed_model_residual_delay_us(
+        alignment.anchor_delay_us if alignment.status == ALIGNMENT_OK else None,
+        delay_us,
+    )
+    predicted_applied = predicted_branch_sum(
+        W,
+        T,
+        trim_w,
+        trim_t,
+        alignment.polarity_sign,
+        freqs_hz=freqs,
+        residual_delay_us=residual_delay_us,
+    )
+    predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted_applied), 1e-12))
     candidate = CrossoverCandidate(
         trim_db={woofer_role: trim_w, tweeter_role: trim_t},
         polarity=alignment.polarity,

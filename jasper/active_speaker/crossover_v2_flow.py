@@ -147,6 +147,7 @@ from jasper.audio_measurement.program_analysis import (
     predicted_branch_sum,
     realized_branch_level_match,
     solve_ripple_optimal_trim,
+    summed_model_residual_delay_us,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 from jasper.log_event import log_event
@@ -4480,7 +4481,8 @@ def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
     ``predicted_sum`` is the ``(freqs_hz, magnitude_db)`` pair
     :func:`~jasper.audio_measurement.program_analysis.predicted_branch_sum`
     produces — on the v2 path, rebuilt from the LINEARIZED branches at the
-    committed trim, i.e. a model of exactly what the emitted graph will do.
+    committed trim AND the committed delay (rung P3 / R10b), i.e. a model of
+    exactly what the emitted graph will do.
     Returns a :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`, or
     ``None`` when there is no usable prediction to grade (``None`` input, a
     malformed pair, or a curve the evaluator refuses). **``None`` means
@@ -4548,9 +4550,10 @@ def _commanded_delta(raw_predicted_sum: Any, predicted_sum: Any) -> Any:
 
     The linearized-branch prediction minus the raw-branch one, both built from
     the SAME measured branches with the SAME summation model
-    (``program_analysis.predicted_branch_sum``), so the branch measurements
-    and the summation model divide out and what is left is the shape the
-    emitted filters and trims ask the speaker for.
+    (``program_analysis.predicted_branch_sum``) at the SAME committed residual
+    delay, so the branch measurements, the summation model, and the alignment
+    all divide out and what is left is the shape the emitted filters and trims
+    ask the speaker for.
 
     ``None`` — the probe reports ``unavailable``, which is not a pass — when
     either curve is missing, when they are the same object (a trims-only
@@ -8610,7 +8613,8 @@ class CrossoverV2Conductor:
         whichever trim this call actually committed to (the sanity-guarded
         ``role_attenuations_db`` return value, not necessarily the re-solved
         ``resolved`` — the correction filters are emitted either way, only
-        the trim differs on a rejection). Read by ``_measure_verdict`` to
+        the trim differs on a rejection) and at the session's COMMITTED delay
+        (rung P3 / R10b). Read by ``_measure_verdict`` to
         override ``self._measure_predicted_sum``.
         """
         woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
@@ -9203,18 +9207,47 @@ class CrossoverV2Conductor:
         # cases) — so the persisted VERIFY prediction must be rebuilt from
         # them too, at whichever trim ``role_attenuations_db`` actually ended
         # up holding. Mirrors ``program_analysis._build_candidate``'s own
-        # final predicted-sum call exactly: full-grid branches, no
-        # residual-delay term (the branches are already in the
-        # argmax-referenced frame). Without this, VERIFY compared the
-        # correctly-linearized measured summation against a prediction still
-        # built from the raw branches — a deterministic mismatch equal to
+        # final predicted-sum call exactly — full-grid branches at the
+        # committed trim AND the committed delay. Without this, VERIFY compared
+        # the correctly-linearized measured summation against a prediction
+        # still built from the raw branches — a deterministic mismatch equal to
         # the filters' own in-band response (measured live on JTS3:
         # 1.688-1.699 dB across three attempts, against the 1.5 dB
         # tolerance).
+        #
+        # The delay term is rung P3 / R10b ("make the summed model carry the
+        # committed delay and trim"). ``W_lin``/``T_lin`` are the branches'
+        # ``DriverResponse.complex_tf`` times a correction, and
+        # ``_driver_response`` windows on each branch's OWN argmax exactly as
+        # ``_aligned_branch_tf`` does, so this pair sits in the SAME
+        # argmax-referenced frame as the raw pair and takes the SAME residual —
+        # never the applied delay itself, which would double-count the measured
+        # peak gap (see ``summed_model_residual_delay_us``).
+        #
+        # Both numbers come off ``analysis.alignment``, the SAME pair site 1
+        # used and the same pair :func:`alignment_to_candidate_fields` reads to
+        # build the emitted ``MeasuredCrossoverAlignment`` — so "the committed
+        # delay" here is literally the delay that reaches the graph.
+        # (``_analyze_measure`` replaces ``alignment.delay_us`` with the
+        # candidate's selection before this runs, so it also equals
+        # ``cand.delay_us``; the candidate's own ``anchor_delay_us`` is NOT
+        # used, because it is ``None`` on the no-declared-bounds path where the
+        # alignment's is not, and the two models must not disagree.) Site 1
+        # deriving its residual from the same two values is what leaves the raw
+        # and linearized predictions differing by the correction filters and
+        # nothing else — which is what keeps ``_commanded_delta`` and the
+        # BEFORE/AFTER predicted-spec improvement gate comparing like with like.
         predicted_lin = predicted_branch_sum(
             W_lin, T_lin,
             role_attenuations_db[woofer_role], role_attenuations_db[tweeter_role],
             analysis.alignment.polarity_sign,
+            freqs_hz=freqs,
+            residual_delay_us=summed_model_residual_delay_us(
+                analysis.alignment.anchor_delay_us
+                if analysis.alignment.status == ALIGNMENT_OK
+                else None,
+                analysis.alignment.delay_us,
+            ),
         )
         self._last_linearized_predicted_sum = (
             freqs, 20.0 * np.log10(np.maximum(np.abs(predicted_lin), 1e-12)),
