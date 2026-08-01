@@ -802,9 +802,29 @@ async def test_finish_discovery_threads_the_played_faders_db_into_every_render(
     captured_fader_db: list[float] = []
 
     def _fake_render_with_determinism_receipt(
-        binary_path, config_path, *, yaml_text, first_output_path, second_output_path, bounds, fader_db
+        binary_path,
+        config_path,
+        *,
+        declared_output_path,
+        first_output_path,
+        second_output_path,
+        bounds,
+        fader_db,
     ):
         captured_fader_db.append(fader_db)
+        # Pin the CALL SITE, not just the helper. A render's destination is
+        # `devices.playback.filename` inside its config, so the executor must
+        # hand over a coherent config-and-destination pair. Asserting that
+        # here is the strongest guard against a regression: the helper's own
+        # tests cannot see what the caller built, and it was exactly this
+        # unpinned call site that let the destination bug reach main.
+        config_text = config_path.read_text(encoding="utf-8")
+        declared = yaml.safe_load(config_text)["devices"]["playback"]["filename"]
+        assert declared == str(declared_output_path)
+        # The two preserved outputs and the destination are three distinct
+        # files, or one render's bytes would destroy another's.
+        assert len({declared_output_path, first_output_path, second_output_path}) == 3
+
         data = np.zeros(8000, dtype="<f8").tobytes()
         first_output_path.write_bytes(data)
         second_output_path.write_bytes(data)
@@ -819,7 +839,9 @@ async def test_finish_discovery_threads_the_played_faders_db_into_every_render(
             output_byte_size=len(data),
         )
         return render.DeterminismReceipt(
-            config_sha256=render.config_shape_sha256(yaml_text), first=invocation, second=invocation
+            config_sha256=render.config_shape_sha256(config_text),
+            first=invocation,
+            second=invocation,
         )
 
     import jasper.bass_extension.bench.executor as executor_mod

@@ -60,10 +60,12 @@ import resource
 import shutil
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 
@@ -393,33 +395,179 @@ def config_shape_sha256(yaml_text: str) -> str:
     return hashlib.sha256(yaml_text.encode("utf-8")).hexdigest()
 
 
+def _declared_playback_destination(config_text: str, *, config_path: Path) -> str:
+    """The destination the config itself names: ``devices.playback.filename``.
+
+    A render's destination is **not** a command-line argument.
+    :func:`render_config` builds argv as exactly
+    ``[binary_path, "--gain=<db>", <config_path>]``; the binary writes
+    wherever this one field says — the field
+    :func:`~jasper.bass_extension.bench.derivation.derive_truncated_config`'s
+    R3 device swap emits for the derived ``type: File`` playback device.
+    Everything :func:`render_config` does with an ``output_path`` (unlink a
+    stale file, assert one appeared, hash it) is watching, never directing.
+    """
+
+    try:
+        parsed = yaml.safe_load(config_text)
+    except yaml.YAMLError as exc:
+        raise RenderError(f"render config {config_path} is not parseable YAML: {exc}") from exc
+    devices = parsed.get("devices") if isinstance(parsed, Mapping) else None
+    playback = devices.get("playback") if isinstance(devices, Mapping) else None
+    filename = playback.get("filename") if isinstance(playback, Mapping) else None
+    if not isinstance(filename, str):
+        raise RenderError(
+            f"render config {config_path} declares no devices.playback.filename "
+            "— a render writes only where its own config says, so there is "
+            "nothing for this render to write into"
+        )
+    return filename
+
+
+def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
+    """Refuse to place a preserved render output over an existing file.
+
+    ``Path.rename`` overwrites silently on POSIX. This check has two call
+    sites, defending different things:
+
+    * **Up front, before any render** — the one that fires in practice. A
+      ``.first`` left behind by a campaign that died partway would otherwise
+      be replaced without a word. Checking here costs no render at all.
+    * **Immediately before each move.** Nothing inside
+      :func:`render_with_determinism_receipt` can occupy a preserved slot
+      between those two moments: the three paths are proved distinct, and the
+      only file created in between is the one at the declared destination. So
+      this call defends against a writer OUTSIDE this function touching the
+      bundle directory during the render window — real, but not the ordinary
+      case.
+
+    Why a stale file matters more than it looks: the receipt's hashes come
+    from the :class:`RenderInvocation` computed BEFORE the move, while the
+    campaign reads the preserved file afterwards. Those are decoupled, so a
+    surviving stale file would let the receipt truthfully report
+    "deterministic" about two renders while the measurement used bytes from a
+    different run.
+    """
+
+    if path.exists():
+        raise RenderError(
+            f"the {label} render's preserved output path already exists: {path} "
+            "— refusing rather than silently overwriting it. This receipt's "
+            "hashes are computed before the file is moved here, while the "
+            "campaign reads the file afterwards, so a stale file would make "
+            "the receipt describe different bytes than the measurement used. "
+            "Delete it, or render into a fresh bundle directory."
+        )
+
+
+def _preserve_render_output(source: Path, destination: Path, *, label: str) -> None:
+    """Move a finished render's output aside, freeing the declared destination.
+
+    Safe the moment :func:`render_config` returns: the
+    :class:`RenderInvocation` it hands back already carries
+    ``output_sha256`` and ``output_byte_size``, both computed from the file
+    before that return, so the recorded evidence does not depend on the
+    bytes staying put.
+    """
+
+    _assert_preserved_output_slot_free(destination, label=label)
+    source.rename(destination)
+
+
 def render_with_determinism_receipt(
     binary_path: str,
     config_path: Path,
     *,
-    yaml_text: str,
+    declared_output_path: Path,
     first_output_path: Path,
     second_output_path: Path,
     bounds: RenderBounds,
     fader_db: float,
 ) -> DeterminismReceipt:
-    """R8: render ``config_path`` twice; refuse on any byte mismatch.
+    """R8: render ONE config shape twice; refuse on any byte mismatch.
 
+    Both renders run the same ``config_path`` — one shape, rendered twice,
+    exactly as R8 defines it. A render's destination lives inside the config
+    (``devices.playback.filename``, see
+    :func:`_declared_playback_destination`) rather than in argv, so both
+    renders write to ``declared_output_path``; each output is then moved
+    aside to ``first_output_path`` / ``second_output_path`` so both survive
+    to be compared.
+
+    Moving render 1's output away is what makes render 2's proof stronger
+    than rendering to two separate destinations would be: the declared
+    destination does not exist when render 2 starts, so
+    :func:`render_config`'s ``is_file()`` check is real evidence that the
+    binary rewrote it, not evidence that some file happens to be sitting
+    there.
+
+    Refuses before the first subprocess starts if ``config_path`` does not
+    actually declare ``declared_output_path``, if the three paths are not
+    distinct, or if either preserved-output path is already occupied.
+
+    ``declared_output_path`` is not redundant with the config, and its
+    strongest justification is easy to miss: requiring the config's declared
+    filename to equal a path the CALLER chose inside the bundle is what
+    transitively enforces R9's "renders write only inside the bundle
+    directory". Delete the parameter and that containment check has nowhere
+    left to live — and the move-aside would then make a wrong destination
+    invisible to the caller, since the output would be preserved under the
+    expected name either way. The comparison is a strict string compare on
+    purpose: :meth:`Path.resolve` would touch the filesystem (I/O inside a
+    guard that must complete before any subprocess starts, and a raise on a
+    broken symlink) and would follow symlinks, so a ``/tmp`` versus
+    ``/private/tmp`` pair would be ACCEPTED even though CamillaDSP opens the
+    literal string. That trades a loud false positive for a quiet false
+    negative, which is the wrong direction for a guard.
+
+    ``config_sha256`` is computed from ``config_path``'s own bytes, read
+    here, so the recorded shape identity provably fingerprints the text that
+    was rendered — there is no second copy of that text to drift from it.
     ``fader_db`` is threaded to both renders via ``--gain`` (R4(c)/R9) — see
     :func:`render_config`. Establishes determinism only for the shape
-    rendered here — it makes no claim about untested shapes. Callers key
-    their receipt cache by :func:`config_shape_sha256` so a shape already
-    receipted this campaign is never re-rendered twice more.
+    rendered here; it makes no claim about untested shapes.
     """
 
+    config_text = config_path.read_text(encoding="utf-8")
+    declared = _declared_playback_destination(config_text, config_path=config_path)
+    if declared != str(declared_output_path):
+        raise RenderError(
+            f"the render was told it writes to {declared_output_path} but "
+            f"{config_path} declares devices.playback.filename={declared!r} — "
+            "a render's destination lives inside the config, so this render "
+            "would watch a file the binary never writes"
+        )
+
+    paths = (declared_output_path, first_output_path, second_output_path)
+    if len(set(paths)) != len(paths):
+        raise RenderError(
+            "the declared destination and the two preserved-output paths must "
+            f"be three distinct files, got {declared_output_path}, "
+            f"{first_output_path}, {second_output_path} — reusing one would "
+            "destroy a render's output before it could be compared"
+        )
+    _assert_preserved_output_slot_free(first_output_path, label="first")
+    _assert_preserved_output_slot_free(second_output_path, label="second")
+
     first = render_config(
-        binary_path, config_path, output_path=first_output_path, bounds=bounds, fader_db=fader_db
+        binary_path,
+        config_path,
+        output_path=declared_output_path,
+        bounds=bounds,
+        fader_db=fader_db,
     )
+    _preserve_render_output(declared_output_path, first_output_path, label="first")
     second = render_config(
-        binary_path, config_path, output_path=second_output_path, bounds=bounds, fader_db=fader_db
+        binary_path,
+        config_path,
+        output_path=declared_output_path,
+        bounds=bounds,
+        fader_db=fader_db,
     )
+    _preserve_render_output(declared_output_path, second_output_path, label="second")
+
     receipt = DeterminismReceipt(
-        config_sha256=config_shape_sha256(yaml_text), first=first, second=second
+        config_sha256=config_shape_sha256(config_text), first=first, second=second
     )
     if not receipt.deterministic:
         raise RenderError(

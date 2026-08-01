@@ -478,6 +478,13 @@ class BenchRoleExecutor:
         determinism receipt), and return the derived config, the first
         render's output path, and the live pipeline's playback channel count.
 
+        ONE config, rendered twice. A render's destination is
+        ``devices.playback.filename`` inside the config, never an argv flag,
+        so both renders write to ``playback_path`` and each output is moved
+        aside afterwards — to ``.first`` and ``.second`` — by
+        ``render_with_determinism_receipt``. ``playback_path`` itself is
+        empty when this returns; ``.first`` is the artifact the caller reads.
+
         ``fader_db`` (R4(a)'s bracketed, locked-measurement-level main-volume
         reading — or ``0.0`` for the fully-synthetic, no-live-playback
         ``digital_transfer_probe``) is threaded into ``--gain`` (R4(c)/R9):
@@ -532,7 +539,7 @@ class BenchRoleExecutor:
         determinism = render.render_with_determinism_receipt(
             self.binary.path,
             config_path,
-            yaml_text=derived.yaml_text,
+            declared_output_path=playback_path,
             first_output_path=first_output,
             second_output_path=second_output,
             bounds=bounds,
@@ -541,7 +548,7 @@ class BenchRoleExecutor:
         sink.write_json(
             f"{self.target.target_id}/{role_tag}-{boundary}-determinism.json",
             {
-                "config_sha256": render.config_shape_sha256(derived.yaml_text),
+                "config_sha256": determinism.config_sha256,
                 "deterministic": determinism.deterministic,
                 "first_sha256": determinism.first.output_sha256,
                 "second_sha256": determinism.second.output_sha256,
