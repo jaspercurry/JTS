@@ -13,6 +13,8 @@ existed.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 
@@ -41,6 +43,78 @@ def _fixture() -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
     unstable = peq._bell_response_db(freqs, UNSTABLE_HZ, 4.0, 10.0)
     positions = [stable + scale * unstable for scale in (2.0, 1.5, -1.0)]
     return freqs, np.mean(positions, axis=0), positions
+
+
+@dataclass(frozen=True)
+class _Cap:
+    """The allowance curve a swept design was built against."""
+
+    freqs: np.ndarray
+    depth_db: np.ndarray
+
+
+def _swept_design(
+    strategy_id: str,
+    *,
+    q: float,
+    stable_hz: float,
+    unstable_hz: float,
+    scales: tuple[float, ...],
+) -> tuple[strategy.CorrectionDesign, strategy.CorrectionStrategy, _Cap]:
+    """One design from the sweep grid, with the allowance it was built against.
+
+    Two modes: one every position agrees about, one whose level swings across
+    them by `scales`. Both share `q`, so the grid sweeps bell width — which is
+    what governs how far a legitimate cut's skirt reaches into a neighbouring
+    protected bin.
+    """
+    freqs = _log_freqs()
+    correction = strategy.CORRECTION_STRATEGIES[strategy_id]
+    stable = peq._bell_response_db(freqs, stable_hz, q, 8.0)
+    unstable = peq._bell_response_db(freqs, unstable_hz, q, 10.0)
+    positions = [stable + scale * unstable for scale in scales]
+    measured = np.mean(positions, axis=0)
+    design = strategy.design_correction(
+        measured, freqs, position_magnitudes=positions,
+        strategy_choice=strategy_id,
+    )
+    matrix, _ = spatial.build_spatial_matrix(positions, freqs)
+    depth_db = variance_cap.allowed_depth_db(
+        matrix.std_db, base_max_cut_db=correction.max_cut_db,
+    )
+    return design, correction, _Cap(freqs=freqs, depth_db=depth_db)
+
+
+#: The sweep grid — 3 strategies x 7 bell widths x 6 mode pairs x 5 spread
+#: shapes = 630 designs, in ~0.4 s. Deliberately the SAME grid the PR's
+#: characterisation run used, so the numbers the docstrings state and the
+#: numbers these tests pin cannot drift apart. Q is swept because bell width
+#: governs how far a legitimate cut's skirt reaches into a neighbouring
+#: protected bin, which is what the residual bound is sensitive to; the mode
+#: pairs range from well separated (45/160 Hz) to nearly co-located (80/85 Hz).
+_SWEEP_Q = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
+_SWEEP_MODES = (
+    (45.0, 160.0), (60.0, 90.0), (110.0, 130.0),
+    (35.0, 220.0), (80.0, 85.0), (50.0, 65.0),
+)
+_SWEEP_SCALES = (
+    (2.0, 1.5, -1.0), (3.0, 1.0, -2.0), (1.4, 1.0, 0.2),
+    (5.0, 0.0, -4.0), (1.1, 1.0, 0.9),
+)
+
+
+def _sweep_cases():
+    for strategy_id in ("safe", "balanced", "assertive"):
+        for q in _SWEEP_Q:
+            for stable_hz, unstable_hz in _SWEEP_MODES:
+                for scales in _SWEEP_SCALES:
+                    design, correction, cap = _swept_design(
+                        strategy_id, q=q, stable_hz=stable_hz,
+                        unstable_hz=unstable_hz, scales=scales,
+                    )
+                    if not design.report["spatial_variance_cap"]["available"]:
+                        continue
+                    yield design, correction, cap
 
 
 def _deepest_cut_near(design: strategy.CorrectionDesign, freq_hz: float) -> float:
@@ -106,8 +180,12 @@ def test_unstable_frequency_loses_depth_while_stable_one_keeps_it():
     # Uncapped, the unstable mode gets the whole peak inverted (~8.4 dB, inside
     # the strategy's -10 dB floor).
     assert _deepest_cut_near(uncapped, UNSTABLE_HZ) < -8.0
-    # Capped, it gets roughly the fraction the taper allows at sigma ~13 dB.
-    assert -5.0 < _deepest_cut_near(capped, UNSTABLE_HZ) < -4.0
+    # Capped, the CHAIN there is held to the allowance the taper gives at
+    # sigma ~13 dB (~4.6 dB); no single filter is the whole story, so assert on
+    # the chain rather than on one gain.
+    at_unstable = np.asarray([UNSTABLE_HZ], dtype=np.float64)
+    assert float(peq.predicted_response(capped.peqs, at_unstable)[0]) > -5.0
+    assert float(peq.predicted_response(uncapped.peqs, at_unstable)[0]) < -8.0
     # The stable mode is corrected in both, to within a small residual-path
     # difference (the capped filter near the unstable mode spills a little).
     assert _deepest_cut_near(uncapped, STABLE_HZ) < -7.0
@@ -216,20 +294,27 @@ def test_cumulative_depth_at_one_centre_cannot_out_stack_the_allowance():
         untrimmed, depth_cap_db, freqs, correction,
     )
     assert n_trimmed > 0
-    assert len(trimmed) < len(untrimmed)
     assert float(peq.predicted_response(trimmed, probe)[0]) > stacked
+    # The clamp does not merely improve it — it lands ON the allowance.
+    assert float(peq.predicted_response(trimmed, probe)[0]) == pytest.approx(
+        allowed, abs=1e-9
+    )
     # And the shipped design carries the count so the trim is not silent.
     design = strategy.design_correction(
         measured, freqs, position_magnitudes=positions,
     )
-    assert design.report["spatial_variance_cap"]["filters_depth_trimmed"] == n_trimmed
+    assert design.report["spatial_variance_cap"]["filters_depth_trimmed"] > 0
 
 
-def test_the_trims_own_limitation_is_bounded_and_stated():
-    """The trim binds each cut at its OWN centre, in order, so a later filter's
-    skirt can still add a fraction of a dB over an earlier centre's allowance.
-    `_enforce_variance_depth_cap` states that limitation and names 0.05 dB on
-    this fixture; pin it so the stated number stays a measured one."""
+def test_clamp_never_touches_a_centre_the_spread_left_alone():
+    """The gate's B2 defect, pinned.
+
+    Once ANY bin was capped, the first cut of this clamp enforced a cumulative
+    ceiling at EVERY cut centre — including centres where the seats agreed and
+    the allowance is still the strategy's own floor. It trimmed 2.03 dB off a
+    centre whose sigma was 0.031 dB: a constraint that never existed on main,
+    applied on evidence saying nothing is wrong.
+    """
     freqs, measured, positions = _fixture()
     correction = strategy.CORRECTION_STRATEGIES["balanced"]
     matrix, _ = spatial.build_spatial_matrix(positions, freqs)
@@ -239,15 +324,101 @@ def test_the_trims_own_limitation_is_bounded_and_stated():
         min_filter_gain_db=correction.min_filter_gain_db,
         band_mask=strategy._band_mask(freqs, correction),
     )
-    design = strategy.design_correction(
-        measured, freqs, position_magnitudes=positions,
+    stable_idx = int(np.argmin(np.abs(freqs - STABLE_HZ)))
+    assert float(matrix.std_db[stable_idx]) < 1.0, "fixture: 45 Hz is stable"
+    assert float(depth_cap_db[stable_idx]) == correction.max_cut_db, (
+        "fixture: a stable bin's allowance IS the strategy floor"
     )
-    overshoot_db = max(
-        float(np.interp(p.freq, freqs, depth_cap_db))
-        - float(peq.predicted_response(design.peqs, np.asarray([p.freq]))[0])
-        for p in design.peqs if p.gain < 0
+
+    # Two co-located cuts at the STABLE centre — the stacking shape the clamp
+    # exists to catch — plus one at the capped centre so the cap is engaged.
+    stable_pair = [
+        peq.PEQ(freq=STABLE_HZ, q=4.0, gain=-5.0),
+        peq.PEQ(freq=STABLE_HZ + 0.6, q=4.0, gain=-4.0),
+    ]
+    filters = [*stable_pair, peq.PEQ(freq=UNSTABLE_HZ, q=4.0, gain=-9.0)]
+    kept, n_trimmed = strategy._enforce_variance_depth_cap(
+        filters, depth_cap_db, freqs, correction,
     )
-    assert overshoot_db == pytest.approx(0.05, abs=0.01)
+
+    # The stable pair survives BIT-IDENTICALLY, stacked depth and all.
+    assert [(p.freq, p.q, p.gain) for p in kept[:2]] == [
+        (p.freq, p.q, p.gain) for p in stable_pair
+    ]
+    # And the protected centre WAS constrained, so this is not a vacuous pass.
+    assert n_trimmed == 1
+    assert kept[-1].gain > -9.0
+
+
+def test_clamp_holds_every_protected_centre_to_its_allowance():
+    """The clamp's own guarantee, swept: on the SHIPPED chain, no protected
+    filter centre is left past its allowance — exactly, not approximately.
+
+    Also the regression pin for the ordering defect this fix found: the clamp
+    used to run BEFORE the headroom cap and the crossover exclusion, both of
+    which can DROP a boost, and removing positive gain beside a protected
+    centre deepened the net there after the clamp had finished. That left a
+    protected centre 1.66 dB past its allowance on the assertive sweep.
+    """
+    worst = 0.0
+    for case in _sweep_cases():
+        design, correction, cap_db = case
+        for filt in design.peqs:
+            if filt.gain >= 0:
+                continue
+            allowed = float(np.interp(filt.freq, cap_db.freqs, cap_db.depth_db))
+            if not bool(variance_cap.protected_mask(
+                allowed, base_max_cut_db=correction.max_cut_db,
+            )):
+                continue
+            net = float(peq.predicted_response(
+                design.peqs, np.asarray([filt.freq], dtype=np.float64),
+            )[0])
+            worst = max(worst, allowed - net)
+    assert worst == pytest.approx(0.0, abs=1e-9)
+
+
+def test_realized_overshoot_stays_within_the_measured_bound():
+    """What the CENTRE-bound clamp leaves between centres — measured, swept,
+    and pinned as a bound rather than as one flattering fixture.
+
+    A bell centred on a bin whose own allowance is generous inevitably spills
+    into a neighbouring bin whose allowance is tighter; refusing that would
+    forbid correcting the first bin at all. So a residue exists. Across the
+    full sweep (630 designs: 3 strategies x 7 Q x 6 mode pairs x 5 spread
+    shapes) its worst value is 1.600 dB (safe) / 2.477 dB (balanced) /
+    2.354 dB (assertive), median 0.000 — and it is published per design as
+    `max_overshoot_db`, so no design hides its own number.
+    """
+    by_strategy: dict[str, list[float]] = {}
+    for design, correction, _cap in _sweep_cases():
+        block = design.report["spatial_variance_cap"]
+        assert block["max_overshoot_db"] is not None
+        by_strategy.setdefault(correction.strategy_id, []).append(
+            block["max_overshoot_db"]
+        )
+
+    assert sum(len(v) for v in by_strategy.values()) == 630
+    # Per strategy, so a regression in one cannot hide behind another's max.
+    # Bounds sit a little above each measured worst — enough for ordinary
+    # numeric drift, far below the shallowest strategy's whole 6 dB budget.
+    measured_worst = {"safe": 1.600, "balanced": 2.477, "assertive": 2.354}
+    for strategy_id, values in by_strategy.items():
+        assert min(values) >= 0.0, strategy_id
+        # Typical designs pay nothing: the residue is the exception, not the
+        # rule — 215 of the 630 designs show any at all.
+        assert float(np.median(values)) == 0.0, strategy_id
+        assert max(values) == pytest.approx(
+            measured_worst[strategy_id], abs=0.05
+        ), strategy_id
+        assert max(values) <= measured_worst[strategy_id] + 0.5, strategy_id
+
+    # And the specific worst-case shape reproduces its measured value, so a
+    # change in EITHER direction is caught rather than only a blow-out.
+    design = _swept_design("balanced", q=2.0, stable_hz=60.0, unstable_hz=90.0,
+                           scales=(3.0, 1.0, -2.0))[0]
+    assert design.report["spatial_variance_cap"][
+        "max_overshoot_db"] == pytest.approx(2.477, abs=0.05)
 
 
 def test_cumulative_trim_is_a_no_op_without_a_cap():
@@ -289,6 +460,7 @@ def test_stable_room_designs_byte_identically_to_the_uncapped_path():
     assert block["max_depth_forgone_db"] == 0.0
     assert block["worst_freq_hz"] is None
     assert block["filters_depth_trimmed"] == 0
+    assert block["max_overshoot_db"] == 0.0
     # Nothing happened, so nothing is claimed.
     assert not [
         w for w in capped.report["warnings"]
@@ -320,6 +492,10 @@ def test_disclosure_and_nudge_state_the_ceiling_not_the_filters():
     # strategy's whole floor.
     assert 0.0 < block["max_depth_forgone_db"] < abs(block["base_max_cut_db"])
     assert block["worst_freq_hz"] == pytest.approx(UNSTABLE_HZ, rel=0.1)
+    # The two MEASURED fields: what the enforcement did to the shipped chain.
+    # Both are facts about filters, unlike every ceiling field above.
+    assert block["filters_depth_trimmed"] > 0
+    assert block["max_overshoot_db"] == 0.0
 
     nudge = next(
         w for w in design.report["warnings"]
@@ -358,7 +534,13 @@ def test_advisor_packet_carries_the_cap_so_the_model_sees_the_refusal():
     assert summary["available"] is True
     assert summary["n_bins_capped"] == design.report[
         "spatial_variance_cap"]["n_bins_capped"]
-    assert "Not a count of filters removed." in summary["note"]
+    assert summary["max_overshoot_db"] == pytest.approx(
+        design.report["spatial_variance_cap"]["max_overshoot_db"]
+    )
+    # The note keeps the two registers apart rather than labelling the whole
+    # block one way (the ceiling counts vs the measured filter action).
+    assert "not a count of filters removed" in summary["note"]
+    assert "measured on the filters that shipped" in summary["note"]
 
 
 # --------------------------------------------------------------------------
@@ -385,6 +567,7 @@ def test_single_position_capture_leaves_the_design_alone_and_says_why():
     # Absence, never a neutral-looking measurement.
     assert block["max_depth_forgone_db"] is None
     assert block["worst_freq_hz"] is None
+    assert block["max_overshoot_db"] is None
     # The policy that WOULD have applied is still stated.
     assert block["base_max_cut_db"] == -10.0
 

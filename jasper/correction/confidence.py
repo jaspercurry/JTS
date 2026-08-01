@@ -155,10 +155,10 @@ def _position_variance(
     freqs_hz: np.ndarray | None,
     band_hz: tuple[float, float],
 ) -> dict[str, Any]:
-    if freqs_hz is None or len(position_magnitudes) < 2:
+    if freqs_hz is None or len(position_magnitudes) < spatial.MIN_POSITIONS_FOR_SPREAD:
         return {
             "available": False,
-            "reason": "need at least two completed positions",
+            "reason": spatial.TOO_FEW_POSITIONS_REASON,
         }
 
     matrix, reason = spatial.build_spatial_matrix(position_magnitudes, freqs_hz)

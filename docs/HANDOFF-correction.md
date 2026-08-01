@@ -2536,11 +2536,16 @@ Concrete changes:
   vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB —
   a *ceiling*, not a fixed depth: on a multi-position capture
   `jasper/correction/variance_cap.py` lowers it per frequency wherever the
-  seats disagree about the level, so the design never inverts a feature that
-  moves with the microphone (#1954). Every frequency inside the room layer's
-  own repeatability tolerance keeps the full -10 dB, and the design report
-  carries a `spatial_variance_cap` block saying where and how much was
-  withheld.
+  positions disagree about the level, so the design never inverts a feature
+  that moves across the sampled region (#1954; the flow samples a ~30 cm
+  cluster around the listening point, so that region is roughly a listener's
+  head). Every frequency inside the room layer's own repeatability tolerance
+  keeps the full -10 dB. `strategy._enforce_variance_depth_cap` then holds the
+  *realized* chain to that allowance at every protected filter centre — a
+  per-filter floor cannot bound a stack — and the design report's
+  `spatial_variance_cap` block states both the ceiling (bins capped, depth
+  forgone) and what enforcement measured on the shipped filters
+  (`filters_depth_trimmed`, `max_overshoot_db`).
 - YAML emit (live apply path): `jasper/correction/session.py` asks
   `jasper.sound.graph_carrier` to re-emit the currently loaded topology with
   fresh room PEQs and the saved sound profile. For ordinary stereo this still

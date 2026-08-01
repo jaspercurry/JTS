@@ -286,9 +286,10 @@ def _variance_cap_summary(cap: Any) -> dict[str, Any] | None:
     Load-bearing for the model rather than decorative: without it the packet
     shows residual error the design did not correct and no reason for it, and
     the obvious advice — correct harder — is precisely the advice the cap
-    exists to refuse. ``note`` states the same boundary the disclosure record
-    does: this is the ceiling the designer worked under, not a count of
-    filters removed.
+    exists to refuse. ``note`` keeps the two registers apart rather than
+    labelling the whole block one way: the bin counts describe the CEILING the
+    designer worked under, while ``filters_depth_trimmed`` and
+    ``max_overshoot_db`` are measured facts about the filters that shipped.
     """
     if not isinstance(cap, dict):
         return None
@@ -302,9 +303,12 @@ def _variance_cap_summary(cap: Any) -> dict[str, Any] | None:
         "max_depth_forgone_db": _round_opt(cap.get("max_depth_forgone_db")),
         "worst_freq_hz": _round_opt(cap.get("worst_freq_hz"), 1),
         "filters_depth_trimmed": cap.get("filters_depth_trimmed"),
+        "max_overshoot_db": _round_opt(cap.get("max_overshoot_db")),
         "note": (
-            "Depth ALLOWED at these frequencies, limited by seat-to-seat "
-            "spread. Not a count of filters removed."
+            "n_bins_* and max_depth_forgone_db are the depth ALLOWED at these "
+            "frequencies, limited by seat-to-seat spread — not a count of "
+            "filters removed. filters_depth_trimmed and max_overshoot_db are "
+            "measured on the filters that shipped."
         ),
     }
 

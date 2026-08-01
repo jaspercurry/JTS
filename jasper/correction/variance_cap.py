@@ -73,30 +73,50 @@ rooms. Every frequency the product itself would call high **or** medium
 repeatability keeps the full depth its strategy allows; only the frequencies it
 calls **low** lose any, and they lose it gradually.
 
-**The statistic** is the raw per-frequency cross-position sigma, and this is
-where the room layer parts company with the speaker layer, on purpose. The
-digest names ``sigma/sqrt(N)`` — the standard error of the mean — as the
-precedent, because dispersing a measurement cloud is the *speaker* protocol's
-own instruction and a term that bites harder the better a household follows an
-instruction is backwards. That reasoning does not carry here. The room layer's
-positions are **listening positions** ("Move the microphone to position N of
-M"), so disagreement between them is a property of the room where people
-actually sit, not an artefact of a protocol asking for dispersion. And the
-speaker layer does not in fact put a *structural* spread through that division:
-:func:`~jasper.active_speaker.linearization_envelope.position_stability_limit`
-consumes ``BandSpread.sigma_db``, the deliberately comb-insensitive band LEVEL
-spread, and explicitly refuses ``max_sigma_db``, the per-bin structure spread,
-because dedicated interference instruments own that evidence there. The room
-layer has no such instrument, and
-:attr:`~jasper.correction.spatial.SpatialMatrix.std_db` IS a per-bin structure
-spread — so it is the analogue of what the speaker layer sends to
-``spatial_exclusion_limit``, not of what it sends through ``sqrt(N)``.
+**The statistic** is the raw per-frequency cross-position sigma, **not**
+``sigma/sqrt(N)``. This is a deliberate, recorded departure from the letter of
+the digest's recommendation A in service of its intent, ruled by the conductor
+on issue #1954 (2026-08-01) and flagged there for ratification. The argument:
 
-**What would overturn that call:** evidence that the room flow's guided cloud
-is dispersion-like rather than seat-like — several captures around one seat
-rather than several places people sit. Then the ``sqrt(N)`` softening is the
-right shape and this tolerance is too tight. That is a measurement question
-about the flow, not a maths question, and it is not settled here.
+The room flow's captures are a **~30 cm cluster around one listening point**,
+not several seats — the placement prompt says "Move about 30 cm from the
+previous position, keep the microphone at ear height"
+(:mod:`jasper.web.correction_setup`), and the 2026-05-27 research synthesis
+specifies exactly that cluster (main listening point at ear height, then 30 cm
+left / right / forward / back). So the region the positions sample is
+approximately the region a seated listener's **head occupies**.
+
+That is why raw sigma is the right statistic, and it is a different reason from
+"several seats disagree". ``sigma/sqrt(N)`` is the standard error of the
+**mean** — it answers *how well is the target known*. Raw sigma is the
+**physical variability of the response across the sampled region** — it answers
+*how deep is it safe to invert here*. A feature that swings across a head-sized
+region is not robustly invertible for the actual listener however precisely its
+mean is estimated; more positions measure that instability **better**, they do
+not make it **smaller**. Depth safety has to track the quantity that does not
+shrink with N. Under ``sigma/sqrt(N)`` this cap's knee would sit at
+``6*sqrt(N)`` dB — 10.4 dB at the 3-position minimum, 14.7 dB at 6 — against a
+repo whose own normal per-frequency seat spread is 4-6 dB, i.e. inert for every
+realistic room.
+
+The speaker layer is consistent with this rather than contradicted by it:
+:func:`~jasper.active_speaker.linearization_envelope.position_stability_limit`
+puts only ``BandSpread.sigma_db`` — the deliberately comb-insensitive band
+LEVEL spread — through the ``sqrt(N)`` division, and explicitly refuses
+``max_sigma_db``, the per-bin structure spread, because dedicated interference
+instruments own that evidence there. The room layer has no such instrument, and
+:attr:`~jasper.correction.spatial.SpatialMatrix.std_db` IS a per-bin structural
+spread — the analogue of what the speaker layer routes to
+``spatial_exclusion_limit``, not of what it routes through ``sqrt(N)``.
+
+**What would overturn this**, stated so a later reader can check rather than
+re-litigate: (a) evidence that households in practice sample far beyond the
+listening area — a spread of genuinely distinct seats rather than the
+prescribed head-sized cluster, which would make the region-stability argument
+about the wrong region; or (b) a ratified decision that correction depth should
+target **mean-knowledge** rather than region-stability, which would make
+``sigma/sqrt(N)`` correct and this tolerance far too tight. Neither is settled
+here; both are recorded on #1954.
 
 The estimator this is calibrated against
 ----------------------------------------
@@ -145,8 +165,15 @@ TOLERABLE_STD_DB: float = spatial.MEDIUM_CONFIDENCE_STD_DB
 #: Guards the division for a bin whose positions agree exactly (sigma 0).
 _SIGMA_EPSILON_DB: float = 1e-6
 
+#: How far under the strategy's own floor an allowance must sit before this
+#: module calls the bin **protected**. Float slack only, not a policy width:
+#: :func:`depth_fraction` returns exactly ``1.0`` inside the tolerance, so an
+#: untouched bin's allowance is bit-identical to the scalar and the comparison
+#: needs no room to breathe.
+PROTECTED_EPS_DB: float = 1e-9
 
-def depth_fraction(std_db: np.ndarray | float) -> np.ndarray:
+
+def depth_fraction(std_db: Any) -> np.ndarray:
     """The fraction of a strategy's cut depth this spread supports, in [0, 1].
 
     ``min(1, TOLERABLE_STD_DB / max(sigma, eps))`` — pure, elementwise, and
@@ -154,25 +181,79 @@ def depth_fraction(std_db: np.ndarray | float) -> np.ndarray:
     come from. Returns exactly ``1.0`` at or below the tolerance, so an
     ordinary room's allowed depth is bit-identical to the strategy's own
     scalar and its design cannot move.
+
+    Always an ``ndarray``, including for a scalar input (0-d), so the return
+    annotation is true of every call rather than of the array case only.
     """
     sigma = np.asarray(std_db, dtype=np.float64)
-    return np.minimum(
-        1.0, TOLERABLE_STD_DB / np.maximum(sigma, _SIGMA_EPSILON_DB),
+    return np.asarray(
+        np.minimum(1.0, TOLERABLE_STD_DB / np.maximum(sigma, _SIGMA_EPSILON_DB)),
+        dtype=np.float64,
     )
 
 
-def allowed_depth_db(
-    std_db: np.ndarray | float,
-    *,
-    base_max_cut_db: float,
-) -> np.ndarray:
+def allowed_depth_db(std_db: Any, *, base_max_cut_db: float) -> np.ndarray:
     """Per-frequency cut floor, dB, non-positive, on ``std_db``'s own grid.
 
     ``base_max_cut_db`` is the strategy's scalar floor (negative). The result is
     the array :func:`jasper.correction.peq.design_peq` accepts as
     ``max_cut_db``.
     """
-    return base_max_cut_db * depth_fraction(std_db)
+    return np.asarray(base_max_cut_db * depth_fraction(std_db), dtype=np.float64)
+
+
+def protected_mask(depth_db: Any, *, base_max_cut_db: float) -> np.ndarray:
+    """Where the spread genuinely REDUCED the allowance below the strategy's floor.
+
+    **The single definition of "this bin is protected",** shared by everything
+    that acts on the cap, so no consumer can invent a second one. A bin the
+    spread left alone is not protected: its allowance IS
+    ``base_max_cut_db``, and the strategy's own per-filter floor is the only
+    rule that has ever applied there. Acting on such a bin would impose a
+    constraint that never existed before this cap, on evidence that says
+    nothing is wrong — the defect the gate found in the first cut of the
+    cumulative clamp.
+
+    Always an ``ndarray`` (0-d for a scalar input); wrap a scalar call in
+    ``bool()``.
+    """
+    return np.asarray(
+        np.asarray(depth_db, dtype=np.float64) > base_max_cut_db + PROTECTED_EPS_DB
+    )
+
+
+def realized_overshoot_db(
+    depth_cap_db: Any,
+    realized_shift_db: Any,
+    *,
+    base_max_cut_db: float,
+    band_mask: Any,
+) -> float:
+    """How far past its allowance the finished chain actually cuts, dB, worst bin.
+
+    **Measured, per design, over every protected in-band bin** — not a modelled
+    bound and not one fixture's number. ``realized_shift_db`` is the whole PEQ
+    chain's predicted dB shift on the same grid
+    (:func:`jasper.correction.peq.predicted_response`), so this sees every
+    filter's skirt, not just the cuts centred on a protected bin.
+
+    Returns ``0.0`` when no protected bin is over its allowance — including
+    when nothing is protected at all. Non-negative by construction.
+
+    Why a residual can exist at all, and why it is disclosed rather than
+    designed away: ``strategy._enforce_variance_depth_cap`` binds the allowance
+    at protected filter **centres**, because a bell centred on a stable mode
+    inevitably spills into a neighbouring protected bin and forbidding that
+    would forbid correcting the stable mode. What lands between centres is
+    therefore real, bounded, and stated here instead of asserted away.
+    """
+    cap = np.asarray(depth_cap_db, dtype=np.float64)
+    realized = np.asarray(realized_shift_db, dtype=np.float64)
+    band = np.asarray(band_mask, dtype=bool)
+    mask = protected_mask(cap, base_max_cut_db=base_max_cut_db) & band
+    if not mask.any():
+        return 0.0
+    return float(max(0.0, float(np.max(cap[mask] - realized[mask]))))
 
 
 def no_correction_mask(
@@ -196,13 +277,16 @@ def no_correction_mask(
     offering an allowance the engine will stop on. (Changing that ``break`` is
     not an option from here: the speaker layer fits against the same function.)
 
-    **This is the tail, not the common path.** :func:`depth_fraction` tapers
-    smoothly and never reaches zero, so under the shipped tolerance a bin only
-    qualifies at a spread no real room produces — for ``balanced`` (-10 dB
-    floor, 0.5 dB minimum filter) a sigma above ~120 dB. It stays because the
-    engine's stopping rule is real, the mapping's tolerance is a tunable, and a
-    future retune must not silently reintroduce the forfeit; a wrecked capture
-    (one position at the noise floor, another at full level) can reach it too.
+    **This is the tail, not the common path — and the threshold is absurd, not
+    merely high.** :func:`depth_fraction` tapers smoothly and never reaches
+    zero, so a bin qualifies only above
+    ``TOLERABLE_STD_DB * base_max_cut_db / min_filter_gain_db``: **48 dB** of
+    cross-position sigma for ``safe``, **120 dB** for ``balanced`` and **144 dB**
+    for ``assertive``. No room produces those; only a wrecked capture does (one
+    position at the noise floor, another at full level), and the tests exercise
+    it with exactly that. It stays because the engine's stopping rule is real,
+    the mapping's tolerance is a tunable, and a future retune must not silently
+    reintroduce the forfeit.
     """
     return np.asarray(depth_db, dtype=np.float64) > -abs(min_filter_gain_db)
 
@@ -250,10 +334,21 @@ class VarianceCapDisclosure:
       worst_freq_hz: where that largest reduction sits; ``None`` when no bin
         was capped.
       filters_depth_trimmed: how many designed filters the room layer then had
-        to shallow or drop because their *cumulative* cut at one centre
-        frequency would have exceeded the allowance there. Set by the caller
-        that performs that enforcement (``strategy._enforce_variance_depth_cap``)
-        — a per-filter cap cannot bound a stack, exactly as on the boost side.
+        to shallow or drop because the chain's cumulative cut at a **protected**
+        centre would have exceeded the allowance there. Unlike every field
+        above, this one IS about shipped filters — it is the measured action,
+        not the ceiling. Set by the caller that performs that enforcement
+        (``strategy._enforce_variance_depth_cap``); a per-filter cap cannot
+        bound a stack, exactly as on the boost side.
+      max_overshoot_db: how far past its allowance the finished chain actually
+        cuts at the worst protected in-band bin, dB, non-negative — measured on
+        this design, by :func:`realized_overshoot_db`, after every policy stage
+        has run. ``0.0`` means measured and clean (including when the cap was
+        available but protected nothing, where the protected set is empty and
+        the statement still holds); ``None`` means no cap ran, so nothing was
+        measured. This is the honest statement of what the centre-bound clamp
+        leaves behind between centres; see that function for why a residue
+        exists rather than being designed away.
     """
 
     available: bool
@@ -267,6 +362,7 @@ class VarianceCapDisclosure:
     max_depth_forgone_db: float | None = None
     worst_freq_hz: float | None = None
     filters_depth_trimmed: int = 0
+    max_overshoot_db: float | None = None
 
     @property
     def active(self) -> bool:
@@ -279,13 +375,24 @@ class VarianceCapDisclosure:
         """
         return self.available and self.n_bins_capped > 0
 
-    def with_trimmed(self, filters_depth_trimmed: int) -> VarianceCapDisclosure:
-        """A copy carrying the caller's cumulative-trim count.
+    def with_enforcement(
+        self,
+        *,
+        filters_depth_trimmed: int,
+        max_overshoot_db: float,
+    ) -> VarianceCapDisclosure:
+        """A copy carrying what the caller's enforcement actually did.
 
-        ``replace`` rather than a field-by-field rebuild, so a field added to
-        this record cannot be silently dropped on the way through.
+        Both numbers come from the room layer because both are facts about the
+        *shipped filters*, which this module never sees. ``replace`` rather
+        than a field-by-field rebuild, so a field added to this record cannot
+        be silently dropped on the way through.
         """
-        return replace(self, filters_depth_trimmed=filters_depth_trimmed)
+        return replace(
+            self,
+            filters_depth_trimmed=filters_depth_trimmed,
+            max_overshoot_db=max_overshoot_db,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe disclosure record."""
@@ -301,6 +408,7 @@ class VarianceCapDisclosure:
             "max_depth_forgone_db": self.max_depth_forgone_db,
             "worst_freq_hz": self.worst_freq_hz,
             "filters_depth_trimmed": self.filters_depth_trimmed,
+            "max_overshoot_db": self.max_overshoot_db,
         }
 
 
