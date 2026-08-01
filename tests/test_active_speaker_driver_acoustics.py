@@ -272,7 +272,13 @@ def test_flat_summed_capture_reads_blend_ok(tmp_path):
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "flat.wav", captured)
 
-    result = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    result = da.analyze_summed_crossover(
+
+        path, meta, crossover_fc_hz=2000.0,
+
+        capture_geometry="near_field",
+
+    )
     assert result.verdict == "blend_ok"
     assert abs(result.null_depth_db) < da.DEFAULT_NULL_THRESHOLD_DB
 
@@ -288,7 +294,13 @@ def test_crossover_null_reads_polarity_or_delay_problem(tmp_path):
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "null.wav", captured)
 
-    result = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    result = da.analyze_summed_crossover(
+
+        path, meta, crossover_fc_hz=2000.0,
+
+        capture_geometry="near_field",
+
+    )
     assert result.verdict == "polarity_or_delay_problem"
     assert result.null_depth_db >= da.DEFAULT_NULL_THRESHOLD_DB
 
@@ -297,7 +309,10 @@ def test_summed_clipped_capture_is_unusable(tmp_path):
     sig, meta = _reference_sweep()
     captured = np.ones(len(sig) + 2000, dtype=np.float64)
     path = _write_capture(tmp_path, "clip.wav", captured)
-    result = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    result = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=2000.0,
+        capture_geometry="near_field",
+    )
     assert result.verdict == "unusable_capture"
 
 
@@ -305,7 +320,10 @@ def test_summed_rejects_bad_fc(tmp_path):
     sig, meta = _reference_sweep()
     path = _write_capture(tmp_path, "x.wav", sig.astype(np.float64))
     with pytest.raises(da.DriverAcousticsError):
-        da.analyze_summed_crossover(path, meta, crossover_fc_hz=0.0)
+        da.analyze_summed_crossover(
+            path, meta, crossover_fc_hz=0.0,
+            capture_geometry="near_field",
+        )
 
 
 # ---------- overlap-band level (L1 phone level matching) ---------------------
@@ -1011,7 +1029,13 @@ def test_summed_near_field_default_gating_is_exempt(tmp_path):
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "flat.wav", captured)
 
-    result = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    result = da.analyze_summed_crossover(
+
+        path, meta, crossover_fc_hz=2000.0,
+
+        capture_geometry="near_field",
+
+    )
     assert result.verdict == "blend_ok"
     assert result.gating is not None
     assert result.gating["applied"] is False
@@ -1160,7 +1184,13 @@ def test_summed_snr_block_is_none_without_any_noise_input(tmp_path):
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "null.wav", captured)
 
-    result = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    result = da.analyze_summed_crossover(
+
+        path, meta, crossover_fc_hz=2000.0,
+
+        capture_geometry="near_field",
+
+    )
     assert result.snr is None
     assert result.null_depth_capped is False
     assert result.verdict == "polarity_or_delay_problem"
@@ -1175,7 +1205,13 @@ def test_summed_null_depth_capped_by_insufficient_overlap_snr(tmp_path):
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "null.wav", captured)
 
-    plain = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    plain = da.analyze_summed_crossover(
+
+        path, meta, crossover_fc_hz=2000.0,
+
+        capture_geometry="near_field",
+
+    )
     mid_dbfs = next(
         b["level_dbfs"]
         for b in da._capture_band_levels(path)
@@ -1188,6 +1224,7 @@ def test_summed_null_depth_capped_by_insufficient_overlap_snr(tmp_path):
     noise = [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": mid_dbfs - 20.0}]
     capped = da.analyze_summed_crossover(
         path, meta, crossover_fc_hz=2000.0, noise_band_report=noise,
+        capture_geometry="near_field",
     )
     assert capped.snr is not None
     assert capped.snr["decision_class"] == "alignment"
@@ -1245,6 +1282,7 @@ def test_summed_production_shape_never_reads_the_hann_capture_band_levels(
         meta,
         crossover_fc_hz=2000.0,
         ambient_duration_s=14.0,
+        capture_geometry="near_field",
     )
 
     assert result.ambient is not None
@@ -1267,9 +1305,16 @@ def test_summed_null_depth_uncapped_with_scalar_only_noise(tmp_path):
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "null.wav", captured)
 
-    plain = da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+    plain = da.analyze_summed_crossover(
+
+        path, meta, crossover_fc_hz=2000.0,
+
+        capture_geometry="near_field",
+
+    )
     scalar_only = da.analyze_summed_crossover(
         path, meta, crossover_fc_hz=2000.0, noise_floor_dbfs=-80.0,
+        capture_geometry="near_field",
     )
     assert scalar_only.snr is not None
     assert scalar_only.snr["verdict"] == "unknown"
@@ -1408,3 +1453,235 @@ def test_capture_geometry_reference_axis_calls_real_gating_module(tmp_path):
     else:
         assert result.verdict == da.VERDICT_UNUSABLE_CAPTURE
         assert result.capture_geometry == "reference_axis"
+
+
+# ---------- summed-crossover SNR stays in ONE domain ------------------------
+# (SC-1 SNR units defect, 2026-08-01)
+# The summed capture sweeps only [fc/2, fc*2]. Against the canonical six-band
+# table that covers NO band at the shipped crossover frequencies, so every band
+# the alignment gate reads took apply_noise_band_fallback's raw-ambient branch
+# and was subtracted from a gated, deconvolved signal level — different units.
+# Measured error ran -19.7 to +22.5 dB, and a false PASS was reproduced.
+# analyze_summed_crossover now derives its band table from the sweep, so the
+# fallback is unreachable and both sides stay in the gated deconvolved domain.
+
+
+def _summed_relay_capture(tmp_path, name, *, fc_hz, gain=0.05, seed=17):
+    """A relay-shaped summed capture whose sweep is the production
+    [fc/2, fc*2] — the narrow shape that exposed the units mismatch.
+    Returns (path, sweep_meta, ambient_duration_s)."""
+
+    reference, meta = sweep_mod.synchronized_swept_sine(
+        f1=fc_hz / 2.0, f2=fc_hz * 2.0, duration_approx_s=1.0, sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    ir = np.zeros(512, dtype=np.float64)
+    ir[10] = 1.0
+    ir[int(0.006 * SR)] = 10 ** (-12 / 20)
+    played = fftconvolve(reference.astype(np.float64), ir)
+    path = _write_relay_capture(
+        tmp_path, name, played, gain=gain, ambient_s=14.0, seed=seed,
+    )
+    return path, meta.to_dict(), 14.0
+
+
+def _gate_relevant_snr_bands(result, fc_hz):
+    """The SNR bands worst_band_verdict actually reduces over — the ones that
+    decide the alignment verdict."""
+    lo_hz = max(fc_hz / 2.0, da.ANALYSIS_LO_HZ)
+    hi_hz = min(fc_hz * 2.0, da.ANALYSIS_HI_HZ)
+    return [
+        band for band in result.snr["bands"]
+        if band["band_hz"] and band["band_hz"][1] > lo_hz
+        and band["band_hz"][0] < hi_hz
+    ]
+
+
+@pytest.mark.parametrize("fc_hz", [1600.0, 2500.0])
+def test_summed_crossover_snr_reads_every_gate_band_in_one_domain(
+    tmp_path, fc_hz,
+):
+    """Coverage by construction at the two SHIPPED crossover frequencies.
+
+    Both are frequencies where the canonical table covered nothing, so every
+    gate-relevant band took the raw-ambient fallback before this fix. The
+    assertions are the teeth: no ambient band may report the fallback basis,
+    and every band must be fully inside the sweep. Reintroducing an uncovered
+    band — by widening the derived table or reverting to the canonical one —
+    fails here.
+    """
+    path, meta, ambient_s = _summed_relay_capture(
+        tmp_path, f"summed-{int(fc_hz)}.wav", fc_hz=fc_hz,
+    )
+
+    result = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=fc_hz, capture_geometry="reference_axis",
+        ambient_duration_s=ambient_s,
+    )
+
+    assert result.ambient is not None and result.snr is not None
+    # Every band kept its diagnostic basis, and every one is deconvolved.
+    bases = {band["band_id"]: band["basis"] for band in result.ambient["bands"]}
+    assert bases, "the ambient report must still disclose a per-band basis"
+    assert set(bases.values()) == {"deconvolved"}, (
+        f"a gate band fell back to the raw ambient domain: {bases}"
+    )
+    # ...and that is structural, not luck: every band is inside the sweep.
+    covered = snr_policy.excitation_covered_bands(
+        tuple(
+            (band["band_id"], band["band_hz"][0], band["band_hz"][1])
+            for band in result.snr["bands"]
+        ),
+        f1_hz=float(meta["f1"]), f2_hz=float(meta["f2"]),
+    )
+    assert covered and all(covered.values()), f"uncovered SNR band: {covered}"
+    # The gate reduces over real evidence, not "unknown" placeholders.
+    relevant = _gate_relevant_snr_bands(result, fc_hz)
+    assert relevant, "the alignment gate must read at least one band"
+    assert all(
+        band["method"] == "paired_signal_window_deconvolution"
+        for band in relevant
+    )
+
+
+def test_summed_crossover_stays_in_one_domain_in_near_field_geometry(tmp_path):
+    """The capture_geometry hazard, pinned.
+
+    ``near_field`` is the geometry where the raw-ambient substitution flips
+    sign: the reflection gate is exempt, so the deconvolved ambient sits ABOVE
+    the raw p95 and substituting the raw value INFLATES the reported SNR — the
+    false-``ok``, under-capped-null direction. Before this fix, the summed
+    gate's safe direction depended on the reflection gate having run, which the
+    SNR subtraction has no way to see.
+
+    Coverage by construction removes that dependency: no band takes the
+    fallback in EITHER geometry, so the sign cannot flip. This asserts it in
+    the dangerous geometry specifically.
+    """
+    fc_hz = 1600.0
+    path, meta, ambient_s = _summed_relay_capture(
+        tmp_path, "summed-nearfield.wav", fc_hz=fc_hz,
+    )
+
+    result = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=fc_hz, capture_geometry="near_field",
+        ambient_duration_s=ambient_s,
+    )
+
+    assert result.gating["applied"] is False
+    assert result.gating["exempt_reason"] == "near_field"
+    bases = {band["band_id"]: band["basis"] for band in result.ambient["bands"]}
+    assert set(bases.values()) == {"deconvolved"}, (
+        "near_field is the sign-flipping geometry; a raw fallback here "
+        f"inflates the alignment SNR: {bases}"
+    )
+
+
+def test_analyze_summed_crossover_requires_an_explicit_capture_geometry(tmp_path):
+    """No silent default. ``near_field`` used to be the default, which made the
+    un-gated reading — different null depth, different validity floor, and the
+    sign-flipping SNR geometry above — the one a caller got by saying nothing.
+    Both production callers already state their geometry."""
+
+    sig, meta = _reference_sweep()
+    path = _write_capture(tmp_path, "flat.wav", sig)
+
+    with pytest.raises(TypeError, match="capture_geometry"):
+        da.analyze_summed_crossover(path, meta, crossover_fc_hz=2000.0)
+
+
+def test_summed_crossover_refuses_to_subtract_across_domains(tmp_path):
+    """Fail closed if a raw-ambient band ever reaches the subtraction again.
+
+    Coverage by construction means this cannot trip today. It exists so a
+    future edit that re-opens the fallback on this path is refused loudly
+    instead of quietly changing what the alignment gate means. Simulated here
+    by handing the analyzer a deliberately too-wide band table.
+    """
+    fc_hz = 1600.0
+    path, meta, ambient_s = _summed_relay_capture(
+        tmp_path, "summed-wide.wav", fc_hz=fc_hz,
+    )
+
+    def _too_wide(*, f1_hz, f2_hz):
+        # Reaches an octave below f1, so the sweep cannot cover it.
+        return (("sweep_low", f1_hz / 2.0, f2_hz),)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(snr_policy, "sweep_excitation_bands", _too_wide)
+    try:
+        with pytest.raises(da.DriverAcousticsError, match="raw-ambient"):
+            da.analyze_summed_crossover(
+                path, meta, crossover_fc_hz=fc_hz,
+                capture_geometry="reference_axis", ambient_duration_s=ambient_s,
+            )
+    finally:
+        monkeypatch.undo()
+
+
+def test_summed_crossover_fc_2000_covered_case_is_not_regressed(tmp_path):
+    """Fc 2000 is the one frequency that already read correctly: ``mid`` is
+    1000-4000 Hz and its sweep is exactly 1000-4000 Hz, so the canonical band
+    was covered and took the deconvolved path. It must still read true.
+
+    The gate stays accurate here — the reported SNR reproduces an independently
+    computed same-domain difference — and it stays on the deconvolved basis.
+    """
+    fc_hz = 2000.0
+    path, meta, ambient_s = _summed_relay_capture(
+        tmp_path, "summed-2000.wav", fc_hz=fc_hz,
+    )
+    assert (float(meta["f1"]), float(meta["f2"])) == (1000.0, 4000.0)
+
+    result = da.analyze_summed_crossover(
+        path, meta, crossover_fc_hz=fc_hz, capture_geometry="reference_axis",
+        ambient_duration_s=ambient_s,
+    )
+
+    bases = {band["band_id"]: band["basis"] for band in result.ambient["bands"]}
+    assert set(bases.values()) == {"deconvolved"}
+    # The derived table spans exactly the sweep, which here is exactly the
+    # canonical `mid` band the pre-fix code read correctly.
+    edges = [band["band_hz"] for band in result.snr["bands"]]
+    assert min(edge[0] for edge in edges) == pytest.approx(1000.0)
+    assert max(edge[1] for edge in edges) == pytest.approx(4000.0)
+    # This capture cleared the alignment gate before the fix — Fc 2000 was the
+    # one frequency that was never deflated — so it must still clear it.
+    assert result.snr["verdict"] == "ok"
+    assert (
+        result.snr["worst_relevant"]["estimated_snr_db"]
+        >= da.DRIVER.alignment_snr_ok_db
+    )
+    # Every gate band carries real paired evidence, not a scalar or a blank.
+    for band in _gate_relevant_snr_bands(result, fc_hz):
+        assert band["method"] == "paired_signal_window_deconvolution"
+        assert band["estimated_snr_db"] is not None
+
+
+def test_per_driver_near_field_ambient_keeps_the_canonical_band_table(tmp_path):
+    """Scope guard. The raw-ambient fallback is CORRECT for the wide per-driver
+    near-field sweep it was built for (issue #1563), where the uncovered bands
+    are ones the gate does not read. That path must be untouched: it still
+    reports canonical band ids and still uses the fallback where the sweep does
+    not reach."""
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=60.0, f2=4000.0, duration_approx_s=1.0, sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    path, ambient_duration_s = _write_narrow_band_capture(
+        tmp_path, "per-driver.wav", reference, lf_tone_dbfs=None,
+    )
+
+    result = da.analyze_driver_capture(
+        path, sweep_meta.to_dict(), passband_hz=(40.0, 2000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+
+    band_ids = {band["band_id"] for band in result.ambient["bands"]}
+    assert band_ids == {
+        band_id for band_id, _lo, _hi in snr_policy.CROSSOVER_SNR_BANDS_HZ
+    }
+    bases = {band["band_id"]: band["basis"] for band in result.ambient["bands"]}
+    assert bases["sub_bass"] == "raw_ambient_fallback"
+    assert bases["mid"] == "deconvolved"

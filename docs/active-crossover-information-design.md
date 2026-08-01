@@ -856,6 +856,36 @@ window must still read "insufficient") are pinned in
 `tests/test_audio_measurement_snr_policy.py` and
 `tests/test_active_speaker_driver_acoustics.py`.
 
+**The fallback belongs to the WIDE per-driver sweep only (SC-1 SNR units
+defect, 2026-08-01).** Substituting the raw reading changes a band's UNITS,
+not just its value — a covered band is a gated transfer-function level, a fallback
+band is a band-integrated dBFS RMS over ungated 1 s frames — and those two do
+not subtract. That is harmless in the case the fix was built for, where a
+per-driver near-field sweep covers most bands and the uncovered ones are not
+the ones the gate reads. It is not harmless for the SUMMED crossover capture:
+its sweep is only `[fc/2, fc*2]`, so at the shipped crossover frequencies NO
+canonical band is covered and EVERY band deciding the alignment verdict took
+the fallback. The measured consequence was an SNR error of −19.7 to +22.5 dB
+— mostly deflation, causing false refusals of good captures (a true 54 dB
+overlap SNR reported as 33), but bidirectional: at a steeply
+low-frequency-weighted ambient the number can read 22 dB HIGH, and a false
+PASS was reproduced. `analyze_summed_crossover` therefore derives its band
+table from the sweep itself (`snr_policy.sweep_excitation_bands`: three
+log-uniform bands spanning exactly `[f1, f2]`, ids
+`sweep_low`/`sweep_mid`/`sweep_high`). Every band is then covered by
+construction, the fallback is structurally unreachable on that path, and both
+sides of every subtraction stay in one gated deconvolved domain. Three bands
+rather than one keeps the per-band granularity this section's split policy
+depends on: a null read at `fc` from shoulders at `fc/2` and `fc*2` should
+not be cleared by an average that hides an under-supported shoulder.
+Coverage is asserted rather than assumed, and the analyzer fails closed if a
+`raw_ambient_fallback` band ever reaches the subtraction — so the gate's
+safety no longer rests on the reflection gate having run, a fact the
+subtraction has no way to see. The per-driver path is untouched and still
+reports canonical band ids. Fc = 2000 Hz, the one frequency that already read
+correctly (`mid` is 1000-4000 Hz and its sweep is exactly 1000-4000 Hz),
+still does.
+
 ### Measurement validity: gating and the low-frequency floor
 
 A domestic room contaminates a far-field capture with reflections a few

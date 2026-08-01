@@ -668,6 +668,33 @@ create a second retention system.
   path produced it). Full detail, the ground-truth validation
   table, and doc cross-reference in
   active-crossover-information-design.md "Level control and SNR".
+- **The fallback is scoped to the WIDE per-driver sweep; the summed
+  crossover capture derives its own bands (SC-1 SNR units defect,
+  2026-08-01).** The
+  substitution above swaps a band's UNITS, not just its value: a
+  `"deconvolved"` band is a gated transfer-function level, a
+  `"raw_ambient_fallback"` band is a band-integrated dBFS RMS over ungated
+  1 s frames. That is harmless where it was designed to run — a per-driver
+  near-field sweep covers most canonical bands, and the uncovered ones are
+  not the ones the alignment gate reads. It is not harmless on the SUMMED
+  crossover capture, whose sweep is only `[fc/2, fc*2]`: at the shipped
+  crossover frequencies NO canonical band is fully covered, so every band
+  deciding the alignment verdict took the fallback and was then subtracted
+  from a deconvolved signal level. Measured error −19.7 to +22.5 dB — mostly
+  toward false refusal, but bidirectional, and a false PASS was reproduced.
+  `analyze_summed_crossover` now derives its band table from the sweep
+  (`snr_policy.sweep_excitation_bands` — three log-uniform bands spanning
+  exactly `[f1, f2]`, ids `sweep_low`/`sweep_mid`/`sweep_high`), so every
+  band is covered by construction and the fallback is unreachable there.
+  Coverage is asserted rather than assumed, and the analyzer additionally
+  fails closed if a `raw_ambient_fallback` band ever reaches the
+  subtraction. The per-driver path is unchanged and still reports canonical
+  band ids. Fc = 2000 Hz was the one frequency that already read correctly
+  (`mid` is 1000-4000 Hz and its sweep is exactly 1000-4000 Hz) and still
+  does. `analyze_summed_crossover`'s `capture_geometry` also lost its
+  `near_field` default — that is the geometry where the substitution's sign
+  flips, and it should never have been the answer a caller got by saying
+  nothing.
 - **Lane B fixed-axis admission contract (2026-07-12).** Driver analysis no
   longer accepts `capture_geometry` from the browser. It derives near-field vs
   reference-axis from a complete relay proof revalidated against the active

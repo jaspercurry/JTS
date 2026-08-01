@@ -340,6 +340,79 @@ def excitation_covered_bands(
     }
 
 
+def sweep_excitation_bands(
+    *,
+    f1_hz: float,
+    f2_hz: float,
+) -> tuple[tuple[str, float, float], ...]:
+    """Three log-uniform SNR bands spanning EXACTLY the swept range.
+
+    :data:`CROSSOVER_SNR_BANDS_HZ` is a table of canonical ACOUSTIC bands, and
+    it is the right table when the sweep is wide enough to excite them. It is
+    the wrong table for a narrow sweep, because a band the sweep only partly
+    covers puts the two sides of an SNR subtraction into different units:
+    :func:`apply_noise_band_fallback` substitutes a RAW dBFS ambient level for
+    an uncovered band, while the signal side stays a gated, deconvolved
+    transfer-function level. Those do not subtract.
+
+    The summed-crossover capture is exactly that narrow case. Its sweep is one
+    octave either side of the crossover
+    (``[fc/2, fc*2]``, ``commissioning_capture_producer._prepare_sweep``), so
+    at the shipped crossover frequencies NO canonical band is fully covered and
+    every band that decides the alignment verdict takes the raw fallback. The
+    resulting error was measured (SC-1 SNR units defect, 2026-08-01) at
+    -19.7 to +22.5 dB — mostly toward false refusal, but bidirectional,
+    and a false PASS was reproduced.
+
+    Deriving the table from ``[f1_hz, f2_hz]`` removes the mismatch at its
+    source rather than correcting for it: every band is covered by
+    construction, so the fallback is structurally unreachable and both sides
+    of every subtraction stay in the one gated deconvolved domain. Three bands
+    keeps the per-band granularity the split SNR policy depends on — a null
+    read at ``fc`` from shoulders at ``fc/2`` and ``fc*2`` should not be
+    cleared by an average that hides a noisy shoulder — at a resolution
+    (two thirds of an octave for a full-width sweep) comparable to the
+    canonical table's own bands.
+
+    Coverage is ASSERTED, not assumed: this raises rather than return a table
+    that would re-open the fallback. That assertion is what makes "covered by
+    construction" a checked claim.
+
+    Raises :class:`ValueError` for a non-finite, non-positive, or inverted
+    range, and for any table that fails :func:`excitation_covered_bands`.
+    """
+
+    lo, hi = float(f1_hz), float(f2_hz)
+    if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
+        raise ValueError(
+            "sweep_excitation_bands: need 0 < f1_hz < f2_hz, "
+            f"got f1_hz={f1_hz!r} f2_hz={f2_hz!r}"
+        )
+    # Interior edges are clamped into (lo, hi): cubing a cube root can overshoot
+    # the endpoint by an ulp, which would invert the top band's edges.
+    ratio = (hi / lo) ** (1.0 / 3.0)
+    edge_low = min(max(lo * ratio, lo), hi)
+    edge_high = min(max(edge_low, edge_low * ratio), hi)
+    bands = (
+        ("sweep_low", lo, edge_low),
+        ("sweep_mid", edge_low, edge_high),
+        ("sweep_high", edge_high, hi),
+    )
+    uncovered = sorted(
+        band_id
+        for band_id, is_covered in excitation_covered_bands(
+            bands, f1_hz=lo, f2_hz=hi
+        ).items()
+        if not is_covered
+    )
+    if uncovered:
+        raise ValueError(
+            "sweep_excitation_bands: derived bands must be covered by "
+            f"[{lo}, {hi}] by construction, but {uncovered} are not"
+        )
+    return bands
+
+
 def apply_noise_band_fallback(
     noise_bands: Sequence[Mapping[str, Any]],
     *,
@@ -369,6 +442,25 @@ def apply_noise_band_fallback(
     available estimate. Each returned band carries a diagnostic ``"basis"``
     key (``"deconvolved"`` or ``"raw_ambient_fallback"``) recording which path
     was taken.
+
+    **The fallback changes the band's UNITS, and a caller that subtracts it
+    from a deconvolved signal level must account for that.** A
+    ``"deconvolved"`` band is a gated transfer-function level (dimensionless,
+    ``20*log10|Y/X|``, per-bin power MEAN); a ``"raw_ambient_fallback"`` band
+    is a band-INTEGRATED RMS in true dBFS over ungated one-second frames.
+    Three things differ — the division by ``|X(f)|``, the per-bin-mean vs
+    band-sum statistic, and the observation window (a <=7 ms gated impulse
+    response vs 1 s of room) — so the substitution is not a constant offset
+    and its sign is not stable. Measured on the summed-crossover capture
+    (SC-1 SNR units defect, 2026-08-01) the resulting SNR error ran -19.7 to +22.5 dB.
+
+    This is a correct substitution for the case it was built for (issue #1563:
+    a WIDE per-driver near-field sweep, where the uncovered bands are the ones
+    the gate does not read and the deconvolved value there is a Tikhonov
+    artifact). It is not a licence to mix domains inside a gated band. A
+    consumer whose gate reads uncovered bands should narrow its band table to
+    the excited range instead — see :func:`sweep_excitation_bands`, which
+    makes the fallback structurally unreachable rather than correcting for it.
     """
 
     robust_by_id = {item["band_id"]: item for item in robust_bands}
