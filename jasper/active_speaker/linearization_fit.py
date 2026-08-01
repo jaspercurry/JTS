@@ -608,6 +608,13 @@ class LinearizationFit:
     pass/fail." All four are REPORT-ONLY in this PR; nothing gates on them
     yet (design doc build-order step 2, closed-loop verify, is a later PR).
 
+    **Every one of those numbers grades the REALIZED cascade** (R10b, #1988) —
+    the measurement plus :func:`complex_correction_response`, the exact RBJ
+    biquads CamillaDSP emits — never the Lorentzian bell the peaking search
+    uses internally to pick its next peak. Same rule for
+    :attr:`correction_giveback_db`. Pinned by
+    ``test_reported_residual_grades_the_realized_biquad_not_the_lorentzian``.
+
     **All three ladder levels are FIT DIAGNOSTICS, and the flat-linearization
     plan's PR-5 fixed how they are labeled downstream.** Every one of them is
     computed per-driver, on this fit's own envelope grid, from the single
@@ -2406,17 +2413,58 @@ def fit_driver_linearization(
             None if centred_target is None else centred_target.gain_permitted
         ),
     )
-    if lift.filters != tuple(filters):
-        filters = list(lift.filters)
-        # Rebuild ``working_db`` from the smoothed measurement and the WHOLE
-        # post-lift cascade rather than adding a delta: the stage can shrink a
-        # filter already folded into ``working_db``, so an incremental update
-        # would double-count it.
-        working_db = smoothed_db + 20.0 * np.log10(
-            np.maximum(
-                np.abs(complex_correction_response(tuple(filters), grid_hz)), 1e-12
-            )
+    filters = list(lift.filters)
+
+    # THE CLAIM SEAM (R10b, #1988). Everything below this line is a REPORTED
+    # NUMBER — residual, verify, observe, give-back — and every one of them is
+    # graded here against the cascade the graph will actually emit.
+    #
+    # Rebuilding from ``smoothed_db`` plus the WHOLE cascade rather than
+    # carrying the incremental ``working_db`` forward does two jobs at once:
+    #
+    #  1. It cannot double-count. The lift stage can SHRINK a cut already
+    #     folded in above, so an incremental update would apply that filter
+    #     twice. (This was the rebuild's original and only job, and it fired
+    #     only when the lift stage changed the filter list.)
+    #  2. It cannot grade an approximation. The peaking stage folds itself in
+    #     with :func:`jasper.correction.peq.predicted_response`, whose
+    #     ``_bell_response_db`` is a Lorentzian in log-frequency — its
+    #     half-width matches the RBJ peaking biquad, but "the far skirts are
+    #     still a Lorentzian approximation" (that function's own docstring).
+    #     :func:`complex_correction_response` is the exact biquad, shared with
+    #     the emitter's headroom charge and the runtime contract's proof.
+    #
+    # Job 2 is why this is unconditional. Before R10b the rebuild lived inside
+    # ``if lift.filters != tuple(filters):``, so a cut-only vocabulary — which
+    # makes the lift stage inert by design, and is what every pre-PR-L5 caller
+    # gets — reported residuals computed against the Lorentzian. That is the
+    # shelf-Q defect class of 2026-07-27 arriving in peaking form: the fit
+    # grading itself with an evaluator the hardware does not use. See
+    # :mod:`jasper.active_speaker.delta_probe`'s module docstring — "a model
+    # cannot audit itself".
+    #
+    # STAGE-INTERNAL arithmetic is deliberately left alone. A search heuristic
+    # picking its next peak off an approximate residual is a fit-quality
+    # question; a CLAIM is a correctness one. The two are separated here, not
+    # conflated: this rebuild is the last write to ``working_db``, no
+    # filter-producing stage runs after it, and so it cannot move a single
+    # emitted filter on any path — only the numbers reported about them.
+    #
+    # One of those numbers is not report-only, and saying so is the point of
+    # this note: ``correction_giveback_db`` below is the SSOT
+    # ``crossover_v2_flow._fit_linearization`` anchors each branch's linearized
+    # TRIM on. Grading it exactly therefore moves an emitted trim — measured on
+    # the banked 2026-07-30 JTS3 session at up to 0.124 dB of give-back and
+    # 0.040 dB of committed trim (cut-only vocabulary;
+    # ``captures/r10b-alignment-20260801/lorentzian_gap_probe.py``). That is the
+    # anchor becoming correct, not a new degree of freedom: the give-back's
+    # definition has always been "the level this cascade removes", and it now
+    # measures the cascade rather than a model of it.
+    working_db = smoothed_db + 20.0 * np.log10(
+        np.maximum(
+            np.abs(complex_correction_response(tuple(filters), grid_hz)), 1e-12
         )
+    )
 
     # N1 (adversarial review, 2026-07-24): an explicit raise, not a bare
     # `assert` -- this is a safety invariant on HARDWARE-BOUND output (a
