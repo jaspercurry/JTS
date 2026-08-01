@@ -386,18 +386,23 @@ post-apply and structurally unreachable at stage-1 stop).
 
 ### R9 — the instrument round (rung P1) *(Friday 2026-07-31, overnight into 08-01 — COMPLETE)*
 
-> **Outcome (2026-08-01).** Mission met: the instrument can no longer
-> overstate. Five PRs merged at 0/0 — #1989 (gating contract v1: disclosure
+> **Outcome (2026-08-01).** Mission met: the instrument's graded claims can
+> no longer overstate (the one disclosed limit — the band-edge notch-skirt
+> lever on the frame fit — rides #1990 §B). Five PRs merged at 0/0 — #1989 (gating contract v1: disclosure
 > persisted+surfaced, certified peak fix, asymmetric-cost classification
 > guard, E5's both corrections, #1983 comment), #1987 (frame discipline:
 > fit+disclose over the notch-excluded mask, tilt-removed graded beside raw),
-> #1996 (month-boundary test hermeticity; product half of #1993 stays open),
+> #1996 (month-boundary test hermeticity; #1993's product half was then
+> settled by measurement and closed — spend is conserved across the
+> boundary and cap enforcement reads a rolling window),
 > #1991 (early-fire prominence vote K=12/Q=7.5 — the widened-grid corpus
 > optimum K=12/Q=13.5 was REJECTED by the jts3 anatomy screen 13/13, the
 > bench overruling the corpus exactly as the corpus overruled the research in
 > R8; −31% early fires, zero decision changes on the existing corpus), #1994
 > (disclosure render: one clause writer for both screens, outcome+code+gate
-> an atomic triple, the deictic guard). Replay regression: 1635/1637 leaves
+> an atomic triple, the deictic guard). Replay regression (run at
+> `045477e05`, i.e. through #1987 — #1991's gating change has its own
+> corpus + anatomy evidence and #1994 is copy/render): 1635/1637 leaves
 > identical, 57/57 arrays bit-identical, zero unexplained deltas, honest
 > numbers demonstrated from product code
 > (`captures/replay-scorecard-20260731/regression-r9-20260731/`). Our-chain
@@ -409,8 +414,11 @@ post-apply and structurally unreachable at stage-1 stop).
 > 6-octave 84%-tilt construction stays harness-level until R10 gives the
 > product a full-band comparison. **Slice exit, honestly split:** deploy
 > verified (jts3 = the round's tip, doctor 0 failed / 5 known warnings),
-> state-proof paths held, render FEED verified through the flow's own
-> envelope endpoints, paint seam pinned by gated tests — but no human has
+> state-proof paths held. The live probe reached TRANSPORT only — session,
+> CSRF, and a review-phase envelope fetch (`verify: null`); the R9
+> disclosure lines were never produced live, because the box has never
+> entered a verify state, so the disclosure feed rests on the gated
+> render-seam tests and the replay, not on a live envelope. No human has
 > seen the pixels: background agents cannot click the Browser pane's
 > per-action approval for `.local` origins, and jts3's wizard is parked at a
 > real owner decision (pending unapplied candidate `8ca42d15…` missing spec
@@ -641,17 +649,19 @@ active_rung:    P3, under the owner's same-session authorization; ladder
 last_round:     R9 — the instrument round, COMPLETE at five PRs merged 0/0
                 (#1989 #1987 #1996 #1991 #1994), replay regression clean
                 (zero unexplained deltas), our-chain certification banked.
-                Slice exit honestly split: render feed E2E-verified via the
-                flow's own endpoints; the browser-pixel pass + the parked
-                wizard decision (pending candidate 8ca42d15…) are
+                Slice exit honestly split: live probe = transport only
+                (review-phase envelope, verify null); disclosure feed
+                rests on gated tests + replay; browser-pixel pass + the
+                parked wizard decision (pending candidate 8ca42d15…) are
                 Monday-runbook items
 next_mission:   R10a work orders (this session);
                 captures/NEXT-SESSION-PROMPT-round-10.md for a fresh session
 blocked_on:     Monday-gated: ladder P0–P4 ratification, Q-E, the
                 enclosure-hole timeline, the mic-replacement repeat-floor
-                arm, H3-swap scheduling, the #1993 spend-window product
-                question, the #1990 §B fit-margin threshold decision, and
-                the two new runbook items from the R9 slice check
+                arm, H3-swap scheduling, the #1990 §B fit-margin
+                threshold decision, and the two new runbook items from
+                the R9 slice check (#1993 was settled by measurement and
+                closed — both halves)
 ```
 
 ## How this document relates to session handoffs and issues
