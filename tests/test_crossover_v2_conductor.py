@@ -4011,6 +4011,194 @@ def test_a_retake_after_the_group_closed_never_drops_the_only_take(monkeypatch):
     assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
 
 
+def test_a_materially_different_reclose_refreshes_the_pipeline_but_not_the_publish(
+    monkeypatch, caplog,
+):
+    """#1872, BLOCKER-level proof: a re-close must RECOMPUTE the honest-
+    instrument pipeline (so the fit, the candidate's fingerprinted
+    ``exclusion_evidence``, and the journal all describe the cloud actually
+    retained) even though the durable evidence-artifact PUBLISH is a
+    per-phase singleton.
+
+    Reproduces #1872's own overlap deterministically (no sleeps — the
+    overlap is the CALL ORDER): two geometry-locked rejects exhaust the
+    retry budget (``GEOMETRY_RETRY_POSITIONS``), so the THIRD attempt at the
+    same index ACCEPTS despite geometry still reading locked — matching the
+    issue's own log shape (``geometry_retries=2``, "result accepted"). A
+    FOURTH attempt at that same index — standing in for the late-arriving
+    retake/tail capture the confirm-hold's widened admission window lets
+    through (session.py's ``completion_pending`` branch), the same shape
+    every VOLUNTARY retake of the final position takes (§2.6) — carries
+    MATERIALLY DIFFERENT capture data, not the same fixture twice: a
+    ``validity_floor_hz`` the first close's positions did not have. A test
+    that repeats an IDENTICAL fixture cannot distinguish "recomputed" from
+    "served a stale cached copy" (both closes would report the SAME
+    flatness/floor either way) — this one can, because a stale copy would
+    keep reporting the FIRST close's floor.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    fakes.verify = _comb_cloud_analysis_factory()
+    published: list[tuple[str, dict]] = []
+    c = CrossoverV2Conductor(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(
+            fakes.seams(),
+            publish_cloud=lambda phase, result: published.append(
+                (phase, dict(result))
+            ),
+        ),
+        driver_spacing_m=0.15,
+        index_phase_map=CLOUD_MAP,
+        post_apply_verifies=True,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    for _ in range(GEOMETRY_RETRY_POSITIONS):
+        verdict = _run_phase(c, last, attempt)
+        attempt += 1
+        assert verdict["accepted"] is False
+        assert verdict["code"] == REASON_CLOUD_GEOMETRY_LOCKED
+
+    # Third attempt: the retry budget is spent, so this ACCEPTS despite
+    # geometry still reading locked — the group's FIRST real close. Every
+    # position (including this one) came from the comb factory, whose
+    # fixture hardcodes ``validity_floor_hz=140.0``.
+    first_close = _run_phase(c, last, attempt)
+    attempt += 1
+    assert first_close["accepted"] is True
+    assert first_close["group_complete"] == PHASE_CLOUD_MEASURE
+    assert len(published) == 1
+    assert published[0][0] == PHASE_CLOUD_MEASURE
+    assert (
+        caplog.text.count("event=correction.crossover_v2_cloud_group_complete")
+        == 1
+    )
+    assert caplog.text.count("event=correction.crossover_v2_cloud_spec") == 1
+    first_pipeline = c.group_cloud_result(PHASE_CLOUD_MEASURE)
+    assert first_pipeline is not None
+    assert first_pipeline["validity_floor_hz"] == pytest.approx(140.0)
+
+    # Fourth attempt at the SAME index: the overlap, carrying a GATED
+    # response (validity_floor_hz=400.0) the rest of the group's positions
+    # do not have — ``cloud_validity_floor_hz`` reports the WORST (highest)
+    # floor across all retained positions, so this shift is only visible if
+    # the retake's position genuinely replaced the prior one and the group
+    # was genuinely re-combined and re-assembled.
+    caplog.clear()
+
+    def _gated_retake(program: Any) -> ProgramAnalysis:
+        response = replace(_comb_summed_response(9999), validity_floor_hz=400.0)
+        return ProgramAnalysis(
+            phase="verify",
+            program_id=program.program_id,
+            locations=(_loc("sweep_verify", "summed_sweep", confidence=0.9),),
+            summed_response=response,
+            summed_ripple_db=1.1,
+            verify_tracking={
+                "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
+            },
+            linearity_ok=True,
+        )
+
+    fakes.verify = _gated_retake
+    second_close = _run_phase(c, last, attempt)
+    assert second_close["accepted"] is True
+    assert "code" not in second_close
+    assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
+    assert len(c.group_positions(PHASE_CLOUD_MEASURE)) == len(CLOUD_MEASURE_INDEXES)
+
+    # The JOURNAL carries a spec verdict for the cloud actually used — a
+    # SECOND ``cloud_group_complete`` and ``cloud_spec``, not a missing or
+    # stale one. This is the "normal cloud_spec/cloud_group_complete flow"
+    # shape: a re-close is a real close, logged like one.
+    assert (
+        caplog.text.count("event=correction.crossover_v2_cloud_group_complete")
+        == 1
+    )
+    assert caplog.text.count("event=correction.crossover_v2_cloud_spec") == 1
+
+    # The RECOMPUTE happened: the group's pipeline result now reports the
+    # RETAKEN position's floor, not the stale first-close one.
+    second_pipeline = c.group_cloud_result(PHASE_CLOUD_MEASURE)
+    assert second_pipeline is not None
+    assert second_pipeline["validity_floor_hz"] == pytest.approx(400.0)
+    assert second_pipeline["validity_floor_hz"] != first_pipeline["validity_floor_hz"]
+
+    # ...but the durable EVIDENCE ARTIFACT write is still a per-phase
+    # singleton — the write-once store refuses a write whose bytes differ
+    # from what is already there (this retake's recomputed bytes normally
+    # do), so the guard skips the attempt outright rather than spend it on
+    # a call that would be refused. The skip itself is journalled (the one
+    # fact nothing else states — the artifact now lags the fresh pipeline
+    # result above).
+    assert len(published) == 1, "a second close must not attempt a second publish"
+    assert (
+        caplog.text.count("event=correction.crossover_v2_cloud_publish_skipped")
+        == 1
+    )
+
+    # End-to-end: the FIT itself, and the candidate it produces, must also
+    # see the retaken cloud — not just the pipeline's own bookkeeping.
+    confirmed = _confirm_cloud(c)
+    assert confirmed.get("candidate_fingerprint")
+    assert c.candidate is not None
+    evidence = c.candidate.exclusion_evidence
+    assert evidence["validity_floor_hz"] == pytest.approx(400.0)
+    assert evidence["validity_floor_hz"] == second_pipeline["validity_floor_hz"]
+
+
+def test_a_failed_publish_is_retried_on_the_next_close_not_locked_out():
+    """#1872 resilience, pinned: ``_group_cloud_published`` marks a phase
+    only on a SUCCESSFUL publish, not a bare attempt — stated three times
+    (the ``__init__`` field comment, the publish guard's own comment, and
+    the HANDOFF doc) and asserted nowhere until this test. Marking on the
+    attempt instead (so a FAILED publish also marks) would leave every
+    other conductor test green, because none of them drives a publish
+    failure followed by a second close.
+
+    A transient failure — a full disk, not a write-once conflict — must not
+    permanently lock the phase out of ever publishing for the rest of the
+    session: the group's next close (another voluntary retake of the final
+    position) has to retry.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+
+    calls = {"n": 0}
+
+    def _flaky_publish(phase, result):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("synthetic full disk")
+
+    c._seams = replace(c._seams, publish_cloud=_flaky_publish)
+
+    # First close's publish attempt fails — fail-soft (the capture is still
+    # accepted), and NOT marked published.
+    first_close = _run_phase(c, last, attempt)
+    attempt += 1
+    assert first_close["accepted"] is True
+    assert calls["n"] == 1
+    assert PHASE_CLOUD_MEASURE not in c._group_cloud_published
+
+    # A second close (another voluntary retake) retries the publish — and
+    # this time it succeeds, so it IS marked.
+    second_close = _run_phase(c, last, attempt)
+    assert second_close["accepted"] is True
+    assert calls["n"] == 2, "a failed first attempt must not lock out the retry"
+    assert PHASE_CLOUD_MEASURE in c._group_cloud_published
+
+
 def test_the_tier_rides_the_snapshot_and_the_pipeline_payload():
     """§1.2: every consumer can tell which instrument produced a result, and an
     UNDECLARED tier reads as unknown rather than as "full" (the

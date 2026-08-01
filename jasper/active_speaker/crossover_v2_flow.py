@@ -4815,6 +4815,18 @@ class CrossoverV2Conductor:
         # the group closes, mirroring that dict's own "never confuse
         # not-yet-run with a clean verdict" rule.
         self._group_cloud_result: dict[str, dict[str, Any]] = {}
+        # #1872: which phases' evidence artifact has already been PUBLISHED —
+        # the one part of a group close that is a genuine per-phase
+        # singleton (the evidence store is write-once; see
+        # :meth:`_run_cloud_pipeline`'s own ``publish_cloud`` guard). A
+        # RE-close (a voluntary retake, or a geometry-locked retry's own
+        # retake landing after the group already accepted via budget
+        # exhaustion) still recomputes ``_group_cloud_result`` and re-logs
+        # ``cloud_spec`` every time — only the durable write skips a repeat
+        # attempt once this set already has the phase. Marked on a
+        # SUCCESSFUL publish only, so a transient failure on one close still
+        # gets a chance on the next.
+        self._group_cloud_published: set[str] = set()
         # The group's most recent COMBINE, held from its geometry close until
         # the household confirms past it (flow-simplification §2.6 —
         # ``confirm_cloud_measure_group``). Only CLOUD_MEASURE ever populates
@@ -6337,6 +6349,25 @@ class CrossoverV2Conductor:
                 False, REASON_CLOUD_GEOMETRY_LOCKED,
                 payload={"prompt": prompt, "geometry": dict(verdict)},
             )
+        # #1872: a retake of the group's LAST position can land AFTER the
+        # group already closed once — a genuine voluntary retake (the retry
+        # guard above requires exactly that: "never AFTER the group has
+        # already recorded a verdict"), or a geometry-locked retry's own
+        # retake arriving late because an EARLIER attempt at this same index
+        # already exhausted the retry budget and was silently accepted
+        # (session.py's confirm-hold widens the admission window this can
+        # land in ON PURPOSE — see its own comment on ``completion_pending``
+        # — because closing that window would also close the legitimate
+        # voluntary-retake case). Either way this is a REAL close of the
+        # group as it stands NOW, and everything below — the verdict, the
+        # ``cloud_group_complete`` log, and ``_run_cloud_pipeline``'s
+        # recompute (``_group_cloud_result``, the ``cloud_spec`` log) — runs
+        # every time so nothing downstream (the FIT's exclusion evidence,
+        # the disclosure screen, the journal) can describe a cloud the
+        # household no longer walked. The one thing that is a per-phase
+        # SINGLETON is the durable EVIDENCE ARTIFACT write — see
+        # :meth:`_run_cloud_pipeline`'s own ``publish_cloud`` guard, which is
+        # where the write-once evidence store's contract actually lives.
         self._group_geometry[phase] = verdict
         log_event(
             logger, "correction.crossover_v2_cloud_group_complete",
@@ -7495,7 +7526,7 @@ class CrossoverV2Conductor:
     def _run_cloud_pipeline(
         self, phase: str, combined: Any, positions: Sequence[_CloudPosition],
     ) -> None:
-        """PR-4: the honest-instrument pipeline, run once per CLOSED group.
+        """PR-4: the honest-instrument pipeline.
 
         ``combined`` is the SAME object ``_close_cloud_group`` just derived
         its retry-gating verdict from — ONE combine per group close (S3
@@ -7511,6 +7542,17 @@ class CrossoverV2Conductor:
         properties of the CAPTURE, not of the combine: the gate actually
         applied, the summed ripple, which attempt survived, and the WAV's
         content digest.
+
+        **Runs on EVERY close of the group, including a re-close from a
+        retake (#1872).** ``_group_cloud_result`` and the ``cloud_spec`` log
+        below always describe the cloud that is CURRENTLY retained — the fit
+        (``_cloud_fit_evidence``), the candidate's fingerprinted
+        ``exclusion_evidence``, and the room layer's disclosure
+        (``jasper.web.correction_crossover_v2``'s ``_cloud_summary``) all
+        read ``_group_cloud_result`` (via :meth:`group_cloud_result`), so a
+        stale copy here would silently feed them the pre-retake cloud. Only
+        the durable evidence-artifact PUBLISH below is a per-phase
+        singleton — see its own comment for why.
 
         Never raises and never affects the accepted verdict already decided
         above — this is diagnostic/disclosure machinery, not a capture gate.
@@ -7564,7 +7606,33 @@ class CrossoverV2Conductor:
             spec_n_excluded=flatness.get("n_excluded"),
             validity_floor_hz=result.get("validity_floor_hz"),
         )
-        if self._seams.publish_cloud is not None:
+        # #1872: the PUBLISH is the one per-phase SINGLETON in this pipeline
+        # (everything above re-runs on every close). The evidence store is
+        # write-once, but that means "refuses a write whose bytes differ
+        # from what is already there" — an identical retry is accepted
+        # idempotently, so this guard is not standing in for a check the
+        # store already makes; it exists so a re-close (a genuine retake, or
+        # a geometry-locked retry's own retake landing after the group
+        # already accepted) does not spend an attempt that is guaranteed to
+        # be REFUSED once the retake's recomputed bytes differ from the
+        # first close's, which they normally will. Marked in
+        # ``_group_cloud_published`` only on success, so a transient failure
+        # (a full disk, not a write-once conflict) still gets a chance on
+        # the group's next close rather than being locked out for the rest
+        # of the session.
+        if phase in self._group_cloud_published:
+            # The skip itself is the one fact nothing else states: everything
+            # ABOVE this line just recomputed and re-logged fresh
+            # (``_group_cloud_result``, ``cloud_spec``), but the durable
+            # artifact this phase already published now LAGS that fresh
+            # result — a reader would otherwise have to infer the gap from
+            # counting ``cloud_spec`` lines. INFO, not WARNING: this is the
+            # retake contract working as designed, not a failure.
+            log_event(
+                logger, "correction.crossover_v2_cloud_publish_skipped",
+                session_id=self.session_id, phase=phase,
+            )
+        elif self._seams.publish_cloud is not None:
             try:
                 self._seams.publish_cloud(
                     phase, self._group_cloud_result[phase]
@@ -7578,6 +7646,8 @@ class CrossoverV2Conductor:
                     level=logging.WARNING,
                     session_id=self.session_id, phase=phase, exc_info=True,
                 )
+            else:
+                self._group_cloud_published.add(phase)
 
     def _log_cloud_diag(
         self,
@@ -8252,8 +8322,9 @@ class CrossoverV2Conductor:
         )
         # (The ``flatness_*`` fields this line carried until PR-5 came from
         # the retired per-capture construction. The spec verdict is logged
-        # once per closed group instead — ``correction.crossover_v2_cloud_spec``
-        # in ``_run_cloud_pipeline``.)
+        # on every close of the group instead — ``correction.
+        # crossover_v2_cloud_spec`` in ``_run_cloud_pipeline``, once per
+        # close rather than once per capture.)
         # Measurement-honesty gate G3's own diagnostics: the current
         # attempt's raw pilot transfer (re-derived fresh, read-only — never
         # the mutated conductor state) and the step vs baseline
@@ -8450,10 +8521,20 @@ class CrossoverV2Conductor:
         registry that justifies the intervals — enough that a reader holding
         only ``candidate.json`` can re-derive ``spatial_exclusion_limit`` and
         ``position_stability_limit`` and see WHY a band went uncorrected. The
-        registry is re-read from this group's own pipeline result and
-        serialized by :func:`_null_registry_to_dict`, the one owner of that
-        shape, so the candidate's copy and ``cloud_measure.json``'s cannot
-        disagree.
+        registry is re-read from this group's own pipeline result —
+        ``_group_cloud_result``, always its CURRENT value, refreshed on every
+        close including a retake's re-close (issue #1872) — and serialized by
+        :func:`_null_registry_to_dict`, the one owner of that shape, so the
+        candidate's copy always describes the cloud actually retained at
+        confirm time. ``cloud_measure.json``'s own copy can lag it: the
+        evidence store's ``publish_cloud`` write is a per-phase SINGLETON
+        (see :meth:`_run_cloud_pipeline`'s own guard), so a retake landing
+        between the group's first close and the household's confirm leaves
+        the PERSISTED file describing an earlier cloud than the candidate
+        filed beside it. Accepted scope, not a defect this method owns: the
+        evidence artifact is forensic, the candidate is the product, and
+        #1872 is explicit that the store's write-once behavior — first
+        artifact stands — is by design.
 
         ``band_spread`` is carried as the plain per-band numbers rather than
         the dataclass: this is persisted JSON, and the two fields the term
@@ -8475,8 +8556,11 @@ class CrossoverV2Conductor:
         justify, and (because a non-empty ``exclusion_evidence`` is
         fingerprinted — see :meth:`MeasuredCrossoverCandidate._core`) makes
         them tamper-evident for free. Both are copied verbatim from this
-        group's own pipeline result, the same source ``cloud_measure.json``
-        reads, so the two copies cannot disagree.
+        group's own CURRENT pipeline result — the same field
+        ``cloud_measure.json`` was seeded from at publish time, but see the
+        null-registry paragraph above for why a retake after that publish can
+        leave the persisted file a close behind the candidate, and why that
+        gap is accepted rather than fixed here.
 
         Cost, stated plainly: ``gated_spec_curve`` duplicates the already-
         decimated cloud curve (<=512 points, two float arrays), which adds
