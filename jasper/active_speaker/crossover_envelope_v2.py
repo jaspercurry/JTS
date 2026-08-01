@@ -692,6 +692,69 @@ def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
+    """Every graded band's OWN worst deviation, from the SAME reference the
+    pointer line above names (issue #1857).
+
+    ``_flatness_lines_from_block`` already names ONE band -- whichever of
+    the three read furthest from the reference. But that reference is a
+    power mean pooled across the two tight-tolerance bands
+    (:data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`), so a band
+    that is uniformly off drags the shared zero toward itself, and can make
+    an unrelated band's ordinary ripple read as the LARGER deviation --
+    exactly the failure #1857 reports: a corpus session's shipped verdict
+    read "+4.84 dB @ 1339.6 Hz" (the woofer band) while the tweeter sat
+    uniformly ~5 dB dark across its own passband, because the tweeter's
+    darkness had already pulled the reference down before the woofer's
+    ordinary ripple was measured against it. Showing every band's own
+    number beside the pointer's, from the reference the pointer already
+    uses, means a reader is never limited to the single band the gauge
+    happened to pick — the tweeter's own deviation sits right next to the
+    woofer's, so nobody has to take the pointer's word alone for which
+    driver is the actual problem.
+
+    **Disclosure only — decides nothing.** Every figure here is copied
+    verbatim from ``spec_bands`` (``_compact_cloud_status``'s own per-band
+    projection of the SAME :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
+    the pointer line reads); nothing is recomputed, no band's ``passed`` or
+    the overall verdict moves, and the reference frame itself is untouched.
+    WHICH frame the spec SHOULD anchor to is #1857's still-open Q-E (an
+    owner decision — see ``docs/attribution-stage-plan.md``); this function
+    does not pick a side, it only stops the current frame's single pointer
+    from being read alone.
+
+    Unevaluable bands (``passed`` not a bool, or either dB figure missing/
+    non-finite) are silently skipped — the same "unevaluable is not a
+    fabricated verdict" rule :class:`~jasper.active_speaker.flat_spec.BandResult`
+    already follows. Returns ``[]`` (no line at all, not an empty-looking
+    one) when nothing survives, so a caller need not special-case it.
+    """
+    if not isinstance(spec_bands, list):
+        return []
+    parts: list[str] = []
+    for band in spec_bands:
+        if not isinstance(band, Mapping):
+            continue
+        lo = _finite(band.get("f_lo_hz"))
+        hi = _finite(band.get("f_hi_hz"))
+        deviation_db = _finite(band.get("max_deviation_db"))
+        tolerance_db = _finite(band.get("tolerance_db"))
+        passed = band.get("passed")
+        if (
+            lo is None or hi is None or deviation_db is None
+            or tolerance_db is None or not isinstance(passed, bool)
+        ):
+            continue
+        verdict = "pass" if passed else "fail"
+        parts.append(
+            f"{lo:.0f}–{hi:.0f} Hz {deviation_db:+.2f} dB "
+            f"({verdict}, tolerance ±{tolerance_db:.1f} dB)"
+        )
+    if not parts:
+        return []
+    return ["every band from the same reference: " + ", ".join(parts)]
+
+
 def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     """The spec-facing flatness disclosure — "how flat is the speaker" —
     distinctly labeled from :func:`_verify_expert_details`'s
@@ -770,6 +833,7 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
             "or out of range"
         ] + _carve_out_expert_lines(block)
     lines = _flatness_lines_from_block(flatness)
+    lines.extend(_per_band_flatness_lines(block.get("spec_bands")))
     lines.extend(_carve_out_expert_lines(block))
     return lines
 
@@ -817,7 +881,10 @@ def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
             "Measured before tuning: flatness could not be measured — every "
             "spec band was excluded or out of range"
         ] + _carve_out_expert_lines(block)
-    numeric = "; ".join(_flatness_lines_from_block(flatness))
+    numeric = "; ".join(
+        _flatness_lines_from_block(flatness)
+        + _per_band_flatness_lines(block.get("spec_bands"))
+    )
     line = f"Measured before tuning: {numeric}"
     if _mapping(_v2(status).get("verify")).get("outcome") == "pass":
         line += (

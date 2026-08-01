@@ -1894,7 +1894,13 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `flatness_reference_band_lo_hz`/`flatness_reference_band_hi_hz` (the frame
   the deviation is stated against — a power mean over `REFERENCE_BAND_HZ`;
   the pointer moves in sign and frequency under a different frame, issue
-  #1857), `flatness_rms_db`,
+  #1857), `flatness_bands` (issue #1857 — EVERY graded band's own deviation
+  from that same reference, not just the one `flatness_max_db` picked, as one
+  compact `lo-hiHz:+dev.ddB:pass|fail` token per band joined by `;`; a
+  uniformly-off band can drag the shared reference toward itself and make an
+  unrelated band's ordinary ripple read as the larger deviation, so a reader
+  of this line is no longer limited to the single band the pointer flagged —
+  see `crossover_v2_flow._per_band_flatness_log_field`'s docstring), `flatness_rms_db`,
   `spec_n_excluded`, `validity_floor_hz`. Emitted from `_run_cloud_pipeline`,
   and since the flat-linearization plan's PR-5 it is the ONLY place a
   flatness number is logged (see "Flatness" above).

@@ -40,6 +40,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     _derive_cloud_echo_band_hz,
     _geometry_guidance_copy,
     _min_clamped_echo_band_width_hz,
+    _per_band_flatness_log_field,
     assemble_cloud_group_result,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
@@ -413,6 +414,94 @@ def test_geometry_guidance_softened_when_thin_evidence():
     assert thin != locked
     assert thin
     assert "%" not in thin
+
+
+# --------------------------------------------------------------------------- #
+# #1857: the crossover_v2_cloud_spec log line names every band, not just the
+# one flatness_max_db happened to flag as worst
+# --------------------------------------------------------------------------- #
+
+
+def test_per_band_flatness_log_field_reproduces_the_1857_misattribution():
+    """The SAME mechanism ``test_crossover_envelope_v2.py``'s household-copy
+    test reproduces, read from the log-line helper instead: a uniformly dark
+    tweeter drags the shared reference down, so the woofer's own (much
+    smaller) narrow peak is what ``flatness_max_db`` names -- but the
+    tweeter's own honest number is right there in this field too, which is
+    the whole point (the #1857 corpus session's own forensics started from
+    THIS log line and had to re-derive the tweeter's number by hand from the
+    raw curve; this field is what would have shown it directly).
+    """
+    n = 1000
+    woofer_freqs = np.linspace(250.0, 1999.0, n)
+    tweeter_freqs = np.linspace(2000.0, 7999.0, n)
+    top_freqs = np.linspace(8000.0, 15999.0, n)
+    freqs = np.concatenate([woofer_freqs, tweeter_freqs, top_freqs])
+    woofer_curve = np.zeros(n)
+    woofer_curve[n // 2] = 3.0
+    tweeter_curve = np.full(n, -6.0)
+    top_curve = np.zeros(n)
+    curve = np.concatenate([woofer_curve, tweeter_curve, top_curve])
+    order = np.argsort(freqs)
+    report = evaluate_flat_spec(freqs[order], curve[order], None)
+
+    field = _per_band_flatness_log_field(report.to_dict()["bands"])
+    assert field == (
+        "250-2000Hz:+5.03dB:fail;2000-8000Hz:-3.97dB:fail;8000-16000Hz:+2.03dB:pass"
+    )
+    # The pointer the rest of the log line names is only the woofer's +5.03
+    # -- this field is what surfaces the tweeter's -3.97 alongside it.
+    assert "2000-8000Hz:-3.97dB" in field
+
+
+def test_per_band_flatness_log_field_uniformly_flat():
+    freqs = np.geomspace(250.0, 16_000.0, 1500)
+    report = evaluate_flat_spec(freqs, np.zeros_like(freqs), None)
+    field = _per_band_flatness_log_field(report.to_dict()["bands"])
+    assert field == "250-2000Hz:+0.00dB:pass;2000-8000Hz:+0.00dB:pass;8000-16000Hz:+0.00dB:pass"
+
+
+def test_per_band_flatness_log_field_single_band_defect():
+    freqs = np.geomspace(250.0, 16_000.0, 1500)
+    curve = np.where(freqs >= 8000.0, -6.0, 0.0)
+    report = evaluate_flat_spec(freqs, curve, None)
+    field = _per_band_flatness_log_field(report.to_dict()["bands"])
+    assert field.startswith("250-2000Hz:+0.00dB:pass;2000-8000Hz:+0.00dB:pass;")
+    assert field.endswith("8000-16000Hz:-6.00dB:fail")
+
+
+def test_per_band_flatness_log_field_both_bands_failing():
+    """Edge case named in #1857's remedy: both the woofer and tweeter
+    genuinely out of spec (not one dragging the other) -- the field must
+    show both, not just the one flatness_max_db picked."""
+    bands = [
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "evaluable": True, "passed": False,
+         "max_deviation_db": 3.0},
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "evaluable": True, "passed": False,
+         "max_deviation_db": -4.5},
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "evaluable": True, "passed": True,
+         "max_deviation_db": 1.0},
+    ]
+    assert _per_band_flatness_log_field(bands) == (
+        "250-2000Hz:+3.00dB:fail;2000-8000Hz:-4.50dB:fail;8000-16000Hz:+1.00dB:pass"
+    )
+
+
+def test_per_band_flatness_log_field_skips_unevaluable_bands():
+    bands = [
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "evaluable": False, "passed": None,
+         "max_deviation_db": None},
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "evaluable": True, "passed": False,
+         "max_deviation_db": -4.5},
+    ]
+    assert _per_band_flatness_log_field(bands) == "2000-8000Hz:-4.50dB:fail"
+
+
+def test_per_band_flatness_log_field_empty_or_malformed_input():
+    assert _per_band_flatness_log_field([]) == ""
+    assert _per_band_flatness_log_field(None) == ""
+    assert _per_band_flatness_log_field("not a list") == ""
+    assert _per_band_flatness_log_field([{"evaluable": True}, "not a mapping"]) == ""
 
 
 # --------------------------------------------------------------------------- #
