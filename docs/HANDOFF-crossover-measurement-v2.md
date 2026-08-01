@@ -2079,8 +2079,9 @@ delay selection actually realizes. Until R10b the reference was the
 independently aligned *zero-residual* target sum, which no selection realizes;
 on the banked 2026-07-30 JTS3 capture the two references differ by 0.250 dB rms
 and up to 0.653 dB over the band the tracking check actually differences
-(1/6-octave smoothed, [2000, 4000] Hz; `numbers.json` in
-`captures/r10b-alignment-20260801/`) against a 1.5 dB `VERIFY_TOLERANCE_DB` —
+(1/6-octave smoothed, [2000, 4000] Hz;
+`captures/r10b-alignment-20260801/committed_delay_numbers.json`)
+against a 1.5 dB `VERIFY_TOLERANCE_DB` —
 that gap was being spent as tracking error.
 
 **This is a deliberate reversal of a prohibition, and here is why it is safe.**
