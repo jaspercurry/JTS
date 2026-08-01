@@ -35,10 +35,12 @@ docs/active-crossover-information-design.md:
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
-from jasper.audio_measurement import snr_policy
+from jasper.audio_measurement import program_analysis, snr_policy, sweep
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.correction import acoustic_quality
 from jasper.correction import session as correction_session
@@ -157,6 +159,115 @@ def test_band_levels_dbfs_is_independent_of_capture_length():
     # Pre-fix these spanned a full 10*log10(4) = 6 dB, monotonically
     # decreasing with duration; the true band level does not move at all.
     assert max(levels) - min(levels) < 0.5
+
+
+# ---------- window="rectangular" for non-stationary sweep captures (#1847) --
+
+
+def _room_correction_sweep() -> tuple[np.ndarray, float, float, float]:
+    """Room correction's own sweep shape, rendered through the real generator.
+
+    ``correction/session.py``'s ``SessionConfig`` defaults: 20 Hz-20 kHz,
+    ~10 s @ 48 kHz. Returns ``(stimulus, peak_dbfs, f1, f2)`` — peak measured
+    directly off the rendered signal (not assumed from ``amplitude_dbfs``),
+    matching ``test_sweep_band_crest_factor_matches_the_rendered_sweep``'s
+    own rigor.
+    """
+    f1, f2 = 20.0, 20000.0
+    stimulus, _ = sweep.synchronized_swept_sine(
+        f1=f1, f2=f2, duration_approx_s=10.0,
+        sample_rate=SR, amplitude_dbfs=0.0,
+    )
+    stimulus = np.asarray(stimulus, dtype=np.float64)
+    peak_dbfs = 20.0 * math.log10(float(np.max(np.abs(stimulus))))
+    return stimulus, peak_dbfs, f1, f2
+
+
+def test_band_levels_dbfs_rectangular_window_matches_the_sweep_law():
+    """#1847: a chirp's band split, measured with ``window="rectangular"``,
+    matches the closed-form dwell-time law within a tight tolerance — on
+    room correction's OWN sweep shape and OWN four bands, both "near the
+    edge" and "mid-sweep".
+
+    ``sweep_band_crest_factor_db`` is the analytical peak-to-band-RMS law
+    for an exponential sweep, already validated to within 0.03-0.7 dB
+    against a RECTANGULAR-window measurement of the identical generator
+    (``test_sweep_band_crest_factor_matches_the_rendered_sweep`` in
+    ``tests/test_audio_measurement_program_analysis.py`` — see that test's
+    own docstring for why rectangular, not Hann, is the correct window for
+    a non-stationary sweep). This test applies the SAME check to
+    ``band_levels_dbfs(..., window="rectangular")`` directly, on room
+    correction's four capture-quality bands rather than a driver's SNR
+    solve bands.
+
+    ``sub_bass`` (20-80 Hz) sits at the very START of this low-to-high
+    sweep — the edge Hann attenuates hardest, and where the reported
+    #1847 bias was largest (~-10 dB). ``transition`` (350-1000 Hz) sits
+    ``ln(1000/20)/ln(20000/20) ≈ 57%`` into the sweep's duration — close to
+    Hann's PEAK gain, where the reported bias flipped positive (+4.0 dB).
+    One sweep therefore already exercises both regimes without a second
+    fixture.
+    """
+    stimulus, peak_dbfs, f1, f2 = _room_correction_sweep()
+    levels = {
+        row["band_id"]: row["level_dbfs"]
+        for row in snr_policy.band_levels_dbfs(
+            stimulus, SR, acoustic_quality.SNR_BANDS_HZ, window="rectangular",
+        )
+    }
+    for band_id, lo, hi in acoustic_quality.SNR_BANDS_HZ:
+        predicted = peak_dbfs - program_analysis.sweep_band_crest_factor_db(
+            (f1, f2), (lo, hi)
+        )
+        assert levels[band_id] == pytest.approx(predicted, abs=0.3), band_id
+
+
+def test_band_levels_dbfs_hann_default_still_biases_a_sweep():
+    """Contrast guard: the DEFAULT window is unchanged. A caller that does
+    not opt into ``window="rectangular"`` still sees #1847's bias on a
+    sweep — proving the fix is genuinely opt-in (the stationary-ambient
+    callers of this function are untouched) and that the reported bias is
+    real and reproducible on demand, not an artifact of one session's log.
+    """
+    stimulus, peak_dbfs, f1, f2 = _room_correction_sweep()
+    predicted_sub_bass = peak_dbfs - program_analysis.sweep_band_crest_factor_db(
+        (f1, f2), (20.0, 80.0)
+    )
+    hann_levels = {
+        row["band_id"]: row["level_dbfs"]
+        for row in snr_policy.band_levels_dbfs(
+            stimulus, SR, acoustic_quality.SNR_BANDS_HZ,
+        )  # default window="hann"
+    }
+    # The reported bias was ~-10 dB; assert at least half of that survives
+    # under the unchanged default so this fails loudly if a future edit
+    # flips the default and silently loses the ambient-side regression
+    # coverage the Hann window still needs.
+    assert hann_levels["sub_bass"] < predicted_sub_bass - 5.0
+
+
+def test_band_levels_dbfs_rejects_an_unknown_window():
+    with pytest.raises(ValueError):
+        snr_policy.band_levels_dbfs(
+            np.zeros(SR), SR, snr_policy.CROSSOVER_SNR_BANDS_HZ, window="boxcar",
+        )
+
+
+def test_acoustic_quality_band_levels_dbfs_forwards_window():
+    """The wrapper's ``window`` kwarg reaches ``snr_policy`` unchanged — pins
+    the forwarding ``capture_band_snr`` relies on for #1847, and that the
+    default keeps forwarding "hann" so the ambient/noise delegation test
+    above (byte-equal, no kwarg) is untouched."""
+    rng = np.random.default_rng(1847)
+    samples = rng.normal(scale=0.05, size=SR).astype(np.float64)
+    assert acoustic_quality.band_levels_dbfs(
+        samples, SR, window="rectangular"
+    ) == snr_policy.band_levels_dbfs(
+        samples, SR, acoustic_quality.SNR_BANDS_HZ, window="rectangular",
+    )
+    assert acoustic_quality.band_levels_dbfs(samples, SR) == snr_policy.band_levels_dbfs(
+        samples, SR, acoustic_quality.SNR_BANDS_HZ,
+    )
 
 
 def test_band_snr_verdicts_are_unchanged_by_the_band_power_rescale():

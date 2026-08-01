@@ -108,9 +108,19 @@ def dbfs(value: float) -> float:
 def band_levels_dbfs(
     samples: np.ndarray,
     sample_rate: int,
+    *,
+    window: str = "hann",
 ) -> list[dict[str, Any]]:
-    """Estimate Room's four fixed trust bands with the shared FFT kernel."""
-    return snr_policy.band_levels_dbfs(samples, sample_rate, SNR_BANDS_HZ)
+    """Estimate Room's four fixed trust bands with the shared FFT kernel.
+
+    ``window`` forwards to :func:`snr_policy.band_levels_dbfs` unchanged —
+    "hann" (default, correct for the stationary noise-WAV callers of this
+    wrapper) or "rectangular" (for the non-stationary sweep capture;
+    :func:`capture_band_snr` passes this).
+    """
+    return snr_policy.band_levels_dbfs(
+        samples, sample_rate, SNR_BANDS_HZ, window=window
+    )
 
 
 def capture_band_snr(
@@ -119,17 +129,20 @@ def capture_band_snr(
 ) -> list[dict[str, Any]]:
     """Join capture and pre-sweep-noise levels by band identity.
 
-    **Scale is right; band SHAPE is not yet** (issue #1838, follow-up
-    #1847). Before #1838 the shared estimator returned a per-bin mean, and
+    **Scale and band shape are both right now.** Issue #1838 fixed the
+    scale: before it, the shared estimator returned a per-bin mean, and
     because this compares a ~11 s sweep capture against a ~0.7 s noise WAV
     the error did NOT cancel — the reported SNR carried a
-    ``10*log10(N_capture/N_noise)`` bias, measured at ~12 dB. That is fixed.
-    What is not: ``snr_policy.band_levels_dbfs`` applies a Hann window, which
-    is correct for the stationary noise side but re-weights the SWEEP side's
-    frequencies by when they occur in the capture (~-10 dB on ``sub_bass``,
-    ~1.5 dB of capture-length dependence). Read the per-band numbers as
-    ordinal within one capture, not as calibrated band levels, until #1847
-    lands. Reports carry ``band_snr_scale`` so the two eras are
+    ``10*log10(N_capture/N_noise)`` bias, measured at ~12 dB. Issue #1847
+    fixed the shape: before it, ``snr_policy.band_levels_dbfs``'s Hann
+    window — correct for the stationary noise side — re-weighted the SWEEP
+    side's frequencies by when they occur in the capture (~-10 dB on
+    ``sub_bass``, ~1.5 dB of capture-length dependence). The capture side
+    now measures with ``window="rectangular"``, which weights every sample
+    equally regardless of when its energy lands in time — the correct
+    treatment for a non-stationary sweep (see
+    :func:`snr_policy.band_levels_dbfs`'s own docstring for the analytic
+    validation). Reports carry ``band_snr_scale`` so the two SCALE eras are
     distinguishable on disk — see :data:`BAND_SNR_SCALE`.
     """
     if not noise_report:
@@ -149,6 +162,7 @@ def capture_band_snr(
     capture_levels = band_levels_dbfs(
         captured.astype(np.float64),
         sample_rate,
+        window="rectangular",
     )
     noise_by_band = {
         band.get("band_id"): band
