@@ -2,12 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The emit-loop CLI's argument contract and its no-binary preflight.
+"""The emit-loop CLI's argument contract, its no-binary preflight, and exit codes.
 
-``--dry-run`` is the only path exercised here: the rendering path resolves the
+``--dry-run`` is the path most cases exercise: the rendering path resolves the
 binary from ``jasper-camilla.service`` and belongs to the on-device run, while
 the loop itself is covered against a stand-in binary in
 ``tests/test_active_speaker_emit_bench_loop.py``.
+
+The exception is the exit-2 case at the bottom, which drives the real render
+path to prove a filesystem failure there reaches the shell as "no verdict"
+rather than as "the finding". It needs no hardware because the refusal lands
+before any subprocess starts.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.bass_extension.bench.render import BinaryIdentity
 from jasper.cli import active_speaker_emit_bench as cli
 
 SHELF_Q = 1.0 / math.sqrt(2.0)
@@ -227,3 +233,43 @@ def test_there_is_no_binary_override_flag() -> None:
                 "/usr/bin/camilladsp",
             ]
         )
+
+
+def test_a_filesystem_failure_in_the_render_path_exits_2_not_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run that never rendered a sample is "no verdict", never "the finding".
+
+    #2020 measured this end to end: a directory at the declared destination
+    made ``render_config``'s ``unlink`` raise a bare ``PermissionError`` that
+    escaped ``_render_arm``, ``run_emit_loop``, and this CLI's refusal handler,
+    landing at exit 1 — "at least one graded branch did not match". Nothing had
+    been rendered. ``render.py`` now converts ``OSError`` at the source, so
+    ``_render_arm``'s existing ``except RenderError`` refuses as
+    ``EmitLoopError`` and this CLI maps it to REFUSED / exit 2.
+
+    This is the only case here that runs the real render path rather than
+    ``--dry-run``. It stays hardware-free because the refusal lands before any
+    subprocess starts, so the stand-in binary identity is never invoked.
+    """
+
+    monkeypatch.setattr(
+        cli,
+        "resolve_render_binary",
+        lambda: BinaryIdentity(
+            path="/nonexistent/camilladsp",
+            version_output="CamillaDSP 4.1.3",
+            sha256="0" * 64,
+            camilladsp_build_id="stand-in",
+        ),
+    )
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "control.raw").mkdir()
+
+    rc = cli.main(_args(tmp_path, "--sweep-seconds", "0.5"))
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "REFUSED" in captured.err
+    assert "could not prepare the render destination" in captured.err

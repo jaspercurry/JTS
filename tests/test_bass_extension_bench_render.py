@@ -10,6 +10,8 @@ binary, no real systemctl. Deterministic, no sleeps, no network.
 
 from __future__ import annotations
 
+import os
+import resource
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -269,12 +271,30 @@ def test_render_config_refuses_on_nonzero_exit(
 def test_render_config_refuses_on_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Also the ordering guard for ``render_config``'s two ``subprocess`` arms.
+
+    The match is ANCHORED, and that anchor is the whole guard. ``TimeoutExpired``
+    subclasses ``SubprocessError``, so if those two ``except`` arms were ever
+    swapped, a timeout would be caught by the bounds arm — whose message
+    interpolates the exception, and ``TimeoutExpired`` renders as ``Command
+    '...' timed out after 5.0 seconds``. An unanchored ``match="timed out"`` is
+    a ``re.search`` and finds that substring in the WRONG message, so it passes
+    under the swap and guards nothing (measured: swapped, all 54 cases in this
+    file still passed). ``^render timed out after`` cannot match the bounds
+    message, so it fails.
+
+    What the swap would cost is diagnosis, not the exit code: every genuine
+    300-second render timeout on the Pi would be reported as a bounds-setup
+    failure, for a render whose bounds were fine and which then ran for five
+    minutes — on the only offline-render instrument the bench has.
+    """
+
     def _responder(argv, kwargs):  # type: ignore[no-untyped-def]
         raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 0))
 
     _stub_subprocess_run(monkeypatch, _responder)
     bounds = render.RenderBounds(timeout_s=5.0, rlimit_as_bytes=1 << 28, rlimit_cpu_s=5, nice=10)
-    with pytest.raises(render.RenderError, match="timed out"):
+    with pytest.raises(render.RenderError, match=r"^render timed out after"):
         render.render_config(
             "/opt/camilladsp/camilladsp",
             tmp_path / "cfg.yml",
@@ -848,3 +868,229 @@ def test_binary_identity_tap_implementation_id_excludes_binary_path() -> None:
     assert artifact["binary_path"] == "/path/one"
     assert "camilladsp_version" in artifact
     assert "binary_sha256" in artifact
+
+
+# --------------------------------------------------------------------------- #
+# the module's failure contract: OSError never escapes as itself
+# --------------------------------------------------------------------------- #
+
+#: Three conversion sites are reachable only through an unsearchable directory,
+#: and root ignores the mode bits — so under root these do NOT pass vacuously,
+#: they FAIL: the operation succeeds, and the case either matches the wrong
+#: refusal or gets no refusal at all. A false red is as costly as a false
+#: green, so they skip. (JTS CI runs unprivileged, so they do execute there.)
+_NEEDS_UNPRIVILEGED = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="chmod-based permission triggers do not apply to root",
+)
+
+
+def test_hashing_an_unreadable_file_is_a_render_error(tmp_path: Path) -> None:
+    """``_sha256_file`` is the single conversion site for both of its callers."""
+
+    with pytest.raises(render.RenderError, match="could not read .* to hash it"):
+        render._sha256_file(tmp_path / "absent.raw")
+
+
+def test_a_directory_at_the_render_destination_is_a_render_error(
+    tmp_path: Path,
+) -> None:
+    """The case #2020 measured escaping to exit 1.
+
+    A directory satisfies the ``exists()`` guard and then fails to unlink. The
+    refusal lands before any subprocess starts, so no binary is involved.
+    """
+
+    output_path = tmp_path / "output.raw"
+    output_path.mkdir()
+    with pytest.raises(
+        render.RenderError, match="could not prepare the render destination"
+    ):
+        render.render_config(
+            "/opt/camilladsp/camilladsp",
+            tmp_path / "config.yml",
+            output_path=output_path,
+            bounds=_BOUNDS,
+            fader_db=0.0,
+        )
+
+
+def test_an_unreadable_render_config_is_a_render_error(tmp_path: Path) -> None:
+    with pytest.raises(render.RenderError, match="could not read render config"):
+        render.render_with_determinism_receipt(
+            "/opt/camilladsp/camilladsp",
+            tmp_path / "absent.yml",
+            declared_output_path=tmp_path / "out.raw",
+            first_output_path=tmp_path / "out.first",
+            second_output_path=tmp_path / "out.second",
+            bounds=_BOUNDS,
+            fader_db=0.0,
+        )
+
+
+def test_a_failed_preserve_move_is_a_render_error(tmp_path: Path) -> None:
+    """The slot is free, so the guard passes and ``rename`` itself is what fails."""
+
+    with pytest.raises(
+        render.RenderError, match="could not move the first render's output"
+    ):
+        render._preserve_render_output(
+            tmp_path / "absent.raw", tmp_path / "out.first", label="first"
+        )
+
+
+def test_free_space_on_a_missing_directory_is_a_render_error(tmp_path: Path) -> None:
+    with pytest.raises(render.RenderError, match="could not read free space"):
+        render.check_free_space(
+            tmp_path / "absent", per_render_estimate_bytes=1, renders_outstanding=1
+        )
+
+
+def test_extracting_from_a_missing_render_output_is_a_render_error(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(render.RenderError, match="could not read render output"):
+        render.extract_channel(
+            tmp_path / "absent.raw",
+            channel_index=0,
+            channel_count=2,
+            bytes_per_sample=8,
+        )
+
+
+@_NEEDS_UNPRIVILEGED
+def test_an_unsearchable_bundle_makes_the_slot_check_a_render_error(
+    tmp_path: Path,
+) -> None:
+    """``Path.exists()`` RAISES on EACCES — it is not total.
+
+    It swallows only ENOENT/ENOTDIR/EBADF/ELOOP, so an unsearchable bundle
+    directory reaches the caller as ``PermissionError``. Measured on CPython
+    3.12 while enumerating these sites; the contrary assumption (that
+    ``exists()`` can only answer True or False) is what would leave this one
+    unconverted.
+    """
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "out.first").write_bytes(b"x")
+    bundle.chmod(0o000)
+    try:
+        with pytest.raises(
+            render.RenderError, match="could not check the first render"
+        ):
+            render._assert_preserved_output_slot_free(
+                bundle / "out.first", label="first"
+            )
+    finally:
+        bundle.chmod(0o755)
+
+
+@_NEEDS_UNPRIVILEGED
+def test_a_child_that_cannot_apply_the_bounds_is_a_render_error(
+    tmp_path: Path,
+) -> None:
+    """A ``preexec_fn`` failure is ``SubprocessError``, NOT ``OSError``.
+
+    CPython's ``_posixsubprocess`` deliberately declines to report the child's
+    failure as an ``OSError``, so an ``except OSError`` alone never sees it and
+    it escaped to the emit-bench CLI as exit 1 — the same inversion #2020
+    exists to close, one exception type over.
+
+    The trigger is real, not stubbed: ``nice=-5`` makes ``os.nice()`` inside
+    the actual ``_rlimit_preexec`` raise ``PermissionError`` in the actual
+    child. So this exercises the whole path — real ``subprocess.run``, real
+    ``preexec_fn``, real fork — rather than asserting the handler against a
+    hand-thrown exception. It needs no camilladsp: the child dies in
+    ``preexec_fn``, before ``exec``.
+
+    The precise condition is narrower than "requires privilege": on Linux it is
+    governed by ``RLIMIT_NICE``, which defaults to 0 but can be raised by
+    ``ulimit -e``, a unit's ``LimitNICE=``, or ``docker --ulimit nice=``. On a
+    host that has raised it, the child SUCCEEDS, ``/bin/echo`` exits 0, and this
+    case fails on "produced no output file" instead of the expected match — a
+    false red rather than a false green, and not CI-exposed, since GitHub
+    runners and Docker both default it to 0.
+    """
+
+    bounds = render.RenderBounds(
+        timeout_s=30.0,
+        rlimit_as_bytes=resource.RLIM_INFINITY,
+        rlimit_cpu_s=600,
+        nice=-5,
+    )
+    with pytest.raises(
+        render.RenderError, match="could not apply the render bounds"
+    ):
+        render.render_config(
+            "/bin/echo",
+            tmp_path / "config.yml",
+            output_path=tmp_path / "out.raw",
+            bounds=bounds,
+            fader_db=0.0,
+        )
+
+
+@_NEEDS_UNPRIVILEGED
+def test_an_unstattable_render_binary_is_a_render_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``is_file()`` on the resolved binary, under an unsearchable parent."""
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    binary_path = locked / "camilladsp"
+    binary_path.write_bytes(b"fake-elf-binary")
+    binary_path.chmod(0o755)
+
+    def _responder(argv, kwargs):  # type: ignore[no-untyped-def]
+        return _FakeCompleted(
+            returncode=0, stdout=f"path={binary_path} ; argv[]={binary_path}\n"
+        )
+
+    _stub_subprocess_run(monkeypatch, _responder)
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(
+            render.RenderError, match="could not stat the resolved render binary"
+        ):
+            render.resolve_render_binary(env={})
+    finally:
+        locked.chmod(0o755)
+
+
+@_NEEDS_UNPRIVILEGED
+def test_an_uninspectable_render_output_is_a_render_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The result block: ``is_file()``/``stat()`` after the binary exited 0.
+
+    The bundle goes unsearchable DURING the render, which is the only trigger
+    that can be constructed hardware-free: the destination-prep block ran while
+    the directory was still fine, and a plain missing file is reported as
+    "produced no output file" rather than as an OS failure. It is not the only
+    trigger that exists — ``stat`` also fails on EIO from failing media, on
+    ESTALE over NFS, and on a symlink loop introduced during the render window.
+    """
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    output_path = bundle / "output.raw"
+
+    def _responder(argv, kwargs):  # type: ignore[no-untyped-def]
+        output_path.write_bytes(b"rendered")
+        bundle.chmod(0o000)
+        return _FakeCompleted(returncode=0)
+
+    _stub_subprocess_run(monkeypatch, _responder)
+    try:
+        with pytest.raises(render.RenderError, match="could not be inspected"):
+            render.render_config(
+                "/opt/camilladsp/camilladsp",
+                tmp_path / "config.yml",
+                output_path=output_path,
+                bounds=_BOUNDS,
+                fader_db=0.0,
+            )
+    finally:
+        bundle.chmod(0o755)
