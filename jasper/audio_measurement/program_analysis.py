@@ -24,12 +24,17 @@ Pipeline (per phase):
 4. **Per-driver response** — deconvolve → direct-arrival window + first-reflection
    gate → complex TF + magnitude (mic cal applied if given); band-SNR verdicts.
 5. **Alignment (MEASURE)** — band-limited GCC-PHAT supplies an ×16-upsampled,
-   ε/parallax-corrected seed, polarity, and capture confidence; a
-   declaration-bounded summed-flatness search selects the applied delay.
-6. **Candidate + target** — as-crossed branches (design §5.4) ⇒ trims level-
-   match the branches through the crossover. The selected delay should realize
-   the fixed independently aligned target ``W_xo·g_w + s·T_xo·g_t``; its
-   Fc±1-octave ripple is reported and VERIFY compares against that target.
+   ε/parallax-corrected seed, polarity, and capture confidence; the applied
+   delay is selected from the drift-corrected physical peak-gap ANCHOR plus a
+   ±(period/6) gated local-peak snap (methodology §10, 2026-07-22). Summed
+   flatness has been evidence only, never the selector, since #1649.
+6. **Candidate + prediction** — as-crossed branches (design §5.4) ⇒ trims level-
+   match the branches through the crossover. Two sums come out of this, on
+   purpose (rung P3 / R10b): ``predicted_sum``, the branches at the COMMITTED
+   trim and delay — what the emitted graph will do, and what VERIFY's tracking
+   comparison grades against — and the independently aligned
+   ``W_xo·g_w + s·T_xo·g_t``, whose Fc±1-octave ripple is reported as
+   ``predicted_ripple_db``, a capture-quality number the delay must not move.
 
 CHECK additionally returns the ambient band floor, per-pilot captured levels +
 the behavioral linearity verdict (§3.4), channel-map sanity, and the solved
@@ -2314,9 +2319,12 @@ def summed_model_residual_delay_us(
     Why a residual and not the applied delay itself: :func:`_aligned_branch_tf`
     references each branch to its OWN direct peak, so the measured peak gap is
     already OUT of ``W``/``T``. Phasing by the full applied delay counts that
-    gap twice and injects a deep comb into the prediction of a GOOD
-    measurement — the reverted fix-2 failure mode (``0b7ab5eb7``, 2026-07-21),
-    which reached hardware as a failing VERIFY before it was backed out.
+    gap twice and — in the revert commit's own words — "injects a deep comb
+    into the predicted sum on good measurements and fails VERIFY". That is the
+    fix-2 failure mode, backed out in ``0b7ab5eb7`` (2026-07-21) BEFORE the
+    #1647 branch it lived on merged, so it never reached a shipped build; the
+    same commit deferred "the residual version" to hardware evidence, which is
+    the shape rung P3 / R10b finally adopted.
 
     ``anchor_delay_us`` is ``None`` exactly when the aligner refused the
     estimate (:data:`ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW`): there is then no
