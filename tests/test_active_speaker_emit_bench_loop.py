@@ -264,6 +264,44 @@ def test_both_arms_render_deterministically(exact_report) -> None:
         assert receipt["output_byte_size"] > 0
 
 
+def test_a_second_run_into_the_same_work_directory_still_grades(tmp_path) -> None:
+    """Re-running the bench into one bundle must not refuse on its own leftovers.
+
+    The determinism helper refuses when a preserved-output path is occupied.
+    That guard is right for the bass-extension campaign, which renders many
+    shapes into one bundle under caller-chosen names — but this loop renders
+    exactly two shapes under names it derives from the arm, so its OWN previous
+    run is not a collision worth refusing. Every other case here uses a fresh
+    ``tmp_path``, so none of them would notice: before the slots were cleared,
+    run 2 died with "preserved output path already exists" and took run 1's
+    verdict down with it, since the CLI's default ``--out`` is a fixed
+    directory.
+
+    The second half is what keeps the clearing honest. Overwriting must not
+    reintroduce the hazard the guard exists to prevent, so each retained render
+    is re-hashed off disk and matched against the receipt that describes it —
+    run 2's files must be run 2's bytes, never run 1's left in place.
+    """
+
+    import hashlib
+
+    first = _run(tmp_path, sweep_seconds=0.5)
+    second = _run(tmp_path, sweep_seconds=0.5)
+
+    for report in (first, second):
+        assert report.outcome == loop.OUTCOME_MATCHED
+    work = tmp_path / "work"
+    assert sorted(p.name for p in work.glob("*.raw")) == [
+        "control.first.raw",
+        "control.repeat.raw",
+        "treated.first.raw",
+        "treated.repeat.raw",
+    ]
+    for arm in (second.control, second.treated):
+        on_disk = hashlib.sha256(Path(arm.output_path).read_bytes()).hexdigest()
+        assert on_disk == arm.determinism_receipt["output_sha256"]
+
+
 def test_the_two_arms_differ_only_by_the_filters_under_test(exact_report) -> None:
     """Everything the A/B cancels is byte-identically present in both configs."""
 

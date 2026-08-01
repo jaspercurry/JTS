@@ -552,16 +552,30 @@ def _render_arm(
     the same helper the sibling bass-extension campaign renders through, so the
     determinism proof has one implementation rather than two that can drift.
 
-    A CamillaDSP render's destination is not an argument: it is
-    ``devices.playback.filename`` INSIDE the config. So both renders write to
-    the ``<name>.raw`` that single config already declares, and the helper moves
-    each output aside — to ``<name>.first.raw``, then ``<name>.repeat.raw`` —
-    between them. That move is what makes render 2 a genuine repeat: the
-    declared destination does not exist when it starts, so the file appearing
-    there is evidence the binary wrote it rather than evidence something happened
-    to be sitting there. Same binary, same stimulus, same graph, same config
-    bytes — so byte-identical output, or the instrument does not repeat and
-    nothing measured with it is a measurement.
+    **Why ONE config and not two.** R8 defines a *shape* as the exact byte
+    content of a derived config, keyed by its SHA-256, and asks that each shape
+    be rendered twice. An earlier version of this function derived the emitted
+    text a second time so the repeat could write somewhere else — a CamillaDSP
+    render's destination is not an argument, it is
+    ``devices.playback.filename`` INSIDE the config, so a second destination
+    meant a second config. Those two configs differed by that one line, which
+    made them two distinct shapes with two distinct SHA-256s: the receipt
+    recorded the first shape's hash and the first config's argv while the second
+    render consumed the OTHER shape, so it asserted that shape X repeats on
+    evidence that included a render of shape Y. Rendering one config twice is
+    what actually satisfies R8 — and it, not the move-aside below, is the whole
+    of the improvement.
+
+    Both renders therefore write to the single ``<name>.raw`` that one config
+    declares, and the helper moves each output aside — to ``<name>.first.raw``,
+    then ``<name>.repeat.raw``. That move PRESERVES render 1's bytes so the two
+    can be compared at all; it proves nothing on its own, because
+    :func:`~jasper.bass_extension.bench.render.render_config` already unlinks
+    its destination before every render, so the destination is absent when
+    either render starts and was equally absent under the two-config design.
+    Same binary, same stimulus, same graph, same config bytes: byte-identical
+    output, or the instrument does not repeat and nothing measured with it is a
+    measurement.
 
     :attr:`RenderArm.output_path` is therefore the preserved FIRST render,
     ``<name>.first.raw``; the declared ``<name>.raw`` has been moved away by the
@@ -577,6 +591,21 @@ def _render_arm(
     work_dir = plan.work_dir
     config_path = work_dir / f"{name}.yml"
     first_output_path = work_dir / f"{name}.first.raw"
+    repeat_output_path = work_dir / f"{name}.repeat.raw"
+
+    # Clear OUR two preserved slots so a second run into the same work directory
+    # is not refused by its own leftovers. This does not defeat the helper's
+    # slot guard, it scopes it: that guard defends the bass-extension campaign,
+    # which renders MANY shapes into one bundle under caller-chosen names, so a
+    # collision there means two different shapes are fighting over one file — a
+    # real bug, and the receipt would end up describing different bytes than the
+    # campaign reads back. This loop renders exactly two shapes and derives both
+    # names from the arm, so a collision here only ever means "this directory
+    # was used before". `render_config` already unlinks its own declared
+    # destination for precisely that reason; this restores the same parity for
+    # the two paths the determinism helper adds on top of it.
+    first_output_path.unlink(missing_ok=True)
+    repeat_output_path.unlink(missing_ok=True)
 
     try:
         receipt = render_with_determinism_receipt(
@@ -584,7 +613,7 @@ def _render_arm(
             config_path,
             declared_output_path=work_dir / f"{name}.raw",
             first_output_path=first_output_path,
-            second_output_path=work_dir / f"{name}.repeat.raw",
+            second_output_path=repeat_output_path,
             bounds=bounds,
             fader_db=RENDER_FADER_DB,
         )
