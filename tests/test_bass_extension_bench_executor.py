@@ -802,54 +802,46 @@ async def test_finish_discovery_threads_the_played_faders_db_into_every_render(
     captured_fader_db: list[float] = []
 
     def _fake_render_with_determinism_receipt(
-        binary_path, *, canonical, repeat, bounds, fader_db
+        binary_path,
+        config_path,
+        *,
+        declared_output_path,
+        first_output_path,
+        second_output_path,
+        bounds,
+        fader_db,
     ):
         captured_fader_db.append(fader_db)
         # Pin the CALL SITE, not just the helper. A render's destination is
         # `devices.playback.filename` inside its config, so the executor must
-        # hand over two DISTINCT configs, each naming its OWN destination in
-        # its own text. Asserting that here is the strongest guard against a
-        # regression: the helper's own tests cannot see what the caller built,
-        # and it was exactly this unpinned call site that let a one-config /
-        # two-destinations bug reach main.
-        assert canonical.config_path != repeat.config_path
-        assert canonical.output_path != repeat.output_path
-        for render_pass in (canonical, repeat):
-            declared = yaml.safe_load(render_pass.yaml_text)["devices"]["playback"][
-                "filename"
-            ]
-            assert declared == str(render_pass.output_path)
-            # The text that gets fingerprinted is the text on disk.
-            assert (
-                render_pass.config_path.read_text(encoding="utf-8")
-                == render_pass.yaml_text
-            )
-        # ...and the two configs are the same shape apart from that one field.
-        assert canonical.yaml_text.replace(
-            str(canonical.output_path), "<dest>"
-        ) == repeat.yaml_text.replace(str(repeat.output_path), "<dest>")
+        # hand over a coherent config-and-destination pair. Asserting that
+        # here is the strongest guard against a regression: the helper's own
+        # tests cannot see what the caller built, and it was exactly this
+        # unpinned call site that let the destination bug reach main.
+        config_text = config_path.read_text(encoding="utf-8")
+        declared = yaml.safe_load(config_text)["devices"]["playback"]["filename"]
+        assert declared == str(declared_output_path)
+        # The two preserved outputs and the destination are three distinct
+        # files, or one render's bytes would destroy another's.
+        assert len({declared_output_path, first_output_path, second_output_path}) == 3
 
         data = np.zeros(8000, dtype="<f8").tobytes()
-        canonical.output_path.write_bytes(data)
-        repeat.output_path.write_bytes(data)
+        first_output_path.write_bytes(data)
+        second_output_path.write_bytes(data)
         sha = hashlib.sha256(data).hexdigest()
-
-        def _invocation(render_pass):
-            return render.RenderInvocation(
-                argv=(binary_path, f"--gain={fader_db}", str(render_pass.config_path)),
-                returncode=0,
-                duration_s=0.001,
-                stdout_tail="",
-                stderr_tail="",
-                output_sha256=sha,
-                output_byte_size=len(data),
-            )
-
+        invocation = render.RenderInvocation(
+            argv=(binary_path, f"--gain={fader_db}", str(config_path)),
+            returncode=0,
+            duration_s=0.001,
+            stdout_tail="",
+            stderr_tail="",
+            output_sha256=sha,
+            output_byte_size=len(data),
+        )
         return render.DeterminismReceipt(
-            config_sha256=render.config_shape_sha256(canonical.yaml_text),
-            repeat_config_sha256=render.config_shape_sha256(repeat.yaml_text),
-            first=_invocation(canonical),
-            second=_invocation(repeat),
+            config_sha256=render.config_shape_sha256(config_text),
+            first=invocation,
+            second=invocation,
         )
 
     import jasper.bass_extension.bench.executor as executor_mod

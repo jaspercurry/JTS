@@ -306,10 +306,11 @@ def test_render_config_refuses_when_no_output_produced(
 # R8: determinism receipts
 #
 # render_with_determinism_receipt calls render_config (already pinned above)
-# once per render pass. The comparison logic R8 actually cares about is
-# exercised by patching render_config itself (not subprocess.run) to return
-# canned RenderInvocation values; the destination contract underneath it is
-# exercised against a faithful fake binary, further down.
+# twice on ONE config, moving each output aside so both survive. The
+# comparison logic R8 actually cares about is exercised by patching
+# render_config itself (not subprocess.run) to return canned RenderInvocation
+# values; the destination-and-move contract underneath it is exercised
+# against a faithful fake binary, further down.
 # --------------------------------------------------------------------------- #
 
 _BOUNDS = render.RenderBounds(
@@ -317,12 +318,10 @@ _BOUNDS = render.RenderBounds(
 )
 
 
-def _config_text(*, playback_filename: Path, gain_db: float = 0.0) -> str:
+def _config_text(*, playback_filename: Path) -> str:
     """A minimal derived-shaped config. The destination lives INSIDE it, at
     ``devices.playback.filename`` — exactly as a real derived render config
-    carries it, and as `PlaybackDevice::File` requires. ``gain_db`` is the
-    knob these tests turn to make two configs differ somewhere OTHER than
-    their destination."""
+    carries it."""
 
     return yaml.safe_dump(
         {
@@ -337,27 +336,31 @@ def _config_text(*, playback_filename: Path, gain_db: float = 0.0) -> str:
                     "format": render.DEPLOYED_PROCESSING_PRECISION,
                 },
             },
-            "filters": {"owner_gain": {"type": "Gain", "parameters": {"gain": gain_db}}},
+            "filters": {"owner_gain": {"type": "Gain", "parameters": {"gain": 0.0}}},
             "pipeline": [{"type": "Filter", "channels": [0], "names": ["owner_gain"]}],
         },
         sort_keys=False,
     )
 
 
-def _render_pass(tmp_path: Path, name: str, *, gain_db: float = 0.0) -> render.RenderPass:
-    """A complete pass: a config on disk whose text names its own destination."""
+def _write_render_config(tmp_path: Path) -> tuple[Path, Path]:
+    """Write one config whose text names its own destination.
 
-    output_path = tmp_path / f"{name}.raw"
-    yaml_text = _config_text(playback_filename=output_path, gain_db=gain_db)
-    config_path = tmp_path / f"{name}.yml"
-    config_path.write_text(yaml_text, encoding="utf-8")
-    return render.RenderPass(
-        config_path=config_path, yaml_text=yaml_text, output_path=output_path
+    Returns ``(config_path, declared_output_path)``.
+    """
+
+    declared_output_path = tmp_path / "output.raw"
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        _config_text(playback_filename=declared_output_path), encoding="utf-8"
     )
+    return config_path, declared_output_path
 
 
 def _stub_faithful_render_binary(
-    monkeypatch: pytest.MonkeyPatch, *, payloads: tuple[bytes, ...] = (b"rendered", b"rendered")
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    payloads: tuple[bytes, ...] = (b"rendered", b"rendered"),
 ) -> list[Path]:
     """Stub ``subprocess.run`` with a FAITHFUL fake camilladsp binary.
 
@@ -367,10 +370,10 @@ def _stub_faithful_render_binary(
     handed. This fake reproduces that: it parses the config path out of
     argv, reads the destination that config declares, and writes THERE.
 
-    A stub that instead writes to whatever path the test picked cannot
-    catch a caller that hands one config two destinations — which is
-    exactly how that defect survived into main. Returns the destinations
-    written, in call order.
+    A stub that instead writes to whatever path the test picked cannot catch
+    a caller whose idea of the destination has drifted from the config's —
+    which is exactly how that defect survived into main. Returns the
+    destinations written, in call order.
     """
 
     written: list[Path] = []
@@ -399,114 +402,164 @@ def _fake_render_invocation(*, output_sha256: str) -> render.RenderInvocation:
     )
 
 
+def _stub_render_config_writing(
+    monkeypatch: pytest.MonkeyPatch, *, shas: tuple[str, ...]
+) -> list[Path]:
+    """Patch render_config to return canned invocations AND create the output
+    file, so the move-aside step has something real to move.
+
+    Returns the list of ``config_path`` values the calls received, in order —
+    which is how a test asserts R8's "one shape, rendered twice".
+    """
+
+    config_paths: list[Path] = []
+
+    def _render_config(  # type: ignore[no-untyped-def]
+        binary_path, config_path, *, output_path, bounds, fader_db
+    ) -> render.RenderInvocation:
+        sha = shas[len(config_paths) % len(shas)]
+        config_paths.append(config_path)
+        output_path.write_bytes(b"x")
+        return _fake_render_invocation(output_sha256=sha)
+
+    monkeypatch.setattr(render, "render_config", _render_config)
+    return config_paths
+
+
 def test_determinism_receipt_passes_on_identical_renders(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        render,
-        "render_config",
-        lambda *a, **k: _fake_render_invocation(output_sha256="same-sha"),
-    )
-    canonical = _render_pass(tmp_path, "canonical")
-    repeat = _render_pass(tmp_path, "repeat")
+    config_paths = _stub_render_config_writing(monkeypatch, shas=("same-sha",))
+    config_path, declared = _write_render_config(tmp_path)
     receipt = render.render_with_determinism_receipt(
         "/opt/camilladsp/camilladsp",
-        canonical=canonical,
-        repeat=repeat,
+        config_path,
+        declared_output_path=declared,
+        first_output_path=tmp_path / "out.first",
+        second_output_path=tmp_path / "out.second",
         bounds=_BOUNDS,
         fader_db=0.0,
     )
     assert receipt.deterministic
-    # The canonical shape identity is the one callers key their receipt cache
-    # by, and the one whose output is measured downstream — it must stay the
-    # SHA of the config that produced the kept artifact.
-    assert receipt.config_sha256 == render.config_shape_sha256(canonical.yaml_text)
-    # The repeat is a genuinely distinct shape under R8's byte-content
-    # definition, and the receipt says so rather than implying one text ran
-    # twice.
-    assert receipt.repeat_config_sha256 == render.config_shape_sha256(repeat.yaml_text)
-    assert receipt.repeat_config_sha256 != receipt.config_sha256
+    # ONE shape, rendered twice — R8's own words. Both renders run the same
+    # config path; this is the property whose absence made the previous
+    # revision produce two distinct shapes rendered once each.
+    assert config_paths == [config_path, config_path]
+    # The recorded shape identity is the SHA of the file that was actually
+    # rendered, read from disk here rather than passed in alongside it.
+    assert receipt.config_sha256 == render.config_shape_sha256(
+        config_path.read_text(encoding="utf-8")
+    )
 
 
 def test_determinism_receipt_refuses_on_byte_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls = {"n": 0}
-
-    def _render_config(*a: object, **k: object) -> render.RenderInvocation:
-        calls["n"] += 1
-        return _fake_render_invocation(
-            output_sha256="sha-one" if calls["n"] == 1 else "sha-two"
-        )
-
-    monkeypatch.setattr(render, "render_config", _render_config)
+    _stub_render_config_writing(monkeypatch, shas=("sha-one", "sha-two"))
+    config_path, declared = _write_render_config(tmp_path)
     with pytest.raises(render.RenderError, match="non-deterministic"):
         render.render_with_determinism_receipt(
             "/opt/camilladsp/camilladsp",
-            canonical=_render_pass(tmp_path, "canonical"),
-            repeat=_render_pass(tmp_path, "repeat"),
+            config_path,
+            declared_output_path=declared,
+            first_output_path=tmp_path / "out.first",
+            second_output_path=tmp_path / "out.second",
             bounds=_BOUNDS,
             fader_db=0.0,
         )
 
 
-def test_determinism_receipt_renders_to_the_destinations_the_configs_declare(
+def test_determinism_receipt_renders_the_same_config_twice_and_preserves_both(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The regression test for the one-config-two-destinations defect.
+    """The regression test for the render-destination defect.
 
     Against the faithful fake binary — which writes where the config says,
-    not where the caller wished — both destinations must exist and be
-    byte-identical afterwards. The previous API took ONE config and two
-    output paths; a real binary wrote both renders to the single destination
-    that one config named, and the first render's own output assertion blew
-    up with "render exited 0 but produced no output file".
+    not where the caller wished — the declared destination must be written
+    twice and each output preserved. The defective revision handed
+    ``render_config`` an ``output_path`` the config did not name; the binary
+    wrote elsewhere and the render died on its own output assertion with
+    "render exited 0 but produced no output file".
     """
 
     written = _stub_faithful_render_binary(monkeypatch)
-    canonical = _render_pass(tmp_path, "canonical")
-    repeat = _render_pass(tmp_path, "repeat")
+    config_path, declared = _write_render_config(tmp_path)
+    first_output = tmp_path / "out.first"
+    second_output = tmp_path / "out.second"
 
     receipt = render.render_with_determinism_receipt(
         "/opt/camilladsp/camilladsp",
-        canonical=canonical,
-        repeat=repeat,
+        config_path,
+        declared_output_path=declared,
+        first_output_path=first_output,
+        second_output_path=second_output,
         bounds=_BOUNDS,
         fader_db=-17.5,
     )
 
     assert receipt.deterministic
-    # Two renders, two distinct destinations, each written by the config that
-    # named it — not one destination written twice.
-    assert written == [canonical.output_path, repeat.output_path]
-    assert canonical.output_path.read_bytes() == repeat.output_path.read_bytes()
+    # The binary wrote the SAME declared destination both times — one shape,
+    # rendered twice, rather than two shapes rendered once each.
+    assert written == [declared, declared]
+    # Both outputs survived, moved aside; the destination itself is empty.
+    assert first_output.read_bytes() == second_output.read_bytes() == b"rendered"
+    assert not declared.exists()
     assert receipt.first.output_sha256 == receipt.second.output_sha256
-    # The bracketed fader gain still rides both invocations as one argv token.
+    # Both invocations carry the same config and the same one-token gain.
+    assert receipt.first.argv == receipt.second.argv
     assert receipt.first.argv[1] == "--gain=-17.5"
-    assert receipt.second.argv[1] == "--gain=-17.5"
-    assert receipt.first.argv[2] == str(canonical.config_path)
-    assert receipt.second.argv[2] == str(repeat.config_path)
+    assert receipt.first.argv[2] == str(config_path)
 
 
-def test_determinism_receipt_refuses_a_pass_that_does_not_name_its_destination(
+def test_determinism_receipt_second_render_must_recreate_the_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pass whose output_path is not what its config writes to is the
-    original defect in its most direct form: render_config would watch a
-    file the binary never creates."""
+    """Moving render 1's output away is what makes render 2's proof real: the
+    declared destination does not exist when render 2 starts, so a binary
+    that wrote nothing the second time is caught rather than passing on a
+    leftover file."""
+
+    calls = {"n": 0}
+
+    def _responder(argv, kwargs):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            config_path = Path(argv[-1])
+            parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            Path(parsed["devices"]["playback"]["filename"]).write_bytes(b"rendered")
+        # The second invocation writes nothing at all.
+        return _FakeCompleted(returncode=0)
+
+    _stub_subprocess_run(monkeypatch, _responder)
+    config_path, declared = _write_render_config(tmp_path)
+    with pytest.raises(render.RenderError, match="produced no output file"):
+        render.render_with_determinism_receipt(
+            "/opt/camilladsp/camilladsp",
+            config_path,
+            declared_output_path=declared,
+            first_output_path=tmp_path / "out.first",
+            second_output_path=tmp_path / "out.second",
+            bounds=_BOUNDS,
+            fader_db=0.0,
+        )
+
+
+def test_determinism_receipt_refuses_when_the_config_names_another_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bug's actual lesson, kept as a guard: a caller whose idea of the
+    destination has drifted from the config's would have render_config watch
+    a file the binary never writes."""
 
     written = _stub_faithful_render_binary(monkeypatch)
-    canonical = _render_pass(tmp_path, "canonical")
-    elsewhere = render.RenderPass(
-        config_path=canonical.config_path,
-        yaml_text=canonical.yaml_text,
-        output_path=tmp_path / "somewhere-else.raw",
-    )
+    config_path, _ = _write_render_config(tmp_path)
     with pytest.raises(render.RenderError, match="devices.playback.filename"):
         render.render_with_determinism_receipt(
             "/opt/camilladsp/camilladsp",
-            canonical=canonical,
-            repeat=elsewhere,
+            config_path,
+            declared_output_path=tmp_path / "somewhere-else.raw",
+            first_output_path=tmp_path / "out.first",
+            second_output_path=tmp_path / "out.second",
             bounds=_BOUNDS,
             fader_db=0.0,
         )
@@ -514,61 +567,74 @@ def test_determinism_receipt_refuses_a_pass_that_does_not_name_its_destination(
     assert written == []
 
 
-def test_determinism_receipt_refuses_configs_differing_beyond_the_destination(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two genuinely different graphs would make the receipt prove that two
-    DIFFERENT configs happened to agree, not that one config repeats."""
-
-    written = _stub_faithful_render_binary(monkeypatch)
-    with pytest.raises(render.RenderError, match="not the same config shape"):
-        render.render_with_determinism_receipt(
-            "/opt/camilladsp/camilladsp",
-            canonical=_render_pass(tmp_path, "canonical", gain_db=0.0),
-            repeat=_render_pass(tmp_path, "repeat", gain_db=-6.0),
-            bounds=_BOUNDS,
-            fader_db=0.0,
-        )
-    assert written == []
-
-
-def test_determinism_receipt_refuses_two_passes_sharing_one_destination(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Rendering both passes into one file leaves nothing to compare: the
-    second render unlinks the first render's output before it starts."""
-
-    written = _stub_faithful_render_binary(monkeypatch)
-    canonical = _render_pass(tmp_path, "canonical")
-    with pytest.raises(render.RenderError, match="same destination"):
-        render.render_with_determinism_receipt(
-            "/opt/camilladsp/camilladsp",
-            canonical=canonical,
-            repeat=canonical,
-            bounds=_BOUNDS,
-            fader_db=0.0,
-        )
-    assert written == []
-
-
 def test_determinism_receipt_refuses_a_config_with_no_playback_filename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written = _stub_faithful_render_binary(monkeypatch)
-    headless = render.RenderPass(
-        config_path=tmp_path / "headless.yml",
-        yaml_text="devices: {}\n",
-        output_path=tmp_path / "headless.raw",
-    )
+    config_path = tmp_path / "headless.yml"
+    config_path.write_text("devices: {}\n", encoding="utf-8")
     with pytest.raises(render.RenderError, match="declares no"):
         render.render_with_determinism_receipt(
             "/opt/camilladsp/camilladsp",
-            canonical=headless,
-            repeat=_render_pass(tmp_path, "repeat"),
+            config_path,
+            declared_output_path=tmp_path / "out.raw",
+            first_output_path=tmp_path / "out.first",
+            second_output_path=tmp_path / "out.second",
             bounds=_BOUNDS,
             fader_db=0.0,
         )
     assert written == []
+
+
+@pytest.mark.parametrize("collide", ["declared", "each_other"])
+def test_determinism_receipt_refuses_non_distinct_output_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collide: str
+) -> None:
+    """Reusing one path would destroy a render's output before it could be
+    compared: the second move would overwrite the first, or the second render
+    would unlink what the first preserved."""
+
+    written = _stub_faithful_render_binary(monkeypatch)
+    config_path, declared = _write_render_config(tmp_path)
+    first_output = declared if collide == "declared" else tmp_path / "out.shared"
+    second_output = tmp_path / "out.second" if collide == "declared" else first_output
+    with pytest.raises(render.RenderError, match="three distinct files"):
+        render.render_with_determinism_receipt(
+            "/opt/camilladsp/camilladsp",
+            config_path,
+            declared_output_path=declared,
+            first_output_path=first_output,
+            second_output_path=second_output,
+            bounds=_BOUNDS,
+            fader_db=0.0,
+        )
+    assert written == []
+
+
+def test_determinism_receipt_refuses_a_preserved_output_path_already_in_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Path.rename overwrites silently on POSIX. A leftover .first from an
+    earlier campaign run must not be replaced without a word, nor survive to
+    masquerade as this run's output."""
+
+    written = _stub_faithful_render_binary(monkeypatch)
+    config_path, declared = _write_render_config(tmp_path)
+    stale = tmp_path / "out.first"
+    stale.write_bytes(b"stale-from-an-earlier-run")
+    with pytest.raises(render.RenderError, match="already exists"):
+        render.render_with_determinism_receipt(
+            "/opt/camilladsp/camilladsp",
+            config_path,
+            declared_output_path=declared,
+            first_output_path=stale,
+            second_output_path=tmp_path / "out.second",
+            bounds=_BOUNDS,
+            fader_db=0.0,
+        )
+    # Refused before any render, and the stale file is untouched.
+    assert written == []
+    assert stale.read_bytes() == b"stale-from-an-earlier-run"
 
 
 # --------------------------------------------------------------------------- #
