@@ -800,6 +800,7 @@ def test_every_stage_combination_reports_the_realized_cascades_residual():
          -6.0 * np.log2(_NATIVE_FREQS_HZ / 2000.0)),
     )
     boost = FitVocabulary(allow_boost=True)
+    graded = 0
     for role, band, db in fixtures:
         resp = _driver_response(role, db)
         envelope = _envelope(role, resp, excited_band_hz=band, driver_class="unknown")
@@ -832,6 +833,15 @@ def test_every_stage_combination_reports_the_realized_cascades_residual():
             assert fit.residual_rms_db == pytest.approx(
                 float(np.sqrt(np.mean(residual ** 2))), abs=1e-9,
             ), f"{role}/{band}/{vocabulary}"
+            graded += 1
+
+    # The `continue` above means a fixture set that stopped producing filters
+    # would leave this test asserting nothing at all while still passing. Pin
+    # the count so that failure is loud.
+    assert graded == 2 * len(fixtures), (
+        f"only {graded} of {2 * len(fixtures)} runs placed filters — the "
+        "fixtures no longer exercise what this test claims to cover"
+    )
 
 
 def test_empty_fit_has_degenerate_honesty_ladder_placeholders():
