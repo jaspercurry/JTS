@@ -1186,7 +1186,26 @@ MAX_LINES_BY_PATH = {
     # independent and both are in this file, so the ceiling owes room for each.
     # The largest of the three this pin moves, and the one the relocation pass
     # already shrank — argued in the dated block at the end of this dict.
-    "jasper/web/correction_crossover_v2.py": 9_350,
+    # 2026-08-22 Undo-evidence gate (#1863, + its review): 9,350 -> 9,393.
+    # +66 added, -23 removed, tallied from the diff hunks —
+    #   39  `restore_anchor_static_prefix_refusal`, extracted so the two
+    #       preconditions a pure state read CAN answer have ONE owner. The
+    #       review's SF2: the first revision inlined them into the status
+    #       block, which made this file's own "one owner for a rule with two
+    #       readers" docstring false in the very file the change edited. The
+    #       new reader cannot call the full resolver — gate 3 loads the live
+    #       output topology on every household status poll — so the prefix is
+    #       what it asks, and the docstring now says three readers
+    #   20  the delegation (`rollback_anchor_refusal` calls the extraction
+    #       instead of carrying the two gates, -23 there), the trued-up
+    #       docstring, and one narrowed local: the prefix call narrows for a
+    #       reader but not for mypy, so the three later `state` reads bind
+    #       once rather than each carrying its own `or {}`
+    #    7  the `can_undo` key and the comment saying why this reader takes
+    #       the prefix and not the five
+    # Net +43 against 23 lines removed: the extraction pays for a third of
+    # itself, which is what distinguishes it from a third transcription.
+    "jasper/web/correction_crossover_v2.py": 9_393,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
@@ -1278,7 +1297,33 @@ MAX_LINES_BY_PATH = {
     # dated block at the end of this dict, with the two files it moves with.
     # 2026-08-21 topology pin: 4,165 -> 4,180. Same dated block, same shape of
     # payment as the basin pin one line up.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_180,
+    # 2026-08-22 Undo-evidence gate (#1863, + its review): 4,180 -> 4,289.
+    # +125 added, -16 removed, tallied from the diff hunks rather than
+    # estimated (an earlier revision of this block asserted +51/-14 with an
+    # itemization that summed to 45 — the review caught it, so these three
+    # groups are the hunk counts and they add to 125) —
+    #   78  one new module-level block: `_can_undo`, the `_UNDO_PROMISE_SWAPS`
+    #       table, and `_honest_about_undo`. The table is the review's SF1:
+    #       gating the BUTTON while the verdict still said "you can undo" left
+    #       the first-commission success screen — the screen most new speakers
+    #       ever see — naming a control that is not there, and worse off than
+    #       before the gate, when pressing it at least returned the endpoint's
+    #       honest refusal. FIVE promise shapes, three of which a grep for the
+    #       obvious wording misses; the replacements are existing no-anchor
+    #       copy, not new sentences
+    #   25  nine call sites and the prose they falsified — three gates that
+    #       stop asking `applied`, the two mint sites that now route through
+    #       `_honest_about_undo`, and four claims this change made untrue
+    #       ("Undo is owed the moment something is live", "must stay reachable
+    #       regardless", "leave the household with Undo alone", "Undo survives")
+    #   22  the done screen's restructure: the promotion if/else, plus hoisting
+    #       `next_action` out of the `_envelope(...)` call it was inlined in,
+    #       which the one-line rule change does not itself cost
+    # Trimmed before being paid for, twice: a first pass measured +74 on the
+    # comments alone and was cut by roughly two-thirds on the "point, never
+    # re-teach" rule; the long forms live in PR #2836 and in
+    # HANDOFF-crossover-measurement-v2.md, and this file points at them.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_289,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

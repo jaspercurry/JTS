@@ -1942,6 +1942,13 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "apply_blocked": (state or {}).get("apply_blocked"),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
+        # Issue #1863: whether the v2-aware Undo (handle_v2_restore) actually
+        # has something to restore, so the envelope layer can stop offering a
+        # button the endpoint is guaranteed to refuse. ASKED of the rule's
+        # owner rather than transcribed here — see
+        # :func:`restore_anchor_static_prefix_refusal` for why this reader
+        # takes the static prefix and not the full five-gate resolver.
+        "can_undo": restore_anchor_static_prefix_refusal(state) is None,
         "session_id": session_id,
         # Minimal live-loop observability: no attempt curves/history on the
         # household polling path, only the kernel output the envelope formats
@@ -8935,6 +8942,45 @@ class RollbackAnchorRefusal:
     message: str
 
 
+def restore_anchor_static_prefix_refusal(
+    state: Mapping[str, Any] | None,
+) -> RollbackAnchorRefusal | None:
+    """The first two of :func:`rollback_anchor_refusal`'s five, or ``None``.
+
+    Split out for the THIRD reader (#1863): the ``can_undo`` flag
+    :func:`crossover_v2_status_block` publishes, which decides whether the
+    envelope layer offers an Undo button at all. That reader cannot call the
+    full resolver — gate 3 loads the live output topology, and this runs on
+    every household status poll — but it must not answer a DIFFERENT question
+    from the endpoint the button posts to, which is exactly the drift
+    :func:`rollback_anchor_refusal`'s own "one owner" argument exists to stop.
+    So the prefix a pure state read CAN answer is owned here and asked by both.
+
+    Gates 3-5 are deliberately not in this prefix: two compare stored config
+    identity and one needs a live CamillaDSP reading. A household that trips
+    one of those gets an actionable sentence from a button that exists, which
+    is a legitimate refusal — unlike the first two, which are the guaranteed
+    click-to-fail #1863 removes.
+    """
+    if not state or not state.get("applied"):
+        return RollbackAnchorRefusal(
+            ANCHOR_NOT_APPLIED,
+            "nothing is applied to undo; measure and apply a crossover first",
+        )
+    if not isinstance(state.get("pre_apply_profile"), Mapping):
+        # Now that persist_conductor_state carries pre_apply_profile forward
+        # across every conductor snapshot (W6.12 P0), this branch is reached
+        # ONLY on a genuine first-ever apply — there was never an earlier
+        # profile to stash. Say so plainly rather than reading like a bug
+        # report or a generic "no undo available" error.
+        return RollbackAnchorRefusal(
+            ANCHOR_NO_PRE_APPLY_PROFILE,
+            "this is the first measured crossover on this speaker — there's "
+            "no earlier one to restore; use Speaker setup to remove it instead",
+        )
+    return None
+
+
 def rollback_anchor_refusal(
     state: Mapping[str, Any] | None,
     *,
@@ -8942,12 +8988,17 @@ def rollback_anchor_refusal(
 ) -> RollbackAnchorRefusal | None:
     """Why this durable state has no restorable anchor, or ``None`` if it has.
 
-    **One owner for a rule with two readers.** :func:`handle_v2_restore` raises
-    on this, and #2291's ``rollback_available`` seam asks it before the round's
-    adoption decision commits to a ``restore`` instruction. Before this
+    **One owner for a rule with three readers.** :func:`handle_v2_restore`
+    raises on this, and #2291's ``rollback_available`` seam asks it before the
+    round's adoption decision commits to a ``restore`` instruction. Before this
     function the two would have been separate transcriptions of the same
     preconditions, and a round could have promised a restore that Undo then
-    refused — the exact drift #2291 exists to close.
+    refused — the exact drift #2291 exists to close. #1863 added the third,
+    ``crossover_v2_status_block``'s ``can_undo``, which decides whether the
+    button is offered at all; it cannot afford gate 3's live topology read on
+    every status poll, so it asks
+    :func:`restore_anchor_static_prefix_refusal` — the prefix THIS function
+    also delegates to, rather than a fourth copy of the same two conditions.
 
     The five are, in the order Undo needs them:
 
@@ -9032,23 +9083,15 @@ def rollback_anchor_refusal(
     from jasper.active_speaker.baseline_profile import topology_config_fingerprint
     from jasper.output_topology import load_output_topology
 
-    if not state or not state.get("applied"):
-        return RollbackAnchorRefusal(
-            ANCHOR_NOT_APPLIED,
-            "nothing is applied to undo; measure and apply a crossover first",
-        )
-    pre_apply_profile = state.get("pre_apply_profile")
-    if not isinstance(pre_apply_profile, Mapping):
-        # Now that persist_conductor_state carries pre_apply_profile forward
-        # across every conductor snapshot (W6.12 P0), this branch is reached
-        # ONLY on a genuine first-ever apply — there was never an earlier
-        # profile to stash. Say so plainly rather than reading like a bug
-        # report or a generic "no undo available" error.
-        return RollbackAnchorRefusal(
-            ANCHOR_NO_PRE_APPLY_PROFILE,
-            "this is the first measured crossover on this speaker — there's "
-            "no earlier one to restore; use Speaker setup to remove it instead",
-        )
+    static_prefix = restore_anchor_static_prefix_refusal(state)
+    if static_prefix is not None:
+        return static_prefix
+    # Both guaranteed by the prefix above: ``state`` is a Mapping and
+    # ``pre_apply_profile`` is one too. Bound once, because the prefix call
+    # narrows for the reader but not for the type checker — the gates below
+    # read ``state`` again and would each need their own ``or {}``.
+    resolved = state or {}
+    pre_apply_profile = resolved["pre_apply_profile"]
     stashed_source = pre_apply_profile.get("source")
     stashed_topology_fp = (
         str(stashed_source.get("topology_fingerprint") or "")
@@ -9066,7 +9109,7 @@ def rollback_anchor_refusal(
             )
     stashed_config = pre_apply_profile.get("config")
     if restore_target_diverged(
-        state.get(ROUND_ANCHOR_STATE_KEY),
+        resolved.get(ROUND_ANCHOR_STATE_KEY),
         str(stashed_config.get("path") or "")
         if isinstance(stashed_config, Mapping) else "",
         str(stashed_config.get("sha256") or "")
@@ -9079,7 +9122,7 @@ def rollback_anchor_refusal(
             "check the speaker's current sound, then re-measure",
         )
     if running_config_diverged(
-        state.get(ROUND_ANCHOR_STATE_KEY), running_config_path
+        resolved.get(ROUND_ANCHOR_STATE_KEY), running_config_path
     ):
         return RollbackAnchorRefusal(
             ANCHOR_RUNNING_CONFIG_DIVERGED,
