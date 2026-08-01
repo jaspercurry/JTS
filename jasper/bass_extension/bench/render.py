@@ -98,11 +98,16 @@ class RenderError(RuntimeError):
     """A binary resolution, render invocation, or determinism check failed.
 
     **This module's whole failure surface.** Every filesystem operation
-    converts ``OSError``, and every subprocess call converts ``OSError``,
-    ``TimeoutExpired``, and ``SubprocessError`` — the last because an exception
-    inside ``preexec_fn`` reaches the parent as ``SubprocessError`` rather than
-    ``OSError``, so an ``except OSError`` alone leaves a hole. A caller that
-    handles ``RenderError`` has therefore handled the module.
+    converts ``OSError``; every subprocess call converts ``OSError`` and
+    ``TimeoutExpired``; and the ONE call that carries a ``preexec_fn``
+    (:func:`render_config`) additionally converts ``SubprocessError``. That
+    asymmetry is deliberate rather than an oversight: ``subprocess.run``
+    reports an ordinary startup failure as an ``OSError`` subclass, and the
+    only route by which a child's failure arrives as something else is a
+    ``preexec_fn`` raising — which CPython reports as ``SubprocessError``. The
+    other two sites pass no ``preexec_fn``, so an arm there would handle an
+    exception that cannot occur. A caller that handles ``RenderError`` has
+    therefore handled the module.
 
     That is load-bearing rather than tidy: callers refuse on ``RenderError``
     and map it to a "no verdict was reached" exit, while anything escaping them
@@ -389,9 +394,14 @@ def render_config(
     except subprocess.TimeoutExpired as exc:
         # MUST stay ahead of the SubprocessError arm below — TimeoutExpired
         # SUBCLASSES SubprocessError, so swapping these two silently relabels
-        # every timeout as a bounds-setup failure. A swap is caught by
-        # tests/test_bass_extension_bench_render.py::
-        # test_render_config_refuses_on_timeout, which matches on "timed out".
+        # every genuine render timeout as a bounds-setup failure. A swap is
+        # caught by tests/test_bass_extension_bench_render.py::
+        # test_render_config_refuses_on_timeout, but ONLY because its match is
+        # ANCHORED at "^render timed out after". Do not relax that anchor: the
+        # bounds message below interpolates the exception, and TimeoutExpired
+        # renders as "Command '...' timed out after 5.0 seconds", so an
+        # unanchored search for "timed out" matches the WRONG message and the
+        # guard silently stops guarding. Verified by mutation, both ways.
         raise RenderError(
             f"render timed out after {bounds.timeout_s}s: argv={argv!r}"
         ) from exc
@@ -538,10 +548,9 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
     if occupied:
         raise RenderError(
             f"the {label} render's preserved output path already exists: {path} "
-            "— refusing rather than silently overwriting it. A file here means "
-            "this bundle path has been used before; whether by a run that "
-            "finished or one that did not, this check cannot tell. "
-            "Delete it, or render into a fresh bundle directory."
+            "— refusing rather than silently overwriting it. This bundle path "
+            "has been used before; why is not something this check can tell "
+            "you. Delete it, or render into a fresh bundle directory."
         )
 
 

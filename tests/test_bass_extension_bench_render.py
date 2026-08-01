@@ -271,12 +271,30 @@ def test_render_config_refuses_on_nonzero_exit(
 def test_render_config_refuses_on_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Also the ordering guard for ``render_config``'s two ``subprocess`` arms.
+
+    The match is ANCHORED, and that anchor is the whole guard. ``TimeoutExpired``
+    subclasses ``SubprocessError``, so if those two ``except`` arms were ever
+    swapped, a timeout would be caught by the bounds arm — whose message
+    interpolates the exception, and ``TimeoutExpired`` renders as ``Command
+    '...' timed out after 5.0 seconds``. An unanchored ``match="timed out"`` is
+    a ``re.search`` and finds that substring in the WRONG message, so it passes
+    under the swap and guards nothing (measured: swapped, all 54 cases in this
+    file still passed). ``^render timed out after`` cannot match the bounds
+    message, so it fails.
+
+    What the swap would cost is diagnosis, not the exit code: every genuine
+    300-second render timeout on the Pi would be reported as a bounds-setup
+    failure, for a render whose bounds were fine and which then ran for five
+    minutes — on the only offline-render instrument the bench has.
+    """
+
     def _responder(argv, kwargs):  # type: ignore[no-untyped-def]
         raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 0))
 
     _stub_subprocess_run(monkeypatch, _responder)
     bounds = render.RenderBounds(timeout_s=5.0, rlimit_as_bytes=1 << 28, rlimit_cpu_s=5, nice=10)
-    with pytest.raises(render.RenderError, match="timed out"):
+    with pytest.raises(render.RenderError, match=r"^render timed out after"):
         render.render_config(
             "/opt/camilladsp/camilladsp",
             tmp_path / "cfg.yml",
@@ -981,11 +999,18 @@ def test_a_child_that_cannot_apply_the_bounds_is_a_render_error(
 
     The trigger is real, not stubbed: ``nice=-5`` makes ``os.nice()`` inside
     the actual ``_rlimit_preexec`` raise ``PermissionError`` in the actual
-    child, because lowering niceness requires privilege on every POSIX. So this
-    exercises the whole path — real ``subprocess.run``, real ``preexec_fn``,
-    real fork — rather than asserting the handler against a hand-thrown
-    exception. It needs no camilladsp: the child dies in ``preexec_fn``, before
-    ``exec``.
+    child. So this exercises the whole path — real ``subprocess.run``, real
+    ``preexec_fn``, real fork — rather than asserting the handler against a
+    hand-thrown exception. It needs no camilladsp: the child dies in
+    ``preexec_fn``, before ``exec``.
+
+    The precise condition is narrower than "requires privilege": on Linux it is
+    governed by ``RLIMIT_NICE``, which defaults to 0 but can be raised by
+    ``ulimit -e``, a unit's ``LimitNICE=``, or ``docker --ulimit nice=``. On a
+    host that has raised it, the child SUCCEEDS, ``/bin/echo`` exits 0, and this
+    case fails on "produced no output file" instead of the expected match — a
+    false red rather than a false green, and not CI-exposed, since GitHub
+    runners and Docker both default it to 0.
     """
 
     bounds = render.RenderBounds(
