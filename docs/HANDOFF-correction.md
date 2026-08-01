@@ -2400,6 +2400,8 @@ jasper/
 │   │                                    audio_measurement.ramp
 │   ├── spatial.py                       shared spatial-spread helpers for
 │   │                                    multi-position measurements
+│   ├── variance_cap.py                  cross-position spread -> per-frequency
+│   │                                    ceiling on designed cut depth (#1954)
 │   ├── strategy.py                      correction strategy and target-profile
 │   │                                    orchestration (raw math -> product policy)
 │   └── session.py                       measurement state machine + DSP/replay orchestration
@@ -2531,7 +2533,14 @@ Concrete changes:
 - `jasper/audio_measurement/analysis.py`: 1/48-octave magnitude smoothing
   → JSON-serializable curve (frequency, dB).
 - `jasper/correction/peq.py`: greedy peak-fit on 20-350 Hz residual
-  vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB.
+  vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB —
+  a *ceiling*, not a fixed depth: on a multi-position capture
+  `jasper/correction/variance_cap.py` lowers it per frequency wherever the
+  seats disagree about the level, so the design never inverts a feature that
+  moves with the microphone (#1954). Every frequency inside the room layer's
+  own repeatability tolerance keeps the full -10 dB, and the design report
+  carries a `spatial_variance_cap` block saying where and how much was
+  withheld.
 - YAML emit (live apply path): `jasper/correction/session.py` asks
   `jasper.sound.graph_carrier` to re-emit the currently loaded topology with
   fresh room PEQs and the saved sound profile. For ordinary stereo this still

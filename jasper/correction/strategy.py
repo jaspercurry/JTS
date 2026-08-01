@@ -25,7 +25,7 @@ from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_MIN_HZ,
 )
 
-from . import peq, spatial, target
+from . import peq, spatial, target, variance_cap
 
 # The crossover-region no-boost half-width, in octaves (revision plan §3.3). A
 # BOOST whose center frequency falls within ±(this) of the bass-management
@@ -322,16 +322,16 @@ def _filter_audit(
     before_residual_db: np.ndarray,
     after_residual_db: np.ndarray,
     freqs: np.ndarray,
-    position_magnitudes: list[np.ndarray] | None = None,
+    spatial_matrix: spatial.SpatialMatrix | None = None,
+    spatial_error: str | None = None,
 ) -> list[dict[str, Any]]:
+    # The caller builds the spatial matrix ONCE and hands it to both this audit
+    # and the variance depth cap, so the two read the same stack rather than
+    # rebuilding it. `build_spatial_matrix` returns exactly one of
+    # (matrix, error) non-None, so "positions were supplied at all" is
+    # precisely "either of them is set" — no third flag is needed.
+    spatial_requested = spatial_matrix is not None or spatial_error is not None
     audit: list[dict[str, Any]] = []
-    spatial_matrix = None
-    spatial_error = None
-    if position_magnitudes is not None:
-        spatial_matrix, spatial_error = spatial.build_spatial_matrix(
-            position_magnitudes,
-            freqs,
-        )
     for idx, filt in enumerate(filters, start=1):
         nearest = int(np.argmin(np.abs(freqs - filt.freq)))
         before = float(before_residual_db[nearest])
@@ -362,7 +362,7 @@ def _filter_audit(
             "local_predicted_delta_db": abs(before) - abs(after),
             "rationale": rationale,
         }
-        if position_magnitudes is not None:
+        if spatial_requested:
             if spatial_matrix is None:
                 entry["spatial_confidence"] = {
                     "available": False,
@@ -461,6 +461,102 @@ def _enforce_total_boost_cap(
     return capped
 
 
+def _variance_cap_warning(
+    disclosure: variance_cap.VarianceCapDisclosure,
+) -> dict[str, str]:
+    """The household-facing nudge for a cross-position depth cap that acted.
+
+    Says what the cap did — lowered the depth ALLOWED at some frequencies —
+    and never what it did not: no claim that a filter was removed, because
+    whether the designer would have placed one there is not knowable from the
+    ceiling. Only called when ``disclosure.active``, so the measurement fields
+    it formats are populated.
+    """
+    forgone_db = disclosure.max_depth_forgone_db or 0.0
+    where = (
+        f" near {disclosure.worst_freq_hz:.0f} Hz"
+        if disclosure.worst_freq_hz is not None else ""
+    )
+    none_at_all = (
+        f" At {disclosure.n_bins_no_cut} of them no correction was designed "
+        "at all."
+        if disclosure.n_bins_no_cut else ""
+    )
+    return {
+        "code": "spatial_variance_capped_depth",
+        "severity": "info",
+        "message": (
+            f"Your seats disagreed about the level at {disclosure.n_bins_capped} "
+            f"of {disclosure.n_bins} frequencies in the correction band, so less "
+            f"correction depth was allowed there — up to {forgone_db:.1f} dB "
+            f"less{where}.{none_at_all} A level that changes that much from seat "
+            "to seat isn't one room feature a filter can fix; correcting it for "
+            "the average would be wrong at every seat."
+        ),
+    }
+
+
+def _enforce_variance_depth_cap(
+    filters: list[peq.PEQ],
+    depth_cap_db: np.ndarray | None,
+    freqs: np.ndarray,
+    strategy: CorrectionStrategy,
+) -> tuple[list[peq.PEQ], int]:
+    """Clamp the CUMULATIVE cut at each filter's centre to the spread's allowance.
+
+    ``peq.design_peq``'s per-bin ``max_cut_db`` bounds one filter. A greedy
+    designer can place several at nearly the same frequency — it re-picks the
+    same peak whenever one capped filter did not flatten it — and the stack
+    restores exactly the depth the cap refused. Product policy owns the total,
+    the same way it already does on the boost side
+    (:func:`_enforce_total_boost_cap`); without this the cap would be advisory.
+
+    Each cut is measured against the chain's NET predicted shift at its own
+    centre frequency (boosts included: a boost there really has lifted the
+    level a later cut is working from). A filter with less than
+    ``min_filter_gain_db`` of allowance left is dropped rather than shipped
+    cosmetically. Returns ``(filters, n_trimmed)`` where ``n_trimmed`` counts
+    filters shallowed *or* dropped — the disclosure's own count, since a
+    silently modified filter is exactly what the design report exists to
+    prevent. A ``None`` cap is a no-op and returns the input list unchanged.
+
+    **What it enforces, exactly.** The allowance binds the cuts designed FOR a
+    frequency, at that frequency's own centre, in the order the designer added
+    them. It is not a bound on the finished chain's response at every bin, and
+    deliberately not: a bell centred on a stable mode inevitably spills a
+    fraction of a dB into a neighbouring unstable bin, and refusing it for that
+    would forbid correcting the stable mode at all. So a *later* filter's skirt
+    can still add a fraction of a dB over an earlier filter's centre allowance
+    — 0.05 dB on the regression fixture in
+    ``tests/test_correction_variance_cap.py``, which pins the bound. That
+    residue is bounded by the strategy's filter count; what this rule removes
+    is the unbounded case — the designer re-picking one capped peak until the
+    stack restores the depth the cap refused.
+
+    Pure.
+    """
+    if depth_cap_db is None:
+        return filters, 0
+    kept: list[peq.PEQ] = []
+    trimmed = 0
+    for filt in filters:
+        if filt.gain >= 0:
+            kept.append(filt)
+            continue
+        allowed_db = float(np.interp(filt.freq, freqs, depth_cap_db))
+        at_centre = np.asarray([filt.freq], dtype=np.float64)
+        already_db = float(peq.predicted_response(kept, at_centre)[0])
+        remaining_db = allowed_db - already_db
+        if remaining_db > -strategy.min_filter_gain_db:
+            trimmed += 1
+            continue
+        gain_db = max(filt.gain, remaining_db)
+        if gain_db != filt.gain:
+            trimmed += 1
+        kept.append(peq.PEQ(freq=filt.freq, q=filt.q, gain=gain_db))
+    return kept, trimmed
+
+
 def _crossover_no_boost_band_hz(crossover_hz: float) -> tuple[float, float]:
     """The ``(lo, hi)`` Hz band, ±1/3 octave around Fc, in which boosts are
     excluded. Pure."""
@@ -511,19 +607,75 @@ def design_correction(
     in a boost-capable strategy, boosts within ±1/3 octave of the corner are
     excluded because an LR4 sum is flat there by design, so a dip at the corner
     is the crossover, not a room mode. Cuts near the corner are still allowed.
+
+    ``position_magnitudes`` are the per-seat curves behind ``measured_db``'s
+    spatial average. They do two jobs: they annotate each chosen filter with
+    its seat-to-seat repeatability (``_filter_audit``), and — since #1954 —
+    they BOUND the depth designed at each frequency, so a level that moves
+    with the microphone is not inverted as though the mean were the room. See
+    :mod:`jasper.correction.variance_cap`. A run with fewer than two positions,
+    or one whose curves cannot be stacked, designs exactly as it did before and
+    says so in the report.
     """
     target_profile = resolve_target_profile(target_choice)
     correction_strategy = resolve_correction_strategy(strategy_choice)
     target_db = target_profile.curve_db(freqs)
 
+    # Build the cross-position stack ONCE; the depth cap and the filter audit
+    # both read it. `spatial` is the single writer of this layer's spread.
+    spatial_matrix: spatial.SpatialMatrix | None = None
+    spatial_error: str | None = None
+    depth_cap_db: np.ndarray | None = None
+    cap_disclosure: variance_cap.VarianceCapDisclosure | None = None
+    if position_magnitudes is not None:
+        spatial_matrix, spatial_error = spatial.build_spatial_matrix(
+            position_magnitudes, freqs,
+        )
+        planned_cap_db, cap_disclosure = variance_cap.plan_depth_cap(
+            spatial_matrix,
+            base_max_cut_db=correction_strategy.max_cut_db,
+            min_filter_gain_db=correction_strategy.min_filter_gain_db,
+            band_mask=_band_mask(freqs, correction_strategy),
+            unavailable_reason=spatial_error,
+        )
+        # Gate on `active`, not merely on availability: a run in which the
+        # spread capped nothing in band takes the identical path it took
+        # before the cap existed, so a stable room's design cannot move.
+        if cap_disclosure.active:
+            depth_cap_db = planned_cap_db
+
+    # A frequency the spread allows no usable correction at is withheld from
+    # the designer's search rather than offered at zero depth: design_peq
+    # STOPS when its tallest remaining peak clamps below min_filter_gain_db,
+    # so leaving one visible would forfeit every stable peak underneath it.
+    # Only the curve the DESIGNER sees is masked — every residual the report
+    # states is still measured against the real `measured_db`.
+    #
+    # One further consequence, deliberate: design_peq's "flat enough" stop
+    # reads the band RMS of the residual it was handed, so a withheld bin no
+    # longer counts toward it. That is the right reading — what remains is the
+    # error this design is ALLOWED to act on — but it does mean a room whose
+    # in-band error sits mostly at unstable frequencies gets fewer filters,
+    # which is the point rather than a side effect.
+    design_measured_db = measured_db
+    if depth_cap_db is not None:
+        withheld = variance_cap.no_correction_mask(
+            depth_cap_db,
+            min_filter_gain_db=correction_strategy.min_filter_gain_db,
+        )
+        if withheld.any():
+            design_measured_db = np.where(withheld, target_db, measured_db)
+
     raw_filters = peq.design_peq(
-        measured_db,
+        design_measured_db,
         target_db,
         freqs,
         f_low=correction_strategy.f_low_hz,
         f_high=correction_strategy.f_high_hz,
         max_filters=correction_strategy.max_filters,
-        max_cut_db=correction_strategy.max_cut_db,
+        max_cut_db=(
+            correction_strategy.max_cut_db if depth_cap_db is None else depth_cap_db
+        ),
         max_boost_db=correction_strategy.max_boost_db,
         cuts_only=correction_strategy.cuts_only,
         flatness_target_db=correction_strategy.flatness_target_db,
@@ -531,7 +683,15 @@ def design_correction(
         q_max=correction_strategy.q_max,
         min_filter_gain_db=correction_strategy.min_filter_gain_db,
     )
-    capped = _enforce_total_boost_cap(raw_filters, correction_strategy)
+    # A per-filter floor cannot bound a stack of filters at one frequency.
+    # Cuts only — every boost the designer proposed survives into `allowed`,
+    # so the headroom accounting below still compares like with like.
+    allowed_filters, depth_trimmed = _enforce_variance_depth_cap(
+        raw_filters, depth_cap_db, freqs, correction_strategy,
+    )
+    if cap_disclosure is not None and depth_trimmed:
+        cap_disclosure = cap_disclosure.with_trimmed(depth_trimmed)
+    capped = _enforce_total_boost_cap(allowed_filters, correction_strategy)
     # Read the active crossover corner (never pick it) and forbid boosts inside
     # the crossover region — a dip at the corner is the crossover, not a room
     # mode. Runs AFTER the boost cap so the excluded set reflects final filters.
@@ -596,6 +756,11 @@ def design_correction(
                     "the crossover instead of fixing the room."
                 ),
             })
+    # The cross-position depth cap's own nudge — only when it actually lowered
+    # the ceiling somewhere in band. It claims the CEILING, never the filters
+    # (see VarianceCapDisclosure); `filters` above is where the shipped set is.
+    if cap_disclosure is not None and cap_disclosure.active:
+        warnings.append(_variance_cap_warning(cap_disclosure))
 
     report = {
         "target_profile": target_profile.to_dict(),
@@ -628,7 +793,8 @@ def design_correction(
             before_residual_db=before_residual,
             after_residual_db=after_residual,
             freqs=freqs,
-            position_magnitudes=position_magnitudes,
+            spatial_matrix=spatial_matrix,
+            spatial_error=spatial_error,
         ),
         "warnings": warnings,
     }
@@ -636,6 +802,11 @@ def design_correction(
     # never saw this key are unaffected (no bass management -> absent).
     if crossover_region is not None:
         report["crossover_region"] = crossover_region
+    # Likewise additive: present whenever positions were supplied at all, so a
+    # reader can tell "the cap ran and took nothing" from "the cap could not
+    # run" from "this design never saw positions" (key absent).
+    if cap_disclosure is not None:
+        report["spatial_variance_cap"] = cap_disclosure.to_dict()
     return CorrectionDesign(
         target_profile=target_profile,
         strategy=correction_strategy,
