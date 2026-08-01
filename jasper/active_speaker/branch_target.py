@@ -150,16 +150,23 @@ class BranchTarget:
     stage that scaled one in place would silently re-grade the ones after it.
     """
 
-    #: The target's SHAPE, dB, re-centred to add no level (see
-    #: :func:`branch_target`). Add to the fit's scalar ``target_level_db`` to
-    #: get the per-bin target curve.
+    #: The target's SHAPE, dB. As built by :func:`branch_target` this is the
+    #: raw crossover magnitude; :meth:`centred_on` is what re-centres it to add
+    #: no level, and the fit calls that before using it. Add to the fit's
+    #: scalar ``target_level_db`` to get the per-bin target curve.
     shape_db: np.ndarray
     #: True where a correction filter may put GAIN — the passband widened by
     #: :data:`STOPBAND_GAIN_MARGIN_OCTAVES`.
     gain_permitted: np.ndarray
     #: This branch's output as a fraction of its own full output, ``[0, 1]``.
-    #: 1.0 deep in the passband, falling through the crossover. The
-    #: contribution weight #1968 asks for, on the gain side only.
+    #: 1.0 deep in the passband, falling through the crossover.
+    #:
+    #: The contribution weight #1968 asks for, on the gain side only. **A
+    #: heuristic weighting, not a physical identity**: the consumer multiplies
+    #: a dB deficit by this amplitude fraction, which is monotone
+    #: de-emphasis in the right direction rather than a derived quantity. It is
+    #: honest as a weight and would not be honest as a prediction of how much
+    #: of a boost reaches the sum.
     contribution: np.ndarray
     #: The acoustic passband edge, Hz — :func:`~jasper.active_speaker.
     #: branch_chain.radiating_band_hz`, the -3 dB span.
