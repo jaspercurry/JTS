@@ -6334,7 +6334,102 @@ class CrossoverV2Conductor:
                 False, REASON_CLOUD_GEOMETRY_LOCKED,
                 payload={"prompt": prompt, "geometry": dict(verdict)},
             )
+        # #1872: a retake of the group's LAST position can land AFTER the
+        # group already closed once — a genuine voluntary retake (the retry
+        # guard above requires exactly that: "never AFTER the group has
+        # already recorded a verdict"), or a geometry-locked retry's own
+        # retake arriving late because an EARLIER attempt at this same index
+        # already exhausted the retry budget and was silently accepted
+        # (session.py's confirm-hold widens the admission window this can
+        # land in ON PURPOSE — see its own comment on ``completion_pending``
+        # — because closing that window would also close the legitimate
+        # voluntary-retake case). Either way the geometry verdict recorded
+        # just below is kept honest with whichever take is retained, but the
+        # SIDE EFFECTS in :meth:`_close_cloud_group_once` — the
+        # ``cloud_group_complete`` log and the honesty pipeline's spec-eval +
+        # evidence publish — are a per-phase SINGLETON, exactly what
+        # ``publish_cloud``'s own docstring already promises ("called once
+        # per CLOSED group"): closing twice must not log twice or spend a
+        # second publish attempt the write-once evidence store is guaranteed
+        # to refuse (the duplicate ``CommissioningEvidenceStoreError`` +
+        # WARNING traceback this fixes).
+        already_closed = phase in self._group_geometry
         self._group_geometry[phase] = verdict
+        if already_closed:
+            log_event(
+                logger, "correction.crossover_v2_cloud_group_reclosed",
+                session_id=self.session_id, phase=phase,
+                positions=len(self._group_positions[phase]),
+                geometry_locked=bool(verdict.get("locked")),
+                geometry_reason=verdict.get("reason") or "",
+                thin_evidence=bool(verdict.get("thin_evidence")),
+                geometry_retries=retries,
+            )
+        else:
+            self._close_cloud_group_once(phase, combined, positions, verdict, retries)
+        payload: dict[str, Any] = {
+            "position_id": position.position_id,
+            "group_complete": phase,
+            "geometry": dict(verdict),
+        }
+        if phase == PHASE_CLOUD_MEASURE:
+            # The pre-apply cloud's geometry verdict and disclosure pipeline are
+            # in hand — but the FIT no longer runs here. Flow-simplification
+            # §2.6: firing fit + auto-apply on this acceptance made the final
+            # prompted position the one spot in the whole session a household
+            # could not choose to redo, because the speaker was already being
+            # retuned by the time the "Retake" control could have been tapped.
+            # The fit moves to :meth:`confirm_cloud_measure_group`, which the
+            # host calls when the household confirms PAST the final position.
+            # No trust gate moved: the fit still runs only after the full
+            # cloud, under the same gates — one user tap now sits in front of
+            # it. Stash the combine so the confirm does not pay for a second
+            # one (measured 2.7-6 s, see this method's own docstring).
+            self._group_combined[phase] = combined
+            # …and DROP any eagerly-fitted candidate in the same breath
+            # (eager-fit rider, 2026-07-30). Reaching here a second time is a
+            # VOLUNTARY retake (§2.6): the household redid the final position,
+            # so the cloud just changed and anything fitted from the old one is
+            # answering a question nobody asked any more. Dropping it here —
+            # inside the same locked region that re-stashes the combine, and
+            # BEFORE the accept that lets the host start the next eager fit —
+            # is what makes "a bank always matches the current combine" hold
+            # without a generation counter to check it against. Freeing the
+            # reference also matters on its own: a candidate carries the fit's
+            # arrays, and this is a 1 GB Pi.
+            self._speculative_close = None
+            payload["awaiting_confirm"] = True
+        if phase == PHASE_CLOUD_VERIFY:
+            # The delta probe's spatial arm, and the only point in the session
+            # where it can run: both clouds are walked, so "did the correction
+            # make the room less even" is finally a measured question rather
+            # than a modelled one. Deliberately OUTSIDE the disclosure wrap
+            # above — this is a product gate, like the candidate build, and a
+            # gate that cannot fail the capture is not a gate.
+            refusal = self._delta_probe_refusal(self._run_delta_probe())
+            if refusal is not None:
+                return PhaseVerdict(
+                    False, refusal,
+                    payload={"delta_probe": self._delta_probe.to_dict()}
+                    if self._delta_probe is not None else {},
+                )
+        return PhaseVerdict(True, payload=payload)
+
+    def _close_cloud_group_once(
+        self,
+        phase: str,
+        combined: Any,
+        positions: Sequence[_CloudPosition],
+        verdict: dict[str, Any],
+        retries: int,
+    ) -> None:
+        """The group-close side effects a phase may fire AT MOST ONCE (#1872).
+
+        Split out of :meth:`_close_cloud_group`, whose ``already_closed``
+        guard is the only behavioural change this issue makes — everything
+        below is the pre-existing first-close body, moved verbatim so the
+        diff is the guard, not a rewrite.
+        """
         log_event(
             logger, "correction.crossover_v2_cloud_group_complete",
             session_id=self.session_id, phase=phase,
@@ -6387,53 +6482,6 @@ class CrossoverV2Conductor:
                 level=logging.WARNING,
                 session_id=self.session_id, phase=phase, exc_info=True,
             )
-        payload: dict[str, Any] = {
-            "position_id": position.position_id,
-            "group_complete": phase,
-            "geometry": dict(verdict),
-        }
-        if phase == PHASE_CLOUD_MEASURE:
-            # The pre-apply cloud's geometry verdict and disclosure pipeline are
-            # in hand — but the FIT no longer runs here. Flow-simplification
-            # §2.6: firing fit + auto-apply on this acceptance made the final
-            # prompted position the one spot in the whole session a household
-            # could not choose to redo, because the speaker was already being
-            # retuned by the time the "Retake" control could have been tapped.
-            # The fit moves to :meth:`confirm_cloud_measure_group`, which the
-            # host calls when the household confirms PAST the final position.
-            # No trust gate moved: the fit still runs only after the full
-            # cloud, under the same gates — one user tap now sits in front of
-            # it. Stash the combine so the confirm does not pay for a second
-            # one (measured 2.7-6 s, see this method's own docstring).
-            self._group_combined[phase] = combined
-            # …and DROP any eagerly-fitted candidate in the same breath
-            # (eager-fit rider, 2026-07-30). Reaching here a second time is a
-            # VOLUNTARY retake (§2.6): the household redid the final position,
-            # so the cloud just changed and anything fitted from the old one is
-            # answering a question nobody asked any more. Dropping it here —
-            # inside the same locked region that re-stashes the combine, and
-            # BEFORE the accept that lets the host start the next eager fit —
-            # is what makes "a bank always matches the current combine" hold
-            # without a generation counter to check it against. Freeing the
-            # reference also matters on its own: a candidate carries the fit's
-            # arrays, and this is a 1 GB Pi.
-            self._speculative_close = None
-            payload["awaiting_confirm"] = True
-        if phase == PHASE_CLOUD_VERIFY:
-            # The delta probe's spatial arm, and the only point in the session
-            # where it can run: both clouds are walked, so "did the correction
-            # make the room less even" is finally a measured question rather
-            # than a modelled one. Deliberately OUTSIDE the disclosure wrap
-            # above — this is a product gate, like the candidate build, and a
-            # gate that cannot fail the capture is not a gate.
-            refusal = self._delta_probe_refusal(self._run_delta_probe())
-            if refusal is not None:
-                return PhaseVerdict(
-                    False, refusal,
-                    payload={"delta_probe": self._delta_probe.to_dict()}
-                    if self._delta_probe is not None else {},
-                )
-        return PhaseVerdict(True, payload=payload)
 
     def cloud_measure_group_awaiting_confirm(self) -> bool:
         """Whether the pre-apply cloud is walked but not yet confirmed.

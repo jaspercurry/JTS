@@ -4003,6 +4003,85 @@ def test_a_retake_after_the_group_closed_never_drops_the_only_take(monkeypatch):
     assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
 
 
+def test_close_cloud_group_publishes_and_logs_at_most_once_per_phase(
+    monkeypatch, caplog,
+):
+    """#1872: a geometry-locked retake overlapping group close must not
+    re-close the group.
+
+    Reproduces the reported race deterministically (no sleeps — the overlap
+    is the CALL ORDER, exactly like ``test_a_retake_after_the_group_closed_
+    never_drops_the_only_take`` above simulates a retake by calling
+    ``_run_phase`` again): two geometry-locked rejects exhaust the retry
+    budget (``GEOMETRY_RETRY_POSITIONS``), so the THIRD attempt at the same
+    index ACCEPTS despite geometry still reading locked — the group's one
+    real close, matching the issue's own log shape
+    (``geometry_retries=2``, "result accepted"). A FOURTH attempt at that
+    same index — standing in for the late-arriving retake/tail capture the
+    confirm-hold's widened admission window lets through (session.py's
+    ``completion_pending`` branch) — must still be accepted (the retake
+    contract §2.6 promises that), but must NOT re-log
+    ``cloud_group_complete`` or spend a second ``publish_cloud`` call: the
+    evidence store is write-once, so a second attempt is GUARANTEED to fail
+    (``CommissioningEvidenceStoreError``), which is exactly the duplicate
+    WARNING traceback + duplicate spec-eval this pins shut.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    published: list[tuple[str, dict]] = []
+    c = CrossoverV2Conductor(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(
+            fakes.seams(),
+            publish_cloud=lambda phase, result: published.append(
+                (phase, dict(result))
+            ),
+        ),
+        driver_spacing_m=0.15,
+        index_phase_map=CLOUD_MAP,
+        post_apply_verifies=True,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    for _ in range(GEOMETRY_RETRY_POSITIONS):
+        verdict = _run_phase(c, last, attempt)
+        attempt += 1
+        assert verdict["accepted"] is False
+        assert verdict["code"] == REASON_CLOUD_GEOMETRY_LOCKED
+
+    # Third attempt: the retry budget is spent, so this ACCEPTS despite
+    # geometry still reading locked — the group's ONE real close.
+    first_close = _run_phase(c, last, attempt)
+    attempt += 1
+    assert first_close["accepted"] is True
+    assert first_close["group_complete"] == PHASE_CLOUD_MEASURE
+    assert len(published) == 1
+    assert published[0][0] == PHASE_CLOUD_MEASURE
+    assert (
+        caplog.text.count("event=correction.crossover_v2_cloud_group_complete")
+        == 1
+    )
+
+    # Fourth attempt at the SAME index: the overlap. Still accepted and the
+    # verdict is still kept honest, but the group-level close side effects
+    # must be a per-phase singleton.
+    caplog.clear()
+    second_close = _run_phase(c, last, attempt)
+    assert second_close["accepted"] is True
+    assert "code" not in second_close
+    assert len(published) == 1, "a second close must not attempt a second publish"
+    assert (
+        "event=correction.crossover_v2_cloud_group_complete" not in caplog.text
+    )
+    assert "event=correction.crossover_v2_cloud_group_reclosed" in caplog.text
+    assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
+    assert len(c.group_positions(PHASE_CLOUD_MEASURE)) == len(CLOUD_MEASURE_INDEXES)
+
+
 def test_the_tier_rides_the_snapshot_and_the_pipeline_payload():
     """§1.2: every consumer can tell which instrument produced a result, and an
     UNDECLARED tier reads as unknown rather than as "full" (the

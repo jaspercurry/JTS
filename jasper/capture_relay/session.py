@@ -2018,19 +2018,25 @@ def _poll_capture_plan(
                         # That is 4× longer for the household to sit on the
                         # confirm screen, and the window in which a voluntary
                         # or geometry retake of the final position can re-close
-                        # the group widens with it — which is issue #1872's
-                        # duplicate-close path (``_close_cloud_group`` runs
-                        # ``publish_cloud`` once per acceptance of the group's
-                        # last index, and the evidence store's write-once guard
-                        # then refuses the second artifact). It ships
-                        # deliberately: that path is PRE-EXISTING and bounded,
-                        # it is inherent to keeping the final position
-                        # retakeable at all (the whole point of this hold), the
-                        # store fails soft on the first artifact, and the FIT
-                        # cannot double-fire because ``self._candidate`` guards
-                        # it fire-once. #1872's own fix — close exactly once
-                        # per phase — is still owed and is marginally more
-                        # likely to be hit here than before.
+                        # the group widens with it — which was issue #1872's
+                        # duplicate-close path. Widening the window ships
+                        # deliberately: closing it would also close the
+                        # legitimate voluntary-retake case (the whole point of
+                        # this hold), so #1872's fix lives on the CONDUCTOR
+                        # side instead of here. ``_close_cloud_group`` still
+                        # re-enters on every retake of the final index and
+                        # keeps the geometry verdict honest with whichever take
+                        # is retained, but the group-level SIDE EFFECTS — the
+                        # ``cloud_group_complete`` log and the honesty
+                        # pipeline's ``publish_cloud`` call — now run through
+                        # :meth:`CrossoverV2Conductor._close_cloud_group_once`,
+                        # gated to the phase's FIRST close
+                        # (``already_closed = phase in self._group_geometry``).
+                        # A re-close (voluntary or a late geometry-retry tail)
+                        # never re-logs or re-attempts a publish the write-once
+                        # evidence store is guaranteed to refuse. The FIT still
+                        # cannot double-fire either, because ``self._candidate``
+                        # guards it fire-once.
                         deadline = monotonic() + begin_budget(accepted_count + 1)
                         continue
                     post_set_complete(accepted_count)
