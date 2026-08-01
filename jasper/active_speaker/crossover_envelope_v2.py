@@ -451,18 +451,20 @@ def _verify_gate_lines(status: Mapping[str, Any]) -> list[str]:
     passes the sentence through and adds nothing — no prefix, no label, no
     reformatted number.
 
-    **Whose gate.** The record belongs to the verify verdict this state
-    carries — written with its outcome and code in one call, so the three
-    always describe one capture (see ``crossover_v2_flow._set_verify_outcome``
-    for the desync that ordering prevents). On the done screen that is exactly
-    the verdict being explained. On the verify_fail screen the HEADLINE comes
-    from the current ``failure.code``, which after an early-return retry
-    (locate/pilot/linearity — verdicts that conclude nothing) can be a later
-    attempt than this line. The line stays true of the capture it describes;
-    it simply is not always the same capture as the headline, and the
-    alternative — dropping the disclosure whenever an unrelated retry fails
-    early — would take a true statement off the screen to buy tidier
-    provenance.
+    **Whose gate — the caller owns that question, not this function.** The
+    record belongs to the verify verdict the state carries, written with its
+    outcome and code in one call (``crossover_v2_flow._set_verify_outcome``).
+    It therefore always describes ONE capture — but not necessarily the one
+    the surrounding screen is about, because the record deliberately survives
+    an early-return retry while the screen's headline moves on.
+
+    That matters because one of ``describe_gate``'s four sentences is DEICTIC
+    — "this capture could not be gated" — and takes its referent from the
+    screen. So a caller renders this only where the referent is unambiguous:
+    the done screen always (it explains that very verdict), the verify_fail
+    screen only when its headline code is the one that wrote the record. The
+    check lives in :func:`_verify_expert_details`, which knows the headline;
+    putting it here would need this function to know things it does not.
 
     Empty when no gate was recorded, since silence is the honest rendering of
     an unrecorded gate.
@@ -542,12 +544,18 @@ def _verify_level_reference_lines(status: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
+def _verify_expert_details(
+    status: Mapping[str, Any], *, headline_code: str,
+) -> list[str]:
     """The verify_fail screen's collapsed expert numbers (#1605): the gated
     level error against its limit, the average error, and the band checked.
     Empty when the conductor persisted neither tracking evidence nor a graded
     band (an early-return verify verdict — locate/agc/gate/level-shift —
     reaches neither).
+
+    ``headline_code`` is the reason code THIS screen's verdict copy names. It
+    gates the gate line alone — see the call below for why that one line needs
+    it and the others do not.
 
     The band line comes from :func:`_verify_graded_band_lines`, which the
     done screen renders too — see there for why it is not an evidence-block
@@ -597,8 +605,27 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     # And WHAT THE COMPARISON COULD SEE (#1966), last of the three: the band
     # says how wide the claim is, the frame says how much of it was the
     # instrument, and the gate says how much of the sound the measurement had
-    # to work from in the first place. Same independent-presence rule.
-    lines.extend(_verify_gate_lines(status))
+    # to work from in the first place.
+    #
+    # NOT the same independent-presence rule as those two, and the difference
+    # is the one thing this screen must get right. The band and frame are
+    # cleared by every later attempt, so they can only ever describe the
+    # capture behind THIS headline. The gate record deliberately survives an
+    # early-return retry (it is written with the outcome and code it belongs
+    # to — ``crossover_v2_flow._set_verify_outcome``), so on this screen it can
+    # outlive the verdict being displayed: ``_failure_envelope`` routes ANY
+    # code through this template once the crossover is applied, including the
+    # early returns that conclude nothing.
+    #
+    # One of ``describe_gate``'s four sentences is DEICTIC — "**this capture**
+    # could not be gated" — and takes its referent from the screen rather than
+    # from itself. Under a later attempt's headline, with the band and frame
+    # already cleared, it renders as the screen's ONLY expert line and points
+    # at the wrong capture. So the line renders here only when the headline's
+    # verdict is the one that wrote the record. The done screen has no such
+    # ambiguity — it explains that very verdict — and renders it always.
+    if headline_code and headline_code == _verify_code(status):
+        lines.extend(_verify_gate_lines(status))
     return lines
 
 
@@ -2028,7 +2055,10 @@ def _verify_fail_envelope(
         # travel in the same collapsed disclosure since this screen only
         # has the one "Expert details" mechanism.
         expert_details=(
-            _verify_expert_details(status)
+            # ``code`` is this screen's own headline verdict — handed down so
+            # the gate line can tell whether the record it would print belongs
+            # to the capture being described. See ``_verify_expert_details``.
+            _verify_expert_details(status, headline_code=code)
             + _verify_level_reference_lines(status)
             + _flatness_details_lines(status)
         ),

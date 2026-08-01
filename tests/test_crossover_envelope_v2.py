@@ -41,6 +41,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_APPLY_FAILED,
     REASON_CLIPPED,
     REASON_CHANNEL_MAP_MISMATCH,
+    REASON_LOCATE_FAILED,
     REASON_LOW_ALIGNMENT_CONFIDENCE,
     REASON_NOISY_ROOM_LINEARITY,
     REASON_RELAY_TIMEOUT,
@@ -1397,6 +1398,82 @@ def test_the_gate_sentence_rides_a_passing_verify_too():
         candidate=_candidate_summary(),
     ))
     assert describe_gate(_gate_block(gating.FLOOR_MEASURED)) in env["expert_details"]
+
+
+_GATE_UNGATEABLE = {
+    # ``describe_gate``'s ONE deictic sentence — "this capture …" — whose
+    # referent comes from the screen rather than from the sentence. Persisted
+    # whenever a concluding verdict ran over a capture that could not be gated
+    # (a truthy gating block with no ``floor_source``).
+    "disclosure": describe_gate({"direct_peak_ms": 1.0}),
+    "reflection_measured": False,
+}
+
+
+def test_the_gate_line_is_dropped_when_the_headline_is_another_attempts():
+    """The deictic-referent hole the PR #1994 delta review found.
+
+    The gate record deliberately survives an early-return retry — it is
+    written with the outcome and code it belongs to — while ``failure.code``
+    moves on, and ``_failure_envelope`` routes ANY code through the
+    verify_fail template once the crossover is applied. The evidence, band and
+    frame lines ARE cleared per attempt, so the gate line renders alone: "this
+    capture could not be gated" as the only expert line under a LATER
+    capture's headline, pointing at the wrong capture.
+
+    So the line renders only when the headline's verdict is the one that wrote
+    the record.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        applied=True,
+        failure={"code": REASON_LOCATE_FAILED},
+        verify={
+            "outcome": "fail",
+            # The verdict that CONCLUDED, two attempts ago.
+            "code": REASON_VERIFY_OUT_OF_TOLERANCE,
+            "gate": _GATE_UNGATEABLE,
+        },
+    ))
+    assert env["screen"] == "verify_fail"
+    assert not any("this capture" in line for line in env["expert_details"])
+    assert env["expert_details"] == []
+
+
+def test_the_gate_line_renders_when_the_headline_wrote_the_record():
+    """The other side of the same rule — and the common case. A verify_fail
+    screen whose failure code IS the concluding verdict is describing that
+    verdict's own capture, so the disclosure belongs there."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        applied=True,
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={
+            "outcome": "fail",
+            "code": REASON_VERIFY_OUT_OF_TOLERANCE,
+            "gate": _GATE_UNGATEABLE,
+        },
+    ))
+    assert env["screen"] == "verify_fail"
+    assert _GATE_UNGATEABLE["disclosure"] in env["expert_details"]
+
+
+def test_the_done_screen_keeps_the_gate_line_regardless_of_any_later_failure():
+    """The done screen explains the verdict the record belongs to, so its
+    referent is never ambiguous — the headline-match rule is a verify_fail
+    rule only, and must not cost the done screen its disclosure."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "fail",
+            "code": REASON_VERIFY_OUT_OF_TOLERANCE,
+            "gate": _GATE_UNGATEABLE,
+        },
+        candidate=_candidate_summary(),
+        post_apply_grade={"state": "failed", "graded": False},
+    ))
+    assert env["screen"] == "done"
+    assert _GATE_UNGATEABLE["disclosure"] in env["expert_details"]
 
 
 def test_no_gate_sentence_when_the_record_carries_none():

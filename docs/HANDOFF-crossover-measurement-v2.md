@@ -1686,6 +1686,18 @@ re-phrasing the fields at a render site is how the two states started printing
 identically. Absent stays absent — a pre-R9 state file or an ungateable capture
 renders no gate line rather than a fabricated one.
 
+The record is written with the outcome and code it belongs to, in one call
+(`_set_verify_outcome`), so all three always describe one capture; it therefore
+**survives an early-return retry** (`locate_failed` / `pilot_level_collapse` /
+`agc_behavioral_fail` conclude nothing) where `verify.evidence` /
+`graded_band_hz` / `frame` are cleared. That is why the **done** screen renders
+it unconditionally but the **verify_fail** screen renders it only when
+`failure.code` equals `verify.code`: `_failure_envelope` routes any code through
+that template once the crossover is applied, and one of `describe_gate`'s four
+sentences is deictic ("*this capture* could not be gated") — under a later
+attempt's headline, with the sibling lines already cleared, it would render as
+the screen's only expert line and point at the wrong capture.
+
 `reflection_measured` beside it is
 [`GateDisclosure.gated_anything`](../jasper/audio_measurement/gate_disclosure.py),
 the single owner of "may this record claim a reflection was removed", and it is
