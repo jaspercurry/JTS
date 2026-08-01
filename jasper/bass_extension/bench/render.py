@@ -522,16 +522,17 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
       exact float, while :mod:`~jasper.bass_extension.bench.executor` tags the
       render paths ``f"{setting_dbfs:g}"`` — six significant digits — so two
       settings that differ past the sixth digit survive as distinct candidates
-      and then claim the same preserved path.
+      and then claim the same preserved path (issue #2025).
 
     The remediation the message offers — delete the file, or render into a
     fresh bundle directory — fits the first two. It does NOT fit the third: the
     collision is on a name INSIDE the bundle, so a fresh directory changes
     nothing, and deleting only lets the next run collide at the same tag again.
-    That one needs the caller's naming widened, which is not something an
-    operator can act on from an error string — which is exactly why the causes
-    are enumerated HERE and the message does not enumerate at all. Checking up
-    front costs no render, which is what makes refusing the cheap answer.
+    That one needs the caller's naming fixed — a wider tag, or an index-keyed
+    path that cannot collide at all — which is not something an operator can act
+    on from an error string, which is exactly why the causes are enumerated HERE
+    and the message does not enumerate at all. Checking up front costs no
+    render, which is what makes refusing the cheap answer.
 
     It is specifically NOT protection against a stale file reaching a reader.
     Rename's overwrite is total: a slot that gets written ends up holding the
