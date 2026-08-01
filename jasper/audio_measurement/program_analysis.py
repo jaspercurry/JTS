@@ -827,10 +827,13 @@ class CrossoverCandidate:
     model at rung P3 / R10b. It asks a capture-quality question — how
     coherently can these two branches sum at all — which is a property of the
     measurement and not of the delay selection, and it is the sole input to
-    ``crossover_v2_flow``'s G1 ``MEASURE_PREDICTED_RIPPLE_CEILING_DB``, a
-    ceiling calibrated against a 13-capture hardware corpus measured on
-    exactly this instrument. The two ripples that DO carry the residual are
-    the snap-evidence pair above, which is what makes them a comparison.
+    ``crossover_v2_flow``'s G1 ``MEASURE_PREDICTED_RIPPLE_CEILING_DB``, whose
+    threshold that constant documents as calibrated against a fixed hardware
+    corpus scored on THIS metric. Moving it onto the delay-carrying curve would
+    let a candidate's own alignment lower its own veto number — see
+    ``_build_candidate``'s comment at the two calls for the measured evasion
+    margin. The two ripples that DO carry the residual are the snap-evidence
+    pair above, which is what makes them a comparison.
 
     ``trim_db`` is the APPLIED trim (#1667: ripple-optimal where the polish
     ran and the sanity guard trusts it, otherwise the band-average fallback);
@@ -4006,12 +4009,24 @@ def _build_candidate(
     # capture's two branches sum at all?", which is a property of the
     # measurement and not of the delay selection. It is the ONLY input to
     # `predicted_ripple_db`, and therefore to `crossover_v2_flow`'s G1
-    # `MEASURE_PREDICTED_RIPPLE_CEILING_DB` gate — a ceiling calibrated
-    # (2026-07-22) against a 13-capture hardware corpus measured on exactly
-    # this instrument. Re-pointing that gate at a delay-carrying curve would
-    # silently re-calibrate it (a residual can only ADD ripple, so only ever
-    # stricter) against a corpus that no longer describes it, so the gate keeps
-    # its instrument and this PR changes no adoption decision.
+    # `MEASURE_PREDICTED_RIPPLE_CEILING_DB` gate, whose threshold that constant
+    # documents as calibrated against a fixed 2026-07-22 hardware corpus scored
+    # on THIS metric — the zero-residual ripple, not the delay-carrying one.
+    #
+    # Why the gate keeps this frame: a candidate's own committed delay can LOWER
+    # its ripple, so pointing the veto at a delay-carrying curve would let a
+    # capture whose branches sum incoherently be carried under the ceiling by
+    # its own alignment. Measured on the banked 2026-07-30 JTS3 capture
+    # (`captures/r10b-alignment-20260801/ripple_vs_residual_sweep.py`): sweeping
+    # the residual across the ±(period/6) snap radius, 32 of 84 sampled
+    # residuals come in BELOW the zero-residual 14.8831 dB, bottoming at
+    # 14.0744 dB — and that capture sits 0.12 dB under the 15.0 dB ceiling, so
+    # the 0.81 dB an alignment could buy is not a hypothetical margin. (An
+    # earlier draft of this comment asserted the opposite — that a residual can
+    # only ADD ripple, making the move merely "stricter". The sweep refutes it;
+    # the real reason is evasion, not strictness.) Keeping the veto on a frame
+    # no candidate parameter can move is what closes that path, and it is also
+    # why this PR changes no adoption decision here.
     predicted_aligned = predicted_branch_sum(
         W,
         T,

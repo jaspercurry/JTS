@@ -784,7 +784,22 @@ the ask) is archived at `deep-research-crossover-measurement-prompt.md`
 
 ---
 
-_Last updated: 2026-07-22 (v2.5 — delay selection is anchor-primary with a
+_Last updated: 2026-08-01 (v2.6 — rung P3 / R10b: **§5.6 items 5 and 6 rewritten**.
+The persisted prediction is now the summed model AT the committed delay, not the
+fixed independently aligned zero-residual target, so VERIFY's tracking check
+grades model fidelity against a curve a real selection produces. The delay enters
+as the RESIDUAL `selected − anchor` only
+(`program_analysis.summed_model_residual_delay_us`), never the applied delay,
+which would double-count the peak gap `_aligned_branch_tf` already removed — the
+reverted fix-2 mode. Item 5's "VERIFY's reference is the independently aligned
+zero-residual target sum, not a candidate-specific model" sentence is
+**superseded**; two safety properties it carried moved to named owners rather
+than being dropped — `predicted_ripple_db` (the G1 ceiling) stays on the
+independently aligned frame, and the ±(period/6) snap radius bounds the residual
+below one comb period. Consequence recorded in
+`HANDOFF-crossover-measurement-v2.md`: the predicted-spec improvement gate's
+margin narrows with the residual. v2.5 (2026-07-22) — delay selection is
+anchor-primary with a
 gated ±(period/6) local-peak snap of the drift-corrected physical peak gap;
 the narrowband summed-flatness *selection* path is deleted (flatness demoted to
 evidence) after a hardware repeat showed its basin ordering preferred the wrong
