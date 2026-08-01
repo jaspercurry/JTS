@@ -1418,6 +1418,22 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "apply_blocked": (state or {}).get("apply_blocked"),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
+        # Issue #1863: whether the v2-aware Undo (handle_v2_restore) actually
+        # has something to restore. Mirrors that endpoint's own first two
+        # gates exactly — "nothing is applied to undo" and "this is the
+        # first measured crossover on this speaker" — so the envelope layer
+        # can stop offering a button the endpoint is guaranteed to refuse.
+        # Deliberately NOT re-checked against topology_fingerprint (the
+        # endpoint's third, rarer gate): that mismatch is a legitimate,
+        # occasionally-refused action with its own clear "re-measure"
+        # message, not the "click-to-fail" defect this flag exists to close,
+        # and re-deriving it here would mean a live topology read on every
+        # status poll for a corner the endpoint already handles honestly.
+        "can_undo": bool(
+            state
+            and state.get("applied")
+            and isinstance(state.get("pre_apply_profile"), Mapping)
+        ),
         "session_id": session_id,
         # Flat-linearization plan PR-4: the compact per-group honesty
         # verdict. ``None`` when no group has closed yet — never a fabricated

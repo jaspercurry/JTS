@@ -3796,6 +3796,79 @@ def test_status_block_never_asks_an_unapplied_session_for_a_grade():
     assert grade["graded"] is True
 
 
+def test_status_block_reports_can_undo_only_with_a_real_pre_apply_profile():
+    """#1863: the envelope layer's Undo affordance is gated entirely on this
+    flag, so it must mirror handle_v2_restore's own two refusal gates
+    exactly — applied AND a real stashed pre_apply_profile, never applied
+    alone. A first-ever apply (pre_apply_profile is None) has nothing to
+    restore; the restore endpoint says so plainly and the status block must
+    agree before any button ever reaches the household."""
+    v2host.save_v2_state({
+        "session_id": "cap_first_ever",
+        "applied": True,
+        "pre_apply_profile": None,
+    })
+    assert v2host.crossover_v2_status_block()["can_undo"] is False
+
+    v2host.save_v2_state({
+        "session_id": "cap_with_prior",
+        "applied": True,
+        "pre_apply_profile": {"kind": "prior", "config": {"path": "/tmp/x.yml"}},
+    })
+    assert v2host.crossover_v2_status_block()["can_undo"] is True
+
+    # Defensive: a stashed profile with nothing currently applied (should
+    # not occur in practice — observe_restore clears both together — but
+    # the flag must require BOTH facts, never the profile's presence alone).
+    v2host.save_v2_state({
+        "session_id": "cap_not_applied",
+        "applied": False,
+        "pre_apply_profile": {"kind": "prior", "config": {"path": "/tmp/x.yml"}},
+    })
+    assert v2host.crossover_v2_status_block()["can_undo"] is False
+
+
+def test_first_ever_apply_end_to_end_offers_no_undo_but_a_valid_one_does(monkeypatch):
+    """#1863 contract test over the REAL production seam — save_v2_state ->
+    crossover_v2_status_block -> build_crossover_envelope_v2 — exactly what a
+    GET /crossover/envelope on the done screen serves, not a hand-built
+    envelope fixture. A first-ever apply (no pre_apply_profile) must not
+    offer Undo as the done screen's primary action; a second apply with a
+    real stashed profile must, at the real restore endpoint."""
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    def _envelope_for(pre_apply_profile):
+        v2host.save_v2_state({
+            "session_id": "cap_e2e",
+            "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+            "applied": True,
+            "pre_apply_profile": pre_apply_profile,
+            "verify": {"outcome": "pass"},
+        })
+        status = {
+            "active": True,
+            "setup": {"active": True, "status": "ready"},
+            "crossover_v2": v2host.crossover_v2_status_block(),
+        }
+        return build_crossover_envelope_v2(status)
+
+    first_ever = _envelope_for(None)
+    assert first_ever["screen"] == "done"
+    assert first_ever["next_action"]["id"] == "room"
+    assert not any(
+        a["id"] == "verify_undo" for a in first_ever["alternate_actions"]
+    )
+
+    with_prior = _envelope_for({"kind": "prior", "config": {"path": "/tmp/x.yml"}})
+    assert with_prior["screen"] == "done"
+    assert with_prior["next_action"]["id"] == "verify_undo"
+    assert with_prior["next_action"]["endpoint"] == "/correction/crossover/v2/restore"
+
+
 def test_apply_blocked_is_scoped_to_its_producing_session():
     """Item 1 (#1605): a blocked-apply nudge belongs to the session that
     produced it. persist_conductor_state carries apply_blocked forward while

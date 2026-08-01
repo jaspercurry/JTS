@@ -1697,6 +1697,20 @@ def _undo_action() -> dict[str, Any]:
         "show_during_relay": True,
     }
 
+
+# Issue #1863: "applied" says something is LIVE; it does not say there is an
+# earlier profile to bring BACK. A genuine first-ever apply on a speaker has
+# no ``pre_apply_profile`` to restore, and handle_v2_restore
+# (jasper.web.correction_crossover_v2) correctly refuses with "there's no
+# earlier one to restore" — so gating every Undo affordance on ``applied``
+# alone was offering a button guaranteed to fail. crossover_v2_status_block
+# computes ``can_undo`` from the SAME evidence the endpoint itself checks
+# (applied AND a real pre_apply_profile), so this reads that pre-computed
+# fact rather than re-deriving it — one writer, same rule everywhere the
+# question is asked.
+def _can_undo(status: Mapping[str, Any]) -> bool:
+    return bool(_v2(status).get("can_undo"))
+
 # --- failure recency (issue #1942) -------------------------------------------
 
 #: How long a persisted terminal failure keeps rendering as the LIVE screen.
@@ -1958,9 +1972,13 @@ def _aged_failure_envelope(
       are nulled below. ``None`` is not a special aged-only value: it is what
       the ``tier`` key's own contract already calls unknown, and this screen
       genuinely HAS no session.
-    * **Undo survives.** ``applied`` is the state fact that says something is
-      live on the speaker, and W6.7 ruling 3 says the household is entitled to
-      Undo whenever that is true. The live path offers it; so does this one.
+    * **Undo survives, when there is one to offer.** ``applied`` is the state
+      fact that says something is live on the speaker, and W6.7 ruling 3 says
+      the household is entitled to Undo whenever that is true — but "entitled
+      to Undo" presumes there is an earlier profile to restore. #1863: a
+      first-ever apply never stashed one, and offering the button anyway is a
+      guaranteed refusal from handle_v2_restore. The live path and this one
+      both gate on :func:`_can_undo`, never on ``applied`` alone.
     * **Uniform across templates, except where the copy is durable.** A stale
       ``hard_stop`` gets the same treatment as a stale ``verify_fail``,
       because "act on this now" is equally untrue of both. If the blocking
@@ -1975,7 +1993,7 @@ def _aged_failure_envelope(
         status,
         next_action=next_action,
         alternate_actions=(
-            [*alternate_actions, _undo_action()] if applied
+            [*alternate_actions, _undo_action()] if _can_undo(status)
             else alternate_actions
         ),
         nudges=[{
@@ -2010,7 +2028,8 @@ def _verify_fail_envelope(
     VERIFY-phase override in :func:`_failure_envelope` (W6.7 ruling 3) for any
     OTHER code surfacing once the candidate is applied — the household is
     entitled to the Undo affordance the moment something is live on the
-    speaker, regardless of which check failed.
+    speaker AND there is actually something to restore it from (issue
+    #1863 — see :func:`_can_undo`), regardless of which check failed.
 
     ``verify_undo`` and ``verify_remeasure`` carry ``show_during_relay``
     (W6.12, the same seam W6.10 added for the review screen's Apply): the
@@ -2039,7 +2058,9 @@ def _verify_fail_envelope(
         alternate_actions=[
             # Shared with the aged-failure entry screen — see ``_undo_action``
             # for the restore-path rationale and the open W6.7 N2 item.
-            _undo_action(),
+            # Omitted entirely (not merely disabled) when there is nothing to
+            # restore (#1863) — a first-ever apply has no earlier profile.
+            *([_undo_action()] if _can_undo(status) else []),
             {
                 "id": "verify_remeasure",
                 "label": "Re-measure",
@@ -2546,15 +2567,26 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "endpoint": "/correction/crossover/v2/session",
                 "body": {"tier": TIER_FULL},
             })
-        env = _envelope(
-            screen="done", active_step="verify",
-            verdict=done_verdict,
-            next_action={
+        # #1863: Undo is the primary action ONLY when there is actually an
+        # earlier profile to restore — a first-ever apply on this speaker
+        # never stashed one, and handle_v2_restore refuses that cleanly
+        # ("there's no earlier one to restore"). Offering it anyway made the
+        # household's most-visible button on the whole screen a guaranteed
+        # 400. When there's nothing to undo, promote the next real forward
+        # step (room correction) to primary instead of a dead safety net.
+        if _can_undo(status):
+            next_action = {
                 "id": "verify_undo",
                 "label": "Undo (restore previous sound)",
                 "endpoint": "/correction/crossover/v2/restore",
                 "body": {},
-            },
+            }
+        else:
+            next_action, *alternate_actions = alternate_actions
+        env = _envelope(
+            screen="done", active_step="verify",
+            verdict=done_verdict,
+            next_action=next_action,
             alternate_actions=alternate_actions,
             # PR-L4 item 7: the badge may not claim more than the evidence.
             # "Verified." still means the tracking comparator passed, but a
