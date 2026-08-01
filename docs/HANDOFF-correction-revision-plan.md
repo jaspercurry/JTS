@@ -220,10 +220,23 @@ offline (the CamillaDSP render harness exists, aimed elsewhere). Two of three
 seams are mis-assigned today; this is also the likely home of the genuine
 1000–1600 Hz model error left after tilt removal.
 
-**Status.** PENDING RATIFICATION; nothing merged. **R10a (target + guards
-half) opened 2026-08-01 in the extended R9 session under the owner's
-same-session authorization** — see the split note at the end of the R10
-campaign section. R10b (alignment + emit) follows it, never precedes it.
+**Status.** R10a (target + guards half) **LANDED 2026-08-01** under the
+owner's same-session authorization — #1999 (crossover-shaped per-branch
+target, structural stopband guard at ½ octave past the −3 dB radiating
+band, #1967's classify-only unclamp; crossover-region residual
+−43%/−47% on the banked bench, #1817 closed) and #1998 (#1954's
+per-frequency variance-capped depth), both gated 0/0 across multi-round
+reviews — #1998's first round found two behaviour defects closed by
+code (the clamp reached centres the cap had no mandate over; the cap
+was under-enforced at protected bins), the later rounds'
+evidence-honesty findings closed by strengthening evidence. Ladder ratification itself remains Monday's, and the
+R10a gates produced **two new ratification items**: the raw-σ statistic
+ruling (recorded on #1954 — deliberate deviation from the digest's
+letter) and the bins-vs-centres clamp question (between-centre residue
+is measured-not-bounded — worst-found ~11.6 dB on a 3360-design grid,
+stable-centre share ~17%; every design publishes its own
+`max_overshoot_db` as the real protection). R10b (alignment + emit)
+follows R10a, never precedes what it built.
 
 **Reshapes.** Precedes WO-6 and **any delay work** — so **WO-3's delay-adoption
 path (Q-A) is superseded-pending**: no delay value is adopted on model evidence
@@ -517,6 +530,38 @@ working flow**, never beside it.
 > replay + predicted-vs-old-fit figures; the new objective replaces the
 > old fit behind the working flow.
 
+> **R10a outcome (2026-08-01).** Both halves' PRs merged at 0/0 — #1999
+> and #1998, each through multi-round gates. #1998's first round found
+> two BEHAVIOUR defects, closed by code: the cumulative clamp imposed a
+> ceiling at centres the cap had no mandate over (a σ=0.031 dB centre —
+> where the seats agreed — trimmed 2 dB, with the nudge blaming
+> disagreement), and the cap was under-enforced at the bins it protects
+> (55% over its allowance on the default strategy) — fixed by the
+> `protected_mask` single owner and a realized-chain monotone
+> relaxation run last, which itself surfaced a real ordering bug
+> (dropped boosts deepening a protected centre post-clamp). The
+> remaining findings were evidence-honesty class (a non-discriminating
+> guard fixture, docstring numbers that didn't reproduce with one
+> clause inverted, a vacuous regression pin, a grid-conditional figure
+> dressed as a bound), all closed by strengthening the evidence: an
+> in-suite counterfactual with a geometric precondition, a named
+> hardcode-free probe script
+> (`captures/r10a-objective-20260801/fit_band_probe.py`), a
+> self-guarding fixture, and per-design `max_overshoot_db` publication.
+> Offline validation banked in `captures/r10a-objective-20260801/`
+> (figures + `numbers.json`): crossover-region residual woofer
+> 1.887→1.079 dB rms, tweeter 3.063→1.634; the flat-target #1817
+> artifact (+2.81 dB inside the radiating band) eliminated; a perfect
+> tweeter that drew ~9 dB of spurious cut under the flat target draws
+> zero under the shaped one; summed 2.514→2.402 (small, correctly —
+> the residue belongs to R10b's alignment). Deployed to jts3
+> (`0280eb91a`, doctor 0 failed steady-state). Slice accounting carries
+> forward from R9 unchanged: the live verify path remains behind the
+> owner's parked-candidate decision, so R10a's on-device evidence is
+> the deploy + the banked offline validation + the gated regression
+> pins; the live envelope confirmation rides the same Monday runbook
+> items.
+
 ### R11 — the loop round (rung P4 / WO-7 chassis + live fixed-mic validation) *(Saturday night 08-01 / Sunday 2026-08-02)*
 
 **Territory:** the conductor/report layer — `crossover_v2_flow`,
@@ -635,33 +680,36 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-01 (R9 closed; R10a opened in the same
-                owner-extended session)
-jts3_sha:       5f434edb8 — verified deployed (build.txt status=ok),
-                jasper-doctor 0 failed / 5 known warnings
-active_round:   R10a — the objective round, target + guards half (rung P3;
-                territory: jasper/correction/ fit layer +
-                jasper/active_speaker/ fit/trim). R10b (alignment + emit)
-                queued behind it
-active_rung:    P3, under the owner's same-session authorization; ladder
-                ratification itself still Monday's. P1 is COMPLETE —
-                see the R9 outcome block in the campaign section
-last_round:     R9 — the instrument round, COMPLETE at five PRs merged 0/0
-                (#1989 #1987 #1996 #1991 #1994), replay regression clean
-                (zero unexplained deltas), our-chain certification banked.
-                Slice exit honestly split: live probe = transport only
-                (review-phase envelope, verify null); disclosure feed
-                rests on gated tests + replay; browser-pixel pass + the
-                parked wizard decision (pending candidate 8ca42d15…) are
-                Monday-runbook items
-next_mission:   R10a work orders (this session);
-                captures/NEXT-SESSION-PROMPT-round-10.md for a fresh session
+date:           2026-08-01 (R9 closed AND R10a landed, one owner-extended
+                session)
+jts3_sha:       0280eb91a — verified deployed (build.txt status=ok),
+                jasper-doctor 0 failed steady-state / 5 known warnings
+active_round:   R10b — the objective round's alignment + emit half
+                (summed model carries committed delay + trim; offline
+                emit loop through the render harness; delay search).
+                Next session's work: captures/NEXT-SESSION-PROMPT-round-10.md
+                covers it (DoD items 1–2 done — item 2's exit metric
+                holds, zero stopband filters on all four branch/arm
+                cells, the guard demonstrated structurally rather than
+                on-corpus; start at item 3)
+active_rung:    P3, second half. P1 COMPLETE (R9 outcome block); P3's
+                target + guards half LANDED (R10a outcome block); ladder
+                ratification still Monday's
+last_round:     R9 (five PRs 0/0, replay regression clean, our-chain
+                certification banked, honest-split slice) + R10a (#1999
+                fit objective, #1998 variance cap, both 0/0 multi-round;
+                crossover-region residual −43%/−47% banked; deployed)
+next_mission:   R10b via captures/NEXT-SESSION-PROMPT-round-10.md
 blocked_on:     Monday-gated: ladder P0–P4 ratification, Q-E, the
                 enclosure-hole timeline, the mic-replacement repeat-floor
                 arm, H3-swap scheduling, the #1990 §B fit-margin
-                threshold decision, and the two new runbook items from
-                the R9 slice check (#1993 was settled by measurement and
-                closed — both halves)
+                threshold decision, the two R9 runbook items (parked
+                candidate 8ca42d15… + browser-pixel pass), and the two
+                R10a ratification items: the raw-σ ruling (#1954
+                comment) and bins-vs-centres clamp binding (worst-found
+                ~11.6 dB between-centre residue, ~17% stable share,
+                per-design max_overshoot_db published). #1993 settled
+                and closed, both halves
 ```
 
 ## How this document relates to session handoffs and issues
