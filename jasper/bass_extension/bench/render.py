@@ -106,8 +106,12 @@ class RenderError(RuntimeError):
     only route by which a child's failure arrives as something else is a
     ``preexec_fn`` raising — which CPython reports as ``SubprocessError``. The
     other two sites pass no ``preexec_fn``, so an arm there would handle an
-    exception that cannot occur. A caller that handles ``RenderError`` has
-    therefore handled the module.
+    exception that cannot occur for any cause a maintainer will meet. (Not
+    strictly none: CPython also falls back to ``SubprocessError("Bad exception
+    data from child: …")`` when the errpipe payload does not split into three
+    fields. That is memory-corruption-grade, and an arm for it would still be
+    dead weight.) A caller that handles ``RenderError`` has therefore handled
+    the module.
 
     That is load-bearing rather than tidy: callers refuse on ``RenderError``
     and map it to a "no verdict was reached" exit, while anything escaping them
@@ -513,11 +517,21 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
       ordinary case, since nothing here ever deletes a preserved output and
       the bench's ``--bundle-dir`` defaults to a fixed path, so a plain re-run
       lands right back on these names;
-    * two different shapes colliding on one caller-chosen name.
+    * two candidates colliding on one caller-chosen name WITHIN a single run.
+      :mod:`~jasper.bass_extension.bench.runner` keeps candidates distinct by
+      exact float, while :mod:`~jasper.bass_extension.bench.executor` tags the
+      render paths ``f"{setting_dbfs:g}"`` — six significant digits — so two
+      settings that differ past the sixth digit survive as distinct candidates
+      and then claim the same preserved path.
 
-    The remediation is identical for all three, which is what lets the message
-    stay honest without diagnosing. Checking up front costs no render at all,
-    which is what makes refusing the cheap answer.
+    The remediation the message offers — delete the file, or render into a
+    fresh bundle directory — fits the first two. It does NOT fit the third: the
+    collision is on a name INSIDE the bundle, so a fresh directory changes
+    nothing, and deleting only lets the next run collide at the same tag again.
+    That one needs the caller's naming widened, which is not something an
+    operator can act on from an error string — which is exactly why the causes
+    are enumerated HERE and the message does not enumerate at all. Checking up
+    front costs no render, which is what makes refusing the cheap answer.
 
     It is specifically NOT protection against a stale file reaching a reader.
     Rename's overwrite is total: a slot that gets written ends up holding the
@@ -528,7 +542,8 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
     The check has two call sites, defending different things:
 
     * **Up front, before any render** — the one that fires in practice, for any
-      of the reused-directory cases above.
+      of the three cases above. Note the third needs no reused directory: it
+      happens within one run, in a directory that may be brand new.
     * **Immediately before each move.** Nothing inside
       :func:`render_with_determinism_receipt` can occupy a preserved slot
       between those two moments: the three paths are proved distinct, and the
