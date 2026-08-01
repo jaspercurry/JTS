@@ -552,15 +552,24 @@ def _render_arm(
 ) -> RenderArm:
     """Render one arm twice, proving the render repeats byte-for-byte.
 
-    The determinism proof is spelled out here rather than delegated to
-    :func:`~jasper.bass_extension.bench.render.render_with_determinism_receipt`
-    because that helper renders ONE config path into two different output paths
-    — and a CamillaDSP render's destination is not an argument, it is
-    ``devices.playback.filename`` INSIDE the config. Two destinations therefore
-    need two derivations: ``derived`` (built by :func:`plan_emit_loop`) plus a
-    second one built here, differing in nothing but where the samples land. Same
-    binary, same stimulus, same graph — so byte-identical output, or the
+    Two derivations of one emitted text — ``derived`` (built by
+    :func:`plan_emit_loop`) and a second built here — differing in nothing but
+    where the samples land, because a CamillaDSP render's destination is not an
+    argument: it is ``devices.playback.filename`` INSIDE the config. Same
+    binary, same stimulus, same graph, so byte-identical output, or the
     instrument does not repeat and nothing measured with it is a measurement.
+
+    **A note for whoever touches this next.** This was written when
+    :func:`~jasper.bass_extension.bench.render.render_with_determinism_receipt`
+    could not be used: it took one config path and two output paths, which no
+    binary would honour. PR #2011 fixed that helper, and fixed it *better* than
+    this — it renders the SAME config text twice to its declared destination and
+    moves each output aside between runs, so render 2 starts with that
+    destination absent, which is a stronger proof than two configs that differ
+    by one string. Folding this onto that helper is the right follow-up and
+    would delete the second derivation above; it is not done here only because
+    that fix landed mid-review of this branch and a determinism-path swap is not
+    a change to make unreviewed.
     """
 
     work_dir = plan.work_dir
