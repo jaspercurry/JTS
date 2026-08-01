@@ -1465,10 +1465,21 @@ def verify_inconclusive_cause(
       ReasonSpec); it reaches the DONE screen's, because that screen keys on
       the coarse outcome rather than the code.
 
-    ``None``/unknown on either argument means the record does not say, which is
-    the ordinary state of a durable state file written before this shipped.
-    The clause is then EMPTY rather than guessed — the caller states the
-    outcome and stops, which is the honest rendering of an unrecorded cause.
+    The two arguments go unknown for different reasons and get different
+    answers, and the difference is load-bearing:
+
+    * ``code=None`` — the record does not say WHICH verdict fired (a durable
+      state written before this shipped). Nothing at all is established, so
+      the clause is EMPTY: the caller states the outcome and stops, which is
+      the honest rendering of an unrecorded cause.
+    * ``reflection_measured=None`` — the verdict IS known, only its gate is
+      not. That collapses into the no-reflection-claim branch below rather
+      than emptying the clause, because the code alone already establishes the
+      observation ("the window came out shorter than the tuning's") — that is
+      what the rule measured, independent of any gate record. Emptying here
+      would also break :func:`verify_inconclusive_message`, whose registry
+      rendering passes exactly this and would otherwise read "The check was
+      inconclusive — . Re-verify to try again."
 
     Returned without terminal punctuation: the caller owns the sentence it
     lands in.
@@ -4811,10 +4822,11 @@ class CrossoverV2Conductor:
         # nulls it while this outcome stands.
         self._verify_code: str | None = None
         # VERIFY's own gate, reduced to what the screens need (issue #1974 /
-        # #1966) — see ``_gate_record``. Recomputed from THIS attempt's capture
-        # on every verdict, including the early returns, because the screen
-        # that reports a gate-comparability refusal is exactly the one that has
-        # to say what the gate did.
+        # #1966) — see ``_gate_record``. THE THIRD MEMBER OF THE TRIPLE above:
+        # written only by ``_set_verify_outcome``, so it always describes the
+        # same capture as the outcome and code beside it. An attempt that
+        # early-returns never reaches that method and therefore leaves all
+        # three standing together, rather than replacing one of them.
         self._verify_gate: dict[str, Any] | None = None
         # The VERIFY tracking numbers behind the verify_fail screen's collapsed
         # expert disclosure (#1605). Set only once the tolerance comparison is
@@ -5199,6 +5211,11 @@ class CrossoverV2Conductor:
         ``_gate_record``. Surfaced on EVERY outcome, for the reason the graded
         band and the frame are: a pass is exactly when nobody asks how much of
         the response the comparison could actually see.
+
+        It describes the capture that produced :attr:`verify_outcome` and
+        :attr:`verify_code`, never a later attempt's — the three are one write
+        (``_set_verify_outcome``). A screen may therefore pair them freely,
+        which is exactly what the done screen's cause copy does.
         """
         return dict(self._verify_gate) if self._verify_gate else None
 
@@ -7413,18 +7430,35 @@ class CrossoverV2Conductor:
         self._safe_log_diag(self._log_verify_diag, analysis, verdict)
         return verdict
 
-    def _set_verify_outcome(self, outcome: str, code: str | None = None) -> None:
-        """Record the verify outcome and the verdict that produced it, TOGETHER.
+    def _set_verify_outcome(
+        self, outcome: str, code: str | None, gate: dict[str, Any] | None,
+    ) -> None:
+        """Record the verify outcome, its verdict, and its gate — as ONE write.
 
-        One call, not two assignments (issue #1974). "inconclusive" is reached
-        by two verdicts that share no mechanism, and the done screen names the
-        cause from the pair — so an outcome written without its code, or with a
-        previous attempt's, is a screen telling a household the wrong reason.
-        Making the pair one write is what keeps that unavailable rather than
-        merely intended. ``code=None`` is the pass: nothing rejected it.
+        One call, not three assignments (issue #1974). "inconclusive" is
+        reached by two verdicts that share no mechanism, and the done screen
+        names the cause by reading the code and the gate TOGETHER — so any two
+        of these three drawn from different attempts is a screen telling a
+        household the wrong reason. ``code=None`` is the pass: nothing
+        rejected it. ``gate=None`` is an ungateable capture.
+
+        **The gate is a parameter, not a field this method reads.** An earlier
+        revision recomputed ``_verify_gate`` at the top of ``_verify_verdict``,
+        before the early returns — which meant an attempt that early-returned
+        (``locate_failed`` / ``pilot_level_collapse`` / ``agc_behavioral_fail``,
+        none of which reach here) overwrote the gate while leaving the PREVIOUS
+        attempt's outcome and code standing. The adversarial gate on PR #1994
+        reproduced the consequence on the real conductor: an attempt-1
+        "inconclusive" whose window was capped at the ceiling, followed by an
+        attempt-2 locate failure whose capture DID find a reflection, made the
+        done screen say "a reflection reached the microphone sooner…" about a
+        verdict whose own capture had found none — #1974 re-created in a new
+        place. Requiring the gate at the call site is what makes that
+        unavailable rather than merely intended.
         """
         self._verify_outcome = outcome
         self._verify_code = code
+        self._verify_gate = gate
 
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call — a stale value from a PRIOR attempt must never
@@ -7445,13 +7479,19 @@ class CrossoverV2Conductor:
         self._verify_evidence = None
         self._verify_graded_band_hz = None
         self._verify_frame = None
-        # NOT reset-then-maybe-set: recomputed outright from THIS attempt's
-        # capture, before any early return, because every verdict below has a
-        # screen and every one of those screens is entitled to say what the
-        # gate did. The gate-comparability refusal needs it most of all — that
-        # is the verdict whose copy used to assert a reflection nobody had
-        # looked for (issue #1974).
-        self._verify_gate = _gate_record(analysis.summed_response)
+        # THIS attempt's gate, as a LOCAL — deliberately not written to
+        # ``self`` here. It is computed before the early returns because the
+        # gate-comparability refusal below needs it (that is the verdict whose
+        # copy used to assert a reflection nobody had looked for, issue
+        # #1974), but it only becomes conductor state through
+        # ``_set_verify_outcome``, alongside the outcome and code it belongs
+        # to. See that method for the desync this ordering prevents.
+        #
+        # Named for what it is, not "gate": ``verify_gate`` below is this same
+        # capture's window in MILLISECONDS, and in the one method where
+        # confusing the two produced a household-visible bug they should not
+        # share a name.
+        gate_record = _gate_record(analysis.summed_response)
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.pilot_snr_ok is False:
@@ -7471,7 +7511,9 @@ class CrossoverV2Conductor:
             and verify_gate is not None
             and verify_gate + 1e-6 < self._measure_gate_window_ms
         ):
-            self._set_verify_outcome("inconclusive", REASON_VERIFY_INCONCLUSIVE)
+            self._set_verify_outcome(
+                "inconclusive", REASON_VERIFY_INCONCLUSIVE, gate_record,
+            )
             return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
         # Measurement-honesty gate G3 (2026-07-22): the tracking-max
         # comparison below is exactly the thing a shifted recording chain
@@ -7507,7 +7549,9 @@ class CrossoverV2Conductor:
             self._verify_pilot_transfer_step_db is not None
             and self._verify_pilot_transfer_step_db > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
         ):
-            self._set_verify_outcome("inconclusive", REASON_VERIFY_LEVEL_SHIFT)
+            self._set_verify_outcome(
+                "inconclusive", REASON_VERIFY_LEVEL_SHIFT, gate_record,
+            )
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
@@ -7531,7 +7575,9 @@ class CrossoverV2Conductor:
         # travel in the persisted evidence as diagnostic fields only.
         max_db = tracking.get("max_db_notch_excluded")
         if not isinstance(max_db, (int, float)) or max_db > VERIFY_TOLERANCE_DB:
-            self._set_verify_outcome("fail", REASON_VERIFY_OUT_OF_TOLERANCE)
+            self._set_verify_outcome(
+                "fail", REASON_VERIFY_OUT_OF_TOLERANCE, gate_record,
+            )
             return PhaseVerdict(
                 False, REASON_VERIFY_OUT_OF_TOLERANCE,
                 payload={"tracking": dict(tracking)},
@@ -7548,7 +7594,7 @@ class CrossoverV2Conductor:
             self._verify_validity_floor_hz = summed.validity_floor_hz
         refusal = self._delta_probe_refusal(self._run_delta_probe())
         if refusal is not None:
-            self._set_verify_outcome("fail", refusal)
+            self._set_verify_outcome("fail", refusal, gate_record)
             return PhaseVerdict(
                 False, refusal,
                 payload={
@@ -7559,7 +7605,7 @@ class CrossoverV2Conductor:
                     ),
                 },
             )
-        self._set_verify_outcome("pass")
+        self._set_verify_outcome("pass", None, gate_record)
         return PhaseVerdict(
             True, payload={
                 "measurement_phase": PHASE_VERIFY,

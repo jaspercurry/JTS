@@ -1522,6 +1522,76 @@ def test_the_gate_is_recorded_on_a_passing_verify_too():
     assert c.verify_gate["reflection_measured"] is False
 
 
+def test_an_early_return_retry_cannot_repair_the_gate_onto_a_stale_verdict():
+    """The desync the PR #1994 adversarial gate found, pinned as a property.
+
+    The outcome, the code, and the gate are written by ONE call, so an attempt
+    that early-returns (``locate_failed`` / ``pilot_level_collapse`` /
+    ``agc_behavioral_fail`` — none of which reach ``_set_verify_outcome``)
+    leaves all three of the previous attempt's facts standing TOGETHER.
+
+    Before the fix the gate alone was recomputed at the top of every
+    ``_verify_verdict`` call, so this exact sequence — an inconclusive whose
+    window was capped at the search ceiling, then a locate failure whose
+    capture DID find a reflection — paired attempt 1's verdict with attempt 2's
+    gate. The done screen then said "a reflection reached the microphone
+    sooner…" about a verdict whose own capture had found none: issue #1974
+    re-created one layer down. The symmetric understatement (measured, then a
+    ceiling-capped early return) is the same bug in the other direction.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    # Attempt 1 concludes: gate-comparability inconclusive, window capped.
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.5, gate_ms=5.0, floor_source=gating.FLOOR_SEARCH_BOUND,
+    )
+    assert _run_phase(c, 3, 3)["code"] == "verify_inconclusive"
+    assert c.verify_gate is not None
+    assert c.verify_gate["reflection_measured"] is False
+
+    # Attempt 2 never concludes — but its capture found a reflection.
+    fakes.verify = lambda program: _verify_analysis(
+        program, locate_confidence=0.0, floor_source=gating.FLOOR_MEASURED,
+    )
+    assert _run_phase(c, 3, 4)["code"] == REASON_LOCATE_FAILED
+
+    # The triple is still attempt 1's, entire.
+    assert c.verify_outcome == "inconclusive"
+    assert c.verify_code == "verify_inconclusive"
+    assert c.verify_gate is not None
+    assert c.verify_gate["reflection_measured"] is False
+    assert "no reflection found" in c.verify_gate["disclosure"]
+
+    # And the screen the household actually reads says the ceiling thing.
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "done",
+            "applied": True,
+            "verify": {
+                "outcome": c.verify_outcome,
+                "code": c.verify_code,
+                "gate": c.verify_gate,
+            },
+            "candidate": {"trims_db": {"lo": -1.0}, "delay_us": 120.0,
+                          "polarity": "normal"},
+            "post_apply_grade": {"state": "inconclusive", "graded": False},
+        },
+    })
+    assert env["screen"] == "done"
+    assert "less usable sound to compare" in env["verdict_text"]
+    assert "reflection" not in env["verdict_text"]
+
+
 def test_an_ungated_capture_records_no_gate_at_all():
     """Absent stays absent (the #1987 rule): a response carrying no gating
     block yields no record, so no screen can print a gate that never ran."""

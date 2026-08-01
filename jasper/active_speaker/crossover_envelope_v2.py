@@ -451,6 +451,19 @@ def _verify_gate_lines(status: Mapping[str, Any]) -> list[str]:
     passes the sentence through and adds nothing — no prefix, no label, no
     reformatted number.
 
+    **Whose gate.** The record belongs to the verify verdict this state
+    carries — written with its outcome and code in one call, so the three
+    always describe one capture (see ``crossover_v2_flow._set_verify_outcome``
+    for the desync that ordering prevents). On the done screen that is exactly
+    the verdict being explained. On the verify_fail screen the HEADLINE comes
+    from the current ``failure.code``, which after an early-return retry
+    (locate/pilot/linearity — verdicts that conclude nothing) can be a later
+    attempt than this line. The line stays true of the capture it describes;
+    it simply is not always the same capture as the headline, and the
+    alternative — dropping the disclosure whenever an unrelated retry fails
+    early — would take a true statement off the screen to buy tidier
+    provenance.
+
     Empty when no gate was recorded, since silence is the honest rendering of
     an unrecorded gate.
     """
