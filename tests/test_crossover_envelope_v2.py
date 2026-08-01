@@ -2599,6 +2599,23 @@ def test_review_screen_offers_the_three_way_decision_and_never_undo():
     assert not any("undo" in str(a.get("label") or "").lower() for a in every_action)
 
 
+def test_review_decline_exits_to_the_speaker_page_not_the_room_correction_hub():
+    """#1985: "Leave it as it is" used to href="/correction/" — the
+    UNRELATED room-correction subsystem's own page, which greets an exiting
+    crossover household with its browser-mic HTTPS-transition interstitial
+    (a bare relative href here resolves against wherever the crossover page
+    itself is currently being served, per nginx's HTTPS-to-HTTP catch-all
+    for the plain-HTTP wizards). "/sound/" is the coherent destination the
+    docstring always promised ("returns to the speaker page") and the same
+    one the speaker_setup action already uses from this exact module."""
+    env = build_crossover_envelope_v2(_review_status())
+    decline = next(
+        a for a in env["alternate_actions"] if a["id"] == "review_decline"
+    )
+    assert decline["href"] == "/sound/"
+    assert decline["href"] != "/correction/"
+
+
 def test_review_apply_posts_the_reviewed_candidates_own_fingerprint():
     """The screen does not need a new apply path — it needs a button that posts
     to the one that is there (work-order premise 4). ``handle_v2_apply``'s FIRST

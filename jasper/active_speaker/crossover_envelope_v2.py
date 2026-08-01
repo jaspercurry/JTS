@@ -1111,9 +1111,17 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     and a ``jasper-web`` restart because it lives in durable state with no TTL.
 
     **"Leave it as it is" does not delete the candidate**, deliberately: it
-    ends the journey and returns to the speaker page, and the proposal stays
-    reviewable until a newer measurement replaces it. Deleting on decline would
-    make an accidental tap cost ten captures to undo.
+    ends the journey and returns to the speaker page (``/sound/`` — issue
+    #1985: the generic ``/correction/`` root this used to point at is the
+    UNRELATED room-correction subsystem's own page, which greeted an
+    exiting crossover household with a browser-mic HTTPS-transition
+    interstitial that has nothing to do with the flow they just left; the
+    same bare relative ``/sound/`` href the ``speaker_setup`` action below
+    already uses works whether this screen is being viewed over HTTP or
+    HTTPS — nginx's HTTPS catch-all downgrades an unmatched path back to
+    plain HTTP), and the proposal stays reviewable until a newer
+    measurement replaces it. Deleting on decline would make an accidental
+    tap cost ten captures to undo.
 
     **No Undo anywhere on this screen (D6).** Undo restores what an apply
     replaced, and stage 1 replaced nothing — offering it here would invite a
@@ -1194,7 +1202,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         {
             "id": "review_decline",
             "label": "Leave it as it is",
-            "href": "/correction/",
+            "href": "/sound/",
             "show_during_relay": True,
         },
     ]
