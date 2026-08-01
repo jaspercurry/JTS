@@ -313,6 +313,48 @@ def test_soft_clip_gain_is_zero_at_silence_and_refuses_a_positive_limit() -> Non
         compare.soft_clip_fundamental_gain_db(0.1, 3.0)
 
 
+def test_the_bounds_disclosed_optimism_is_the_measured_one() -> None:
+    """The docstring says "computed"; this is the computation, simulated.
+
+    Driven through :func:`jasper.bass_extension.bench.render.reference_soft_clip`
+    — the repo's own line-for-line port of the pinned implementation — rather
+    than through this module's algebra, so the disclosed figures cannot agree
+    with a mistake in the derivation they describe. (They once did: the first
+    version of that docstring quoted the FUNDAMENTAL-gain factor ``1 − a²/9``
+    where the measured quantity is the output waveform's PEAK, ``1 − a²/6.75``,
+    and understated the shortfall by a third.)
+    """
+
+    from jasper.bass_extension.bench.render import reference_soft_clip
+
+    clip_dbfs = -1.0
+    clip = 10.0 ** (clip_dbfs / 20.0)
+    theta = np.linspace(0.0, 2.0 * np.pi, 200_001)
+
+    def simulated_shortfall(a: float) -> tuple[float, float]:
+        """``(true |g|, fraction the measured-peak bound falls short by)``."""
+        rendered = reference_soft_clip(a * clip * np.sin(theta), clip_limit_dbfs=clip_dbfs)
+        measured_peak = float(np.max(np.abs(rendered)))
+        # The peak factor, confirmed against the closed form.
+        assert measured_peak / (a * clip) == pytest.approx(1.0 - a * a / 6.75, abs=1e-7)
+        true = -compare.soft_clip_fundamental_gain_db(a * clip, clip_dbfs)
+        bound = -compare.soft_clip_fundamental_gain_db(measured_peak, clip_dbfs)
+        return true, (true - bound) / true
+
+    # At the budget: 1.53 % low, 0.000765 dB.
+    a_budget = 0.227287
+    true_db, fraction = simulated_shortfall(a_budget)
+    assert true_db == pytest.approx(compare.SOFT_CLIP_BUDGET_DB, abs=1e-5)
+    assert fraction == pytest.approx(0.0153, abs=2e-4)
+    assert true_db * fraction == pytest.approx(0.000765, abs=1e-5)
+
+    # At the bench's own default stimulus level: 0.148 %.
+    a_default = (10.0 ** (-24.0 / 20.0)) / clip
+    default_db, default_fraction = simulated_shortfall(a_default)
+    assert default_db == pytest.approx(0.00484, abs=1e-5)
+    assert default_fraction == pytest.approx(0.00148, abs=2e-5)
+
+
 def test_soft_clip_bound_is_conservative_and_clears_at_the_bench_level() -> None:
     clip_linear = 10.0 ** (-1.0 / 20.0)
     quiet = 10.0 ** (-24.0 / 20.0)

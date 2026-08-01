@@ -988,13 +988,19 @@ on 2026-07-27 a shipped shelf realized at Q 0.476 while every gate in the fit
 evaluated it at 0.707, missing its design by up to 1.70 dB with nothing in the
 loop able to see it.
 
-Run it **on the speaker** — the binary's identity is resolved from the running
-`jasper-camilla.service` unit and there is deliberately no `--binary` override:
+The bench itself runs **on the speaker** — the binary's identity is resolved
+from the running `jasper-camilla.service` unit and there is deliberately no
+`--binary` override. Invoke it **from your laptop checkout**, though:
+`pi-run-diagnostic.sh` is a laptop-side wrapper that SSHes to `$PI_HOST` (typed
+on the Pi it would SSH from the Pi to itself). Every path in the command below
+is therefore **Pi-side** — `--linearization` and `--out` are resolved on the
+speaker, not on your laptop.
 
 ```sh
+# from the laptop checkout; paths are on the Pi
 bash scripts/pi-run-diagnostic.sh -- \
   /opt/jasper/.venv/bin/jasper-active-speaker-emit-bench \
-    --linearization /path/to/fits.json \
+    --linearization /var/tmp/fits.json \
     --playback-device "$(...)" \
     --out /var/tmp/emit-loop
 ```
@@ -1005,6 +1011,18 @@ process and are not: a production-length run measures 221 MiB parent-only peak
 RSS (235 MiB on an independent measurement during review), a real fraction of a
 1 GB Pi. `pi-run-diagnostic.sh` gives the kernel an obvious thing to kill before
 it reaches a product daemon.
+
+**Expect to raise the runner's memory ceiling for a longer sweep.** Its defaults
+(`MemoryHigh=256M`, `MemoryMax=384M`, `RuntimeMaxSec=10min`) fit the measured
+221–235 MiB with little headroom, and the dominant term — the deconvolution's
+zero-padded FFT — scales with `--sweep-seconds`. A longer sweep will be
+OOM-killed by the cgroup, which looks exactly like a bench bug and is not one.
+Raise it deliberately:
+
+```sh
+JTS_DIAG_MEMORY_HIGH=512M JTS_DIAG_MEMORY_MAX=768M \
+  bash scripts/pi-run-diagnostic.sh -- ...
+```
 
 `--linearization` is a JSON object of persisted per-role `LinearizationFit`
 records (`{role: {"filters": [...], ...}}`), the shape

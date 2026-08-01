@@ -258,19 +258,31 @@ def soft_clip_error_bound_db(
     The caller's only available peak is read off the RENDER, which is the
     limiter's OUTPUT, so it is already compressed by the very transform being
     bounded: the amplitude fed in here is low, and the bound is therefore
-    slightly OPTIMISTIC on that axis, not conservative. The size is computed
-    rather than hand-waved. At :data:`SOFT_CLIP_BUDGET_DB` the post-clip peak
-    under-reads by a factor ``1 − a²/9 = 0.99426``, and since ``g`` goes as
-    ``a²`` the bound comes out **1.15 % low — 0.00057 dB** on a 0.05 dB budget.
-    At the bench's own default stimulus level it is 0.11 % of an 0.0048 dB
-    reading.
+    slightly OPTIMISTIC on that axis, not conservative.
+
+    The size is computed, and the factor is the PEAK one, not the
+    fundamental-gain one — the two are different and confusing them is how this
+    docstring was wrong on first writing. ``g`` above is a *fundamental*
+    (``1 − a²/9``), but what a caller measures off a render is the output
+    WAVEFORM's peak, and the transform is monotone on its domain, so that peak
+    is ``f(a) = a·(1 − a²/6.75)`` — the cubic evaluated at the sine's crest.
+    At :data:`SOFT_CLIP_BUDGET_DB` (``a = 0.22729``) the peak therefore
+    under-reads by ``1 − a²/6.75 = 0.992347``, and since ``g`` goes as ``a²``
+    the bound comes out **1.53 % low — 0.000765 dB** on a 0.05 dB budget. At the
+    bench's own default stimulus level it is **0.148 %** of an 0.00484 dB
+    reading. ``tests/test_active_speaker_emit_bench_compare.py`` pins both
+    figures by driving a sine through
+    :func:`jasper.bass_extension.bench.render.reference_soft_clip`, the repo's
+    own port of the pinned implementation, rather than trusting the algebra
+    here.
 
     It is disclosed rather than corrected. Inverting the cubic to recover the
-    pre-clip peak is one Newton step, but it would buy back six ten-thousandths
-    of a decibel on a bound whose whole job is to separate 0.05 dB from 1.7 dB —
-    false precision, and one more step between a reader and the arithmetic. The
-    per-frequency-vs-peak conservatism above is larger than this in every real
-    case, so the bound as computed still errs high overall.
+    pre-clip peak is one Newton step, but it would buy back eight
+    ten-thousandths of a decibel on a bound whose whole job is to separate
+    0.05 dB from 1.7 dB — false precision, and one more step between a reader
+    and the arithmetic. The per-frequency-vs-peak conservatism above is larger
+    than this in every real case, so the bound as computed still errs high
+    overall.
     """
 
     treated = soft_clip_fundamental_gain_db(treated_peak_linear, clip_limit_dbfs)
