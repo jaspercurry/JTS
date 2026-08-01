@@ -765,7 +765,12 @@ def test_aggregate_by_provider_folds_in_activity_cost(tmp_path: Path):
     _insert_interval(
         db, "grok", (now - timedelta(hours=1)).isoformat(), now.isoformat(), 3.0,
     )
-    rows = store.aggregate_by_provider()
+    # Explicit since_utc, not the default current-calendar-month window: the
+    # default resets at UTC midnight on the 1st, which would clip this
+    # 1-hour interval whenever the test happens to run in the first hour of
+    # a month (#1993). since_utc=now-2h contains the interval by
+    # construction regardless of wall-clock time.
+    rows = store.aggregate_by_provider(since_utc=now - timedelta(hours=2))
     grok = next(r for r in rows if r["provider"] == "grok")
     assert grok["sessions"] == 1
     assert grok["input_tokens"] == 1000  # tokens still tracked
