@@ -770,13 +770,22 @@ def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
     assert abs(lorentzian_giveback - exact_giveback) > 0.05
 
 
-def test_exact_rebuild_does_not_move_a_single_emitted_filter():
-    """The R10b rebuild is a CLAIM seam, not a design one.
+def test_every_stage_combination_reports_the_realized_cascades_residual():
+    """The R10b rule holds for every path through the fit, not one fixture.
 
-    It is the last write to ``working_db`` and no filter-producing stage runs
-    after it, so it cannot move a filter — this pins that structurally rather
-    than by argument: the emitted cascade equals what the stages produced,
-    across the vocabularies and shapes that exercise every stage.
+    Eight runs — four shapes x both vocabularies — reaching the shelf, peaking,
+    CD-horn and lift stages in their various combinations. In each, the reported
+    ``residual_rms_db`` is recomputed from ``complex_correction_response`` over
+    the fit's own band and give-back frame, and must match.
+
+    **What this does NOT prove**, stated so the name is not read as more:
+    that the fix leaves the emitted filters alone. A single-revision test cannot
+    show that. The no-filter-moves claim rests on the seam's structure (the
+    rebuild is the last write to ``working_db``; no filter-producing stage runs
+    after it) and on the two-revision measurement in
+    ``captures/r10b-alignment-20260801/lorentzian_gap_probe.py``, which compares
+    the emitted sets across revisions on a real corpus. What this test adds is
+    that no stage combination leaves an approximate claim behind.
     """
     fixtures = (
         ("woofer", (150.0, 4000.0), _bell(_NATIVE_FREQS_HZ, 1000.0, 8.0, 0.15)),
