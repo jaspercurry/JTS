@@ -494,12 +494,14 @@ def render_with_determinism_receipt(
     aside to ``first_output_path`` / ``second_output_path`` so both survive
     to be compared.
 
-    Moving render 1's output away is what makes render 2's proof stronger
-    than rendering to two separate destinations would be: the declared
-    destination does not exist when render 2 starts, so
-    :func:`render_config`'s ``is_file()`` check is real evidence that the
-    binary rewrote it, not evidence that some file happens to be sitting
-    there.
+    What moving render 1's output away contributes is PRESERVATION, not
+    proof. :func:`render_config` unlinks its destination before every render,
+    so its ``is_file()`` check afterwards is real evidence that the binary
+    wrote that file — which holds whether or not anything was moved aside,
+    and held equally for a caller that rendered to two separate
+    destinations. What the move buys is that render 2 does not simply
+    overwrite render 1: both outputs survive, so there are two files to
+    compare at all.
 
     Refuses before the first subprocess starts if ``config_path`` does not
     actually declare ``declared_output_path``, if the three paths are not

@@ -277,16 +277,24 @@ def test_a_second_run_into_the_same_work_directory_still_grades(tmp_path) -> Non
     verdict down with it, since the CLI's default ``--out`` is a fixed
     directory.
 
-    The second half is what keeps the clearing honest. Overwriting must not
-    reintroduce the hazard the guard exists to prevent, so each retained render
-    is re-hashed off disk and matched against the receipt that describes it —
-    run 2's files must be run 2's bytes, never run 1's left in place.
+    Run 2 carries a DIFFERENT fit, and that is what makes the byte assertions
+    below able to discriminate at all: the treated arm must come back with
+    different bytes than run 1 produced, and the retained file must hash to
+    what run 2's own receipt records. Run the same fit twice and the two runs
+    render byte-identically — that is what determinism means — so neither
+    assertion could tell a fresh render from a leftover. The CONTROL arm
+    carries no filters in either run, so it renders identically by
+    construction and is deliberately not part of the difference assertion.
     """
 
+    import copy
     import hashlib
 
-    first = _run(tmp_path, sweep_seconds=0.5)
-    second = _run(tmp_path, sweep_seconds=0.5)
+    varied = copy.deepcopy(DESIGNED)
+    varied["tweeter"][1]["gain"] -= 1.0
+
+    first = _run(tmp_path)
+    second = _run(tmp_path, linearization=varied)
 
     for report in (first, second):
         assert report.outcome == loop.OUTCOME_MATCHED
@@ -297,9 +305,33 @@ def test_a_second_run_into_the_same_work_directory_still_grades(tmp_path) -> Non
         "treated.first.raw",
         "treated.repeat.raw",
     ]
-    for arm in (second.control, second.treated):
-        on_disk = hashlib.sha256(Path(arm.output_path).read_bytes()).hexdigest()
-        assert on_disk == arm.determinism_receipt["output_sha256"]
+    treated_before = first.treated.determinism_receipt["output_sha256"]
+    treated_after = second.treated.determinism_receipt["output_sha256"]
+    assert treated_before != treated_after
+    on_disk = hashlib.sha256(Path(second.treated.output_path).read_bytes()).hexdigest()
+    assert on_disk == treated_after
+
+
+def test_an_unclearable_output_slot_refuses_instead_of_escaping_as_an_oserror(
+    tmp_path,
+) -> None:
+    """A slot that cannot be cleared is a refusal, not a traceback.
+
+    ``unlink(missing_ok=True)`` suppresses only ``FileNotFoundError``. Anything
+    else — a directory sitting in the slot, a read-only mount — would escape as
+    a bare ``OSError``, past ``run_emit_loop`` and past the CLI's refusal
+    handler, and land as exit 1: "a graded branch did not match". That inverts
+    the CLI's three-state contract, reporting a realization defect for a run
+    that never rendered a sample. It must be an ``EmitLoopError``, which the CLI
+    maps to REFUSED and exit 2.
+    """
+
+    work = tmp_path / "work"
+    work.mkdir(parents=True)
+    (work / "control.first.raw").mkdir()
+
+    with pytest.raises(EmitLoopError, match="could not be cleared"):
+        _run(tmp_path, sweep_seconds=0.5)
 
 
 def test_the_two_arms_differ_only_by_the_filters_under_test(exact_report) -> None:

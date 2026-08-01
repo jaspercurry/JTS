@@ -598,14 +598,29 @@ def _render_arm(
     # slot guard, it scopes it: that guard defends the bass-extension campaign,
     # which renders MANY shapes into one bundle under caller-chosen names, so a
     # collision there means two different shapes are fighting over one file — a
-    # real bug, and the receipt would end up describing different bytes than the
-    # campaign reads back. This loop renders exactly two shapes and derives both
-    # names from the arm, so a collision here only ever means "this directory
-    # was used before". `render_config` already unlinks its own declared
-    # destination for precisely that reason; this restores the same parity for
-    # the two paths the determinism helper adds on top of it.
-    first_output_path.unlink(missing_ok=True)
-    repeat_output_path.unlink(missing_ok=True)
+    # real bug. This loop renders exactly two shapes and derives both names from
+    # the arm, so a collision here only ever means "this directory was used
+    # before". `render_config` already unlinks its own declared destination for
+    # precisely that reason; this restores the same parity for the two paths the
+    # determinism helper adds on top of it.
+    for slot in (first_output_path, repeat_output_path):
+        try:
+            slot.unlink(missing_ok=True)
+        except OSError as exc:
+            # `missing_ok` suppresses only FileNotFoundError; anything else
+            # (a directory in the slot, a read-only mount) would otherwise
+            # escape as a bare OSError, past run_emit_loop and past the CLI's
+            # refusal handler — surfacing as exit 1, "a graded branch did not
+            # match", for a run that never rendered anything. Refusing here
+            # keeps it exit 2, "no verdict was reached", which is true.
+            log_event(
+                logger, "emit_loop.refused", arm=name, stage="prepare",
+                slot=str(slot), reason=str(exc),
+            )
+            raise EmitLoopError(
+                f"{name} arm's preserved output slot {slot} could not be "
+                f"cleared: {exc}"
+            ) from exc
 
     try:
         receipt = render_with_determinism_receipt(
