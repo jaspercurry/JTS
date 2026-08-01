@@ -2023,20 +2023,28 @@ def _poll_capture_plan(
                         # deliberately: closing it would also close the
                         # legitimate voluntary-retake case (the whole point of
                         # this hold), so #1872's fix lives on the CONDUCTOR
-                        # side instead of here. ``_close_cloud_group`` still
-                        # re-enters on every retake of the final index and
-                        # keeps the geometry verdict honest with whichever take
-                        # is retained, but the group-level SIDE EFFECTS — the
-                        # ``cloud_group_complete`` log and the honesty
-                        # pipeline's ``publish_cloud`` call — now run through
-                        # :meth:`CrossoverV2Conductor._close_cloud_group_once`,
-                        # gated to the phase's FIRST close
-                        # (``already_closed = phase in self._group_geometry``).
-                        # A re-close (voluntary or a late geometry-retry tail)
-                        # never re-logs or re-attempts a publish the write-once
-                        # evidence store is guaranteed to refuse. The FIT still
-                        # cannot double-fire either, because ``self._candidate``
-                        # guards it fire-once.
+                        # side instead of here, and does not shut this window
+                        # at all. ``_close_cloud_group`` still re-enters and
+                        # fully RECOMPUTES on every retake of the final index —
+                        # the geometry verdict, ``_group_cloud_result`` (what
+                        # the FIT and the candidate's fingerprinted
+                        # ``exclusion_evidence`` read), and the
+                        # ``cloud_group_complete`` / ``cloud_spec`` journal
+                        # lines all describe whichever cloud is CURRENTLY
+                        # retained, every time. The one thing that is a
+                        # per-phase singleton is the durable EVIDENCE ARTIFACT
+                        # write — see the ``publish_cloud`` guard inside
+                        # :meth:`CrossoverV2Conductor._run_cloud_pipeline`,
+                        # keyed by ``self._group_cloud_published`` and marked
+                        # only on a SUCCESSFUL write. The write-once evidence
+                        # store refuses a write only when its bytes DIFFER from
+                        # what is already there (an identical retry is accepted
+                        # idempotently), so a re-close's recomputed — and
+                        # normally different — bytes would be refused if
+                        # re-attempted; the guard skips that attempt outright
+                        # rather than spend it on a call that cannot succeed.
+                        # The FIT still cannot double-fire either, because
+                        # ``self._candidate`` guards it fire-once.
                         deadline = monotonic() + begin_budget(accepted_count + 1)
                         continue
                     post_set_complete(accepted_count)

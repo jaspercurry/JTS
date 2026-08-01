@@ -443,11 +443,20 @@ arrays on the analysis FFT grid — one two-occurrence `DriverResponse`
 measured **33.6 MB** on the S0 corpus's own grid (524,289 bins;
 production MEASURE uses a different program and grid, so read this as
 the order of magnitude, not the number) — so a session that never defers
-does not store it at all, and a group close releases it as soon as the
-fit has consumed it. Re-consumption cannot strand on the release: the
-relay admits a begin only at `(accepted_count + 1, attempts_used + 1)`
-and dedupes processed pairs, so a group closes for the last time exactly
-once.
+does not store it at all, and the FIT releases it as soon as it has
+consumed it.
+
+Re-consumption cannot strand on that release even though a cloud
+group's CLOSE is not exactly-once (issue #1872): a geometry-locked
+retry's own retake, or a voluntary retake (§2.6), can re-close the
+group, and `_close_cloud_group` recomputes the honest-instrument
+pipeline on every close — only the durable evidence-artifact publish is
+a per-phase singleton (the write-once evidence store). What IS
+exactly-once is the FIT itself: `confirm_cloud_measure_group` refuses a
+second call once `self._candidate` is set, and every retake shape lands
+BEFORE that confirm — a geometry retake returns REJECTED well before any
+confirm, and a voluntary retake is only admitted while the confirm has
+not happened yet — so the analysis release can never be reached twice.
 
 1. **CHECK** (~25 s, one tap). Ambient silence + two band-limited pilot
    chirps per driver at two levels (−10 dB apart). Yields the ambient
@@ -852,7 +861,9 @@ cloud exists**, and falls back to `PHASE_CLOUD_MEASURE` under an explicit
 screen (M = 1 never produces one) and every tier at stage 1 (issue #1965).
 `cloud_measure` is the uncorrected pre-apply baseline, so it is never rendered
 bare, which would report a corrected speaker as bad forever.
-Logged once per closed group as `event=correction.crossover_v2_cloud_spec`.
+Logged on every close of the group (including a retake's re-close, issue
+#1872) as `event=correction.crossover_v2_cloud_spec` — always describing
+whichever cloud is currently retained.
 The tolerances are the spec table's own per-band values
 (`flat_spec.SPEC_BANDS`) rather than one provisional constant. Contract test:
 [`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py).
@@ -1721,8 +1732,13 @@ relay plan's `max_attempts` bounds the whole session.
 Key `event=` lines (via `jasper.log_event`):
 
 ```sh
-# Conductor phase walk (the /correction/ wizard runs under jasper-correction-web):
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry)'
+# Conductor phase walk (the /correction/ wizard runs under jasper-correction-web).
+# cloud_group_complete and cloud_spec both fire on EVERY close of a cloud
+# group, including a retake's re-close (issue #1872) — seeing either twice
+# for one phase is the retake contract working, not a bug; publish_cloud
+# (not journalled directly, but see cloud_publish_failed below) is the one
+# part of a close that is a per-phase singleton:
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry|cloud_spec)'
 # Session volume lifecycle (fail-closed). ``persist_failed`` is CRITICAL and
 # means the durable intent could not be written — it belongs in any sweep of
 # this family, not just the happy three:
@@ -1867,8 +1883,10 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   floor source is not persisted, so the pair could only be reported as a real
   window beside a null source. MEASURE's own source is on its own diag line
   and in the retained sidecar.
-- `correction.crossover_v2_cloud_spec` — the spec verdict, once per CLOSED
-  group (not per capture): `phase`, `available`, `reason`, `spec_passed`,
+- `correction.crossover_v2_cloud_spec` — the spec verdict, logged on every
+  CLOSE of the group (not per capture within it — a retake's re-close logs
+  it again, with the recomputed numbers; issue #1872): `phase`, `available`,
+  `reason`, `spec_passed`,
   `spec_evaluable`, `flatness_max_db`, `flatness_max_hz`,
   `flatness_reference_band_lo_hz`/`flatness_reference_band_hi_hz` (the frame
   the deviation is stated against — a power mean over `REFERENCE_BAND_HZ`;
@@ -1877,6 +1895,27 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `spec_n_excluded`, `validity_floor_hz`. Emitted from `_run_cloud_pipeline`,
   and since the flat-linearization plan's PR-5 it is the ONLY place a
   flatness number is logged (see "Flatness" above).
+- `correction.crossover_v2_cloud_group_complete` — the group's geometry
+  verdict, logged on every close of the group for the same reason as
+  `cloud_spec` above (a re-close is a real close): `phase`, `positions`,
+  `geometry_locked`, `geometry_reason`, `thin_evidence`, `geometry_retries`.
+  The durable evidence-artifact PUBLISH behind both of these log lines
+  (`publish_cloud`) is the one part of the close that IS a per-phase
+  singleton — the evidence store is write-once, so a re-close's recomputed
+  (and normally different) bytes would be refused if a second write were
+  attempted; `_run_cloud_pipeline` skips that attempt outright once a phase
+  has one successful publish recorded, rather than spend it on a call that
+  cannot succeed.
+- `correction.crossover_v2_cloud_publish_failed` (WARNING) — the skipped
+  case above still failed once: the phase's FIRST publish attempt raised
+  (a full disk, a write-once conflict against evidence this session did not
+  write, or similar). `phase`, `exc_info`. Fail-soft by design — the
+  group's own accept is decided before this seam ever runs (see the S4/N1
+  review-finding comments on `_close_cloud_group`), so a publish failure
+  never costs the accept. Its sibling
+  `correction.crossover_v2_cloud_pipeline_call_failed` (WARNING) names the
+  broader case: any named-family exception anywhere in
+  `_run_cloud_pipeline`, not just the publish seam.
 
 Source: the `_log_check_diag` / `_log_measure_diag` / `_log_verify_diag`
 methods on `CrossoverV2Conductor` in `crossover_v2_flow.py`, called from thin
