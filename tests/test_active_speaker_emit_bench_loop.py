@@ -444,7 +444,11 @@ def test_a_stimulus_past_the_fft_cap_refuses_instead_of_being_truncated(
 
     with pytest.raises(EmitLoopError, match="FFT cap"):
         _run(tmp_path, sweep_seconds=loop.MAX_STIMULUS_SECONDS + 10.0)
-    assert not (tmp_path / "work" / "control.raw").exists()
+    # ``control.first.raw``, not ``control.raw``: the determinism helper moves
+    # each render off the declared destination, so ``control.raw`` is absent
+    # after a SUCCESSFUL run too and asserting on it would prove nothing. The
+    # preserved first render is the artifact only a real render leaves behind.
+    assert not (tmp_path / "work" / "control.first.raw").exists()
 
 
 def test_the_default_stimulus_fits_inside_the_fft_cap() -> None:
