@@ -752,7 +752,7 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
         )
     if not parts:
         return []
-    return ["every band from the same reference: " + "; ".join(parts)]
+    return ["every band from the same reference: " + ", ".join(parts)]
 
 
 def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
