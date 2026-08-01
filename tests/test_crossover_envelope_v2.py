@@ -25,11 +25,13 @@ from __future__ import annotations
 import time
 from typing import Mapping
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_envelope_v2 import (
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     _PHASE_STEP,
+    _per_band_flatness_lines,
     build_crossover_envelope_v2,
 )
 from jasper.active_speaker.crossover_v2_flow import (
@@ -53,8 +55,10 @@ from jasper.active_speaker.crossover_v2_flow import (
     verify_inconclusive_cause,
     verify_inconclusive_message,
 )
+from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.gate_disclosure import describe_gate
+from jasper.web.correction_crossover_v2 import _compact_cloud_status
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "apply", "verify")
 
@@ -1137,6 +1141,208 @@ def test_flatness_copy_names_no_frame_when_the_record_carries_none():
     details = env["expert_details"]
     assert any("from the spec reference at 11480 Hz" in line for line in details)
     assert not any("reference mean" in line for line in details)
+
+
+# --- #1857: every band discloses its own deviation, not just the pointer's ---
+
+
+def _dark_tweeter_compact_cloud(*, phase: str = PHASE_CLOUD_VERIFY):
+    """A REAL ``evaluate_flat_spec`` report reproducing #1857's mechanism —
+    reproduced from the actual evaluator, not asserted by fiat.
+
+    A narrow +3 dB peak sits in the woofer band; the tweeter band is
+    uniformly ~6 dB dark across its ENTIRE passband (no peak, no texture,
+    just a whole-band offset); the top band is flat. Because the shared
+    reference is a power mean pooled across the woofer+tweeter bands, the
+    tweeter's own darkness drags that reference down, and the woofer's
+    narrow (and much smaller) peak ends up reading a LARGER deviation from
+    it than the tweeter's own uniform darkness does — the exact
+    misattribution class #1857 reports.
+    """
+    n = 1000
+    woofer_freqs = np.linspace(250.0, 1999.0, n)
+    tweeter_freqs = np.linspace(2000.0, 7999.0, n)
+    top_freqs = np.linspace(8000.0, 15999.0, n)
+    freqs = np.concatenate([woofer_freqs, tweeter_freqs, top_freqs])
+
+    woofer_curve = np.zeros(n)
+    woofer_curve[n // 2] = 3.0  # one narrow +3 dB peak, otherwise flat
+    tweeter_curve = np.full(n, -6.0)  # uniformly dark, the WHOLE band
+    top_curve = np.zeros(n)
+    curve = np.concatenate([woofer_curve, tweeter_curve, top_curve])
+
+    order = np.argsort(freqs)
+    freqs, curve = freqs[order], curve[order]
+
+    report = evaluate_flat_spec(freqs, curve, None)
+    gauge = spec_flatness_gauge(report)
+    pipeline = {
+        "available": True,
+        "spec": report.to_dict(),
+        "flatness": gauge.to_dict(),
+        "merged_excluded_bands_hz": [],
+        "validity_floor_hz": None,
+    }
+    compact = _compact_cloud_status({phase: {"geometry": {}, "pipeline": pipeline}})
+    return compact[phase], report, gauge
+
+
+def test_the_shipped_pointer_blames_the_woofer_while_the_tweeter_stays_dark():
+    """Mechanism check, not the fix: confirms #1857 reproduces against the
+    REAL evaluator before testing that the disclosure now names it too.
+
+    The pointer picks the WOOFER band — the larger absolute deviation under
+    the dragged full-range reference — per the SAME "absolute dB, not
+    tolerance headroom" rule ``test_flat_spec_ssot.py`` already pins for
+    ``spec_flatness_gauge``. The tweeter's own reading, from the identical
+    reference, is smaller in magnitude despite being a whole-band defect —
+    which is exactly why the pointer alone misses it. This PR does not
+    change this selection (#1857's anchor choice, Q-E, is still an open
+    owner decision); it only stops the pointer from being the only thing a
+    reader sees.
+    """
+    _compact, report, gauge = _dark_tweeter_compact_cloud()
+    assert gauge.max_band_hz == (250.0, 2000.0)
+    assert gauge.max_db == pytest.approx(5.0336, abs=5e-4)
+    tweeter = next(
+        b for b in report.bands if (b.f_lo_hz, b.f_hi_hz) == (2000.0, 8000.0)
+    )
+    assert tweeter.max_deviation_db == pytest.approx(-3.9664, abs=5e-4)
+    assert tweeter.passed is False  # a real defect, just not the FLAGGED one
+    assert abs(tweeter.max_deviation_db) < abs(gauge.max_db)
+
+
+def test_the_expert_disclosure_now_names_every_band_beside_the_pointer():
+    """The fix. The pointer line is untouched — still the woofer, per the
+    mechanism test above — but the tweeter's own -3.97 dB now sits right
+    beside it, so a reader can no longer see "+5.03 dB, woofer band" without
+    also seeing the tweeter's own number in the same disclosure."""
+    compact, _report, _gauge = _dark_tweeter_compact_cloud()
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, cloud={PHASE_CLOUD_VERIFY: compact},
+        candidate=_candidate_summary(),
+    ))
+    details = env["expert_details"]
+    # The pointer: unchanged shape and unchanged verdict — still the woofer.
+    assert any(
+        line.startswith(
+            "flatness +5.03 dB from the 250–8000 Hz reference mean at 1125 Hz"
+        )
+        for line in details
+    )
+    # The new line: every band, from the SAME reference, including the
+    # tweeter's own honest number.
+    per_band = next(
+        line for line in details
+        if line.startswith("every band from the same reference:")
+    )
+    assert "250–2000 Hz +5.03 dB (fail, tolerance ±1.5 dB)" in per_band
+    assert "2000–8000 Hz -3.97 dB (fail, tolerance ±2.0 dB)" in per_band
+    assert "8000–16000 Hz +2.03 dB (pass, tolerance ±2.5 dB)" in per_band
+
+
+def test_the_pre_apply_reading_also_names_every_band():
+    """The BEFORE-TUNING branch (``_pre_apply_flatness_lines``) folds every
+    ``_flatness_lines_from_block`` line into one ``"Measured before
+    tuning: "``-prefixed sentence (the module's own framing rule — these
+    numbers must never render bare the way CLOUD-VERIFY renders them). The
+    per-band disclosure is the SAME kind of before-tuning claim as the
+    pointer it sits beside, so it folds into that SAME sentence rather than
+    appearing as a separate, unprefixed line the way carve-outs do."""
+    compact, _report, _gauge = _dark_tweeter_compact_cloud(phase=PHASE_CLOUD_MEASURE)
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"},
+        cloud={PHASE_CLOUD_MEASURE: compact}, candidate=_candidate_summary(),
+    ))
+    details = env["expert_details"]
+    lead = next(line for line in details if line.startswith("Measured before tuning: "))
+    assert "250–2000 Hz +5.03 dB (fail, tolerance ±1.5 dB)" in lead
+    assert "2000–8000 Hz -3.97 dB (fail, tolerance ±2.0 dB)" in lead
+    assert "8000–16000 Hz +2.03 dB (pass, tolerance ±2.5 dB)" in lead
+
+
+def test_per_band_lines_uniformly_flat_shows_no_alarm():
+    """Edge case: nothing wrong anywhere. The new line still renders (every
+    band IS evaluable) but shows nothing alarming — three passes, ~0 dB —
+    confirming the disclosure does not manufacture a false impression of
+    trouble where the pointer already reports none."""
+    freqs = np.geomspace(250.0, 16_000.0, 1500)
+    report = evaluate_flat_spec(freqs, np.zeros_like(freqs), None)
+    spec_bands = [
+        {
+            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "passed": b.passed,
+            "max_deviation_db": b.max_deviation_db, "tolerance_db": b.tolerance_db,
+        }
+        for b in report.bands
+    ]
+    lines = _per_band_flatness_lines(spec_bands)
+    assert len(lines) == 1
+    assert "+0.00 dB (pass" in lines[0]
+    assert "fail" not in lines[0]
+
+
+def test_per_band_lines_single_band_defect_leaves_the_others_quiet():
+    """Edge case: only the top band is out of spec; woofer and tweeter are
+    genuinely flat. The per-band line shows two clean passes and one real
+    failure — the ordinary, non-misattribution case, which this disclosure
+    must render just as plainly as the drag case above."""
+    freqs = np.geomspace(250.0, 16_000.0, 1500)
+    curve = np.where(freqs >= 8000.0, -6.0, 0.0)
+    report = evaluate_flat_spec(freqs, curve, None)
+    spec_bands = [
+        {
+            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "passed": b.passed,
+            "max_deviation_db": b.max_deviation_db, "tolerance_db": b.tolerance_db,
+        }
+        for b in report.bands
+    ]
+    line = _per_band_flatness_lines(spec_bands)[0]
+    assert "250–2000 Hz" in line and "(pass" in line.split("250–2000 Hz")[1][:20]
+    assert "8000–16000 Hz" in line and "(fail" in line.split("8000–16000 Hz")[1][:20]
+
+
+def test_per_band_lines_both_bands_failing_shows_both():
+    """Edge case named in #1857's own remedy: BOTH the woofer and tweeter
+    genuinely out of spec (not one dragging the other) — the per-band line
+    must show both failures, not collapse to the single pointer."""
+    spec_bands = [
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": False,
+         "max_deviation_db": 3.0, "tolerance_db": 1.5},
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": False,
+         "max_deviation_db": -4.5, "tolerance_db": 2.0},
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": True,
+         "max_deviation_db": 1.0, "tolerance_db": 2.5},
+    ]
+    line = _per_band_flatness_lines(spec_bands)[0]
+    assert "250–2000 Hz +3.00 dB (fail" in line
+    assert "2000–8000 Hz -4.50 dB (fail" in line
+    assert "8000–16000 Hz +1.00 dB (pass" in line
+
+
+def test_per_band_lines_skips_unevaluable_bands_without_fabricating():
+    """A band with no surviving evidence (``passed`` is ``None``, not a
+    bool) contributes no line — the same "unevaluable is not a fabricated
+    verdict" rule ``BandResult`` itself follows — rather than printing a
+    fake 0 dB reading for a band nothing measured."""
+    spec_bands = [
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": None,
+         "max_deviation_db": None, "tolerance_db": 1.5},
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": False,
+         "max_deviation_db": -4.5, "tolerance_db": 2.0},
+    ]
+    line = _per_band_flatness_lines(spec_bands)[0]
+    assert "250–2000 Hz" not in line
+    assert "2000–8000 Hz -4.50 dB (fail" in line
+
+
+def test_per_band_lines_empty_or_malformed_input_renders_nothing():
+    """No fabricated line when there is nothing to disclose — mirrors every
+    other honesty rule in this module (``[]``, never an empty-looking
+    sentence)."""
+    assert _per_band_flatness_lines([]) == []
+    assert _per_band_flatness_lines(None) == []
+    assert _per_band_flatness_lines("not a list") == []
+    assert _per_band_flatness_lines([{"passed": None}, "not a mapping"]) == []
 
 
 def test_done_screen_states_the_band_verify_graded():
