@@ -13,18 +13,35 @@ files under ``--out``.
 It must run on the speaker, because the binary's identity is resolved from the
 running ``jasper-camilla.service`` unit (R5) — there is no ``--binary`` override
 to bypass that, deliberately. On a laptop, ``--dry-run`` emits and derives both
-arms and writes the stimulus without resolving a binary or rendering anything,
-which is the useful preflight there.
+arms and writes both derived configs without resolving a binary or rendering
+anything: every refusal that does not need a binary (an emitter validation
+refusal, a stage outside the offline allowlist, a hard-clip limiter, a stimulus
+past the FFT cap) surfaces there, on the laptop, instead of on the Pi.
 
-Exit codes: ``0`` every branch matched, ``1`` at least one branch did not,
-``2`` the run refused (bad inputs, no binary, an unrenderable config, or a
-render whose residual could not be attributed).
+**Exit codes are three-state, because the evidence is.**
+
+* ``0`` — every branch that could be graded matched, and at least one was.
+  Branches with nothing to verify are listed, not counted.
+* ``1`` — at least one graded branch did not match. The finding.
+* ``2`` — no verdict was reached: the run refused (bad inputs, no binary, an
+  unrenderable config, a residual that could not be attributed), or it
+  completed but nothing in it was gradeable. Both are "no evidence", and
+  neither may read as a pass — see
+  :mod:`jasper.active_speaker.delta_probe`'s ``unavailable`` doctrine.
+
+**Memory:** the renders are bounded in their own child processes, but the
+deconvolution and FFTs run in THIS process and are not. A production-length run
+measures 221 MiB parent-only peak RSS (an independent measurement during review
+put it at 235 MiB) — a real fraction of a 1 GB Pi. Run it through
+``scripts/pi-run-diagnostic.sh`` (see ``docs/testing-tooling.md``) so the kernel
+has an obvious thing to kill before it reaches a product daemon.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -32,9 +49,13 @@ from typing import Any, Sequence
 from jasper.active_speaker.bench.compare import analysis_band_hz
 from jasper.active_speaker.bench.derivation import EmitDerivationError
 from jasper.active_speaker.bench.loop import (
+    OUTCOME_MATCHED,
+    OUTCOME_MISMATCHED,
     STIMULUS_SWEEP_SECONDS,
     EmitLoopError,
+    EmitLoopPlan,
     EmitLoopReport,
+    plan_emit_loop,
     run_emit_loop,
 )
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
@@ -93,6 +114,26 @@ def _print_plan(
     print(f"work dir: {args.out}")
 
 
+def _print_derivation(plan: EmitLoopPlan) -> None:
+    """What the emit + derive preflight proved, without any binary."""
+
+    print(
+        f"derived both arms: capture {plan.geometry.capture_channels}ch @ "
+        f"{plan.geometry.sample_rate_hz} Hz -> playback "
+        f"{plan.geometry.playback_channels}ch"
+    )
+    for branch in plan.treated.branches:
+        print(
+            f"  {branch.role:<10} channels {list(branch.channels)}  "
+            f"limiter {branch.limiter_clip_limit_dbfs:+.2f} dBFS  "
+            f"{len(branch.names)} stage(s)"
+        )
+    print(f"emitter level move between arms: {plan.expected_offset_db:+.3f} dB")
+    for path in plan.config_paths:
+        print(f"  wrote {path}")
+    print(f"  stimulus the run will write: {plan.stimulus_path} (not written here)")
+
+
 def _print_report(report: EmitLoopReport) -> None:
     print()
     print(f"binary: {report.binary['binary_path']} ({report.binary['version_output']})")
@@ -100,6 +141,19 @@ def _print_report(report: EmitLoopReport) -> None:
     for branch in report.branches:
         valid = branch.valid_band_hz
         span = f"{valid[0]:.0f}–{valid[1]:.0f} Hz" if valid else "no valid bins"
+        if not branch.graded:
+            # Named, never counted. "Measured, nothing to verify" and "not
+            # measured at all" are different news and the reader gets both.
+            seen = (
+                f"measured over {span} ({branch.n_bins} bins)"
+                if branch.measured
+                else "not measured"
+            )
+            print(
+                f"  {branch.role:<10} {'unavailable':<14} no verdict — {seen}"
+                f"{f'; {branch.verdict.reason}' if branch.verdict.reason else ''}"
+            )
+            continue
         print(
             f"  {branch.role:<10} {branch.verdict.verdict:<14} "
             f"max {branch.band_max_error_db:7.3f} dB @ {branch.band_worst_hz:7.0f} Hz  "
@@ -114,6 +168,7 @@ def _print_report(report: EmitLoopReport) -> None:
             )
         if branch.verdict.reason:
             print(f"  {'':<10} reason: {branch.verdict.reason}")
+    print(f"outcome: {report.outcome}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -150,9 +205,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the plan and stop; resolve no binary and render nothing",
+        help=(
+            "emit and derive both arms and write both configs, then stop; "
+            "resolve no binary and render nothing"
+        ),
     )
     args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s emit-bench %(levelname)s %(message)s",
+    )
 
     try:
         preset = load_active_speaker_preset(args.preset)
@@ -162,7 +224,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     reduced = _load_linearization(args.linearization)
     _print_plan(preset, reduced, args)
 
+    # A refusing run must not leave a previous run's verdict sitting beside
+    # this run's fresh configs, where the next reader would pair them.
+    report_path = Path(args.out) / "report.json"
+    report_path.unlink(missing_ok=True)
+
     if args.dry_run:
+        try:
+            plan = plan_emit_loop(
+                preset,
+                playback_device=args.playback_device,
+                linearization=reduced,
+                work_dir=args.out,
+                sweep_seconds=float(args.sweep_seconds),
+            )
+        except (EmitLoopError, EmitDerivationError, ActiveSpeakerConfigError) as exc:
+            print(f"REFUSED — {exc}", file=sys.stderr)
+            return 2
+        _print_derivation(plan)
         print("dry run: no binary resolved, nothing rendered")
         return 0
 
@@ -185,11 +264,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"REFUSED — {exc}", file=sys.stderr)
         return 2
 
-    report_path = Path(args.out) / "report.json"
     report_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
     _print_report(report)
     print(f"\nreport: {report_path}")
-    return 0 if report.matched else 1
+    if report.outcome == OUTCOME_MATCHED:
+        return 0
+    if report.outcome == OUTCOME_MISMATCHED:
+        return 1
+    # Nothing reached a verdict. Not a refusal in the sense of "the run broke",
+    # but the same absence of evidence, and it must not exit 0.
+    print(
+        "no branch could be graded — the linearization commands nothing this "
+        "instrument can verify",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":

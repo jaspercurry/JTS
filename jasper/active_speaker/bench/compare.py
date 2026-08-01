@@ -69,7 +69,11 @@ from typing import Any
 
 import numpy as np
 
-from jasper.active_speaker.delta_probe import DeltaProbeMap, classify_delta_probe
+from jasper.active_speaker.delta_probe import (
+    VERDICT_UNAVAILABLE,
+    DeltaProbeMap,
+    classify_delta_probe,
+)
 from jasper.audio_measurement.deconv import (
     DEFAULT_POST_ARRIVAL_MS,
     apply_arrival_window,
@@ -247,8 +251,26 @@ def soft_clip_error_bound_db(
 
     Each arm's compression lies in ``[g(peak), 0]`` and both are ≤ 0, so their
     difference cannot exceed the larger magnitude. Using each arm's PEAK rather
-    than its per-frequency amplitude makes the bound conservative at every
-    frequency, which is the direction a refusal bound must err in.
+    than its per-frequency amplitude is the conservative direction — a refusal
+    bound must err that way.
+
+    **Two effects, and they run opposite ways — the net is stated, not implied.**
+    The caller's only available peak is read off the RENDER, which is the
+    limiter's OUTPUT, so it is already compressed by the very transform being
+    bounded: the amplitude fed in here is low, and the bound is therefore
+    slightly OPTIMISTIC on that axis, not conservative. The size is computed
+    rather than hand-waved. At :data:`SOFT_CLIP_BUDGET_DB` the post-clip peak
+    under-reads by a factor ``1 − a²/9 = 0.99426``, and since ``g`` goes as
+    ``a²`` the bound comes out **1.15 % low — 0.00057 dB** on a 0.05 dB budget.
+    At the bench's own default stimulus level it is 0.11 % of an 0.0048 dB
+    reading.
+
+    It is disclosed rather than corrected. Inverting the cubic to recover the
+    pre-clip peak is one Newton step, but it would buy back six ten-thousandths
+    of a decibel on a bound whose whole job is to separate 0.05 dB from 1.7 dB —
+    false precision, and one more step between a reader and the arithmetic. The
+    per-frequency-vs-peak conservatism above is larger than this in every real
+    case, so the bound as computed still errs high overall.
     """
 
     treated = soft_clip_fundamental_gain_db(treated_peak_linear, clip_limit_dbfs)
@@ -446,9 +468,36 @@ class BranchComparison:
     def matched(self) -> bool:
         return self.verdict.matched
 
+    @property
+    def measured(self) -> bool:
+        """Whether the instrument saw this branch at all.
+
+        True when any bin survived the validity mask. Distinguishes the two
+        situations that both classify as ``unavailable``: a branch that was
+        measured perfectly well but carries no correction to verify
+        (``measured`` True, :attr:`graded` False — benign, and the common case
+        for a role the fit left alone), from one the instrument could not see
+        (``measured`` False — a real problem, and not the same news).
+        """
+
+        return self.n_bins > 0
+
+    @property
+    def graded(self) -> bool:
+        """Whether a verdict was reached — ``unavailable`` means it was not.
+
+        :mod:`jasper.active_speaker.delta_probe`'s own doctrine: ``unavailable``
+        is "not a pass … no evidence to refuse on, and no permission granted
+        either". A caller must not fold it into either side.
+        """
+
+        return self.verdict.verdict != VERDICT_UNAVAILABLE
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "role": self.role,
+            "measured": self.measured,
+            "graded": self.graded,
             "band_hz": list(self.band_hz),
             "valid_band_hz": (
                 list(self.valid_band_hz) if self.valid_band_hz is not None else None

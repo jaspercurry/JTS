@@ -19,6 +19,7 @@ pinned binary on the Pi answers it.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import resource
 import stat
@@ -87,10 +88,10 @@ def _fake_binary(directory: Path, *, inject_slope6: bool = False) -> BinaryIdent
 
 def _run(directory: Path, *, inject_slope6: bool = False, **kwargs):
     kwargs.setdefault("sweep_seconds", SWEEP_SECONDS)
+    kwargs.setdefault("linearization", DESIGNED)
     return run_emit_loop(
         ActiveSpeakerPreset.from_mapping(_two_way_preset("mono")),
         playback_device=ACTIVE_PCM,
-        linearization=DESIGNED,
         work_dir=directory / "work",
         binary=_fake_binary(directory, inject_slope6=inject_slope6),
         bounds=TEST_BOUNDS,
@@ -108,13 +109,25 @@ def slope6_report(tmp_path_factory):
     return _run(tmp_path_factory.mktemp("slope6"), inject_slope6=True)
 
 
+@pytest.fixture(scope="module")
+def tweeter_only_report(tmp_path_factory):
+    """A correction on one driver — the ordinary single-driver shape."""
+
+    return _run(
+        tmp_path_factory.mktemp("tweeter_only"),
+        linearization={"tweeter": DESIGNED["tweeter"]},
+    )
+
+
 # --------------------------------------------------------------------------- #
 # the pair
 # --------------------------------------------------------------------------- #
 
 
 def test_an_exact_render_matches_on_every_branch(exact_report) -> None:
+    assert exact_report.outcome == loop.OUTCOME_MATCHED
     assert exact_report.matched
+    assert not exact_report.unavailable_branches
     assert [b.role for b in exact_report.branches] == ["woofer", "tweeter"]
     for branch in exact_report.branches:
         assert branch.verdict.verdict == VERDICT_MATCHED
@@ -131,6 +144,7 @@ def test_a_shelf_the_dsp_realizes_at_slope6_q_is_caught(slope6_report) -> None:
     residual, and VERIFY prediction all evaluate the shelf the config claims.
     """
 
+    assert slope6_report.outcome == loop.OUTCOME_MISMATCHED
     assert not slope6_report.matched
     tweeter = next(b for b in slope6_report.branches if b.role == "tweeter")
     assert tweeter.verdict.verdict == VERDICT_MODEL_ERROR
@@ -163,6 +177,66 @@ def test_the_injection_moves_only_the_shelf(slope6_report, exact_report) -> None
     exact_tweeter = next(b for b in exact_report.branches if b.role == "tweeter")
     slope6_tweeter = next(b for b in slope6_report.branches if b.role == "tweeter")
     assert exact_tweeter.valid_band_hz == slope6_tweeter.valid_band_hz
+
+
+# --------------------------------------------------------------------------- #
+# three-state honesty
+# --------------------------------------------------------------------------- #
+
+
+def test_a_role_with_no_correction_does_not_drag_the_run_to_a_mismatch(
+    tweeter_only_report,
+) -> None:
+    """The ordinary single-driver correction, end to end.
+
+    The woofer carries no filters, so its comparison commands nothing and
+    reaches no verdict — while being measured across thousands of clean bins at
+    ~0 dB of error. A two-state pass/fail reports that as a failure; the run's
+    honest outcome is that the branch that COULD be graded matched, and the
+    other one is disclosed rather than counted.
+    """
+
+    report = tweeter_only_report
+    woofer = next(b for b in report.branches if b.role == "woofer")
+    tweeter = next(b for b in report.branches if b.role == "tweeter")
+
+    assert woofer.measured and woofer.n_bins > 1000
+    assert not woofer.graded
+    assert woofer.band_max_error_db == pytest.approx(0.0, abs=1e-6)
+    assert tweeter.graded and tweeter.matched
+
+    assert report.outcome == loop.OUTCOME_MATCHED
+    assert report.matched
+    assert [b.role for b in report.unavailable_branches] == ["woofer"]
+    assert [b.role for b in report.graded_branches] == ["tweeter"]
+    assert not report.mismatched_branches
+
+    payload = report.to_dict()
+    assert payload["outcome"] == loop.OUTCOME_MATCHED
+    assert payload["unavailable_roles"] == ["woofer"]
+    assert payload["graded_roles"] == ["tweeter"]
+
+
+def test_outcome_is_unavailable_when_no_branch_reaches_a_verdict(
+    tweeter_only_report,
+) -> None:
+    """Nothing graded is not a pass. The vocabulary is closed and pinned."""
+
+    ungraded = next(b for b in tweeter_only_report.branches if not b.graded)
+    empty = loop.EmitLoopReport(
+        branches=(ungraded,),
+        treated=tweeter_only_report.treated,
+        control=tweeter_only_report.control,
+        binary=tweeter_only_report.binary,
+        stimulus=tweeter_only_report.stimulus,
+        expected_offset_db=0.0,
+    )
+    assert empty.outcome == loop.OUTCOME_UNAVAILABLE
+    assert not empty.matched
+    assert loop.EMIT_LOOP_OUTCOMES == {
+        loop.OUTCOME_MATCHED, loop.OUTCOME_MISMATCHED, loop.OUTCOME_UNAVAILABLE
+    }
+    assert empty.outcome in loop.EMIT_LOOP_OUTCOMES
 
 
 # --------------------------------------------------------------------------- #
@@ -239,8 +313,69 @@ def test_the_stimulus_lead_in_covers_the_analysis_window(exact_report) -> None:
     assert exact_report.stimulus["lead_in_s"] == loop.STIMULUS_LEAD_IN_S
 
 
+def test_the_free_space_guard_is_sized_at_playback_width_in_pairs(
+    tmp_path, monkeypatch
+) -> None:
+    """The render writes the PLAYBACK frame, and pairs, not renders.
+
+    Sized at capture width a 2-way stereo run under-reserves by exactly the
+    channel ratio; ``estimate_render_bytes`` already carries the x2 for one
+    determinism pair, so the outstanding count is pairs.
+    """
+
+    from jasper.bass_extension.bench import render as render_mod
+
+    seen: dict[str, object] = {}
+
+    def _spy(bundle_dir, *, per_render_estimate_bytes, renders_outstanding):
+        seen["bytes"] = per_render_estimate_bytes
+        seen["outstanding"] = renders_outstanding
+        raise render_mod.RenderError("stop here")
+
+    monkeypatch.setattr(loop, "check_free_space", _spy)
+    with pytest.raises(EmitLoopError, match="stop here"):
+        run_emit_loop(
+            ActiveSpeakerPreset.from_mapping(_two_way_preset("stereo")),
+            playback_device=ACTIVE_PCM,
+            linearization=DESIGNED,
+            work_dir=tmp_path / "work",
+            binary=_fake_binary(tmp_path),
+            bounds=TEST_BOUNDS,
+            sweep_seconds=SWEEP_SECONDS,
+        )
+
+    from jasper.audio_measurement.sweep import synchronized_sweep_metadata
+
+    meta = synchronized_sweep_metadata(duration_approx_s=SWEEP_SECONDS)
+    seconds = loop.STIMULUS_LEAD_IN_S + meta.duration_s + loop.STIMULUS_TAIL_S
+    assert seen["outstanding"] == loop.RENDER_PAIRS_PER_RUN == 2
+    # 4 playback channels on a stereo 2-way, not the 2 the capture carries —
+    # sizing at capture width under-reserves by that ratio.
+    assert seen["bytes"] == render_mod.estimate_render_bytes(48000, 4, seconds)
+    assert seen["bytes"] > render_mod.estimate_render_bytes(48000, 2, seconds)
+
+
+def test_the_run_emits_its_structured_events(tmp_path, caplog) -> None:
+    """``event=emit_loop.*`` is a real surface, not a claim in a docstring.
+
+    A short sweep: this asserts the events EXIST and fire on the normal path,
+    not their values (which the accuracy cases above own). The CLI configures
+    logging so these reach the journal; the producing side is what could rot
+    silently, so it is what is pinned.
+    """
+
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.bench.loop"):
+        _run(tmp_path, sweep_seconds=0.5)
+    events = [r.getMessage() for r in caplog.records]
+    assert sum("event=emit_loop.render " in line for line in events) == 2
+    assert sum("event=emit_loop.branch " in line for line in events) == 2
+    assert any("event=emit_loop.outcome " in line for line in events)
+    assert any("deterministic=true" in line for line in events)
+
+
 def test_the_report_is_json_serialisable(exact_report) -> None:
     payload = json.loads(json.dumps(exact_report.to_dict()))
+    assert payload["outcome"] == loop.OUTCOME_MATCHED
     assert payload["matched"] is True
     assert payload["binary"]["camilladsp_version"] == "v4.1.3"
     assert payload["stimulus"]["capture_channels"] == 2

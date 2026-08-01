@@ -992,21 +992,45 @@ Run it **on the speaker** — the binary's identity is resolved from the running
 `jasper-camilla.service` unit and there is deliberately no `--binary` override:
 
 ```sh
-sudo /opt/jasper/.venv/bin/jasper-active-speaker-emit-bench \
-  --linearization /path/to/fits.json \
-  --playback-device "$(...)" \
-  --out /var/tmp/emit-loop
+bash scripts/pi-run-diagnostic.sh -- \
+  /opt/jasper/.venv/bin/jasper-active-speaker-emit-bench \
+    --linearization /path/to/fits.json \
+    --playback-device "$(...)" \
+    --out /var/tmp/emit-loop
 ```
+
+**Run it through the bounded runner, not bare.** The renders are bounded in
+their own child processes, but the deconvolution and FFTs run in the CLI's own
+process and are not: a production-length run measures 221 MiB parent-only peak
+RSS (235 MiB on an independent measurement during review), a real fraction of a
+1 GB Pi. `pi-run-diagnostic.sh` gives the kernel an obvious thing to kill before
+it reaches a product daemon.
 
 `--linearization` is a JSON object of persisted per-role `LinearizationFit`
 records (`{role: {"filters": [...], ...}}`), the shape
-`linearization_fit.linearization_filters_by_role` reduces. Exit `0` when every
-branch matched, `1` when one did not, `2` on a refusal. The bundle carries both
-arms' configs, both renders, and `report.json`.
+`linearization_fit.linearization_filters_by_role` reduces.
 
-`--dry-run` emits and derives both arms and prints the plan without resolving a
-binary or rendering — the useful preflight on a laptop, where no
-`jasper-camilla.service` exists.
+**Exit codes are three-state, because the evidence is.** `0` — every branch that
+could be graded matched, and at least one was. `1` — a graded branch did not
+match; the finding. `2` — no verdict was reached: either the run refused, or it
+completed and nothing in it was gradeable. A role the fit left alone commands
+nothing, so its comparison reaches no verdict at all
+(`delta_probe`'s `unavailable`: "not a pass … no evidence to refuse on, and no
+permission granted either") — those branches are listed in the report's
+`unavailable_roles`, never counted as passes or failures. `report.json` carries
+`outcome` alongside the per-branch records.
+
+The bundle keeps both arms' configs, **four `.raw` renders** (each arm's render
+and its determinism repeat — the repeat's SHA-256 is what the receipt asserts
+against, so both are retained as evidence), the stimulus WAV, and `report.json`.
+
+`--dry-run` runs the real emitter and the real derivation for both arms and
+writes both derived configs, without resolving a binary or rendering anything.
+That makes it a genuine preflight rather than an echo of the arguments: an
+emitter validation refusal, a stage outside the offline allowlist, a hard-clip
+limiter, or a stimulus past the deconvolution's FFT cap all surface on a laptop
+instead of after an SSH round trip. It does not write the (multi-megabyte)
+stimulus — the derivation validates the header it is handed, not the file.
 
 Read `band_max_error_db` per branch, not just the verdict: the classifier's
 tolerances are calibrated for a microphone (1.5 dB below 10 kHz) and are

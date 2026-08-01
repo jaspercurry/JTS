@@ -239,6 +239,30 @@ def test_invisible_bins_never_reach_the_verdict() -> None:
     assert result.verdict.verdict != VERDICT_MODEL_ERROR
 
 
+def test_a_measured_branch_that_commands_nothing_is_ungraded_not_failed() -> None:
+    """A role the fit left alone: measured cleanly, nothing to verify.
+
+    This is the ordinary shape of a single-driver correction, and it is exactly
+    the case a two-state pass/fail gets wrong — the branch is measured across
+    thousands of bins at 0.000 dB of error and still reaches no verdict, because
+    nothing was commanded there. ``measured`` and ``graded`` are separate facts
+    so a caller can tell this from a branch the instrument could not see.
+    """
+
+    freqs, treated_db, control_db, band = _curves([], [])
+    result = compare.compare_branch(
+        freqs, treated_db, control_db, np.zeros_like(freqs),
+        role="woofer", band_hz=band,
+    )
+    assert result.measured
+    assert result.n_bins > 1000
+    assert not result.graded
+    assert not result.matched
+    assert result.verdict.verdict == "unavailable"
+    assert result.verdict.reason == "nothing_commanded"
+    assert result.band_max_error_db == pytest.approx(0.0, abs=1e-9)
+
+
 def test_no_valid_bins_reports_absence_rather_than_a_grade() -> None:
     freqs = np.geomspace(30.0, 18000.0, 100)
     result = compare.compare_branch(
@@ -254,6 +278,9 @@ def test_no_valid_bins_reports_absence_rather_than_a_grade() -> None:
     assert math.isnan(result.band_max_error_db)
     assert not result.frame.fit.fitted
     assert not result.matched
+    # Neither measured NOR graded — the other half of the distinction above.
+    assert not result.measured
+    assert not result.graded
 
 
 def test_grid_mismatch_is_loud() -> None:

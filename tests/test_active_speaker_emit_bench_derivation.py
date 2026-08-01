@@ -21,8 +21,8 @@ from jasper.active_speaker import ActiveSpeakerPreset, emit_active_speaker_basel
 from jasper.active_speaker.bench import derivation
 from jasper.active_speaker.bench.derivation import (
     EmitDerivationError,
-    capture_geometry,
     derive_offline_render_config,
+    device_geometry,
 )
 from jasper.active_speaker.camilla_yaml import driver_baseline_limiter_name
 from jasper.bass_extension.bench.derivation import ArtifactHeader
@@ -175,10 +175,26 @@ def test_stimulus_geometry_mismatch_refuses_before_any_render(header, message) -
         _derive(_emit(), header=header)
 
 
-def test_capture_geometry_reads_the_emitted_block() -> None:
-    assert capture_geometry(_emit()) == (48000, 2)
+def test_device_geometry_reads_both_sides_of_the_emitted_block() -> None:
+    geometry = device_geometry(_emit())
+    assert geometry.sample_rate_hz == 48000
+    assert geometry.capture_channels == 2
+    assert geometry.playback_channels == 2
     with pytest.raises(EmitDerivationError):
-        capture_geometry("devices: {}")
+        device_geometry("devices: {}")
+
+
+def test_device_geometry_separates_capture_from_playback_width() -> None:
+    """The render writes the PLAYBACK frame, which is the wider one.
+
+    Sizing anything (notably the free-space estimate) at capture width is short
+    by exactly this ratio on a multi-way stereo preset, which is why the two
+    counts are named rather than returned as an ordered pair.
+    """
+
+    geometry = device_geometry(_emit(layout="stereo"))
+    assert geometry.capture_channels == 2
+    assert geometry.playback_channels == 4
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +284,43 @@ def test_missing_branch_limiter_refuses() -> None:
             step["names"].remove(limiter)
     with pytest.raises(EmitDerivationError, match="exactly one pipeline step"):
         _derive(yaml.safe_dump(payload, sort_keys=False))
+
+
+def test_a_hard_clip_limiter_refuses() -> None:
+    """The soft-clip bound describes the cubic transform and nothing else.
+
+    A hard-clip limiter is a different, discontinuous transform whose
+    contribution to the A/B that bound does not describe at all — so the premise
+    is read off the graph rather than assumed. (The stand-in binary refuses a
+    hard-clip limiter outright, so this has to be driven at the derivation.)
+    """
+
+    payload = yaml.safe_load(_emit())
+    payload["filters"][driver_baseline_limiter_name("woofer")]["parameters"][
+        "soft_clip"
+    ] = False
+    with pytest.raises(EmitDerivationError, match="not a soft-clip Limiter"):
+        _derive(yaml.safe_dump(payload, sort_keys=False))
+
+
+def test_a_limiter_missing_its_soft_clip_flag_refuses() -> None:
+    payload = yaml.safe_load(_emit())
+    del payload["filters"][driver_baseline_limiter_name("woofer")]["parameters"][
+        "soft_clip"
+    ]
+    with pytest.raises(EmitDerivationError, match="not a soft-clip Limiter"):
+        _derive(yaml.safe_dump(payload, sort_keys=False))
+
+
+def test_the_emitter_ships_soft_clip_limiters() -> None:
+    """The premise above is satisfied by the real emitter, not merely asserted."""
+
+    for branch in _derive(_emit()).branches:
+        assert branch.limiter_clip_limit_dbfs <= 0.0
+    payload = yaml.safe_load(_emit())
+    for role in ROLES:
+        params = payload["filters"][driver_baseline_limiter_name(role)]["parameters"]
+        assert params["soft_clip"] is True
 
 
 def test_branch_limiter_that_is_not_a_limiter_refuses() -> None:

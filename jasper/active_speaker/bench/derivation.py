@@ -316,6 +316,22 @@ def _branch_steps(
             raise EmitDerivationError(
                 f"{limiter!r} is not a Limiter in the emitted graph"
             )
+        # The comparison's soft-clip refusal bound
+        # (:func:`jasper.active_speaker.bench.compare.soft_clip_error_bound_db`)
+        # is derived from the CUBIC transform, and is the only thing standing
+        # between a hot render and an unattributable residual. A HARD-clip
+        # limiter is a different, discontinuous transform whose contribution
+        # that bound does not describe at all — it would be wrong without limit,
+        # and silently. Read the flag rather than assume it: this derivation is
+        # already reading this filter, so the premise costs one line here and is
+        # unfalsifiable anywhere else.
+        if definition.params.get("soft_clip") is not True:
+            raise EmitDerivationError(
+                f"{limiter!r} is not a soft-clip Limiter (soft_clip="
+                f"{definition.params.get('soft_clip')!r}) — the bench's soft-clip "
+                "bound describes the cubic transform only, so a hard-clip branch "
+                "cannot be graded"
+            )
         clip_limit = _finite_float(
             definition.params.get("clip_limit"), f"{limiter}.clip_limit"
         )
@@ -360,25 +376,50 @@ def _program_headroom_db(text: str) -> float:
     )
 
 
-def capture_geometry(emitted_text: str) -> tuple[int, int]:
-    """``(sample_rate_hz, capture_channels)`` the emitted config expects.
+@dataclass(frozen=True, slots=True)
+class DeviceGeometry:
+    """What the emitted config expects on each side of the pipeline.
 
-    The loop needs both BEFORE it can build a stimulus file, and the stimulus's
-    own header is then what :func:`derive_offline_render_config` validates
-    against — so this reads the same two live values from the same block, and
-    the derivation's check stays an independent re-proof rather than a
-    tautology (it compares the artifact's header, not this return value).
+    ``capture_channels`` sizes the stimulus file; ``playback_channels`` sizes
+    the render OUTPUT, which is the wider of the two on any multi-way preset
+    (a 2-way stereo main captures 2 and plays back 4). They are named rather
+    than returned as a tuple because using one where the other belongs is a
+    silent, plausible-looking mistake — the free-space estimate sized at
+    capture width is short by exactly that ratio.
+    """
+
+    sample_rate_hz: int
+    capture_channels: int
+    playback_channels: int
+
+
+def device_geometry(emitted_text: str) -> DeviceGeometry:
+    """Read the emitted config's device geometry.
+
+    The loop needs the capture side BEFORE it can build a stimulus file, and the
+    stimulus's own header is then what :func:`derive_offline_render_config`
+    validates against — so this reads the live values from the same block, and
+    the derivation's check stays an independent re-proof rather than a tautology
+    (it compares the artifact's header, not this return value).
     """
 
     devices = _parse(emitted_text).get("devices")
     if not isinstance(devices, Mapping):
         raise EmitDerivationError("emitted config has no devices mapping")
     capture = devices.get("capture")
+    playback = devices.get("playback")
     if not isinstance(capture, Mapping):
         raise EmitDerivationError("emitted devices.capture is not a mapping")
-    return (
-        _positive_int(devices.get("samplerate"), "devices.samplerate"),
-        _positive_int(capture.get("channels"), "devices.capture.channels"),
+    if not isinstance(playback, Mapping):
+        raise EmitDerivationError("emitted devices.playback is not a mapping")
+    return DeviceGeometry(
+        sample_rate_hz=_positive_int(devices.get("samplerate"), "devices.samplerate"),
+        capture_channels=_positive_int(
+            capture.get("channels"), "devices.capture.channels"
+        ),
+        playback_channels=_positive_int(
+            playback.get("channels"), "devices.playback.channels"
+        ),
     )
 
 
@@ -555,9 +596,10 @@ def derive_offline_render_config(
 __all__ = [
     "PROGRAM_HEADROOM_FILTER",
     "BranchStep",
+    "DeviceGeometry",
     "DerivedRenderConfig",
     "EmitDerivationError",
     "assert_no_async_resampler",
-    "capture_geometry",
     "derive_offline_render_config",
+    "device_geometry",
 ]

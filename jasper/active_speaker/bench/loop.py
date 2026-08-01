@@ -32,9 +32,23 @@ The run, in order
    always-on soft clip's contribution, deconvolve both against one window taken
    from the control arm, and grade the difference against the fit's own claim.
 
+:func:`plan_emit_loop` is steps 1 and 3 on their own — everything reachable
+without a binary — so the CLI's ``--dry-run`` proves the same emit and
+derivation refusals on a laptop that the full run would hit on the Pi.
+
 **No live graph is touched.** Nothing here loads, applies, or reloads a config
 on a running CamillaDSP, plays audio through a device, or writes outside the
 caller's work directory. Every render is a one-shot batch pass over files.
+
+**This process is not bounded; the renders are.** The rlimits apply to the
+render children. The deconvolution and its FFTs run here, in the caller's own
+process: a production-length run measures **221 MiB parent-only peak RSS**
+(``getrusage(RUSAGE_SELF)``, 10 s sweep, 2-way mono; an independent measurement
+during review put the same run at 235 MiB). That is a real fraction of a 1 GB
+Pi, which is why the documented Pi invocation goes through
+``scripts/pi-run-diagnostic.sh`` rather than being run bare. The dominant term
+is the deconvolution's zero-padded FFT, so it scales with sweep length, not with
+the number of branches.
 
 What only a real run can prove
 ------------------------------
@@ -63,7 +77,11 @@ from jasper.active_speaker.linearization_fit import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, required_driver_roles
 from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
-from jasper.audio_measurement.sweep import SweepMeta, synchronized_swept_sine
+from jasper.audio_measurement.sweep import (
+    SweepMeta,
+    synchronized_sweep_metadata,
+    synchronized_swept_sine,
+)
 from jasper.bass_extension.bench.derivation import ArtifactHeader
 from jasper.bass_extension.bench.render import (
     DEPLOYED_PROCESSING_PRECISION,
@@ -92,9 +110,10 @@ from .compare import (
 )
 from .derivation import (
     DerivedRenderConfig,
+    DeviceGeometry,
     EmitDerivationError,
-    capture_geometry,
     derive_offline_render_config,
+    device_geometry,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,9 +189,15 @@ DEFAULT_RENDER_BOUNDS = RenderBounds(
     nice=10,
 )
 
-#: How many renders a run performs: two arms, each rendered twice for its
-#: determinism receipt. Used for the pre-render free-space guard.
-RENDERS_PER_RUN: int = 4
+#: Determinism PAIRS a run performs — two arms, each rendered twice.
+#:
+#: The free-space guard is sized in pairs, not renders, because
+#: :func:`~jasper.bass_extension.bench.render.estimate_render_bytes` already
+#: carries a x2 for exactly one such pair being on disk at once. 2 pairs x 2 =
+#: the four ``.raw`` files a completed run retains (both arms' first render AND
+#: both repeats, all four kept as evidence — the repeats' SHA-256 is what the
+#: determinism receipt asserts against, so a reviewer can re-verify it).
+RENDER_PAIRS_PER_RUN: int = 2
 
 
 class EmitLoopError(RuntimeError):
@@ -199,13 +224,46 @@ class RenderArm:
         }
 
 
+#: Every graded branch matched, and at least one branch was graded.
+OUTCOME_MATCHED = "matched"
+#: At least one graded branch did not match. The finding.
+OUTCOME_MISMATCHED = "mismatched"
+#: No branch reached a verdict. **Not a pass**, and not a failure either.
+OUTCOME_UNAVAILABLE = "unavailable"
+
+#: Every outcome a run can report. Pinned by a test.
+EMIT_LOOP_OUTCOMES: frozenset[str] = frozenset(
+    {OUTCOME_MATCHED, OUTCOME_MISMATCHED, OUTCOME_UNAVAILABLE}
+)
+
+
 @dataclass(frozen=True)
 class EmitLoopReport:
     """One offline emit-loop run: what was rendered, and how it graded.
 
     ``branches`` carries one :class:`~jasper.active_speaker.bench.compare.
-    BranchComparison` per driver role, in preset order. ``matched`` is True only
-    when every branch matched — a speaker is not verified by its better half.
+    BranchComparison` per driver role, in preset order.
+
+    **The outcome is three-state, because the evidence is.** A role the fit left
+    alone commands nothing, so its comparison has nothing to verify and
+    :func:`jasper.active_speaker.delta_probe.classify_delta_probe` returns
+    ``unavailable`` for it — which that module is explicit is "not a pass … no
+    evidence to refuse on, and no permission granted either". Folding those
+    branches into a two-state pass/fail breaks that doctrine in whichever
+    direction it picks: counted as failures, an ordinary tweeter-only
+    correction reports a mismatch on a woofer measured across 10,000 clean bins
+    at 0.000 dB of error; counted as passes, a run that graded nothing at all
+    reports success. So:
+
+    * :data:`OUTCOME_MISMATCHED` — a graded branch did not match. The finding.
+    * :data:`OUTCOME_MATCHED` — every graded branch matched, and at least one
+      was graded. Ungraded branches are disclosed, never silently counted.
+    * :data:`OUTCOME_UNAVAILABLE` — nothing reached a verdict. No claim either
+      way, and it must not read as a pass.
+
+    :attr:`matched` is kept as the narrow "outcome is matched" predicate so a
+    caller cannot accidentally read a two-state answer out of a three-state
+    fact.
     """
 
     branches: tuple[BranchComparison, ...]
@@ -216,8 +274,39 @@ class EmitLoopReport:
     expected_offset_db: float
 
     @property
+    def graded_branches(self) -> tuple[BranchComparison, ...]:
+        """Branches a verdict was reached for."""
+
+        return tuple(branch for branch in self.branches if branch.graded)
+
+    @property
+    def unavailable_branches(self) -> tuple[BranchComparison, ...]:
+        """Branches no verdict was reached for — disclosed, never counted."""
+
+        return tuple(branch for branch in self.branches if not branch.graded)
+
+    @property
+    def mismatched_branches(self) -> tuple[BranchComparison, ...]:
+        return tuple(
+            branch for branch in self.graded_branches if not branch.matched
+        )
+
+    @property
+    def outcome(self) -> str:
+        if self.mismatched_branches:
+            return OUTCOME_MISMATCHED
+        if self.graded_branches:
+            return OUTCOME_MATCHED
+        return OUTCOME_UNAVAILABLE
+
+    @property
     def matched(self) -> bool:
-        return bool(self.branches) and all(b.matched for b in self.branches)
+        """Every graded branch matched and at least one was graded.
+
+        NOT the negation of "something is wrong" — see :attr:`outcome`.
+        """
+
+        return self.outcome == OUTCOME_MATCHED
 
     @property
     def worst_branch(self) -> BranchComparison | None:
@@ -228,7 +317,11 @@ class EmitLoopReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "outcome": self.outcome,
             "matched": self.matched,
+            "graded_roles": [b.role for b in self.graded_branches],
+            "unavailable_roles": [b.role for b in self.unavailable_branches],
+            "mismatched_roles": [b.role for b in self.mismatched_branches],
             "expected_offset_db": self.expected_offset_db,
             "binary": self.binary,
             "stimulus": self.stimulus,
@@ -322,51 +415,167 @@ def _derive(
         raise EmitLoopError(f"{name} arm could not be derived: {exc}") from exc
 
 
+@dataclass(frozen=True)
+class EmitLoopPlan:
+    """Everything a run needs, built and proved WITHOUT rendering anything.
+
+    The shared front half of :func:`run_emit_loop` and the CLI's ``--dry-run``.
+    Both arms are emitted through the real emitter and derived through the real
+    derivation, and both derived configs are written to ``work_dir`` — so every
+    refusal that does not require a binary (an emitter validation refusal, a
+    stage outside the offline allowlist, a hard-clip limiter, a stimulus past
+    the FFT cap) surfaces here. That is what makes ``--dry-run`` a preflight
+    rather than an echo of the arguments: it catches on a laptop what would
+    otherwise be discovered on the Pi.
+
+    ``stimulus_path`` is the file the real run WILL write. Planning does not
+    write it — the derivation validates the header it is handed, never the
+    file — so a dry run leaves no multi-megabyte WAV behind.
+    """
+
+    roles: tuple[str, ...]
+    work_dir: Path
+    treated_text: str
+    control_text: str
+    treated: DerivedRenderConfig
+    control: DerivedRenderConfig
+    geometry: DeviceGeometry
+    sweep_meta: SweepMeta
+    capture_header: ArtifactHeader
+    stimulus_path: Path
+    stimulus_seconds: float
+    expected_offset_db: float
+
+    @property
+    def config_paths(self) -> tuple[Path, Path]:
+        """The two derived configs, written to disk by :func:`plan_emit_loop`."""
+
+        return (self.work_dir / "control.yml", self.work_dir / "treated.yml")
+
+
+def plan_emit_loop(
+    preset: ActiveSpeakerPreset,
+    *,
+    playback_device: str,
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]],
+    work_dir: Path,
+    sweep_seconds: float = STIMULUS_SWEEP_SECONDS,
+    emit_kwargs: Mapping[str, Any] | None = None,
+) -> EmitLoopPlan:
+    """Emit both arms, derive both, write both configs. No binary, no render.
+
+    Raises:
+      EmitLoopError: on any refusal reachable without a binary.
+    """
+
+    extra = dict(emit_kwargs or {})
+    if "linearization" in extra:
+        raise EmitLoopError(
+            "emit_kwargs must not carry 'linearization' — the loop sets it per "
+            "arm, and a caller-supplied one would make the two arms differ by "
+            "something other than the filters under test"
+        )
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    roles = required_driver_roles(preset.way_count)
+
+    treated_text = emit_active_speaker_baseline_config(
+        preset,
+        playback_device=playback_device,
+        linearization=dict(linearization),
+        **extra,
+    )
+    control_text = emit_active_speaker_baseline_config(
+        preset, playback_device=playback_device, linearization=None, **extra
+    )
+
+    geometry = device_geometry(control_text)
+    meta = synchronized_sweep_metadata(
+        duration_approx_s=float(sweep_seconds),
+        sample_rate=geometry.sample_rate_hz,
+        amplitude_dbfs=OFFLINE_STIMULUS_PEAK_DBFS,
+    )
+    stimulus_seconds = STIMULUS_LEAD_IN_S + meta.duration_s + STIMULUS_TAIL_S
+    if stimulus_seconds > MAX_STIMULUS_SECONDS:
+        raise EmitLoopError(
+            f"a {stimulus_seconds:.1f} s stimulus is past the deconvolution's "
+            f"{MAX_STIMULUS_SECONDS:.0f} s FFT cap, which truncates rather than "
+            "refuses — a truncated arm would be graded as a measurement. Shorten "
+            "the sweep."
+        )
+
+    stimulus_path = work_dir / "stimulus.wav"
+    capture_header = ArtifactHeader(
+        sample_rate_hz=geometry.sample_rate_hz,
+        channels=geometry.capture_channels,
+        bits_per_sample=16,
+    )
+    arms: dict[str, DerivedRenderConfig] = {}
+    for name, text in (("control", control_text), ("treated", treated_text)):
+        derived = _derive(
+            name,
+            text,
+            roles=roles,
+            stimulus_path=stimulus_path,
+            capture_header=capture_header,
+            playback_path=work_dir / f"{name}.raw",
+        )
+        (work_dir / f"{name}.yml").write_text(derived.yaml_text, encoding="utf-8")
+        arms[name] = derived
+
+    return EmitLoopPlan(
+        roles=tuple(roles),
+        work_dir=work_dir,
+        treated_text=treated_text,
+        control_text=control_text,
+        treated=arms["treated"],
+        control=arms["control"],
+        geometry=geometry,
+        sweep_meta=meta,
+        capture_header=capture_header,
+        stimulus_path=stimulus_path,
+        stimulus_seconds=stimulus_seconds,
+        expected_offset_db=(
+            arms["treated"].program_headroom_db - arms["control"].program_headroom_db
+        ),
+    )
+
+
 def _render_arm(
     name: str,
+    plan: EmitLoopPlan,
+    derived: DerivedRenderConfig,
     emitted_text: str,
     *,
-    roles: Sequence[str],
-    work_dir: Path,
-    stimulus_path: Path,
-    capture_header: ArtifactHeader,
     binary: BinaryIdentity,
     bounds: RenderBounds,
 ) -> RenderArm:
-    """Derive and render one arm twice, proving the render repeats byte-for-byte.
+    """Render one arm twice, proving the render repeats byte-for-byte.
 
     The determinism proof is spelled out here rather than delegated to
     :func:`~jasper.bass_extension.bench.render.render_with_determinism_receipt`
     because that helper renders ONE config path into two different output paths
     — and a CamillaDSP render's destination is not an argument, it is
     ``devices.playback.filename`` INSIDE the config. Two destinations therefore
-    need two derivations, which is what this does: one emitted text, derived
-    twice, differing in nothing but where the samples land. Same binary, same
-    stimulus, same graph — so byte-identical output or the instrument does not
-    repeat and nothing measured with it is a measurement.
+    need two derivations: ``derived`` (built by :func:`plan_emit_loop`) plus a
+    second one built here, differing in nothing but where the samples land. Same
+    binary, same stimulus, same graph — so byte-identical output, or the
+    instrument does not repeat and nothing measured with it is a measurement.
     """
 
+    work_dir = plan.work_dir
     output_path = work_dir / f"{name}.raw"
     repeat_output_path = work_dir / f"{name}.repeat.raw"
-    derived = _derive(
-        name,
-        emitted_text,
-        roles=roles,
-        stimulus_path=stimulus_path,
-        capture_header=capture_header,
-        playback_path=output_path,
-    )
     repeat_derived = _derive(
         name,
         emitted_text,
-        roles=roles,
-        stimulus_path=stimulus_path,
-        capture_header=capture_header,
+        roles=plan.roles,
+        stimulus_path=plan.stimulus_path,
+        capture_header=plan.capture_header,
         playback_path=repeat_output_path,
     )
     config_path = work_dir / f"{name}.yml"
     repeat_config_path = work_dir / f"{name}.repeat.yml"
-    config_path.write_text(derived.yaml_text, encoding="utf-8")
     repeat_config_path.write_text(repeat_derived.yaml_text, encoding="utf-8")
 
     try:
@@ -457,79 +666,54 @@ def run_emit_loop(
         soft-clip contribution. A refusal is never downgraded to a verdict.
     """
 
-    extra = dict(emit_kwargs or {})
-    if "linearization" in extra:
-        raise EmitLoopError(
-            "emit_kwargs must not carry 'linearization' — the loop sets it per "
-            "arm, and a caller-supplied one would make the two arms differ by "
-            "something other than the filters under test"
-        )
-    work_dir = Path(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    roles = required_driver_roles(preset.way_count)
-
-    treated_text = emit_active_speaker_baseline_config(
+    plan = plan_emit_loop(
         preset,
         playback_device=playback_device,
-        linearization=dict(linearization),
-        **extra,
+        linearization=linearization,
+        work_dir=work_dir,
+        sweep_seconds=sweep_seconds,
+        emit_kwargs=emit_kwargs,
     )
-    control_text = emit_active_speaker_baseline_config(
-        preset, playback_device=playback_device, linearization=None, **extra
-    )
-
-    sample_rate, capture_channels = capture_geometry(control_text)
+    sample_rate = plan.geometry.sample_rate_hz
     sweep, meta = synchronized_swept_sine(
         duration_approx_s=float(sweep_seconds),
         sample_rate=sample_rate,
         amplitude_dbfs=OFFLINE_STIMULUS_PEAK_DBFS,
     )
-    stimulus_seconds = STIMULUS_LEAD_IN_S + meta.duration_s + STIMULUS_TAIL_S
-    if stimulus_seconds > MAX_STIMULUS_SECONDS:
-        raise EmitLoopError(
-            f"a {stimulus_seconds:.1f} s stimulus is past the deconvolution's "
-            f"{MAX_STIMULUS_SECONDS:.0f} s FFT cap, which truncates rather than "
-            "refuses — a truncated arm would be graded as a measurement. Shorten "
-            "the sweep."
-        )
-    stimulus_path = work_dir / "stimulus.wav"
-    capture_header = _write_stimulus_wav(
-        stimulus_path, sweep, sample_rate=sample_rate, channels=capture_channels
+    written_header = _write_stimulus_wav(
+        plan.stimulus_path,
+        sweep,
+        sample_rate=sample_rate,
+        channels=plan.geometry.capture_channels,
     )
+    if written_header != plan.capture_header:
+        raise EmitLoopError(
+            f"the written stimulus header {written_header} is not the one both "
+            f"arms were derived against ({plan.capture_header})"
+        )
 
     try:
+        # Sized at PLAYBACK width: the render writes the full pipeline frame,
+        # which is wider than the capture on any multi-way preset. And in PAIRS,
+        # because estimate_render_bytes already carries the x2 for a determinism
+        # pair — see RENDER_PAIRS_PER_RUN.
         check_free_space(
-            work_dir,
+            plan.work_dir,
             per_render_estimate_bytes=estimate_render_bytes(
-                sample_rate, capture_channels, stimulus_seconds
+                sample_rate, plan.geometry.playback_channels, plan.stimulus_seconds
             ),
-            renders_outstanding=RENDERS_PER_RUN,
+            renders_outstanding=RENDER_PAIRS_PER_RUN,
         )
     except RenderError as exc:
         raise EmitLoopError(str(exc)) from exc
 
     control = _render_arm(
-        "control",
-        control_text,
-        roles=roles,
-        work_dir=work_dir,
-        stimulus_path=stimulus_path,
-        capture_header=capture_header,
-        binary=binary,
-        bounds=bounds,
+        "control", plan, plan.control, plan.control_text, binary=binary, bounds=bounds
     )
     treated = _render_arm(
-        "treated",
-        treated_text,
-        roles=roles,
-        work_dir=work_dir,
-        stimulus_path=stimulus_path,
-        capture_header=capture_header,
-        binary=binary,
-        bounds=bounds,
+        "treated", plan, plan.treated, plan.treated_text, binary=binary, bounds=bounds
     )
 
-    expected_offset_db = treated.derived.program_headroom_db - control.derived.program_headroom_db
     band_hz = analysis_band_hz(meta)
     branches = tuple(
         _grade_branch(
@@ -539,19 +723,30 @@ def run_emit_loop(
             sweep=sweep,
             sample_rate=sample_rate,
             band_hz=band_hz,
-            expected_offset_db=expected_offset_db,
+            expected_offset_db=plan.expected_offset_db,
             claimed_filters=linearization.get(role) or (),
         )
-        for role in roles
+        for role in plan.roles
     )
-    return EmitLoopReport(
+    report = EmitLoopReport(
         branches=branches,
         treated=treated,
         control=control,
         binary=binary.identity_artifact(),
-        stimulus=_stimulus_record(meta, band_hz, capture_channels, stimulus_path),
-        expected_offset_db=expected_offset_db,
+        stimulus=_stimulus_record(
+            meta, band_hz, plan.geometry.capture_channels, plan.stimulus_path
+        ),
+        expected_offset_db=plan.expected_offset_db,
     )
+    log_event(
+        logger,
+        "emit_loop.outcome",
+        outcome=report.outcome,
+        graded=len(report.graded_branches),
+        mismatched=len(report.mismatched_branches),
+        unavailable=len(report.unavailable_branches),
+    )
+    return report
 
 
 def _stimulus_record(
@@ -683,15 +878,21 @@ def _grade_branch(
 
 __all__ = [
     "DEFAULT_RENDER_BOUNDS",
+    "EMIT_LOOP_OUTCOMES",
     "MAX_STIMULUS_SECONDS",
     "OFFLINE_STIMULUS_PEAK_DBFS",
-    "RENDERS_PER_RUN",
+    "OUTCOME_MATCHED",
+    "OUTCOME_MISMATCHED",
+    "OUTCOME_UNAVAILABLE",
     "RENDER_FADER_DB",
+    "RENDER_PAIRS_PER_RUN",
     "STIMULUS_LEAD_IN_S",
     "STIMULUS_SWEEP_SECONDS",
     "STIMULUS_TAIL_S",
     "EmitLoopError",
+    "EmitLoopPlan",
     "EmitLoopReport",
     "RenderArm",
+    "plan_emit_loop",
     "run_emit_loop",
 ]
