@@ -21,6 +21,21 @@ def _connection(reply: bytes):
     return reader, writer
 
 
+class _PendingReader:
+    """Reader whose readline() blocks on a future the test controls.
+
+    Needed (instead of the AsyncMock-based `_connection` above) so the
+    cancellation-race test can resolve the reply at an exact,
+    test-chosen event-loop tick rather than immediately.
+    """
+
+    def __init__(self, reply: "asyncio.Future[bytes]") -> None:
+        self._reply = reply
+
+    async def readline(self) -> bytes:
+        return await self._reply
+
+
 @pytest.mark.asyncio
 async def test_mux_command_is_one_bounded_json_exchange(monkeypatch):
     reader, writer = _connection(b'{"active_source":"idle"}\n')
@@ -92,3 +107,60 @@ async def test_mux_command_validates_request_and_response(monkeypatch):
         )
         with pytest.raises(RuntimeError, match=match):
             await uds._mux_socket_command("STATUS")
+
+
+@pytest.mark.asyncio
+async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
+    """_mux_socket_command must terminate its caller when cancelled, even
+    when jasper-mux's reply lands in the very same event-loop tick as the
+    cancellation.
+
+    Regression for #1952 (the #1935 class). CPython <= 3.11's
+    asyncio.wait_for swallows a CancelledError that arrives in the tick its
+    awaited future completes (Lib/asyncio/tasks.py: ``except
+    CancelledError: if fut.done(): return fut.result()``). This call sits
+    on correction/coordinator.py's _refresh_measurement_gate_lease, a
+    cancellation-only ``while True:`` that measurement_window()'s finally
+    cancels and then awaits unboundedly -- a swallowed cancel here makes
+    that task immortal and wedges the whole window teardown.
+
+    The race is constructed deterministically, not sampled: resolve the
+    reply future and cancel() the task with no intervening await, so both
+    wake-ups queue in the same event-loop tick. Mirrors
+    test_mux.py::test_run_answers_cancellation_racing_a_wake_alert (#1935).
+    """
+    loop = asyncio.get_running_loop()
+    reply: asyncio.Future[bytes] = loop.create_future()
+    reader = _PendingReader(reply)
+    writer = MagicMock()
+    writer.drain = AsyncMock()
+    monkeypatch.setattr(
+        uds.asyncio,
+        "open_unix_connection",
+        AsyncMock(return_value=(reader, writer)),
+    )
+
+    task = asyncio.create_task(
+        uds._mux_socket_command(
+            "STATUS", socket_path="/tmp/mux.sock", timeout=30.0,
+        )
+    )
+    # Let the task open the (fake) connection, write, and park inside the
+    # bounded wait for the reply before racing it. Measured empirically for
+    # this exact call shape on 3.11.15: offset 0 never swallows (the
+    # wrapped exchange() task hasn't run its first step yet); offsets 1-7
+    # swallow 100/100 on the pre-fix code. This is well inside that window.
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    reply.set_result(b'{"active_source":"idle"}\n')
+    task.cancel()
+
+    done, pending = await asyncio.wait({task}, timeout=10.0)
+    assert not pending, (
+        "_mux_socket_command ignored cancellation and is still running -- "
+        "a swallowed CancelledError makes "
+        "_refresh_measurement_gate_lease's task immortal and wedges "
+        "measurement_window() teardown (#1952)"
+    )
+    assert task.cancelled()

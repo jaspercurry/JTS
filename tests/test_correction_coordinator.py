@@ -738,3 +738,91 @@ async def test_abort_target_falls_back_to_entering_task_when_none_registered(mon
             await asyncio.sleep(30.0)  # entering task parked; nothing registered
 
     assert target.failed is True
+
+
+class _PendingVoiceReader:
+    """Reader whose readline() blocks on a future the test controls.
+
+    Lets the cancellation-race test below resolve voice_daemon's reply at
+    an exact, test-chosen event-loop tick instead of immediately -- the
+    other tests in this file mock ``coordinator._voice_uds_command``
+    itself, which bypasses the real function's UDS I/O (and therefore its
+    ``asyncio.timeout`` call) entirely.
+    """
+
+    def __init__(self, reply: "asyncio.Future[bytes]") -> None:
+        self._reply = reply
+
+    async def readline(self) -> bytes:
+        return await self._reply
+
+
+class _NoopVoiceWriter:
+    def write(self, _data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_voice_uds_command_answers_cancellation_racing_the_reply(monkeypatch):
+    """_voice_uds_command must terminate its caller when cancelled, even
+    when voice_daemon's reply lands in the very same event-loop tick as
+    the cancellation.
+
+    Regression for #1952 (the #1935 class). CPython <= 3.11's
+    asyncio.wait_for swallows a CancelledError that arrives in the tick its
+    awaited future completes (Lib/asyncio/tasks.py: ``except
+    CancelledError: if fut.done(): return fut.result()``). This call sits
+    on _refresh_voice_lease's cancellation-only ``while True:`` body path
+    (see the closure inside measurement_window() above), which
+    measurement_window()'s finally cancels and then awaits unboundedly --
+    a swallowed cancel here makes that task immortal and wedges
+    MEASURE_RESUME / the mux-gate release / the module-level re-entrancy
+    mutex for the life of the process.
+
+    The race is constructed deterministically, not sampled: resolve the
+    reply future and cancel() the task with no intervening await, so both
+    wake-ups queue in the same event-loop tick. Mirrors
+    test_mux.py::test_run_answers_cancellation_racing_a_wake_alert (#1935).
+    """
+    loop = asyncio.get_running_loop()
+    reply: asyncio.Future[bytes] = loop.create_future()
+
+    async def fake_open_unix_connection(_path):
+        return _PendingVoiceReader(reply), _NoopVoiceWriter()
+
+    monkeypatch.setattr(
+        coordinator.asyncio, "open_unix_connection", fake_open_unix_connection,
+    )
+
+    task = asyncio.create_task(
+        coordinator._voice_uds_command(
+            "/tmp/voice.sock", "MEASURE_PAUSE", timeout=30.0,
+        )
+    )
+    # Let the task open the (fake) connection, write, and park inside the
+    # bounded wait for the reply before racing it. Measured empirically for
+    # this exact call shape on 3.11.15: offset 0 never swallows (the
+    # wrapped readline() task hasn't run its first step yet); offsets 1-5
+    # swallow 100/100 on the pre-fix code. This is well inside that window.
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    reply.set_result(b'{"result": "ok"}\n')
+    task.cancel()
+
+    done, pending = await asyncio.wait({task}, timeout=10.0)
+    assert not pending, (
+        "_voice_uds_command ignored cancellation and is still running -- a "
+        "swallowed CancelledError makes _refresh_voice_lease's task "
+        "immortal and wedges measurement_window() teardown (#1952)"
+    )
+    assert task.cancelled()
