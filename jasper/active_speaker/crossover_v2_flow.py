@@ -112,6 +112,7 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
     sections_by_role,
 )
+from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary,
     complex_correction_response,
@@ -8683,6 +8684,15 @@ class CrossoverV2Conductor:
                 resp, envelopes[role],
                 vocabulary=vocabulary, level_frame=level_frame,
                 radiating_band_hz=radiating_bands[role],
+                # The branch's own committed crossover as the fit's target
+                # SHAPE (#1817, R10a) — built from the SAME ``sections`` the
+                # radiating band above and the emitter's own filters come
+                # from, so the shape the fit aims at and the filter the graph
+                # runs cannot disagree. ``None`` for a role with no committed
+                # region, which is the pre-R10a flat target exactly.
+                target=branch_target(
+                    sections[role], envelopes[role].freqs_hz,
+                ),
             )
             fits[role] = fit
             # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
