@@ -661,7 +661,8 @@ def test_verify_residual_uses_same_residual_math_as_fit_over_its_own_band():
 
 
 def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
-    """R10b (#1988): every REPORTED number grades the cascade the graph emits.
+    """R10b (first-principles panel CC-2(b)): the reported numbers are graded
+    on the CURVE the graph emits, not on a model of it.
 
     The peaking stage folds itself into the working curve with
     :func:`jasper.correction.peq.predicted_response`, a Lorentzian in
@@ -682,6 +683,14 @@ def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
     Peaking filters only — and the assertion is deliberately TWO-SIDED: pinning
     only "matches the exact evaluator" would pass vacuously on a fixture where
     the two evaluators happen to agree, so the gap is asserted to be real.
+
+    **Scope, so this is not read as more than it pins (issue #2013).** It pins
+    the residual's CURVE, not its FRAME. On this fixture the CD-horn stage does
+    not fire, so ``hf.spend_db`` is 0 and ``frame_target_db`` is just the flat
+    target — which is exactly why the fixture is clean for the curve rule. Where
+    that stage DOES fire, the frame carries a spend sized on the pre-seam
+    Lorentzian-folded curve (0.143 dB on the banked corpus). A frame-rule pin
+    needs a fixture where the stage fires; #2013 owns that.
     """
     db = (
         _bell(_NATIVE_FREQS_HZ, 3000.0, 6.0, 0.12)
@@ -701,6 +710,11 @@ def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
         "this fixture is the peaking path; a shelf would fold in exactly and "
         "dilute what the test is pinning"
     )
+    # The docstring's scope note, pinned rather than asserted in prose: with the
+    # CD-horn stage inert the FRAME is just the flat target, so what follows
+    # isolates the curve rule cleanly. If this ever fires, the numbers below
+    # stop being a pure curve claim (see #2013).
+    assert fit.hf_continuation_spend_db == 0.0
 
     grid_hz = envelope.freqs_hz
     smoothed_db = _ladder_smooth(

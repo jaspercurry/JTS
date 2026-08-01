@@ -608,12 +608,26 @@ class LinearizationFit:
     pass/fail." All four are REPORT-ONLY in this PR; nothing gates on them
     yet (design doc build-order step 2, closed-loop verify, is a later PR).
 
-    **Every one of those numbers grades the REALIZED cascade** (R10b, #1988) —
-    the measurement plus :func:`complex_correction_response`, the exact RBJ
-    biquads CamillaDSP emits — never the Lorentzian bell the peaking search
-    uses internally to pick its next peak. Same rule for
+    **Every one of those numbers grades the REALIZED cascade** (R10b;
+    first-principles panel CC-2(b),
+    ``captures/first-principles-panel-20260731/objective-verdict.md``) — the
+    measurement plus :func:`complex_correction_response`, the exact RBJ biquads
+    CamillaDSP emits — never the Lorentzian bell the peaking search uses
+    internally to pick its next peak. Same rule for
     :attr:`correction_giveback_db`. Pinned by
     ``test_reported_residual_grades_the_realized_biquad_not_the_lorentzian``.
+
+    **That is the CURVE, not the whole ruler — issue #2013.** The residual is
+    ``working_db - frame_target_db``, and the FRAME still carries one pre-seam
+    term: ``frame_target_db = target_curve_db - hf.spend_db``, where
+    ``hf.spend_db`` is sized inside :func:`_hf_continuation_stage` against a
+    ``working_db`` that has not been rebuilt yet. So does
+    :attr:`measured_deficit_at_ceiling_db`. Measured on the banked 2026-07-30
+    JTS3 session (``captures/r10b-alignment-20260801/lorentzian_gap_probe.py``,
+    ``exact_fold_counterfactual``): the spend moves 0.143 dB under an exact fold
+    and the committed trim up to 0.162 dB. Do not read the sentence above as
+    "no Lorentzian reaches any reported number" — it reaches the frame, and
+    #2013 owns closing it.
 
     **All three ladder levels are FIT DIAGNOSTICS, and the flat-linearization
     plan's PR-5 fixed how they are labeled downstream.** Every one of them is
@@ -2415,9 +2429,12 @@ def fit_driver_linearization(
     )
     filters = list(lift.filters)
 
-    # THE CLAIM SEAM (R10b, #1988). Everything below this line is a REPORTED
-    # NUMBER — residual, verify, observe, give-back — and every one of them is
-    # graded here against the cascade the graph will actually emit.
+    # THE CLAIM SEAM (R10b; first-principles panel CC-2(b), "rebuild
+    # ``working_db`` from ``complex_correction_response`` unconditionally" —
+    # ``captures/first-principles-panel-20260731/objective-verdict.md``).
+    # Everything below this line is a REPORTED NUMBER — residual, verify,
+    # observe, give-back — and every one of them is graded here against the
+    # cascade the graph will actually emit.
     #
     # Rebuilding from ``smoothed_db`` plus the WHOLE cascade rather than
     # carrying the incremental ``working_db`` forward does two jobs at once:
@@ -2450,7 +2467,26 @@ def fit_driver_linearization(
     # filter-producing stage runs after it, and so it cannot move a single
     # emitted filter on any path — only the numbers reported about them.
     #
-    # One of those numbers is not report-only, and saying so is the point of
+    # WHAT THIS SEAM DOES NOT REACH (issue #2013), because a seam that
+    # overstates itself is the defect it was built to fix. It makes the claim
+    # CURVE exact. It does not make the claim FRAME exact: ``frame_target_db``
+    # below is ``target_curve_db - hf.spend_db``, and ``hf.spend_db`` was sized
+    # by ``_hf_continuation_stage`` ABOVE this line, against the peaking stage's
+    # Lorentzian-folded ``working_db``. That stage's ``fit_quality`` suppression
+    # is a DECISION taken on the same approximate curve (its realization check
+    # is exact, but the ``cut_target_db`` it checks against is not), and
+    # ``measured_deficit_at_ceiling_db`` is reported from it.
+    #
+    # Measured, not assumed — banked 2026-07-30 JTS3 session, exact-fold
+    # counterfactual in ``captures/r10b-alignment-20260801/
+    # lorentzian_gap_probe.py``: the spend moves 0.143 dB (3.2418 -> 3.0987) and
+    # the committed trim up to 0.162 dB, which is LARGER than anything this
+    # seam itself moves. The suppression verdict did not flip on any of the 8
+    # rows — "not shown to flip on this corpus", not "shown safe". Moving that
+    # stage's input changes what it DECIDES, which needs its own evidence and
+    # its own review; #2013 owns it.
+    #
+    # One of the numbers below is not report-only, and saying so is the point of
     # this note: ``correction_giveback_db`` below is the SSOT
     # ``crossover_v2_flow._fit_linearization`` anchors each branch's linearized
     # TRIM on. Grading it exactly therefore moves an emitted trim — measured on

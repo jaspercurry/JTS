@@ -6494,7 +6494,8 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # frame_whose_realized_check_passes_banks_and_proceeds for the grading).
     #
     # This fixture used to land on the polish and now lands on the anchor, for a
-    # reason worth recording rather than papering over: R10b (#1988) made the
+    # reason worth recording rather than papering over: R10b (panel CC-2(b))
+    # made the
     # fit's `correction_giveback_db` grade the REALIZED biquad cascade instead
     # of `predicted_response`'s Lorentzian, which moved this pair's anchor by
     # +0.124 dB (tweeter -1.383 -> -1.260). BOTH graded pairs moved with it (the
@@ -8918,7 +8919,7 @@ def test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused(caplog):
     # 0.4 dB. That walk is what the flat target used to prevent, by burying ~9 dB
     # of spurious cut in the very branch the scan reads.
     #
-    # Both walks grew 0.2 dB at R10b (#1988; 5.4 -> 5.6 and 0.2 -> 0.4) because
+    # Both walks grew 0.2 dB at R10b (5.4 -> 5.6 and 0.2 -> 0.4) because
     # the anchor each is measured FROM now carries the realized biquad cascade's
     # give-back rather than `predicted_response`'s Lorentzian. The ratio the
     # claim rests on survives with room to spare, and the two arms' realized
@@ -9180,7 +9181,8 @@ def test_a_disagreeing_frame_whose_realized_check_passes_banks_and_proceeds(
     no guard runs. The claim itself is unchanged and is asserted below in the
     form it always had: the placement follows the core median.
 
-    **Why every magnitude here moved ~0.03-0.13 dB at R10b (#1988).**
+    **Why every magnitude here moved ~0.03-0.13 dB at R10b** (the claim-seam
+    change; first-principles panel CC-2(b)).
     ``correction_giveback_db`` is the anchor's own input, and it now measures
     the level the REALIZED biquad cascade removes rather than the level
     ``peq.predicted_response``'s Lorentzian bell said it would. The anchor, the
