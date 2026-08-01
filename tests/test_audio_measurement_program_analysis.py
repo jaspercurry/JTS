@@ -1982,11 +1982,12 @@ def test_sweep_band_crest_factor_matches_the_rendered_sweep():
     directly, Parseval-style.
 
     The measurement deliberately uses a RECTANGULAR window rather than
-    `snr_policy.band_levels_dbfs`. That estimator's Hann window is correct for
-    the stationary ambient it reads, but a sweep is non-stationary: the window
-    attenuates whichever frequencies happen to occur near the ends of the
-    capture, which on a 4 s woofer sweep misreports the band split by tens of
-    dB. Reading the crest through it would measure the window, not the sweep.
+    `snr_policy.band_levels_dbfs`. That estimator's DEFAULT Hann window is
+    correct for the stationary ambient it reads, but a sweep is non-stationary:
+    the window attenuates whichever frequencies happen to occur near the ends
+    of the capture, which on a 4 s woofer sweep misreports the band split by
+    tens of dB. Reading the crest through it would measure the window, not
+    the sweep.
     """
     from jasper.audio_measurement.sweep import synchronized_swept_sine
 

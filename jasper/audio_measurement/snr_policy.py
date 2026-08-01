@@ -42,7 +42,7 @@ function, not at their own module top.
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -102,7 +102,7 @@ def band_levels_dbfs(
     sample_rate: int,
     bands: Sequence[tuple[str, float, float]],
     *,
-    window: str = "hann",
+    window: Literal["hann", "rectangular"] = "hann",
 ) -> list[dict[str, Any]]:
     """Band-INTEGRATED level of ``samples``, in true dBFS, per band with bins.
 
@@ -165,7 +165,8 @@ def band_levels_dbfs(
     the ambient/noise reports here, and
     ``driver_acoustics._capture_band_levels``'s own sweep-capture SC-1 SNR
     gate — still reads a sweep through the Hann default, a SEPARATE,
-    not-yet-measured bias tracked apart from #1847's bounded fix.
+    not-yet-measured bias tracked apart from #1847's bounded fix (issue
+    #2010).
 
     Bounds the FFT input the same way
     :func:`~jasper.audio_measurement.deconv.deconvolve` does
@@ -179,8 +180,18 @@ def band_levels_dbfs(
         return []
     samples = deconv.cap_capture_length(samples, sweep_len=0, sample_rate=sample_rate)
     x = np.asarray(samples, dtype=np.float64)
-    win = np.hanning(x.size) if window == "hann" else np.ones(x.size)
-    spectrum = np.fft.rfft(x * win)
+    if window == "hann":
+        win = np.hanning(x.size)
+        windowed = x * win
+        window_energy = float(np.sum(win ** 2))
+    else:
+        # window == "rectangular": x * ones(N) == x and sum(ones(N)**2) == N,
+        # so both the ones() array and the elementwise multiply are skipped
+        # outright — ~2x N x 8 bytes avoided on the path whose own docstring
+        # below names OOM risk on an uploaded WAV up to the 30 s cap.
+        windowed = x
+        window_energy = float(x.size)
+    spectrum = np.fft.rfft(windowed)
     freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
     power = np.abs(spectrum) ** 2
     # One-sided -> two-sided energy: every bin except DC (and Nyquist, which
@@ -191,7 +202,7 @@ def band_levels_dbfs(
         power[-1] = power[-1] / 2.0
     # Parseval + window-energy normalization: mean-square of the unwindowed
     # signal in a band = (two-sided band energy) / (N * sum(w**2)).
-    denom = float(x.size) * float(np.sum(win ** 2))
+    denom = float(x.size) * window_energy
     out: list[dict[str, Any]] = []
     for band_id, low, high in bands:
         mask = (freqs >= low) & (freqs < high)

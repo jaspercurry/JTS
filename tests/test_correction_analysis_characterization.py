@@ -737,15 +737,19 @@ def test_helper_reports_reach_status_and_homeowner_nudge(
     sess._write_acoustic_quality_json()
     acoustic_path = tmp_path / "acoustic_quality.json"
     persisted_bytes = acoustic_path.read_bytes()
-    # Digest moved once, in #1838, when the report gained `band_snr_scale`
-    # (previously 261dd876…). That key is the whole point: bundles written
-    # either side of the band-power fix carry `band_snr` / `min_band_snr_db`
-    # on scales ~12 dB apart with identical keys and units, so the marker has
-    # to be IN the artifact for a later reader to tell them apart. The
-    # capture_quality digest above is deliberately unchanged — that report is
-    # untouched.
+    # Digest has moved twice: in #1838, when the report gained
+    # `band_snr_scale` (previously 261dd876…), and again in #1847, when
+    # BAND_SNR_SCALE bumped `band_power_v2` -> `band_power_v3` for the
+    # sweep-side window fix (see BAND_SNR_SCALE's own comment in
+    # acoustic_quality.py). That key is the whole point: bundles written on
+    # either side of a scale OR shape fix carry `band_snr` / `min_band_snr_db`
+    # on different scales with identical keys and units, so the marker has to
+    # be IN the artifact for a later reader to tell them apart. The
+    # capture_quality digest above is deliberately unchanged — `band_snr` is
+    # monkeypatched to a fixed fixture here, not computed through the changed
+    # estimator, so that report is untouched.
     assert hashlib.sha256(persisted_bytes).hexdigest() == (
-        "6e304273da747e59f39b977faa0d4061e4550e87d23109196011261537296bf9"
+        "8a34fa59588d154b91a941602e1a3496d72f9e0c6481408c6d400d507aaf8d0d"
     )
     persisted = json.loads(persisted_bytes)
     persisted_capture = persisted["captures"][0]
