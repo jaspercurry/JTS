@@ -1667,6 +1667,53 @@ not repeat it. An unfitted frame is disclosed as ABSENT, never as a flat one.
 The delta probe takes no second fit — it reads the same `verify_tracking_curve`,
 so its frame is this one.
 
+**VERIFY discloses WHAT THE GATE DID, and the inconclusive copy speaks from
+it** (issues #1966 / #1974). A record printing `gate_window_ms = 7.0` and
+nothing else reads as "reflections removed" to every consumer, and across the
+whole 2026-07-30 corpus it meant the opposite — no reflection found, window
+capped at the search ceiling, nothing gated out. The sentence separating those
+two states has one writer,
+[`gate_disclosure.describe_gate`](../jasper/audio_measurement/gate_disclosure.py),
+and until R9 it reached no household surface at all: the analysis summary's
+copy dead-ended in an off-by-default operator sidecar and the position-evidence
+copy in bundle artifacts, both dropped by every projection a screen reads. It
+now travels like the frame above — `_gate_record` composes it once at verdict
+time, the host persists it as `verify.gate`
+(`{disclosure, reflection_measured}`), and `_verify_gate_lines` renders the
+sentence **verbatim** into `expert_details` on the verify_fail and done
+screens, on every outcome including a pass. Verbatim is the contract:
+re-phrasing the fields at a render site is how the two states started printing
+identically. Absent stays absent — a pre-R9 state file or an ungateable capture
+renders no gate line rather than a fabricated one.
+
+The record is written with the outcome and code it belongs to, in one call
+(`_set_verify_outcome`), so all three always describe one capture; it therefore
+**survives an early-return retry** (`locate_failed` / `pilot_level_collapse` /
+`agc_behavioral_fail` conclude nothing) where `verify.evidence` /
+`graded_band_hz` / `frame` are cleared. That is why the **done** screen renders
+it unconditionally but the **verify_fail** screen renders it only when
+`failure.code` equals `verify.code`: `_failure_envelope` routes any code through
+that template once the crossover is applied, and one of `describe_gate`'s four
+sentences is deictic ("*this capture* could not be gated") — under a later
+attempt's headline, with the sibling lines already cleared, it would render as
+the screen's only expert line and point at the wrong capture.
+
+`reflection_measured` beside it is
+[`GateDisclosure.gated_anything`](../jasper/audio_measurement/gate_disclosure.py),
+the single owner of "may this record claim a reflection was removed", and it is
+the one fact the `verify_inconclusive` household copy branches on. That copy
+used to assert "the room reflection cut the window short" without ever
+consulting it — on BOTH roads to an inconclusive outcome, including the pilot
+level-shift road where no reflection and no window are involved. The clause now
+has one writer (`crossover_v2_flow.verify_inconclusive_cause`) shared by the
+verify_fail screen and the done screen's ungraded verdict, so the two surfaces
+cannot drift apart again; `REASON_REGISTRY`'s entry is that writer's
+cause-unknown rendering rather than a second copy of the words. Which road was
+taken is read from `verify.code`, persisted beside `verify.outcome` in one
+write (`_set_verify_outcome`) — **not** from `failure.code`, which is the most
+recent rejection of any phase and is nulled by a later persist while the
+outcome stands.
+
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
 relay plan's `max_attempts` bounds the whole session.

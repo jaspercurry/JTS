@@ -149,8 +149,10 @@ what-not-to-change list is explicit: re-derive under P1 rather than widen it).
 precedes the search window), #1867 + #1967 (**same mechanism** — the ≥4 kHz
 echo-band floor makes the crossover-region rungs and any crossover-region null
 structurally invisible; **#1967 is scheduled R10**, because the unclamp is only
-safe once the objective carries the crossover context), #1974 (**R12** —
-inconclusive copy blames a reflection on a path with none), #1750 (**R12** —
+safe once the objective carries the crossover context), #1974 (**moved R12 →
+R9** — inconclusive copy blames a reflection on a path with none; R9's exit
+requires the gate disclosure to RENDER, and the screens carrying that copy are
+the render slot, so the two ship together), #1750 (**R12** —
 `detect_echo` bounds round outside the search window), #1790 (gating v2 —
 detection, aggregation, anomaly policy), #1783 (chart paints below the validity
 floor, legend blames interference), #1859 (byte-identical DSP, 3–7.7 dB apart —

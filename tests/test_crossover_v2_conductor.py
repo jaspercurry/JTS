@@ -238,6 +238,7 @@ _ROOM_SCALE_EXPECTED_RMS_DB = {0.4: 1.011, 1.0: 2.691, 2.5: 8.566}
 
 def _driver_response(
     role: str, window_ms: float, *, summed_db: np.ndarray | None = None,
+    floor_source: str | None = None,
 ) -> DriverResponse:
     if summed_db is not None:
         magnitude_db = np.asarray(summed_db, dtype=float)
@@ -246,7 +247,14 @@ def _driver_response(
     return DriverResponse(
         role=role, freqs_hz=_SUMMED_FREQS_HZ, magnitude_db=magnitude_db,
         complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
-        gating={"applied": True, "window_ms": window_ms},
+        # ``floor_source`` is WHY the window is that long (issue #1966) —
+        # optional here because most fixtures only care that a window exists,
+        # and a block without it reads as "unknown" exactly like a schema-1
+        # record does.
+        gating={
+            "applied": True, "window_ms": window_ms,
+            **({"floor_source": floor_source} if floor_source else {}),
+        },
         snr=None, validity_floor_hz=None,
     )
 
@@ -367,13 +375,15 @@ def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> Pi
 def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
     pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
-    pilot_snr_ok=None,
+    pilot_snr_ok=None, floor_source=None,
 ) -> ProgramAnalysis:
     return ProgramAnalysis(
         phase="verify",
         program_id=program.program_id,
         locations=(_loc("sweep_verify", "summed_sweep", confidence=locate_confidence),),
-        summed_response=_driver_response("summed", gate_ms, summed_db=summed_db),
+        summed_response=_driver_response(
+            "summed", gate_ms, summed_db=summed_db, floor_source=floor_source,
+        ),
         summed_ripple_db=1.1,
         # W6.7 ruling 1: the conductor gates on the notch-excluded max, not the
         # raw ``max_db`` — this fake keeps them equal (a fake with no notch to
@@ -1378,6 +1388,229 @@ def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
     _run_phase(c, 3, 4)
     assert c.verify_outcome == "inconclusive"
     assert c.verify_evidence is None
+
+
+# --- #1974: the outcome and the verdict that produced it -------------------------
+
+
+def test_the_verify_outcome_always_carries_the_code_that_produced_it():
+    """Issue #1974: "inconclusive" is reached by two verdicts with no shared
+    mechanism, so the outcome alone cannot tell a household WHY the check could
+    not settle. The pair is written in one call (``_set_verify_outcome``), and
+    this pins the property that makes the done screen's copy safe: whatever the
+    conductor reports as ``verify_code`` is the code of the verdict it just
+    returned — never a previous attempt's, never absent.
+
+    Also the no-behaviour-change pin for the copy work: the accepted/code
+    values asserted here are exactly the ones the surrounding suite already
+    asserted before the copy changed. Only what a screen SAYS moved.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    # (analysis factory, expected outcome, expected code)
+    cases = [
+        (lambda program: _verify_analysis(program, max_db=2.4),
+         "fail", "verify_out_of_tolerance"),
+        (lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0),
+         "inconclusive", "verify_inconclusive"),
+        (_verify_analysis, "pass", None),
+    ]
+    for index, (factory, outcome, code) in enumerate(cases, start=3):
+        fakes.verify = factory
+        verdict = _run_phase(c, 3, index)
+        assert c.verify_outcome == outcome, code
+        assert c.verify_code == code, code
+        # The pair agrees with the verdict itself, which is the whole point:
+        # a screen reading the persisted code is reading THIS verdict.
+        assert c.verify_code == (verdict.get("code") or None)
+        assert verdict["accepted"] is (outcome == "pass")
+
+
+def test_a_level_shift_records_its_own_code_not_the_gates():
+    """The second road to "inconclusive". Before #1974 both roads produced the
+    same household sentence, which blamed a room reflection — on a verdict
+    where no reflection and no window are involved at all."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    _run_phase(c, 3, 3)
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.56, max_db=0.5,
+    )
+    verdict = _run_phase(c, 3, 4)
+    assert verdict["code"] == "verify_level_shift"
+    assert c.verify_outcome == "inconclusive"
+    assert c.verify_code == "verify_level_shift"
+
+
+def test_the_verify_gate_record_is_gate_disclosures_own_sentence():
+    """Issue #1966's disclosure, at the seam where it enters the wizard.
+
+    The conductor composes it ONCE, by calling ``describe_gate`` — it does not
+    assemble a sentence of its own from the same fields, which is the failure
+    mode the whole contract exists to prevent. So the assertion is equality
+    against that function's output, not a substring match that a lookalike
+    would also satisfy.
+    """
+    from jasper.audio_measurement import gate_disclosure
+
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.5, gate_ms=5.0, floor_source=gating.FLOOR_SEARCH_BOUND,
+    )
+    _run_phase(c, 3, 3)
+    record = c.verify_gate
+    assert record is not None
+    assert record["disclosure"] == gate_disclosure.describe_gate(
+        {"applied": True, "window_ms": 5.0,
+         "floor_source": gating.FLOOR_SEARCH_BOUND}
+    )
+    # The one fact the household copy branches on, and the state the whole
+    # 2026-07-30 corpus was actually in.
+    assert record["reflection_measured"] is False
+    assert "no reflection found" in record["disclosure"]
+
+
+def test_a_measured_reflection_is_recorded_as_one():
+    """The other epistemic state — the only one where "reflections were
+    removed" is a true thing to say (``GateDisclosure.gated_anything``)."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.5, gate_ms=5.0, floor_source=gating.FLOOR_MEASURED,
+    )
+    _run_phase(c, 3, 3)
+    assert c.verify_gate is not None
+    assert c.verify_gate["reflection_measured"] is True
+    assert "reflection measured" in c.verify_gate["disclosure"]
+
+
+def test_the_gate_is_recorded_on_a_passing_verify_too():
+    """On EVERY outcome, like the graded band and the frame beside it: a pass
+    is exactly when nobody would otherwise ask how much of the response the
+    comparison could see."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    fakes.verify = lambda program: _verify_analysis(
+        program, floor_source=gating.FLOOR_SEARCH_BOUND,
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.verify_gate is not None
+    assert c.verify_gate["reflection_measured"] is False
+
+
+def test_an_early_return_retry_cannot_repair_the_gate_onto_a_stale_verdict():
+    """The desync the PR #1994 adversarial gate found, pinned as a property.
+
+    The outcome, the code, and the gate are written by ONE call, so an attempt
+    that early-returns (``locate_failed`` / ``pilot_level_collapse`` /
+    ``agc_behavioral_fail`` — none of which reach ``_set_verify_outcome``)
+    leaves all three of the previous attempt's facts standing TOGETHER.
+
+    Before the fix the gate alone was recomputed at the top of every
+    ``_verify_verdict`` call, so this exact sequence — an inconclusive whose
+    window was capped at the search ceiling, then a locate failure whose
+    capture DID find a reflection — paired attempt 1's verdict with attempt 2's
+    gate. The done screen then said "a reflection reached the microphone
+    sooner…" about a verdict whose own capture had found none: issue #1974
+    re-created one layer down. The symmetric understatement (measured, then a
+    ceiling-capped early return) is the same bug in the other direction.
+    """
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    # Attempt 1 concludes: gate-comparability inconclusive, window capped.
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.5, gate_ms=5.0, floor_source=gating.FLOOR_SEARCH_BOUND,
+    )
+    assert _run_phase(c, 3, 3)["code"] == "verify_inconclusive"
+    assert c.verify_gate is not None
+    assert c.verify_gate["reflection_measured"] is False
+
+    # Attempt 2 never concludes — but its capture found a reflection.
+    fakes.verify = lambda program: _verify_analysis(
+        program, locate_confidence=0.0, floor_source=gating.FLOOR_MEASURED,
+    )
+    assert _run_phase(c, 3, 4)["code"] == REASON_LOCATE_FAILED
+
+    # The triple is still attempt 1's, entire.
+    assert c.verify_outcome == "inconclusive"
+    assert c.verify_code == "verify_inconclusive"
+    assert c.verify_gate is not None
+    assert c.verify_gate["reflection_measured"] is False
+    assert "no reflection found" in c.verify_gate["disclosure"]
+
+    # And the screen the household actually reads says the ceiling thing.
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "done",
+            "applied": True,
+            "verify": {
+                "outcome": c.verify_outcome,
+                "code": c.verify_code,
+                "gate": c.verify_gate,
+            },
+            "candidate": {"trims_db": {"lo": -1.0}, "delay_us": 120.0,
+                          "polarity": "normal"},
+            "post_apply_grade": {"state": "inconclusive", "graded": False},
+        },
+    })
+    assert env["screen"] == "done"
+    assert "less usable sound to compare" in env["verdict_text"]
+    assert "reflection" not in env["verdict_text"]
+
+
+def test_an_ungated_capture_records_no_gate_at_all():
+    """Absent stays absent (the #1987 rule): a response carrying no gating
+    block yields no record, so no screen can print a gate that never ran."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    def ungated(program):
+        analysis = _verify_analysis(program)
+        return dataclasses.replace(
+            analysis,
+            summed_response=dataclasses.replace(analysis.summed_response, gating={}),
+        )
+
+    fakes.verify = ungated
+    _run_phase(c, 3, 3)
+    assert c.verify_gate is None
 
 
 # --- PR-5: the retired per-capture flatness relay --------------------------------

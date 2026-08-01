@@ -6333,6 +6333,8 @@ class _StubConductor:
 
     candidate = None
     verify_outcome = None
+    verify_code = None
+    verify_gate = None
     verify_evidence = None
     verify_graded_band_hz = None
     verify_frame = None
@@ -6504,6 +6506,72 @@ def test_the_compared_frame_is_persisted_even_on_a_pass():
     plain.verify_outcome = "fail"
     v2host.persist_conductor_state(plain, failure_code=None)
     assert "frame" not in (v2host.load_v2_state() or {})["verify"]
+
+
+def test_the_gate_disclosure_is_persisted_even_on_a_pass():
+    """Issue #1966: the sentence that says what the gate DID has to survive the
+    hop to the wizard, or it renders nowhere — which is exactly where it stood
+    before R9 (an off-by-default operator sidecar and a bundle artifact, both
+    dropped by every projection a screen reads).
+
+    Same always-persisted shape and same argument as the frame above: a pass is
+    when nobody would otherwise ask how much of the response the comparison
+    could see. The persisted value is the CONDUCTOR's record, byte-for-byte —
+    the host copies it, it does not re-derive a sentence of its own.
+    """
+    conductor = _StubConductor("s1")
+    conductor.verify_outcome = "pass"
+    conductor.verify_gate = {
+        "disclosure": (
+            "no reflection found; window capped at the 7.00 ms search ceiling, "
+            "so nothing was gated out, valid above 357 Hz"
+        ),
+        "reflection_measured": False,
+    }
+    v2host.save_v2_state({"session_id": "s1"})
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    verify = (v2host.load_v2_state() or {})["verify"]
+    assert verify["gate"] == conductor.verify_gate
+
+    # No gating block, no key: absent means "this capture was never gated",
+    # never "the gate found nothing".
+    plain = _StubConductor("s1")
+    plain.verify_outcome = "fail"
+    v2host.persist_conductor_state(plain, failure_code=None)
+    assert "gate" not in (v2host.load_v2_state() or {})["verify"]
+
+
+def test_the_verify_code_is_persisted_beside_its_outcome():
+    """Issue #1974: "inconclusive" is reached by two verdicts with no shared
+    mechanism, and the done screen names the cause from the code.
+
+    It is NOT read from ``failure.code``: that is the most recent rejection of
+    any phase, and the second persist below — the ordinary shape of a session
+    that fails VERIFY and then writes again with nothing failing — nulls the
+    failure block while the verify outcome stands. A screen reading it there
+    would have lost the cause exactly when it needed it.
+    """
+    conductor = _StubConductor("s1")
+    conductor.verify_outcome = "inconclusive"
+    conductor.verify_code = "verify_level_shift"
+    v2host.save_v2_state({"session_id": "s1"})
+    v2host.persist_conductor_state(
+        conductor, failure_code="verify_level_shift",
+    )
+    state = v2host.load_v2_state() or {}
+    assert state["verify"]["code"] == "verify_level_shift"
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    state = v2host.load_v2_state() or {}
+    assert state["failure"] is None
+    assert state["verify"]["code"] == "verify_level_shift"
+
+    # A pass carries no code — nothing rejected it.
+    passing = _StubConductor("s1")
+    passing.verify_outcome = "pass"
+    v2host.persist_conductor_state(passing, failure_code=None)
+    assert "code" not in (v2host.load_v2_state() or {})["verify"]
 
 
 def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():

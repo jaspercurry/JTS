@@ -1435,6 +1435,89 @@ DELTA_PROBE_REASON_BY_VERDICT: Mapping[str, str] = {
 }
 
 
+def verify_inconclusive_cause(
+    code: str | None, reflection_measured: bool | None,
+) -> str:
+    """WHY a verify check could not settle, as one household clause (#1974).
+
+    **THE single writer of that clause**, because it renders on TWO screens —
+    the verify_fail screen's reason copy and the done screen's ungraded
+    verdict — and those two screens is exactly how the bug this fixes stayed
+    invisible: each carried its own paraphrase of "the room reflection cut the
+    window short", so neither could be corrected without the other being
+    noticed. There is now one sentence and two framings of it.
+
+    Two things produce the "inconclusive" outcome and they share no mechanism:
+
+    * ``REASON_VERIFY_INCONCLUSIVE`` — VERIFY's own gate came out SHORTER than
+      MEASURE's, so the two captures cannot be compared like for like. That is
+      the whole of what the rule observed; WHY the window is short is a
+      separate fact, and it is the one the old copy asserted without ever
+      consulting. ``reflection_measured`` is that fact, taken from
+      :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`
+      — the single owner of "is the reflections claim true here", whose own
+      docstring says it is true THERE and nowhere else. Across the whole
+      2026-07-30 corpus it was False (issue #1966), i.e. the sentence people
+      actually read was false on every capture that produced it.
+    * ``REASON_VERIFY_LEVEL_SHIFT`` — the recording chain moved between
+      attempts. No reflection and no window are involved at all, and this path
+      never reaches the verify_fail screen's inconclusive copy (it has its own
+      ReasonSpec); it reaches the DONE screen's, because that screen keys on
+      the coarse outcome rather than the code.
+
+    The two arguments go unknown for different reasons and get different
+    answers, and the difference is load-bearing:
+
+    * ``code=None`` — the record does not say WHICH verdict fired (a durable
+      state written before this shipped). Nothing at all is established, so
+      the clause is EMPTY: the caller states the outcome and stops, which is
+      the honest rendering of an unrecorded cause.
+    * ``reflection_measured=None`` — the verdict IS known, only its gate is
+      not. That collapses into the no-reflection-claim branch below rather
+      than emptying the clause, because the code alone already establishes the
+      observation ("the window came out shorter than the tuning's") — that is
+      what the rule measured, independent of any gate record. Emptying here
+      would also break :func:`verify_inconclusive_message`, whose registry
+      rendering passes exactly this and would otherwise read "The check was
+      inconclusive — . Re-verify to try again."
+
+    Returned without terminal punctuation: the caller owns the sentence it
+    lands in.
+    """
+    if code == REASON_VERIFY_LEVEL_SHIFT:
+        # Same vocabulary as REASON_VERIFY_LEVEL_SHIFT's own ReasonSpec below,
+        # deliberately: one cause should not have two names depending on which
+        # screen a household happens to be reading.
+        return "the microphone's levels changed between measurements"
+    if code != REASON_VERIFY_INCONCLUSIVE:
+        return ""
+    if reflection_measured:
+        # The ONE state where blaming a reflection is true — and it says what
+        # the comparison actually lost, not merely that a reflection existed.
+        return (
+            "a reflection reached the microphone sooner than it did during "
+            "tuning, so there was less of the sound to compare"
+        )
+    # Reflection NOT measured, or not recorded. Both render the observation the
+    # rule made and stop there: a window capped at the search ceiling proves
+    # nothing about reflections, so naming one would be the same overstatement
+    # in a new place. The precise gate state is disclosed a line below in
+    # expert details, by ``gate_disclosure.describe_gate``.
+    return "this measurement had less usable sound to compare than the tuning did"
+
+
+def verify_inconclusive_message(reflection_measured: bool | None) -> str:
+    """``REASON_VERIFY_INCONCLUSIVE``'s household sentence. Single writer.
+
+    The registry entry below holds this function's ``None`` (cause-unknown)
+    rendering, so a caller with no gate record on hand — and every reader of
+    ``REASON_REGISTRY`` — gets copy that is true rather than copy that guesses.
+    The envelope re-renders it with the persisted fact when it has one.
+    """
+    cause = verify_inconclusive_cause(REASON_VERIFY_INCONCLUSIVE, reflection_measured)
+    return f"The check was inconclusive — {cause}. Re-verify to try again."
+
+
 @dataclass(frozen=True)
 class ReasonSpec:
     """One terminal verdict's template + budget + copy (§5.10)."""
@@ -1619,8 +1702,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_VERIFY_INCONCLUSIVE: ReasonSpec(
         REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2, "",
-        "The check was inconclusive — the room reflection cut the window "
-        "short. Re-verify to try again.",
+        # NOT a literal (issue #1974). This copy used to assert "the room
+        # reflection cut the window short" on a verdict that never consulted
+        # whether a reflection was found — and across the whole 2026-07-30
+        # corpus none was. The sentence has one writer now
+        # (``verify_inconclusive_message``), and what the registry holds is its
+        # cause-unknown rendering: true for any reader with no gate record.
+        # The envelope re-renders it with the persisted fact.
+        verify_inconclusive_message(None),
     ),
     REASON_VERIFY_LEVEL_SHIFT: ReasonSpec(
         REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2, "",
@@ -2254,6 +2343,39 @@ def _gate_disclosure(response: Any) -> str | None:
     from jasper.audio_measurement import gate_disclosure
 
     return gate_disclosure.describe_gate(response.gating)
+
+
+def _gate_record(response: Any) -> dict[str, Any] | None:
+    """The gate reduced to the two facts a household SCREEN needs, or ``None``.
+
+    ``{"disclosure": <the sentence>, "reflection_measured": <bool>}``. Both are
+    :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivations, taken
+    here at compose time — one is :func:`_gate_disclosure`'s sentence, the
+    other is
+    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`,
+    the single owner of "may this record claim reflections were removed".
+    Neither is re-derived downstream.
+
+    **A reduction, not the block.** What travels to the wizard's durable state
+    is these two derived facts rather than the gating fragment itself, so the
+    state file does not take a dependency on
+    :mod:`~jasper.audio_measurement.gating`'s schema — that schema is versioned
+    and moves (it went 1 -> 2 in R9), and a screen re-deriving copy from it
+    would be a second place the two epistemic states could be collapsed back
+    into one. A response with no gating block yields ``None``: absent stays
+    absent, and no screen invents a gate that was never applied.
+    """
+    disclosure = _gate_disclosure(response)
+    if disclosure is None:
+        return None
+    from jasper.audio_measurement import gate_disclosure
+
+    return {
+        "disclosure": disclosure,
+        "reflection_measured": gate_disclosure.build_gate_disclosure(
+            response.gating
+        ).gated_anything,
+    }
 
 
 def _capture_wav_sha256(result: Any) -> str | None:
@@ -4690,6 +4812,22 @@ class CrossoverV2Conductor:
         # takes precedence in ``cloud_close_state``.
         self._group_close_running = False
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
+        # WHICH VERDICT produced that outcome (issue #1974) — written with it,
+        # never apart, by ``_set_verify_outcome``. "inconclusive" is reached by
+        # two verdicts with no shared mechanism (a too-short gate, and the
+        # recording chain moving), and the done screen has to tell a household
+        # WHY the check could not settle long after the terminal failure screen
+        # has aged out. ``failure.code`` cannot answer that: it is the most
+        # recent rejection of ANY phase, and a later persist with no failure
+        # nulls it while this outcome stands.
+        self._verify_code: str | None = None
+        # VERIFY's own gate, reduced to what the screens need (issue #1974 /
+        # #1966) — see ``_gate_record``. THE THIRD MEMBER OF THE TRIPLE above:
+        # written only by ``_set_verify_outcome``, so it always describes the
+        # same capture as the outcome and code beside it. An attempt that
+        # early-returns never reaches that method and therefore leaves all
+        # three standing together, rather than replacing one of them.
+        self._verify_gate: dict[str, Any] | None = None
         # The VERIFY tracking numbers behind the verify_fail screen's collapsed
         # expert disclosure (#1605). Set only once the tolerance comparison is
         # actually reached (the tracking numbers exist); the early-return
@@ -5053,6 +5191,33 @@ class CrossoverV2Conductor:
     @property
     def verify_outcome(self) -> str | None:
         return self._verify_outcome
+
+    @property
+    def verify_code(self) -> str | None:
+        """The reason code behind :attr:`verify_outcome`, or ``None`` on a pass.
+
+        Written with the outcome, never apart — see ``_set_verify_outcome``.
+        The host persists the pair so the done screen can name WHY a check came
+        back inconclusive (issue #1974) once the terminal failure screen has
+        aged out.
+        """
+        return self._verify_code
+
+    @property
+    def verify_gate(self) -> dict[str, Any] | None:
+        """VERIFY's gate as the screens need it, or ``None`` (issue #1974).
+
+        ``{"disclosure": str, "reflection_measured": bool}`` — see
+        ``_gate_record``. Surfaced on EVERY outcome, for the reason the graded
+        band and the frame are: a pass is exactly when nobody asks how much of
+        the response the comparison could actually see.
+
+        It describes the capture that produced :attr:`verify_outcome` and
+        :attr:`verify_code`, never a later attempt's — the three are one write
+        (``_set_verify_outcome``). A screen may therefore pair them freely,
+        which is exactly what the done screen's cause copy does.
+        """
+        return dict(self._verify_gate) if self._verify_gate else None
 
     @property
     def verify_evidence(self) -> dict[str, Any] | None:
@@ -7265,6 +7430,36 @@ class CrossoverV2Conductor:
         self._safe_log_diag(self._log_verify_diag, analysis, verdict)
         return verdict
 
+    def _set_verify_outcome(
+        self, outcome: str, code: str | None, gate: dict[str, Any] | None,
+    ) -> None:
+        """Record the verify outcome, its verdict, and its gate — as ONE write.
+
+        One call, not three assignments (issue #1974). "inconclusive" is
+        reached by two verdicts that share no mechanism, and the done screen
+        names the cause by reading the code and the gate TOGETHER — so any two
+        of these three drawn from different attempts is a screen telling a
+        household the wrong reason. ``code=None`` is the pass: nothing
+        rejected it. ``gate=None`` is an ungateable capture.
+
+        **The gate is a parameter, not a field this method reads.** An earlier
+        revision recomputed ``_verify_gate`` at the top of ``_verify_verdict``,
+        before the early returns — which meant an attempt that early-returned
+        (``locate_failed`` / ``pilot_level_collapse`` / ``agc_behavioral_fail``,
+        none of which reach here) overwrote the gate while leaving the PREVIOUS
+        attempt's outcome and code standing. The adversarial gate on PR #1994
+        reproduced the consequence on the real conductor: an attempt-1
+        "inconclusive" whose window was capped at the ceiling, followed by an
+        attempt-2 locate failure whose capture DID find a reflection, made the
+        done screen say "a reflection reached the microphone sooner…" about a
+        verdict whose own capture had found none — #1974 re-created in a new
+        place. Requiring the gate at the call site is what makes that
+        unavailable rather than merely intended.
+        """
+        self._verify_outcome = outcome
+        self._verify_code = code
+        self._verify_gate = gate
+
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call — a stale value from a PRIOR attempt must never
         # leak into THIS attempt's diagnostic (mirrors ``_last_measure_guard``'s
@@ -7284,6 +7479,19 @@ class CrossoverV2Conductor:
         self._verify_evidence = None
         self._verify_graded_band_hz = None
         self._verify_frame = None
+        # THIS attempt's gate, as a LOCAL — deliberately not written to
+        # ``self`` here. It is computed before the early returns because the
+        # gate-comparability refusal below needs it (that is the verdict whose
+        # copy used to assert a reflection nobody had looked for, issue
+        # #1974), but it only becomes conductor state through
+        # ``_set_verify_outcome``, alongside the outcome and code it belongs
+        # to. See that method for the desync this ordering prevents.
+        #
+        # Named for what it is, not "gate": ``verify_gate`` below is this same
+        # capture's window in MILLISECONDS, and in the one method where
+        # confusing the two produced a household-visible bug they should not
+        # share a name.
+        gate_record = _gate_record(analysis.summed_response)
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.pilot_snr_ok is False:
@@ -7303,7 +7511,9 @@ class CrossoverV2Conductor:
             and verify_gate is not None
             and verify_gate + 1e-6 < self._measure_gate_window_ms
         ):
-            self._verify_outcome = "inconclusive"
+            self._set_verify_outcome(
+                "inconclusive", REASON_VERIFY_INCONCLUSIVE, gate_record,
+            )
             return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
         # Measurement-honesty gate G3 (2026-07-22): the tracking-max
         # comparison below is exactly the thing a shifted recording chain
@@ -7339,7 +7549,9 @@ class CrossoverV2Conductor:
             self._verify_pilot_transfer_step_db is not None
             and self._verify_pilot_transfer_step_db > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
         ):
-            self._verify_outcome = "inconclusive"
+            self._set_verify_outcome(
+                "inconclusive", REASON_VERIFY_LEVEL_SHIFT, gate_record,
+            )
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
@@ -7363,7 +7575,9 @@ class CrossoverV2Conductor:
         # travel in the persisted evidence as diagnostic fields only.
         max_db = tracking.get("max_db_notch_excluded")
         if not isinstance(max_db, (int, float)) or max_db > VERIFY_TOLERANCE_DB:
-            self._verify_outcome = "fail"
+            self._set_verify_outcome(
+                "fail", REASON_VERIFY_OUT_OF_TOLERANCE, gate_record,
+            )
             return PhaseVerdict(
                 False, REASON_VERIFY_OUT_OF_TOLERANCE,
                 payload={"tracking": dict(tracking)},
@@ -7380,7 +7594,7 @@ class CrossoverV2Conductor:
             self._verify_validity_floor_hz = summed.validity_floor_hz
         refusal = self._delta_probe_refusal(self._run_delta_probe())
         if refusal is not None:
-            self._verify_outcome = "fail"
+            self._set_verify_outcome("fail", refusal, gate_record)
             return PhaseVerdict(
                 False, refusal,
                 payload={
@@ -7391,7 +7605,7 @@ class CrossoverV2Conductor:
                     ),
                 },
             )
-        self._verify_outcome = "pass"
+        self._set_verify_outcome("pass", None, gate_record)
         return PhaseVerdict(
             True, payload={
                 "measurement_phase": PHASE_VERIFY,
@@ -9865,4 +10079,8 @@ __all__ = [
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
     "spec_report_for_predicted_sum",
+    # The inconclusive-verdict copy, exported because it has TWO screens and
+    # therefore cannot live inside either one (issue #1974).
+    "verify_inconclusive_cause",
+    "verify_inconclusive_message",
 ]
