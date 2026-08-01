@@ -133,8 +133,15 @@ cross-frame comparison the product makes — including the corrected headline th
 ~84% of the scorecard's "2.02× optimistic prediction" was instrument tilt, not
 model error.
 
-**Status.** PENDING RATIFICATION; nothing merged. **Scheduled: R9**, the
-instrument round, under the provisional green light.
+**Status.** LANDED in R9 (2026-08-01) under the provisional green light —
+#1989 (gating contract v1), #1987 (frame discipline), #1991 (early-fire
+prominence vote), #1994 (disclosure render + both #1974 sites), all gated
+0/0; corpus replay regression clean (zero unexplained deltas). Ladder
+ratification itself remains Monday's. Known limit, disclosed not hidden:
+the frame fit over the notch-excluded mask is necessary but not
+sufficient (skirt residual can still lever a band-edge fit — #1990 §B
+carries the measured table and the option set; fit-side margin is a
+threshold decision for ratification).
 
 **Reshapes.** Precedes WO-6 and WO-7. **WO-5's frame-anchor question (Q-E) is
 superseded-pending**: which anchor the reference frame uses is not a free choice
@@ -213,8 +220,10 @@ offline (the CamillaDSP render harness exists, aimed elsewhere). Two of three
 seams are mis-assigned today; this is also the likely home of the genuine
 1000–1600 Hz model error left after tilt removal.
 
-**Status.** PENDING RATIFICATION; nothing merged. **Scheduled: R10**, the
-objective round.
+**Status.** PENDING RATIFICATION; nothing merged. **R10a (target + guards
+half) opened 2026-08-01 in the extended R9 session under the owner's
+same-session authorization** — see the split note at the end of the R10
+campaign section. R10b (alignment + emit) follows it, never precedes it.
 
 **Reshapes.** Precedes WO-6 and **any delay work** — so **WO-3's delay-adoption
 path (Q-A) is superseded-pending**: no delay value is adopted on model evidence
@@ -375,7 +384,39 @@ honesty copy live; state proven byte-identical; the findings line is
 legitimately absent this session, and the "checked N–M Hz" line is
 post-apply and structurally unreachable at stage-1 stop).
 
-### R9 — the instrument round (rung P1) *(Friday 2026-07-31)*
+### R9 — the instrument round (rung P1) *(Friday 2026-07-31, overnight into 08-01 — COMPLETE)*
+
+> **Outcome (2026-08-01).** Mission met: the instrument can no longer
+> overstate. Five PRs merged at 0/0 — #1989 (gating contract v1: disclosure
+> persisted+surfaced, certified peak fix, asymmetric-cost classification
+> guard, E5's both corrections, #1983 comment), #1987 (frame discipline:
+> fit+disclose over the notch-excluded mask, tilt-removed graded beside raw),
+> #1996 (month-boundary test hermeticity; product half of #1993 stays open),
+> #1991 (early-fire prominence vote K=12/Q=7.5 — the widened-grid corpus
+> optimum K=12/Q=13.5 was REJECTED by the jts3 anatomy screen 13/13, the
+> bench overruling the corpus exactly as the corpus overruled the research in
+> R8; −31% early fires, zero decision changes on the existing corpus), #1994
+> (disclosure render: one clause writer for both screens, outcome+code+gate
+> an atomic triple, the deictic guard). Replay regression: 1635/1637 leaves
+> identical, 57/57 arrays bit-identical, zero unexplained deltas, honest
+> numbers demonstrated from product code
+> (`captures/replay-scorecard-20260731/regression-r9-20260731/`). Our-chain
+> certification banked (§R9 + §WO-6 of
+> `captures/detector-certification-20260801/`). New issues: #1988 (ε-tilt,
+> candidate frame-tilt mechanism), #1990, #1992, #1993. Scope note from the
+> regression: the product's VERIFY frame is fitted over its graded tracking
+> band — every comparison the product makes is now frame-disciplined; the
+> 6-octave 84%-tilt construction stays harness-level until R10 gives the
+> product a full-band comparison. **Slice exit, honestly split:** deploy
+> verified (jts3 = the round's tip, doctor 0 failed / 5 known warnings),
+> state-proof paths held, render FEED verified through the flow's own
+> envelope endpoints, paint seam pinned by gated tests — but no human has
+> seen the pixels: background agents cannot click the Browser pane's
+> per-action approval for `.local` origins, and jts3's wizard is parked at a
+> real owner decision (pending unapplied candidate `8ca42d15…` missing spec
+> by 1.5 dB — leftover bench state). Both are Monday-runbook items; verify
+> grades applied state, so the live-envelope confirmation follows the
+> owner's Apply/Measure-again/Leave-as-is call.
 
 **Territory:** the measurement/analysis layer — `jasper/audio_measurement/`
 (`gating.py`, `program_analysis.py`) and the frame/level math analysis consumes,
@@ -455,6 +496,18 @@ working flow**, never beside it.
 > **This is the fattest round and the likeliest to split.** If it splits, the
 > **target + guards** half precedes the **alignment + emit** half — never the
 > reverse, since the emit loop is only interpretable once the objective is right.
+
+> **Split taken (2026-08-01).** The owner authorized continuing into R10
+> within the R9 session; the split above is exercised as written. **R10a
+> (this session): target + guards** — crossover-shaped per-branch target
+> (#1817), contribution-weighted stopband-limited fit with the
+> passband-edge hard rule, #1954's variance-capped depth, and #1967's
+> unclamp with the new objective context. **R10b (same session if the
+> window holds, else next session): alignment + emit** — the summed model
+> carrying committed delay and trim, the offline emit loop through the
+> render harness, and the delay search. Validation unchanged: corpus
+> replay + predicted-vs-old-fit figures; the new objective replaces the
+> old fit behind the working flow.
 
 ### R11 — the loop round (rung P4 / WO-7 chassis + live fixed-mic validation) *(Saturday night 08-01 / Sunday 2026-08-02)*
 
@@ -574,24 +627,31 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-07-31
-jts3_sha:       1cedf9ee7 — verified deployed, jasper-doctor 0 failed / 5
-                known warnings
-active_round:   R9 — the instrument round (rung P1; territory:
-                jasper/audio_measurement/)
-active_rung:    P1 (frame discipline + gating contract) — R8 certified the
-                detector offline: both detectors fail the frozen criteria,
-                shipped core kept. R9 implements P1 itself, still under the
-                owner's provisional green light, not under ratification
-last_round:     R7 + R8 — one continuous session, ten PRs merged at 0/0
-                (R7: #1959 #1956 #1972 #1963 #1970 #1977; R8: #1980 #1981
-                #1982 #1984)
-next_mission:   captures/NEXT-SESSION-PROMPT-round-9.md
-blocked_on:     nothing for R9. Monday-gated: ladder P0–P4 ratification, Q-E,
-                the enclosure-hole timeline (which sessions are leaky-box —
-                every cross-session comparison spanning it is unreadable
-                until it is pinned), the mic-replacement repeat-floor arm,
-                H3-swap scheduling
+date:           2026-08-01 (R9 closed; R10a opened in the same
+                owner-extended session)
+jts3_sha:       5f434edb8 — verified deployed (build.txt status=ok),
+                jasper-doctor 0 failed / 5 known warnings
+active_round:   R10a — the objective round, target + guards half (rung P3;
+                territory: jasper/correction/ fit layer +
+                jasper/active_speaker/ fit/trim). R10b (alignment + emit)
+                queued behind it
+active_rung:    P3, under the owner's same-session authorization; ladder
+                ratification itself still Monday's. P1 is COMPLETE —
+                see the R9 outcome block in the campaign section
+last_round:     R9 — the instrument round, COMPLETE at five PRs merged 0/0
+                (#1989 #1987 #1996 #1991 #1994), replay regression clean
+                (zero unexplained deltas), our-chain certification banked.
+                Slice exit honestly split: render feed E2E-verified via the
+                flow's own endpoints; the browser-pixel pass + the parked
+                wizard decision (pending candidate 8ca42d15…) are
+                Monday-runbook items
+next_mission:   R10a work orders (this session);
+                captures/NEXT-SESSION-PROMPT-round-10.md for a fresh session
+blocked_on:     Monday-gated: ladder P0–P4 ratification, Q-E, the
+                enclosure-hole timeline, the mic-replacement repeat-floor
+                arm, H3-swap scheduling, the #1993 spend-window product
+                question, the #1990 §B fit-margin threshold decision, and
+                the two new runbook items from the R9 slice check
 ```
 
 ## How this document relates to session handoffs and issues
