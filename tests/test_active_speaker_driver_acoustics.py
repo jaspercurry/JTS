@@ -1202,6 +1202,59 @@ def test_summed_null_depth_capped_by_insufficient_overlap_snr(tmp_path):
     assert capped.verdict == plain.verdict == "polarity_or_delay_problem"
 
 
+def test_summed_production_shape_never_reads_the_hann_capture_band_levels(
+    tmp_path, monkeypatch
+):
+    """Issue #2010: the production summed-crossover call never reaches
+    ``_capture_band_levels``, which Hann-windows a non-stationary sweep.
+
+    This pins the reachability claim recorded in ``_capture_band_levels``'s
+    docstring, which is the whole reason that function was left on the Hann
+    default rather than mirroring #1847's ``window="rectangular"`` fix.
+    ``commissioning_capture_producer``'s ``analyze_summed_crossover`` call —
+    the only production caller — always supplies ``ambient_duration_s`` and
+    supplies NEITHER ``noise_band_report`` NOR ``noise_floor_dbfs``. That
+    builds the paired ambient report, which is stamped ``domain=
+    "deconvolved"``, so the capture side is measured by
+    ``snr_policy.magnitude_band_levels`` on the deconvolved magnitude instead.
+
+    If a future change makes the raw-FFT branch reachable from this shape, the
+    monkeypatched ``_capture_band_levels`` raises and this fails loudly rather
+    than silently re-arming a measured bias (up to ~11.6 dB per band, and
+    strongly capture-layout dependent) underneath the SC-1 SNR gate.
+    """
+    reference, meta = _reference_sweep()
+    ir = np.zeros(64, dtype=np.float64)
+    ir[0] = 1.0
+    ir[12] = 0.98
+    signal = fftconvolve(reference.astype(np.float64), ir)
+    path = _write_relay_capture(
+        tmp_path, "production-shape.wav", signal, gain=0.4, ambient_s=14.0,
+    )
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "_capture_band_levels (Hann window) reached from the production "
+            "summed-crossover shape — see issue #2010"
+        )
+
+    monkeypatch.setattr(da, "_capture_band_levels", _forbidden)
+
+    result = da.analyze_summed_crossover(
+        path,
+        meta,
+        crossover_fc_hz=2000.0,
+        ambient_duration_s=14.0,
+    )
+
+    assert result.ambient is not None
+    assert result.ambient["domain"] == "deconvolved"
+    assert result.snr is not None
+    methods = {band["method"] for band in result.snr["bands"]}
+    assert methods == {"paired_signal_window_deconvolution"}
+    assert "fft_band_power_difference" not in methods
+
+
 def test_summed_null_depth_uncapped_with_scalar_only_noise(tmp_path):
     """A scalar noise floor alone is not sufficient evidence for the
     alignment class (per "Level control and SNR"): the snr block reads
