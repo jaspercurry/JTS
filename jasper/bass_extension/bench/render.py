@@ -95,7 +95,17 @@ _FORBIDDEN_ARGV_TOKENS = frozenset({"--statefile", "-p", "--port", "-a", "--addr
 
 
 class RenderError(RuntimeError):
-    """A binary resolution, render invocation, or determinism check failed."""
+    """A binary resolution, render invocation, or determinism check failed.
+
+    **This module's whole failure surface.** Every filesystem operation here
+    converts ``OSError`` into this type, so a caller that handles
+    ``RenderError`` has handled the module. That is load-bearing rather than
+    tidy: callers refuse on ``RenderError`` and map it to a "no verdict was
+    reached" exit, while a bare ``OSError`` escapes them and lands as "a graded
+    branch did not match" — a finding reported for a run that never rendered a
+    sample. Anything added here that touches the filesystem converts too;
+    ``tests/test_bass_extension_bench_render.py`` pins the sites.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,9 +165,12 @@ class BinaryIdentity:
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise RenderError(f"could not read {path} to hash it: {exc}") from exc
     return digest.hexdigest()
 
 
@@ -223,8 +236,13 @@ def resolve_render_binary(
             "refusing rather than silently preferring the override (R5)"
         )
     binary_path = Path(resolved_path)
-    if not binary_path.is_file():
-        raise RenderError(f"resolved render binary does not exist: {binary_path}")
+    try:
+        if not binary_path.is_file():
+            raise RenderError(f"resolved render binary does not exist: {binary_path}")
+    except OSError as exc:
+        raise RenderError(
+            f"could not stat the resolved render binary {binary_path}: {exc}"
+        ) from exc
     resolved = shutil.which(str(binary_path)) or (
         str(binary_path) if os.access(binary_path, os.X_OK) else None
     )
@@ -331,10 +349,21 @@ def render_config(
             "render argv carries a statefile or websocket-bind token — refusing "
             f"before start: {argv!r}"
         )
-    if not output_path.parent.exists():
-        raise RenderError(f"render output directory does not exist: {output_path.parent}")
-    if output_path.exists():
-        output_path.unlink()
+    try:
+        if not output_path.parent.exists():
+            raise RenderError(
+                f"render output directory does not exist: {output_path.parent}"
+            )
+        if output_path.exists():
+            output_path.unlink()
+    except OSError as exc:
+        # Not redundant with the guards above: `exists()` re-raises anything
+        # that is not ENOENT/ENOTDIR (an unsearchable bundle directory), and a
+        # DIRECTORY at output_path satisfies `exists()` and then fails to
+        # unlink. Both are OSError, which is not this module's failure type.
+        raise RenderError(
+            f"could not prepare the render destination {output_path}: {exc}"
+        ) from exc
 
     start = time.monotonic()
     try:
@@ -361,10 +390,17 @@ def render_config(
             f"render exited {result.returncode}: argv={argv!r} "
             f"stdout={stdout_tail!r} stderr={stderr_tail!r}"
         )
-    if not output_path.is_file():
+    try:
+        if not output_path.is_file():
+            raise RenderError(
+                f"render exited 0 but produced no output file: {output_path}"
+            )
+        output_byte_size = output_path.stat().st_size
+    except OSError as exc:
         raise RenderError(
-            f"render exited 0 but produced no output file: {output_path}"
-        )
+            f"render exited 0 but its output {output_path} could not be "
+            f"inspected: {exc}"
+        ) from exc
     return RenderInvocation(
         argv=argv,
         returncode=result.returncode,
@@ -372,7 +408,7 @@ def render_config(
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
         output_sha256=_sha256_file(output_path),
-        output_byte_size=output_path.stat().st_size,
+        output_byte_size=output_byte_size,
     )
 
 
@@ -427,12 +463,23 @@ def _declared_playback_destination(config_text: str, *, config_path: Path) -> st
 def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
     """Refuse to place a preserved render output over an existing file.
 
-    ``Path.rename`` overwrites silently on POSIX. This check has two call
-    sites, defending different things:
+    ``Path.rename`` overwrites silently on POSIX, so an occupied slot would be
+    replaced without a word. What that silence would cost is **an operator
+    signal, not measurement integrity**: a ``.first`` sitting in a bundle is
+    evidence that a campaign died partway through, and it is worth stopping to
+    say so rather than quietly paving over. Checking up front costs no render
+    at all, which is what makes refusing the cheap answer.
 
-    * **Up front, before any render** — the one that fires in practice. A
-      ``.first`` left behind by a campaign that died partway would otherwise
-      be replaced without a word. Checking here costs no render at all.
+    It is specifically NOT protection against a stale file reaching a reader.
+    Rename's overwrite is total: a slot that gets written ends up holding the
+    fresh bytes, and a slot that does not get written belongs to a run that
+    raised instead of returning a receipt. There is no path on which a receipt
+    describes one set of bytes while the retained file holds another.
+
+    The check has two call sites, defending different things:
+
+    * **Up front, before any render** — the one that fires in practice, for the
+      died-partway campaign above.
     * **Immediately before each move.** Nothing inside
       :func:`render_with_determinism_receipt` can occupy a preserved slot
       between those two moments: the three paths are proved distinct, and the
@@ -440,23 +487,21 @@ def _assert_preserved_output_slot_free(path: Path, *, label: str) -> None:
       this call defends against a writer OUTSIDE this function touching the
       bundle directory during the render window — real, but not the ordinary
       case.
-
-    Why a stale file matters more than it looks: the receipt's hashes come
-    from the :class:`RenderInvocation` computed BEFORE the move, while the
-    campaign reads the preserved file afterwards. Those are decoupled, so a
-    surviving stale file would let the receipt truthfully report
-    "deterministic" about two renders while the measurement used bytes from a
-    different run.
     """
 
-    if path.exists():
+    try:
+        occupied = path.exists()
+    except OSError as exc:
+        raise RenderError(
+            f"could not check the {label} render's preserved output path "
+            f"{path}: {exc}"
+        ) from exc
+    if occupied:
         raise RenderError(
             f"the {label} render's preserved output path already exists: {path} "
-            "— refusing rather than silently overwriting it. This receipt's "
-            "hashes are computed before the file is moved here, while the "
-            "campaign reads the file afterwards, so a stale file would make "
-            "the receipt describe different bytes than the measurement used. "
-            "Delete it, or render into a fresh bundle directory."
+            "— refusing rather than silently overwriting it, because a file "
+            "already sitting here is evidence that an earlier campaign did not "
+            "finish. Delete it, or render into a fresh bundle directory."
         )
 
 
@@ -471,7 +516,13 @@ def _preserve_render_output(source: Path, destination: Path, *, label: str) -> N
     """
 
     _assert_preserved_output_slot_free(destination, label=label)
-    source.rename(destination)
+    try:
+        source.rename(destination)
+    except OSError as exc:
+        raise RenderError(
+            f"could not move the {label} render's output from {source} to "
+            f"{destination}: {exc}"
+        ) from exc
 
 
 def render_with_determinism_receipt(
@@ -530,7 +581,10 @@ def render_with_determinism_receipt(
     rendered here; it makes no claim about untested shapes.
     """
 
-    config_text = config_path.read_text(encoding="utf-8")
+    try:
+        config_text = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RenderError(f"could not read render config {config_path}: {exc}") from exc
     declared = _declared_playback_destination(config_text, config_path=config_path)
     if declared != str(declared_output_path):
         raise RenderError(
@@ -617,7 +671,12 @@ def check_free_space(
     """
 
     required = per_render_estimate_bytes * max(1, renders_outstanding)
-    usage = shutil.disk_usage(bundle_dir)
+    try:
+        usage = shutil.disk_usage(bundle_dir)
+    except OSError as exc:
+        raise RenderError(
+            f"could not read free space for {bundle_dir}: {exc}"
+        ) from exc
     if usage.free < required:
         raise RenderError(
             f"free space {usage.free} bytes is below the campaign estimate "
@@ -642,7 +701,10 @@ def extract_channel(
         raise RenderError(
             f"channel_index {channel_index} is outside [0, {channel_count})"
         )
-    data = raw_path.read_bytes()
+    try:
+        data = raw_path.read_bytes()
+    except OSError as exc:
+        raise RenderError(f"could not read render output {raw_path}: {exc}") from exc
     frame_bytes = bytes_per_sample * channel_count
     if len(data) % frame_bytes != 0:
         raise RenderError(
