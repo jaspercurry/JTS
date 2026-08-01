@@ -740,19 +740,21 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     a BARE sweep at this module's OWN defaults (:data:`DEFAULT_F1_HZ` 20 Hz,
     :data:`DEFAULT_F2_HZ` 20 kHz, :data:`DEFAULT_DURATION_S` 6 s) reads
     sub_bass -11.57 dB, bass -1.57, upper_bass +2.44, transition +4.09,
-    mid +1.76, treble -7.62 against the law. Those are the numbers for that
-    shape only. The LIVE summed-crossover sweep is much narrower — bounded to
-    one octave either side of the crossover (``f1 = max(20, fc/2)``,
-    ``f2 = min(23000, fc*2)``, in ``commissioning_capture_producer``'s
-    ``_prepare_sweep``) — and was NOT characterised band-by-band; do not read
-    the table above as its bias.
+    mid +1.76, treble -7.62 against the law. Those figures hold for that shape
+    only. The LIVE summed-crossover sweep is much narrower — bounded to one
+    octave either side of the crossover, clamped to
+    :data:`~jasper.active_speaker.test_signal_plan.MIN_DRIVER_TEST_FREQUENCY_HZ`
+    and
+    :data:`~jasper.active_speaker.test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ`
+    (``commissioning_capture_producer``'s ``_prepare_sweep``) — and was NOT
+    characterised band-by-band, so those per-band figures do not describe it.
 
     *What actually drives it: capture LAYOUT, not sweep range or duration.*
     Holding the sweep fixed and varying only the leading quiet from 0 to 20 s
     moved every band by more than 13 dB — treble across a 27 dB span, and
     five of the six bands CHANGED SIGN along the way (a band reading too
     quiet at one layout reads too loud at another). Varying sweep duration
-    from 2.07 s to 20.03 s instead moved it by under 0.03 dB. So the bias is
+    from 2.07 s to 20.03 s instead moved it by about 0.03 dB. So the bias is
     not a fixed per-band offset that could be calibrated out once; it is a
     function of where the sweep happens to sit inside the recording.
 
@@ -779,7 +781,7 @@ def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:
     ``noise_floor_dbfs`` on a capture whose paired ambient did not build,
     puts a layout-dependent error straight into the SC-1 SNR gate — a
     decision, not a disclosure. ``window="rectangular"`` is the likely fix
-    (it matches the same law to within 0.09 dB on the shapes measured), but
+    (it matches the same law to within 0.1 dB on the shapes measured), but
     it is not a validated drop-in here: on a PADDED capture, which driver
     captures are by design, it carries a band-independent duty-cycle offset
     of ``10*log10(sweep_len/capture_len)`` — 5.93 dB across that same
