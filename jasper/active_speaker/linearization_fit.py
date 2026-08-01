@@ -1986,17 +1986,25 @@ def _lift_stage(
     realization gate below reads ``realized_db[band_mask]``, and reusing that
     idiom here is the plausible-looking mistake. It is wrong because
     ``band_mask``'s overlap with the stopband is **incidental, not
-    guaranteed**: the mask is whatever :func:`_adaptive_band_trim` walked out
-    to, which depends on the driver's own curve. Measured on the 2026-07-30
-    JTS3 session (``captures/r10a-objective-20260801``), the two branches of
-    ONE speaker disagree about it — the woofer's fit band runs to 2597.9 Hz
-    against a gain band ending at 2266.8 Hz, so its stopband is partly inside
-    the mask and partly above it, while the tweeter's fit band starts at
-    873.1 Hz against a gain band starting at 1764.6 Hz, putting that whole
-    stretch inside. A mask-limited guard would therefore catch this defect on
-    some branches and some sessions and not others, which is worse than one
-    that never fired: it would look like coverage. Reading the emitted cascade
-    over the whole grid has no such dependency.
+    guaranteed**: the mask is the fit band
+    (:func:`_adaptive_band_trim`'s walk) intersected with the envelope, and
+    where that lands depends on the driver's own curve, not on the crossover.
+
+    Measured on the 2026-07-30 JTS3 session, where ONE speaker's two branches
+    disagree about it (both arms identical; re-derive with
+    ``captures/r10a-objective-20260801/fit_band_probe.py``):
+
+    * **woofer** — fit band ``(150.0, 2747.3)`` Hz against a gain band ending
+      at 2266.8 Hz. Its stopband is PARTLY inside the mask: 7 of 78 stopband
+      bins, spanning 2323.0-2747.3 Hz, with the rest above the fit band.
+    * **tweeter** — fit band ``(2020.0, 18390.9)`` Hz against a gain band
+      *starting* at 1764.6 Hz. The fit band begins ABOVE the gain band's lower
+      edge, so **all 89** of its stopband bins fall OUTSIDE the mask.
+
+    So a mask-limited guard would half-see one branch and be completely blind
+    on the other, in the same session. That is worse than one that never
+    fired: it would look like coverage. Reading the emitted cascade over the
+    whole grid has no such dependency.
     ``test_a_mask_limited_guard_would_miss_these_bins_entirely`` pins the
     distinction.
 
@@ -2105,8 +2113,9 @@ def _lift_stage(
     # branch's acoustic passband edge. Read over the WHOLE grid, NOT
     # ``band_mask`` — the mask's overlap with the stopband is incidental
     # rather than guaranteed, so a mask-limited test has coverage that varies
-    # by branch and by session. See this function's docstring for the measured
-    # case where one speaker's two branches disagree about it.
+    # by branch and by session. On the banked 2026-07-30 session it would have
+    # seen 7 of the woofer's 78 stopband bins and NONE of the tweeter's 89;
+    # see this function's docstring.
     if gain_permitted is not None and np.any(
         realized_db[~gain_permitted] > SIGNIFICANT_GAIN_DB
     ):
