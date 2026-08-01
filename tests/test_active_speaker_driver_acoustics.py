@@ -1443,8 +1443,9 @@ def test_capture_geometry_reference_axis_calls_real_gating_module(tmp_path):
 # table that covers NO band at the shipped crossover frequencies, so every band
 # the alignment gate reads took apply_noise_band_fallback's raw-ambient branch
 # and was subtracted from a gated, deconvolved signal level — different units.
-# At the production sweep length (SUMMED_SWEEP_DURATION_S = 8.0) the measured
-# error ran -22.08 to +11.11 dB and falsely refused 43 of 162 synthetic
+# At an 8 s sweep (the SUMMED_SWEEP_DURATION_S ceiling — the real length is
+# min(8 s, both adjacent drivers' declared limits), so a two-way runs 4 s) the
+# measured error ran -22.08 to +11.11 dB and refused 43 of 162 synthetic
 # captures. analyze_summed_crossover now derives its band table from the sweep,
 # so the fallback is unreachable and both sides stay in the gated deconvolved
 # domain.

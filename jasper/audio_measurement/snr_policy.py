@@ -360,18 +360,28 @@ def sweep_excitation_bands(
     (``[fc/2, fc*2]``, ``commissioning_capture_producer._prepare_sweep``), so
     at the shipped crossover frequencies NO canonical band is fully covered and
     every band that decides the alignment verdict takes the raw fallback.
-    Measured through the production analyzer at the production sweep length
-    (``SUMMED_SWEEP_DURATION_S = 8.0``; synthetic captures, 162 cases) the
-    resulting SNR error ran **-22.08 to +11.11 dB** and falsely refused
-    **43 of 162** captures whose overlap SNR was genuinely sufficient
-    (SC-1 SNR units defect, 2026-08-01).
+    Measured through the production analyzer at an 8 s sweep (synthetic
+    captures, 162 cases) the resulting SNR error ran **-22.08 to +11.11 dB**
+    and refused **43 of 162** captures whose whole-sweep SNR was genuinely
+    sufficient (SC-1 SNR units defect, 2026-08-01).
 
-    Sweep duration matters and must be stated with any number here: the raw
-    substitute gets no sweep processing gain while the deconvolved side does,
-    so the substitution understates noise at short sweeps and overstates it at
-    long ones. The same code on a 1 s sweep runs -13.32 to +27.44 dB and
-    produced 3 outright false PASSES; at the production 8 s length none of the
-    162 cases became a false pass, though 6 still read HIGH (up to +11.11 dB).
+    **Sweep duration must be stated with any number here, and 8 s is a CEILING
+    rather than "the" production length.** The real length is
+    ``min(SUMMED_SWEEP_DURATION_S, maximum_duration_s)``
+    (``commissioning_capture_producer._bounded_sweep_meta``), where
+    ``maximum_duration_s`` is the minimum across BOTH adjacent drivers'
+    operator-declared ``max_sweep_duration_s``, then decremented until the
+    sweep fits. With ``MAX_TWEETER_SWEEP_DURATION_S = 4.0`` a real two-way runs
+    a 4 s summed sweep, so shipped configurations sit BETWEEN the two lengths
+    measured here and are not covered by either.
+
+    That matters because duration controls the SIGN: the raw substitute gets no
+    sweep processing gain while the deconvolved side does, so the substitution
+    understates noise at short sweeps and overstates it at long ones. The same
+    code at 1 s runs -13.32 to +27.44 dB and produced 3 outright false PASSES.
+    At 8 s none of the 162 cases became a false pass — but 6 still read HIGH (up
+    to +11.11 dB), and the false-pass regime IS the short-sweep regime, so the
+    8 s result is not evidence that shorter shipped configurations are safe.
 
     Deriving the table from ``[f1_hz, f2_hz]`` removes the mismatch at its
     source rather than correcting for it: every band is covered by
@@ -476,11 +486,13 @@ def apply_noise_band_fallback(
     band-sum statistic, and the observation window (a <=7 ms gated impulse
     response vs 1 s of room) — so the substitution is not a constant offset
     and its sign is not stable. It is not even stable in the SWEEP LENGTH: on
-    the summed-crossover capture the error ran -22.08 to +11.11 dB at the
-    production 8 s sweep and -13.32 to +27.44 dB at 1 s, because the raw
-    substitute gets no sweep processing gain while the deconvolved side does
-    (SC-1 SNR units defect, 2026-08-01). Any number quoted for this
-    substitution has to name the sweep length it was measured at.
+    the summed-crossover capture the error ran -22.08 to +11.11 dB at an 8 s
+    sweep and -13.32 to +27.44 dB at 1 s, because the raw substitute gets no
+    sweep processing gain while the deconvolved side does (SC-1 SNR units
+    defect, 2026-08-01). Any number quoted for this substitution has to name
+    the sweep length it was measured at — and note that the summed sweep's
+    length is ``min(SUMMED_SWEEP_DURATION_S, both drivers' declared limits)``,
+    so 8 s is its ceiling, not its typical value.
 
     This is a correct substitution for the case it was built for (issue #1563:
     a WIDE per-driver near-field sweep, where the uncovered bands are the ones
