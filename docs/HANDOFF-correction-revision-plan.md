@@ -225,8 +225,11 @@ owner's same-session authorization — #1999 (crossover-shaped per-branch
 target, structural stopband guard at ½ octave past the −3 dB radiating
 band, #1967's classify-only unclamp; crossover-region residual
 −43%/−47% on the banked bench, #1817 closed) and #1998 (#1954's
-per-frequency variance-capped depth), both gated 0/0 after multi-round
-evidence hardening. Ladder ratification itself remains Monday's, and the
+per-frequency variance-capped depth), both gated 0/0 across multi-round
+reviews — #1998's first round found two behaviour defects closed by
+code (the clamp reached centres the cap had no mandate over; the cap
+was under-enforced at protected bins), the later rounds'
+evidence-honesty findings closed by strengthening evidence. Ladder ratification itself remains Monday's, and the
 R10a gates produced **two new ratification items**: the raw-σ statistic
 ruling (recorded on #1954 — deliberate deviation from the digest's
 letter) and the bins-vs-centres clamp question (between-centre residue
@@ -528,12 +531,21 @@ working flow**, never beside it.
 > old fit behind the working flow.
 
 > **R10a outcome (2026-08-01).** Both halves' PRs merged at 0/0 — #1999
-> and #1998, each through multi-round gates whose findings were all
-> evidence-honesty class (a non-discriminating guard fixture, docstring
-> numbers that didn't reproduce with one clause inverted, a vacuous
-> regression pin, a grid-conditional figure dressed as a bound) and all
-> closed by strengthening the evidence: an in-suite counterfactual with
-> a geometric precondition, a named hardcode-free probe script
+> and #1998, each through multi-round gates. #1998's first round found
+> two BEHAVIOUR defects, closed by code: the cumulative clamp imposed a
+> ceiling at centres the cap had no mandate over (a σ=0.031 dB centre —
+> where the seats agreed — trimmed 2 dB, with the nudge blaming
+> disagreement), and the cap was under-enforced at the bins it protects
+> (55% over its allowance on the default strategy) — fixed by the
+> `protected_mask` single owner and a realized-chain monotone
+> relaxation run last, which itself surfaced a real ordering bug
+> (dropped boosts deepening a protected centre post-clamp). The
+> remaining findings were evidence-honesty class (a non-discriminating
+> guard fixture, docstring numbers that didn't reproduce with one
+> clause inverted, a vacuous regression pin, a grid-conditional figure
+> dressed as a bound), all closed by strengthening the evidence: an
+> in-suite counterfactual with a geometric precondition, a named
+> hardcode-free probe script
 > (`captures/r10a-objective-20260801/fit_band_probe.py`), a
 > self-guarding fixture, and per-design `max_overshoot_db` publication.
 > Offline validation banked in `captures/r10a-objective-20260801/`
@@ -676,7 +688,10 @@ active_round:   R10b — the objective round's alignment + emit half
                 (summed model carries committed delay + trim; offline
                 emit loop through the render harness; delay search).
                 Next session's work: captures/NEXT-SESSION-PROMPT-round-10.md
-                covers it (its DoD item 1 is done; start at item 3)
+                covers it (DoD items 1–2 done — item 2's exit metric
+                holds, zero stopband filters on all four branch/arm
+                cells, the guard demonstrated structurally rather than
+                on-corpus; start at item 3)
 active_rung:    P3, second half. P1 COMPLETE (R9 outcome block); P3's
                 target + guards half LANDED (R10a outcome block); ladder
                 ratification still Monday's
