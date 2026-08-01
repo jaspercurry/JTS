@@ -472,6 +472,18 @@ def _verify_gate_reflection_measured(status: Mapping[str, Any]) -> bool | None:
     return measured if isinstance(measured, bool) else None
 
 
+def _verify_code(status: Mapping[str, Any]) -> str | None:
+    """WHICH VERDICT produced the persisted verify outcome, or ``None``.
+
+    The other half of the pair :func:`_verify_gate_reflection_measured` feeds,
+    read through the same accessor so the two can never be taken from
+    different blocks (#1974). ``None`` is a record written before this shipped
+    — unknown, not "no verdict".
+    """
+    code = _mapping(_v2(status).get("verify")).get("code")
+    return code if isinstance(code, str) and code else None
+
+
 def _verify_level_reference_lines(status: Mapping[str, Any]) -> list[str]:
     """"level reference reset for this session…" — the #1927 disclosure.
 
@@ -2462,14 +2474,14 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 # not be gated). It leaves the outcome stated and the cause
                 # unnamed, which is what the record supports.
                 cause = verify_inconclusive_cause(
-                    str(_mapping(v2.get("verify")).get("code") or "") or None,
+                    _verify_code(status),
                     _verify_gate_reflection_measured(status),
                 )
+                because = f" — {cause}" if cause else ""
                 done_verdict = (
                     "Your speaker is tuned, but the check that confirms it "
-                    f"could not tell either way{f' — {cause}' if cause else ''}. "
-                    "Re-verify to try again, or undo to restore the previous "
-                    "sound."
+                    f"could not tell either way{because}. Re-verify to try "
+                    "again, or undo to restore the previous sound."
                 )
             else:
                 done_verdict = (
