@@ -40,25 +40,34 @@ DBFS_FLOOR = -120.0
 
 # Provenance marker for every band-referenced level this module publishes —
 # `band_snr`, `min_band_snr_db`, and the `band_noise_dbfs` rows they are
-# computed from (issue #1838).
+# computed from (issue #1838; bumped again by #1847 — see below).
 #
-# Why a marker and not a schema bump: the numbers moved but the shape did
-# not. Before #1838 `snr_policy.band_levels_dbfs` returned a per-BIN mean
-# rather than band power, so a level read low by `7.27 + 10*log10(n_bins)`
-# AND the SNR built from it inherited a `10*log10(N_capture/N_noise)` bias
-# (~12 dB at the shipped 0.7 s-noise / ~11 s-capture shape) because the two
-# sides are measured over different-length windows and the error therefore
-# did not cancel. Both eras write the same keys with the same units, so a
-# reader diffing `min_band_snr_db` across the boundary — the doctor, the
+# Why a marker and not a schema bump: the numbers moved but the KEYS/shape
+# did not. v1 -> v2 (#1838): `snr_policy.band_levels_dbfs` returned a
+# per-BIN mean rather than band power, so a level read low by
+# `7.27 + 10*log10(n_bins)` AND the SNR built from it inherited a
+# `10*log10(N_capture/N_noise)` bias (~12 dB at the shipped 0.7 s-noise /
+# ~11 s-capture shape) because the two sides are measured over
+# different-length windows and the error therefore did not cancel. v2 -> v3
+# (#1847): `capture_band_snr`'s sweep side now measures with
+# `window="rectangular"` instead of the Hann window the ambient/noise side
+# still (correctly) uses — Hann re-weighted a chirp's per-band split by WHEN
+# each frequency occurs in the capture, moving `sub_bass` +3.1 to +11.5 dB
+# depending on capture padding, comparable in magnitude to the ~12 dB that
+# motivated v2 in the first place, and enough on its own to cross both
+# `SNR_WARN_DB` (20) and `SNR_OK_DB` (25) since they sit only 5 dB apart.
+# Every era writes the same keys with the same units, so a reader diffing
+# `min_band_snr_db` across ANY of these boundaries — the doctor, the
 # bundle collection summary, the calibration agent's advisor packet — would
-# see a ~12 dB "regression" that is entirely the estimator.
+# see a spurious multi-dB "regression" or "improvement" that is entirely
+# the estimator.
 #
-# A reader MUST treat an ABSENT marker as the old (pre-#1838) scale and
-# refuse to compare it against a marked report. Bumping SCHEMA_VERSION would
-# have said "this artifact is shaped differently", which is false and would
-# have invalidated every archived bundle for readers that gate on the
-# version.
-BAND_SNR_SCALE = "band_power_v2"
+# A reader MUST treat an ABSENT marker as the oldest (pre-#1838) scale, and
+# refuse to compare reports carrying DIFFERENT marker values. Bumping
+# SCHEMA_VERSION would have said "this artifact is shaped differently",
+# which is false and would have invalidated every archived bundle for
+# readers that gate on the version.
+BAND_SNR_SCALE = "band_power_v3"
 # TRAP — these edges look like the room-correction boundary and are
 # deliberately NOT routed through jasper.audio_measurement.room_boundary.
 # This is capture-quality vocabulary, not a correction band: its first four
@@ -108,9 +117,19 @@ def dbfs(value: float) -> float:
 def band_levels_dbfs(
     samples: np.ndarray,
     sample_rate: int,
+    *,
+    window: str = "hann",
 ) -> list[dict[str, Any]]:
-    """Estimate Room's four fixed trust bands with the shared FFT kernel."""
-    return snr_policy.band_levels_dbfs(samples, sample_rate, SNR_BANDS_HZ)
+    """Estimate Room's four fixed trust bands with the shared FFT kernel.
+
+    ``window`` forwards to :func:`snr_policy.band_levels_dbfs` unchanged —
+    "hann" (default, correct for the stationary noise-WAV callers of this
+    wrapper) or "rectangular" (for the non-stationary sweep capture;
+    :func:`capture_band_snr` passes this).
+    """
+    return snr_policy.band_levels_dbfs(
+        samples, sample_rate, SNR_BANDS_HZ, window=window
+    )
 
 
 def capture_band_snr(
@@ -119,17 +138,33 @@ def capture_band_snr(
 ) -> list[dict[str, Any]]:
     """Join capture and pre-sweep-noise levels by band identity.
 
-    **Scale is right; band SHAPE is not yet** (issue #1838, follow-up
-    #1847). Before #1838 the shared estimator returned a per-bin mean, and
-    because this compares a ~11 s sweep capture against a ~0.7 s noise WAV
-    the error did NOT cancel — the reported SNR carried a
-    ``10*log10(N_capture/N_noise)`` bias, measured at ~12 dB. That is fixed.
-    What is not: ``snr_policy.band_levels_dbfs`` applies a Hann window, which
-    is correct for the stationary noise side but re-weights the SWEEP side's
-    frequencies by when they occur in the capture (~-10 dB on ``sub_bass``,
-    ~1.5 dB of capture-length dependence). Read the per-band numbers as
-    ordinal within one capture, not as calibrated band levels, until #1847
-    lands. Reports carry ``band_snr_scale`` so the two eras are
+    **Scale is right (#1838); band SHAPE is now right too (#1847) —
+    absolute per-band level still is not.** Before #1838 the shared
+    estimator returned a per-bin mean, and because this compares a ~11 s
+    sweep capture against a ~0.7 s noise WAV the error did NOT cancel — the
+    reported SNR carried a ``10*log10(N_capture/N_noise)`` bias, measured at
+    ~12 dB. That is fixed. Before #1847: ``snr_policy.band_levels_dbfs``'s
+    Hann window, correct for the stationary noise side, re-weighted the
+    SWEEP side's frequencies by when they occur in the capture (~-10 dB on
+    ``sub_bass``). The capture side now measures with
+    ``window="rectangular"`` instead — an unwindowed FFT weights every
+    sample equally regardless of when its energy lands in time, the correct
+    treatment for a non-stationary sweep (see
+    :func:`snr_policy.band_levels_dbfs`'s own docstring for the analytic
+    validation) — and that is fixed too.
+
+    **What is still NOT calibrated: absolute per-band level.** The
+    estimator's denominator is the WHOLE capture's sample count, and this
+    path has no duration FLOOR on the raw upload — only the 30 s ceiling
+    (``deconv.cap_capture_length``) bounds it from above. Extra lead-in/tail
+    silence around the sweep therefore dilutes every band's reported level
+    by the same factor (more non-signal samples in the same divisor)
+    without changing which band carries relatively more or less energy —
+    up to a few dB of admissible swing depending on how much padding a
+    given upload carries. Read the per-band SPLIT within one capture as
+    trustworthy now; read one band's absolute dBFS as ordinal within that
+    capture, not as calibrated SPL comparable across captures of different
+    padding. Reports carry ``band_snr_scale`` so the eras are
     distinguishable on disk — see :data:`BAND_SNR_SCALE`.
     """
     if not noise_report:
@@ -149,6 +184,7 @@ def capture_band_snr(
     capture_levels = band_levels_dbfs(
         captured.astype(np.float64),
         sample_rate,
+        window="rectangular",
     )
     noise_by_band = {
         band.get("band_id"): band

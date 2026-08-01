@@ -42,7 +42,7 @@ function, not at their own module top.
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -101,6 +101,8 @@ def band_levels_dbfs(
     samples: np.ndarray,
     sample_rate: int,
     bands: Sequence[tuple[str, float, float]],
+    *,
+    window: Literal["hann", "rectangular"] = "hann",
 ) -> list[dict[str, Any]]:
     """Band-INTEGRATED level of ``samples``, in true dBFS, per band with bins.
 
@@ -140,16 +142,31 @@ def band_levels_dbfs(
     A full-band total, where that variance is negligible, matches the true
     RMS to <0.05 dB.
 
-    **Not a band-shape estimator for non-stationary input.** The Hann window
-    is correct for the stationary ambient this reads, but it re-weights a
-    swept sine's frequencies by WHEN they occur in the capture — a 4 s
-    sweep's reported band split is wrong by tens of dB, and it varies with
-    capture length. Room correction's ``capture_band_snr`` reads a sweep
-    capture through this function and inherits that bias (measured
-    ~-10 dB on ``sub_bass``, ~1.5 dB of capture-length dependence); the
-    per-band SHAPE there is not yet trustworthy even though the overall
-    scale now is. Tracked in issue #1847 — do not read this docstring as a
-    clean bill of health for that consumer.
+    **``window`` picks "hann" (default) or "rectangular" — this is a
+    non-stationary-input escape hatch, not free choice.** Hann is correct
+    for the stationary ambient this reads by default, but a sweep is
+    non-stationary: the window re-weights a swept sine's frequencies by WHEN
+    they occur in the capture — a 4 s sweep's reported band split was wrong
+    by tens of dB, and it varied with capture length (issue #1847; measured
+    ~-10 dB on ``sub_bass``, ~1.5 dB of capture-length dependence, on room
+    correction's own ~11 s sweep). Pass ``window="rectangular"`` for a
+    sweep/chirp capture instead: an unwindowed FFT weights every sample
+    equally regardless of when its energy lands in time, which is what a
+    non-stationary signal needs. It is the same choice
+    ``sweep_band_crest_factor_db``'s own validation test makes
+    (:mod:`jasper.audio_measurement.program_analysis`,
+    ``test_sweep_band_crest_factor_matches_the_rendered_sweep``), and it
+    matches that function's analytical dwell-time law to within 0.3 dB on
+    room correction's own sweep shape (see
+    ``test_band_levels_dbfs_rectangular_window_matches_the_sweep_law`` in
+    ``tests/test_audio_measurement_snr_policy.py``). ``capture_band_snr``
+    (room correction's sweep-capture disclosure path) passes
+    ``window="rectangular"`` for exactly this reason; every OTHER caller —
+    the ambient/noise reports here, and
+    ``driver_acoustics._capture_band_levels``'s own sweep-capture SC-1 SNR
+    gate — still reads a sweep through the Hann default, a SEPARATE,
+    not-yet-measured bias tracked apart from #1847's bounded fix (issue
+    #2010).
 
     Bounds the FFT input the same way
     :func:`~jasper.audio_measurement.deconv.deconvolve` does
@@ -157,12 +174,24 @@ def band_levels_dbfs(
     (ambient noise, capture band levels) limited only by the HTTP body cap —
     unbounded would otherwise drive this rfft + hanning to OOM on the 1 GB Pi.
     """
+    if window not in ("hann", "rectangular"):
+        raise ValueError(f"band_levels_dbfs: unknown window {window!r}")
     if samples.ndim != 1 or sample_rate <= 0 or samples.size < 8:
         return []
     samples = deconv.cap_capture_length(samples, sweep_len=0, sample_rate=sample_rate)
     x = np.asarray(samples, dtype=np.float64)
-    window = np.hanning(x.size)
-    spectrum = np.fft.rfft(x * window)
+    if window == "hann":
+        win = np.hanning(x.size)
+        windowed = x * win
+        window_energy = float(np.sum(win ** 2))
+    else:
+        # window == "rectangular": x * ones(N) == x and sum(ones(N)**2) == N,
+        # so both the ones() array and the elementwise multiply are skipped
+        # outright — ~2x N x 8 bytes avoided on the path whose own docstring
+        # below names OOM risk on an uploaded WAV up to the 30 s cap.
+        windowed = x
+        window_energy = float(x.size)
+    spectrum = np.fft.rfft(windowed)
     freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
     power = np.abs(spectrum) ** 2
     # One-sided -> two-sided energy: every bin except DC (and Nyquist, which
@@ -173,7 +202,7 @@ def band_levels_dbfs(
         power[-1] = power[-1] / 2.0
     # Parseval + window-energy normalization: mean-square of the unwindowed
     # signal in a band = (two-sided band energy) / (N * sum(w**2)).
-    denom = float(x.size) * float(np.sum(window ** 2))
+    denom = float(x.size) * window_energy
     out: list[dict[str, Any]] = []
     for band_id, low, high in bands:
         mask = (freqs >= low) & (freqs < high)

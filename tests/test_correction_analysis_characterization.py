@@ -19,7 +19,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.audio_measurement import analysis, calibration, deconv, quality, sweep
+from jasper.audio_measurement import (
+    analysis,
+    calibration,
+    deconv,
+    program_analysis,
+    quality,
+    sweep,
+)
 from jasper.correction import acoustic_quality, envelope, status
 from .correction_session_fixtures import make_measurement_session
 
@@ -95,6 +102,60 @@ def test_capture_band_snr_preserves_exact_report(tmp_path: Path):
         },
     ]
     assert sess._capture_band_snr(capture_path, noise_report) == report
+
+
+def test_capture_band_snr_reports_honest_sub_bass_on_a_real_sweep(tmp_path: Path):
+    """#1847, end-to-end through the actual consumer: room correction's own
+    ~10 s sweep capture, not a stationary-tone stand-in.
+
+    ``test_capture_band_snr_preserves_exact_report`` above uses four
+    STATIONARY tones as its capture fixture — deliberately, per its own
+    docstring, to pin the #1838 SCALE fix in isolation. That fixture cannot
+    see the #1847 SHAPE bug at all: a stationary signal's band split does
+    not depend on which window measures it (see
+    ``jasper.audio_measurement.snr_policy.band_levels_dbfs``'s own
+    docstring). Only a genuinely non-stationary capture — a real sweep —
+    exercises the bug this issue reports, so this test renders one through
+    the production generator instead.
+    """
+    sample_rate = 48000
+    f1, f2 = 20.0, 20000.0
+    stimulus, _ = sweep.synchronized_swept_sine(
+        f1=f1, f2=f2, duration_approx_s=10.0,
+        sample_rate=sample_rate, amplitude_dbfs=0.0,
+    )
+    stimulus = np.asarray(stimulus, dtype=np.float64)
+    peak_dbfs = 20.0 * float(np.log10(float(np.max(np.abs(stimulus)))))
+    capture_path = tmp_path / "sweep_capture.wav"
+    sweep.write_sweep_wav(capture_path, stimulus.astype(np.float32), sample_rate)
+
+    # A quiet, flat noise floor for every band so estimated_snr_db is
+    # dominated by the capture side under test, not the noise side.
+    noise_report = {
+        "band_noise_dbfs": [
+            {"band_id": band_id, "level_dbfs": -80.0}
+            for band_id, _lo, _hi in acoustic_quality.SNR_BANDS_HZ
+        ],
+    }
+
+    report = acoustic_quality.capture_band_snr(capture_path, noise_report)
+    by_band = {row["band_id"]: row for row in report}
+
+    predicted_sub_bass = peak_dbfs - program_analysis.sweep_band_crest_factor_db(
+        (f1, f2), (20.0, 80.0)
+    )
+    # Honest now: within a fraction of a dB of the analytic dwell-time law
+    # (test_audio_measurement_snr_policy.py's
+    # test_band_levels_dbfs_rectangular_window_matches_the_sweep_law pins
+    # the same accuracy on the underlying estimator directly; this pins it
+    # through the actual consumer function). Before #1847 this read ~-20
+    # dBFS — about 10 dB low, exactly the issue's reported bias.
+    assert by_band["sub_bass"]["capture_level_dbfs"] == pytest.approx(
+        predicted_sub_bass, abs=0.3
+    )
+    assert by_band["sub_bass"]["estimated_snr_db"] == pytest.approx(
+        predicted_sub_bass + 80.0, abs=0.3
+    )
 
 
 def test_capture_band_snr_fails_closed_without_usable_evidence(tmp_path: Path):
@@ -676,15 +737,19 @@ def test_helper_reports_reach_status_and_homeowner_nudge(
     sess._write_acoustic_quality_json()
     acoustic_path = tmp_path / "acoustic_quality.json"
     persisted_bytes = acoustic_path.read_bytes()
-    # Digest moved once, in #1838, when the report gained `band_snr_scale`
-    # (previously 261dd876…). That key is the whole point: bundles written
-    # either side of the band-power fix carry `band_snr` / `min_band_snr_db`
-    # on scales ~12 dB apart with identical keys and units, so the marker has
-    # to be IN the artifact for a later reader to tell them apart. The
-    # capture_quality digest above is deliberately unchanged — that report is
-    # untouched.
+    # Digest has moved twice: in #1838, when the report gained
+    # `band_snr_scale` (previously 261dd876…), and again in #1847, when
+    # BAND_SNR_SCALE bumped `band_power_v2` -> `band_power_v3` for the
+    # sweep-side window fix (see BAND_SNR_SCALE's own comment in
+    # acoustic_quality.py). That key is the whole point: bundles written on
+    # either side of a scale OR shape fix carry `band_snr` / `min_band_snr_db`
+    # on different scales with identical keys and units, so the marker has to
+    # be IN the artifact for a later reader to tell them apart. The
+    # capture_quality digest above is deliberately unchanged — `band_snr` is
+    # monkeypatched to a fixed fixture here, not computed through the changed
+    # estimator, so that report is untouched.
     assert hashlib.sha256(persisted_bytes).hexdigest() == (
-        "6e304273da747e59f39b977faa0d4061e4550e87d23109196011261537296bf9"
+        "8a34fa59588d154b91a941602e1a3496d72f9e0c6481408c6d400d507aaf8d0d"
     )
     persisted = json.loads(persisted_bytes)
     persisted_capture = persisted["captures"][0]

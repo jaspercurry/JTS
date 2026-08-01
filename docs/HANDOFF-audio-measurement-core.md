@@ -428,7 +428,12 @@ create a second retention system.
   absolute rows moved too (the SNR *ratio* only cancelled exactly when both
   sides were measured over equal-length windows, which `capture_band_snr` —
   a full sweep capture against a separately recorded noise WAV — does not
-  guarantee); `band_snr_verdicts` / `cap_null_depth_db` are new,
+  guarantee). `capture_band_snr`'s sweep side also picked up its own
+  `window="rectangular"` FFT window in #1847: the shared function's default
+  Hann window is right for `band_noise_dbfs`'s stationary noise WAV but
+  re-weighted the sweep side's bands by when they occur in the ~11 s
+  capture (measured ~-10 dB on `sub_bass`) — see `band_levels_dbfs`'s own
+  docstring; `band_snr_verdicts` / `cap_null_depth_db` are new,
   consumed by `active_speaker/driver_acoustics.py` and
   `crossover_alignment.py`), `program.py` + `program_analysis.py` (crossover
   conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/

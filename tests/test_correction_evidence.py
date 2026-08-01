@@ -101,7 +101,7 @@ def test_acoustic_quality_report_marks_the_band_snr_scale():
         }],
     )
 
-    assert acoustic_quality.BAND_SNR_SCALE == "band_power_v2"
+    assert acoustic_quality.BAND_SNR_SCALE == "band_power_v3"
     # Present at the root, where a whole-report reader looks...
     assert report["summary"]["band_snr_scale"] == acoustic_quality.BAND_SNR_SCALE
     # ...and beside the per-capture numbers themselves, since a consumer can
