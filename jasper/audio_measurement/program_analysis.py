@@ -21,6 +21,12 @@ Pipeline (per phase):
 3. **Drift (MEASURE)** — ε from the woofer→woofer-repeat separation, cross-checked
    against the schedule-residual slope of all located segments; disagreement or
    |ε|>500 ppm ⇒ ``glitch_detected`` (callers must reject the capture).
+   **VERIFY** plays one mono summed sweep, so none of those repeat-pair
+   comparisons exists there; it gets its own shaped check instead
+   (``_verify_capture_integrity`` → :class:`CaptureIntegrity`, issue #1971) —
+   heard / on-schedule / unclipped, plus an explicit ``not_evaluated`` record
+   naming the MEASURE-era checks that structurally cannot run. Both phases
+   project their verdict onto the same ``glitch_detected`` bool.
 4. **Per-driver response** — deconvolve → direct-arrival window + first-reflection
    gate → complex TF + magnitude (mic cal applied if given); band-SNR verdicts.
 5. **Alignment (MEASURE)** — band-limited GCC-PHAT supplies an ×16-upsampled,
@@ -65,6 +71,7 @@ from jasper.audio_measurement.frame_fit import FrameComparison, fit_frame
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     KIND_PILOT,
+    KIND_SUMMED_SWEEP,
     KIND_SWEEP,
     PHASE_CHECK,
     PHASE_MEASURE,
@@ -174,7 +181,29 @@ DISCONTINUITY_RSS_RATIO = 0.25
 # here would invert that dependency. Duplicated deliberately: this module
 # needs its own "was this sweep even heard" precondition before it fits a
 # step, not merely a return value a caller might forget to cross-check.
-DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR = 0.3
+#
+# Named for the JUDGMENT, not for its first caller (#1971). It carried a
+# `DISCONTINUITY_` prefix while the step fit was its only consumer;
+# `_verify_capture_integrity` below is the second, and that prefix would have
+# claimed the floor was about step fitting when what it actually decides is
+# "was this sweep even heard".
+SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
+
+# `crossover_v2_flow.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`'s twin (#1971) — the
+# G2 xrun detector's ceiling, duplicated here for the same layering reason as
+# the floor above and pinned against it by the same contract test. A located
+# stimulus further than this off its SCHEDULED slot did not drift there; the
+# timeline was spliced. The flow keeps applying it to MEASURE's `KIND_SWEEP`
+# segments; this module applies it to VERIFY's single `KIND_SUMMED_SWEEP`,
+# which no flow-side gate has ever filtered for (the whole of #1971).
+#
+# INHERITED, NOT RE-DERIVED. The 5 ms number comes from the 2026-07-22 MEASURE
+# evidence the flow's copy documents (a glitched capture at −25…−28 ms against
+# a clean corpus running ≤1.5 ms). No equivalent VERIFY-corpus distribution has
+# been measured, so the margin on this path is an assumption carried over from
+# a capture of the same programs by the same locator — not a measurement of
+# this phase. Widening or tightening it wants a VERIFY corpus first.
+SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 
 # Sentinel for "the located sweeps were not trustworthy enough to fit a step
 # from at all" — distinct from `0.0`, which means "confidently no step" on a
@@ -186,6 +215,56 @@ DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR = 0.3
 # `analysis_diagnostic_summary` for the two places that must (and now do)
 # handle the non-numeric case.
 DISCONTINUITY_UNRESOLVED = "unresolved"
+
+# --- VERIFY capture integrity (issue #1971) -------------------------------- #
+#
+# Three states, and the third is the point. ``_estimate_drift``'s glitch
+# verdict is a bare ``bool``, which is honest on MEASURE (every one of its
+# three inputs is computable from a MEASURE program) and a lie on VERIFY,
+# where none of them is: VERIFY plays ONE mono summed sweep, so there is no
+# repeat pair to take an epsilon, a level agreement, or a within-role
+# residual from. Before #1971 that produced ``glitch_detected is False`` on
+# every VERIFY analysis ever taken — a False that meant "nobody looked",
+# indistinguishable from "looked and it was clean".
+#
+# So a VERIFY capture records a per-check STATUS. ``not_evaluated`` is what a
+# structurally-inapplicable check reports, and it is never collapsed into a
+# pass.
+INTEGRITY_PASS = "pass"
+INTEGRITY_FAIL = "fail"
+INTEGRITY_NOT_EVALUATED = "not_evaluated"
+
+# The checks a single summed sweep CAN answer. These are the substitutes the
+# 2026-07-31 P0 repeat-floor bench had to assemble by hand
+# (captures/repeat-floor-20260731/README.md) because no shipped gate covered
+# the VERIFY path.
+INTEGRITY_CHECK_SWEEP_HEARD = "summed_sweep_heard"
+INTEGRITY_CHECK_SWEEP_SCHEDULE = "summed_sweep_schedule"
+INTEGRITY_CHECK_CLIPPED_RUN = "clipped_run"
+# The MEASURE-era checks a single summed sweep CANNOT answer. Recorded by name
+# rather than omitted: a reader asking "did anything check for a dropped
+# buffer here?" gets the answer, and a future VERIFY program that grows a
+# repeat pair has the exact list of what would become evaluable. Their MEASURE
+# counterparts are ``DriftEstimate.glitch_inputs``'s ``epsilon_out_of_bound``
+# / ``repeat_level_disagree`` / ``residual_desync`` and the diagnostic
+# ``_locate_discontinuity`` step fit.
+INTEGRITY_CHECK_REPEAT_EPSILON = "repeat_epsilon"
+INTEGRITY_CHECK_REPEAT_LEVEL = "repeat_level_agreement"
+INTEGRITY_CHECK_WITHIN_ROLE_DESYNC = "within_role_desync"
+INTEGRITY_CHECK_DISCONTINUITY_STEP = "discontinuity_step"
+
+# Why each unevaluated check could not run — one short clause, stored on the
+# check itself so the record explains itself without a lookup table.
+_INTEGRITY_NO_REPEAT_PAIR = "verify plays one summed sweep: no repeat pair"
+_INTEGRITY_STEP_NEEDS_MORE_SWEEPS = (
+    "a step fit needs more located sweeps than a verify program has"
+)
+_INTEGRITY_NO_SUMMED_SWEEP = "no summed sweep located in this capture"
+_INTEGRITY_NO_STIMULUS = "no stimulus segment located in this capture"
+_INTEGRITY_SWEEP_NOT_HEARD = (
+    "the summed sweep was not confidently located, so its schedule residual "
+    "is not evidence"
+)
 
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
@@ -667,6 +746,89 @@ class SegmentLocation:
 
 
 @dataclass(frozen=True)
+class IntegrityCheck:
+    """One capture-integrity question, and what this capture said about it.
+
+    ``status`` is one of :data:`INTEGRITY_PASS` / :data:`INTEGRITY_FAIL` /
+    :data:`INTEGRITY_NOT_EVALUATED`. ``reason`` is filled ONLY on
+    ``not_evaluated`` and says why the check could not run — that clause is
+    the whole reason this type exists rather than a ``dict[str, bool]``, in
+    which "did not run" and "ran and passed" are the same value.
+    """
+
+    name: str
+    status: str
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class CaptureIntegrity:
+    """What a VERIFY capture's own timeline says about whether it is usable.
+
+    The evidence half of the record (``locate_confidence_min``,
+    ``schedule_residual_ms_worst``, ``clipped_segments``) is reported whether
+    or not the check drawn from it ran, because a measured figure is worth
+    disclosing even where it is not worth a verdict: a summed sweep the
+    locator could barely find still HAS a residual, and printing it beside a
+    ``not_evaluated`` schedule check is what stops a reader inferring a splice
+    from a number that is really just noise (the #1838 / D3 lesson, applied to
+    VERIFY).
+
+    ``failed`` / ``not_evaluated`` / ``glitched`` are derived from ``checks``
+    rather than stored, so the summary can never disagree with the checks it
+    summarizes. ``checks`` is ordered most-fundamental-first, which is also
+    the order a consumer should route on: a sweep nobody heard explains its
+    own residual, so "not heard" outranks "off schedule".
+
+    ``None`` where a :class:`ProgramAnalysis` carries no record at all means
+    "no evidence" — the same convention ``linearity_ok`` / ``pilot_snr_ok``
+    already use — and never "clean". Every VERIFY analysis
+    ``analyze_program_capture`` produces carries one (pinned by test).
+    """
+
+    checks: tuple[IntegrityCheck, ...] = ()
+    locate_confidence_min: float | None = None
+    # SIGNED (mirrors ``crossover_v2_flow._sweep_schedule_diag_fields``): the
+    # direction the schedule broke in is half the forensic value — positive
+    # means the sweep arrived LATE, the 2026-07-27 insertion shape.
+    schedule_residual_ms_worst: float | None = None
+    clipped_segments: tuple[str, ...] = ()
+
+    @property
+    def failed(self) -> tuple[str, ...]:
+        return tuple(c.name for c in self.checks if c.status == INTEGRITY_FAIL)
+
+    @property
+    def not_evaluated(self) -> tuple[str, ...]:
+        return tuple(
+            c.name for c in self.checks if c.status == INTEGRITY_NOT_EVALUATED
+        )
+
+    @property
+    def glitched(self) -> bool:
+        """True when at least one EVALUATED check failed.
+
+        A record of nothing but ``not_evaluated`` is not glitched — it is
+        unexamined, and the ``not_evaluated`` list is how a reader tells the
+        two apart.
+        """
+        return bool(self.failed)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe record for a verdict payload / durable evidence."""
+        return {
+            "glitched": self.glitched,
+            "checks": [
+                {"name": c.name, "status": c.status, **({"reason": c.reason} if c.reason else {})}
+                for c in self.checks
+            ],
+            "locate_confidence_min": self.locate_confidence_min,
+            "schedule_residual_ms_worst": self.schedule_residual_ms_worst,
+            "clipped_segments": list(self.clipped_segments),
+        }
+
+
+@dataclass(frozen=True)
 class DriftEstimate:
     """In-capture clock-drift estimate + the glitch verdict (design §5.6.3).
 
@@ -702,7 +864,7 @@ class DriftEstimate:
     when no step is resolved on a capture whose sweeps were confidently
     located — including on a clean capture, where this is the expected
     value. ``DISCONTINUITY_UNRESOLVED`` (a `str`) / ``""`` (#1839) when one
-    or more located sweeps fell below ``DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR``
+    or more located sweeps fell below ``SWEEP_LOCATE_CONFIDENCE_FLOOR``
     instead: a step fitted from an unlocated sweep is not a clean reading, it
     is a fabrication, so it is a distinct sentinel rather than silently
     ``0.0``. Diagnostic only; never gates ``glitch_detected``.
@@ -1118,7 +1280,20 @@ class ProgramAnalysis:
     # spec, and ``CrossoverCandidate.predicted_ripple_db`` (still the
     # independently-aligned instrument) at the G1 capture-quality ceiling.
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
+    # Set by MEASURE from ``drift.glitch_detected`` and by VERIFY from
+    # ``capture_integrity.glitched`` (issue #1971) — in BOTH cases a one-bit
+    # projection of a richer record that is the owner of the fact, assigned at
+    # the single construction site so the two can never disagree (pinned by
+    # test). It was structurally ``False`` on every VERIFY analysis before
+    # #1971, because the only thing that could set it ran on MEASURE alone.
     glitch_detected: bool = False
+    # The per-check VERIFY capture-integrity record ``glitch_detected``
+    # summarizes — including the checks that could NOT run here and why. Set
+    # by ``_analyze_verify`` on every VERIFY-phase analysis (which is also
+    # every spatial-cloud position, since those replay the verify program).
+    # ``None`` on CHECK/MEASURE and on analyses built before this field
+    # existed: "no evidence", never "clean" — see :class:`CaptureIntegrity`.
+    capture_integrity: CaptureIntegrity | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -1660,7 +1835,7 @@ def _locate_discontinuity(
     confidently located — including a clean capture, where this is the
     expected value; or ``(DISCONTINUITY_UNRESOLVED, "")`` (#1839) when one or
     more of ``stimulus_locs`` falls below
-    ``DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR`` — a step fitted from a sweep the
+    ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` — a step fitted from a sweep the
     locator could barely find is not a "clean capture" reading, it is a
     number invented from noise (real incident: session
     cap_-Us10xORVNlFa_dgi-sP7g's sweeps located at confidence 0.0298, and this
@@ -1704,7 +1879,7 @@ def _locate_discontinuity(
     # a "clean, no step" reading (0.0) — it is a confident-looking
     # fabrication from noise. Gate BEFORE the least-squares fit, on the exact
     # per-location confidence the fit is about to trust implicitly.
-    if any(loc.confidence < DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR for loc in ordered):
+    if any(loc.confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR for loc in ordered):
         return DISCONTINUITY_UNRESOLVED, ""
 
     starts = np.array(
@@ -1911,6 +2086,160 @@ def _estimate_drift(
         discontinuity_samples=discontinuity_samples,
         discontinuity_after_segment=discontinuity_after,
     )
+
+
+# --------------------------------------------------------------------------- #
+# capture integrity (VERIFY)
+# --------------------------------------------------------------------------- #
+
+
+def _verify_capture_integrity(
+    program: ExcitationProgram,
+    sample_rate: int,
+    locations: Sequence[SegmentLocation],
+) -> CaptureIntegrity:
+    """Capture-integrity evidence for a ONE-summed-sweep program (issue #1971).
+
+    ``_estimate_drift`` cannot run here and this is not a smaller version of
+    it. Every one of its three glitch inputs compares a role's repeated
+    sweeps against each other, and a VERIFY program plays one mono summed
+    sweep — so the honest record is not "drift checks passed", it is "drift
+    checks did not run, and here is what did".
+
+    What runs, in routing order:
+
+    1. **heard** — the summed sweep's own locate confidence against
+       :data:`SWEEP_LOCATE_CONFIDENCE_FLOOR`. First because a sweep the
+       correlator could barely find lands in the wrong place and then
+       manufactures a large residual: report the cause, not the symptom
+       (``crossover_v2_flow._sweep_locate_confidence_ok``'s D3 / #1838
+       rationale, which VERIFY never inherited because that gate filters
+       ``KIND_SWEEP``).
+    2. **schedule** — |residual| against
+       :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`, the G2 xrun detector. Only
+       when (1) passed; otherwise ``not_evaluated``, with the measured
+       residual still disclosed as evidence.
+    3. **clipped run** — any stimulus segment carrying a full-scale run
+       (``SegmentLocation.clipped``, already computed by
+       ``_locate_segments``). Independent of (1): a clip is a clip whether or
+       not the locator was confident.
+
+    The gate-window comparability substitute the P0 bench also used by hand is
+    deliberately NOT here. It compares this capture's gate against the
+    PREDICTION's, and only the conductor holds the MEASURE window — so it
+    stays where it already lives (``crossover_v2_flow._verify_verdict``'s
+    inconclusive rule) rather than being restated as a second owner.
+
+    Pilot segments are excluded from (1) and (2) for the same reason
+    ``_estimate_drift`` excludes them: their short, quiet windows locate
+    coarsely by design and would manufacture spurious fires. They are
+    included in (3), where window precision does not matter.
+
+    **What (2) cannot see**, stated because a gate whose bound is unstated
+    gets read as total:
+
+    * A splice INSIDE the summed sweep. The residual is measured at the
+      sweep's located START, so an insertion partway through corrupts the
+      deconvolution while leaving the start where it belongs. MEASURE's G2 has
+      the identical bound; this is the shape ``_locate_discontinuity`` exists
+      to name, and it needs more sweeps than a VERIFY program has.
+    * A splice BEFORE the first stimulus, which the global offset absorbs —
+      correctly, since a uniformly shifted capture is not corrupt.
+    * Anything at all on a LEGACY pilot-less VERIFY program, where the summed
+      sweep IS the global-offset anchor and its residual is therefore
+      structurally ~0. Every conductor-composed VERIFY program carries the
+      leading pilot pair (``crossover_v2_flow._compose_verify_program`` always
+      passes ``leading_pilot_gains_db``), so the anchor is a pilot and the
+      sweep's residual is a real measurement; the pilot-less shape survives
+      only in older fixtures.
+    """
+    sweeps = [loc for loc in locations if loc.kind == KIND_SUMMED_SWEEP]
+    stimuli = [loc for loc in locations if loc.kind in STIMULUS_KINDS]
+    clipped_segments = tuple(loc.segment_id for loc in stimuli if loc.clipped)
+
+    confidence_min: float | None = None
+    residual_ms_worst: float | None = None
+    if sweeps:
+        confidence_min = min(float(loc.confidence) for loc in sweeps)
+        worst = max(sweeps, key=lambda loc: abs(loc.residual_samples))
+        residual_ms_worst = float(worst.residual_samples) / sample_rate * 1000.0
+
+    checks: list[IntegrityCheck] = []
+    if confidence_min is None or residual_ms_worst is None:
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_NOT_EVALUATED,
+            _INTEGRITY_NO_SUMMED_SWEEP,
+        ))
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_SWEEP_SCHEDULE, INTEGRITY_NOT_EVALUATED,
+            _INTEGRITY_NO_SUMMED_SWEEP,
+        ))
+    elif confidence_min < SWEEP_LOCATE_CONFIDENCE_FLOOR:
+        checks.append(IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_FAIL))
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_SWEEP_SCHEDULE, INTEGRITY_NOT_EVALUATED,
+            _INTEGRITY_SWEEP_NOT_HEARD,
+        ))
+    else:
+        checks.append(IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_PASS))
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_SWEEP_SCHEDULE,
+            INTEGRITY_FAIL
+            if abs(residual_ms_worst) > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
+            else INTEGRITY_PASS,
+        ))
+    if not stimuli:
+        # No stimulus segment to inspect is not "nothing was clipped" — it is
+        # the same "nobody looked" a bare False would have been.
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_CLIPPED_RUN, INTEGRITY_NOT_EVALUATED,
+            _INTEGRITY_NO_STIMULUS,
+        ))
+    else:
+        checks.append(IntegrityCheck(
+            INTEGRITY_CHECK_CLIPPED_RUN,
+            INTEGRITY_FAIL if clipped_segments else INTEGRITY_PASS,
+        ))
+    for name in (
+        INTEGRITY_CHECK_REPEAT_EPSILON,
+        INTEGRITY_CHECK_REPEAT_LEVEL,
+        INTEGRITY_CHECK_WITHIN_ROLE_DESYNC,
+    ):
+        checks.append(IntegrityCheck(
+            name, INTEGRITY_NOT_EVALUATED, _INTEGRITY_NO_REPEAT_PAIR,
+        ))
+    checks.append(IntegrityCheck(
+        INTEGRITY_CHECK_DISCONTINUITY_STEP, INTEGRITY_NOT_EVALUATED,
+        _INTEGRITY_STEP_NEEDS_MORE_SWEEPS,
+    ))
+
+    integrity = CaptureIntegrity(
+        checks=tuple(checks),
+        locate_confidence_min=confidence_min,
+        schedule_residual_ms_worst=residual_ms_worst,
+        clipped_segments=clipped_segments,
+    )
+    if integrity.glitched:
+        # The VERIFY twin of ``program_analysis.glitch``, at the same level
+        # and for the same reason: the capture this fired on is about to be
+        # refused, and the journal should say which measurement said so.
+        log_event(
+            logger,
+            "program_analysis.capture_integrity",
+            level=logging.WARNING,
+            phase=program.phase,
+            program_id=program.program_id,
+            failed=",".join(integrity.failed),
+            not_evaluated=",".join(integrity.not_evaluated),
+            locate_confidence_min=(
+                round(confidence_min, 4) if confidence_min is not None else None
+            ),
+            schedule_residual_ms_worst=(
+                round(residual_ms_worst, 3) if residual_ms_worst is not None else None
+            ),
+            clipped_segments=",".join(clipped_segments),
+        )
+    return integrity
 
 
 # --------------------------------------------------------------------------- #
@@ -4297,6 +4626,11 @@ def _analyze_verify(
     pilots, linearity_ok, channel_map_ok, pilot_snr_ok = _pilot_verdicts(
         program, capture, sample_rate, locations, global_offset=global_offset,
     )
+    # Capture integrity (issue #1971). Computed on EVERY verify-shaped
+    # analysis — the tracking comparison above is exactly the thing a spliced
+    # or clipped recording invalidates, and until this existed nothing on this
+    # path ever looked.
+    integrity = _verify_capture_integrity(program, sample_rate, locations)
     return ProgramAnalysis(
         phase=program.phase,
         program_id=program.program_id,
@@ -4309,6 +4643,8 @@ def _analyze_verify(
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
         pilot_snr_ok=pilot_snr_ok,
+        capture_integrity=integrity,
+        glitch_detected=integrity.glitched,
     )
 
 
@@ -4488,6 +4824,26 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         value = getattr(analysis, flag, None)
         if value is not None:
             out[flag] = value
+
+    # VERIFY capture integrity (#1971), flattened one field per fact like every
+    # other block here. Absent — not empty — on CHECK/MEASURE, whose glitch
+    # verdict is the ``drift`` block above; a retained VERIFY clip that carries
+    # neither block is one taken before this record existed.
+    integrity = getattr(analysis, "capture_integrity", None)
+    if integrity is not None:
+        out["integrity_failed"] = ",".join(getattr(integrity, "failed", ()) or ())
+        out["integrity_not_evaluated"] = ",".join(
+            getattr(integrity, "not_evaluated", ()) or ()
+        )
+        out["integrity_locate_confidence_min"] = getattr(
+            integrity, "locate_confidence_min", None
+        )
+        out["integrity_schedule_residual_ms_worst"] = getattr(
+            integrity, "schedule_residual_ms_worst", None
+        )
+        out["integrity_clipped_segments"] = ",".join(
+            getattr(integrity, "clipped_segments", ()) or ()
+        )
 
     summed_response = getattr(analysis, "summed_response", None)
     if summed_response is not None:

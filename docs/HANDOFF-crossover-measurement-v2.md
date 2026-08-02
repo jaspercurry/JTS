@@ -266,7 +266,28 @@ vs ≤1.5 ms on every clean capture — reuses `drift_baselines_disagree`).
 ≥0.69 on every clean capture): a sweep the locator can barely find is a
 capture too quiet to hear, not a splice, so it answers `locate_failed`
 ("check the volume and the microphone") and does NOT auto-retry a level
-that cannot win. VERIFY refuses
+that cannot win.
+
+**Both of those gates are MEASURE-only, and VERIFY got its own in #1971.**
+They filter `KIND_SWEEP`; VERIFY plays one `KIND_SUMMED_SWEEP`, so until
+2026-08 no splice/schedule check on this system had ever looked at a VERIFY
+capture — and `glitch_detected` there came from `_estimate_drift`, whose
+three inputs all compare a role's repeated sweeps and so cannot exist on a
+single mono sweep. It was structurally `False` on every VERIFY analysis ever
+taken: a False that meant *nobody looked*. `program_analysis.
+_verify_capture_integrity` now produces a per-check
+`ProgramAnalysis.capture_integrity` record on every verify-shaped analysis —
+**heard** (the same 0.3 floor), **on-schedule** (the same 5 ms ceiling,
+inherited from the MEASURE evidence above and *not* re-derived on a VERIFY
+corpus), **unclipped** — plus an explicit `not_evaluated` entry, with a
+reason, for each MEASURE-era check that structurally cannot run there. The
+conductor gates on it ahead of everything the tracking verdict rests on
+(`_verify_verdict`), so a spliced or clipped capture never produces a
+pass/fail tracking answer: unheard ⇒ `locate_failed`, spliced or clipped ⇒
+`drift_baselines_disagree`. The third substitute the P0 bench used by hand,
+gate-window comparability, was already the inconclusive rule below and is
+**not** restated in the record — the conductor is the only holder of the
+MEASURE window. VERIFY refuses
 with the new `verify_level_shift` reason (verify-fail template, budget 2)
 when a later attempt's summed-pilot transfer steps more than 0.35 dB from
 the session's first verify attempt (the phone chain stepped 0.75–0.82 dB
@@ -1554,10 +1575,10 @@ unready setup.
 | `pilot_level_collapse` | MEASURE / cloud / VERIFY | 1 | the quiet pilot never cleared the room's in-band floor, so no level comparison from the pair is evidence — room too loud, or the playback level collapsed (e.g. a correction that dropped the pilot band). Checked BEFORE the linearity branch on all three phases, so a collapsed pair can never surface as the phone's fault (#1810) — and on MEASURE, before the **glitch** branch too (#1838): low SNR causes the glitch signal, so asking the glitch first reported "capture glitched" for a capture nobody could hear |
 | `snr_floor` | CHECK | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16). CHECK-only — the other phases use `pilot_level_collapse` |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
-| `clipped` | MEASURE / VERIFY | 1 | auto quieter retry (gain −3 dB) |
-| `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped (#1765). Since #1838 a merely weakly-located sweep is NOT in this class — it answers `locate_failed` ahead of this branch |
+| `clipped` | MEASURE | 1 | auto quieter retry (gain −3 dB). MEASURE-only: VERIFY replays the *identical* program on every attempt (that invariant is what makes the `verify_level_shift` baseline mean anything), so there is no quieter retry to offer — a clipped VERIFY capture is refused as a capture glitch instead (#1971). This row said "MEASURE / VERIFY" until then; no VERIFY path ever returned this code |
+| `drift_baselines_disagree` | MEASURE / VERIFY | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped on MEASURE (#1765), and `integrity=` says which check tripped on VERIFY (#1971, where the class is a spliced timeline or a clipped run). Since #1838 a merely weakly-located sweep is NOT in this class on either phase — it answers `locate_failed` ahead of this branch |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
-| `locate_failed` | any | 1 | couldn't hear the speaker. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag) |
+| `locate_failed` | any | 1 | couldn't hear the speaker. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag) |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
 | `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current (evaluation `unconfirmed` / `stale` / `malformed` — all three are cleared by the one confirm action, which saves the visible values and rebuilds the profile). Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** confirm control here, so "confirm the safety limits" would name a button that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
@@ -1824,7 +1845,15 @@ only a *glitch* MEASURE capture got a partial view via
 separate event carries `epsilon_ppm`, `max_residual_samples`,
 `repeat_level_delta_db`, `glitch_inputs`, `discontinuity_samples`, and
 `discontinuity_after_segment`; the last three are not fields on the
-per-capture event below. `CrossoverV2Conductor` now emits one
+per-capture event below. Its VERIFY twin is
+`event=program_analysis.capture_integrity` (#1971) — same WARN level, same
+failures-only cadence — carrying `failed`, `not_evaluated`,
+`locate_confidence_min`, `schedule_residual_ms_worst`, and
+`clipped_segments`. The verify diag below carries the same record on EVERY
+capture, pass or fail, as `integrity` / `integrity_not_evaluated` /
+`integrity_locate_confidence_min` / `integrity_residual_ms_worst`;
+`integrity=unavailable` there is its own value and means the analysis
+carried no record at all, never a clean capture. `CrossoverV2Conductor` now emits one
 additional `log_event` per consumed capture, **on the accepted path AND
 every rejection**, carrying that phase's full numeric diagnostics (pure
 additive observability — none of these calls choose a verdict). The two

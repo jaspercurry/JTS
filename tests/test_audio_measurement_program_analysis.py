@@ -789,7 +789,7 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
     """#1839: `_locate_discontinuity` must not turn an untrustworthy sweep
     location into a confident-looking number. Real incident (session
     cap_-Us10xORVNlFa_dgi-sP7g): sweeps located at confidence 0.0298 against
-    production's 0.3 floor (``DISCONTINUITY_LOCATE_CONFIDENCE_FLOOR``), and
+    production's 0.3 floor (``SWEEP_LOCATE_CONFIDENCE_FLOOR``), and
     the pre-fix code still reported a fabricated
     ``discontinuity_samples = -2090.5``.
 

@@ -146,6 +146,10 @@ from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
+    INTEGRITY_CHECK_CLIPPED_RUN,
+    INTEGRITY_CHECK_REPEAT_EPSILON,
+    INTEGRITY_CHECK_SWEEP_HEARD,
+    INTEGRITY_CHECK_SWEEP_SCHEDULE,
     AlignmentEstimate,
     CrossoverCandidate,
     DriftEstimate,
@@ -155,6 +159,7 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     RoleGainSolve,
     SegmentLocation,
+    _verify_capture_integrity,
     predicted_branch_sum,
     solve_branch_trims,
     summed_model_residual_delay_us,
@@ -380,15 +385,35 @@ def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> Pi
     )
 
 
+_INTEGRITY_FROM_LOCATIONS = object()
+
+
 def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
     pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
-    pilot_snr_ok=None, floor_source=None,
+    pilot_snr_ok=None, floor_source=None, residual_samples=0.0,
+    integrity=_INTEGRITY_FROM_LOCATIONS,
 ) -> ProgramAnalysis:
+    locations = (
+        _loc(
+            "sweep_verify", "summed_sweep",
+            confidence=locate_confidence, residual_samples=residual_samples,
+        ),
+    )
+    if integrity is _INTEGRITY_FROM_LOCATIONS:
+        # Derived by PRODUCTION code from this fixture's own locations (#1971),
+        # not hand-built: a hand-built record would let the conductor's gate be
+        # tested against a shape the analyzer never produces. Pass
+        # ``integrity=None`` for the pre-#1971 analysis shape.
+        integrity = _verify_capture_integrity(
+            program, program.sample_rate_hz, locations,
+        )
     return ProgramAnalysis(
         phase="verify",
         program_id=program.program_id,
-        locations=(_loc("sweep_verify", "summed_sweep", confidence=locate_confidence),),
+        locations=locations,
+        capture_integrity=integrity,
+        glitch_detected=bool(integrity is not None and integrity.glitched),
         summed_response=_driver_response(
             "summed", gate_ms, summed_db=summed_db, floor_source=floor_source,
         ),
@@ -1396,6 +1421,161 @@ def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
     _run_phase(c, 3, 4)
     assert c.verify_outcome == "inconclusive"
     assert c.verify_evidence is None
+
+
+# --- #1971: the VERIFY capture-integrity gate ------------------------------------
+#
+# Before this, nothing on the VERIFY path checked whether the capture the
+# tracking verdict grades was intact: ``glitch_detected`` came from
+# ``_estimate_drift`` (MEASURE-only), and the two flow gates that DO catch a
+# splice filter ``KIND_SWEEP`` while VERIFY's sweep is ``KIND_SUMMED_SWEEP``.
+
+
+def _spliced_verify(program, **kwargs):
+    """A VERIFY analysis whose summed sweep landed a splice off its slot."""
+    off_slot = SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * program.sample_rate_hz * 3
+    return _verify_analysis(program, residual_samples=off_slot, **kwargs)
+
+
+def _verify_to_apply(fakes):
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    return c
+
+
+def test_verify_splice_refuses_before_the_tracking_grade():
+    """A glitched capture must not produce a pass/fail TRACKING verdict. The
+    tracking max here is wildly out of tolerance, and the answer is still the
+    capture-glitch code — because a spliced recording is not evidence about
+    the speaker either way."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _spliced_verify(program, max_db=9.9)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == "drift_baselines_disagree"
+    # §5.2's capture-glitch convention: a transient, silently auto-retried
+    # code, not a new user-facing one and not a verify_fail decision screen.
+    assert verdict["auto_retry"] is True
+    assert verdict["code"] in TRANSIENT_AUTO_RETRY_CODES
+    # The evidence rides the verdict, so the host event carries WHY.
+    record = verdict["capture_integrity"]
+    assert record["glitched"] is True
+    assert [c["name"] for c in record["checks"] if c["status"] == "fail"] == [
+        INTEGRITY_CHECK_SWEEP_SCHEDULE
+    ]
+    # And the not-evaluated register travels with it — a reader of this
+    # payload can tell which checks were never asked.
+    assert INTEGRITY_CHECK_REPEAT_EPSILON in [
+        c["name"] for c in record["checks"] if c["status"] == "not_evaluated"
+    ]
+    # No tracking verdict was drawn from it.
+    assert c.verify_evidence is None
+
+
+def test_verify_unheard_sweep_routes_to_locate_failed_not_a_glitch():
+    """#1838's D3 rule on the VERIFY path: "too quiet" and "spliced" produce
+    the same symptom and must not share a verdict. This confidence clears
+    ``_stimulus_locate_ok``'s 0.1 floor, so before #1971 it reached the
+    tracking grade untouched."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(
+        program, locate_confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.05,
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == REASON_LOCATE_FAILED
+    # NOT the silent-auto-retry glitch code: re-running the same measurement
+    # at the same level cannot fix a capture nobody could hear.
+    assert verdict["code"] not in TRANSIENT_AUTO_RETRY_CODES
+    record = verdict["capture_integrity"]
+    failed = [c["name"] for c in record["checks"] if c["status"] == "fail"]
+    assert failed == [INTEGRITY_CHECK_SWEEP_HEARD]
+    # The residual the mislocated sweep shows is NOT reported as a splice.
+    not_evaluated = [
+        c["name"] for c in record["checks"] if c["status"] == "not_evaluated"
+    ]
+    assert INTEGRITY_CHECK_SWEEP_SCHEDULE in not_evaluated
+
+
+def test_verify_clip_refuses_as_a_capture_glitch():
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    clipped = _loc("sweep_verify", "summed_sweep", clipped=True)
+    fakes.verify = lambda program: _verify_analysis(
+        program,
+        integrity=_verify_capture_integrity(
+            program, program.sample_rate_hz, (clipped,),
+        ),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == "drift_baselines_disagree"
+    record = verdict["capture_integrity"]
+    assert [c["name"] for c in record["checks"] if c["status"] == "fail"] == [
+        INTEGRITY_CHECK_CLIPPED_RUN
+    ]
+    assert record["clipped_segments"] == ["sweep_verify"]
+
+
+def test_verify_clean_integrity_still_passes_end_to_end():
+    """The era-exact clean path: the SAME fixture every other verify test
+    uses, now carrying a production-derived integrity record, still accepts."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.verify_outcome == "pass"
+
+
+def test_verify_without_an_integrity_record_is_not_refused_but_says_so(caplog):
+    """``None`` is "no evidence" — the same convention ``linearity_ok`` and
+    ``pilot_snr_ok`` use two lines up, where only an explicit failure refuses.
+    A pre-#1971 analysis shape must not become an un-passable capture; the
+    live analyze seam always populates the record (pinned in
+    tests/test_crossover_v2_program_pilots.py). It is not a SILENT pass
+    either: the journal says ``unavailable``, its own value, so a missing
+    record can never be read as a clean one."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _verify_analysis(program, integrity=None)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert "integrity=unavailable" in caplog.text
+    assert "integrity_locate_confidence_min=null" in caplog.text
+
+
+def test_verify_integrity_gate_runs_ahead_of_the_linearity_branch():
+    """A spliced capture's pilot-derived linearity verdict is drawn from a
+    corrupted timeline, so it must not be the reported cause — the same order
+    ``_measure_verdict`` puts its glitch branch in."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    fakes.verify = lambda program: _spliced_verify(program, linearity=False)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["code"] == "drift_baselines_disagree"
+
+
+def test_verify_diag_discloses_integrity_on_pass_and_on_refusal(caplog):
+    """Disclosed on EVERY verify: on a pass it is what makes "this capture was
+    comparable" measured rather than assumed, and on a refusal it names which
+    check fired — which is how telemetry tells this gate's ``locate_failed``
+    from ``_stimulus_locate_ok``'s."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    _run_phase(c, 3, 3)
+    assert "integrity=ok" in caplog.text
+    assert f"integrity_not_evaluated={INTEGRITY_CHECK_REPEAT_EPSILON}" in caplog.text
+    assert "integrity_locate_confidence_min=0.9" in caplog.text
+    assert "integrity_residual_ms_worst=0.0" in caplog.text
+
+    caplog.clear()
+    fakes.verify = _spliced_verify
+    _run_phase(c, 3, 4)
+    assert f"integrity={INTEGRITY_CHECK_SWEEP_SCHEDULE}" in caplog.text
+    assert "integrity_residual_ms_worst=15.0" in caplog.text
 
 
 # --- #1974: the outcome and the verdict that produced it -------------------------
