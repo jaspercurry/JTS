@@ -39,6 +39,7 @@ from jasper.wake_events import (
     make_event_id,
 )
 
+from ._async_wait import wait_signalled
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -1168,11 +1169,22 @@ async def test_concurrent_sweeps_do_not_double_scan(tmp_path):
     calls = 0
     started = asyncio.Event()
     release = asyncio.Event()
+    # Captured here, in the test's own async body, rather than reaching into
+    # asyncio.Event's private lazily-bound `_loop` from the background
+    # thread below. `_loop` is only bound once wait()'s prologue actually
+    # runs, and wait_signalled's asyncio.wait_for wraps that wait in a Task
+    # on Python 3.11 (ensure_future adds a scheduling tick) -- the
+    # background thread can start and reach for `started._loop` before that
+    # Task gets its first turn, reading None. Capturing the loop explicitly
+    # up front makes this immune to that ordering regardless of how the
+    # test body awaits `started`. Same idiom as FakeProc in
+    # tests/test_web_balance_flow.py / tests/test_web_sync_flow.py.
+    loop = asyncio.get_running_loop()
 
     def slow_scan():
         nonlocal calls
         calls += 1
-        started._loop.call_soon_threadsafe(started.set)
+        loop.call_soon_threadsafe(started.set)
         # block until the test releases us
         import time
         while not release.is_set():
@@ -1182,7 +1194,7 @@ async def test_concurrent_sweeps_do_not_double_scan(tmp_path):
     store._scan_and_prune_blocking = slow_scan
     store._audio_bytes_estimate = None  # force scan path
     t1 = asyncio.ensure_future(store._retention_sweep())
-    await started.wait()
+    await wait_signalled(started, "blocking scan started", producer=t1)
     await store._retention_sweep()  # should skip, not second-scan
     release.set()
     await t1

@@ -1156,7 +1156,7 @@ async def test_source_observations_serialize_probe_and_record(mux):
 
     mux._probe_sources = probe_sources
     first = asyncio.create_task(mux._observe_sources())
-    await first_probe_started.wait()
+    await wait_signalled(first_probe_started, "first source probe started", producer=first)
     second = asyncio.create_task(mux._observe_sources())
     await asyncio.sleep(0)
     assert calls == 1

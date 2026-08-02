@@ -56,6 +56,8 @@ from jasper.audio_measurement.playback import (
     WavSourceFailureCode,
 )
 
+from ._async_wait import wait_signalled
+
 TARGET = "1" * 64
 PROFILE = "2" * 64
 REQUIREMENT = "3" * 64
@@ -981,7 +983,7 @@ async def test_playback_cancellation_preserves_admission_when_close_fails(
             timeout_s=12,
         )
     )
-    await entered.wait()
+    await wait_signalled(entered, "blocked playback entered", producer=task)
     task.cancel()
 
     with pytest.raises(PlaybackAdmissionCancelled) as caught:
@@ -1074,7 +1076,7 @@ async def test_playback_failure_and_cancellation_have_correlated_terminal_events
             timeout_s=12,
         )
     )
-    await entered.wait()
+    await wait_signalled(entered, "blocked playback entered", producer=task)
     task.cancel()
     with pytest.raises(PlaybackAdmissionCancelled) as caught:
         await task

@@ -791,6 +791,8 @@ async def test_level_cancel_during_restore_drains_then_discards_identity(
     from jasper.correction.level_match import MeasurementLevelLock
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
+    from ._async_wait import wait_signalled
+
     outcome = SimpleNamespace(
         locked=True,
         ramp=SimpleNamespace(state=RampState.LOCKED, restored=False),
@@ -836,7 +838,7 @@ async def test_level_cancel_during_restore_drains_then_discards_identity(
             set_main_volume_db=blocked_restore,
         )
     )
-    await restore_started.wait()
+    await wait_signalled(restore_started, "level-match restore started", producer=task)
     task.cancel()
     release_restore.set()
     with pytest.raises(asyncio.CancelledError):

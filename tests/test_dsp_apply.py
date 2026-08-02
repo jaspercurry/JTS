@@ -393,7 +393,7 @@ async def test_pending_intent_race_orders_ordinary_writer_before_recovery(
             intent.write_text("{}\n", encoding="utf-8")
 
     first = asyncio.create_task(ordinary())
-    await ordinary_entered.wait()
+    await wait_signalled(ordinary_entered, "ordinary writer entered", producer=first)
     publisher = asyncio.create_task(publish_intent())
     await asyncio.wait_for(publisher_contended.wait(), timeout=1.0)
     assert not intent.exists()

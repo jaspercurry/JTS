@@ -37,6 +37,7 @@ from jasper.correction.session import (
     SessionBusyError,
     SessionState,
 )
+from ._async_wait import wait_signalled
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
 )
@@ -1230,7 +1231,7 @@ async def test_emergency_stop_reaps_audio_task_before_reset(tmp_path: Path):
     running = asyncio.create_task(
         sess.run_background_audio_operation(audio_operation)
     )
-    await started.wait()
+    await wait_signalled(started, "background audio operation started", producer=running)
     sess.state = SessionState.SWEEPING
 
     assert await sess.stop_background_audio_for_reset() is True
@@ -1357,7 +1358,7 @@ async def test_emergency_stop_gracefully_reaps_active_relay_level_ramp(
             wait_for_armed=False,
         )
     )
-    await tone_started.wait()
+    await wait_signalled(tone_started, "level-match relay tone started", producer=running)
 
     intent = await sess.begin_autolevel_reset()
     assert await sess.stop_background_audio_for_reset() is True
@@ -1420,7 +1421,7 @@ async def test_emergency_stop_reaps_level_match_before_phone_arms(
             wait_for_armed=True,
         )
     )
-    await poll_sleeping.wait()
+    await wait_signalled(poll_sleeping, "pre-arm poll first sleep entered", producer=running)
 
     intent = await sess.begin_autolevel_reset()
     stopping = asyncio.create_task(sess.stop_background_audio_for_reset())

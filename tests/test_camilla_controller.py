@@ -374,7 +374,7 @@ async def test_direct_graph_mutation_wins_race_before_intent_publication(
             intent.write_text("{}\n", encoding="utf-8")
 
     mutation = asyncio.create_task(cam.reload())
-    await mutation_entered.wait()
+    await wait_signalled(mutation_entered, "direct graph mutation entered", producer=mutation)
     publisher = asyncio.create_task(publish_intent())
     await asyncio.wait_for(lock_contended.wait(), timeout=1.0)
     assert not intent.exists()
@@ -689,7 +689,7 @@ async def test_cancellation_cancels_worker_still_queued_in_executor(monkeypatch)
         invoked += 1
 
     task = asyncio.create_task(controller._call(operation))
-    await queued.wait()
+    await wait_signalled(queued, "worker queued in executor", producer=task)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):

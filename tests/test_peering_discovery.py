@@ -21,6 +21,7 @@ from jasper.peering.discovery import (
     _parse_service_info,
 )
 
+from ._async_wait import wait_signalled
 
 SERVICE_NAME = f"peer-one.{SERVICE_TYPE}"
 
@@ -282,7 +283,9 @@ async def test_slow_added_cannot_overwrite_later_updated_identity() -> None:
     added = asyncio.create_task(
         _change(discovery, zeroconf, _StateChange.Added),
     )
-    await zeroconf.first_started.wait()
+    await wait_signalled(
+        zeroconf.first_started, "first zeroconf lookup started", producer=added
+    )
     updated = asyncio.create_task(
         _change(discovery, zeroconf, _StateChange.Updated),
     )
@@ -308,7 +311,9 @@ async def test_removed_waits_for_slow_added_without_peer_resurrection() -> None:
     added = asyncio.create_task(
         _change(discovery, zeroconf, _StateChange.Added),
     )
-    await zeroconf.first_started.wait()
+    await wait_signalled(
+        zeroconf.first_started, "first zeroconf lookup started", producer=added
+    )
     removed = asyncio.create_task(
         _change(discovery, zeroconf, _StateChange.Removed),
     )

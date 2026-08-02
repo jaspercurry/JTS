@@ -8,6 +8,8 @@ import pytest
 
 from jasper.correction import playback
 
+from ._async_wait import wait_signalled
+
 
 @pytest.mark.asyncio
 async def test_cancelled_sweep_kills_and_reaps_aplay(monkeypatch, tmp_path):
@@ -40,7 +42,7 @@ async def test_cancelled_sweep_kills_and_reaps_aplay(monkeypatch, tmp_path):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
     task = asyncio.create_task(playback.play_sweep(wav_path, timeout_s=30.0))
-    await wait_started.wait()
+    await wait_signalled(wait_started, "process wait() started", producer=task)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -81,9 +83,9 @@ async def test_repeated_cancellation_still_reaps_aplay(monkeypatch, tmp_path):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
     task = asyncio.create_task(playback.play_sweep(wav_path, timeout_s=30.0))
-    await first_wait_started.wait()
+    await wait_signalled(first_wait_started, "process wait() started", producer=task)
     task.cancel()
-    await kill_called.wait()
+    await wait_signalled(kill_called, "process.kill() called", producer=task)
     task.cancel()
     await asyncio.sleep(0)
     assert task.done() is False
