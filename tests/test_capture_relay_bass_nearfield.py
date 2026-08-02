@@ -73,12 +73,13 @@ def test_bass_nearfield_geometry_is_server_derived_never_request_supplied():
 
 
 def test_bass_nearfield_validity_refuses_unclean_and_is_drift_insensitive():
-    # Magnitude FR like room/crossover: drift-insensitive, alignment matters,
-    # auto-gain would flatten the very response being measured.
+    # Magnitude FR is drift-insensitive and auto-gain would flatten the very
+    # response being measured. The parked flow has no production analysis
+    # caller yet, so it must not advertise a hard alignment gate.
     v = build_bass_nearfield_spec().validity
     assert v.clean_capture == "refuse"
     assert v.allow_capability_fallback is True
-    assert v.require_alignment is True
+    assert v.require_alignment is False
     assert v.clock_drift == "ignore"
 
 

@@ -11,11 +11,13 @@ stimulus is buried in noise, clipped, or absent, so the cross-correlation peak
 that locates it is weak or ambiguous. That is a silently-wrong measurement unless
 it fails loud, which is what this module does.
 
-It is a reusable primitive: the per-flow adapter passes the decrypted capture and
+It is a reusable primitive: an owning analysis passes the decrypted capture and
 the **known** stimulus the Pi played (a sweep, a marker, …), and gets back an
-alignment with a 0..1 confidence. When the spec's `validity.require_alignment` is
-set, a confidence below threshold raises `AlignmentError` so the household is told
-the measurement failed rather than handed a wrong correction.
+alignment with a 0..1 confidence. ``assert_alignment_confident`` can turn that
+score into a hard gate, but callers must validate their per-flow threshold before
+advertising ``validity.require_alignment=True``. The room-correction relay is
+observation-only today and deliberately does not use this uncalibrated 0.40
+default as a fleet-wide rejection threshold.
 
 Confidence is the normalized margin between the dominant correlation peak and the
 next-strongest peak OUTSIDE the main lobe: `(primary - secondary) / primary`. A
@@ -181,9 +183,8 @@ def assert_alignment_confident(
 ) -> AlignmentResult:
     """Score alignment and, when `require`, fail loud below `threshold`.
 
-    `require` mirrors the spec's `validity.require_alignment`. When False the
-    result is returned for reporting without gating (e.g. a level measurement
-    where alignment is informational, not decisive).
+    ``require`` selects enforcement for the owning, threshold-calibrated flow.
+    When False the result is returned for reporting without gating.
     """
     result = cross_correlation_alignment(
         captured,

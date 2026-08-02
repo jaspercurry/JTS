@@ -330,6 +330,58 @@ async def _post_room_sweep_host_event(
     )
 
 
+def _assert_room_relay_alignment_policy(pi_session: Any) -> None:
+    """Keep Room relay captures observe-only until a gate is calibrated.
+
+    ``PiCaptureSession`` always carries the registered spec. A few focused tests
+    inject a transport-only namespace without one, so absence means "no policy
+    assertion" for that test seam. A real room spec that advertises a hard gate
+    must fail closed here instead of silently accepting an ungated capture.
+    """
+    spec = getattr(pi_session, "spec", None)
+    validity = getattr(spec, "validity", None)
+    if bool(getattr(validity, "require_alignment", False)):
+        raise RuntimeError(
+            "room_sweep requested a hard alignment gate, but Room alignment "
+            "is observation-only until its threshold is fleet-calibrated"
+        )
+
+
+def _log_room_relay_alignment(
+    sess: Any,
+    pi_session: Any,
+    *,
+    capture_kind: str,
+) -> None:
+    """Emit Room's existing direct-arrival proxy as rollout evidence."""
+    report: Any
+    if capture_kind == "measurement":
+        captures = getattr(sess, "capture_quality", ())
+        report = captures[-1] if captures else None
+    elif capture_kind == "repeat":
+        report = getattr(sess, "repeat_quality", None)
+    else:
+        report = getattr(sess, "verify_quality", None)
+    direct = report.get("direct_arrival") if isinstance(report, Mapping) else None
+    available = bool(isinstance(direct, Mapping) and direct.get("available"))
+    value = direct.get("direct_to_pre_arrival_db") if available else None
+    reason = None
+    if not available:
+        reason = direct.get("reason") if isinstance(direct, Mapping) else "unavailable"
+    log_event(
+        logger,
+        "capture_relay.alignment",
+        session_id=getattr(pi_session, "session_id", ""),
+        capture_kind=capture_kind,
+        metric="direct_to_pre_arrival_db",
+        mode="observe",
+        required=False,
+        available=available,
+        value_db=value,
+        reason=reason,
+    )
+
+
 def _crossover_volume_safety_refusal() -> dict[str, str]:
     return {
         "status": "refused",
@@ -4133,6 +4185,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     async def _run_and_consume(
         client: RelayClient, pi_session: PiCaptureSession
     ) -> None:
+        _assert_room_relay_alignment_policy(pi_session)
         # On `armed` (phone recording), play the sweep through the SAME
         # measurement_window()/prepare_and_play_sweep path the browser flow uses
         # (loud-output safety + renderer/voice pause preserved). run_capture's
@@ -4224,6 +4277,11 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 await sess.on_repeat_capture_uploaded(capture_path)
             else:
                 await sess.on_capture_uploaded(capture_path)
+            _log_room_relay_alignment(
+                sess,
+                pi_session,
+                capture_kind="repeat" if is_repeat else "measurement",
+            )
         finally:
             # Idempotent backstop for failures before the armed/sweep window.
             await sess.restore_level_match_volume(
@@ -4294,6 +4352,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         from jasper.capture_relay.session import purge, run_capture
         from jasper.correction import coordinator, playback
 
+        _assert_room_relay_alignment_policy(pi_session)
         cam = _camilla()
         capture_path = sess.verify_capture_path()
         control_client = _bounded_relay_control_client(client)
@@ -4394,6 +4453,11 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             capture_path.parent.mkdir(parents=True, exist_ok=True)
             capture_path.write_bytes(result.wav)
             await sess.on_verify_capture_uploaded(capture_path)
+            _log_room_relay_alignment(
+                sess,
+                pi_session,
+                capture_kind="verify",
+            )
             await asyncio.to_thread(_maybe_auto_revert, sess)
         finally:
             try:

@@ -160,7 +160,9 @@ def test_room_sweep_validity_refuses_unclean_with_fallback():
     assert s.validity.clean_capture == "refuse"
     # …but never dead-end an iPhone that cannot do a clean capture.
     assert s.validity.allow_capability_fallback is True
-    assert s.validity.require_alignment is True
+    # Room reports direct-arrival alignment evidence but does not advertise a
+    # hard gate until its fleet threshold has been calibrated.
+    assert s.validity.require_alignment is False
     # Magnitude FR is drift-insensitive.
     assert s.validity.clock_drift == "ignore"
 

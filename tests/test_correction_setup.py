@@ -1835,6 +1835,61 @@ def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
     assert consumed == [("repeat", tmp_path / "repeat.wav")]
 
 
+def test_room_relay_alignment_policy_is_observe_only_and_logs_proxy(monkeypatch):
+    from jasper.capture_relay.spec import build_room_sweep_spec
+
+    pi_session = SimpleNamespace(
+        session_id="relay-room",
+        spec=build_room_sweep_spec(),
+    )
+    session = SimpleNamespace(
+        capture_quality=[{
+            "direct_arrival": {
+                "available": True,
+                "direct_to_pre_arrival_db": 27.5,
+            }
+        }]
+    )
+    events = []
+
+    def capture_event(_logger, event, **fields):
+        events.append((event, fields))
+
+    monkeypatch.setattr(correction_setup, "log_event", capture_event)
+
+    correction_setup._assert_room_relay_alignment_policy(pi_session)
+    correction_setup._log_room_relay_alignment(
+        session,
+        pi_session,
+        capture_kind="measurement",
+    )
+
+    assert events == [(
+        "capture_relay.alignment",
+        {
+            "session_id": "relay-room",
+            "capture_kind": "measurement",
+            "metric": "direct_to_pre_arrival_db",
+            "mode": "observe",
+            "required": False,
+            "available": True,
+            "value_db": 27.5,
+            "reason": None,
+        },
+    )]
+
+
+def test_room_relay_refuses_a_spec_that_claims_an_unimplemented_hard_gate():
+    pi_session = SimpleNamespace(
+        spec=SimpleNamespace(
+            validity=SimpleNamespace(require_alignment=True),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="observation-only"):
+        correction_setup._assert_room_relay_alignment_policy(pi_session)
+
+
 @pytest.mark.parametrize("repeat", [False, True], ids=["measurement", "repeat"])
 @pytest.mark.parametrize(
     "failure",
