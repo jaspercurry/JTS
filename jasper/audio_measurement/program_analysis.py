@@ -2399,7 +2399,14 @@ def _driver_snr_block(
 
     Fails closed: a raw report with no captured segment to pair it against
     produces no verdict at all rather than a cross-domain one. "Not
-    measured" is honest; a number in the wrong units is not.
+    measured" is honest; a number in the wrong units is not. A segment that
+    is PRESENT but degenerate (a capture truncated before this sweep, so
+    :func:`_raw_sweep_segment` clamps to fewer than 8 samples) reaches the
+    same destination by the shipped route instead: ``band_levels_dbfs``
+    returns no bands, so the block carries ``verdict: "unknown"`` and an
+    empty band list. Both spellings of "not measured" are honest; they are
+    distinguishable on purpose, because absent means "no evidence was
+    offered" and unknown means "evidence was offered and was unusable".
     """
     if ambient_report is None or fc_hz is None:
         return None

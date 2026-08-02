@@ -566,6 +566,36 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
     mid = next(b for b in deconvolved.snr["bands"] if b["band_id"] == "mid")
     assert mid["method"] == "deconvolved_band_difference"
 
+    # A segment that is present but degenerate — a capture truncated before
+    # this sweep — reaches "not measured" by the other spelling: a block that
+    # says `unknown` over zero bands, never a number.
+    degenerate = program_analysis._driver_response(
+        "woofer", ir, SR, calibration=None, ambient_report=raw_report,
+        fc_hz=FC_HZ, n_fft=8192, capture_segment=np.zeros(0),
+    )
+    assert degenerate.snr is not None
+    assert degenerate.snr["bands"] == []
+    assert degenerate.snr["verdict"] == "unknown"
+    assert degenerate.snr["worst_relevant"] is None
+
+
+def test_raw_sweep_segment_clamps_instead_of_raising():
+    """`_raw_sweep_segment` never raises on a capture that cannot contain the
+    segment — the locator is what fails a truncated capture, and the SNR
+    verdict must not turn that into an exception inside the analysis."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    seg = prog.segment("sweep_w")
+    cap = np.zeros(1000)
+    assert program_analysis._raw_sweep_segment(cap, seg, 5_000_000).size == 0
+    assert program_analysis._raw_sweep_segment(cap, seg, -10**6).size == 0
+    assert program_analysis._raw_sweep_segment(cap, seg, 998).size == 2
+    # The ordinary case is the whole scheduled segment, unclamped.
+    full = np.zeros(seg.n_samples + 200)
+    assert program_analysis._raw_sweep_segment(full, seg, 100).size == seg.n_samples
+
 
 def test_measure_no_drift_delay_is_tight():
     prog = build_measure_program(
