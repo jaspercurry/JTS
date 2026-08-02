@@ -609,6 +609,128 @@ def test_worst_band_verdict_none_when_nothing_covered():
     assert snr_policy.worst_band_verdict(None, 100.0, 200.0) is None
 
 
+# ---------- worst_band_verdict: the equal-verdict tie-break (issue #2026) -----
+#
+# Verdict rank still dominates (the refusal path is unchanged); among EQUAL
+# verdicts the entry with the LOWEST estimated_snr_db wins, because that is
+# the number cap_null_depth_db proves the reported null against.
+
+
+def test_worst_band_verdict_breaks_equal_verdict_ties_on_lowest_snr():
+    """Issue #2026's reproduction: all-`ok` sweep bands, 17 dB apart.
+
+    Table order would return `sweep_low` at 55 dB; the band that actually
+    limits the measurement is `sweep_high` at 38 dB.
+    """
+    bands = [
+        {"band_id": "sweep_low", "band_hz": [800.0, 1269.9],
+         "estimated_snr_db": 55.0, "verdict": "ok"},
+        {"band_id": "sweep_mid", "band_hz": [1269.9, 2015.9],
+         "estimated_snr_db": 41.0, "verdict": "ok"},
+        {"band_id": "sweep_high", "band_hz": [2015.9, 3200.0],
+         "estimated_snr_db": 38.0, "verdict": "ok"},
+    ]
+    worst = snr_policy.worst_band_verdict(bands, 800.0, 3200.0)
+    assert worst["band_id"] == "sweep_high"
+    assert worst["estimated_snr_db"] == pytest.approx(38.0)
+    # And the cap that reads it now proves a 30 dB null against 38 dB, not 55.
+    reported, capped = snr_policy.cap_null_depth_db(
+        30.0, worst, DRIVER.null_cap_margin_db
+    )
+    assert reported == pytest.approx(28.0)
+    assert capped is True
+
+
+def test_worst_band_verdict_lowest_snr_wins_regardless_of_table_order():
+    """The pick is by value, not position — reversing the table cannot move it.
+
+    Guards the run-to-run instability reported on #2026, where which third
+    landed first changed the reported SNR by ~5 dB on noise seed alone.
+    """
+    bands = [
+        {"band_id": "sweep_low", "band_hz": [800.0, 1269.9],
+         "estimated_snr_db": 38.0, "verdict": "ok"},
+        {"band_id": "sweep_mid", "band_hz": [1269.9, 2015.9],
+         "estimated_snr_db": 41.0, "verdict": "ok"},
+        {"band_id": "sweep_high", "band_hz": [2015.9, 3200.0],
+         "estimated_snr_db": 55.0, "verdict": "ok"},
+    ]
+    forward = snr_policy.worst_band_verdict(bands, 800.0, 3200.0)
+    reverse = snr_policy.worst_band_verdict(list(reversed(bands)), 800.0, 3200.0)
+    assert forward["band_id"] == reverse["band_id"] == "sweep_low"
+    assert forward["estimated_snr_db"] == reverse["estimated_snr_db"] == 38.0
+
+
+def test_worst_band_verdict_rank_still_dominates_snr():
+    """No-change guard on the REFUSAL path.
+
+    An `insufficient` band wins over every `ok` sibling even when its SNR is
+    the HIGHEST in the window, and even when it is last in table order.
+    """
+    bands = [
+        {"band_id": "sweep_low", "band_hz": [800.0, 1269.9],
+         "estimated_snr_db": 5.0, "verdict": "ok"},
+        {"band_id": "sweep_mid", "band_hz": [1269.9, 2015.9],
+         "estimated_snr_db": 8.0, "verdict": "reduced"},
+        {"band_id": "sweep_high", "band_hz": [2015.9, 3200.0],
+         "estimated_snr_db": 34.9, "verdict": "insufficient"},
+    ]
+    worst = snr_policy.worst_band_verdict(bands, 800.0, 3200.0)
+    assert worst["band_id"] == "sweep_high"
+    assert worst["verdict"] == "insufficient"
+
+
+def test_worst_band_verdict_prefers_numeric_evidence_over_missing_snr():
+    """A same-verdict band with no usable number never displaces one that has
+    a number: cap_null_depth_db cannot cap against ``None``/NaN, so treating
+    the numberless band as "worst" would silently REMOVE the cap."""
+    for absent in (None, float("nan"), "n/a"):
+        bands = [
+            {"band_id": "no_number", "band_hz": [800.0, 1600.0],
+             "estimated_snr_db": absent, "verdict": "ok"},
+            {"band_id": "numeric", "band_hz": [1600.0, 3200.0],
+             "estimated_snr_db": 40.0, "verdict": "ok"},
+        ]
+        worst = snr_policy.worst_band_verdict(bands, 800.0, 3200.0)
+        assert worst["band_id"] == "numeric", absent
+        # ... and in the other table order too.
+        worst = snr_policy.worst_band_verdict(
+            list(reversed(bands)), 800.0, 3200.0
+        )
+        assert worst["band_id"] == "numeric", absent
+
+
+def test_band_snr_verdicts_worst_relevant_is_the_lowest_snr_ok_band():
+    """End-to-end through the builder: `worst_relevant` (what the cap reads)
+    reports the lowest-SNR band of the window, not the first one."""
+    capture_bands = [
+        {"band_id": "sweep_low", "band_hz": [800.0, 1269.9], "level_dbfs": -10.0},
+        {"band_id": "sweep_mid", "band_hz": [1269.9, 2015.9], "level_dbfs": -10.0},
+        {"band_id": "sweep_high", "band_hz": [2015.9, 3200.0], "level_dbfs": -10.0},
+    ]
+    noise_bands = [
+        {"band_id": "sweep_low", "level_dbfs": -65.0},   # 55 dB
+        {"band_id": "sweep_mid", "level_dbfs": -51.0},   # 41 dB
+        {"band_id": "sweep_high", "level_dbfs": -48.0},  # 38 dB
+    ]
+    block = snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_ALIGNMENT,
+        capture_bands=capture_bands,
+        noise_bands=noise_bands,
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=(800.0, 3200.0),
+        model=DRIVER,
+        band_method="deconvolved_band_difference",
+    )
+    assert block["verdict"] == "ok"
+    assert block["worst_relevant"]["band_id"] == "sweep_high"
+    assert block["worst_relevant"]["estimated_snr_db"] == pytest.approx(38.0)
+    reported, capped = snr_policy.cap_null_depth_db(
+        30.0, block["worst_relevant"], DRIVER.null_cap_margin_db
+    )
+    assert (reported, capped) == (pytest.approx(28.0), True)
+
+
 # ---------- cap_null_depth_db -------------------------------------------------
 
 
