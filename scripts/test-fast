@@ -90,6 +90,39 @@ add_test_if_present() {
   fi
 }
 
+# Like add_test_if_present, but accepts a pytest node id qualified with
+# `::test_name` (as scripts/ci-classify.py's --landing-pytest-targets emits
+# for its one function-scoped target): the existence check is against the
+# file portion only, while the full id -- file plus `::`-suffix -- is what
+# gets queued, so pytest runs just that one function rather than the whole
+# file.
+add_pytest_target_if_present() {
+  local target="$1"
+  local file="${target%%::*}"
+  if [[ -f "${file}" ]]; then
+    printf '%s\n' "${target}" >> "${selected_test_tmp}"
+  fi
+}
+
+# issue #1973: deploy/index.html (and other deploy/assets/* changes cheap
+# enough to also fold in) were invisible to the changed-file mapping below,
+# so editing the landing page gave a green test-fast while
+# tests/test_landing_page_html.py sat red at the same tree -- caught only by
+# running it explicitly. Read the registered bundle from ci-classify.py's
+# own --landing-pytest-targets rather than copying the list here, so the two
+# lanes cannot drift apart; guarded so a diff touching several landing paths
+# only pays for the one subprocess invocation.
+_landing_tests_added=false
+add_landing_tests_if_needed() {
+  if [[ "${_landing_tests_added}" == true ]]; then
+    return
+  fi
+  _landing_tests_added=true
+  while IFS= read -r landing_target; do
+    [[ -n "${landing_target}" ]] && add_pytest_target_if_present "${landing_target}"
+  done < <(python3 scripts/ci-classify.py --landing-pytest-targets)
+}
+
 add_globbed_tests() {
   local pattern="$1"
   local matched=false
@@ -139,6 +172,14 @@ while IFS= read -r changed; do
     deploy/assets/*/js/*.js|tests/js/*.mjs)
       add_test_if_present "tests/test_dialog_helper.py"
       add_test_if_present "tests/test_local_web_host_js.py"
+      ;;
+    deploy/index.html|deploy/assets/*)
+      # Listed after the js/*.js arm above on purpose: a page-module JS
+      # change keeps matching that narrower, earlier arm and its own tests
+      # only (case runs the first match, not every match); a landing-page or
+      # other shared-asset change (app.css, a new page dir) falls through to
+      # here.
+      add_landing_tests_if_needed
       ;;
     rust/*)
       # The Rust crates' static source guards are Python tests (cargo can't

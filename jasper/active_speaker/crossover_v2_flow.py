@@ -1914,10 +1914,15 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # capture on 2026-07-22 hardware built a candidate whose ``predicted_ripple_db``
 # was 27.316 dB at an alignment confidence (0.703) that cleared
 # ALIGNMENT_CONFIDENCE_TRUST_FLOOR above — the candidate auto-applied, then
-# failed three VERIFYs at 5.3-6.7 dB. Every clean MEASURE that same day (13
-# captures across UMIK-2, iMM-6C, and the phone chain) predicted
-# 4.387-9.031 dB. This ceiling sits ~6 dB
-# above the clean corpus's worst case and ~12 dB below the corrupt one — wide
+# failed three VERIFYs at 5.3-6.7 dB. Every clean MEASURE that same day
+# predicted 4.387-9.031 dB — 13 captures precisely: 4 on UMIK-2, 8 on
+# iMM-6C, 1 accepted phone-chain measure. This composition is OWNED here;
+# cite this comment rather than re-quoting a count (issue #2015 traced a
+# since-corrected 12-capture, two-chain restatement elsewhere to a copy
+# that dropped the phone measure). Primary source: that night's own
+# retention sidecars, tabulated in ``captures/xover-e0-2026-07-21/
+# honesty-guards-proof-20260722/REPORT.md``'s G1 table. This ceiling sits
+# ~6 dB above the clean corpus's worst case and ~12 dB below the corrupt one — wide
 # margin on both sides. A candidate whose OWN predicted ripple is this bad is
 # not a trustworthy basis for auto-apply regardless of what alignment
 # confidence reported, so this REUSES REASON_LOW_ALIGNMENT_CONFIDENCE (same
