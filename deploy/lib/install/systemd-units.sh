@@ -397,8 +397,10 @@ install_usbsink_unit_files() {
         "${SYSTEMD_DIR}/jasper-usbgadget.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbgadget-forensics.service" \
+        "${SYSTEMD_DIR}/jasper-usbgadget-forensics.service"
+    install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbgadget-forensics.path" \
-        "${SYSTEMD_DIR}/"
+        "${SYSTEMD_DIR}/jasper-usbgadget-forensics.path"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
         "${SYSTEMD_DIR}/jasper-usbsink.service"

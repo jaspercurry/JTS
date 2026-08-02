@@ -363,11 +363,18 @@ def _log_room_relay_alignment(
     else:
         report = getattr(sess, "verify_quality", None)
     direct = report.get("direct_arrival") if isinstance(report, Mapping) else None
-    available = bool(isinstance(direct, Mapping) and direct.get("available"))
-    value = direct.get("direct_to_pre_arrival_db") if available else None
+    direct_report: Mapping[str, Any] | None = (
+        direct if isinstance(direct, Mapping) else None
+    )
+    available = bool(direct_report and direct_report.get("available"))
+    value = (
+        direct_report.get("direct_to_pre_arrival_db")
+        if available and direct_report is not None
+        else None
+    )
     reason = None
     if not available:
-        reason = direct.get("reason") if isinstance(direct, Mapping) else "unavailable"
+        reason = direct_report.get("reason") if direct_report else "unavailable"
     log_event(
         logger,
         "capture_relay.alignment",

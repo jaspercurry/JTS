@@ -159,7 +159,7 @@ ALLOWED_EXPECTS: dict[tuple[str, str], str] = {
         "return guards the top; the message states the invariant."
     ),
     (
-        "jasper-fanin/src/mixer.rs",
+        "jasper-fanin/src/mixer/direct_capture.rs",
         "read_direct_and_render only called on a direct lane",
     ): (
         "Routing invariant: step() calls read_direct_and_render only when "
@@ -212,6 +212,15 @@ ALLOWED_EXPECTS: dict[tuple[str, str], str] = {
 # issue #1718, which found these were unmatched by the original
 # ``.unwrap()``/``.expect(``/``panic!``-only pattern.
 ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
+    (
+        "jasper-ring/src/lib.rs",
+        "ring publish requires exactly one complete slot",
+    ): (
+        "Caller-contract invariant: RingWriter validates every public write "
+        "against the attached ring geometry before this mapping helper copies "
+        "it. A mismatch here is an internal caller bug; continuing would risk "
+        "a partial slot publication across the shared-memory boundary."
+    ),
     (
         "jasper-outputd/src/assistant_source.rs",
         "channels must be > 0",
@@ -671,7 +680,10 @@ def _runtime_findings() -> _Findings:
     seen_expects: set[tuple[str, str]] = set()
     seen_asserts: set[tuple[str, str]] = set()
     for crate in RUNTIME_CRATES:
-        for path in sorted((REPO / "rust" / crate / "src").glob("*.rs")):
+        # Rust modules can live below src/ (for example
+        # jasper-fanin/src/mixer/direct_capture.rs). A shallow glob silently
+        # stopped enforcing this contract when code was split into a module.
+        for path in sorted((REPO / "rust" / crate / "src").rglob("*.rs")):
             rel = str(path.relative_to(REPO / "rust"))
             lines = path.read_text().splitlines()
             spans = _cfg_test_spans(lines)

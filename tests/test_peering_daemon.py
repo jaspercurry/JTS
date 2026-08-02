@@ -162,6 +162,35 @@ async def test_stop_cancels_retained_send_tasks(daemon_setup):
     assert daemon._send_tasks == set()
 
 
+async def test_stop_refuses_send_spawned_while_cancellation_yields(daemon_setup):
+    daemon, transport = daemon_setup
+    started: list[bytes] = []
+    first_cancelled = asyncio.Event()
+
+    async def blocked_send(payload: bytes) -> None:
+        started.append(payload)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            first_cancelled.set()
+            # Reproduce a state-machine action racing with stop's gather. The
+            # late send must be refused, not created and then erased un-drained.
+            daemon._spawn_send(b"late")
+            await asyncio.sleep(0)
+            raise
+
+    transport.send = blocked_send
+    daemon._spawn_send(b"first")
+    while started != [b"first"]:
+        await asyncio.sleep(0)
+
+    await daemon.stop()
+
+    assert first_cancelled.is_set()
+    assert started == [b"first"]
+    assert daemon._send_tasks == set()
+
+
 # ---------- mode=ON, solo arbitration ----------
 
 

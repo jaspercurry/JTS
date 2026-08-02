@@ -235,7 +235,6 @@ class PeeringDaemon:
             for task in pending_sends:
                 task.cancel()
             await asyncio.gather(*pending_sends, return_exceptions=True)
-            self._send_tasks.clear()
 
         if self._uds_server is not None:
             self._uds_server.close()
@@ -480,7 +479,10 @@ class PeeringDaemon:
             self._pending_decision.set_result(decision)
 
     def _spawn_send(self, payload: bytes) -> None:
-        if self._transport is None or self._loop is None:
+        # stop() clears _running before it yields to cancellation. Refuse any
+        # action that races in after that quiesce point so a late send cannot
+        # appear after stop's task snapshot and escape its drain.
+        if not self._running or self._transport is None or self._loop is None:
             return
         # Best-effort fire-and-forget; the recv side has its own error
         # handling. Spawn a task rather than awaiting so the state

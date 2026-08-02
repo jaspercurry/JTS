@@ -478,17 +478,25 @@ def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
 
 def test_outputd_dual_apple_zero_frame_active_read_silences_period():
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
-    read_dual = alsa_rs.split(
-        "pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {",
-        2,
-    )[2].split("pub fn write_dual_period", 1)[0]
-    zero_frame_branch = read_dual.split("if frames == 0 {", 1)[1].split(
-        "} else if frames < requested_frames",
-        1,
-    )[0]
+    classifier = alsa_rs.split(
+        "fn read_content_pcm<Read, Recover>(", 1,
+    )[1].split("fn zero_fill_content_period", 1)[0]
+    zero_fill = alsa_rs.split(
+        "fn zero_fill_content_period", 1,
+    )[1].split("pub struct AlsaBackend", 1)[0]
+    paired_sink = alsa_rs.split(
+        "impl PairedCompositeSink", 1,
+    )[1].split("pub fn write_dual_period", 1)[0]
 
-    assert "content_empty_period_count += 1" in zero_frame_branch
-    assert "out.fill(0);" in zero_frame_branch
+    # A successful zero-frame ALSA read is classified as no data and counted.
+    assert "if frames == 0 {" in classifier
+    assert "content_empty_period_count += 1" in classifier
+    assert "read: ContentRead::NoData" in classifier
+    # The shared silence helper maps that outcome to a full-period zero fill.
+    assert "ContentRead::NoData | ContentRead::XrunRecovered => 0" in zero_fill
+    assert "out[(frames_read * channels)..].fill(0);" in zero_fill
+    # The paired-composite path must use the same helper rather than drift.
+    assert "zero_fill_content_period(out, 4, classified.read)" in paired_sink
 
 
 def test_camilla_outputd_config_is_not_legacy_v1():
