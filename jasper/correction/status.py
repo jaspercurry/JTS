@@ -339,8 +339,9 @@ def session_config_payload(session: Any) -> dict[str, Any]:
     }
 
 
-def session_snapshot(session: Any) -> dict[str, Any]:
-    """Build the live `/status` session snapshot payload."""
+def _session_common_payload(session: Any) -> dict[str, Any]:
+    """Fields shared by live status and persisted session metadata."""
+
     return {
         "session_id": session.session_id,
         "state": session.state.value,
@@ -356,15 +357,8 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         "correction_strategy": _correction_strategy_payload(session),
         "input_device": session.input_device,
         "capture_transport": getattr(session, "capture_transport", "local"),
-        "local_capture_setup_bound": bool(
-            getattr(session, "local_capture_setup_bound", False)
-        ),
         "mic_calibration": _mic_calibration_payload(session),
         "browser_audio_report": session.browser_audio_report,
-        # Point-in-time copies: these containers can mutate while a
-        # handler thread serializes `/status`.
-        "capture_quality": list(session.capture_quality),
-        "noise_reports": list(session.noise_reports),
         "repeat_quality": session.repeat_quality,
         "repeatability_report": session.repeatability_report,
         "verify_quality": session.verify_quality,
@@ -372,15 +366,7 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         "acoustic_quality": _acoustic_summary(session),
         "runtime_integrity": session.runtime_integrity.summary(),
         "position_analysis": session.position_analysis,
-        "sweep": (
-            session.sweep_meta.to_dict() if session.sweep_meta else None
-        ),
         "peqs": _peq_payload(session),
-        "design_report": (
-            dict(session.design_report)
-            if session.design_report is not None
-            else None
-        ),
         "config_path": (
             str(session.config_path) if session.config_path else None
         ),
@@ -403,61 +389,42 @@ def session_snapshot(session: Any) -> dict[str, Any]:
     }
 
 
+def session_snapshot(session: Any) -> dict[str, Any]:
+    """Build the live `/status` session snapshot payload."""
+
+    return {
+        **_session_common_payload(session),
+        "local_capture_setup_bound": bool(
+            getattr(session, "local_capture_setup_bound", False)
+        ),
+        # Point-in-time copies: these containers can mutate while a
+        # handler thread serializes `/status`.
+        "capture_quality": list(session.capture_quality),
+        "noise_reports": list(session.noise_reports),
+        "sweep": (
+            session.sweep_meta.to_dict() if session.sweep_meta else None
+        ),
+        "design_report": (
+            dict(session.design_report)
+            if session.design_report is not None
+            else None
+        ),
+    }
+
+
 def info_json_payload(session: Any) -> dict[str, Any]:
     """Build the per-session `info.json` metadata payload."""
     return {
         "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "session_id": session.session_id,
-        "state": session.state.value,
-        "started_at": session.started_at,
-        "updated_at": session.updated_at,
-        "error": session.error,
-        "total_positions": session.total_positions,
-        "current_position": session.current_position,
-        "repeat_main_position": session.repeat_main_position,
-        "target_choice": session.target_choice,
-        "target_profile": _target_profile_payload(session),
-        "strategy_choice": session.strategy_choice,
-        "correction_strategy": _correction_strategy_payload(session),
+        **_session_common_payload(session),
         "noise_floor_db": session.noise_floor_db,
-        "input_device": session.input_device,
-        "capture_transport": getattr(session, "capture_transport", "local"),
-        "mic_calibration": _mic_calibration_payload(session),
-        "browser_audio_report": session.browser_audio_report,
         "capture_quality": session.capture_quality,
         "noise_reports": session.noise_reports,
-        "repeat_quality": session.repeat_quality,
-        "repeatability_report": session.repeatability_report,
-        "verify_quality": session.verify_quality,
-        "confidence_report": session.confidence_report,
-        "acoustic_quality": _acoustic_summary(session),
-        "runtime_integrity": session.runtime_integrity.summary(),
-        "position_analysis": session.position_analysis,
         "current_correction_at_start": session.current_correction_at_start,
-        "autolevel": session.autolevel.snapshot(),
-        "level_match": session.level_match_snapshot(),
         "sweep_meta": (
             session.sweep_meta.to_dict() if session.sweep_meta else None
         ),
-        "peqs": _peq_payload(session),
         "design_report": session.design_report,
-        "config_path": (
-            str(session.config_path) if session.config_path else None
-        ),
-        "measurement_config_path": (
-            str(session.measurement_config_path)
-            if getattr(session, "measurement_config_path", None)
-            else None
-        ),
-        "pre_measurement_config_path": (
-            str(session.pre_measurement_config_path)
-            if getattr(session, "pre_measurement_config_path", None)
-            else None
-        ),
-        "verify_metrics": session.verify_metrics,
-        "verify_before_after": session.verify_before_after,
-        "acceptance": getattr(session, "acceptance", None),
-        "auto_revert_outcome": getattr(session, "auto_revert_outcome", None),
         "config": session_config_payload(session),
     }
 

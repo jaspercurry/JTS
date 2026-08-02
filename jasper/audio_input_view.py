@@ -111,6 +111,13 @@ _PROFILE_CHOICE_SPECS = (
     ),
 )
 
+_ADVANCED_STREAMS_REQUIRE_BRIDGE = (
+    "Advanced wake streams require the AEC bridge."
+)
+_SOFTWARE_STREAMS_BYPASSED = (
+    "Software streams are bypassed by hardware AEC."
+)
+
 
 def profile_choice_specs(*, section: str | None = None) -> tuple[ProfileChoiceSpec, ...]:
     """Return backend-owned profile choice metadata for render/validation."""
@@ -436,10 +443,9 @@ def _fusion_view(
                 _mapping(legs.get("raw")),
             ),
             enabled=not chip_on and not bridge_unavailable,
-            disabled_reason=(
-                "Advanced wake streams require the AEC bridge."
-                if bridge_unavailable
-                else "Software streams are bypassed by hardware AEC." if chip_on else ""
+            disabled_reason=_software_fusion_disabled_reason(
+                bridge_unavailable=bridge_unavailable,
+                chip_on=chip_on,
             ),
         ),
         _fusion_toggle(
@@ -455,10 +461,9 @@ def _fusion_view(
                 _mapping(legs.get("dtln")),
             ),
             enabled=not chip_on and not bridge_unavailable,
-            disabled_reason=(
-                "Advanced wake streams require the AEC bridge."
-                if bridge_unavailable
-                else "Software streams are bypassed by hardware AEC." if chip_on else ""
+            disabled_reason=_software_fusion_disabled_reason(
+                bridge_unavailable=bridge_unavailable,
+                chip_on=chip_on,
             ),
             confirm=dtln_confirm,
         ),
@@ -476,7 +481,7 @@ def _fusion_view(
             ),
             enabled=not bridge_unavailable and bool(_mapping(legs.get("chip_aec_150")).get("available")),
             disabled_reason=(
-                "Advanced wake streams require the AEC bridge."
+                _ADVANCED_STREAMS_REQUIRE_BRIDGE
                 if bridge_unavailable
                 else str(_mapping(legs.get("chip_aec_150")).get("disabled_reason") or "")
             ),
@@ -496,7 +501,7 @@ def _fusion_view(
             ),
             enabled=not bridge_unavailable and bool(_mapping(legs.get("chip_aec_210")).get("available")),
             disabled_reason=(
-                "Advanced wake streams require the AEC bridge."
+                _ADVANCED_STREAMS_REQUIRE_BRIDGE
                 if bridge_unavailable
                 else str(_mapping(legs.get("chip_aec_210")).get("disabled_reason") or "")
             ),
@@ -504,14 +509,26 @@ def _fusion_view(
         ),
     ]
     if aec3_bypassed:
-        toggles[0]["disabled_reason"] = "Software streams are bypassed by hardware AEC."
-        toggles[1]["disabled_reason"] = "Software streams are bypassed by hardware AEC."
+        toggles[0]["disabled_reason"] = _SOFTWARE_STREAMS_BYPASSED
+        toggles[1]["disabled_reason"] = _SOFTWARE_STREAMS_BYPASSED
     return {
         "summary": summary,
         "custom": custom,
         "wake_legs": wake_legs,
         "toggles": toggles,
     }
+
+
+def _software_fusion_disabled_reason(
+    *,
+    bridge_unavailable: bool,
+    chip_on: bool,
+) -> str:
+    if bridge_unavailable:
+        return _ADVANCED_STREAMS_REQUIRE_BRIDGE
+    if chip_on:
+        return _SOFTWARE_STREAMS_BYPASSED
+    return ""
 
 def _custom_checked(
     custom: bool,

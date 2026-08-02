@@ -16,7 +16,6 @@ checks, banded SNR estimates, and same-position repeatability.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -35,8 +34,10 @@ from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.quality_model import ROOM as _ROOM_QUALITY
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
+from ._numbers import round_finite as _round
+
 SCHEMA_VERSION = 1
-DBFS_FLOOR = -120.0
+DBFS_FLOOR = quality.DBFS_FLOOR
 
 # Provenance marker for every band-referenced level this module publishes —
 # `band_snr`, `min_band_snr_db`, and the `band_noise_dbfs` rows they are
@@ -109,9 +110,7 @@ class CaptureAnalysis:
 
 def dbfs(value: float) -> float:
     """Convert a linear amplitude to the Room evidence dBFS floor."""
-    if value <= 0 or not np.isfinite(value):
-        return DBFS_FLOOR
-    return max(DBFS_FLOOR, 20.0 * math.log10(value))
+    return quality.dbfs(value, DBFS_FLOOR)
 
 
 def band_levels_dbfs(
@@ -403,16 +402,6 @@ def analyze_capture(
         raw_magnitude_db=raw_magnitude_db,
         smoothed_magnitude_db=smoothed_magnitude_db,
     )
-
-
-def _round(value: Any, digits: int = 2) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(out):
-        return None
-    return round(out, digits)
 
 
 def _level_from_issues(issues: list[dict[str, Any]]) -> str:

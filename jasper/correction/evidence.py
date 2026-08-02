@@ -12,7 +12,6 @@ future LLM without granting it apply/reset privileges.
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ import numpy as np
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 from . import acoustic_quality, bundles
+from ._numbers import round_finite as _round
 
 SCHEMA_VERSION = 2
 # Upper edge routed through the room-correction boundary SSOT
@@ -41,16 +41,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
-
-
-def _round(value: Any, digits: int = 2) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(out):
-        return None
-    return round(out, digits)
 
 
 def _issue_dicts(issues: list[bundles.BundleIssue]) -> list[dict[str, str]]:

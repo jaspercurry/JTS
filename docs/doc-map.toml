@@ -1275,6 +1275,7 @@ code = [
   "jasper/capture_relay/alignment.py",
   "jasper/capture_relay/cues.py",
   "jasper/capture_relay/health.py",
+  "jasper/capture_relay_config.py",
   "jasper/capture_relay/correction_adapter.py",
   "relay/src/worker.js",
   "capture-page/**",

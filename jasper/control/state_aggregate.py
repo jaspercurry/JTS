@@ -665,26 +665,13 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _capture_relay_config() -> dict[str, Any]:
     """Network-free phone-mic-relay config snapshot for `/state.capture_relay`.
 
-    Reads relay env from os.environ DIRECTLY (deploy-time values) so
-    jasper-control never imports the capture_relay package's numpy/scipy deps
-    just for a config field. The doctor (on-demand) imports
-    capture_relay.health to actively probe reachability. This MUST stay in
-    lockstep with capture_relay.health.relay_config_from_env — pinned by
-    tests/test_capture_relay_health.py.
+    The parser lives in an import-light top-level module so jasper-control does
+    not import the capture-relay package's audio/crypto runtime for one config
+    field.
     """
-    base = (os.environ.get("JASPER_CAPTURE_RELAY_BASE") or "").strip().rstrip("/")
-    # Keep in lockstep with jasper.capture_relay.health.DISABLED_RELAY_BASE_VALUES
-    # without importing that package on the /state hot path.
-    if base.lower() in {"0", "false", "off", "disable", "disabled", "none"}:
-        base = ""
-    registration_token = (
-        os.environ.get("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN") or ""
-    ).strip()
-    return {
-        "configured": bool(base),
-        "relay_base": base or None,
-        "registration_secret_configured": bool(registration_token),
-    }
+    from jasper.capture_relay_config import relay_config_from_env
+
+    return relay_config_from_env()
 
 
 async def _get_state(

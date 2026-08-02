@@ -24,45 +24,18 @@ then skips cleanly rather than warning.
 """
 from __future__ import annotations
 
-import os
 import urllib.error
 import urllib.request
-from typing import Any
 
 from jasper.capture_relay.client import RELAY_USER_AGENT
-
-ENV_RELAY_BASE = "JASPER_CAPTURE_RELAY_BASE"
-ENV_RELAY_REGISTRATION_TOKEN = "JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN"
-DISABLED_RELAY_BASE_VALUES = frozenset(
-    {"0", "false", "off", "disable", "disabled", "none"}
+from jasper.capture_relay_config import (
+    DISABLED_RELAY_BASE_VALUES as DISABLED_RELAY_BASE_VALUES,
+    ENV_RELAY_BASE as ENV_RELAY_BASE,
+    ENV_RELAY_REGISTRATION_TOKEN as ENV_RELAY_REGISTRATION_TOKEN,
+    relay_base_from_env as relay_base_from_env,
+    relay_config_from_env as relay_config_from_env,
+    relay_registration_token_from_env as relay_registration_token_from_env,
 )
-
-
-def relay_base_from_env(env: dict[str, str] | None = None) -> str | None:
-    """The configured relay origin (https://…), or None when unconfigured/disabled."""
-    source = env if env is not None else os.environ
-    base = (source.get(ENV_RELAY_BASE) or "").strip().rstrip("/")
-    if base.lower() in DISABLED_RELAY_BASE_VALUES:
-        return None
-    return base or None
-
-
-def relay_registration_token_from_env(env: dict[str, str] | None = None) -> str | None:
-    """Optional Pi-side registration secret, or None when unconfigured."""
-    source = env if env is not None else os.environ
-    token = (source.get(ENV_RELAY_REGISTRATION_TOKEN) or "").strip()
-    return token or None
-
-
-def relay_config_from_env(env: dict[str, str] | None = None) -> dict[str, Any]:
-    """Fast, network-free config snapshot for `/state.capture_relay`."""
-    base = relay_base_from_env(env)
-    token = relay_registration_token_from_env(env)
-    return {
-        "configured": base is not None,
-        "relay_base": base,
-        "registration_secret_configured": token is not None,
-    }
 
 
 def probe_relay_health(base_url: str, *, timeout: float = 2.0) -> tuple[bool, str]:

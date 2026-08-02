@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 129 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 122 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 511
+- **fixed**: 518
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -392,16 +392,16 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0518 | `jasper/active_speaker/web_commissioning.py` :: _issue | nit | W3 | **open** | — |
 | DA-0519 | `jasper/aec_sweep.py` :: write_aec3_sweep_config | nit | W3 | **fixed** | sweep config publication uses canonical `atomic_write_text` with the existing mode contract — this branch |
 | DA-0520 | `jasper/audio_hardware/__init__.py` :: :8 | nit | W3 | **fixed** | package re-exports the complete DAC registry surface, pinned against `dac.__all__` — this branch |
-| DA-0521 | `jasper/audio_input_view.py` :: _fusion_view | nit | W3 | **open** | — |
+| DA-0521 | `jasper/audio_input_view.py` :: _fusion_view | nit | W3 | **fixed** | shared disabled-reason policy and copy now serve both software fusion toggles |
 | DA-0522 | `jasper/audio_measurement/deconv.py` :: deconvolve (:156-158) | nit | W3 | **fixed** | deconvolution and magnitude response share one next-power-of-two primitive — this branch |
-| DA-0523 | `jasper/audio_measurement/quality.py` :: _dbfs (:107-110) | nit | W3 | **open** | — |
+| DA-0523 | `jasper/audio_measurement/quality.py` :: _dbfs (:107-110) | nit | W3 | **fixed** | public measurement dBFS converter now serves correction evidence too |
 | DA-0524 | `jasper/avahi_service.py` :: render_service | nit | W3 | **fixed** | Avahi publication uses canonical atomic I/O while preserving mode 0644 — this branch |
 | DA-0525 | `jasper/bluetooth/adapter.py` :: :77 | nit | W3 | **open** | — |
 | DA-0526 | `jasper/calibration_agent/cli.py` :: main | nit | W3 | **fixed** | advisor response path is resolved once before output branching |
 | DA-0527 | `jasper/calibration_agent/correction_advisor.py` :: _model_kwargs | nit | W3 | **fixed** | shared no-key sentinel is public and raised directly by the model builder |
 | DA-0528 | `jasper/calibration_agent/proposal_sim.py` :: _curve_arrays | nit | W3 | **fixed** | shared curve-value normalization now serves advisor and simulation paths |
 | DA-0529 | `jasper/capture_relay/__init__.py` :: __all__ | nit | W3 | **fixed** | package exports every builder in the shipped capture-kind registry, including level-ramp and bass-nearfield — this branch |
-| DA-0530 | `jasper/capture_relay/health.py` :: relay_base_from_env | nit | W3 | **open** | — |
+| DA-0530 | `jasper/capture_relay/health.py` :: relay_base_from_env | nit | W3 | **fixed** | import-light capture-relay config owner now serves health and control state |
 | DA-0531 | `jasper/cli/aec_bridge.py` :: _aec_loop: 5 safe-engine-process blocks (~20 | nit | W3 | **open** | — |
 | DA-0532 | `jasper/cli/airplay_mode.py` :: _read_mode / jasper/web/airplay_setup.py:_cu | nit | W3 | **open** | — |
 | DA-0533 | `jasper/cli/doctor/audio.py` :: check_apple_dongle_audio:788 | nit | W3 | **open** | — |
@@ -409,10 +409,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0535 | `jasper/cli/doctor/grouping.py` :: _parse_systemd_environment | nit | W3 | **fixed** | one doctor-shared systemd environment parser serves grouping and renderer checks — this branch |
 | DA-0536 | `jasper/cli/wake_enroll.py` :: main | nit | W3 | **open** | — |
 | DA-0537 | `jasper/control/uds.py` :: _voice_socket_command / _mux_socket_command | nit | W3 | **mooted** | the clients now have materially different deadline and cancellation contracts; forced unification would erase policy — later mainline refactors |
-| DA-0538 | `jasper/correction/acoustic_quality.py` :: _round | nit | W3 | **open** | — |
-| DA-0539 | `jasper/correction/level_match.py` :: _env_float | nit | W3 | **open** | — |
-| DA-0540 | `jasper/correction/runtime_integrity.py` :: FANIN_CONTROL_SOCKET | nit | W3 | **open** | — |
-| DA-0541 | `jasper/correction/status.py` :: session_snapshot | nit | W3 | **open** | — |
+| DA-0538 | `jasper/correction/acoustic_quality.py` :: _round | nit | W3 | **fixed** | correction evidence serializers share one finite-rounding helper |
+| DA-0539 | `jasper/correction/level_match.py` :: _env_float | nit | W3 | **fixed** | level matching already consumes canonical `bounded_env_float` |
+| DA-0540 | `jasper/correction/runtime_integrity.py` :: FANIN_CONTROL_SOCKET | nit | W3 | **fixed** | runtime integrity reads the canonical fan-in status socket constant |
+| DA-0541 | `jasper/correction/status.py` :: session_snapshot | nit | W3 | **fixed** | live and persisted session payloads share one common field builder |
 | DA-0542 | `jasper/fanin/coupling_reconcile.py` :: _recover_to_loopback | nit | W3 | **open** | — |
 | DA-0543 | `jasper/home_assistant.py` :: 583 | nit | W3 | **fixed** | runtime and doctor use the typed `ha_verify_ssl` field directly; duplicated fallbacks removed — this branch |
 | DA-0544 | `jasper/multiroom/reconcile.py` :: _unit_is_enabled:818, _unit_is_active:835 | nit | W3 | **fixed** | shared tri-state systemd probe consolidates the duplicate wrappers — #1299 |
