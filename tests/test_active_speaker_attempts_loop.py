@@ -1,0 +1,585 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""The S3 attempts loop's decision kernel: every stop reason, and the rules.
+
+The three constraints these tests pin come from the 2026-07-31 fixed-mic
+repeat study (``captures/repeat-floor-20260731/README.md``). Each is pinned as
+a *behaviour*, not as a transcribed decimal: the claim floor is asserted to be
+the computation, the consecutive-only rule is asserted by showing the kernel
+has no way to express a fixed baseline, and the repeat cap is asserted through
+the clamp the live flow will call.
+"""
+
+from __future__ import annotations
+
+import inspect
+
+import pytest
+
+from jasper.active_speaker.attempts_loop import (
+    CLAIM_FLOOR_P95_MULTIPLE,
+    CONTINUE,
+    DECISIONS,
+    FLOOR_BASIS_MEASURED,
+    FLOOR_BASIS_POLICY,
+    MAX_USEFUL_REPEAT_AVERAGES,
+    PROVENANCE_MODEL_GRADED,
+    PROVENANCE_REALIZED,
+    REASON_ATTEMPT_NOT_COMPARABLE,
+    REASON_AWAITING_FIRST_ATTEMPT,
+    REASON_BASELINE_ESTABLISHED,
+    REASON_BELOW_CLAIM_FLOOR,
+    REASON_BUDGET_EXHAUSTED,
+    REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR,
+    REASON_FLOOR_METRIC_MISMATCH,
+    REASON_GRADED_BINS_SHRANK,
+    REASON_IMPROVEMENT_ABOVE_FLOOR,
+    REASON_IN_SPEC,
+    REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED,
+    REASON_PREDECESSOR_NOT_COMPARABLE,
+    REASON_PROVENANCE_MISMATCH,
+    REASON_REGRESSION_FROM_PREDECESSOR,
+    STOP_BUDGET,
+    STOP_CONVERGED,
+    STOP_EVIDENCE,
+    STOP_FLOOR,
+    AttemptBudget,
+    AttemptIntegrity,
+    AttemptRecord,
+    FloorStats,
+    decide_next,
+    first_stop_index,
+    material_improvement_db,
+    replay,
+    summarize,
+    useful_repeats,
+)
+
+METRIC = "max_db_notch_excluded"
+
+# The 13 accepted consecutive-pair deviations from
+# captures/repeat-floor-20260731/analysis/refined_A_product_level.json,
+# ``shipped_comparator_accepted_pairs.vs_predecessor.rows``. Present so the
+# floor arithmetic is checked against the real study rather than a round
+# number invented for a test.
+BANKED_CONSECUTIVE_PAIRS_DB = (
+    0.085368, 0.053913, 0.067807, 0.043458, 0.049502, 0.084889, 0.059320,
+    0.039868, 0.070366, 0.047792, 0.043053, 0.035829, 0.051826,
+)
+BANKED_P95_DB = 0.08508
+BANKED_MEDIAN_DB = 0.05183
+
+
+def _floor(claim_floor_db: float = 0.17016, metric: str = METRIC) -> FloorStats:
+    return FloorStats.from_policy_bar(
+        metric=metric, claim_floor_db=claim_floor_db, source="unit test",
+    )
+
+
+def _attempt(
+    attempt_id: str,
+    *,
+    metric: str = METRIC,
+    comparable: bool = True,
+    reasons: tuple[str, ...] = (),
+    provenance: str = PROVENANCE_REALIZED,
+    **kwargs: object,
+) -> AttemptRecord:
+    return AttemptRecord(
+        attempt_id=attempt_id,
+        metric=metric,
+        provenance=provenance,
+        integrity=AttemptIntegrity(comparable=comparable, reasons=reasons),
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+# --------------------------------------------------------------------------
+# Constraint 3 — the claim floor is computed, not transcribed
+# --------------------------------------------------------------------------
+
+
+def test_claim_floor_is_twice_the_measured_p95_not_a_transcribed_decimal():
+    floor = FloorStats.from_repeat_study(
+        metric=METRIC,
+        median_db=BANKED_MEDIAN_DB,
+        p95_db=BANKED_P95_DB,
+        source="captures/repeat-floor-20260731",
+        measured_at="2026-07-31",
+    )
+    assert floor.claim_floor_db == pytest.approx(
+        CLAIM_FLOOR_P95_MULTIPLE * BANKED_P95_DB,
+    )
+    # The number the rule actually yields on the banked study.
+    assert floor.claim_floor_db == pytest.approx(0.17016, abs=1e-9)
+    # And it is NOT the README's household-facing 0.2, which is this same
+    # rule rounded up for display. If someone ever hardcodes 0.2, this fails.
+    assert floor.claim_floor_db < 0.2
+    assert floor.basis == FLOOR_BASIS_MEASURED
+
+
+def test_a_larger_measured_p95_moves_the_floor_with_it():
+    """Mutation check: the floor tracks the measurement, not a constant."""
+
+    tight = FloorStats.from_repeat_study(
+        metric=METRIC, median_db=0.05, p95_db=0.085,
+        source="s", measured_at="2026-07-31",
+    )
+    loose = FloorStats.from_repeat_study(
+        metric=METRIC, median_db=0.10, p95_db=0.170,
+        source="s", measured_at="2026-07-31",
+    )
+    assert loose.claim_floor_db == pytest.approx(2 * tight.claim_floor_db)
+
+
+def test_policy_bar_floor_refuses_to_invent_a_measurement():
+    floor = FloorStats.from_policy_bar(
+        metric="anything", claim_floor_db=0.5, source="a shipped constant",
+    )
+    assert floor.basis == FLOOR_BASIS_POLICY
+    # A back-solved p95 would turn a policy choice into a fake measurement.
+    assert floor.p95_db is None
+    assert floor.median_db is None
+
+
+def test_floor_construction_refuses_nonsense():
+    with pytest.raises(ValueError):
+        FloorStats.from_repeat_study(
+            metric=METRIC, median_db=0.0, p95_db=0.0, source="s", measured_at="",
+        )
+    with pytest.raises(ValueError):
+        FloorStats.from_policy_bar(metric="", claim_floor_db=0.5, source="s")
+    with pytest.raises(ValueError):
+        FloorStats.from_policy_bar(metric="m", claim_floor_db=0.5, source="")
+    with pytest.raises(ValueError):
+        FloorStats(
+            metric="m", claim_floor_db=0.5, basis="made_up", source="s",
+        )
+
+
+# --------------------------------------------------------------------------
+# Constraint 1 — consecutive attempts only; a fixed baseline is unreachable
+# --------------------------------------------------------------------------
+
+
+def test_decide_next_reads_only_the_last_two_attempts():
+    """Drift-accumulating history must not be able to change the verdict.
+
+    Attempt 1 carries a wildly different grade. If the kernel reached past the
+    predecessor to any earlier attempt, this delta would change; it does not.
+    """
+
+    floor = _floor()
+    tail = [
+        _attempt("a2", grade_db=5.0),
+        _attempt("a3", grade_db=4.0),
+    ]
+    with_far_baseline = decide_next([_attempt("a1", grade_db=99.0), *tail], floor)
+    without = decide_next(tail, floor)
+    assert with_far_baseline.magnitude_db == without.magnitude_db
+    assert with_far_baseline.improvement_db == without.improvement_db
+    assert with_far_baseline.basis_attempt_ids == ("a2", "a3")
+
+
+def test_kernel_exposes_no_fixed_baseline_mode():
+    """Mutation guard for the constraint, not a restatement of it.
+
+    The study measured a fixed early baseline drifting +0.0046 dB/repeat while
+    the consecutive comparison stayed flat, so a fixed-baseline option would
+    be a slow lie rather than a feature. This test fails the moment a
+    parameter appears that could express one.
+    """
+
+    parameters = set(inspect.signature(decide_next).parameters)
+    assert parameters == {"history", "floor", "budget"}
+    forbidden = {"baseline", "reference", "anchor", "first", "origin", "since"}
+    assert not any(
+        token in name.lower() for name in parameters for token in forbidden
+    )
+
+
+def test_a_non_comparable_predecessor_is_not_skipped_over():
+    """The basis gap is always exactly one attempt.
+
+    Reaching back to the last *good* attempt re-opens the drift question
+    constraint 1 closed, and no banked gap-of-two deviation exists to
+    calibrate what it would cost. So the kernel refuses instead.
+    """
+
+    history = [
+        _attempt("a1", grade_db=5.0),
+        _attempt("a2", comparable=False, reasons=("locate_failed",)),
+        _attempt("a3", grade_db=1.0),
+    ]
+    decision = decide_next(history, _floor())
+    assert decision.decision == STOP_EVIDENCE
+    assert decision.reason == REASON_PREDECESSOR_NOT_COMPARABLE
+    # Emphatically not an improvement of 4.0 dB graded against a1.
+    assert decision.improvement_db is None
+
+
+# --------------------------------------------------------------------------
+# Constraint 2 — repeat averaging caps at 4
+# --------------------------------------------------------------------------
+
+
+def test_useful_repeats_clamps_to_the_measured_cap():
+    assert MAX_USEFUL_REPEAT_AVERAGES == 4
+    assert useful_repeats(1) == 1
+    assert useful_repeats(4) == 4
+    assert useful_repeats(9) == MAX_USEFUL_REPEAT_AVERAGES
+    assert useful_repeats(0) == 1
+
+
+def test_an_attempt_over_the_repeat_cap_is_disclosed_not_hidden():
+    floor = _floor()
+    history = [
+        _attempt("a1", grade_db=5.0, repeats_used=4),
+        _attempt("a2", grade_db=1.0, repeats_used=9),
+    ]
+    decision = decide_next(history, floor)
+    assert decision.repeats_over_cap is True
+    assert decide_next(history[:1], floor).repeats_over_cap is False
+
+
+# --------------------------------------------------------------------------
+# The decision table — every stop reason
+# --------------------------------------------------------------------------
+
+
+def test_empty_history_awaits_the_first_attempt():
+    decision = decide_next([], _floor())
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_AWAITING_FIRST_ATTEMPT
+    assert decision.attempts_used == 0
+
+
+def test_first_attempt_is_a_baseline_not_a_comparison():
+    decision = decide_next([_attempt("a1", grade_db=5.0)], _floor())
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_BASELINE_ESTABLISHED
+    assert decision.magnitude_db is None
+
+
+def test_stop_evidence_when_the_attempt_itself_is_not_comparable():
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0),
+            _attempt("a2", comparable=False, reasons=("agc_behavioral_fail",)),
+        ],
+        _floor(),
+    )
+    assert decision.decision == STOP_EVIDENCE
+    assert decision.reason == REASON_ATTEMPT_NOT_COMPARABLE
+    assert decision.notes == ("agc_behavioral_fail",)
+
+
+def test_stop_evidence_when_the_floor_measured_a_different_metric():
+    """A floor measured on one instrument says nothing about another."""
+
+    decision = decide_next(
+        [_attempt("a1", grade_db=5.0), _attempt("a2", grade_db=1.0)],
+        _floor(metric="some_other_metric"),
+    )
+    assert decision.decision == STOP_EVIDENCE
+    assert decision.reason == REASON_FLOOR_METRIC_MISMATCH
+
+
+def test_stop_evidence_when_provenance_is_mixed():
+    """A predicted grade and a measured one are different instruments."""
+
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0, provenance=PROVENANCE_MODEL_GRADED),
+            _attempt("a2", grade_db=1.0, provenance=PROVENANCE_REALIZED),
+        ],
+        _floor(),
+    )
+    assert decision.decision == STOP_EVIDENCE
+    assert decision.reason == REASON_PROVENANCE_MISMATCH
+    assert set(decision.notes) == {PROVENANCE_MODEL_GRADED, PROVENANCE_REALIZED}
+
+
+def test_stop_evidence_when_an_above_floor_change_has_no_known_direction():
+    """A magnitude-only comparator moved a lot. Which way is unknown."""
+
+    decision = decide_next(
+        [
+            _attempt("a1"),
+            _attempt("a2", deviation_from_predecessor_db=9.0),
+        ],
+        _floor(),
+    )
+    assert decision.decision == STOP_EVIDENCE
+    assert decision.reason == REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR
+    assert decision.magnitude_db == pytest.approx(9.0)
+    assert decision.improved is None
+
+
+def test_stop_evidence_when_an_improvement_rode_a_shrinking_denominator():
+    """flat_spec hands this hazard to the loop by name; here is where it lands."""
+
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0, n_graded_bins=120),
+            _attempt("a2", grade_db=1.0, n_graded_bins=40),
+        ],
+        _floor(),
+    )
+    assert decision.decision == STOP_EVIDENCE
+    assert decision.reason == REASON_GRADED_BINS_SHRANK
+
+
+def test_a_growing_denominator_does_not_block_an_improvement():
+    """The guard is asymmetric: more bins only makes an improvement harder."""
+
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0, n_graded_bins=40),
+            _attempt("a2", grade_db=1.0, n_graded_bins=120),
+        ],
+        _floor(),
+    )
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_IMPROVEMENT_ABOVE_FLOOR
+
+
+def test_stop_floor_when_the_change_is_smaller_than_the_instrument_resolves():
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.000),
+            _attempt("a2", grade_db=4.900),
+        ],
+        _floor(claim_floor_db=0.17016),
+    )
+    assert decision.decision == STOP_FLOOR
+    assert decision.reason == REASON_BELOW_CLAIM_FLOOR
+    assert decision.magnitude_db == pytest.approx(0.1, abs=1e-9)
+    # Sub-floor is not a regression; it is unknowable either way. The
+    # improvement is still disclosed, just not claimable.
+    assert decision.improved is None
+    assert decision.improvement_db == pytest.approx(0.1, abs=1e-9)
+
+
+def test_stop_floor_fires_on_a_sub_floor_regression_too():
+    decision = decide_next(
+        [_attempt("a1", grade_db=4.900), _attempt("a2", grade_db=5.000)],
+        _floor(claim_floor_db=0.17016),
+    )
+    assert decision.decision == STOP_FLOOR
+    assert decision.improved is None
+
+
+def test_continue_on_a_material_improvement():
+    decision = decide_next(
+        [_attempt("a1", grade_db=5.0), _attempt("a2", grade_db=1.0)], _floor(),
+    )
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_IMPROVEMENT_ABOVE_FLOOR
+    assert decision.improved is True
+    assert decision.improvement_db == pytest.approx(4.0)
+    assert decision.basis_attempt_ids == ("a1", "a2")
+    assert decision.should_continue is True
+
+
+def test_an_above_floor_regression_continues_but_never_reads_as_approval():
+    decision = decide_next(
+        [_attempt("a1", grade_db=1.0), _attempt("a2", grade_db=5.0)], _floor(),
+    )
+    assert decision.decision == CONTINUE
+    assert decision.reason == REASON_REGRESSION_FROM_PREDECESSOR
+    assert decision.improved is False
+    assert decision.improvement_db == pytest.approx(-4.0)
+
+
+def test_stop_converged_when_nothing_material_is_predicted_to_remain():
+    bar = material_improvement_db()
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0),
+            _attempt(
+                "a2", grade_db=1.0, predicted_remaining_improvement_db=bar / 10.0,
+            ),
+        ],
+        _floor(),
+    )
+    assert decision.decision == STOP_CONVERGED
+    assert decision.reason == REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED
+
+
+def test_a_material_predicted_remainder_keeps_the_loop_going():
+    bar = material_improvement_db()
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0),
+            _attempt(
+                "a2", grade_db=1.0, predicted_remaining_improvement_db=bar * 10.0,
+            ),
+        ],
+        _floor(),
+    )
+    assert decision.decision == CONTINUE
+
+
+def test_stop_converged_when_already_in_spec():
+    decision = decide_next([_attempt("a1", grade_db=5.0, in_spec=True)], _floor())
+    assert decision.decision == STOP_CONVERGED
+    assert decision.reason == REASON_IN_SPEC
+
+
+def test_stop_budget_when_the_attempt_budget_is_spent():
+    budget = AttemptBudget(target_attempts=1, hard_cap_attempts=2)
+    decision = decide_next(
+        [_attempt("a1", grade_db=5.0), _attempt("a2", grade_db=1.0)],
+        _floor(),
+        budget=budget,
+    )
+    assert decision.decision == STOP_BUDGET
+    assert decision.reason == REASON_BUDGET_EXHAUSTED
+    # The improvement is still disclosed — the loop stopped for want of tries,
+    # not for want of progress.
+    assert decision.improvement_db == pytest.approx(4.0)
+
+
+def test_the_floor_outranks_the_budget():
+    """When both hold, "too small to resolve" is the more useful truth."""
+
+    budget = AttemptBudget(target_attempts=1, hard_cap_attempts=2)
+    decision = decide_next(
+        [_attempt("a1", grade_db=5.0), _attempt("a2", grade_db=4.99)],
+        _floor(),
+        budget=budget,
+    )
+    assert decision.decision == STOP_FLOOR
+
+
+def test_convergence_outranks_the_budget():
+    budget = AttemptBudget(target_attempts=1, hard_cap_attempts=2)
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0),
+            _attempt("a2", grade_db=1.0, in_spec=True),
+        ],
+        _floor(),
+        budget=budget,
+    )
+    assert decision.decision == STOP_CONVERGED
+
+
+def test_evidence_outranks_everything():
+    budget = AttemptBudget(target_attempts=1, hard_cap_attempts=1)
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0),
+            _attempt("a2", grade_db=1.0, comparable=False, reasons=("bad",)),
+        ],
+        _floor(),
+        budget=budget,
+    )
+    assert decision.decision == STOP_EVIDENCE
+
+
+# --------------------------------------------------------------------------
+# Budget, records, and the walk
+# --------------------------------------------------------------------------
+
+
+def test_budget_defaults_are_three_and_four_and_are_both_disclosed():
+    budget = AttemptBudget()
+    assert (budget.target_attempts, budget.hard_cap_attempts) == (3, 4)
+    decision = decide_next([_attempt("a1", grade_db=1.0)], _floor())
+    assert decision.budget.to_dict() == {
+        "target_attempts": 3, "hard_cap_attempts": 4,
+    }
+
+
+def test_budget_refuses_an_impossible_shape():
+    with pytest.raises(ValueError):
+        AttemptBudget(target_attempts=0)
+    with pytest.raises(ValueError):
+        AttemptBudget(target_attempts=4, hard_cap_attempts=3)
+
+
+def test_attempt_record_refuses_a_negative_magnitude():
+    with pytest.raises(ValueError):
+        _attempt("a1", deviation_from_predecessor_db=-1.0)
+
+
+def test_attempt_record_refuses_unknown_provenance():
+    with pytest.raises(ValueError):
+        _attempt("a1", provenance="vibes")
+
+
+def test_an_explicit_comparator_deviation_beats_a_subtracted_one():
+    """The comparator measured the change; subtraction only estimates it."""
+
+    decision = decide_next(
+        [
+            _attempt("a1", grade_db=5.0),
+            _attempt("a2", grade_db=1.0, deviation_from_predecessor_db=0.05),
+        ],
+        _floor(),
+    )
+    assert decision.magnitude_db == pytest.approx(0.05)
+    assert decision.decision == STOP_FLOOR
+    # Direction is still known, and still disclosed, even though the
+    # magnitude came from elsewhere.
+    assert decision.improvement_db == pytest.approx(4.0)
+
+
+def test_replay_walks_every_prefix_and_first_stop_finds_the_live_stop():
+    floor = _floor()
+    history = [
+        _attempt("a1", grade_db=5.0),
+        _attempt("a2", grade_db=1.0),
+        _attempt("a3", grade_db=0.99),
+        _attempt("a4", grade_db=0.98),
+    ]
+    decisions = replay(history, floor)
+    assert len(decisions) == len(history)
+    assert [d.decision for d in decisions] == [
+        CONTINUE, CONTINUE, STOP_FLOOR, STOP_FLOOR,
+    ]
+    assert first_stop_index(decisions) == 2
+    assert first_stop_index(decisions[:2]) is None
+    assert summarize(decisions) == {
+        CONTINUE: 2, STOP_BUDGET: 0, STOP_CONVERGED: 0,
+        STOP_EVIDENCE: 0, STOP_FLOOR: 2,
+    }
+
+
+def test_every_decision_serialises_with_the_numbers_it_used():
+    decision = decide_next(
+        [_attempt("a1", grade_db=5.0), _attempt("a2", grade_db=1.0)], _floor(),
+    )
+    payload = decision.to_dict()
+    assert payload["decision"] in DECISIONS
+    assert payload["basis_attempt_ids"] == ["a1", "a2"]
+    assert payload["magnitude_db"] == pytest.approx(4.0)
+    assert payload["floor"]["claim_floor_db"] == pytest.approx(0.17016)
+    assert payload["provenance"] == PROVENANCE_REALIZED
+    assert payload["budget"]["hard_cap_attempts"] == 4
+
+
+def test_material_improvement_bar_is_the_shipped_constant_not_a_copy():
+    from jasper.active_speaker.crossover_v2_flow import (
+        PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+    )
+
+    assert material_improvement_db() == PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+
+
+def test_kernel_performs_no_io():
+    """The purity claim, checked from the module's own imports.
+
+    The split between this kernel and ``model_error_store`` only means
+    something if the kernel really cannot touch a disk.
+    """
+
+    import jasper.active_speaker.attempts_loop as kernel
+
+    source = inspect.getsource(kernel)
+    for forbidden in ("import os", "import json", "open(", "Path(", "requests"):
+        assert forbidden not in source, f"kernel reached for {forbidden!r}"
