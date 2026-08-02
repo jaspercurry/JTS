@@ -736,8 +736,11 @@ def test_predicted_ripple_ceiling_rejects_measure_reusing_low_alignment_confiden
 
 
 def test_predicted_ripple_well_under_ceiling_passes():
-    """The 2026-07-22 clean-corpus worst case (12 captures, UMIK-2 +
-    iMM-6C, 4.387-9.031 dB) passes cleanly — the ceiling sits well above it."""
+    """A representative value from the 2026-07-22 clean-corpus worst case
+    passes cleanly — the ceiling sits well above it. See
+    ``MEASURE_PREDICTED_RIPPLE_CEILING_DB``'s comment for the corpus
+    composition AND range; neither is restated here per issue #2015 (the
+    range drifted the same way the count once did)."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(
         program, predicted_ripple_db=9.0,

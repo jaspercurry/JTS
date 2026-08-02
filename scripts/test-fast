@@ -90,6 +90,63 @@ add_test_if_present() {
   fi
 }
 
+# Like add_test_if_present, but accepts a pytest node id qualified with
+# `::test_name` (as scripts/ci-classify.py's --landing-pytest-targets emits
+# for its one function-scoped target): the existence check is against the
+# file portion only, while the full id -- file plus `::`-suffix -- is what
+# gets queued, so pytest runs just that one function rather than the whole
+# file.
+add_pytest_target_if_present() {
+  local target="$1"
+  local file="${target%%::*}"
+  if [[ -f "${file}" ]]; then
+    printf '%s\n' "${target}" >> "${selected_test_tmp}"
+  fi
+}
+
+# issue #1973: deploy/index.html (and other deploy/assets/* changes cheap
+# enough to also fold in) were invisible to the changed-file mapping below,
+# so editing the landing page gave a green test-fast while
+# tests/test_landing_page_html.py sat red at the same tree -- caught only by
+# running it explicitly. Read the registered bundle from ci-classify.py's
+# own --landing-pytest-targets rather than copying the list here, so the two
+# lanes cannot drift apart; guarded so a diff touching several landing paths
+# only pays for the one subprocess invocation.
+#
+# Captured into a variable and exit-status-checked exactly like the routing-
+# policy block above (not `done < <(...)`): a `while read` loop fed by a
+# failing process substitution has no visibility into that command's exit
+# code, so a broken/patched ci-classify.py that exits non-zero with no
+# output would silently queue zero landing tests and this lane would go
+# green with nothing checked -- the exact false-green class #1973 exists to
+# close. `(( ... == 0 ))` catches the same failure shape the workflow's
+# fast-landing job guards with `(( ${#landing_tests[@]} > 0 ))`.
+_landing_tests_added=false
+add_landing_tests_if_needed() {
+  if [[ "${_landing_tests_added}" == true ]]; then
+    return
+  fi
+  _landing_tests_added=true
+  local landing_output
+  if ! landing_output="$(
+    python3 scripts/ci-classify.py --landing-pytest-targets
+  )"; then
+    echo "FATAL: could not resolve landing-page pytest targets" >&2
+    exit 1
+  fi
+  local landing_targets=()
+  while IFS= read -r landing_target; do
+    [[ -n "${landing_target}" ]] && landing_targets+=("${landing_target}")
+  done <<< "${landing_output}"
+  if (( ${#landing_targets[@]} == 0 )); then
+    echo "FATAL: ci-classify.py --landing-pytest-targets returned no pytest targets" >&2
+    exit 1
+  fi
+  for landing_target in "${landing_targets[@]}"; do
+    add_pytest_target_if_present "${landing_target}"
+  done
+}
+
 add_globbed_tests() {
   local pattern="$1"
   local matched=false
@@ -139,6 +196,14 @@ while IFS= read -r changed; do
     deploy/assets/*/js/*.js|tests/js/*.mjs)
       add_test_if_present "tests/test_dialog_helper.py"
       add_test_if_present "tests/test_local_web_host_js.py"
+      ;;
+    deploy/index.html|deploy/assets/*)
+      # Listed after the js/*.js arm above on purpose: a page-module JS
+      # change keeps matching that narrower, earlier arm and its own tests
+      # only (case runs the first match, not every match); a landing-page or
+      # other shared-asset change (app.css, a new page dir) falls through to
+      # here.
+      add_landing_tests_if_needed
       ;;
     rust/*)
       # The Rust crates' static source guards are Python tests (cargo can't

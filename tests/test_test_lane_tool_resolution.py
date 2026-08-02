@@ -43,10 +43,12 @@ Three related contracts share this file rather than growing their own:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -425,6 +427,70 @@ def test_fast_lane_routes_internal_support_files_to_their_guards(
     )
 
     assert set(routed_tests) <= selected, selected
+
+
+def _load_ci_classifier():
+    """Same load-a-hyphenated-script technique as tests/test_ci_classifier.py
+    (a fresh module object under its own name, not a package import) -- so
+    the landing registry below is read from the one real source rather than
+    copied into this file as a second literal that could drift from it."""
+    spec = importlib.util.spec_from_file_location(
+        "ci_classifier_for_lane_test", _SCRIPTS / "ci-classify.py"
+    )
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_ci_classifier = _load_ci_classifier()
+
+
+def test_fast_lane_routes_deploy_index_html_to_the_landing_bundle(
+    tmp_path: Path,
+) -> None:
+    """issue #1973: editing deploy/index.html must select the SAME
+    registered landing-page bundle scripts/ci-classify.py's fast-landing CI
+    lane runs -- not a hand-copied list in test-fast, so the two cannot
+    drift apart. This reproduces the original bug at HEAD on origin/main
+    (before the #1973 fix): deploy/index.html gave a green test-fast while
+    tests/test_landing_page_html.py sat red at the same tree, caught only by
+    running it explicitly. Verified failing on origin/main, passing here.
+
+    Wrinkle: LANDING_PYTEST_TARGETS' one function-scoped entry is a
+    `file::test_name` pytest node id. _fast_lane_selected_tests's
+    changed_path/routed_tests plumbing creates each `routed_tests` entry AS
+    A FILE so test-fast's `[[ -f ... ]]` existence check can see it -- the
+    literal string with `::` in it is never a real path, so this stubs the
+    id's bare FILE half (alongside the other registered files) and asserts
+    the fully-qualified id separately against what got queued for pytest.
+    """
+    landing_test_files: tuple[str, ...] = _ci_classifier.LANDING_TEST_FILES
+    landing_targets: tuple[str, ...] = _ci_classifier.LANDING_PYTEST_TARGETS
+    qualified_targets = tuple(target for target in landing_targets if "::" in target)
+    bare_targets = tuple(target for target in landing_targets if "::" not in target)
+    # Sanity on the registry shape this test assumes, so a future third kind
+    # of entry (or the qualified one disappearing) fails here, not silently.
+    assert bare_targets == landing_test_files
+    assert len(qualified_targets) == 1, qualified_targets
+
+    stub_files = landing_test_files + tuple(
+        target.split("::", 1)[0] for target in qualified_targets
+    )
+
+    selected = _fast_lane_selected_tests(
+        tmp_path,
+        changed_path="deploy/index.html",
+        routed_tests=stub_files,
+    )
+
+    assert set(landing_test_files) <= selected, selected
+    for qualified in qualified_targets:
+        assert qualified in selected, (
+            f"{qualified!r} not queued for pytest -- got {selected}"
+        )
 
 
 def test_fast_lane_propagates_routing_policy_failure_before_later_work(
