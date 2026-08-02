@@ -804,8 +804,8 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
     FLOOR`` — the floor value ITSELF is trusted, not merely "somewhere
     below 0.3" — matching `crossover_v2_flow._sweep_locate_confidence_ok`'s
     exact negation (``confidence >= FLOOR``) at the same threshold. See
-    `test_discontinuity_and_sweep_locate_confidence_floors_agree` in
-    tests/test_discontinuity_locate_confidence_floor_contract.py for the
+    `test_locate_confidence_floors_agree` in
+    tests/test_measurement_integrity_floor_contracts.py for the
     cross-module value pin these two gates share.
     """
     prog = build_measure_program(
