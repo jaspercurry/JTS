@@ -986,7 +986,7 @@ new semantics (issue #2027).
 > `worst_band_verdict` still broke equal-verdict ties by **table order**, so
 > among all-`ok` bands the elected band was `sweep_low`. Since #2026 the tie
 > breaks on the **lowest `estimated_snr_db`** (verdict rank still dominant —
-> see the paragraph below). A different elected band means a different reported
+> see the paragraph above). A different elected band means a different reported
 > number, so **#2027 must re-derive these against post-#2026 code rather than
 > quote them.** The **refusal** counts in this section (43/162 → 5/162) are
 > unaffected: verdict rank still dominates the tie-break, so which band is

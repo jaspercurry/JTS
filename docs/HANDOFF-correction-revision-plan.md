@@ -116,18 +116,11 @@ text stands as written.
 >
 > **Most of the ladder has since been BUILT** under the provisional green light
 > below — so "pending ratification" now means *the conclusions are not settled*,
-> not *the code does not exist*. As of the campaign's close:
-> **P1 landed in R9** (#1989, #1987, #1991, #1994); **P3 landed across R10a and
-> R10b** (#1999, #1998; then #2005, #2009, #2007, #2018, #2016, #2008);
-> **P4's chassis landed in R11** (#1982 the findings reader, #2029 the attempts
-> loop, #2031 the VERIFY evidence gate). **P2 remains unbuilt.** Ratification
-> itself is still Monday's, for every rung including the built ones.
->
-> This list is a **summary for orientation**; each rung's own **Status**
-> paragraph below is authoritative for what it shipped and what it did not —
-> notably P4's, which records that the chassis landed with its per-speaker
-> model-error store **still unwired**. If this block and a rung disagree, the
-> rung wins and this block is the bug.
+> not *the code does not exist*. As of the campaign's close, **P1, P3, and P4's
+> chassis have all landed** across R8–R11; **P2 remains unbuilt.** Each rung's
+> own **Status** paragraph below is authoritative for which PRs shipped and what
+> they did not cover — notably P4's, which records that the chassis landed with
+> its per-speaker model-error store **still unwired**.
 >
 > The owner gave a **provisional green light to build along the
 > ladder** ahead of ratification (see [the campaign](#the-campaign--rounds-to-monday-2026-08-03-and-beyond)).
@@ -719,7 +712,8 @@ working flow**, never beside it.
 > bench had **not** yet run on a real speaker — that proof became R11's
 > first slice. **Standing slice exit: not performed this round, and not
 > waived at the time.** R11's deploy (`14b8d9c96`) and its pass subsumed
-> it two days later, so no round left un-proven code standing for long —
+> it the next day — about 11 h after R10b's last merge — so no round left
+> un-proven code standing for long —
 > but the exit was skipped silently rather than named. Recorded late, and
 > the omission is part of the same R10b bookkeeping lesson as the missing
 > outcome block itself: an exit that something else subsumes afterwards
@@ -907,6 +901,15 @@ close continuously, treat any count here as the date's snapshot and re-run the
 reconciliation rather than trusting it; the invariant that must hold is
 "exactly once", not any particular number.
 
+**The reconciliation, so it can be repeated.** Take the open set from
+`gh issue list --state open --limit 400 --json number`, and take the placed set
+by grepping `#\d+` out of this file's placement zones only — each rung's
+`**Issues.**` paragraph plus the two `###` sections below. Every open number
+must appear in the placed set exactly once; every placed number absent from the
+open set must carry the `closed` marker. Prose cross-references outside those
+zones, and the by-owner regrouping inside "Outside the program", do not count
+as placements.
+
 **Round tags.** An issue scheduled into a campaign round carries a `— Rn` tag
 where it is indexed. **An untagged issue is not yet scheduled**, which is a
 statement about the campaign, not about the issue's importance. Rung and round
@@ -929,10 +932,12 @@ only safe after the objective lands, and the tag says so.
 Named so the boundary is visible, not indexed: #1973 (**R12**, debt, closed),
 #1952 (closed), #1948 (**R12**, debt), #1789 (closed), #1852, #1842, #1843,
 #1718 (closed), #1717, #1716 (closed), #1715, #1709, #1678, #2044 (py3.11 test flake —
-the metadata-sidecar write race) — enumerated by owner so the boundary can be
-audited: CI and
+the metadata-sidecar write race), #2064 (doc-freshness `--all` vs archival
+dirs — an owner ruling, deadline ~2026-08-23) — enumerated by owner so the
+boundary can be audited: CI and
 test-infra (#1973, #1716, #1715, #1709, #2044), multiroom (#1852, #1842, #1678), Rust
-(#1718, #1717), voice (#1843), daemon runtime (#1952), method tooling (#1948),
+(#1718, #1717), voice (#1843), daemon runtime (#1952), method and docs tooling
+(#1948, #2064),
 and one correction-subsystem constant with no measurement behaviour (#1789).
 Closed markers appear on the first (placement) mention only; the by-owner
 regrouping repeats the same numbers as a classification, not a second status.
@@ -1667,10 +1672,11 @@ these sections:
 - **the R10b outcome block** (slice-exit omission) and **R12's Deliverables
   line** (planned-vs-built).
 
-Everything else in the spine — the rung bodies below their Status lines, the
-campaign's R8–R11 narrative, the research index, CURRENT POSITION, and the
-handoff/issue contract — carries prior verification forward and was **not**
-re-read in this pass. The immediately prior 2026-08-02 pass re-verified the
+Everything else in the spine — the rung bodies below their Status lines
+**apart from their Issues lists** (those were re-verified, as part of the index
+above), the campaign's R8–R11 narrative, the research index, CURRENT POSITION,
+and the handoff/issue contract — carries prior verification forward and was
+**not** re-read in this pass. The immediately prior 2026-08-02 pass re-verified the
 CURRENT POSITION block, the campaign's R11–R12 entries, and the R12 tags in the
 issue index against `5a3266f8f`. And before that, on 2026-07-31,
 the spine (charter, ladder, campaign, research index,

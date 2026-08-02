@@ -79,6 +79,14 @@ if (( include_all )); then
   # invisible, they could never have tripped the threshold at ANY age; that is
   # the defect, not the current age. `--all` already promises "top-level +
   # non-HANDOFF docs/"; capping the depth quietly broke that promise.
+  #
+  # OPEN QUESTION — issue #2064: this now also enumerates docs/research/** and
+  # docs/historical/**, which are archival (a research bank's date IS the
+  # fact, so "re-verify and bump the footer" is the WRONG advice for them).
+  # They cross the 90-day threshold around 2026-08-23 and then read as
+  # permanently stale. Deliberately NOT excluded here: choosing which
+  # directories count as archival is a documentation-policy ruling, not a
+  # script default. Read #2064 before adding a prune.
   while IFS= read -r d; do docs+=("$d"); done \
     < <(find docs -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
 fi
