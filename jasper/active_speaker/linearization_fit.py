@@ -2019,9 +2019,12 @@ def _lift_stage(
     * **woofer** — fit band ``(150.0, 2747.3)`` Hz against a gain band ending
       at 2266.8 Hz. Its stopband is PARTLY inside the mask: 7 of 78 stopband
       bins, spanning 2323.0-2747.3 Hz, with the rest above the fit band.
-    * **tweeter** — fit band ``(2020.0, 18390.9)`` Hz against a gain band
+    * **tweeter** — fit band ``(2020.0, 15991.5)`` Hz against a gain band
       *starting* at 1764.6 Hz. The fit band begins ABOVE the gain band's lower
       edge, so **all 89** of its stopband bins fall OUTSIDE the mask.
+      (Top edge re-derived after #1752 made a term's exact zero a hard
+      boundary; it read 18390.9 Hz while the smoother still leaked depth past
+      mic-trust's zero. Every other figure in this note is unchanged.)
 
     So a mask-limited guard would half-see one branch and be completely blind
     on the other, in the same session. That is worse than one that never

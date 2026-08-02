@@ -1167,6 +1167,42 @@ def test_check_low_pilot_snr_routes_to_snr_floor_not_agc():
     assert verdict["template"] == "fix_and_retry"
 
 
+def test_check_with_no_ambient_evidence_refuses_before_publishing_check_json():
+    """Issue #1818's degraded path, pinned where it is ENFORCED.
+
+    A capture whose ambient window survived below
+    ``AMBIENT_MIN_USABLE_FRACTION`` yields an EMPTY band report, and
+    ``_snr_floor_ok`` reads an empty report as ``False`` (pinned one module
+    below by
+    ``test_audio_measurement_program_analysis.py::test_check_ambient_below_the_usable_fraction_degrades_to_disclosed_no_evidence``).
+    This is the other half of that coupling: the conductor must refuse such a
+    CHECK with ``snr_floor`` **and must not publish check.json** — a refused
+    CHECK that still published would hand MEASURE a gain plan and an ambient
+    report the session never actually measured.
+
+    The publish seam is a RAISING stub rather than a recording one on purpose.
+    Asserting an empty ``published_checks`` list would pass for the wrong
+    reason if the refusal were ever moved BELOW the publish and the list were
+    cleared; a stub that raises fails loudly at the moment of the call, and
+    names why in the failure text.
+    """
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(program, snr_floor_ok=False)
+    c = _conductor(fakes)
+
+    def _must_not_publish(plan, ambient):
+        raise AssertionError(
+            "check.json was published for a CHECK the conductor refuses: "
+            "the snr_floor gate must sit ABOVE publish_check"
+        )
+
+    c._seams = dataclasses.replace(c._seams, publish_check=_must_not_publish)
+
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["code"] == "snr_floor"
+    assert fakes.published_checks == []
+
+
 def test_check_linearity_fail_blames_the_room_when_ambient_is_elevated():
     """W6.12: agc_behavioral_fail's copy blames the phone's mic, but hardware
     round 4 proved a distinct honest cause with the identical symptom (the

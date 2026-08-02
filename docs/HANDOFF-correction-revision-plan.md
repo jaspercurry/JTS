@@ -164,8 +164,10 @@ the render slot, so the two ship together), #1750 (**R12** —
 detection, aggregation, anomaly policy), #1783 (chart paints below the validity
 floor, legend blames interference), #1859 (byte-identical DSP, 3–7.7 dB apart —
 frame or physical?), #1857 (worst-band pointer anchored on a full-range mean),
-#1830 (per-band SNR verdict dead where it now matters), #1818 (ambient window
-slides, pulling courtesy beeps into the floor estimate), #1847 (`band_levels_dbfs`
+#1830 (per-band SNR verdict dead where it now matters), #1818 (**R12** — CHECK's
+ambient window slides, pulling courtesy beeps into the floor estimate; it now
+clips like the pilot window and shares its usable-fraction policy, closed),
+#1847 (`band_levels_dbfs`
 Hann-weights chirps — sub-bass reads ~10 dB low), #1938 (**R8** — fixture
 defaults `trim_db` from the default curves, mislabeling every custom-curve
 caller, closed), #1882 + #1883 (alignment-confidence coverage; `sweep_anchor`
@@ -257,8 +259,9 @@ model reproduces passes), #1954 (**R10** — room layer designs depth on the mea
 wire per-frequency spatial variance into the cap), #1955 (constrain the
 L/R per-channel axis before Increment 5 exists), #1894 (measurement-adjudicated
 Fc + topology), #1675 (programmatic ka/directivity guidance from declared
-dimensions), #1752 (`compose_envelope` smoothing leaks depth past a term's own
-zero), #1654 (widen the tweeter sweep to the declared floor — shelved, with a
+dimensions), #1752 (**R12** — `compose_envelope` smoothing leaks depth past a
+term's own zero; hardened — a term at exactly 0 is now a hard boundary like
+OUT_OF_BAND, closed), #1654 (widen the tweeter sweep to the declared floor — shelved, with a
 revival trigger WO-5 depends on), #1870 (owner bench: adjudicate tweeter delay at
 Fc and name the τ≈303 µs reflector), #1968 (the banked research itself).
 

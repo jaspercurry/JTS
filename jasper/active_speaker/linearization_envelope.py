@@ -854,6 +854,33 @@ def compose_envelope(
     boundary, and the smoothing ladder's window would otherwise leak a
     sliver of in-band energy across that boundary in either direction.
 
+    **A term reaching exactly 0 is a hard boundary too (issue #1752).** Any
+    bin where SOME term is exactly 0 composes to exactly 0, and the smoothing
+    pass cannot blur depth back across it — the same treatment OUT_OF_BAND
+    gets, for the same reason. An exact zero from a term is not a small
+    number that should average with its neighbours; it is a trust statement
+    (``mic_trust_limit`` at 0 above its tier's ``taper_zero`` means the
+    calibrated microphone resolves nothing up there), and a statement of no
+    trust cannot be softened by an adjacent bin that happens to have some.
+    Before this rule the ladder leaked depth past every such zero: on the S0
+    replay at ``reference`` tier, mic-trust is exactly 0 from 16444.9 Hz up
+    yet the composed envelope carried 1.4846 dB at that bin and stayed
+    non-zero to 18912.3 Hz, putting the fit band's top edge at 18390.9 Hz.
+    It now ends at 15991.5 Hz, the last bin mic-trust actually trusts.
+
+    This makes all terms consistent rather than leaving two regimes: the
+    newer ``spatial_exclusion`` term already preserved its exact zeros, by
+    composing AFTER the smooth (see the placement paragraph below). The two
+    mechanisms differ in shape because they differ in what else they must
+    protect — exclusion must not blur its zeros *outward* into the
+    neighbourhood's depth, which is why it composes after rather than being
+    hard-masked before — but they now agree that a zero means zero.
+
+    Smoothing is otherwise untouched: it still smooths INSIDE the non-zero
+    region, and the terms that reach zero do so through their own explicit
+    octave-linear taper (:func:`_flat_then_taper`), so the soft handoff at a
+    band edge is the term's own shape and never something the blur supplied.
+
     **The exclusion is applied AFTER the smoothing pass, not before, and
     that placement is load-bearing.** The composed curve is
 
@@ -1057,10 +1084,26 @@ def compose_envelope(
     smoothable_value = np.min(
         np.stack([term.depth_db for term in smoothed_terms]), axis=0
     )
+    # A term that reaches EXACTLY zero is a hard boundary, exactly like
+    # OUT_OF_BAND (issue #1752). Every term here is non-negative, so the min
+    # is 0 at a bin iff some term said 0 there -- and 0 from a term is not a
+    # small number, it is a statement that this term extends no trust to this
+    # bin at all. Without this mask the ladder window blurs neighbouring
+    # in-band depth back across that boundary: measured on the S0 replay at
+    # `reference` tier, where `mic_trust_limit` is exactly 0 from 16444.9 Hz
+    # up, the composed envelope carried 1.4846 dB of allowed depth at that
+    # very bin and stayed non-zero to 18912.3 Hz, putting the fit band's top
+    # edge at 18390.9 Hz -- above the frequency the mic is trusted to resolve
+    # anything at. `<= 0.0` rather than `np.isclose` is deliberate: the rule
+    # is about an EXACT zero, and a bin holding a genuinely tiny but non-zero
+    # permission should keep it rather than be rounded away.
+    hard_zero_mask = smoothable_value <= 0.0
     masked_depth_db = np.where(in_band_mask, smoothable_value, 0.0)
     smoothed_depth_db = _ladder_smooth(grid_hz, masked_depth_db)
     smoothed_depth_db = np.where(
-        in_band_mask & ~spatially_excluded_mask, smoothed_depth_db, 0.0
+        in_band_mask & ~spatially_excluded_mask & ~hard_zero_mask,
+        smoothed_depth_db,
+        0.0,
     )
 
     terms_map: Mapping[ReasonCode, np.ndarray] = {

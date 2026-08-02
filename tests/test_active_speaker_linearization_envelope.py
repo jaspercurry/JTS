@@ -601,6 +601,140 @@ def test_compose_envelope_allowed_depth_bounded_by_every_smoothed_term():
                 assert np.all(curve.allowed_depth_db <= smoothed_term + 1e-9)
 
 
+# --------------------------------------------------------------------------- #
+# A term's EXACT zero is a hard boundary, like OUT_OF_BAND (issue #1752)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("tier", MIC_TIERS)
+def test_compose_envelope_zeroes_where_mic_trust_reaches_exactly_zero(tier):
+    """#1752: no allowed depth survives past a term's own exact zero.
+
+    ``mic_trust_limit`` is exactly 0 from its tier's ``taper_zero`` up — the
+    frequency above which the calibrated microphone resolves nothing. Before
+    this rule the final ladder-smoothing pass blurred in-band depth back
+    across that boundary, so the composed envelope granted correction
+    permission at frequencies its own mic-trust term said were unmeasurable.
+    Measured on the S0 replay at ``reference``: 1.4846 dB of allowed depth at
+    16444.9 Hz, non-zero all the way to 18912.3 Hz.
+
+    Asserted on EVERY tier, since the leak was a property of the smoother and
+    not of one tier's breakpoints.
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
+    curve = compose_envelope(
+        "tweeter", primary,
+        excited_band_hz=(150.0, 20_000.0),
+        mic_tier=tier,
+        driver_class="metal_dome",   # its own taper_zero is off-grid (32 kHz)
+        grid_hz=grid,
+    )
+    mic_trust = curve.terms[ReasonCode.LIMITED_BY_MIC_TIER]
+    zero_bins = mic_trust <= 0.0
+    assert zero_bins.any(), "fixture must reach the taper zero on this grid"
+    # Exactly 0 — not "small", not "close to".
+    assert np.all(curve.allowed_depth_db[zero_bins] == 0.0)
+    # ...and there is still real permission just below the boundary, so this
+    # is a boundary assertion rather than an all-zero envelope trivially
+    # satisfying it.
+    assert curve.allowed_depth_db[~zero_bins].max() > 1.0
+
+
+def test_compose_envelope_zeroes_where_the_class_prior_reaches_exactly_zero():
+    """The rule is about ANY term, not mic-trust specifically.
+
+    ``class_prior_limit`` for the conservative ``unknown`` class tapers to
+    exactly 0 at 12 kHz — below ``reference`` mic-trust's own 16 kHz zero — so
+    this bin set is owned by a different term entirely.
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
+    curve = compose_envelope(
+        "tweeter", primary,
+        excited_band_hz=(150.0, 20_000.0),
+        mic_tier="reference",
+        driver_class="unknown",
+        grid_hz=grid,
+    )
+    class_prior = curve.terms[ReasonCode.LIMITED_BY_CLASS_PRIOR]
+    zero_bins = class_prior <= 0.0
+    assert zero_bins.any()
+    # The class prior zeroes BELOW where reference mic-trust does, so these
+    # bins prove the rule is term-agnostic.
+    mic_trust = curve.terms[ReasonCode.LIMITED_BY_MIC_TIER]
+    assert (mic_trust[zero_bins] > 0.0).any()
+    assert np.all(curve.allowed_depth_db[zero_bins] == 0.0)
+
+
+def test_compose_envelope_still_smooths_inside_the_non_zero_region():
+    """Hardening the boundary must not introduce a cliff INSIDE the band.
+
+    The ladder pass is untouched wherever every term is non-zero: the
+    composed curve stays smooth bin-to-bin across the interior, and the
+    envelope's own taper (each term's explicit octave-linear ramp) is what
+    brings it down to the boundary — the blur was never the soft handoff, it
+    was permission extending past a term's zero.
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
+    curve = compose_envelope(
+        "tweeter", primary,
+        excited_band_hz=(150.0, 20_000.0),
+        mic_tier="reference",
+        driver_class="compression_horn",
+        grid_hz=grid,
+    )
+    depth = curve.allowed_depth_db
+    interior = (grid > 200.0) & (grid < 15_000.0)
+    steps = np.abs(np.diff(depth[interior]))
+    assert steps.max() < 2.0, "interior must stay smooth, no new cliff"
+    # The approach to the boundary is a taper, not a plunge from the ceiling:
+    # the last bin that still has permission holds only a couple of dB.
+    non_zero = np.flatnonzero(depth > 0.0)
+    assert depth[non_zero[-1]] < 4.0
+    assert depth[non_zero[-1]] > 0.0
+
+
+def test_compose_envelope_out_of_band_treatment_is_unchanged_by_the_zero_rule():
+    """OUT_OF_BAND keeps its own behaviour: zeroed on both sides of the
+    smoothing pass, and still reported as ``OUT_OF_BAND`` rather than being
+    relabelled by the term-zero rule that now sits beside it."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
+    curve = compose_envelope(
+        "tweeter", primary,
+        excited_band_hz=(2000.0, 18000.0),
+        mic_tier="reference",
+        driver_class="metal_dome",
+        grid_hz=grid,
+    )
+    below = grid < 2000.0
+    assert below.any()
+    assert np.all(curve.allowed_depth_db[below] == 0.0)
+    assert all(curve.reason[i] == ReasonCode.OUT_OF_BAND
+               for i in np.flatnonzero(below))
+
+
+def test_compose_envelope_no_evidence_sigma_is_all_zero_as_before():
+    """``sigma_db=None`` makes ``repeatability_limit`` an ALL-zero term, so
+    every bin is now a hard zero — which is exactly the all-zero envelope
+    that composition already produced (smoothing zeros yields zeros). Pinned
+    because it is the one term that reaches zero everywhere rather than at a
+    band edge, and its behaviour must not have moved."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
+    curve = compose_envelope(
+        "tweeter", primary,
+        excited_band_hz=(150.0, 20_000.0),
+        mic_tier="reference",
+        driver_class="metal_dome",
+        grid_hz=grid,
+        sigma_db=None,
+    )
+    assert np.all(curve.allowed_depth_db == 0.0)
+
+
 def test_compose_envelope_n_repeats_and_sigma_reported():
     grid = DEFAULT_ENVELOPE_GRID_HZ
     primary = _zero_sigma_primary("woofer", freqs_hz=grid)
@@ -1466,7 +1600,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     bound.
 
     **What the fit band shows, stated to its evidence and no further.** The
-    fit band is **identical** to the no-mask fit's, 2020.0-18390.9 Hz: the
+    fit band is **identical** to the no-mask fit's, 2020.0-15991.5 Hz: the
     exclusion punches holes inside the band rather than truncating it at the
     first null, so the fit keeps its PERMISSION to correct above 8 kHz. That
     is not the same as demonstrating correction up there, and this corpus
@@ -1525,7 +1659,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
 
     assert fit.fit_band_hz == bare_fit.fit_band_hz
     assert fit.fit_band_hz[0] == pytest.approx(2020.0, abs=1.0)
-    assert fit.fit_band_hz[1] == pytest.approx(18_390.9, abs=1.0)
+    assert fit.fit_band_hz[1] == pytest.approx(15_991.5, abs=1.0)
 
     # The reason no filter lands above 8 kHz in EITHER fit, named here so the
     # band assertion above cannot be read as more than preserved permission.
@@ -1583,27 +1717,49 @@ def test_s0_replay_unknown_class_pins_the_undeclared_regime(s0_replay):
 def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     """Predicted-sum ripple, compared on the SAME bins with both fits.
 
-    **The masked fit is very slightly worse, not equal** -- +0.0073 dB on
+    **The masked fit is very slightly worse, not equal** -- +0.0059 dB on
     ``compression_horn`` -- so this test asserts a BOUND (0.05 dB) and the
     exact measured difference, rather than the "no regression" the plan's
     acceptance line asks for in prose. The name says bound for that reason.
 
-    Both fits produce the same fit band on this corpus, so the comparison
-    window is that band minus every masked bin -- 66 bins on the
-    ``compression_horn`` regime, 60 on ``unknown``. The metric is the RMS
-    deviation of the predicted sum about its own median. **Its absolute
-    value is not a ripple figure**: it is dominated by the tweeter's own
-    uncorrected top-octave rolloff, because this corpus gives each position
-    two occurrences and the CD-horn continuation stage suppresses itself at
-    ``insufficient_repeats``. Only the difference between the two fits, on
-    identical bins, is being read here.
+    The comparison window is the BARE fit's band minus every masked bin --
+    one window for both fits, which is what makes the two RMS figures
+    comparable -- 61 bins on the ``compression_horn`` regime, 55 on
+    ``unknown``. The metric is the RMS deviation of the predicted sum about
+    its own median. **Its absolute value is not a ripple figure**: it is
+    dominated by the tweeter's own uncorrected top-octave rolloff, because
+    this corpus gives each position two occurrences and the CD-horn
+    continuation stage suppresses itself at ``insufficient_repeats``. Only
+    the difference between the two fits, on identical bins, is being read
+    here.
 
-    Measured 2026-07-26: **+0.0073 dB** on ``compression_horn`` (3.0682 ->
-    3.0755) and **exactly 0.0** on ``unknown``, where the two fits are
-    filter-for-filter identical. The non-zero one traces to a single bin:
-    7949.3 Hz, the conservatively-rasterized outer edge of the first null's
-    interval, sits inside the fit's core band, so excluding it moves the
-    target level by 0.038 dB and both peaking cuts shrink by ~0.03 dB.
+    Re-measured after #1752 hardened a term's exact zero into a hard
+    boundary: **+0.0059 dB** on ``compression_horn`` (1.6887 -> 1.6947) and
+    **exactly 0.0** on ``unknown``, where the two fits are filter-for-filter
+    identical. The non-zero one traces to a single bin: 7949.3 Hz, the
+    conservatively-rasterized outer edge of the first null's interval, sits
+    inside the fit's core band, so excluding it moves the target level by
+    0.038 dB and both peaking cuts shrink by ~0.03 dB.
+
+    **The two fits no longer share a band on ``unknown``, and that is the
+    hardening showing through.** ``class_prior_limit`` for ``unknown`` is
+    exactly 0 from 12 kHz up, so the composed envelope now ends there
+    instead of carrying blurred depth past it; the second identified null
+    (10842-12348 Hz) then reaches that zero with nothing correctable left
+    between them, and the masked band stops at 10513.6 Hz rather than
+    punching a hole and continuing. On ``compression_horn`` -- whose class
+    prior does not zero until 20 kHz -- the exclusion still punches holes
+    inside a shared band, exactly as before. Filters are identical either
+    way **on this cut-only arm**, so here the change is in the band the fit
+    REPORTS, not in what the speaker plays. That scoping is load-bearing and
+    does NOT generalize: on the reachable BOOST arm (``allow_boost``, no
+    cloud exclusions) the narrowed envelope DOES move the emitted filters --
+    it adds a +4.6785 dB Peaking boost at 10223.7 Hz (a +4.6506 dB branch-
+    chain peak once neighbours sum). That is safe by the existing headroom
+    contract, not by luck: ``branch_headroom_db`` rises 0.0000 -> 5.6506 dB
+    and the emitter subtracts it pre-split, so the bin lands -1.0000 dB re
+    unity -- exactly ``HEADROOM_MARGIN_DB``, since the charge IS peak plus
+    that margin. The runtime contract re-proves it downstream.
     """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     measured_db = np.interp(
@@ -1613,9 +1769,9 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     for f_lo, f_hi in s0_replay.merged_bands_hz:
         excluded |= (grid >= f_lo) & (grid <= f_hi)
 
-    for driver_class, n_bins, expected_delta_db in (
-        (_S0_TWEETER_CLASS, 66, 0.0073),
-        ("unknown", 60, 0.0),
+    for driver_class, n_bins, expected_delta_db, bands_agree in (
+        (_S0_TWEETER_CLASS, 61, 0.0059, True),
+        ("unknown", 55, 0.0, False),
     ):
         bare_fit = fit_driver_linearization(
             s0_replay.primary, _s0_envelope(s0_replay, driver_class, cloud=False)
@@ -1623,7 +1779,11 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
         masked_fit = fit_driver_linearization(
             s0_replay.primary, _s0_envelope(s0_replay, driver_class, cloud=True)
         )
-        assert bare_fit.fit_band_hz == masked_fit.fit_band_hz, driver_class
+        assert (
+            bare_fit.fit_band_hz == masked_fit.fit_band_hz
+        ) is bands_agree, driver_class
+        # One window for both fits (the bare band), so the two RMS figures
+        # are read on identical bins even where the bands themselves differ.
         lo, hi = bare_fit.fit_band_hz
         window = (grid >= lo) & (grid <= hi) & ~excluded
         assert int(window.sum()) == n_bins, driver_class
@@ -1665,12 +1825,18 @@ def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
     smoother instead of applied after it, with every other input held fixed
     -- using this file's own ``_hand_ladder_smooth`` and the per-term curves
     the shipped ``EnvelopeCurve`` already carries, so no private module
-    state is touched and the ONLY difference is the ordering. Measured
-    2026-07-26 on the S0 main leg at ``compression_horn``: 18 in-band bins
+    state is touched and the ONLY difference is the ordering. The hand-built
+    counterfactual therefore also carries #1752's term-exact-zero rule: it is
+    held FIXED so that smoothing ORDER stays the one mutated variable.
+
+    Measured on the S0 main leg at ``compression_horn``: 13 in-band bins
     lose allowed depth, worst 6.06 dB. The comb peak at 12786.4 Hz, sitting
     *between* the second and third identified nulls and fully correctable,
     would have fallen from 9.18 to 3.12 dB; the one at 10223.7 Hz from 15.23
-    to 11.09 dB.
+    to 11.09 dB — all three figures unchanged by the #1752 hardening. The
+    bin COUNT fell from 18 to 13 because five of the eighteen sat above
+    mic-trust's exact zero, where both curves now read 0.0 and so neither
+    can lose anything.
 
     Those peaks are what the registry sized its intervals to protect
     (``IdentifiedNull``: half-depth width, so the span's comb *peaks* stay
@@ -1690,10 +1856,16 @@ def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
         ]),
         axis=0,
     )
+    # #1752's rule, held fixed across the mutation: a term at exactly 0 is a
+    # hard boundary. Without it the counterfactual would differ from the
+    # shipped curve in TWO rules at once and stop isolating the ordering.
+    hard_zero = smoothable <= 0.0
     counterfactual = _hand_ladder_smooth(
         grid, np.where(in_band & ~excluded, smoothable, 0.0)
     )
-    counterfactual = np.where(in_band & ~excluded, counterfactual, 0.0)
+    counterfactual = np.where(
+        in_band & ~excluded & ~hard_zero, counterfactual, 0.0
+    )
 
     # Sanity: the counterfactual still zeroes the nulls themselves -- the
     # mutation is about the neighbourhood, not about the doctrine.
@@ -1703,7 +1875,7 @@ def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
     correctable = in_band & ~excluded
     assert np.all(counterfactual[correctable] <= masked.allowed_depth_db[correctable])
     losses = masked.allowed_depth_db[correctable] - counterfactual[correctable]
-    assert int(np.count_nonzero(losses > 0.005)) == 18
+    assert int(np.count_nonzero(losses > 0.005)) == 13
     assert float(losses.max()) == pytest.approx(6.06, abs=0.02)
 
     for f_hz, shipped_db, pre_smoothing_db in (

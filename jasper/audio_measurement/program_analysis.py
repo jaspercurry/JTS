@@ -3231,15 +3231,6 @@ def _n_fft_for(*irs: np.ndarray) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _ambient_from_capture(
-    capture: np.ndarray, sample_rate: int, ambient_seg: ProgramSegment, global_offset: int
-) -> tuple[np.ndarray, dict[str, Any]]:
-    start = max(0, global_offset + ambient_seg.start_sample)
-    end = min(capture.size, start + ambient_seg.n_samples)
-    samples = capture[start:end]
-    return samples, snr_policy.framed_ambient_band_report(samples, sample_rate, percentile=95)
-
-
 # How much of the scheduled ambient window must actually be present in the
 # capture for it to count as evidence. A capture that started late clips the
 # window's HEAD (never its tail — the pilots follow it), and RMS is
@@ -3248,7 +3239,63 @@ def _ambient_from_capture(
 # survive and the estimate is noise about noise. Below the fraction the caller
 # gets ``None`` and the analysis degrades to the pre-#1810 "no ambient
 # evidence, trust the pilots" behaviour — never to a fabricated floor.
-PILOT_AMBIENT_MIN_USABLE_FRACTION = 0.5
+#
+# ONE policy, both windows (#1818): CHECK's 12 s session-ambient window
+# (`_ambient_from_capture`) and MEASURE/VERIFY's 1 s pilot-ambient window
+# (`_pilot_ambient_samples`) ask the same question of the same kind of
+# evidence, so they share this constant rather than each carrying a number
+# that can drift from the other.
+AMBIENT_MIN_USABLE_FRACTION = 0.5
+
+
+def _ambient_from_capture(
+    capture: np.ndarray, sample_rate: int, ambient_seg: ProgramSegment, global_offset: int
+) -> tuple[np.ndarray | None, dict[str, Any]]:
+    """CHECK's session-ambient window and its band-floor report.
+
+    The window is CLIPPED to the capture, never SLID along it (#1818): ``end``
+    is computed from the window's own (possibly negative) schedule position,
+    not from the clamped start, exactly as `_pilot_ambient_samples` does.
+    Computing it from the clamped start walks a capture that began ``D``
+    seconds late forward onto whatever the schedule put AFTER the window — for
+    the shipped CHECK program that is the courtesy prelude, 0.6 s of −18 dBFS
+    beep at [12.0, 12.6) s butted directly against the 12 s window. Measured on
+    the shipped geometry: a 0.6 s late start read the room floor 39.5 dB hot
+    (−70.00 → −30.52 dBFS window RMS; worst framed band −74.65 → −52.85 dBFS),
+    which is not a floor at all — it is the beep. That number feeds BOTH
+    `_snr_floor_ok` (the room-quality gate) and `_solve_gain_plan`.
+
+    Below :data:`AMBIENT_MIN_USABLE_FRACTION` of the window there is nothing
+    left to measure, and this degrades the same honest way the pilot helper
+    does: ``None`` samples plus an EMPTY band report, which
+    `_snr_floor_ok` reads as False and `_solve_gain_plan` discloses as
+    ``GAIN_BOUND_NO_AMBIENT_EVIDENCE``. Both degradations are fail-closed;
+    neither fabricates a floor. The empty report is produced BY
+    ``framed_ambient_band_report`` (from an empty array) rather than written
+    out here, so that module stays the only owner of the report's shape.
+    """
+    begin = global_offset + ambient_seg.start_sample
+    start = max(0, begin)
+    end = min(capture.size, begin + ambient_seg.n_samples)
+    if end - start < AMBIENT_MIN_USABLE_FRACTION * ambient_seg.n_samples:
+        # Never a silent degrade: this is the difference between "the room was
+        # quiet" and "we never heard the room", and it costs the household a
+        # commissioning attempt. The LOG carries the surviving-audio truth
+        # (how much window was left, how late the capture was) rather than the
+        # report — the report keeps the one shape `snr_policy` owns, so
+        # widening it here would make this function a second author of it.
+        log_event(
+            logger,
+            "program_analysis.ambient_window_unusable",
+            level=logging.WARNING,
+            scheduled_samples=int(ambient_seg.n_samples),
+            surviving_samples=int(max(0, end - start)),
+            capture_late_samples=int(max(0, -begin)),
+        )
+        empty = np.empty(0, dtype=np.float64)
+        return None, snr_policy.framed_ambient_band_report(empty, sample_rate, percentile=95)
+    samples = capture[start:end]
+    return samples, snr_policy.framed_ambient_band_report(samples, sample_rate, percentile=95)
 
 
 def _pilot_ambient_samples(
@@ -3280,8 +3327,8 @@ def _pilot_ambient_samples(
     from the clamped start, so a capture that began after the program did
     yields a shorter window rather than one that has walked forward onto the
     pilot it is supposed to measure the floor for. `_ambient_from_capture`
-    (CHECK's 12 s window) still has the older shape — flagged, not changed
-    here, because its consumer is the gain solve rather than this guard.
+    (CHECK's 12 s window) now has this same shape — it was fixed to match in
+    #1818, and both share :data:`AMBIENT_MIN_USABLE_FRACTION`.
     """
     try:
         seg = program.segment(AMBIENT_SEGMENT_ID)
@@ -3290,7 +3337,7 @@ def _pilot_ambient_samples(
     begin = global_offset + seg.start_sample
     start = max(0, begin)
     end = min(capture.size, begin + seg.n_samples)
-    if end - start < PILOT_AMBIENT_MIN_USABLE_FRACTION * seg.n_samples:
+    if end - start < AMBIENT_MIN_USABLE_FRACTION * seg.n_samples:
         return None
     return capture[start:end]
 

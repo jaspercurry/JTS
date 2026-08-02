@@ -38,6 +38,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    AMBIENT_MIN_USABLE_FRACTION,
     INTEGRITY_CHECK_CLIPPED_RUN,
     INTEGRITY_CHECK_DISCONTINUITY_STEP,
     INTEGRITY_CHECK_REPEAT_EPSILON,
@@ -48,7 +49,6 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_FAIL,
     INTEGRITY_NOT_EVALUATED,
     INTEGRITY_PASS,
-    PILOT_AMBIENT_MIN_USABLE_FRACTION,
     PILOT_MIN_SNR_DB,
     REPEAT_LEVEL_TOLERANCE_DB,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
@@ -374,7 +374,7 @@ def test_short_ambient_window_does_not_feed_the_channel_map_rise_test(phase):
 def test_pilot_ambient_min_usable_fraction_boundary(
     kept_samples_delta, expect_evidence,
 ):
-    """`PILOT_AMBIENT_MIN_USABLE_FRACTION` pinned AT its boundary, inclusive.
+    """`AMBIENT_MIN_USABLE_FRACTION` pinned AT its boundary, inclusive.
 
     Driven through `_pilot_ambient_samples` directly rather than through a
     truncated capture: the end-to-end path recovers ``global_offset`` by
@@ -385,7 +385,7 @@ def test_pilot_ambient_min_usable_fraction_boundary(
     """
     prog = _measure_program()
     ambient = prog.segment("ambient")
-    kept = int(PILOT_AMBIENT_MIN_USABLE_FRACTION * ambient.n_samples) + kept_samples_delta
+    kept = int(AMBIENT_MIN_USABLE_FRACTION * ambient.n_samples) + kept_samples_delta
     # A capture that began exactly ``ambient.n_samples - kept`` samples into
     # the window: its schedule position is negative by that much.
     global_offset = -(ambient.start_sample + ambient.n_samples - kept)
@@ -418,7 +418,7 @@ def test_late_started_capture_clips_the_ambient_window_never_slides_it(
     walk it forward onto the first pilot and read that pilot as the room
     floor — a fabricated loud ambient, i.e. a false ``pilot_level_collapse``
     on a perfectly good capture. Above
-    ``PILOT_AMBIENT_MIN_USABLE_FRACTION`` the shortened window is still an
+    ``AMBIENT_MIN_USABLE_FRACTION`` the shortened window is still an
     honest floor, because RMS is length-independent. (2) Below that fraction
     there is nothing left to measure, and the analysis falls back to "no
     ambient evidence" — ``+inf`` SNR, pilots trusted — never to a guess.
