@@ -1320,8 +1320,8 @@ def test_the_all_ten_cloud_refuses_the_same_dip_by_a_different_rule(s0_main_leg)
     ten-position cloud it does **not**, and the reason is the instrument
     working correctly rather than failing: the dip's frequency *moves* with
     mic height (1814 Hz at tweeter height, 1974 Hz a hand-width low — the S0
-    report's own numbers), so the power mean fills it from 9.24 dB to
-    **5.19 dB**, which is under the ceiling. It is still refused — as
+    report's own numbers), so the power mean fills it from 10.08 dB to
+    **5.14 dB**, which is under the ceiling. It is still refused — as
     ``outside_contiguous_run``, being the n=0 rung of a ladder whose n=1 rung
     is absent — and still not excluded.
 
@@ -1329,6 +1329,19 @@ def test_the_all_ten_cloud_refuses_the_same_dip_by_a_different_rule(s0_main_leg)
     departs from the pre-registered wording, and a silent change to which rule
     catches that dip would be exactly the kind of drift the registry exists to
     prevent.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote re-gating
+    ``cloud_04`` — see ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era".
+
+    **This one never went red, which is why it is worth a note.** The depth
+    moved 5.19 -> 5.1441 dB, and ``abs=0.05`` absorbed it with **0.0041 dB to
+    spare** — so the suite stayed green on a reading that had already moved,
+    and the shipped ``MIN_LADDER_RUNGS`` rationale (which quotes this same
+    refusal at 5.14 dB) silently disagreed with this test. The dip's centre
+    moved the same way, 1864.0 -> 1846.4 Hz, leaving the ``< 20.0`` selector
+    below only 2.4 Hz of margin. Both are re-pinned to the measurement rather
+    than left riding on tolerance, because #1774's next honest re-read would
+    otherwise tip this red and read as a phantom regression.
     """
     report = identify_interference_nulls(
         combine_positions(s0_main_leg), band_hz=S0_WIDE_BAND_HZ
@@ -1338,10 +1351,10 @@ def test_the_all_ten_cloud_refuses_the_same_dip_by_a_different_rule(s0_main_leg)
     dip = next(
         refusal
         for refusal in report.refusals
-        if abs(refusal.f_center_hz - 1864.0) < 20.0
+        if abs(refusal.f_center_hz - 1846.4) < 20.0
     )
     # Smeared by the cloud, so the ceiling rule cannot reach it...
-    assert dip.depth_db == pytest.approx(5.19, abs=0.05)
+    assert dip.depth_db == pytest.approx(5.14, abs=0.05)
     assert dip.depth_db < null_depth_ceiling_db(report.arrival_r_max)
     assert dip.reason == CANDIDATE_OUTSIDE_CONTIGUOUS_RUN
     # ...and it is the n=0 rung it matched, with n=1 missing from the run.
