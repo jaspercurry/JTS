@@ -668,13 +668,13 @@ already done — `captures/replay-scorecard-20260731/figures/fig-h-issue-1857-qe
 generated in R8; R12 confirms the rest), and the round-13 Monday-E2E brief.
 
 > **Re-scope (2026-08-02, R11 close).** Written before R11 ran, this
-> entry's list has moved: #1971, #1973, and #1975 landed in R11
-> (#2031, #2028). Per the round-11 and round-12 briefs **the campaign
-> ends at R12**: the round is the Monday package (runbook + rulings
-> with graphs) and the copy-honesty set (#1974 / #1978 / #1979, #1962
-> if trivially in reach). The #1941 stages and the in-flow/browser E2E
-> remain Monday-gated; the corpus-pin trio, #1948, and the nit ledgers
-> move to ordinary backlog — named cuts, not omissions. The
+> entry's list has moved: #1971 and #1975 landed in R11 (#2031,
+> #2028). Per the round-11 and round-12 briefs **the campaign ends at
+> R12**: the round is the Monday package (runbook + rulings with
+> graphs) and the copy-honesty set (#1974 / #1978 / #1979, #1962 if
+> trivially in reach). The #1941 stages and the in-flow/browser E2E
+> remain Monday-gated; #1973, the corpus-pin trio, #1948, and the nit
+> ledgers move to ordinary backlog — named cuts, not omissions. The
 > authoritative brief is `captures/NEXT-SESSION-PROMPT-round-12.md`,
 > which also carries the owner's re-affirmed four-layer vision lens and
 > the two-stop-kernels rule (if the room lane ever wants floor-aware
