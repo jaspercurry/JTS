@@ -114,19 +114,40 @@
   the way `rememberLocalCapture` does for local mode). The flag is set
   only by this tab's own successful `/start` and cleared the moment
   `syncSessionMechanics` sees the server describing a different
-  `session_id`. **Separately identified, NOT fixed here (tracked as
-  [issue #1660](https://github.com/jaspercurry/JTS/issues/1660)):** the
-  room flow's own relay path (`_apply_relay_setup_to_session` in
-  `jasper/web/correction_setup.py`) never threads a `device` value into
+  `session_id`. **The gap disclosed here is now CLOSED
+  ([issue #1660](https://github.com/jaspercurry/JTS/issues/1660)).** It
+  was: the room flow's own relay path (`_apply_relay_setup_to_session` in
+  `jasper/web/correction_setup.py`) never threaded a `device` value into
   `_relay_calibration_from_setup`, unlike
   `jasper.web.correction_crossover_v2.resolve_relay_calibration` which
-  does — so `_stored_calibration_model_mismatch`'s refusal is reachable
+  does — so `_stored_calibration_model_mismatch`'s refusal was reachable
   for a v2 crossover capture but NOT for a room-correction phone-relay
-  capture today; a mismatched stored reconfirm there would currently bind
-  the wrong calibration rather than refuse it, under the SAME
-  `calibration_id` the page asked for — invisible to
-  `checkCalibrationHonesty` above, which can only ever notice a CHANGED or
-  DROPPED id, never a wrong-mic bind hiding behind the id it expected.
+  capture; a mismatched stored reconfirm bound the wrong calibration
+  rather than refusing it, under the SAME `calibration_id` the page asked
+  for — invisible to `checkCalibrationHonesty` above, which can only ever
+  notice a CHANGED or DROPPED id, never a wrong-mic bind hiding behind the
+  id it expected. `_apply_relay_setup_to_session` now takes `device` and
+  threads it exactly as v2 does. That alone does not reach the room flow,
+  and the reason is worth keeping: the room and crossover level matches are
+  BOUND runs (`setup_binding_id`), which resolve the calibration at the
+  phone's `setup_validate` post — sent from the calibration screen, BEFORE
+  the page opens a microphone, so no `track.label` exists yet — and the raw
+  setup is never resent afterwards (`_assert_relay_setup_binding`) to
+  re-resolve with one. The device first arrives on the level batch, so
+  `_run_relay_level_match` consults the same guard there through the shared
+  `_stored_calibration_identity_refused` (one decision, one WARN, two call
+  sites) and drops the curve on a mismatch. Semantics match v2 throughout:
+  the capture is never blocked, the analysis degrades to
+  annotated-uncalibrated, and the wrong pairing is never re-persisted as the
+  household mic. Scoped to `mode == "stored"` on both seams — serial/upload
+  are the household actively establishing a NEW pairing in the moment, a
+  different risk shape. Pinned by
+  `test_relay_level_bound_stored_calibration_refuses_a_different_mic` and
+  `test_apply_relay_setup_threads_device_into_the_identity_guard`. What
+  remains open on [#1656](https://github.com/jaspercurry/JTS/issues/1656) is
+  the product side, not this binding: the saved-mic UI still cannot change or
+  enter a serial, calibration identity is still bound by model family rather
+  than physical device, and Dayton cal ingestion by serial is unbuilt.
 - 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
   2026-07-19).** Every v2 crossover capture logged
   `crossover_v2_uncalibrated_capture` even with a resolvable stored mic

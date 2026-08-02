@@ -968,6 +968,183 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("device_label", "expect_applied"),
+    (
+        ("iMM-6C", False),
+        ("UMIK-2 (2752:002b)", True),
+    ),
+)
+async def test_relay_level_bound_stored_calibration_refuses_a_different_mic(
+    monkeypatch, tmp_path, caplog, device_label, expect_applied,
+):
+    """A BOUND room-relay ``mode="stored"`` re-confirm must not apply the
+    remembered calibration to a physically DIFFERENT microphone (#1660).
+
+    The bound flow resolves the calibration at ``setup_validate``, which the
+    capture page posts before it has opened a microphone — so
+    ``_relay_calibration_from_setup``'s own ``device`` guard has no label to
+    judge there and ``_stored_calibration_model_mismatch`` early-returns. The
+    phone's device label first arrives on the level batch, and the raw setup
+    is never resent (``_assert_relay_setup_binding``) to re-resolve with one.
+    This drives the whole room level match and pins that the refusal is
+    reached at that later point, with the same semantics
+    ``correction_crossover_v2.resolve_relay_calibration`` already has: drop
+    the curve (the analysis degrades to annotated-uncalibrated) and never
+    block the capture.
+    """
+    import logging
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
+    )
+
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=tmp_path / "cal",
+    )
+    write_household_mic(
+        household_mic_from_calibration(record, serial="810-8494"),
+        path=household_path,
+    )
+
+    setup_binding_id = "room-session-12345"
+    setup = {
+        "total_positions": 3,
+        "calibration": {
+            "mode": "stored",
+            "calibration_id": record.calibration_id,
+            "model": "minidsp_umik2",
+        },
+    }
+    identity = {
+        "schema": 1,
+        "binding_id": setup_binding_id,
+        "sha256": correction_setup._setup_digest(setup),
+    }
+    setup_status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "setup_validate": True,
+            "setup_token": "setup-1",
+            "setup": setup,
+            "setup_identity": identity,
+        },
+    }
+    batch_status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-1",
+                "armed": True,
+                "samples": [
+                    {"seq": seq, "t_client_ms": seq * 200, "rms_dbfs": -52.0,
+                     "peak_dbfs": -47.0}
+                    for seq in range(1, 11)
+                ],
+                "context": {
+                    "setup": {"binding": identity},
+                    "device": {"label": device_label},
+                },
+            },
+        },
+    }
+    current_status = {"value": setup_status}
+    signer = _PhoneEventSigner()
+
+    class Client:
+        def status(self, *_args):
+            return signer.status(current_status["value"]["event"])
+
+        def post_host_event(self, *_args):
+            if _args[-1].get("phase") == "setup_validated":
+                current_status["value"] = batch_status
+            return None
+
+    class Cam:
+        async def get_volume_db(self, *, best_effort):
+            return -32.0
+
+        async def set_volume_db(self, db, *, best_effort):
+            return True
+
+    class Tone:
+        async def play(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_k: "tone.wav")
+    monkeypatch.setattr(playback, "TonePlayer", lambda _path: Tone())
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    class Session:
+        session_id = "room-1"
+        noise_floor_db = None
+        mic_calibration = None
+        input_device = None
+        total_positions = 1
+        current_position = 0
+
+        async def run_level_match(self, _geometry, **ports):
+            await ports["set_main_volume_db"](-41.0)
+            return SimpleNamespace(locked=True, ramp=SimpleNamespace(error=None))
+
+    sess = Session()
+    await correction_setup._run_relay_level_match(
+        sess,
+        Client(),
+        _level_pi_session(),
+        geometry="listening_position",
+        run_token="run-1",
+        setup_binding_id=setup_binding_id,
+        reuse_noise_floor=False,
+    )
+
+    # The phone-reported mic is recorded either way — only the calibration's
+    # fate differs.
+    assert sess.input_device["label"] == device_label
+    if expect_applied:
+        assert sess.mic_calibration is not None
+        assert sess.mic_calibration.calibration_id == record.calibration_id
+        assert (
+            "event=correction.calibration_device_identity_mismatch"
+            not in caplog.text
+        )
+    else:
+        assert sess.mic_calibration is None  # refused, never applied blind
+        assert (
+            "event=correction.calibration_device_identity_mismatch" in caplog.text
+        )
+        assert "stored_model=minidsp_umik2" in caplog.text
+        assert device_label in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
     monkeypatch,
 ):

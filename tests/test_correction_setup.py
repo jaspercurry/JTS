@@ -4291,6 +4291,68 @@ def test_relay_calibration_stored_mode_matching_device_still_applies(
     assert "event=correction.household_mic_saved" in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("device", "expect_applied"),
+    (
+        ({"label": "iMM-6C"}, False),
+        ({"label": "UMIK-2 (2752:002b)"}, True),
+        (None, True),  # no device offered → unchanged, previous behavior
+    ),
+)
+def test_apply_relay_setup_threads_device_into_the_identity_guard(
+    tmp_path, monkeypatch, device, expect_applied,
+):
+    """`_apply_relay_setup_to_session` must pass its `device` through to
+    `_relay_calibration_from_setup`, the way
+    `correction_crossover_v2.resolve_relay_calibration` already does — without
+    it `_stored_calibration_model_mismatch` early-returns on an empty label and
+    the refusal is unreachable for every relay flow that binds through this
+    helper (issue #1660)."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
+    )
+
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=tmp_path / "cal",
+    )
+    write_household_mic(
+        household_mic_from_calibration(record, serial="810-8494"), path=household_path,
+    )
+
+    sess = SimpleNamespace(
+        current_position=0, total_positions=1, mic_calibration=None,
+    )
+    correction_setup._apply_relay_setup_to_session(
+        sess,
+        {
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": record.calibration_id,
+                "model": "minidsp_umik2",
+            },
+        },
+        device=device,
+    )
+
+    if expect_applied:
+        assert sess.mic_calibration is not None
+        assert sess.mic_calibration.calibration_id == record.calibration_id
+    else:
+        assert sess.mic_calibration is None
+
+
 def test_relay_calibration_stored_mode_resolves_upload(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
