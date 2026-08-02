@@ -130,6 +130,7 @@ that consume the exclusion mask are stage S2.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -260,8 +261,10 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 #
 # All three now refuse. ``RAHMONIC_MARGIN``'s screen rejects every one of
 # those admitted estimates by 21.5-78.8x (weakest per window: 22.0, 22.0,
-# 21.5 — i.e. at least 10.7x the margin itself), and each window's verdict
-# becomes not-locked with no usable estimates at all. The inverted
+# 21.5 — i.e. at least 13.0x the margin itself; the ratios are cepstral and
+# did not move under #1750, the multiple did, with the constant), and each
+# window's verdict becomes not-locked with no usable estimates at all. The
+# inverted
 # assertions live in
 # test_rahmonic_false_lock_under_a_raised_window_is_screened (renamed from
 # ..._is_a_known_limitation, which is what it was while it asserted the bug)
@@ -286,11 +289,15 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # in-window echo sitting under a stronger *earlier* reflection answers yes
 # just as a rahmonic does. Swept on two-echo IRs — an earlier 250-400 us
 # reflection at r 0.4-0.6 below the window, a genuine 850-1000 us echo at
-# r 0.15-0.25 inside it, five windows from (700, 1100) to (800, 1200) — 482
-# of 720 cases are refused, at lower/candidate ratios 2.005-4.513, even though
+# r 0.15-0.25 inside it, five windows from (700, 1100) to (800, 1200) — 605
+# of 720 cases are refused, at lower/candidate ratios 1.678-4.513, even though
 # the envelope had located the real late echo to within 0.894% and the two
 # estimators agreed well enough to score every time (corroboration at most
-# 0.266, always below ``CORROBORATION_LOOSE``). Three things bound the hazard:
+# 0.266, always below ``CORROBORATION_LOOSE``). That count was 482 until
+# #1750 lowered ``RAHMONIC_MARGIN`` to 1.65; the readings themselves did not
+# move (every ratio in every leg is bit-identical, because they are cepstral),
+# so this is the price of the tighter screen, paid where the remedy below
+# already applies. Three things bound the hazard:
 #
 # * It needs the stronger-earlier-echo geometry, not merely a raised window:
 #   single-echo raised-window cases refuse 0 of 370, at ratios 0.217-0.942.
@@ -416,6 +423,28 @@ STRENGTH_FLOOR_DB = -120.0
 # do not read this margin as making a raised window safe on its own.
 WINDOW_EDGE_MARGIN_STEPS = 1.0
 
+# How close to a whole sample a window edge may sit before the envelope's
+# index bounds treat it as *being* that sample. Used only by
+# ``_ceil_samples`` / ``_floor_samples``, i.e. only to turn the caller's
+# ``search_us`` into the closed range of sample delays inside it.
+#
+# **Why a tolerance is needed at all**, and it is not float noise: a caller
+# expressing a sample-aligned edge in microseconds has to write a decimal.
+# Eight samples at 48 kHz is 166.6666...us, and the window this module's own
+# docstring uses for the sample-aligned case is written ``166.6667`` — which
+# is 8.0000016 samples, so a bare ``ceil`` excludes sample 8 and silently
+# costs the caller a whole sample (20.8 us) to honour a 0.000033 us
+# overshoot. ``floor`` has the mirror exposure at the upper edge.
+#
+# **Why 1e-3 of a sample** (20.8 ns at 48 kHz): it absorbs a decimal written
+# to three places or better (a D-decimal microsecond value is off by at most
+# 0.5e-D us, i.e. 2.4e-(D+2) samples at 48 kHz, so D >= 2 is covered with
+# two orders to spare), while being 1000x finer than the sample period it
+# rounds to and ~70 000x finer than the detector's own ~71 us quefrency
+# resolution. No window a caller can meaningfully distinguish moves because
+# of it. Pinned by test_window_edges_snap_to_a_sample_aligned_request.
+WINDOW_EDGE_SNAP_SAMPLES = 1e-3
+
 # Rahmonic screen — the rule that closes the mechanism the edge margin above
 # cannot reach. A comb's cepstrum repeats at 2*tau, 3*tau, ..., so a window
 # that excludes the true delay can still contain a *rahmonic* of it, at an
@@ -455,7 +484,7 @@ WINDOW_EDGE_MARGIN_STEPS = 1.0
 # us, 4.2% and 0.12 quefrency steps from the truth, winning by 78.8x. Pinned
 # by test_rahmonic_screen_catches_the_non_integer_ratio_the_submultiple_test_missed.
 #
-# **RAHMONIC_MARGIN = 2.0, calibrated to sit in a measured gap** — the same
+# **RAHMONIC_MARGIN = 1.65, calibrated to sit in a measured gap** — the same
 # posture as ECHO_CONFIDENCE_FLOOR. Two populations are swept, each on its own
 # grid (they are looking for opposite things, so one grid could not have
 # produced both), and each classified by what the *pre-screen* detector did
@@ -466,42 +495,68 @@ WINDOW_EDGE_MARGIN_STEPS = 1.0
 # test_rahmonic_margin_calibration_populations_bracket_the_constant in
 # tests/test_spatial_combine.py regenerates both populations from the grids
 # below and re-derives the gap. It is skipped unless
-# ``JTS_RAHMONIC_CALIBRATION=1`` (~30 s). Every figure here is that test's own
-# output, measured 2026-07-25:
+# ``JTS_RAHMONIC_CALIBRATION=1`` (~30 s), and prints its four figures on
+# stdout under ``-s`` so this comment is one command away. Every figure here
+# is that test's own output, re-measured 2026-08-02 on the unified window
+# boundary (#1750):
 #
 # * **True positives — 2908 readings**, from bare impulse+echo IRs and
 #   shaped-response IRs over tau 200-770 us x r 0.10-0.75, each crossed with
 #   13 search windows from (120, 800) to (800, 1200); admitted when the
 #   pre-screen detector was unrefused, at or above ECHO_CONFIDENCE_FLOOR, and
-#   within 15% of truth. Their lower/candidate ratio peaks at **0.9955**. That
-#   ceiling is not low-quefrency leakage but the candidate's own main-lobe
-#   shoulder: the worst case (tau 740 us, r 0.75, searched in (200, 900)) has
-#   its true quefrency between two cepstral bins — 0.36 of a step above the
-#   lower one — so the peak's energy straddles both and the bin below the
-#   argmax reaches 0.9955 of it.
-# * **Wrong readings — 409 readings**, from the same two IR families but with
+#   within 15% of truth. Their lower/candidate ratio peaks at **0.9955**
+#   (0.995547). That ceiling is not low-quefrency leakage but the candidate's
+#   own main-lobe shoulder: the worst case (tau 740 us, r 0.75, searched in
+#   (200, 900)) has its true quefrency between two cepstral bins — 0.36 of a
+#   step above the lower one — so the peak's energy straddles both and the bin
+#   below the argmax reaches 0.9955 of it. **This population did not move at
+#   all under #1750**, count or ceiling: its worst case is searched in
+#   (200, 900) us, whose edges are 9.6 and 43.2 samples at 48 kHz, and
+#   ``round`` and ``ceil``/``floor`` agree on both.
+# * **Wrong readings — 439 readings**, from the same two IR families but with
 #   tau 100-455 us, crossed with 11 windows from (400, 900) to (1000, 1600) —
 #   i.e. windows that exclude the true delay, which is what makes a rahmonic
 #   reachable; admitted when the pre-screen detector was confident and more
-#   than 15% off truth. Their ratio bottoms out at **4.9192**.
+#   than 15% off truth. Their ratio bottoms out at **2.7899** (2.789915).
 #
-# 2.0 is 2.01x above the true-positive ceiling and 2.46x below the wrong-
-# reading floor. It rejects 409/409 of the wrong readings and 0/2908 of the
-# right ones. A margin of exactly 1.0 ("any stronger peak") would also
-# separate the two populations, but with only 0.5% of headroom over the
-# shoulder case above — the sub-bin geometry that produces it is ordinary, so
-# that headroom is not a margin.
+# **What #1750 cost, and why the constant moved.** Before the window boundary
+# was unified, this population was 409 readings with a floor of 4.9192, and
+# 2.0 sat 2.01x above the ceiling and 2.46x below the floor. Removing the
+# half-sample leak below ``search_us[0]`` stops the envelope railing on an
+# out-of-window sample, so 30 records that used to be saved by a railed
+# estimate now find their real in-window maximum and *corroborate the cepstral
+# rahmonic* instead — a weaker form of the mechanism the rejected
+# "recover the measurement" alternative was rejected for (see the
+# ``earlier_dominant_arrival`` site, which measured exactly this population as
+# 439 / 2.7899 when it scoped that alternative down to the rounding defect).
+# The gap is therefore narrower on its lower wall, and the constant is
+# re-centred in what is left rather than left grazing it: 1.65 is 1.66x above
+# the ceiling and 1.69x below the floor, either side of the 1.667 geometric
+# centre, so the 1.5x bracket the sweep asserts still holds on both walls.
+# **The verdicts are unchanged by the move**: at 1.65 as at 2.0 the screen
+# still rejects 439/439 of the wrong readings and 0/2908 of the right ones —
+# the constant moved to restore headroom, not to change an answer. Lowering it
+# does make the screen refuse more at *raised* windows (see
+# ``DEFAULT_ECHO_SEARCH_US``'s two-echo hazard, re-derived on the same tree);
+# that cost lands only where the module already says to prefer the default,
+# and the default window (5.76 / 38.4 samples) is untouched by #1750.
+#
+# A margin of exactly 1.0 ("any stronger peak") would also separate the two
+# populations, but with only 0.5% of headroom over the shoulder case above —
+# the sub-bin geometry that produces it is ordinary, so that headroom is not a
+# margin.
 #
 # The regenerated populations are synthetic only; the three corpus IRs the
 # original sweep folded into its true positives are absent in CI, and their
 # headroom is pinned separately (0.329-0.387, by
-# test_detect_echo_finds_the_corpus_bounce). An earlier revision of this
+# test_detect_echo_finds_the_corpus_bounce). A pre-2026-07-25 revision of this
 # comment quoted 2925 / 528 readings and a floor of 3.531 from a sweep whose
-# grid steps were never recorded. The **ceiling reproduces exactly**; the two
-# population sizes and the floor do not, and with the original grid unrecorded
-# the difference is not diagnosable — which is precisely why the sweep is now
-# a test. The regenerated floor is *higher* than the one it replaces, so the
-# gap is wider than previously claimed, not narrower.
+# grid steps were never recorded, and was not diagnosable against the
+# committed grid for exactly that reason — which is why the sweep is a test
+# now, and why the two moves since are separable: the 2026-07-25 regeneration
+# (grid written down) and the 2026-08-02 boundary unification (detector
+# changed). Only the second is a real behaviour change, and it is the one that
+# lowered the floor.
 #
 # **RAHMONIC_FLOOR_STEPS = 1** — whole quefrency steps, because the cepstrum
 # is only defined on them. It excludes exactly one bin, the zero-lag bin,
@@ -519,7 +574,7 @@ WINDOW_EDGE_MARGIN_STEPS = 1.0
 # to auto-refuse an honest reading. That headroom is pinned on real data by
 # test_detect_echo_finds_the_corpus_bounce.
 RAHMONIC_FLOOR_STEPS = 1
-RAHMONIC_MARGIN = 2.0
+RAHMONIC_MARGIN = 1.65
 
 # Signal-presence screen — how far the analysis band may sit below the
 # caller's *declared* passband before the detector refuses to read it.
@@ -665,17 +720,27 @@ BAND_BELOW_PASSBAND_MARGIN_DB = 25.0
 # which is the failure mode ``RAHMONIC_MARGIN`` already names: a described
 # grid is not a grid.
 #
-# Measured 2026-07-25 at the default 5-19 kHz band, on the shipped
-# statistic (``EchoDiagnostic.earlier_arrival_db``):
+# Measured 2026-07-25, re-derived 2026-08-02 on the unified window boundary
+# (#1750), at the default 5-19 kHz band, on the shipped statistic
+# (``EchoDiagnostic.earlier_arrival_db``):
 #
 # * **Must not fire — echo-free ringing.** The envelope finds a below-window
 #   local maximum on **658 of 660** readings, spanning **-32.1297 to
-#   -17.1365 dB**. The ceiling is the binding figure. With the floor removed
-#   (mutated to -120 dB) those readings produce **21** ``earlier_dominant_
-#   arrival`` refusals, at most **6 of 60** in a single window, at
-#   (400, 900) — the detector's own skirt named as an arrival, and the
-#   widen-the-window guidance a consumer builds on it firing on nothing.
-#   With the shipped floor: **0 of 660**.
+#   -17.1365 dB** — all three figures bit-identical across #1750, because
+#   this scan's bound was already the correct one. The ceiling is the binding
+#   figure. With the floor removed (mutated to -120 dB) those readings produce
+#   **6** ``earlier_dominant_arrival`` refusals, at most **3 of 60** in a
+#   single window, at (1000, 1600) — the detector's own skirt named as an
+#   arrival, and the widen-the-window guidance a consumer builds on it firing
+#   on nothing. With the shipped floor: **0 of 660**.
+#
+#   That mutation count was **21** at (400, 900) before #1750, and the drop
+#   is the boundary fix rather than the floor: a flip needs the envelope's
+#   answer *below* ``search_us[0]``, and the envelope can no longer select an
+#   out-of-window sample — it reaches below only by parabolic refinement, so
+#   at most half a sample past ``first``. The mutation still re-opens the
+#   defect it exists to prove, on a population the shipped floor refuses 0
+#   of, so the constant is unchanged and its gap is unchanged.
 # * **Must fire — the S0 ground plane, n=3: -0.64, -2.01, -2.57 dB** at
 #   125-146 us. A mic capsule left centimetres proud of the floor; the
 #   loudest thing on those records, and the reason all three measured
@@ -990,28 +1055,31 @@ class EchoDiagnostic:
         is none, which is unambiguous because a measured one has a strictly
         positive delay (the same convention as ``lower_peak_us``).
 
-        **It is not always an arrival the window strictly excluded, and the
-        difference is one sample.** This field's bound is the delay
-        (``ceil(search_lo * rate)``), while the envelope's own candidate
-        range starts at ``round(search_lo * rate)`` — so when
-        ``frac(search_lo * rate) < 0.5`` the sample at that boundary is
-        simultaneously the envelope's first candidate and a "below-window"
-        arrival by this field's reckoning. That is exactly what S0's
-        ground_plane_01/02 report: their ``earlier_arrival_us`` of 145.83 us
-        is the *same envelope sample* that produced their
-        ``tau_envelope_us`` of 137.5 / 139.4 us after parabolic refinement.
-        (ground_plane_03's 125.0 us is a genuinely different sample.)
+        **It is always an arrival the window strictly excluded, and there is
+        one definition of "excluded" (#1750).** The scan that produces this
+        field stops at the same index the envelope's own candidate range
+        starts at — ``_ceil_samples(search_lo, rate)`` — so "below the
+        window" and "in the window" partition the samples with no overlap.
+        Until #1750 this bound was ``ceil`` while the envelope's was
+        ``round``, and at any window whose lower edge is not sample-aligned
+        the sample between them was simultaneously the envelope's first
+        candidate and a below-window arrival by this field's reckoning. S0's
+        ground_plane_01/02 were exactly that case: their
+        ``earlier_arrival_us`` of 145.83 us was the *same envelope sample*
+        that produced their ``tau_envelope_us`` of 137.5 / 139.4 us after
+        parabolic refinement, through a (150, 1000) us window whose lower
+        edge is 7.2 samples at 48 kHz.
 
-        The two definitions are deliberately **not** unified: ``round`` is
-        the estimator's own boundary, and moving it changes which sample the
-        envelope selects, which perturbs the adjudicated ``RAHMONIC_MARGIN``
-        calibration — see the rejected alternative at the
-        ``earlier_dominant_arrival`` site. Fixing that boundary is deferred
-        work that has to be done together with re-deriving that sweep. The
-        refusal is right on its merits regardless of the wrinkle: given a
-        *sample-aligned* lower edge (166.6667 us = exactly 8 samples at
-        48 kHz, so the two definitions coincide), all three ground-plane
-        positions still collapse and still refuse.
+        This field itself did not move when that was fixed — its bound was
+        already the correct one — and neither did ``earlier_arrival_db``:
+        across the 1027-record base-vs-branch differential behind #1750 both
+        are bit-identical, including all three ground-plane positions
+        (145.83 / 145.83 / 125.0 us). What moved is which refusal *names*
+        them at a non-sample-aligned window; see
+        ``REFUSAL_EARLIER_DOMINANT_ARRIVAL``'s site for that, and note the
+        contrast with a *sample-aligned* lower edge (166.6667 us = 8 samples
+        at 48 kHz), where all three positions are byte-identical to the
+        pre-#1750 detector and still refuse ``earlier_dominant_arrival``.
 
         It is what an ``earlier_dominant_arrival`` refusal names, and it is
         reported on every record that reached the envelope stage — same
@@ -1553,6 +1621,16 @@ def _parabolic_offset(values: np.ndarray, index: int) -> float:
     if denom == 0.0:
         return 0.0
     return float(np.clip(0.5 * (left - right) / denom, -0.5, 0.5))
+
+
+def _ceil_samples(delay_s: float, sample_rate: int) -> int:
+    """First whole sample whose delay is at or above ``delay_s``."""
+    return int(math.ceil(delay_s * sample_rate - WINDOW_EDGE_SNAP_SAMPLES))
+
+
+def _floor_samples(delay_s: float, sample_rate: int) -> int:
+    """Last whole sample whose delay is at or below ``delay_s``."""
+    return int(math.floor(delay_s * sample_rate + WINDOW_EDGE_SNAP_SAMPLES))
 
 
 class EchoInputError(ValueError):
@@ -2109,8 +2187,24 @@ def detect_echo(
     # --- 4. Envelope estimator. ---
     envelope = _analytic_envelope(_bandpass(segment, lo_hz, hi_hz, sample_rate))
     main = int(np.argmax(envelope))
-    first = main + int(round(search_lo_s * sample_rate))
-    last = min(envelope.size - 2, main + int(round(search_hi_s * sample_rate)))
+    # **The window's edges in samples, defined once.** ``first`` is the first
+    # sample whose delay is at or above ``search_lo_s`` and ``last`` the last
+    # at or below ``search_hi_s``, so the candidate range is exactly the
+    # sample delays inside the caller's closed window — ceil at the bottom,
+    # floor at the top, the search_us rejection contract read at sample
+    # resolution. ``first`` is also the below-window scan's stop below, which
+    # is the point: one writer, so no sample can be simultaneously the
+    # envelope's first in-window candidate and a "below-window arrival".
+    #
+    # It was ``round()`` at both edges until #1750. Rounding the lower edge
+    # *down* whenever ``frac(search_lo * rate) < 0.5`` searched up to half a
+    # sample below the window the caller asked for — at (150, 1000) us and
+    # 48 kHz, from 145.83 us — and that is not a rounding nicety: S0's
+    # ground_plane_01/02 have a proud-capsule arrival at exactly 145.8 us,
+    # which the leaked half-sample admitted as an in-window candidate while
+    # the scan below simultaneously reported it as below-window.
+    first = main + _ceil_samples(search_lo_s, sample_rate)
+    last = min(envelope.size - 2, main + _floor_samples(search_hi_s, sample_rate))
     tau_envelope = 0.0
     envelope_strength_db = STRENGTH_FLOOR_DB
     if last > first + 1:
@@ -2130,13 +2224,16 @@ def detect_echo(
     # ``ECHO_CONFIDENCE_FLOOR`` has one, while all three S0 ground-plane
     # positions do (both pinned in tests/test_spatial_combine.py). That is
     # what keeps the refusal below off the found-nothing population.
-    # The bound is computed from the delay rather than from
-    # ``first``, which is rounded to a whole sample and can therefore sit a
-    # fraction of a sample on the wrong side of ``search_lo_s`` — the very
-    # discrepancy this reading exists to explain.
+    #
+    # The scan stops at ``first`` — the same value the envelope's candidate
+    # range starts at, not a second derivation of the boundary — so "below
+    # the window" and "in the window" partition the samples with no overlap
+    # and no gap. Until #1750 this bound was ``ceil`` while ``first`` was
+    # ``round``, and the two disagreed by a sample at any window whose lower
+    # edge is not sample-aligned.
     earlier_arrival_us = 0.0
     earlier_arrival_db = STRENGTH_FLOOR_DB
-    below_stop = main + int(np.ceil(search_lo_s * sample_rate))
+    below_stop = first
     if below_stop > main + 1:
         early = np.arange(main + 1, min(below_stop, envelope.size - 1))
         early = early[
@@ -2228,8 +2325,11 @@ def detect_echo(
     # refused at 21.5-78.8x the candidate, with that stronger peak landing
     # within half a quefrency step of the position's true delay. (The full
     # rahmonic-refusal population on those same three windows spans
-    # 5.14-624.29; the narrower range is the subset that used to be admitted,
-    # which is the set the fix is measured against.) See ``RAHMONIC_MARGIN``
+    # 5.91-624.29; the narrower range is the subset that used to be admitted,
+    # which is the set the fix is measured against. That floor was 5.14
+    # before #1750 — the *ratios* are cepstral and did not move, but the
+    # population did: the lowest-ratio members are now reached by the edge
+    # rule first.) See ``RAHMONIC_MARGIN``
     # for the calibration and for why an exact tau/2, tau/3 submultiple
     # re-test would have missed the worst measured case.
     #
@@ -2297,16 +2397,38 @@ def detect_echo(
         # loudest thing here arrives at 146 us, below the window you
         # searched" knows to widen it.
         #
+        # **Which refusal names those three records now depends on the
+        # window's alignment, and #1750 is why.** The envelope can no longer
+        # *select* a sample below ``search_lo_s``; it reaches below only
+        # through parabolic refinement, i.e. by at most half a sample from
+        # ``first``. At the protocol window's 7.2-sample lower edge that is
+        # not enough, so those three envelope answers now land at 156.25 us,
+        # inside the window and inside the edge margin, and
+        # ``tau_at_window_lower_edge`` returns first. At a *sample-aligned*
+        # lower edge (166.6667 us = 8 samples at 48 kHz) it is enough, and
+        # all three are byte-identical to the pre-#1750 detector, this
+        # refusal included. Both outcomes are refusals, both carry
+        # ``earlier_arrival_us`` / ``earlier_arrival_db`` unchanged
+        # (145.83 / 145.83 / 125.0 us at -2.57 / -2.01 / -0.64 dB), and
+        # neither reports a delay — so what the household is told about the
+        # interloper survives; only the slug that leads with it moves. Both
+        # halves are pinned on the real captures in section F of
+        # tests/test_spatial_combine.py.
+        #
         # **Three conditions, all properties of this record.** The
         # envelope's answer below ``search_lo_s``; a genuine arrival
         # measured down there for the refusal to name; and that arrival
         # loud enough to deserve the word *dominant*
         # (``EARLIER_ARRIVAL_DOMINANCE_DB``). The third is not decoration:
         # without it the band-limited envelope's own ringing qualifies, and
-        # at raised windows it flipped 22 of 660 echo-free readings into a
-        # refusal naming the detector's skirt as an arrival. Failing any
-        # condition falls through to the honest nothing-found below, whose
-        # verdict is then byte-identical to the pre-S0 detector's.
+        # at raised windows it flipped 6 of 660 echo-free readings into a
+        # refusal naming the detector's skirt as an arrival (21 before
+        # #1750 — the count and the single figure live on that constant, and
+        # an earlier revision of this line quoted 22 against the constant's
+        # own 21, which is the drift a second copy always eventually is).
+        # Failing any condition falls through to the honest nothing-found
+        # below, whose verdict is then byte-identical to the pre-S0
+        # detector's.
         #
         # It cannot pre-empt any existing refusal — every one of them
         # returns earlier — and it cannot pre-empt a credible reading,
@@ -2326,11 +2448,18 @@ def detect_echo(
         # readings and its ``lower_peak_ratio`` floor fell **4.9192 ->
         # 2.7899**, under the 1.5x ``RAHMONIC_MARGIN`` wall that sweep
         # asserts — i.e. the screen's own headroom, not a test's opinion of
-        # it. Restricting the change to the window-bounds rounding defect
-        # below still broke it (floor 2.7899, population 439). So the
-        # recovery path is not available without re-deriving an adjudicated
-        # calibration, and the detector names what it lost instead of
-        # guessing better. Revisit only together with that calibration.
+        # it. Those two figures are the pre-#1750 tree's; the recovery path
+        # has not been re-measured against the unified boundary, and its
+        # baseline has moved under it, so they are archaeology rather than a
+        # current comparison. What HAS landed is the smaller half of that
+        # measurement: the same sweep predicted "restricting the change to
+        # the window-bounds rounding defect" at floor 2.7899 / population
+        # 439, and #1750 did exactly that and re-derived exactly those
+        # figures — the calibration was re-adjudicated with it, and
+        # ``RAHMONIC_MARGIN`` moved 2.0 -> 1.65 to keep the wall. So the
+        # detector still names what it lost rather than guessing better;
+        # reviving the recovery path means re-running this sweep on the
+        # current tree first, not reading the 506 above as still true.
         if (
             0.0 < tau_envelope < search_lo_s
             and earlier_arrival_us > 0.0
