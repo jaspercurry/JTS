@@ -10678,6 +10678,33 @@ def test_the_boost_bound_fails_open_when_it_cannot_be_computed(caplog):
     assert "variance_reason=variance_check_failed" in caplog.text
 
 
+def test_the_boost_evidence_disclosure_is_reached_by_an_ordinary_walk(caplog):
+    """Reachability, without a monkeypatch anywhere.
+
+    The wiring test below stubs the composer to prove the vocabulary carries
+    what it returns; that says nothing about whether the composer is CALLED on
+    the production path. This walks the real cloud group to close and asserts
+    the real disclosure fired — so a future refactor that leaves
+    ``_boost_excluded_bands_hz`` orphaned fails here rather than shipping a
+    bound nothing invokes.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    c = _cloud_conductor(fakes)
+    _walk_measure_cloud_to_close(c)
+
+    disclosures = [
+        r for r in caplog.records
+        if "event=correction.crossover_v2_boost_evidence" in r.getMessage()
+    ]
+    assert len(disclosures) == 1, [r.getMessage()[:80] for r in disclosures]
+    message = disclosures[0].getMessage()
+    # The span it reports is the real one: this cloud's own validity floor up
+    # to the registry band's real lower edge, not a placeholder.
+    assert f'unadjudicated_span_hz="[100.0, {c._cloud_echo_band.band_hz[0]}]"' in message
+
+
 def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
     """The wiring, end to end at the conductor's own surface: what
     ``_boost_excluded_bands_hz`` composes is what ``fit_driver_linearization``
