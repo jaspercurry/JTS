@@ -3578,6 +3578,53 @@ def bind_production_play(
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         write_program_wav(wav_path, program)
         artifact = evidence_store.identify_artifact(wav_rel)
+        if phase in SUMMED_SWEEP_PHASES:
+            # Issue #1976. Every SUMMED_SWEEP_PHASES phase plays the SAME
+            # excitation object — ``_program_for_phase`` in
+            # crossover_v2_flow.py returns ``self._verify_program`` for
+            # VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike — so a
+            # measure-stage session that walks a pre-apply cloud group
+            # WITHOUT ever arming a literal VERIFY capture (the common
+            # shape: 12 real bundles surveyed 2026-07-29, only 4 ever
+            # reached VERIFY) left this reusable stimulus persisted only
+            # under its cloud-phase name, discoverable by nobody who
+            # didn't already know which phase happened to run. A
+            # 2026-07-31 offline-replay attempt against a real bench
+            # bundle confirmed the gap: ``cloud_measure_program.wav`` was
+            # on disk, no summed-sweep stimulus was recoverable under a
+            # predictable name.
+            #
+            # This does NOT reuse the ``verify_program.wav`` name: the
+            # corpus-index tooling and its mapped research docs derive
+            # "which phases this bundle reached" from which
+            # ``{phase}_program.wav`` files exist on disk, so writing to
+            # that path for a CLOUD_MEASURE-only session would make a
+            # cloud-only bundle false-report having reached VERIFY —
+            # corrupting the exact presence-heuristic this fix's own
+            # replay use case depends on. ``summed_program.wav`` is a
+            # NEW, dedicated name: present whenever this session played
+            # ANY summed-sweep-shaped capture, additive to (never a
+            # substitute for) the phase-named files above.
+            #
+            # Fill-if-absent: content is guaranteed byte-identical (same
+            # ``program`` object across VERIFY/CLOUD_MEASURE/CLOUD_VERIFY
+            # within one relay session), so an existing file — including
+            # one an earlier phase in this same session already wrote —
+            # is left alone. Best-effort: this is a diagnostic convenience
+            # copy, not the measurement itself, so a full disk or a
+            # permissions fault here must not abort an operator's capture.
+            try:
+                summed_wav_path = (
+                    Path(bundle_dir)
+                    / f"crossover_v2/{relay_session_id}/summed_program.wav"
+                )
+                if not summed_wav_path.exists():
+                    write_program_wav(summed_wav_path, program)
+            except (OSError, ValueError, TypeError, AttributeError):
+                log_event(
+                    logger, "correction.crossover_v2_summed_program_persist_failed",
+                    level=logging.WARNING, phase=phase, exc_info=True,
+                )
 
         async def _play_body() -> None:
             from jasper.active_speaker.program_playback import (
