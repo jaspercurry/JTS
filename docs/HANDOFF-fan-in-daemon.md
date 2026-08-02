@@ -1035,7 +1035,7 @@ scripts/
 tests/
   test_fanin_systemd.py             ← hardware-free pytest for the systemd unit shape
   test_fanin_wiring.py              ← asoundrc + renderer unit topology shape
-  test_doctor.py                    ← doctor parser/check behavior
+  test_doctor_audio_runtime.py      ← doctor parser/check behavior
 ```
 
 The Rust binary is built on the Pi during `install.sh` (taking ~3-5

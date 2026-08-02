@@ -309,7 +309,7 @@ normal primary mic path alive and only routes the manual source when
 - `/sound/` and `jasper-doctor` keep current output hardware readiness
   separate from saved active-speaker topology mismatch
   ([`tests/test_sound_setup.py`](../tests/test_sound_setup.py),
-  [`tests/test_doctor.py`](../tests/test_doctor.py)).
+  [`tests/test_doctor_audio.py`](../tests/test_doctor_audio.py)).
 
 **Needs a real plug/unplug hardware pass (flag for the next on-Pi
 session):**
