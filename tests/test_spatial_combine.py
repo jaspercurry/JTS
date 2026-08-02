@@ -1310,6 +1310,213 @@ def test_detect_echo_refuses_a_candidate_hugging_the_window_lower_edge(search_lo
     assert clear.tau_us - search_us[0] > margin_us
 
 
+def _impulse_with_sample_spikes(*spikes: tuple[int, float], seed: int = 0) -> np.ndarray:
+    """An impulse at 1000 plus reflections at exact **sample** offsets.
+
+    ``_impulse_with_echo`` takes a delay in seconds and rounds it to a
+    sample, which is the wrong tool for testing where a sample boundary is:
+    the quantity under test would be hidden inside the fixture. Here the
+    caller names the sample.
+    """
+    rng = np.random.default_rng(seed)
+    ir = np.zeros(65_536)
+    ir[1000] = 1.0
+    for offset, reflection in spikes:
+        ir[1000 + offset] += reflection
+    return ir + rng.normal(0.0, 1e-4, ir.size)
+
+
+def test_the_envelope_never_searches_below_the_requested_window():
+    """#1750 — ``search_us[0]`` is the floor of the envelope's candidate
+    range, not a value to round to the nearest sample.
+
+    The bounds used to be ``int(round(search_lo * rate))``, so a window whose
+    lower edge fell in the first half of a sample searched from *below* it —
+    at (150, 1000) us and 48 kHz, from sample 7 (145.833 us) rather than
+    sample 8 (166.667 us), i.e. up to half a sample outside the caller's
+    window. This is that boundary, pinned where it is visible: a dominant
+    reflection at exactly sample 7 and a weaker one at sample 20.
+
+    Under ``ceil`` the envelope cannot select sample 7 and answers from
+    sample 8 (156.25 us after the parabola's half-sample clamp, which is
+    refinement, not search). Under the old ``round`` it selected sample 7 and
+    answered 145.8 us — a delay the caller's own window excludes — which is
+    what makes this test fail if the bound is ever put back.
+    """
+    ir = _impulse_with_sample_spikes((7, 0.9))
+    search_us = (150.0, 1000.0)
+    assert search_us[0] * 1e-6 * SAMPLE_RATE == pytest.approx(7.2), (
+        "this test is about a lower edge that lands between samples 7 and 8; "
+        "if that is no longer true the case has stopped being the case"
+    )
+
+    found = detect_echo(ir, SAMPLE_RATE, search_us=search_us)
+
+    # The excluded sample is not the answer. The floor is sample 8 less the
+    # parabola's clamp; anything below it means the search itself reached
+    # outside the window.
+    spike_us = 7.0 / SAMPLE_RATE * 1e6
+    floor_us = 7.5 / SAMPLE_RATE * 1e6
+    assert found.tau_envelope_us >= floor_us - 1e-9, found
+    assert found.tau_envelope_us != pytest.approx(spike_us, abs=1.0), found
+
+    # ...and the excluded sample is reported as what it is — a below-window
+    # arrival — rather than being silently dropped.
+    assert found.earlier_arrival_us == pytest.approx(spike_us, abs=1e-9), found
+
+
+def test_the_below_window_scan_and_the_envelope_bound_share_one_definition():
+    """#1750 — no sample is both the first in-window candidate and a
+    below-window arrival.
+
+    Before the fix ``earlier_arrival_us`` used ``ceil(search_lo * rate)``
+    while the envelope's candidate range used ``round(...)``, so at any
+    window whose lower edge is not sample-aligned the sample between them
+    was **both**: S0's ground_plane_01 reported an ``earlier_arrival_us`` of
+    145.83 us and a ``tau_envelope_us`` of 137.5 us that were the same
+    envelope sample, refined in opposite directions. They are one definition
+    now, and this is the property that says so — swept over every alignment
+    of the lower edge within a sample, because a single window would only
+    pin one of them.
+
+    Swept over every alignment of the lower edge within a sample, because a
+    single window only pins one of them, and driven from a reflection placed
+    on the boundary sample itself — which is the only place the two
+    definitions could ever have disagreed.
+
+    The sweep sits around sample 15 (~312 us) rather than S0's sample 7:
+    the 5-19 kHz band resolves ~71 us, so a reflection one or two samples
+    off the direct arrival is inside its main lobe and produces no local
+    maximum for the below-window scan to find at all. That is a property of
+    the band, not of the boundary, and putting the fixture where the
+    instrument can resolve it is what keeps this a test of the boundary.
+    """
+    for numerator in range(0, 10):
+        # Lower edges at 15.0, 15.1, ... 15.9 samples: every alignment.
+        # 15.0 is the sample-aligned control — ``round`` and ``ceil`` agree
+        # there, so that row passed before #1750 too and must still.
+        search_lo_us = (15.0 + numerator / 10.0) / SAMPLE_RATE * 1e6
+        first_index = spatial_combine._ceil_samples(search_lo_us * 1e-6, SAMPLE_RATE)
+        where = (search_lo_us, first_index)
+
+        # A lone dominant reflection on the last sample BELOW the window.
+        below = detect_echo(
+            _impulse_with_sample_spikes((first_index - 1, 0.9)),
+            SAMPLE_RATE,
+            search_us=(search_lo_us, 1000.0),
+        )
+        assert below.earlier_arrival_us == pytest.approx(
+            (first_index - 1) / SAMPLE_RATE * 1e6, abs=1e-9
+        ), where
+        # The one invariant: the envelope's own answer and the below-window
+        # arrival are not the same sample. The gap is at least half a sample
+        # by construction — the arrival sits on whole sample ``first - 1``
+        # and the envelope's lowest reachable answer is ``first`` less the
+        # parabola's clamp — so half a sample is the assertion, not "one is
+        # bigger". Under the old bounds the envelope selected the excluded
+        # sample and the two readings were the same sample refined in
+        # opposite directions, which a bare ``>`` accepts: measured at a
+        # 15.1-sample edge, 312.5010 us against 312.5000 us. S0's
+        # ground_plane_01 is the same shape at S0's scale (145.83 us
+        # reported below the window, 137.5 us reported as the answer).
+        half_sample_us = 0.5 / SAMPLE_RATE * 1e6
+        assert below.tau_envelope_us - below.earlier_arrival_us >= (
+            half_sample_us - 1e-9
+        ), (where, below)
+
+        # ...and the first sample INSIDE the window is searched, so the
+        # boundary excludes exactly one sample and not two.
+        inside = detect_echo(
+            _impulse_with_sample_spikes((first_index, 0.9)),
+            SAMPLE_RATE,
+            search_us=(search_lo_us, 1000.0),
+        )
+        assert inside.tau_envelope_us == pytest.approx(
+            first_index / SAMPLE_RATE * 1e6, abs=0.5 / SAMPLE_RATE * 1e6
+        ), where
+        assert inside.earlier_arrival_us < first_index / SAMPLE_RATE * 1e6, where
+
+
+def test_window_edges_snap_to_a_sample_aligned_request():
+    """#1750 — ``WINDOW_EDGE_SNAP_SAMPLES``: a sample-aligned edge written as
+    a decimal still means that sample.
+
+    Eight samples at 48 kHz is 166.6666...us, so a caller writes something
+    like ``166.6667`` — which is 8.0000016 samples. A bare ``ceil`` reads
+    that as 9 and silently costs the caller a whole sample (20.8 us) of
+    window to honour a 0.000033 us overshoot; a bare ``floor`` has the
+    mirror exposure at the upper edge. The snap is what stops both, and
+    without it the sample-aligned control this file uses for
+    ``earlier_dominant_arrival`` would not be sample-aligned at all.
+
+    The tolerance is asserted to be small enough to be physically
+    meaningless as well as large enough to do the job — a threshold that
+    silently grew to a fraction of a sample would pass the first half of
+    this test and defeat the window contract.
+    """
+    exact_lo = 8.0 / SAMPLE_RATE  # 166.6666...us
+    exact_hi = 48.0 / SAMPLE_RATE  # 1000 us
+
+    # Written to four decimals, high side, as a caller would: still sample 8.
+    assert spatial_combine._ceil_samples(166.6667e-6, SAMPLE_RATE) == 8
+    # ...and to four decimals, low side, at the upper edge: still sample 8.
+    assert spatial_combine._floor_samples(166.6666e-6, SAMPLE_RATE) == 8
+    # Exact values are unambiguous in both directions.
+    assert spatial_combine._ceil_samples(exact_lo, SAMPLE_RATE) == 8
+    assert spatial_combine._floor_samples(exact_hi, SAMPLE_RATE) == 48
+
+    # A genuinely fractional edge is NOT snapped — the snap must not become a
+    # rounding rule. 7.2 samples still ceils to 8, and 7.9 to 8, but 7.999
+    # does too rather than being pulled down to 7.
+    assert spatial_combine._ceil_samples(150e-6, SAMPLE_RATE) == 8
+    assert spatial_combine._ceil_samples(7.9 / SAMPLE_RATE, SAMPLE_RATE) == 8
+    assert spatial_combine._floor_samples(7.9 / SAMPLE_RATE, SAMPLE_RATE) == 7
+
+    # The tolerance is a thousandth of a sample, so it cannot swallow a
+    # window edge anyone can express: a hundredth of a sample away from an
+    # integer is still honoured as fractional.
+    assert spatial_combine.WINDOW_EDGE_SNAP_SAMPLES == 1e-3
+    assert spatial_combine._ceil_samples((8.0 + 0.01) / SAMPLE_RATE, SAMPLE_RATE) == 9
+    assert spatial_combine._floor_samples((8.0 - 0.01) / SAMPLE_RATE, SAMPLE_RATE) == 7
+
+
+def test_the_envelope_upper_bound_is_the_last_in_window_sample():
+    """#1750 — the upper edge got the symmetric treatment, for the symmetric
+    reason.
+
+    ``last`` was ``round(search_hi * rate)`` too, so a window whose upper
+    edge fell in the second half of a sample searched *above* it. The
+    contract is the same at both ends — ``search_us`` is a closed range of
+    delays — so the bound is the last sample at or below ``search_hi``.
+
+    (150, 850) us at 48 kHz is the ladder's clearest case: 40.8 samples, so
+    ``round`` searched sample 41 at 854.2 us, 4.2 us past the window the
+    caller asked for.
+    """
+    # A lone reflection at sample 41 — outside a window that ends at 850 us.
+    ir = _impulse_with_sample_spikes((41, 0.5))
+    assert 850.0 * 1e-6 * SAMPLE_RATE == pytest.approx(40.8)
+
+    found = detect_echo(ir, SAMPLE_RATE, search_us=(150.0, 850.0))
+    assert spatial_combine._floor_samples(850e-6, SAMPLE_RATE) == 40
+
+    # The out-of-window reflection is not what the envelope answers with.
+    # The ceiling is sample 40 plus the parabola's clamp, not "below sample
+    # 41": with the old ``round`` bound the envelope selected sample 41 and
+    # refinement nudged it to 854.15 us, which a bare "< 854.17" accepts.
+    assert found.tau_envelope_us <= 40.5 / SAMPLE_RATE * 1e6 + 1e-9, found
+
+    # ...and it is found when the window is widened by one sample, which is
+    # what makes this a boundary test rather than a "does the detector see
+    # anything" test.
+    widened = detect_echo(
+        ir, SAMPLE_RATE, search_us=(150.0, 41.0 / SAMPLE_RATE * 1e6)
+    )
+    assert widened.tau_envelope_us == pytest.approx(
+        41.0 / SAMPLE_RATE * 1e6, abs=0.5
+    ), widened
+
+
 _BELOW_WINDOW_CLOUD_US = (150.0, 400.0)
 
 # The measured verdict for a 10-position cloud whose true delays span
@@ -1332,11 +1539,28 @@ _BELOW_WINDOW_CLOUD_US = (150.0, 400.0)
 # there because "no usable estimates" is an outcome several different bugs
 # could also produce; pinning *which* rule declined keeps each row an
 # assertion about the screen rather than about emptiness.
+#
+# Two of those counts moved under #1750 (2 -> 0 at (300, 800), 5 -> 4 at
+# (650, 1000)) and the verdict column did not move at all. Unifying the
+# envelope's index bounds on ``ceil`` stopped those envelopes railing on an
+# out-of-window sample; the estimate then lands inside the window but within
+# the edge margin, and ``tau_at_window_lower_edge`` — which returns *before*
+# the rahmonic screen — names it instead. The records were refused before and
+# are refused now; only the more specific of two correct reasons changed.
+#
+# Which rows the boundary *can* reach is a property of their edges in
+# samples at 48 kHz, and it is not the same set as the rows that moved:
+# (300, 800) 14.4, (400, 900) 19.2, (650, 1000) 31.2 and (800, 1200)
+# 38.4/57.6 all have at least one edge where ``round`` and ``ceil``/``floor``
+# disagree, while (600, 1000) 28.8 and (700, 1000) 33.6 have neither and are
+# bit-identical by construction. So two of the four reachable rows moved and
+# two did not — (400, 900) has no rahmonic refusals to lose and (800, 1200)
+# keeps all four. Reachable is the necessary condition, not the outcome.
 _RAISED_WINDOW_SWEEP = [
-    ((300.0, 800.0), False, GEOMETRY_UNKNOWN, 1, 2),
+    ((300.0, 800.0), False, GEOMETRY_UNKNOWN, 1, 0),
     ((400.0, 900.0), False, GEOMETRY_UNKNOWN, 0, 0),
     ((600.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, 2),
-    ((650.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, 5),
+    ((650.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, 4),
     ((700.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, 3),
     ((800.0, 1200.0), False, GEOMETRY_UNKNOWN, 0, 4),
 ]
@@ -1643,7 +1867,9 @@ def test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_on
     true rahmonic — a lone 400 us echo seen through (650, 1000), whose
     cepstral candidate is its second rahmonic at 1.98x the truth — is
     refused at 2.337, *below* it. Both are asserted below, so the
-    interleaving is executable rather than claimed. No threshold on
+    interleaving is executable rather than claimed (both figures survived
+    #1750 unchanged — ``lower_peak_ratio`` is measured off the cepstrum,
+    which the envelope's window bounds cannot reach). No threshold on
     ``lower_peak_ratio`` separates them, and the other single-record
     evidence does not either: both classes can show two estimators agreeing
     tightly on the in-window candidate. The plausible discriminator is
@@ -1657,7 +1883,7 @@ def test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_on
     it is reachable only from a raised window with something stronger below
     it. The shape of that boundary is not this test's job: it belongs to
     :func:`test_raised_window_two_echo_hazard_is_bounded_by_the_default_window`,
-    which sweeps the same geometry family from committed grid literals (482
+    which sweeps the same geometry family from committed grid literals (605
     of 720 raised-window cases refuse; the same geometries refuse 0 of 432 at
     the default window and single-echo raised-window cases 0 of 370). The
     remedy is in the last assertion here: the default window contains the
@@ -1691,12 +1917,21 @@ def test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_on
     assert refused.lower_peak_ratio > RAHMONIC_MARGIN, refused
 
     # The interleaving that makes this unfixable per-record: a genuine
-    # rahmonic refusal lands *below* this honest one on the very statistic
-    # the screen uses, so no threshold on it could separate the two.
+    # rahmonic lands *below* this honest one on the very statistic the screen
+    # uses, so no threshold on it could separate the two.
+    #
+    # Since #1750 this control is *reached* by the edge rule rather than by
+    # the screen — (650, 1000) us has a 31.2-sample lower edge, so unifying
+    # the envelope bounds on ``ceil`` stops its envelope railing below the
+    # window, and the in-window estimate it finds instead hugs the edge. That
+    # changes nothing about the ambiguity: ``lower_peak_ratio`` is a cepstral
+    # statistic, both readings below are bit-identical to the pre-#1750 ones,
+    # and a rule that happens to fire first at one window is not a way to tell
+    # an honest late echo from a rahmonic.
     genuine = detect_echo(
         _impulse_with_echo(400e-6, 0.75), SAMPLE_RATE, search_us=(650.0, 1000.0)
     )
-    assert genuine.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY, genuine
+    assert genuine.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, genuine
     assert genuine.tau_cepstral_us / 400.0 == pytest.approx(2.0, abs=0.05), genuine
     assert genuine.lower_peak_ratio > RAHMONIC_MARGIN, genuine
     assert genuine.lower_peak_ratio < refused.lower_peak_ratio, (
@@ -1787,7 +2022,7 @@ def test_rahmonic_margin_is_load_bearing_in_both_directions():
     * **Too high (1e9)** — the screen stops screening, and the 150-400 us
       cloud goes back to reading ``geometry_locked`` at ~857 us through a
       (700, 1000) window. That is the *lower* wall: wrong readings bottom
-      out at 4.9192, so a margin above that starts letting them through.
+      out at 2.7899, so a margin above that starts letting them through.
 
     The shipped value does neither, and the same two cases show it sitting
     between the populations rather than merely between the failures. Both
@@ -1893,15 +2128,24 @@ def test_rahmonic_margin_calibration_populations_bracket_the_constant():
       truth. These are the false locks the screen exists to reject; their
       ratio *floor* is the wall above the margin.
 
-    **Measured 2026-07-25** (24-28 s of sweep): 2908 true positives, ceiling
-    **0.9955**; 409 wrong readings, floor **4.9192**. So 2.0 sits 2.01x above
-    the ceiling and 2.46x below the floor. Against the pre-existing comment,
-    the ceiling reproduces exactly while the population sizes and the floor
-    do not — expected, since the original grid steps are unknown, and safe,
-    since the regenerated floor is *higher*. The three corpus IRs the
-    original sweep folded into its true positives are deliberately not here:
-    this test must run in CI, where the corpus is absent. Their headroom is
-    pinned separately by :func:`test_detect_echo_finds_the_corpus_bounce`.
+    **Re-measured 2026-08-02** (24-28 s of sweep), on the unified window
+    boundary (#1750): 2908 true positives, ceiling **0.9955** (0.995547);
+    439 wrong readings, floor **2.7899** (2.789915). So 1.65 sits 1.66x above
+    the ceiling and 1.69x below the floor. The four figures are printed on
+    stdout under ``-s`` so a passing run re-derives the comment rather than
+    only bracketing it.
+
+    **What #1750 moved.** The true-positive population is bit-identical
+    (2908 / 0.995547); the wrong-reading population grew 409 -> 439 and its
+    floor fell 4.9192 -> 2.7899, which is the collision ``RAHMONIC_MARGIN``'s
+    comment and the ``earlier_dominant_arrival`` rejected-alternative both
+    predicted for exactly this change, to four decimal places. The constant
+    moved 2.0 -> 1.65 to stay inside the narrower gap with the same 1.5x
+    bracket, and the *verdicts* did not move with it: 439/439 wrong readings
+    still refused, 0/2908 right ones. The three corpus IRs the original sweep
+    folded into its true positives are deliberately not here: this test must
+    run in CI, where the corpus is absent. Their headroom is pinned
+    separately by :func:`test_detect_echo_finds_the_corpus_bounce`.
 
     The assertions are the bracket and its width, not the four figures. A
     grid this large is a *sample* of the two populations — pinning its exact
@@ -1964,12 +2208,24 @@ def test_rahmonic_margin_calibration_populations_bracket_the_constant():
         f"true positives n={len(true_positive)} ceiling={ceiling:.4f}; "
         f"wrong readings n={len(wrong_reading)} floor={floor:.4f}"
     )
+    # The four figures ``RAHMONIC_MARGIN``'s comment quotes, on stdout as
+    # well as in the assertion messages below: the assertions are brackets,
+    # so a *passing* run would otherwise hand back no way to re-derive the
+    # prose. Captured by pytest unless ``-s``, so this costs nothing in a
+    # normal run and makes re-deriving the comment one command.
+    print(
+        f"RAHMONIC_MARGIN calibration: true positives n={len(true_positive)} "
+        f"ceiling={ceiling:.6f}; wrong readings n={len(wrong_reading)} "
+        f"floor={floor:.6f}"
+    )
 
     # The gap exists, and the constant is inside it...
     assert ceiling < RAHMONIC_MARGIN < floor, measured
     # ...with room on both walls rather than grazing either. 1.5x is the
-    # weakest bracket the measured gap comfortably supports (2.01x / 2.46x),
-    # so failing this means the populations have genuinely closed in.
+    # weakest bracket the measured gap comfortably supports (1.66x / 1.69x
+    # since #1750, and the gap's own geometric centre is 1.667), so failing
+    # this means the populations have genuinely closed in — which is exactly
+    # what it did on #1750's first run, at the old 2.0.
     assert ceiling * 1.5 <= RAHMONIC_MARGIN, measured
     assert floor >= 1.5 * RAHMONIC_MARGIN, measured
 
@@ -2150,12 +2406,22 @@ def test_raised_window_two_echo_hazard_is_bounded_by_the_default_window():
     (``_HAZARD_*``) and every quoted figure is an attribute of
     :func:`_two_echo_hazard_sweep`, so the comment and the code cannot drift.
 
-    **Measured 2026-07-25** (~9 s): the raised leg refuses **482 of 720** at
-    lower/candidate ratios **2.005-4.513**, with the discarded envelope
+    **Re-measured 2026-08-02** (~9 s): the raised leg refuses **605 of 720**
+    at lower/candidate ratios **1.678-4.513**, with the discarded envelope
     estimates within **0.894%** of the true late echo and corroboration never
     worse than **0.266**; the default-window leg refuses **0 of 432** (ratios
     **0.166-0.945**) and reads the earlier echo to within **2.398%**; the
     single-echo leg refuses **0 of 370** (ratios **0.217-0.942**).
+
+    Only the raised leg's refusal count moved under #1750, and not because
+    the detector reads these IRs differently: every ratio in every leg is
+    bit-identical (``lower_peak_ratio`` is cepstral, and the boundary that
+    changed is the envelope's). What moved is ``RAHMONIC_MARGIN``, 2.0 ->
+    1.65, so 123 raised-window records whose ratios always sat between the
+    two values are now refused: 482 -> 605, and ``measured_confident``
+    179 -> 56. That is the priced cost of the tighter screen, and it lands
+    only where the module already says to prefer the default window — both
+    boundary legs are untouched, ratio for ratio.
 
     The assertions are the walls, not those figures: exact grid sizes (so a
     changed literal fails loudly rather than silently re-scoping the prose),
@@ -2164,6 +2430,11 @@ def test_raised_window_two_echo_hazard_is_bounded_by_the_default_window():
     what makes this a *cost* rather than the screen catching bad readings.
     """
     sweep = _two_echo_hazard_sweep()
+    # Same reason as the rahmonic calibration's print: the assertions below
+    # are walls, so a passing run would otherwise hand back no way to
+    # re-derive the figures ``DEFAULT_ECHO_SEARCH_US`` quotes. Captured by
+    # pytest unless ``-s``.
+    print(f"two-echo hazard sweep: {sweep}")
 
     # Grid sizes, so "of 720 / of 432 / of 370" in the prose is executable.
     assert sweep.raised.total == 720, sweep.raised
@@ -2733,9 +3004,20 @@ def test_earlier_dominant_arrival_names_an_arrival_below_the_window():
     before your window starts". The refusal now names it, and the real
     records it stands in for are pinned by
     :func:`test_ground_plane_positions_report_the_proud_capsule_arrival`.
+
+    **The window is (166.6667, 1000) us — 8 samples at 48 kHz — since
+    #1750**, not S0's (150, 1000). The refusal's first condition is that the
+    envelope's own answer landed below ``search_us[0]``, and with the index
+    bounds unified on ``ceil`` the envelope cannot *select* an out-of-window
+    sample: it reaches below only by parabolic refinement, at most half a
+    sample past ``first``. At a 7.2-sample lower edge that is not enough and
+    ``tau_at_window_lower_edge`` names the record instead; at a sample-
+    aligned one it is. That contrast is asserted below on this same IR, and
+    on real captures in section F, so the alignment dependence is pinned
+    rather than merely worked around.
     """
     ir = _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3)
-    found = detect_echo(ir, SAMPLE_RATE, search_us=(150.0, 1000.0))
+    found = detect_echo(ir, SAMPLE_RATE, search_us=(166.6667, 1000.0))
 
     assert found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, found
     assert found.tau_us == 0.0
@@ -2744,8 +3026,24 @@ def test_earlier_dominant_arrival_names_an_arrival_below_the_window():
 
     # The mechanism, readable off the record: the envelope's own answer is
     # below the window it was given, which is why nothing was comparable.
-    assert 0.0 < found.tau_envelope_us < 150.0, found
+    assert 0.0 < found.tau_envelope_us < 166.6667, found
     assert found.corroboration == 1.0, found
+
+    # The same IR through S0's own (150, 1000) protocol window, whose lower
+    # edge is 7.2 samples: still a refusal, still zero, still disclosing the
+    # interloper at the same delay and level — a different one of the two
+    # correct reasons, because the envelope's answer now sits just inside
+    # the window and inside the edge margin instead of just below it.
+    unaligned = detect_echo(ir, SAMPLE_RATE, search_us=(150.0, 1000.0))
+    assert unaligned.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, unaligned
+    assert unaligned.tau_us == 0.0
+    assert unaligned.confidence == 0.0
+    assert unaligned.earlier_arrival_us == pytest.approx(
+        found.earlier_arrival_us
+    ), unaligned
+    assert unaligned.earlier_arrival_db == pytest.approx(
+        found.earlier_arrival_db
+    ), unaligned
 
     # And the refusal names the interloper — delay and level, in the same
     # units strength_db uses.
@@ -2879,11 +3177,17 @@ def test_earlier_arrival_dominance_floor_sits_in_the_measured_gap():
         "the disclosure fields must not depend on the threshold — only the "
         "verdict does"
     )
-    assert unguarded_flips == 21, unguarded_flips
+    # Re-derived 2026-08-02: 21 -> 6 under #1750. The flips are records where
+    # the envelope's answer landed below the window, and that is exactly what
+    # the unified boundary stops the estimator doing on its own — what is
+    # left reaches below only by parabolic refinement. The mutation still
+    # re-opens the defect it is here to prove (6 > 0), on a population the
+    # shipped floor still refuses 0 of.
+    assert unguarded_flips == 6, unguarded_flips
     worst_window, worst_count = max(
         unguarded_per_window.items(), key=lambda item: item[1]
     )
-    assert (worst_window, worst_count) == ((400.0, 900.0), 6), unguarded_per_window
+    assert (worst_window, worst_count) == ((1000.0, 1600.0), 3), unguarded_per_window
 
     # The gap, in both directions, against the shipped value. The
     # ground-plane floor (-2.57 dB) is real data and lives in section F; the
@@ -2893,8 +3197,17 @@ def test_earlier_arrival_dominance_floor_sits_in_the_measured_gap():
 
     # And a synthetic interloper at the ground plane's own level still
     # refuses, so the floor is not merely "quiet enough to never fire".
+    # The window is the *sample-aligned* (166.6667, 1000) us — 8 samples at
+    # 48 kHz — and not S0's (150, 1000) protocol window, because since #1750
+    # the envelope can no longer select a sample below ``search_us[0]``: it
+    # reaches below the window only through parabolic refinement, i.e. by at
+    # most half a sample from ``first``. At a 7.2-sample lower edge that is
+    # not enough and ``tau_at_window_lower_edge`` names the same record
+    # instead (also a refusal, also carrying ``earlier_arrival_us`` /
+    # ``_db``); at a sample-aligned edge it is. The real ground-plane
+    # captures show both halves of that contrast, pinned in section F.
     loud = _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3)
-    found = detect_echo(loud, SAMPLE_RATE, search_us=(150.0, 1000.0))
+    found = detect_echo(loud, SAMPLE_RATE, search_us=(166.6667, 1000.0))
     assert found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, found
     assert found.earlier_arrival_db > EARLIER_ARRIVAL_DOMINANCE_DB, found
 
@@ -2910,14 +3223,25 @@ def test_a_below_dominance_interloper_falls_back_to_the_honest_zero():
     the band exists, so it is pinned rather than left as prose.
 
     Regime: one synthetic geometry — a 145 us interloper of varying strength
-    against a real 320 us echo at r=0.3, searched (150, 1000) us in the
+    against a real 320 us echo at r=0.3, searched (166.6667, 1000) us in the
     default band. Read the width as an order of magnitude, not a boundary.
+
+    The window is the sample-aligned one for the reason
+    :func:`test_earlier_dominant_arrival_names_an_arrival_below_the_window`
+    gives: since #1750 the refusal's "envelope answered below the window"
+    condition is only reachable within half a sample of the lower edge. The
+    *levels* are unchanged by that — ``earlier_arrival_db`` is measured by a
+    scan the fix did not touch, and reads -9.57 / -10.11 / -10.69 dB here
+    exactly as it did at (150, 1000) before — so the band is the same band,
+    read where the verdict it bounds can still be reached. It is one r step
+    narrower: at r=0.30 the interloper no longer takes the envelope's answer
+    at all, where at the old bounds it still did.
     """
     def probe(early_r: float):
         return detect_echo(
             _impulse_with_two_echoes(145e-6, early_r, 320e-6, 0.3),
             SAMPLE_RATE,
-            search_us=(150.0, 1000.0),
+            search_us=(166.6667, 1000.0),
         )
 
     # Above the floor: named.
@@ -2927,27 +3251,23 @@ def test_a_below_dominance_interloper_falls_back_to_the_honest_zero():
 
     # Inside the band: still steals the envelope's answer, still disclosed
     # on the record, but not named — the honest zero instead.
-    for early_r, level_db in ((0.32, -10.11), (0.30, -10.69)):
-        fallen_back = probe(early_r)
-        assert fallen_back.earlier_arrival_db == pytest.approx(level_db, abs=0.2), (
-            early_r,
-            fallen_back,
-        )
-        assert fallen_back.earlier_arrival_db < EARLIER_ARRIVAL_DOMINANCE_DB
-        # It really did take the answer — that is what makes this a band
-        # rather than just "quiet things are ignored".
-        assert 0.0 < fallen_back.tau_envelope_us < 150.0, fallen_back
-        assert fallen_back.refusal == "", fallen_back
-        assert fallen_back.confidence == 0.0, fallen_back
-        # ...and the interloper is still disclosed on the fallen-back
-        # record, which is what keeps the silence from being total.
-        assert fallen_back.earlier_arrival_us == pytest.approx(145.8, abs=0.5)
+    fallen_back = probe(0.32)
+    assert fallen_back.earlier_arrival_db == pytest.approx(-10.11, abs=0.2), fallen_back
+    assert fallen_back.earlier_arrival_db < EARLIER_ARRIVAL_DOMINANCE_DB
+    # It really did take the answer — that is what makes this a band
+    # rather than just "quiet things are ignored".
+    assert 0.0 < fallen_back.tau_envelope_us < 166.6667, fallen_back
+    assert fallen_back.refusal == "", fallen_back
+    assert fallen_back.confidence == 0.0, fallen_back
+    # ...and the interloper is still disclosed on the fallen-back
+    # record, which is what keeps the silence from being total.
+    assert fallen_back.earlier_arrival_us == pytest.approx(145.8, abs=0.5)
 
     # Below the band: the interloper no longer wins the envelope at all, so
     # there is no mechanism left to name.
-    weak = probe(0.28)
-    assert weak.earlier_arrival_db == pytest.approx(-11.30, abs=0.2), weak
-    assert not 0.0 < weak.tau_envelope_us < 150.0, weak
+    weak = probe(0.30)
+    assert weak.earlier_arrival_db == pytest.approx(-10.69, abs=0.2), weak
+    assert not 0.0 < weak.tau_envelope_us < 166.6667, weak
     assert weak.refusal == "", weak
 
 
@@ -2964,6 +3284,16 @@ def test_effective_floor_is_reported_on_every_record():
     Asserted on a measurement, on three different refusal paths, and on the
     ``combine_positions`` raise path, because a consumer disclosing "arrivals
     below ~X us are invisible" needs X most when the window found nothing.
+
+    Two of the driving inputs changed under #1750, because they no longer
+    reach the refusal they were chosen for: the ``rahmonic_of_lower_delay``
+    case is now the honest-late-echo geometry through (750, 1100) us (a
+    36-sample lower edge the boundary fix does not move), and the
+    ``earlier_dominant_arrival`` case is read at the sample-aligned
+    (166.6667, 1000) us. Neither substitution weakens the check — the field
+    under test is ``effective_floor_us``, which is arithmetic on
+    ``search_us[0]`` and the band — but the slug each case is *labelled*
+    with has to be true, so the inputs move rather than the expectations.
     """
     def floor_for(search_us, band_hz=DEFAULT_ECHO_BAND_HZ):
         return search_us[0] + WINDOW_EDGE_MARGIN_STEPS * (
@@ -3014,15 +3344,15 @@ def test_effective_floor_is_reported_on_every_record():
         ),
         (
             REFUSAL_RAHMONIC_OF_LOWER_DELAY,
-            _impulse_with_echo(400e-6, 0.75),
-            {"search_us": (650.0, 1000.0)},
-            (650.0, 1000.0),
+            _impulse_with_two_echoes(300e-6, 0.5, 850e-6, 0.2),
+            {"search_us": (750.0, 1100.0)},
+            (750.0, 1100.0),
         ),
         (
             REFUSAL_EARLIER_DOMINANT_ARRIVAL,
             _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3),
-            {"search_us": (150.0, 1000.0)},
-            (150.0, 1000.0),
+            {"search_us": (166.6667, 1000.0)},
+            (166.6667, 1000.0),
         ),
         # ...and the non-refusal zero: "ran, found nothing credible".
         ("", zero_confidence, {}, DEFAULT_ECHO_SEARCH_US),
@@ -3655,7 +3985,8 @@ def test_detect_echo_finds_the_corpus_bounce(corpus_irs):
         # place the "low-quefrency leakage cannot auto-refuse an honest
         # reading" claim can actually be tested: a real IR carries a real
         # driver response, and the cubic detrend is what keeps it out of the
-        # low quefrencies. Measured 0.329-0.387 against a margin of 2.0. A
+        # low quefrencies. Measured 0.329-0.387 against the shipped
+        # ``RAHMONIC_MARGIN``, asserted against the symbol two lines down. A
         # future change to DETREND_ORDER or the analysis band would show up
         # here first. The bound is 0.45 rather than 0.5 so it is a genuine
         # tripwire on that 0.387 worst case (~16% of headroom) rather than a
@@ -4193,36 +4524,82 @@ def test_ground_plane_positions_report_the_proud_capsule_arrival(ground_plane_ir
     *not* changed: every estimator field below is exactly what the S0
     report tabulated, because the fix names the outcome rather than
     re-estimating anything.
+
+    **Which name, since #1750, depends on the window's sample alignment, and
+    both halves are asserted here.** Unifying the envelope's index bounds on
+    ``ceil`` stopped the estimator selecting a sample below ``search_us[0]``,
+    so it reaches below the window only by parabolic refinement — at most
+    half a sample past ``first``.
+
+    * Through the leg-B protocol window (150, 1000) us, whose lower edge is
+      7.2 samples at 48 kHz, that is not enough: all three envelope answers
+      land at 156.25 us, inside the window and inside its edge margin, and
+      ``tau_at_window_lower_edge`` returns before the dominance rule is
+      reached. Their pre-#1750 answers were 137.5 / 139.4 / 135.4 us, each
+      the *same envelope sample* as the interloper the window excluded — the
+      half-sample leak this fix closed.
+    * Through the sample-aligned (166.6667, 1000) us — 8 samples, the
+      control the module's ``earlier_arrival_us`` docstring names — it is,
+      and all three records are **bit-identical to the pre-#1750 detector**,
+      ``earlier_dominant_arrival`` included.
+
+    What does not move either way, and is the acceptance that matters: no
+    position reports a delay, none reports confidence, and every one carries
+    the interloper at the delay and level the S0 report tabulated. A
+    household is told the same thing about the same arrival in both cases.
     """
     expected = {
-        # position -> (cepstral tau, envelope tau, interloper tau, its level)
-        "ground_plane_01": (327.2, 137.5, 145.8, -2.57),
-        "ground_plane_02": (270.2, 139.4, 145.8, -2.01),
-        "ground_plane_03": (342.8, 135.4, 125.0, -0.64),
+        # position -> (cepstral tau, interloper tau, its level)
+        "ground_plane_01": (327.2, 145.8, -2.57),
+        "ground_plane_02": (270.2, 145.8, -2.01),
+        "ground_plane_03": (342.8, 125.0, -0.64),
     }
     assert set(ground_plane_irs) == set(expected)
 
-    for position, (ceps, env, early_us, early_db) in expected.items():
-        found = detect_echo(
+    # The sample-aligned lower edge, in us: 8 samples at 48 kHz, written as
+    # the literal four decimals a caller would — which is #1750's own case,
+    # 8.0000016 samples. Deriving it as ``8.0 / SAMPLE_RATE * 1e6`` instead
+    # gives 166.66666666666666, which round-trips to *exactly* 8.0 and makes
+    # ``WINDOW_EDGE_SNAP_SAMPLES`` a no-op here — the assertions below would
+    # then hold with the snap removed, which is not what this control is for.
+    aligned_search_us = (166.6667, S0_PROTOCOL_SEARCH_US[1])
+
+    for position, (ceps, early_us, early_db) in expected.items():
+        protocol = detect_echo(
             ground_plane_irs[position],
             SAMPLE_RATE,
             search_us=S0_PROTOCOL_SEARCH_US,
         )
-        assert found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, (position, found)
-        assert found.tau_us == 0.0
-        assert found.confidence == 0.0
+        aligned = detect_echo(
+            ground_plane_irs[position], SAMPLE_RATE, search_us=aligned_search_us
+        )
 
-        # The S0 report's own numbers, unchanged.
-        assert found.tau_cepstral_us == pytest.approx(ceps, abs=0.5), position
-        assert found.tau_envelope_us == pytest.approx(env, abs=0.5), position
-        assert found.corroboration == 1.0, position
+        # Both windows: a refusal, no delay, no confidence.
+        assert protocol.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, (position, protocol)
+        assert aligned.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, (position, aligned)
+        for found in (protocol, aligned):
+            assert found.tau_us == 0.0, position
+            assert found.confidence == 0.0, position
 
-        # ...and the interloper the refusal is named for.
-        assert found.earlier_arrival_us == pytest.approx(early_us, abs=0.5), position
-        assert found.earlier_arrival_db == pytest.approx(early_db, abs=0.2), position
-        # It is the loudest thing any of these records saw: louder than
-        # anything the window contained, which is why it took the answer.
-        assert found.earlier_arrival_db > -3.0, position
+            # The S0 report's own numbers, unchanged.
+            assert found.tau_cepstral_us == pytest.approx(ceps, abs=0.5), position
+            # The envelope now rails one sample up, at the first in-window
+            # sample less the parabola's clamp, on both windows.
+            assert found.tau_envelope_us == pytest.approx(156.25, abs=0.5), position
+
+            # ...and the interloper the refusal is named for, which neither
+            # the boundary fix nor the choice of window moved.
+            assert found.earlier_arrival_us == pytest.approx(early_us, abs=0.5), position
+            assert found.earlier_arrival_db == pytest.approx(early_db, abs=0.2), position
+            # It is the loudest thing any of these records saw: louder than
+            # anything the window contained, which is why it took the answer.
+            assert found.earlier_arrival_db > -3.0, position
+
+        # The dominance rule really is reached at the aligned window and
+        # really is pre-empted at the protocol one — not merely a different
+        # answer, but the documented refusal precedence doing its job.
+        assert aligned.corroboration == 1.0, position
+        assert protocol.corroboration < 1.0, position
 
 
 @requires_s0
@@ -4298,8 +4675,13 @@ def test_ground_plane_cloud_reads_as_thin_evidence_free(ground_plane_irs):
     assert combined.geometry.locked is False
     assert combined.geometry.thin_evidence is False
     # Every position refused by name — the acceptance the plan asked for:
-    # informative on all three, never a silent confidence collapse.
+    # informative on all three, never a silent confidence collapse. Since
+    # #1750 the name at this (not sample-aligned) window is the edge rule
+    # rather than the dominance rule; which of the two it is belongs to
+    # :func:`test_ground_plane_positions_report_the_proud_capsule_arrival`,
+    # which asserts both windows. What this test needs is only that no
+    # position fell back to the silent empty refusal.
     assert all(
-        e is not None and e.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL
+        e is not None and e.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE
         for e in combined.per_position_echo
     ), [e.refusal for e in combined.per_position_echo if e is not None]
