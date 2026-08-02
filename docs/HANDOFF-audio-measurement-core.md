@@ -381,7 +381,9 @@ adjacent-pair graph under the writer lock, admit generation and playback,
 persist/reopen strict values only after exact restoration, and consume the
 bounded schedule and evaluator. Legacy direct/browser summed ingress remains
 pre-audio refused; the production `kind=summed` relay supplies recorder bytes
-and generation-specific signed geometry to that host. Active, not this shared
+and generation-specific signed geometry to that host (retired by W5b on
+2026-07-24 — see "The gaps" below; `kind=summed` is no longer a shipped
+capture kind). Active, not this shared
 module, now publishes the candidate, performs exact apply/readback, evaluates
 three post-apply repeats, and exposes the receipt-backed Room decision.
 The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
@@ -433,15 +435,48 @@ create a second retention system.
   Hann window is right for `band_noise_dbfs`'s stationary noise WAV but
   re-weighted the sweep side's bands by when they occur in the ~11 s
   capture (measured ~-10 dB on `sub_bass`) — see `band_levels_dbfs`'s own
-  docstring; `band_snr_verdicts` / `cap_null_depth_db` are new,
+  docstring. `driver_acoustics._capture_band_levels` deliberately keeps the
+  Hann default: its bias was measured in #2010 and is real, but no production
+  caller reaches it, so it is a characterised dead error rather than an
+  uncharacterised live one. `band_snr_verdicts` / `cap_null_depth_db` are new,
   consumed by `active_speaker/driver_acoustics.py` and
-  `crossover_alignment.py`), `program.py` + `program_analysis.py` (crossover
+  `crossover_alignment.py`. Two later corrections change what every SNR
+  number here means. First: `worst_band_verdict` breaks an EQUAL-verdict tie
+  on the lowest `estimated_snr_db` instead of table order (verdict rank still
+  dominates; a band with no usable number sorts `+inf` so it can never
+  displace one that has a number — `_worst_snr_key`). Both consumers of the
+  winning entry's `estimated_snr_db` therefore read a stricter number than
+  before — `cap_null_depth_db` caps a null nearer, and
+  `correction_crossover_backend`'s completion-time level correction sizes a
+  larger shortfall, so a session can solve to a HIGHER capture level than it
+  used to. Second: the ambient report's DOMAIN now picks
+  the signal side it may be subtracted from — `unwrap_noise_report` tags a
+  report `raw` or `deconvolved`, and `program_analysis._driver_snr_block`
+  pairs a raw one with the RAW captured sweep segment (`_raw_sweep_segment`,
+  `window="rectangular"`) and a deconvolved one with the transfer function,
+  producing NO verdict rather than a cross-domain one when there is no
+  segment to pair against. The design rationale and the measured error are
+  owned by
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Level control and SNR"; do not restate them here),
+  `program.py` + `program_analysis.py` (crossover
   conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/
   VERIFY composers, and the pure `(program, capture) → ProgramAnalysis`
   locator / clock-drift ε / GCC-PHAT polarity-and-confidence seed +
   anchor-primary delay pipeline: the comb lobe is the drift-corrected physical
   peak gap, snapped to the nearest local GCC-PHAT peak within ±(period/6) at Fc,
-  with summed flatness demoted to evidence) — all
+  with summed flatness demoted to evidence. VERIFY plays one mono summed
+  sweep, so none of MEASURE's repeat-pair drift checks exists there;
+  `_verify_capture_integrity` gives it its own shaped record
+  (`CaptureIntegrity`: heard / on-schedule / unclipped) in which a check that
+  structurally cannot run is `not_evaluated` **with its reason**, never
+  collapsed into a pass — `glitch_detected` is the one-bit projection of that
+  record. CHECK's ambient window (`program.DEFAULT_CHECK_AMBIENT_S`, 12 s) is
+  CLIPPED to the capture, never slid
+  along it, and shares the pilot window's `AMBIENT_MIN_USABLE_FRACTION`
+  degrade — below it, `_ambient_from_capture` returns no samples and an empty
+  band report plus `event=program_analysis.ambient_window_unusable`, never a
+  fabricated floor) — all
   under `jasper/audio_measurement/`; plus,
   staying in `jasper/correction/`: `confidence.py`, `coordinator.py`
   (`measurement_window`: pauses renderers + voice, serializes), `session.py`
@@ -476,6 +511,67 @@ create a second retention system.
   (`QualityModel.null_cap_margin_db`, 10 dB). Both new fields default
   identically across `ROOM`/`DRIVER`/`RAMP`, so room correction (which does
   not call `snr_policy` yet) is unaffected.
+- **The package outgrew this section, and the 2026-07-17 pass did not catch
+  up. The nearest
+  thing to a live module inventory is the package's own `__init__.py`
+  docstring — read that first, but do not treat it as complete: on
+  2026-08-02 it described 22 of the 27 modules on disk (`correction_lane`,
+  `evidence_identity`, `excitation`, `level_solver`, and `room_boundary` are
+  unlisted). This doc names the modules and points at their owners rather
+  than restating their design.** Five modules it has never named, added or
+  substantially extended since:
+  `gating.py` (IR gating, first-
+  reflection detection, the `f_valid` / `f_trusted` low-frequency floors, and
+  the un-gateable-feature ledger) — **it predates the 2026-07-17 pass and was
+  missed by it**: the module landed 2026-07-12 with IR gating and the LF
+  validity floor (#1281), and only `f_trusted` plus the un-gateable-feature
+  ledger arrived 2026-07-31 (#1989) — and
+  `gate_disclosure.py` (what the gate
+  actually bought, priced over the band the DUT radiates) — spec in
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Measurement validity", plan in [gating-v2-plan.md](gating-v2-plan.md);
+  `spatial_combine.py` (the spatial multi-capture power-mean combiner, the
+  power-mean-vs-median interference screen, the cepstral echo detector, the
+  `geometry.locked` verdict) and `interference_nulls.py` (the orthogonal
+  position-invariant null-ladder gate that screen is blind to); and
+  `frame_fit.py` (the least-squares `offset + tilt·log2(f)` frame fitted and
+  DISCLOSED before two curves are differenced, so instrument tilt stops being
+  reported as model error). Those four DO postdate the pass (2026-07-25 to
+  2026-07-31). All five are reached by the v2 conductor flow —
+  `crossover_v2_flow` imports `gate_disclosure`, `spatial_combine`, and
+  `interference_nulls` directly (lazily, inside functions), while `gating` and
+  `frame_fit` BOTH arrive through `program_analysis`; `crossover_v2_flow`
+  deliberately does not import `gating`, reading a gating block purely as data
+  (`_gate_disclosure`'s docstring). That flow is owned
+  by
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+  **Their calibrated thresholds are justified in-module, in constant tables
+  beside each constant — those tables are the single source of truth for
+  those numbers; do not copy a figure out of them into prose.**
+- **Three shared CONSTANTS are homed here for a structural reason worth
+  stating**, because it is the property that makes this package the right
+  floor: `jasper.correction` and `jasper.active_speaker` import **each
+  other**, so neither is below the other, while `jasper/audio_measurement/`
+  is imported by both and imports neither. `room_boundary.py` owns the room
+  layer's upper band edge (the "350 Hz cap", previously ten independent float
+  literals — see [HANDOFF-correction.md](HANDOFF-correction.md));
+  `correction_lane.py` owns the `correction_substream` ALSA lane name that
+  correction sweeps and commissioning captures share (previously five distinct
+  names across eleven files); and `excitation.py` owns
+  `AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS` (−12 dBFS), so the level stage and
+  the measurement stage cannot disagree about the source peak.
+  **The three are not guarded to the same strength, and the difference
+  matters.** The first two have AST drift guards
+  (`tests/test_correction_boundary_ssot.py`,
+  `tests/test_correction_substream_ssot.py`) that fail on a *re-declared
+  literal anywhere in the routed sites* — they catch a new copy. The third has
+  a shared-default consistency pin instead
+  (`test_automatic_measurement_source_peak_is_one_shared_default`): it asserts
+  the value is −12.0 and that the sweep generator's default,
+  `driver_acoustics.DEFAULT_AMPLITUDE_DBFS`, and `SessionConfig().amplitude_dbfs`
+  all still agree with it. That catches the known defaults drifting apart; it
+  does **not** catch a second −12.0 scattered somewhere new, and nothing today
+  would fail if one were.
 - `null_walk.py` is the shared decision foundation for active-driver and
   sub-to-mains timing. Its signed coordinate names both possible delay targets
   and maps either sign to a non-negative target-specific DSP operation. It
@@ -637,7 +733,12 @@ create a second retention system.
   them at reduced confidence; fewer than two refuses the set.
   This closes the prior live-hardware `acoustic.snr: null` path without making
   the probe's raw RMS an acoustic SNR verdict.
-- **Phantom noise-floor fix (2026-07-17).** The mechanism above — ambient
+- **Phantom noise-floor fix (2026-07-17).** *(Noted 2026-08-02, not fixed:
+  `snr_policy.excitation_covered_bands`' docstring sends the reader to
+  "docs/HANDOFF-audio-measurement-core.md 'SNR' section" — there is no such
+  heading in this file, and **this bullet is what that pointer means**. Fixing
+  it is a code edit, so it was left for the owner of that module rather than
+  done in a docs-only pass.)* The mechanism above — ambient
   noise deconvolved through the SAME regularized inverse as the signal —
   has a blind spot: outside the reference sweep's own excited range
   `[f1, f2]` (a per-driver CONFIRMED safe band, routinely narrower than the
@@ -737,18 +838,31 @@ create a second retention system.
   lost by subtracting two normalized display plots.
 
 ### The gaps (worktree-confirmed)
-- ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED.**
-  The measurement loop *is* wired. The live browser mic-capture surface is the
-  HTTPS `/correction/crossover/` page through the Jasper relay:
+- ~~**Active-speaker measurement loop is built but UNWIRED.**~~ **CLOSED**
+  (2026-06-18), **and the wiring has since been REPLACED.** The 2026-06-19
+  audit inspected a pre-wiring snapshot; the loop was then wired through
   `/crossover/relay-capture` → `correction_crossover_backend` →
-  `web_measurement.record_driver_capture`, which runs `driver_acoustics`
-  (`record_driver_acoustic_capture`) and
-  persist the real acoustic verdict block into measurement state (the 2026-06-19
-  audit inspected a pre-wiring snapshot — the wiring landed 2026-06-18).
-  `kind=summed` now rejects every browser field except its discriminator, then
-  joins the recorder WAV to the Active-owned host; the host alone selects the
-  normal/reverse/delay operation and guarded graph. Legacy direct summed routes
-  still refuse before graph load. **L1
+  `active_speaker/web_measurement.record_driver_capture` →
+  `commissioning_capture.record_driver_acoustic_capture` (which runs
+  `driver_acoustics`), persisting the real acoustic verdict block into
+  measurement state.
+  **That chain is gone as of W5b (2026-07-24), which retired the legacy
+  per-driver flow outright.** Verified 2026-08-02: `/crossover/relay-capture`
+  is no longer in `correction_setup`'s POST-route allowlist (the surviving
+  crossover POSTs are `/crossover/{level-match,relay-cancel,reset,
+  recover-volume}` plus `/crossover/v2/{session,verify,apply,restore}`);
+  `correction_crossover_backend.record_driver_capture` still exists but has
+  **no production caller left** — only
+  `tests/test_correction_crossover_backend_level_solve.py` reaches it; and
+  `kind=summed` is not a shipped capture kind at all (`capture_relay/spec.py`
+  ships `room_sweep`, `balance_burst`, `sync_marker`, `crossover_sweep`,
+  `level_ramp`, `bass_nearfield`; `"summed"` survives only as a `driver_role`
+  value selecting consent/placement copy). The shipped crossover measurement
+  is now the **v2 conductor** — the cloud phone capture page driving
+  `/crossover/v2/*`, with `build_crossover_envelope` a shim straight to
+  `build_crossover_envelope_v2` — and it is owned by
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
+  not restated here. **L1
   then closed the level-match loop (2026-06-20):** each per-driver capture also
   records an **overlap-band level** at the crossover Fc, and
   `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
@@ -773,17 +887,33 @@ create a second retention system.
   automatic-apply path. Manual operator pins otherwise remain authoritative. (The
   schema field carrying the datasheet sensitivity is `sensitivity_db_2v83_1m` on
   the crossover-preview drivers, not `DriverSpec.sensitivity_db`.)
-- **Duplicated graph-safety parsing.** The same CamillaDSP-graph
+- ~~**Duplicated graph-safety parsing.** The same CamillaDSP-graph
   invariants (per-output commission mute at −120 dB + wired; tweeter
   outputs wrapped by protective HP + limiter; fail-closed on parse error)
-  are re-implemented across `runtime_contract.py` (`_commission_mutes`,
-  `_pipeline_contains`, `_filter_params`, …) and `staging.py`
-  (`_parse_generated_filters`, `_pipeline_contains_chain`,
-  `_running_filter_matches`, plus three functions —
-  `_all_commission_mutes_engaged`, `_software_guard_evidence`,
-  `driver_commission_audible_evidence` — that each re-parse), with a live
-  read-back variant too. ≈4 parallel paths. (Matches the prior staff
-  review's P1.)
+  are re-implemented across `runtime_contract.py` and `staging.py` …
+  ≈4 parallel paths.~~ **CLOSED** — this bullet described the pre-slice-2
+  world and contradicted the roadmap below it, which is where the work is
+  recorded (Phase 1 slices 2a / 2b / 2b-follow-up, plus the 2026-07-03
+  active-emitter gate). Verified 2026-08-02: **not one of the helpers it named
+  still re-implements the invariant locally** — some were deleted, the rest
+  now delegate. `runtime_contract._commission_mutes` is gone, replaced by
+  `_commission_mute_states(view: GraphView)`; `_pipeline_contains` is gone,
+  replaced by the shared `graph_safety.pipeline_contains_chain`;
+  `_filter_params` survives as a *name* only, an import alias for
+  `graph_evidence.filter_params`; `staging`'s
+  `_parse_generated_filters` / `_pipeline_contains_chain` /
+  `_running_filter_matches` survive only as historical cross-references
+  inside `graph_safety`'s own docstrings. `_all_commission_mutes_engaged`,
+  `_software_guard_evidence`, and `driver_commission_audible_evidence` still
+  exist but are now *callers* of the shared predicates, which is the design
+  ("normalize-then-predicate, NOT one parser") working as intended — three
+  parse ADAPTERS, one predicate set. **One honest residual:**
+  `commissioning_runtime.py` still defines its own `_filter_params(graph,
+  name, *, filter_type)`, which raises `CommissioningRuntimeError` where
+  `graph_evidence.filter_params` returns `{}` — a second raw-dict accessor
+  with a deliberately different contract, five call sites in that file. That
+  is one parallel accessor, not four parallel parsing paths, and it is the
+  only piece of the original P1 left to decide on.
 - ~~**Active-speaker commissioning does not use `measurement_window`**~~
   **CLOSED (cooperatively, 2026-06-20).** Commissioning can't *hold* a
   `measurement_window` the way correction/balance/sync do — it spans many
@@ -948,16 +1078,43 @@ signal to a compression driver.
 
 ### L1 measured level match (landed 2026-06-20)
 
+> **Read this first (re-verified 2026-08-02).** The *capture procedure* the
+> numbered steps below describe — a per-driver near-field sweep the browser
+> records — was **retired by W5b on 2026-07-24**. The shipped crossover
+> measurement is the v2 conductor's guided spatial cloud, captured by the
+> cloud phone page, and it is owned by
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> What is still live, and why this section stays, is the **tier contract**:
+> the trim chain (`baseline_profile._measured_level_trims` →
+> `_derive_corrections`), the provenance ladder, the fail-closed
+> `provisional` behavior, and the magnitude-only rule that L1 can never
+> authorize a phase or delay decision. Treat the capture mechanics as the
+> design record; treat the decision rules as current.
+
 The phone level match refines the datasheet sensitivity trim with a measured
 one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
 
 1. **Capture (near-field, per driver).** The Confirm outputs card's per-driver
    Play control ramps one driver audible through the production crossover
-   (`commission_ramp.build_stage5_ramp_gate`), the household holds the phone
-   ~2–5 cm from that driver, and the browser records the sweep with
+   (`commission_ramp.build_stage5_ramp_gate` — still live, and still by-ear),
+   the household holds the phone ~2–5 cm from that driver, and the browser
+   records the sweep with
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js).
    Placement copy lives on the page (`active-speaker-ui.js`
    `NEARFIELD_LEVEL_MATCH_GUIDANCE`).
+   **The recording described here — on this page — is retired** (see the note
+   above): as of 2026-08-02 no module under `deploy/assets/sound-profile/`
+   calls `getUserMedia` at all, so the `/sound/` page cannot record and
+   `NEARFIELD_LEVEL_MATCH_GUIDANCE` is copy with no recorder behind it. This
+   is **not** a claim about `measurement-audio.js`, which is very much alive.
+   Within `deploy/assets/` only `balance` and `sync` import it — but the file
+   also leaves that tree: `capture-page/build.sh` **copies** the canonical
+   shared module into the phone bundle (`dist/js/`), and
+   `capture-page/js/{main,level-events,ambient-stats}.js` import the copy
+   (the pairing is pinned by `tests/test_capture_page_js.py`). That phone page
+   carries the live L1 level match — `/crossover/level-match` against
+   `capture_relay.spec.build_level_ramp_spec`'s `kind="level_ramp"`. The
+   module moved; this page's use of it went away.
    The correction-native relay flow strengthens that advice into a comparable
    measurement contract: 3 cm from the microphone capsule to the named driver's
    radiating-surface center (horn mouth for a compression driver), on-axis, with
@@ -1030,11 +1187,23 @@ the speaker is audibly level-matched.
 
 ### L2 calibrated crossover alignment (landed 2026-06-21, corrected 2026-06-21)
 
+> **Same boundary as L1 (re-verified 2026-08-02).** The per-capture endpoints
+> in step 1 went with the legacy flow; the `calibration_id` the analysis reads
+> now comes off the **durable comparison set**
+> (`correction_crossover_backend`), not a field on a capture POST. Everything
+> that makes L2 a *decision* contract is still live and still enforced —
+> `crossover_alignment.resolve_measurement_mode`'s downgrade-only
+> `phase_aware` gate, the relative-margin polarity signal in
+> `propose_crossover_alignment` (reached today from
+> `measured_candidate.evaluate_measured_candidate` via `_candidate_delays`,
+> the Wave-3 path), and the rule that a browser capture may never supply a
+> delay VALUE.
+
 The calibrated-mic tier proposes crossover **polarity** (plus a delay *status* and
 calibrated FR curves) on top of L1's level match. Gated so an uncalibrated phone
 can never authorize a phase decision:
 
-1. **Calibrated capture.** The driver / summed capture endpoints accept a
+1. **Calibrated capture.** The capture path accepts a
    `calibration_id` — the SAME `jasper.audio_measurement.calibration` store the `/correction/`
    wizard fills (Dayton iMM-6/UMM-6, miniDSP UMIK, uploaded REW curve). The handler
    loads the record and threads `record.curve` into `driver_acoustics`;
@@ -1294,8 +1463,11 @@ active graph is staged), and that un-bonding still succeeds.
 
 **Active-emitter L0 gate landed (2026-07-03):** the complement to the flat-
 program gate above. That gate stops a *flat* (`emit_sound_config`) program graph
-reaching a tweeter output; this one makes the four active-speaker emitters
-(`emit_active_speaker_{startup,commissioning,baseline,driver_domain}_config`)
+reaching a tweeter output; this one makes the DAC-bound active-speaker emitters
+(`emit_active_speaker_{startup,commissioning,program,baseline,driver_domain}_config`
+— four when this landed; `emit_active_speaker_program_config` arrived with the
+gate already wired in 2026-07-18's channel-routed program playback, so the set
+is five today)
 enforce their own tweeter-protection invariant at the emit boundary, rather than
 relying only on the downstream `classify_camilla_graph` re-prove. Each emitter
 now runs a fail-closed gate (`camilla_yaml._assert_tweeter_outputs_protected`)
@@ -1310,7 +1482,14 @@ the output) with a corner **at or above a 400 Hz absolute floor**
 tweeter HP left at 30/80/100 Hz). The predicates are the shared
 `graph_safety.output_highpass_protected` / `unprotected_tweeter_outputs`
 (normalize-then-predicate, the same GraphView the ≈4 verifiers use). The
-File-sink program bake is *not* gated (no DAC, no driver to over-drive). Scope:
+File-sink program bake (`emit_active_speaker_program_bake_config`, the sixth
+emitter) is *not* gated (no DAC, no driver to over-drive) — safety there is by
+construction, and `classify_camilla_graph`'s matching exemption keys on the
+File **pipe** rather than on the bake's provenance marker: it requires a
+`type: File` playback sink whose filename is the snapserver FIFO
+(`_playback_is_program_bake_pipe` → `multiroom.leader_config.playback_is_pipe`),
+which is stricter than "a File sink", so an ALSA-sink program graph stays
+blocked under a roleful topology. Scope:
 L0 proves HP-presence + a safe corner FLOOR only — validating that a preset's
 *designed* Fc suits its specific driver is preset-validation's job (follow-up).
 **New failure mode callers handle:** an emit now raises
@@ -1370,10 +1549,57 @@ to de-risk Phase 3.
   before trusting any `phase_aware` delay step.
 - **DAC8x clock coherence** for the chip-AEC reference path (separate, but
   shares the hardware).
+- **A corpus-derived constant frozen into a hardware-free test goes stale
+  invisibly, and CI cannot tell you** — the env-gated corpus test that would
+  disagree is skipped there, so the frozen test keeps passing against a number
+  the hardware no longer produces. This is not hypothetical: it is how
+  `tests/test_active_speaker_linearization_envelope.py`'s
+  `_S0_WORST_BAND_SIGMA_DB` survived #1991's prominence vote while every
+  env-gated reading around it moved (re-derived 3.0878 → 3.0957 in #2045).
+  Any such literal must carry an explicit stand-in warning and be **re-derived
+  through its own production function against the live corpus**, never
+  transcribed, whenever the corpus moves.
 
 ---
 
-Last verified: 2026-07-17 (added the closed-loop level solver's isolated-driver
+**Verified 2026-08-02 — scope, stated exactly.** This pass re-read against
+`7049b668d`, in a worktree pinned to that commit (per the provenance note
+above): the two module-inventory sections ("What exists
+and is production-grade", "What is already shared") including a mechanical diff
+of `jasper/audio_measurement/`'s 27 modules against its own `__init__.py`
+docstring; the "gaps" section end to end; the L1 and L2 product sections; the
+Phase-1 roadmap paragraphs about graph safety and the active-emitter gate; and
+the Risks list. Behaviors newly covered here, each read at its owner:
+`snr_policy.worst_band_verdict` / `_worst_snr_key` (equal-verdict tie-break,
+#2026), `snr_policy.unwrap_noise_report` +
+`program_analysis._driver_snr_block` / `_raw_sweep_segment` (the noise
+report's domain picks the signal side, #1830),
+`program_analysis._verify_capture_integrity` / `CaptureIntegrity` and
+`crossover_v2_flow._verify_verdict` (VERIFY integrity evidence, #1971),
+`program_analysis._ambient_from_capture` + `AMBIENT_MIN_USABLE_FRACTION`
+(CHECK's ambient window clips rather than slides, #1818),
+`snr_policy.sweep_excitation_bands` reached from
+`driver_acoustics.analyze_summed_crossover` (#2024), and
+`camilla_yaml._assert_tweeter_outputs_protected`'s emitter set.
+**Five claims were found DRIFTED and corrected**: the duplicated-graph-safety
+gap (not one helper it named still re-implements the invariant; it
+contradicted the roadmap below it), the
+wired-loop route chain (`/crossover/relay-capture` and its backend entry have
+no production caller since W5b), its surviving TWIN in the Wave 3 subsection
+(the `kind=summed` relay sentence, annotated in place rather than rewritten),
+L1 step 1's browser-records clause, and L2
+step 1's per-capture `calibration_id` endpoints.
+**NOT re-verified in this pass and NOT warranted by the date below:** the Wave
+1 / Wave 2 / Wave 3 "Current state" subsections (still carrying their own
+2026-07-13 – 2026-07-15 dates and the 2026-07-15 header) — the one `kind=summed`
+annotation there is a pointer to the corrected account below, not a
+re-verification of anything around it — the `null_walk` /
+`delay_graph` contract paragraphs beyond confirming their symbols and caps
+exist, and every hardware figure anywhere in this file. No hardware behavior
+was revalidated. The `spatial_combine` / `interference_nulls` calibrated
+constants were confirmed to live in-module and were **not** transcribed here.
+
+Verified 2026-07-17: added the closed-loop level solver's isolated-driver
 reassert override, checked hardware-free; bounded, cancellation-safe shared DSP-writer
 admission and contention observability checked hardware-free; Wave 2 neutral artifact-manifest, playback,
 admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
@@ -1443,7 +1669,7 @@ against three real jts3 hardware captures (sub_bass moved from 13-16 dB
 "insufficient" to 62-66 dB "ok" on all three; every other band's reported
 level is bit-for-bit unchanged) and pinned by ground-truth fixtures plus
 synthetic protective-power cases; not yet hardware-validated on a live
-re-measure). **Those absolute figures are pre-#1838 and no longer
+re-measure. **Those absolute figures are pre-#1838 and no longer
 reproduce**: the raw-ambient side of that subtraction was reading
 18-39 dB low, so the post-#1838 sub_bass SNR lands well below 62-66 dB.
 The phantom-fix mechanism (deconvolved artifact → raw fallback) is
@@ -1455,3 +1681,5 @@ it UNDERSTATED SNR by ~40-50 dB (13-16 dB reported against 63-66 dB true);
 wherever that level is the noise term it OVERSTATED SNR, and where it is
 read absolutely it made the room look far quieter than it was. Separate
 causes, opposite signs.
+
+Last verified: 2026-08-02
