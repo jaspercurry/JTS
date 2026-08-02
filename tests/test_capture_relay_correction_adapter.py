@@ -967,6 +967,168 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     assert tone_kwargs["freq_hz"] == 875.0
 
 
+class _BoundLevelMatchHarness:
+    """Drive repeated BOUND relay level matches against one session.
+
+    A room session runs several level matches under a SINGLE setup binding —
+    the shipped "Retry level check" and "Check verification level" routes both
+    re-enter `_run_relay_level_match` without re-binding — and each one reports
+    its own realized microphone. These tests exist because the calibration
+    decision has to be made per match, not once at bind time (#1660).
+    """
+
+    def __init__(self, monkeypatch, tmp_path, *, model="minidsp_umik2"):
+        from jasper.audio_measurement import calibration
+        from jasper.correction.household_mic import (
+            household_mic_from_calibration,
+            write_household_mic,
+        )
+
+        monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+        self.household_path = tmp_path / "household_mic.json"
+        monkeypatch.setenv(
+            "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(self.household_path)
+        )
+
+        self.record = calibration.store_calibration(
+            text="20 -1\n100 0\n1000 1\n",
+            provider="minidsp",
+            model=model,
+            label="miniDSP UMIK-2",
+            source="https://vendor.example/cal.txt",
+            serial="810-8494",
+            root=tmp_path / "cal",
+        )
+        write_household_mic(
+            household_mic_from_calibration(self.record, serial="810-8494"),
+            path=self.household_path,
+        )
+
+        from jasper.web import correction_setup
+
+        self.setup_binding_id = "room-session-12345"
+        self.setup = {
+            "total_positions": 3,
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": self.record.calibration_id,
+                "model": model,
+            },
+        }
+        self.identity = {
+            "schema": 1,
+            "binding_id": self.setup_binding_id,
+            "sha256": correction_setup._setup_digest(self.setup),
+        }
+
+        class Session:
+            session_id = "room-1"
+            noise_floor_db = None
+            mic_calibration = None
+            input_device = None
+            total_positions = 1
+            current_position = 0
+
+            async def run_level_match(self, _geometry, **ports):
+                await ports["set_main_volume_db"](-41.0)
+                return SimpleNamespace(locked=True, ramp=SimpleNamespace(error=None))
+
+        self.sess = Session()
+        self._install(monkeypatch)
+
+    def _install(self, monkeypatch):
+        from jasper.capture_relay import session as relay_session
+        from jasper.correction import coordinator, playback
+        from jasper.web import correction_setup
+
+        class Cam:
+            async def get_volume_db(self, *, best_effort):
+                return -32.0
+
+            async def set_volume_db(self, db, *, best_effort):
+                return True
+
+        class Tone:
+            async def play(self):
+                return None
+
+            def cancel(self):
+                return None
+
+        @asynccontextmanager
+        async def window():
+            yield
+
+        monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
+        monkeypatch.setattr(coordinator, "measurement_window", window)
+        monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_k: "tone.wav")
+        monkeypatch.setattr(playback, "TonePlayer", lambda _path: Tone())
+        monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    async def run(self, device_label, run_token, *, resend_raw_setup=False):
+        """One level match reporting ``device_label`` as the realized mic.
+
+        ``resend_raw_setup`` replays the full setup payload on `setup_validate`
+        the way the first match (and a phone that reloaded mid-run) does,
+        instead of relying on the binding already being frozen.
+        """
+        from jasper.web import correction_setup
+
+        setup_status = {
+            "event": {
+                "capture_page": dict(_CAPTURE_PAGE),
+                "setup_validate": True,
+                "setup_token": f"setup-{run_token}",
+                "setup": self.setup,
+                "setup_identity": self.identity,
+            },
+        }
+        batch_status = {
+            "event": {
+                "capture_page": dict(_CAPTURE_PAGE),
+                "level_batch": {
+                    "schema": 1,
+                    "run_token": run_token,
+                    "armed": True,
+                    "samples": [
+                        {
+                            "seq": seq,
+                            "t_client_ms": seq * 200,
+                            "rms_dbfs": -52.0,
+                            "peak_dbfs": -47.0,
+                        }
+                        for seq in range(1, 11)
+                    ],
+                    "context": {
+                        "setup": {"binding": self.identity},
+                        "device": {"label": device_label},
+                    },
+                },
+            },
+        }
+        current = {"value": setup_status if resend_raw_setup else batch_status}
+        signer = _PhoneEventSigner()
+
+        class Client:
+            def status(self, *_args):
+                return signer.status(current["value"]["event"])
+
+            def post_host_event(self, *_args):
+                if _args[-1].get("phase") == "setup_validated":
+                    current["value"] = batch_status
+                return None
+
+        await correction_setup._run_relay_level_match(
+            self.sess,
+            Client(),
+            _level_pi_session(),
+            geometry="listening_position",
+            run_token=run_token,
+            setup_binding_id=self.setup_binding_id,
+            reuse_noise_floor=False,
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("device_label", "expect_applied"),
@@ -981,156 +1143,27 @@ async def test_relay_level_bound_stored_calibration_refuses_a_different_mic(
     """A BOUND room-relay ``mode="stored"`` re-confirm must not apply the
     remembered calibration to a physically DIFFERENT microphone (#1660).
 
-    The bound flow resolves the calibration at ``setup_validate``, which the
-    capture page posts before it has opened a microphone — so
-    ``_relay_calibration_from_setup``'s own ``device`` guard has no label to
-    judge there and ``_stored_calibration_model_mismatch`` early-returns. The
-    phone's device label first arrives on the level batch, and the raw setup
-    is never resent (``_assert_relay_setup_binding``) to re-resolve with one.
-    This drives the whole room level match and pins that the refusal is
-    reached at that later point, with the same semantics
-    ``correction_crossover_v2.resolve_relay_calibration`` already has: drop
-    the curve (the analysis degrades to annotated-uncalibrated) and never
-    block the capture.
+    The bound flow resolves the calibration during the ``setup_validate``
+    handshake, whose payload declares no device — the realized capture mic is
+    reported first on the level batch. This drives the whole room level match
+    and pins that the refusal is reached there, with the same semantics
+    ``correction_crossover_v2.resolve_relay_calibration`` already has: drop the
+    curve (the analysis degrades to annotated-uncalibrated) and never block the
+    capture.
     """
     import logging
 
-    from jasper.capture_relay import session as relay_session
-    from jasper.correction import coordinator, playback
-    from jasper.web import correction_setup
-
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
     caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+    harness = _BoundLevelMatchHarness(monkeypatch, tmp_path)
+    await harness.run(device_label, "run-1", resend_raw_setup=True)
 
-    from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import (
-        household_mic_from_calibration,
-        write_household_mic,
-    )
-
-    record = calibration.store_calibration(
-        text="20 -1\n100 0\n1000 1\n",
-        provider="minidsp",
-        model="minidsp_umik2",
-        label="miniDSP UMIK-2",
-        source="https://vendor.example/cal.txt",
-        serial="810-8494",
-        root=tmp_path / "cal",
-    )
-    write_household_mic(
-        household_mic_from_calibration(record, serial="810-8494"),
-        path=household_path,
-    )
-
-    setup_binding_id = "room-session-12345"
-    setup = {
-        "total_positions": 3,
-        "calibration": {
-            "mode": "stored",
-            "calibration_id": record.calibration_id,
-            "model": "minidsp_umik2",
-        },
-    }
-    identity = {
-        "schema": 1,
-        "binding_id": setup_binding_id,
-        "sha256": correction_setup._setup_digest(setup),
-    }
-    setup_status = {
-        "event": {
-            "capture_page": dict(_CAPTURE_PAGE),
-            "setup_validate": True,
-            "setup_token": "setup-1",
-            "setup": setup,
-            "setup_identity": identity,
-        },
-    }
-    batch_status = {
-        "event": {
-            "capture_page": dict(_CAPTURE_PAGE),
-            "level_batch": {
-                "schema": 1,
-                "run_token": "run-1",
-                "armed": True,
-                "samples": [
-                    {"seq": seq, "t_client_ms": seq * 200, "rms_dbfs": -52.0,
-                     "peak_dbfs": -47.0}
-                    for seq in range(1, 11)
-                ],
-                "context": {
-                    "setup": {"binding": identity},
-                    "device": {"label": device_label},
-                },
-            },
-        },
-    }
-    current_status = {"value": setup_status}
-    signer = _PhoneEventSigner()
-
-    class Client:
-        def status(self, *_args):
-            return signer.status(current_status["value"]["event"])
-
-        def post_host_event(self, *_args):
-            if _args[-1].get("phase") == "setup_validated":
-                current_status["value"] = batch_status
-            return None
-
-    class Cam:
-        async def get_volume_db(self, *, best_effort):
-            return -32.0
-
-        async def set_volume_db(self, db, *, best_effort):
-            return True
-
-    class Tone:
-        async def play(self):
-            return None
-
-        def cancel(self):
-            return None
-
-    @asynccontextmanager
-    async def window():
-        yield
-
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
-    monkeypatch.setattr(coordinator, "measurement_window", window)
-    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_k: "tone.wav")
-    monkeypatch.setattr(playback, "TonePlayer", lambda _path: Tone())
-    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
-
-    class Session:
-        session_id = "room-1"
-        noise_floor_db = None
-        mic_calibration = None
-        input_device = None
-        total_positions = 1
-        current_position = 0
-
-        async def run_level_match(self, _geometry, **ports):
-            await ports["set_main_volume_db"](-41.0)
-            return SimpleNamespace(locked=True, ramp=SimpleNamespace(error=None))
-
-    sess = Session()
-    await correction_setup._run_relay_level_match(
-        sess,
-        Client(),
-        _level_pi_session(),
-        geometry="listening_position",
-        run_token="run-1",
-        setup_binding_id=setup_binding_id,
-        reuse_noise_floor=False,
-    )
-
+    sess = harness.sess
     # The phone-reported mic is recorded either way — only the calibration's
     # fate differs.
     assert sess.input_device["label"] == device_label
     if expect_applied:
         assert sess.mic_calibration is not None
-        assert sess.mic_calibration.calibration_id == record.calibration_id
+        assert sess.mic_calibration.calibration_id == harness.record.calibration_id
         assert (
             "event=correction.calibration_device_identity_mismatch"
             not in caplog.text
@@ -1142,6 +1175,129 @@ async def test_relay_level_bound_stored_calibration_refuses_a_different_mic(
         )
         assert "stored_model=minidsp_umik2" in caplog.text
         assert device_label in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_relay_level_second_match_refuses_a_swapped_mic(
+    monkeypatch, tmp_path, caplog,
+):
+    """The identity decision must re-run on EVERY level match, not only the
+    one that minted the binding.
+
+    "Retry level check" and "Check verification level" both re-enter
+    `_run_relay_level_match` against an ALREADY-frozen binding, so a decision
+    made once at bind time cannot see a mic swapped afterwards: the session
+    would keep match 1's calibration while `input_device` silently updated to
+    the new mic. Match 2 here reports an iMM-6C against a UMIK-2 binding.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+    harness = _BoundLevelMatchHarness(monkeypatch, tmp_path)
+
+    await harness.run("UMIK-2 (2752:002b)", "run-1", resend_raw_setup=True)
+    assert harness.sess.mic_calibration is not None  # match 1 applied it
+    assert getattr(harness.sess, "relay_setup_binding", None) is not None
+    caplog.clear()
+
+    await harness.run("iMM-6C", "run-2")
+
+    assert harness.sess.input_device["label"] == "iMM-6C"
+    assert harness.sess.mic_calibration is None
+    assert "event=correction.calibration_device_identity_mismatch" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_relay_level_correct_mic_retry_recovers_the_calibration(
+    monkeypatch, tmp_path,
+):
+    """A refused match must not poison the binding: plugging the RIGHT mic back
+    in and retrying re-applies the calibration.
+
+    The refusal drops `mic_calibration`, but the binding still holds what the
+    household chose, so the next match's own decision restores it. Without a
+    per-match decision the session would stay uncalibrated until a full
+    re-bind, silently degrading every later capture.
+    """
+    harness = _BoundLevelMatchHarness(monkeypatch, tmp_path)
+
+    await harness.run("iMM-6C", "run-1", resend_raw_setup=True)
+    assert harness.sess.mic_calibration is None  # refused
+
+    await harness.run("UMIK-2 (2752:002b)", "run-2")
+
+    assert harness.sess.mic_calibration is not None
+    assert (
+        harness.sess.mic_calibration.calibration_id == harness.record.calibration_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_level_household_mic_save_waits_for_the_realized_mic(
+    monkeypatch, tmp_path, caplog,
+):
+    """`event=correction.household_mic_saved` must never fire for a mic nobody
+    has seen yet, nor re-fire on every retry.
+
+    The bound flow resolves at `setup_validate`, before any device is reported.
+    Saving there refreshes the household record's `updated_at` as if the
+    household had confirmed a mic that may not even be the one that records —
+    and on a mismatch it would re-stamp the very pairing being refused. The
+    save belongs to the first match that actually APPLIES the calibration.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+    harness = _BoundLevelMatchHarness(monkeypatch, tmp_path)
+
+    # Match 1 — wrong mic. Refused, so nothing is persisted at all.
+    await harness.run("iMM-6C", "run-1", resend_raw_setup=True)
+    assert harness.sess.mic_calibration is None
+    assert "event=correction.household_mic_saved" not in caplog.text
+    assert "event=correction.household_mic_replaced" not in caplog.text
+
+    # Match 2 — right mic. Exactly one save.
+    caplog.clear()
+    await harness.run("UMIK-2 (2752:002b)", "run-2")
+    assert caplog.text.count("event=correction.household_mic_saved") == 1
+
+    # Match 3 — right mic again. The binding remembers it already saved.
+    caplog.clear()
+    await harness.run("UMIK-2 (2752:002b)", "run-3")
+    assert "event=correction.household_mic_saved" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_relay_level_matching_raw_setup_resend_is_accepted_and_no_ops(
+    monkeypatch, tmp_path, caplog,
+):
+    """A phone that resends the SAME raw setup on `setup_validate` is accepted
+    and changes nothing — unchanged behavior, pinned.
+
+    `_assert_relay_setup_binding` governs only the level-batch path; on
+    `setup_validate` a matching raw resend passes
+    `_validated_relay_setup_binding` and then silently no-ops because the
+    binding already exists. Nothing may re-resolve, re-save, or re-decide off
+    that resend — the realized device on the level batch stays the authority.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+    harness = _BoundLevelMatchHarness(monkeypatch, tmp_path)
+
+    await harness.run("UMIK-2 (2752:002b)", "run-1", resend_raw_setup=True)
+    first_binding = harness.sess.relay_setup_binding
+    assert caplog.text.count("event=correction.household_mic_saved") == 1
+    caplog.clear()
+
+    # Same raw setup again, same binding id — accepted, no second save, and the
+    # frozen binding identity is unchanged.
+    await harness.run("UMIK-2 (2752:002b)", "run-2", resend_raw_setup=True)
+
+    assert harness.sess.relay_setup_binding == first_binding
+    assert harness.sess.mic_calibration is not None
+    assert "event=correction.household_mic_saved" not in caplog.text
+    assert "event=correction.calibration_device_identity_mismatch" not in caplog.text
 
 
 @pytest.mark.asyncio

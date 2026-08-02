@@ -128,26 +128,46 @@
   notice a CHANGED or DROPPED id, never a wrong-mic bind hiding behind the
   id it expected. `_apply_relay_setup_to_session` now takes `device` and
   threads it exactly as v2 does. That alone does not reach the room flow,
-  and the reason is worth keeping: the room and crossover level matches are
-  BOUND runs (`setup_binding_id`), which resolve the calibration at the
-  phone's `setup_validate` post — sent from the calibration screen, BEFORE
-  the page opens a microphone, so no `track.label` exists yet — and the raw
-  setup is never resent afterwards (`_assert_relay_setup_binding`) to
-  re-resolve with one. The device first arrives on the level batch, so
-  `_run_relay_level_match` consults the same guard there through the shared
-  `_stored_calibration_identity_refused` (one decision, one WARN, two call
-  sites) and drops the curve on a mismatch. Semantics match v2 throughout:
-  the capture is never blocked, the analysis degrades to
-  annotated-uncalibrated, and the wrong pairing is never re-persisted as the
-  household mic. Scoped to `mode == "stored"` on both seams — serial/upload
-  are the household actively establishing a NEW pairing in the moment, a
-  different risk shape. Pinned by
-  `test_relay_level_bound_stored_calibration_refuses_a_different_mic` and
-  `test_apply_relay_setup_threads_device_into_the_identity_guard`. What
-  remains open on [#1656](https://github.com/jaspercurry/JTS/issues/1656) is
-  the product side, not this binding: the saved-mic UI still cannot change or
-  enter a serial, calibration identity is still bound by model family rather
-  than physical device, and Dayton cal ingestion by serial is unbuilt.
+  and the reason is the load-bearing part: the room and crossover level
+  matches are BOUND runs (`setup_binding_id`), which resolve the calibration
+  during the phone's `setup_validate` handshake — a payload that declares no
+  device at all (`{setup_validate, setup_token, setup, setup_identity}`). The
+  page HAS opened a microphone by then (`requestMicPermissionForSetup`) and
+  the picker screen shows a selected label, but that label is a PREDICTION of
+  what will record; **the realized capture device is authoritative only from
+  the first level batch**. So the decision belongs there. A binding also
+  outlives its first level match — Retry level check and Check verification
+  level both re-enter `_run_relay_level_match` against the same frozen
+  binding — so the decision is made per MATCH, keyed on the calibration
+  carried on `_RelaySetupBinding` itself (`compare=False`, so binding
+  equality still means "same setup identity + digest"). Each match evaluates
+  `_stored_calibration_identity_refused` against its own realized mic and
+  either applies the record or drops it; a refused match followed by a
+  correct-mic retry therefore recovers on its own. The household-mic write
+  waits for the first match that actually applies the calibration, so
+  `correction.household_mic_saved` never fires for a mic nobody has seen yet
+  and never re-fires per retry. Semantics match v2 throughout: the capture is
+  never blocked, the analysis degrades to annotated-uncalibrated, and the
+  wrong pairing is never persisted. Scoped to `mode == "stored"` —
+  serial/upload are the household actively establishing a NEW pairing in the
+  moment, a different risk shape. Pinned by
+  `test_relay_level_bound_stored_calibration_refuses_a_different_mic`,
+  `test_relay_level_second_match_refuses_a_swapped_mic`,
+  `test_relay_level_correct_mic_retry_recovers_the_calibration`,
+  `test_relay_level_household_mic_save_waits_for_the_realized_mic`, and
+  `test_apply_relay_setup_threads_device_into_the_identity_guard`. Note
+  `_assert_relay_setup_binding` governs only the level-batch path; on
+  `setup_validate` a matching raw resend is accepted and silently no-ops
+  (pinned by `test_relay_level_matching_raw_setup_resend_is_accepted_and_no_ops`).
+  What remains open on
+  [#1656](https://github.com/jaspercurry/JTS/issues/1656) is the product side,
+  not this binding: the saved-mic UI still cannot change or enter a serial,
+  calibration identity is still bound by model family rather than physical
+  device, and Dayton cal ingestion by serial is unbuilt. Separately, the
+  upload/verify handlers scope their level-match gates to
+  `capture_transport == "local"`, so a same-origin desktop client can reach
+  analysis without one ([#2041](https://github.com/jaspercurry/JTS/issues/2041));
+  the phone-relay flows above are unaffected.
 - 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
   2026-07-19).** Every v2 crossover capture logged
   `crossover_v2_uncalibrated_capture` even with a resolvable stored mic
