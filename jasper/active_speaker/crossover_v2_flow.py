@@ -7669,6 +7669,13 @@ class CrossoverV2Conductor:
         driver deficit, and separating those needs the post-apply arm to ask
         "did this help" rather than "did this match the model" (#1868).
 
+        **Know what one band costs before adding to this list.** The fit
+        enforces these ALL-OR-NOTHING: a driver whose realized boost cascade
+        lands significant gain in any one of them loses its whole lift, not
+        just that band (``lift_suppressed_reason="boost_excluded_band"``).
+        That is why this returns only the positively-contradicted class and
+        never a "we were unsure here" list.
+
         **Fails OPEN**, disclosed. A span too narrow to analyse, a cloud that
         never retained per-position curves, or an unexpected numeric failure
         all yield no exclusions — i.e. exactly the permission the gate grants
