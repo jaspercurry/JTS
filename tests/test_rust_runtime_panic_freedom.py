@@ -74,7 +74,7 @@ a hot loop (issue #1718's own audit verified this per crate rather than
 trusting a name):
 
 - ``jasper-ring`` looks like an opt-in prototype from its own module doc
-  ("Ring B prototype")  but ``docs/HANDOFF-audio-graph-consolidation.md``'s
+  ("Ring B prototype") but ``docs/HANDOFF-audio-graph-consolidation.md``'s
   P4 milestone (LANDED) has the coupling reconciler resolve the DEFAULT
   coupling to ``shm_ring`` on a full-profile, ring-eligible box (validated
   on jts.local + jts3; jts4/streambox and jts5 excluded pending
