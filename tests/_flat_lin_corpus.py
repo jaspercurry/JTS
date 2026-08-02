@@ -53,6 +53,51 @@ detector-vs-reading, bisect, record era) is documented once, in
 ``tests.test_spatial_combine.test_band_deficit_separates_honest_captures_from_stopband_residue``'s
 docstring -- it governs every population read through this module,
 not just that test's own.
+
+The 2026-08-02 re-pin era (#2045)
+---------------------------------
+
+Every corpus reading that moved between PR #1753 (where these pins were set,
+``2a7060ab1``) and 2026-08-02 moved for ONE reason, established by ablation
+rather than assumed: **PR #1991** (``540d169f5``, "a crossing must stand out to
+become a window bound") added the prominence vote to the first-reflection
+detector.
+
+On this corpus that vote changes exactly one capture. ``cloud_04`` alone used
+to report ``floor_source="measured_reflection"`` at a **1777.8 Hz** validity
+floor -- a reflection "found" 3 samples past the search-window open, which is
+precisely the field instance #1991 names as its motivation (**#1790**). Under
+the vote that crossing is voted down, no later crossing qualifies, and
+``cloud_04`` gates like its nine neighbours: ``floor_source="search_span_bound"``
+at **142.857 Hz**. So these pins were holding a detector artifact in place, and
+the fix -- not a regression -- is what moved them.
+
+**The ablation is the evidence, and it is reproducible.** Disabling only the
+vote (``prominence_db=0``, which :func:`jasper.audio_measurement.gating.detect_first_reflection`
+documents as an exact recovery of the pre-vote detector) restores every
+pre-#1991 reading with the rest of the tree at HEAD. The control rides in the
+data itself: groupings that do NOT contain ``cloud_04`` -- ``hand_width_low``
+(cloud_07-10), ``desk_edge``, ``ground_plane`` -- are byte-identical across the
+change, and only ``main`` and ``tweeter_height`` moved.
+
+Reproduce (both roots must be reachable; these tests skip otherwise)::
+
+    JTS_FLAT_LIN_S0=<captures>/flat-linearization-20260725 \\
+    JTS_FLAT_LIN_CORPUS=<captures>/flat-linearization-20260725/cdhorn-live-session \\
+      .venv/bin/pytest tests/test_spatial_combine.py \\
+        tests/test_interference_nulls.py \\
+        tests/test_active_speaker_linearization_envelope.py \\
+        tests/test_crossover_v2_cloud_pipeline.py \\
+        tests/test_flat_spec_ssot.py tests/test_flat_spec.py
+
+These readings are **deterministic**: three runs (a repeat in the same session,
+and one under ``OMP_NUM_THREADS=1``) agree bit-for-bit, so the pins keep their
+original decimal precision rather than widening into a tolerance.
+
+A re-pin from this era is tagged ``RE-PINNED 2026-08-02 (#2045)`` at its call
+site. That tag is deliberate: jaspercurry/JTS#1774's cal-sign re-baseline will
+re-derive these same numbers again, and it needs to tell this pass's values
+from the 2026-07-27 (PR-U1) ones sitting beside them.
 """
 from __future__ import annotations
 

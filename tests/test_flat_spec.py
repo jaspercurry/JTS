@@ -825,14 +825,21 @@ def test_s0_convergence_residual_falls_because_the_mask_grew(s0_combined):
     SAME curve -- the speaker never changed:
 
       mask                     residual    bins    excluded
-      none                     4.6043 dB   10752          0
-      power-vs-median screen   4.6472 dB   10647        105
-      screen + null registry   3.7649 dB    7698       3054
+      none                     4.6141 dB   10752          0
+      power-vs-median screen   4.6696 dB   10616        136
+      screen + null registry   3.8031 dB    7678       3074
 
-    Adding the registry drops the residual by 0.88 dB while removing 2949
+    Adding the registry drops the residual by 0.87 dB while removing 2938
     bins from the denominator. Read alone that looks like convergence; read
     with the counts it is visibly the 8-16 kHz band losing 54 % of its bins.
     A loop that watched only ``rms_db`` would call that progress.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote re-gating
+    ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin
+    era". Every column moved a little and the LESSON did not move at all,
+    which is what this test is for: the residual still falls by ~0.9 dB while
+    the denominator loses ~2900 bins, so the drop is still the mask growing
+    rather than the speaker improving.
 
     The last row is also the exactness check: the reassembled figure matches
     a direct from-the-arrays recomputation to 1e-12 relative.
@@ -850,19 +857,19 @@ def test_s0_convergence_residual_falls_because_the_mask_grew(s0_combined):
             evaluate_flat_spec(freqs, spec, mask)
         )
 
-    assert readings["none"].rms_db == pytest.approx(4.6043, abs=0.002)
+    assert readings["none"].rms_db == pytest.approx(4.6141, abs=0.002)
     assert readings["none"].n_bins == 10_752
     assert readings["none"].n_excluded == 0
 
-    assert readings["screen"].rms_db == pytest.approx(4.6472, abs=0.002)
-    assert readings["screen"].n_bins == 10_647
-    assert readings["screen"].n_excluded == 105
+    assert readings["screen"].rms_db == pytest.approx(4.6696, abs=0.002)
+    assert readings["screen"].n_bins == 10_616
+    assert readings["screen"].n_excluded == 136
 
     both = readings["screen_plus_registry"]
-    assert both.rms_db == pytest.approx(3.7649, abs=0.002)
-    assert both.n_bins == 7698
-    assert both.n_excluded == 3054
-    assert readings["screen"].rms_db - both.rms_db == pytest.approx(0.88, abs=0.02)
+    assert both.rms_db == pytest.approx(3.8031, abs=0.002)
+    assert both.n_bins == 7678
+    assert both.n_excluded == 3074
+    assert readings["screen"].rms_db - both.rms_db == pytest.approx(0.87, abs=0.02)
 
     # Exactness of the per-band reassembly, against the arrays directly.
     mask = combined.excluded | registry.excluded

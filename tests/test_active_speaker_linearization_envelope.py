@@ -1443,6 +1443,17 @@ def test_s0_position_stability_calibration_populations(s0_main_captures):
     floor. Each row is (N, sigma range, standard-error range, limit range) --
     the same rows the docstring prints, so the table cannot drift from the
     measurement.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote, which
+    re-gates ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02
+    re-pin era". Exactly the two groupings that CONTAIN cloud_04 moved
+    (``main_all_10`` and ``main_tweeter_height_6``); ``main_hand_width_low_4``
+    (cloud_07-10), ``desk_front_edge_3`` and ``ground_plane_3`` are
+    byte-identical, which is the control on the change. Both moves are in the
+    direction the fix predicts: removing cloud_04's truncated-window artifact
+    makes the positions agree BETTER, so sigma falls -- most visibly on the
+    six-position subgroup (0.340 -> 0.190 dB), where cloud_04 carries more
+    weight -- and the stability limit loosens with it (23.82 -> 24.00 dB).
     """
     from tests._flat_lin_corpus import (
         S0_DESK_EDGE,
@@ -1463,8 +1474,8 @@ def test_s0_position_stability_calibration_populations(s0_main_captures):
     }
     expected = {
         # name: (N, sigma_lo, sigma_hi, se_lo, se_hi, limit_lo, worst_band_hz)
-        "main_all_10": (10, 0.946, 3.088, 0.299, 0.976, 12.29, 16_000.0),
-        "main_tweeter_height_6": (6, 0.340, 1.234, 0.139, 0.504, 23.82, 16_000.0),
+        "main_all_10": (10, 0.923, 3.096, 0.292, 0.979, 12.26, 16_000.0),
+        "main_tweeter_height_6": (6, 0.190, 1.222, 0.078, 0.499, 24.00, 16_000.0),
         "main_hand_width_low_4": (4, 0.964, 3.029, 0.482, 1.514, 7.92, 16_000.0),
         "desk_front_edge_3": (3, 0.306, 1.735, 0.177, 1.002, 11.98, 16_000.0),
         "ground_plane_3": (3, 0.362, 3.173, 0.209, 1.832, 6.55, 8000.0),
@@ -1582,7 +1593,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     """THE acceptance, on the declared-``compression_horn`` regime.
 
     Measured 2026-07-26. The registry identifies three rungs over 5-19 kHz --
-    8016-9427, 10842-12348 and 14280-15679 Hz. With the merged mask composed
+    8015-9428, 10841-12351 and 14276-15651 Hz. With the merged mask composed
     in, the envelope allows **exactly 0.0 dB** at all fourteen envelope-grid
     bins inside them (against 2.82-22.80 dB without it), the fit places **no
     filter** anywhere near them (its two peaking cuts sit at 2388.9 and
@@ -1605,7 +1616,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     first null, so the fit keeps its PERMISSION to correct above 8 kHz. That
     is not the same as demonstrating correction up there, and this corpus
     cannot demonstrate it: every filter either fit emits sits at 2388.9 or
-    3533.4 Hz, well below the first null at 8016 Hz, because the CD-horn
+    3533.4 Hz, well below the first null at 8015 Hz, because the CD-horn
     continuation stage -- the stage that would place HF content -- suppresses
     itself at ``insufficient_repeats`` on a corpus giving each position two
     occurrences (``LinearizationFit.hf_continuation_suppressed_reason``,
@@ -1617,7 +1628,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     grid = DEFAULT_ENVELOPE_GRID_HZ
     intervals = s0_replay.registry.excluded_bands_hz
     assert [(round(lo), round(hi)) for lo, hi in intervals] == [
-        (8016, 9427), (10842, 12348), (14280, 15679),
+        (8015, 9428), (10841, 12351), (14276, 15651),
     ]
 
     bare = _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=False)

@@ -1107,9 +1107,9 @@ def test_s0_main_leg_identifies_the_8_to_16_khz_family(s0_main_leg):
     Measured 2026-07-25 — the numbers ``RUNG_MATCH_TOLERANCE_SPACINGS``,
     ``LADDER_ARRIVAL_TOLERANCE`` and ``R_AGREEMENT_TOLERANCE`` all quote:
 
-      tau_ladder    298.777 us      arrival tau   321.478 us
-      gap           -7.061 %        r_time        0.3765
-      r_freq        0.3490          agreement     0.0275
+      tau_ladder    298.747 us      arrival tau   321.478 us
+      gap           -7.071 %        r_time        0.3765
+      r_freq        0.3438          agreement     0.0327
 
     The ladder sits **below** the arrival, by more than the 1/6-octave
     smoothing bandwidth would allow — which is exactly why the fit takes tau
@@ -1124,6 +1124,16 @@ def test_s0_main_leg_identifies_the_8_to_16_khz_family(s0_main_leg):
     confidence floor it used to sit below — so the ladder is now corroborated
     by all ten positions rather than nine, and the arrival-derived numbers
     shift in the third decimal accordingly.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote, which
+    re-gates ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02
+    re-pin era" for the ablation. ``cloud_04`` is a member of this cloud, so
+    its wider window moves the combined curve: the two lower rung centres
+    shift by ~13 Hz (8659.4 -> 8646.2, 11614.0 -> 11627.2) while the 15 kHz
+    rung holds to 0.1 Hz, and the depth-implied ``r_freq`` moves 0.3490 ->
+    0.3438 with ``agreement`` 0.0275 -> 0.0327. The IDENTIFICATION is
+    untouched -- same three rungs, same n, same classification, same
+    arrival tau and ``r_time``, still corroborated by all ten positions.
     """
     report = identify_interference_nulls(
         combine_positions(s0_main_leg), band_hz=S0_BAND_HZ
@@ -1133,9 +1143,9 @@ def test_s0_main_leg_identifies_the_8_to_16_khz_family(s0_main_leg):
 
     assert [null.n for null in report.nulls] == [2, 3, 4]
     centres = [null.f_center_hz for null in report.nulls]
-    assert centres == pytest.approx([8659.4, 11_614.0, 14_977.3], abs=2.0)
+    assert centres == pytest.approx([8646.2, 11_627.2, 14_977.3], abs=2.0)
     depths = [null.depth_db for null in report.nulls]
-    assert depths == pytest.approx([5.89, 6.33, 3.22], abs=0.05)
+    assert depths == pytest.approx([5.93, 6.23, 3.12], abs=0.05)
 
     # All ten positions corroborate since the 2026-07-27 alignment fix —
     # cloud_04 used to sit below the confidence floor purely because the
@@ -1143,17 +1153,17 @@ def test_s0_main_leg_identifies_the_8_to_16_khz_family(s0_main_leg):
     assert report.n_corroborating == 10
     assert report.arrival_tau_us == pytest.approx(321.478, abs=0.05)
     assert report.arrival_r_time == pytest.approx(0.3765, abs=0.001)
-    assert report.tau_ladder_us == pytest.approx(298.777, abs=0.05)
+    assert report.tau_ladder_us == pytest.approx(298.747, abs=0.05)
 
     # The measured ladder-vs-arrival gap, and that the band admits it while a
     # smoothing-bandwidth window (about +-6 %) would not.
-    assert report.ladder_arrival_gap == pytest.approx(-0.07061, abs=0.0005)
+    assert report.ladder_arrival_gap == pytest.approx(-0.07071, abs=0.0005)
     assert abs(report.ladder_arrival_gap) > 0.06
     assert abs(report.ladder_arrival_gap) < LADDER_ARRIVAL_TOLERANCE
 
     # The plan's acceptance bar for the two-instrument agreement.
-    assert report.r_freq == pytest.approx(0.3490, abs=0.001)
-    assert report.agreement == pytest.approx(0.0275, abs=0.001)
+    assert report.r_freq == pytest.approx(0.3438, abs=0.001)
+    assert report.agreement == pytest.approx(0.0327, abs=0.001)
     assert report.agreement <= 0.05
 
 
@@ -1256,8 +1266,16 @@ def test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling():
     positions, and showed it is **physically impossible** for the ~320 us
     arrival to have cut it: that arrival's r caps any null at 6.81 dB and the
     dip is 10.71 dB ("S0 executed" section b). Through the shipped statistic
-    on the six-position cloud the same verdict comes out at 9.24 dB against a
-    7.01 dB ceiling — +2.23 dB over, and acquitted.
+    on the six-position cloud the same verdict comes out at 10.08 dB against a
+    7.01 dB ceiling — +3.08 dB over, and acquitted.
+
+    RE-PINNED 2026-08-02 (#2045): PR #1991's prominence vote re-gates
+    ``cloud_04``, one of these six positions — see ``tests._flat_lin_corpus``
+    "The 2026-08-02 re-pin era". The dip reads deeper and slightly lower
+    (9.24 -> 10.08 dB, 1814.2 -> 1808.3 Hz) against an unchanged 7.008 dB
+    ceiling, so the acquittal margin grows +2.23 -> +3.08 dB. The VERDICT is
+    unchanged and is what this test exists for: the dip is over its ceiling,
+    so the ~320 us arrival cannot have cut it.
 
     **The subgroup is load-bearing and is the honest scope of this claim** —
     the ten-position divergence is asserted by
@@ -1279,15 +1297,15 @@ def test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling():
     ]
     assert len(acquitted) == 1, report.refusals
     (dip,) = acquitted
-    assert dip.f_center_hz == pytest.approx(1814.2, abs=2.0)
-    assert dip.depth_db == pytest.approx(9.24, abs=0.05)
+    assert dip.f_center_hz == pytest.approx(1808.3, abs=2.0)
+    assert dip.depth_db == pytest.approx(10.08, abs=0.05)
     assert dip.evidence["depth_ceiling_db"] == pytest.approx(7.008, abs=0.01)
     assert dip.depth_db - dip.evidence["depth_ceiling_db"] == pytest.approx(
-        2.23, abs=0.02
+        3.08, abs=0.02
     )
 
     # Left alone: not identified, not excluded.
-    assert all(not (lo <= 1814.2 <= hi) for lo, hi in report.excluded_bands_hz)
+    assert all(not (lo <= 1808.3 <= hi) for lo, hi in report.excluded_bands_hz)
     # ...and the real family is still identified on the same call.
     assert report.reason == ""
     assert [null.n for null in report.nulls] == [2, 3, 4]
@@ -1353,32 +1371,39 @@ def test_contiguity_is_what_keeps_the_1_8_khz_dip_out_of_the_registry(s0_main_le
     "allow gaps". Measured 2026-07-26 on the ten-position main leg over
     1.2-19 kHz:
 
-      shipped        rungs [2, 3, 4], 24.27 % of the band excluded
-      gaps allowed   rungs [0, 2, 3, 4], 27.21 % excluded — n=1 skipped
+      shipped        rungs [2, 3, 4], 24.18 % of the band excluded
+      gaps allowed   rungs [0, 2, 3, 4], 26.99 % excluded — n=1 skipped
 
     The extra rung is the 1.8 kHz lobing dip, which the plan's two-mechanism
     verdict says is not the comb at all. Note it passes **both**
     corroborations while wrong, because the deepest rung sets ``r_freq`` and
     a spurious shallow rung does not move it — so contiguity is the only rule
     standing between the registry and that claim.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote re-gating
+    ``cloud_04`` — see ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era".
+    Only the digits moved (24.27 -> 24.18 %, 27.21 -> 26.99 %, and the spurious
+    rung's centre 1864.0 -> 1846.4 Hz); the counterfactual is unchanged, which
+    is the whole point of the test — allowing gaps still admits the 1.8 kHz
+    lobing dip as a fourth rung, and both corroborations still miss it.
     """
     import jasper.audio_measurement.interference_nulls as module
 
     combined = combine_positions(s0_main_leg)
     shipped = identify_interference_nulls(combined, band_hz=S0_WIDE_BAND_HZ)
     assert [null.n for null in shipped.nulls] == [2, 3, 4]
-    assert shipped.excluded_fraction == pytest.approx(0.2427, abs=0.001)
+    assert shipped.excluded_fraction == pytest.approx(0.2418, abs=0.001)
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(module, "_longest_consecutive", sorted)
         gapped = identify_interference_nulls(combined, band_hz=S0_WIDE_BAND_HZ)
 
     assert [null.n for null in gapped.nulls] == [0, 2, 3, 4]
-    assert gapped.nulls[0].f_center_hz == pytest.approx(1864.0, abs=2.0)
-    assert gapped.excluded_fraction == pytest.approx(0.2721, abs=0.001)
+    assert gapped.nulls[0].f_center_hz == pytest.approx(1846.4, abs=2.0)
+    assert gapped.excluded_fraction == pytest.approx(0.2699, abs=0.001)
     # It would have been excluded from correction as a comb rung...
     assert any(
-        lo <= 1864.0 <= hi for lo, hi in gapped.excluded_bands_hz
+        lo <= 1846.4 <= hi for lo, hi in gapped.excluded_bands_hz
     ), gapped.excluded_bands_hz
     # ...and neither corroboration would have caught it.
     assert gapped.reason == ""
@@ -1462,8 +1487,8 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
     Measured 2026-07-25, GAP AND AGREEMENT COLUMNS RE-DERIVED 2026-07-27:
 
       grouping        tau_ladder  gap %    worst rung  r_freq  agreement
-      main, 10        298.777     -7.061   0.0872      0.3490  0.0275
-      tweeter ht, 6   298.904     -6.671   0.0818      0.3506  0.0242
+      main, 10        298.747     -7.071   0.0830      0.3438  0.0327
+      tweeter ht, 6   298.904     -6.671   0.0818      0.3479  0.0269
       low, 4          297.961     -7.540   0.0933      0.3374  0.0410
       desk edge, 3    298.343     -7.058   0.0926      0.3746  0.0187
 
@@ -1476,12 +1501,21 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
     columns this table exists to calibrate, ``tau_ladder`` and ``worst rung``,
     did not move at all; the arrival-derived gap and the agreement did, in the
     third decimal.
+
+    RE-DERIVED AGAIN 2026-08-02 (#2045) for PR #1991's prominence vote, which
+    re-gates ``cloud_04`` — see ``tests._flat_lin_corpus`` "The 2026-08-02
+    re-pin era". The same control shape holds and is stronger this time: only
+    ``cloud_04`` moved, so only the two groupings CONTAINING it moved (``main``
+    and ``tweeter ht``), while ``low, 4`` (cloud_07-10) and ``desk edge`` are
+    byte-identical across the change. Every constant this table calibrates
+    keeps its headroom, because the three ``worst_*`` aggregates are all set by
+    groupings that did not move.
     """
     groupings = {
-        "main": (s0_main_leg, 298.777, -0.07061, 0.0872, 0.3490, 0.0275),
+        "main": (s0_main_leg, 298.747, -0.07071, 0.0830, 0.3438, 0.0327),
         "tweeter_height": (
             s0_position_captures(S0_MAIN, only=S0_MAIN_TWEETER_HEIGHT),
-            298.904, -0.06671, 0.0818, 0.3506, 0.0242,
+            298.904, -0.06671, 0.0818, 0.3479, 0.0269,
         ),
         "hand_width_low": (
             s0_position_captures(S0_MAIN, only=S0_MAIN_HAND_WIDTH_LOW),
@@ -1541,17 +1575,23 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
     assert R_AGREEMENT_TOLERANCE / worst_agreement == pytest.approx(2.44, abs=0.08)
 
     # The depth-ceiling margin's "must not acquit" population: 12 genuine
-    # rungs, spanning -3.94 to +0.27 dB relative to their own ceiling. The
+    # rungs, spanning -4.05 to +0.27 dB relative to their own ceiling. The
     # ceiling is what the margin has to clear, and it is *positive* — a real
     # rung can read over the bound.
     assert len(ceiling_deltas) == 12
-    assert min(ceiling_deltas) == pytest.approx(-3.94, abs=0.05)
+    assert min(ceiling_deltas) == pytest.approx(-4.05, abs=0.05)
     assert max(ceiling_deltas) == pytest.approx(+0.27, abs=0.02)
     assert DEPTH_CEILING_MARGIN_DB > max(ceiling_deltas)
-    # ...and the gap to the acquittal case (+2.23 dB, the test above), which
-    # the constant is centred in.
+    # ...and the gap to the acquittal case (+3.08 dB, the test above). The
+    # constant separates the two populations from BOTH sides, but no longer
+    # symmetrically: RE-PINNED 2026-08-02 (#2045), PR #1991's prominence vote
+    # deepened the acquitted dip 9.24 -> 10.08 dB, so the acquittal side's
+    # headroom grew 0.98 -> 1.83 dB while the "must not acquit" side held at
+    # 0.98 dB. The constant is now the tighter guard against acquitting a real
+    # rung, which is the direction that matters — an acquittal is what removes
+    # a null from the registry.
     assert DEPTH_CEILING_MARGIN_DB - max(ceiling_deltas) == pytest.approx(0.98, abs=0.03)
-    assert 2.23 - DEPTH_CEILING_MARGIN_DB == pytest.approx(0.98, abs=0.03)
+    assert 3.08 - DEPTH_CEILING_MARGIN_DB == pytest.approx(1.83, abs=0.03)
 
     # ``DEFAULT_MIN_NULL_DEPTH_DB``'s three populations, and the overlap that
     # constant is explicit about: depth alone separates nothing here.
@@ -1561,7 +1601,7 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
     )
     assert len(unexplained_depths) == 3
     assert (min(unexplained_depths), max(unexplained_depths)) == pytest.approx(
-        (2.55, 4.15), abs=0.02
+        (2.88, 4.15), abs=0.02
     )
     assert min(unexplained_depths) < max(identified_depths)
     assert max(unexplained_depths) > min(identified_depths), "the two overlap"
@@ -1576,16 +1616,23 @@ def test_s0_ladder_calibration_populations_bracket_the_constants(s0_main_leg):
 def test_s0_exclusion_stays_far_below_the_runaway_cap(s0_main_leg):
     """E — the measured population behind ``EXCLUSION_CAP_FRACTION``.
 
-    Measured 2026-07-25: the identified family excludes 30.85 % of the
+    Measured 2026-07-25: the identified family excludes 30.74 % of the
     5-19 kHz band on the main leg — the widest of the S0 readings, because
-    that band is the narrowest the family is graded in — and 23.91-25.35 %
+    that band is the narrowest the family is graded in — and 23.85-25.35 %
     over the wider 1.2-19 kHz band across the four groupings. The cap is a
     guard, not a knob, and it must not bind on real data.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote re-gating
+    ``cloud_04`` — see ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era".
+    The fractions moved in the third decimal (30.85 -> 30.74 %, and the wide
+    band's floor 23.91 -> 23.85 %) and the cap's headroom GREW slightly. The
+    claim being guarded — that ``EXCLUSION_CAP_FRACTION`` never binds on real
+    data — is unchanged and further from binding than before.
     """
     narrow = identify_interference_nulls(
         combine_positions(s0_main_leg), band_hz=S0_BAND_HZ
     )
-    assert narrow.excluded_fraction == pytest.approx(0.3085, abs=0.001)
+    assert narrow.excluded_fraction == pytest.approx(0.3074, abs=0.001)
     assert narrow.capped is False
 
     fractions = [narrow.excluded_fraction]
@@ -1601,6 +1648,6 @@ def test_s0_exclusion_stays_far_below_the_runaway_cap(s0_main_leg):
         assert report.capped is False
         fractions.append(report.excluded_fraction)
 
-    assert max(fractions) == pytest.approx(0.3085, abs=0.001)
-    assert min(fractions[1:]) == pytest.approx(0.2391, abs=0.001)
-    assert EXCLUSION_CAP_FRACTION - max(fractions) == pytest.approx(0.3415, abs=0.002)
+    assert max(fractions) == pytest.approx(0.3074, abs=0.001)
+    assert min(fractions[1:]) == pytest.approx(0.2385, abs=0.001)
+    assert EXCLUSION_CAP_FRACTION - max(fractions) == pytest.approx(0.3426, abs=0.002)
