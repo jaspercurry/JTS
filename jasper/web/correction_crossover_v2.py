@@ -244,6 +244,47 @@ def classify_program_failure(
     return code, refusals
 
 
+def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
+    """Turn a :class:`CrossoverV2FlowError` into a refusal the household reads.
+
+    Issue #1833. ``resolve_plan_shape``'s failures are programmer strings
+    ("unknown commission tier 'turbo' (expected one of full, express)",
+    "cloud_measure_positions must be 6..12, got 14"). Two call sites used to
+    rewrap them as ``CrossoverV2Refused(str(exc))``, which the wizard's 400 arm
+    echoes into the DOM verbatim — the exact leak
+    :func:`classify_program_failure` exists to close, defeated by the rewrap
+    happening BEFORE any classification: once it is a ``ValueError`` the
+    classifier no longer claims it, and
+    ``correction_setup._relay_failure_message`` never sees it either.
+
+    So classify FIRST and carry the code out. The message comes from the same
+    :data:`~jasper.active_speaker.crossover_v2_flow.REASON_REGISTRY` entry the
+    phone's failure screen renders, so the two surfaces cannot disagree, and
+    the ``code=`` gives the 400 body that reason's own ``next_action``.
+
+    The raw text is logged here rather than dropped: this is the one site that
+    discards it, and it is the only place the failed constraint is named. The
+    boundary's own ``correction.crossover_v2_refused`` log records what was
+    SENT, which from here on is household copy.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_INTERNAL_ERROR,
+        REASON_REGISTRY,
+    )
+
+    classified = classify_program_failure(exc)
+    code = classified[0] if classified else REASON_INTERNAL_ERROR
+    log_event(
+        logger,
+        "correction.crossover_v2_plan_shape_refused",
+        level=logging.WARNING,
+        code=code,
+        error_type=type(exc).__name__,
+        detail=str(exc),
+    )
+    return CrossoverV2Refused(REASON_REGISTRY[code].message, code=code)
+
+
 def profile_refusal_code(evaluation_status: str) -> str:
     """Map a :class:`~jasper.active_speaker.driver_safety.DriverSafetyProfileEvaluation`
     status to the reason code whose copy names the action that ACTUALLY clears it.
@@ -4954,7 +4995,7 @@ def prepare_v2_session(
     try:
         plan_shape = resolve_plan_shape(raw.get("tier") if raw else None)
     except CrossoverV2FlowError as exc:
-        raise CrossoverV2Refused(str(exc)) from exc
+        raise refused_from_flow_error(exc) from exc
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
@@ -5148,7 +5189,7 @@ def _verify_plan_shape(
     try:
         return resolve_plan_shape((state or {}).get("tier"))
     except CrossoverV2FlowError as exc:
-        raise CrossoverV2Refused(str(exc)) from exc
+        raise refused_from_flow_error(exc) from exc
 
 
 def prepare_v2_verify(

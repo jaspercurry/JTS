@@ -192,8 +192,28 @@ class AdmittedPlaybackResult:
     admission: PlaybackAdmissionArtifact
 
 
+PLAYBACK_READMISSION_REFUSED_MESSAGE = (
+    "the live speaker graph changed; start this capture again"
+)
+"""What a household is told when :class:`PlaybackAdmissionRefused` fires.
+
+Owned here, beside the exception, because two boundaries surface it —
+``web_commissioning``'s driver-capture sweep and ``commissioning_runtime``'s
+summed capture (#1832) — and a household sentence with two authors is a
+drift in waiting. NOT the exception's own message: ``str(exc)`` stays the
+slug join, which is the right thing for the journal and the wrong thing for
+a person. Boundaries own the translation; this is the one translation.
+"""
+
+
 class PlaybackAdmissionRefused(RuntimeError):
-    """The fresh playback-side decision refused audio emission."""
+    """The fresh playback-side decision refused audio emission.
+
+    ``str(exc)`` joins raw admission slugs, so it is operator/journal text and
+    never household copy. Every boundary that surfaces this to a person maps
+    it to :data:`PLAYBACK_READMISSION_REFUSED_MESSAGE` and carries the slugs
+    out separately, from ``decision.refusal_reasons`` (#1820 / #1832).
+    """
 
     def __init__(self, decision: ExcitationAdmission) -> None:
         if not isinstance(decision, ExcitationAdmission) or decision.allowed:

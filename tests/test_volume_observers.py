@@ -17,13 +17,18 @@ tmp_path-backed state file for Spotify. Coverage:
 - source activation forwards one fresh observation even at same value
 - AirPlay ticks read but do not dispatch canonical observations
 - observer ignores readers that return None (source not active)
+- _run answers cancel() on each of _tick's directly-awaited chains (#2003)
 """
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
 from jasper import bluealsa_probe
+from jasper import volume_coordinator
 from jasper import volume_observers as observer_mod
+from jasper.renderer import RendererClient
 from jasper.volume_observers import VolumeObserver
 from jasper.volume_coordinator import Source
 
@@ -464,3 +469,215 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
     assert any(
         "reconciler raised" in r.message for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# #2003 — VolumeObserver._run must answer cancel(), even when the awaited
+# reply lands in the same event-loop tick as the cancellation.
+#
+# _run is a cancellation-only `while True:` and its only documented shutdown is
+# `stop()`, which cancels the task and then awaits it. On CPython <= 3.11
+# `asyncio.wait_for` SWALLOWS a CancelledError that arrives in the tick its
+# awaited future completes (Lib/asyncio/tasks.py: `except CancelledError: if
+# fut.done(): return fut.result()`), so a swallowed cancel there makes the
+# observer IMMORTAL and hangs that `await`.
+#
+# `asyncio.gather` is NOT affected: its own `_cancel_requested` bookkeeping
+# re-raises the parent's cancellation once its children finish, whether or not
+# a child swallowed its own. That already cleared _tick's gathered readers
+# (#1952). What it does not clear are _tick's DIRECTLY awaited chains, and
+# there are exactly two:
+#
+#   every tick   _tick -> VolumeCoordinator._active_source
+#                      -> RendererClient.selected_source        (renderer.py)
+#   on transition _tick -> apply_active_source_transition
+#                      -> _set_push_source_for_handoff -> _set_bluetooth
+#                      -> bluealsa_probe.list_pcms              (bluealsa_probe.py)
+#                      -> _busctl_set_property             (volume_coordinator.py)
+#
+# All three are pinned below. They live together because the invariant they
+# protect is one loop's, not three modules'.
+#
+# NOTE ON WHAT THESE TESTS CAN OBSERVE: CPython 3.12 rewrote wait_for on top of
+# asyncio.timeout(), so on 3.12/3.13 these pass with or without the fix. The
+# py3.11 CI leg is the one that goes red on the pre-fix code -- same as #1935
+# and #1952, whose regressions only ever failed there.
+# ---------------------------------------------------------------------------
+
+
+class _PendingReader:
+    """Reader whose readline() blocks on a future the test resolves.
+
+    Needed so the race lands at an exact, test-chosen event-loop tick instead
+    of immediately -- an AsyncMock reply resolves before the caller ever parks
+    in the bounded wait, which is the one offset that never reproduces.
+    """
+
+    def __init__(self, reply: "asyncio.Future[bytes]") -> None:
+        self._reply = reply
+
+    async def readline(self) -> bytes:
+        return await self._reply
+
+
+class _NoopWriter:
+    def write(self, _data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+class _FakeProc:
+    """Subprocess whose communicate() blocks on a future the test resolves."""
+
+    def __init__(self, reply: "asyncio.Future[tuple[bytes, bytes]]") -> None:
+        self._reply = reply
+        self.returncode = 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return await self._reply
+
+    def kill(self) -> None:
+        pass
+
+    async def wait(self) -> int:
+        return 0
+
+
+async def _race_cancel_against(task, resolve) -> None:
+    """Park `task` in its bounded wait, then resolve + cancel in one tick.
+
+    Both wake-ups queue in the same event-loop iteration because there is no
+    `await` between `resolve()` and `task.cancel()` -- the race is constructed,
+    not sampled.
+    """
+    for _ in range(4):
+        await asyncio.sleep(0)
+    resolve()
+    task.cancel()
+
+
+async def test_run_answers_cancellation_racing_the_mux_status_reply(
+    tmp_path, monkeypatch,
+):
+    """The every-tick chain: _tick -> _active_source -> selected_source.
+
+    This one drives the REAL RendererClient call through the REAL observer
+    loop, because that composition is the reported symptom: an immortal
+    observer whose `stop()` never returns.
+    """
+    loop = asyncio.get_running_loop()
+    reply: asyncio.Future[bytes] = loop.create_future()
+
+    async def fake_open_unix_connection(_path):
+        return _PendingReader(reply), _NoopWriter()
+
+    monkeypatch.setattr(
+        "jasper.renderer.asyncio.open_unix_connection",
+        fake_open_unix_connection,
+    )
+    renderer = RendererClient(librespot_state_path=str(tmp_path / "missing.json"))
+
+    class _RendererBackedCoordinator(_FakeCoordinator):
+        """_active_source that goes through the real renderer call.
+
+        _FakeCoordinator's returns a constant, which cannot reproduce anything:
+        the defect is one call further down, inside selected_source's wait.
+        """
+
+        async def _active_source(self):
+            await renderer.selected_source()
+            return Source.IDLE
+
+    obs = VolumeObserver(
+        _RendererBackedCoordinator(),
+        librespot_state_path=str(tmp_path / "missing.json"),
+    )
+    task = asyncio.create_task(obs._run())
+    await _race_cancel_against(
+        task, lambda: reply.set_result(b'{"selected_source":"idle"}\n'),
+    )
+
+    _done, pending = await asyncio.wait({task}, timeout=10.0)
+    assert not pending, (
+        "VolumeObserver._run ignored cancellation and is still polling -- a "
+        "swallowed CancelledError makes the observer immortal and hangs "
+        "VolumeObserver.stop()'s `await self._task` (#2003)"
+    )
+    assert task.cancelled()
+
+
+async def test_busctl_set_property_answers_cancellation_racing_the_subprocess(
+    monkeypatch,
+):
+    """The transition chain's last hop (jasper/volume_coordinator.py).
+
+    Reached from _tick only when the active source changes, so narrower than
+    the mux-status path above -- but the same swallow, and the same immortal
+    observer when it fires.
+    """
+    loop = asyncio.get_running_loop()
+    reply: asyncio.Future[tuple[bytes, bytes]] = loop.create_future()
+
+    async def fake_exec(*_args, **_kwargs):
+        return _FakeProc(reply)
+
+    monkeypatch.setattr(
+        "jasper.volume_coordinator.asyncio.create_subprocess_exec", fake_exec,
+    )
+    task = asyncio.create_task(
+        volume_coordinator._busctl_set_property(
+            "org.bluealsa", "/path", "org.bluez.MediaTransport1",
+            "Volume", "q", "64",
+        )
+    )
+    await _race_cancel_against(task, lambda: reply.set_result((b"", b"")))
+
+    _done, pending = await asyncio.wait({task}, timeout=10.0)
+    assert not pending, (
+        "_busctl_set_property ignored cancellation -- a swallowed "
+        "CancelledError on the active-source transition path makes "
+        "VolumeObserver._run immortal (#2003)"
+    )
+    assert task.cancelled()
+
+
+async def test_bluealsa_list_pcms_answers_cancellation_racing_the_subprocess(
+    monkeypatch,
+):
+    """The transition chain one hop earlier (jasper/bluealsa_probe.py).
+
+    _set_bluetooth resolves the transport path through this probe BEFORE it
+    calls _busctl_set_property, both directly awaited. Fixing only the later
+    call would leave the loop just as immortal when the cancel lands here.
+    """
+    import logging
+
+    loop = asyncio.get_running_loop()
+    reply: asyncio.Future[tuple[bytes, bytes]] = loop.create_future()
+
+    async def fake_exec(*_args, **_kwargs):
+        return _FakeProc(reply)
+
+    monkeypatch.setattr(
+        "jasper.bluealsa_probe.asyncio.create_subprocess_exec", fake_exec,
+    )
+    task = asyncio.create_task(
+        bluealsa_probe.list_pcms(logging.getLogger("test"))
+    )
+    await _race_cancel_against(task, lambda: reply.set_result((b"", b"")))
+
+    _done, pending = await asyncio.wait({task}, timeout=10.0)
+    assert not pending, (
+        "bluealsa_probe.list_pcms ignored cancellation -- a swallowed "
+        "CancelledError on the active-source transition path makes "
+        "VolumeObserver._run immortal (#2003)"
+    )
+    assert task.cancelled()

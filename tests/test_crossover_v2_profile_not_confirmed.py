@@ -159,7 +159,11 @@ def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
         ),
         (ProgramPlaybackError("no current DSP config to restore"), REASON_PROGRAM_UNPLAYABLE),
         (ProgramAdmissionError("program must be an ExcitationProgram"), REASON_PROGRAM_UNPLAYABLE),
-        (CrossoverV2FlowError("cloud_measure_positions must be 3..7, got 9"), REASON_PROGRAM_UNPLAYABLE),
+        # A message the live f-string can actually produce: the bounds are
+        # MIN/MAX_CLOUD_MEASURE_POSITIONS (6..12 today), and 9 is the shipped
+        # DEFAULT, so the previous literal ("must be 3..7, got 9") described a
+        # refusal that cannot happen and read as a captured real message.
+        (CrossoverV2FlowError("cloud_measure_positions must be 6..12, got 14"), REASON_PROGRAM_UNPLAYABLE),
     ],
 )
 def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_code):
@@ -602,3 +606,71 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
     # route the pre-flight guards — so the 400-body action is what keeps this
     # combination from being a loop.
     assert env["next_action"]["endpoint"] == "/correction/crossover/v2/verify"
+
+
+# --------------------------------------------------------------------------- #
+# #1833 — the rewrap that ran BEFORE classification
+# --------------------------------------------------------------------------- #
+
+
+def test_plan_shape_refusal_is_classified_before_it_is_rewrapped():
+    """Both ``resolve_plan_shape`` call sites used to do
+    ``raise CrossoverV2Refused(str(exc))``, which is a one-way door: the moment
+    a ``CrossoverV2FlowError`` becomes a ``ValueError``,
+    :func:`classify_program_failure` stops claiming it and the wizard's 400 arm
+    echoes the programmer string into the DOM. Classify first, then rewrap.
+
+    ``test_whole_program_family_is_mapped_at_the_wizard_boundary`` did not and
+    could not catch this: it hands the mapper a raw ``CrossoverV2FlowError``,
+    which is precisely the shape the rewrap destroys before the mapper is ever
+    reached (#1833).
+    """
+    spec = REASON_REGISTRY[REASON_PROGRAM_UNPLAYABLE]
+
+    with pytest.raises(v2host.CrossoverV2Refused) as raised:
+        v2host.prepare_v2_session(
+            {"tier": "turbo"},
+            status={},
+            run_async=None,
+            camilla_factory=None,
+        )
+    assert str(raised.value) == spec.message
+    assert raised.value.code == REASON_PROGRAM_UNPLAYABLE
+    assert "turbo" not in str(raised.value)
+    _assert_household_copy(
+        REASON_PROGRAM_UNPLAYABLE, "prepare_v2_session", str(raised.value),
+    )
+
+    # The verify-stage site resolves the tier off durable state instead of the
+    # request body, and leaked identically.
+    with pytest.raises(v2host.CrossoverV2Refused) as verify_raised:
+        v2host._verify_plan_shape(
+            {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
+            {"tier": "turbo"},
+        )
+    assert str(verify_raised.value) == spec.message
+    assert verify_raised.value.code == REASON_PROGRAM_UNPLAYABLE
+
+
+def test_plan_shape_refusal_keeps_the_raw_constraint_in_the_journal(caplog):
+    """Household copy names no constraint by design, so the ONE site that
+    discards the flow text has to put it somewhere an operator can read.
+    Otherwise the fix trades a DOM leak for a debugging dead end."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger=v2host.logger.name)
+    with pytest.raises(v2host.CrossoverV2Refused):
+        v2host.prepare_v2_session(
+            {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None,
+        )
+
+    lines = [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith(
+            "event=correction.crossover_v2_plan_shape_refused"
+        )
+    ]
+    assert len(lines) == 1
+    assert "turbo" in lines[0]
+    assert f"code={REASON_PROGRAM_UNPLAYABLE}" in lines[0]
+    assert "error_type=CrossoverV2FlowError" in lines[0]

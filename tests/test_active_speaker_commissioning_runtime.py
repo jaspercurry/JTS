@@ -1455,6 +1455,135 @@ async def test_callback_failure_restores_and_classifies_possible_audio(
     assert fake.raw == predecessor
 
 
+def _refused_playback_admission():
+    """A genuinely refused ExcitationAdmission (no forging: the constructor
+    recomputes reasons from the typed inputs and rejects mismatches)."""
+    from jasper.audio_measurement.excitation_admission import (
+        ExcitationLimits,
+        ExcitationRequest,
+        FrequencyBand,
+        admit_excitation,
+    )
+
+    limits = ExcitationLimits(
+        permitted_band=FrequencyBand(500, 10_000),
+        maximum_effective_peak_dbfs=-12,
+        maximum_duration_s=8,
+        maximum_repeat_count=3,
+        target_fingerprint="1" * 64,
+        safety_profile_fingerprint="2" * 64,
+        protection_requirement_fingerprint="3" * 64,
+        excitation_plan_fingerprint="4" * 64,
+    )
+    request = ExcitationRequest(
+        band=FrequencyBand(1_000, 8_000),
+        effective_peak_dbfs=-18,
+        duration_s=4,
+        repeat_count=2,
+        target_fingerprint=limits.target_fingerprint,
+        safety_profile_fingerprint=limits.safety_profile_fingerprint,
+        authority_fingerprint=limits.fingerprint,
+        excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
+    )
+    # Missing protection evidence is the cheapest honest refusal.
+    return admit_excitation(request, limits, protection_evidence=None)
+
+
+@pytest.mark.asyncio
+async def test_readmission_refusal_detail_is_copy_not_raw_slugs(
+    tmp_path: Path, caplog,
+) -> None:
+    """#1832. ``PlaybackAdmissionRefused`` builds its message by joining raw
+    admission slugs, and this runtime's generic failure arm used to format
+    ``f"summed capture failed: {type}: {exc}"`` into ``detail`` --
+    ``commissioning_host`` re-raises that string unchanged, so both the class
+    name and the slugs travelled to whatever renders it. Latent only because
+    the summed path has no HTTP caller yet; the same leak family as #1820.
+
+    ``detail`` is the household-facing half of this exception (``__init__``
+    passes it to ``super()``, so it is also ``str(exc)``). The slugs are not
+    dropped -- they must still be reachable for forensics.
+    """
+    import logging
+
+    from jasper.audio_measurement.admitted_playback import (
+        PLAYBACK_READMISSION_REFUSED_MESSAGE,
+        PlaybackAdmissionRefused,
+    )
+
+    decision = _refused_playback_admission()
+    refusal = PlaybackAdmissionRefused(decision)
+    # The premise: str(exc) really is a slug join, so a formatter that
+    # interpolates it really does leak.
+    assert "playback re-admission refused:" in str(refusal)
+    assert "protection_evidence_missing" in str(refusal)
+
+    fake = FakePort()
+
+    async def capture(_context: runtime.CommissioningLiveContext):
+        raise refusal
+
+    caplog.set_level(logging.WARNING, logger=runtime.__name__)
+    with pytest.raises(runtime.CommissioningRuntimeFailure) as raised:
+        await runtime.run_summed_capture(
+            fake.port(),
+            _request(),
+            capture,
+            topology=_TOPOLOGY,
+            mutation_journal=_journal(),
+            config_dir=tmp_path,
+        )
+
+    failure = raised.value
+    assert failure.detail == PLAYBACK_READMISSION_REFUSED_MESSAGE
+    assert str(failure) == PLAYBACK_READMISSION_REFUSED_MESSAGE
+    assert "PlaybackAdmissionRefused" not in failure.detail
+    assert "re-admission" not in failure.detail
+    assert "protection_evidence_missing" not in failure.detail
+    # A distinguishable code, not the generic bucket -- #1820's lesson was that
+    # collapsing every failure into one classification is its own defect.
+    assert failure.code == "playback_readmission_refused"
+    # Forensics survive: the slugs reach the journal, and the original
+    # exception stays on __cause__.
+    assert failure.__cause__ is refusal
+    lines = [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith(
+            "event=active_speaker.summed_capture_readmission_refused"
+        )
+    ]
+    assert len(lines) == 1
+    assert "protection_evidence_missing" in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_unknown_capture_failures_keep_their_diagnostic_detail(
+    tmp_path: Path,
+) -> None:
+    """Scope guard for the containment above. Only the refusal we can name
+    gets a sentence; an unclassified failure must keep saying what broke, or
+    the fix would trade a leak for a blind spot."""
+    fake = FakePort()
+
+    async def capture(_context: runtime.CommissioningLiveContext):
+        raise RuntimeError("capture worker failed")
+
+    with pytest.raises(runtime.CommissioningRuntimeFailure) as raised:
+        await runtime.run_summed_capture(
+            fake.port(),
+            _request(),
+            capture,
+            topology=_TOPOLOGY,
+            mutation_journal=_journal(),
+            config_dir=tmp_path,
+        )
+
+    assert raised.value.code == "capture_failed"
+    assert raised.value.detail == (
+        "summed capture failed: RuntimeError: capture worker failed"
+    )
+
+
 @pytest.mark.asyncio
 async def test_cleanup_failure_dominates_callback_cancellation(tmp_path: Path) -> None:
     fake = FakePort()

@@ -6829,8 +6829,22 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         status=HTTPStatus.BAD_REQUEST,
                     )
                 except (OSError, RuntimeError, TypeError) as e:
+                    # Issue #1833: a CrossoverV2FlowError raised SYNCHRONOUSLY
+                    # inside prepare_v2_session's `_open` (the spec/index-map
+                    # builders) reaches here, not the 400 arm above -- it is a
+                    # RuntimeError subclass, so `except ValueError` misses it.
+                    # `str(e)` then put a programmer string
+                    # ("cloud_measure_positions must be 6..12, got 14") straight
+                    # into the wizard's DOM. Route it through the ONE mapper the
+                    # rest of this module already uses; it is the identity for
+                    # everything outside the mapped families, so nothing else on
+                    # this arm changes. The raw string still reaches the journal
+                    # via logger.exception above.
                     logger.exception("%s failed", path)
-                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                    self._send_json(
+                        {"ok": False, "error": _relay_failure_message(e)},
+                        status=500,
+                    )
                 return
 
             if path == "/crossover/v2/apply":

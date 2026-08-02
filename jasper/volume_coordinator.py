@@ -2791,7 +2791,16 @@ async def _busctl_set_property(
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        # asyncio.timeout(), NOT asyncio.wait_for(): see the note on
+        # RendererClient.selected_source (jasper/renderer.py). This call sits
+        # on VolumeObserver._run's other directly-awaited chain -- _tick ->
+        # apply_active_source_transition -> _set_push_source_for_handoff ->
+        # _set_bluetooth -> here -- so a cancel swallowed by wait_for makes
+        # that cancellation-only loop immortal (#2003). Transition-gated
+        # rather than every-tick, but the same swallow. Do not "simplify"
+        # this back to wait_for while 3.11 is supported.
+        async with asyncio.timeout(2.0):
+            _, stderr = await proc.communicate()
     except (FileNotFoundError, asyncio.TimeoutError) as e:
         logger.debug("busctl set-property %s.%s failed: %s", interface, prop, e)
         return False

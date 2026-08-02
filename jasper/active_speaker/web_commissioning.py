@@ -2670,6 +2670,7 @@ async def play_driver_capture_sweep(
     )
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.audio_measurement.admitted_playback import (
+        PLAYBACK_READMISSION_REFUSED_MESSAGE,
         PlaybackAdmissionFailed,
         PlaybackAdmissionRefused,
     )
@@ -2804,7 +2805,7 @@ async def play_driver_capture_sweep(
                     "confirmable": False,
                     "issues": [_issue(
                         "active_driver_playback_readmission_refused",
-                        "the live speaker graph changed; start this capture again",
+                        PLAYBACK_READMISSION_REFUSED_MESSAGE,
                     )],
                     "refusal_codes": [
                         reason.value for reason in exc.decision.refusal_reasons

@@ -536,6 +536,66 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     assert "phone-mic relay capture is not configured" in message
 
 
+def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
+    monkeypatch,
+):
+    """#1833 leak 1. ``CrossoverV2FlowError`` subclasses ``RuntimeError``, not
+    ``ValueError`` — so one raised SYNCHRONOUSLY inside ``prepare_v2_session``'s
+    ``_open`` (the spec / index-phase-map builders, both of which validate) skips
+    the 400 arm entirely and lands in this 500 arm, which echoed ``str(e)``
+    straight into the wizard's DOM.
+
+    ``test_whole_program_family_is_mapped_at_the_wizard_boundary`` asserts the
+    mapper handles this exception class, which reads like end-to-end containment
+    and is not: nothing on this route called the mapper.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_PROGRAM_UNPLAYABLE,
+        REASON_REGISTRY,
+        CrossoverV2FlowError,
+    )
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    raw_text = "cloud_measure_positions must be 6..12, got 14"
+
+    def _raise_flow_error(*_a, **_k):
+        raise CrossoverV2FlowError(raw_text)
+
+    monkeypatch.setattr(
+        correction_setup, "_handle_crossover_v2_relay", _raise_flow_error
+    )
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+
+    assert b"500" in resp.split(b"\r\n", 1)[0]
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+    assert body["error"] == REASON_REGISTRY[REASON_PROGRAM_UNPLAYABLE].message
+    assert "cloud_measure_positions" not in body["error"]
+    assert raw_text not in body["error"]
+
+
+def test_the_500_arm_still_reports_unmapped_failures_verbatim(monkeypatch):
+    """Scope guard for the fix above: the mapper is the identity outside the
+    families it knows, so a plain transport failure must keep saying what it
+    said. Containing every 500 behind one sentence would hide real breakage."""
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+
+    def _raise_oserror(*_a, **_k):
+        raise OSError("relay socket vanished")
+
+    monkeypatch.setattr(
+        correction_setup, "_handle_crossover_v2_relay", _raise_oserror
+    )
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+
+    assert b"500" in resp.split(b"\r\n", 1)[0]
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+    assert body["error"] == "relay socket vanished"
+
+
 def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     monkeypatch, caplog,
 ):

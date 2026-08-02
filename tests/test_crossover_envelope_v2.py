@@ -2748,6 +2748,35 @@ def test_review_screen_offers_the_three_way_decision_and_never_undo():
     assert not any("undo" in str(a.get("label") or "").lower() for a in every_action)
 
 
+def test_review_decline_exits_to_the_active_speaker_entry_not_the_hub():
+    """#1985: "Leave it as it is" must land the household back where the
+    journey started, not in another subsystem's permission flow.
+
+    The generic ``/correction/`` hub is the Room-correction wizard, and its
+    first act is the browser-mic HTTPS-transition interstitial — a non-sequitur
+    for someone who just finished a crossover measurement and chose to keep
+    things as they are. The R8 slice check found exactly that landing.
+
+    Pinned as a literal, not "anything under /correction/": ``/correction/`` is
+    a prefix of ``/correction/crossover/``, so a containment assertion would
+    have passed against the bug. The sibling ``review_remeasure`` alternate is
+    asserted alongside it because the two must stay distinguishable — one
+    navigates away, one POSTs and re-renders in place.
+    """
+    env = build_crossover_envelope_v2(_review_status())
+    decline = next(
+        a for a in env["alternate_actions"] if a["id"] == "review_decline"
+    )
+    assert decline["href"] == "/correction/crossover/"
+    # Declining applies nothing: it is a link, never an endpoint.
+    assert "endpoint" not in decline
+    remeasure = next(
+        a for a in env["alternate_actions"] if a["id"] == "review_remeasure"
+    )
+    assert remeasure["endpoint"] == "/correction/crossover/v2/session"
+    assert "href" not in remeasure
+
+
 def test_review_apply_posts_the_reviewed_candidates_own_fingerprint():
     """The screen does not need a new apply path — it needs a button that posts
     to the one that is there (work-order premise 4). ``handle_v2_apply``'s FIRST
