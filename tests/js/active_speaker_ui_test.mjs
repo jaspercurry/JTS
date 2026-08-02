@@ -63,7 +63,7 @@ import {
 }
 
 // Provisional datasheet fallback: tweeter trim flagged a datasheet estimate, and
-// the near-field guidance is surfaced.
+// the level-match guidance is surfaced — the pointer to where measuring happens.
 {
   const s = levelMatchSummary({
     corrections: { woofer: { gain_db: 0 }, tweeter: { gain_db: -25.2 } },
@@ -72,7 +72,7 @@ import {
   });
   assert.equal(s.provisional, true);
   assert.equal(s.rows[1].sourceLabel, "Datasheet estimate");
-  assert.ok(s.guidance.includes("2–5 cm"));
+  assert.ok(s.guidance.includes("jts.local/correction"));
   assert.ok(/safe starting estimates/i.test(s.note));
   assert.ok(/not acoustic measurements/i.test(s.note));
 }
@@ -158,11 +158,31 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(/output confirmation/i.test(identitySaveFailure));
 }
 
-// Near-field copy — manual and automatic are both valid ownership paths. An
+// Level-match copy — manual and automatic are both valid ownership paths. An
 // automatic result cannot silently overwrite manual pins.
-assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("2–5 cm"));
 assert.ok(/safe applied manual crossover/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 assert.ok(/explicitly apply/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
+
+// ...and it must POINT at the experience that can actually measure. /sound/ is
+// plain HTTP, so it has no getUserMedia and no recorder in this bundle; the
+// capture lives on the HTTPS /correction/ hub. BOTH halves are pinned: the
+// typeable host, and the tab. jts.local/correction lands on the sibling Room
+// tab, so naming the host alone would send the household to the wrong screen —
+// "Active speaker" (correction_hub.SECTIONS) is the part that makes the pointer
+// correct, so it gets its own guard.
+assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("jts.local/correction"));
+assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("Active speaker"));
+
+// It must NOT carry a microphone-placement instruction. The canonical capture
+// geometry is owned by jasper/active_speaker/capture_geometry.py and rendered
+// by the capture page; a copy here is a second owner that silently goes stale
+// — which is exactly what happened to the "2–5 cm" sentence this guard
+// replaced: the canonical geometry had already narrowed that range to one
+// fixed value (DRIVER_PLACEMENT_TARGET_CM). These two negatives fail if that
+// sentence comes back, or any distance figure in any casing or spelled-out
+// unit ("3 cm", "3 CM", "three centimetres", inches).
+assert.ok(!/hold the microphone/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
+assert.ok(!/\d\s*cm|centimet|\binch/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 
 // --- Local-subwoofer crossover helpers --------------------------------------
 const STEREO_NO_SUB = {

@@ -1100,12 +1100,13 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    the household holds the phone ~2–5 cm from that driver, and the browser
    records the sweep with
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js).
-   Placement copy lives on the page (`active-speaker-ui.js`
+   Placement copy lived on the page (`active-speaker-ui.js`
    `NEARFIELD_LEVEL_MATCH_GUIDANCE`).
    **The recording described here — on this page — is retired** (see the note
    above): as of 2026-08-02 no module under `deploy/assets/sound-profile/`
-   calls `getUserMedia` at all, so the `/sound/` page cannot record and
-   `NEARFIELD_LEVEL_MATCH_GUIDANCE` is copy with no recorder behind it. This
+   calls `getUserMedia` at all, so the `/sound/` page cannot record;
+   `NEARFIELD_LEVEL_MATCH_GUIDANCE` no longer asks for one, and now points at
+   the v2 conductor's **Active speaker** tab (`correction_hub.SECTIONS`). This
    is **not** a claim about `measurement-audio.js`, which is very much alive.
    Within `deploy/assets/` only `balance` and `sync` import it — but the file
    also leaves that tree: `capture-page/build.sh` **copies** the canonical

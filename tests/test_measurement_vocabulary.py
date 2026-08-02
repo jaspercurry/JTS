@@ -410,6 +410,34 @@ def test_the_fixed_axis_placement_copy_keeps_the_conditional_aim():
         assert "unless its calibration file says otherwise" in text
 
 
+def test_the_driver_levels_pointer_names_the_tab_as_its_owner_labels_it():
+    """The `/sound/` driver-levels copy tells the household to choose a tab BY
+    NAME, so that name has to track the module that owns it.
+
+    ``correction_hub.SECTIONS`` is the single owner of the household-facing tab
+    labels ("Active speaker" for the still-internally-``crossover`` slug); the
+    pointer in ``active-speaker-ui.js`` is a second copy of one of them. Rename
+    the tab in Python and the pointer silently sends the household looking for a
+    tab that no longer exists, with every other test green — the #1959 shape (a
+    row label and the surface it points at drifting apart), which is why that
+    page is swept here at all.
+
+    Read the LITERALS, not the file text: the comment above the copy also names
+    the tab, so a plain substring search would stay green if the copy dropped it.
+    """
+    from jasper.web.correction_hub import SECTIONS
+
+    label = next(text for key, text, _ in SECTIONS if key == "crossover")
+    literals = _readable_strings("deploy/assets/sound-profile/js/active-speaker-ui.js")
+    assert any(label in literal for literal in literals), (
+        f'The /sound/ driver-levels pointer must name the "{label}" tab exactly '
+        "as correction_hub.SECTIONS labels it — update "
+        "NEARFIELD_LEVEL_MATCH_GUIDANCE in "
+        "deploy/assets/sound-profile/js/active-speaker-ui.js to match the "
+        "renamed tab, or the copy sends the household to a tab that is not there"
+    )
+
+
 def test_allowlist_entries_are_still_used():
     """An exemption that no longer matches anything is stale — it outlived the
     string it excused, and a stale exemption is how a real offender slips in

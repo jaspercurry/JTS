@@ -462,17 +462,26 @@ export function commissionGateReason(gateId) {
   }[gateId] || 'A setup step still needs finishing before this driver can be tested.';
 }
 
-// Near-field placement guidance for the L1 phone level match. The page owns the
-// measurement copy (backend stays vocabulary-free). The level match is OPTIONAL
-// — confirming each driver by ear is enough to finish; the phone capture just
-// refines the per-driver levels with a measurement. Holding the mic close and at
-// a CONSISTENT distance for every driver is what makes the levels comparable.
+// Pointer to the L1 level match for the driver-levels card. The level match is
+// OPTIONAL — confirming each driver by ear is enough to finish HERE. This page
+// cannot record: /sound/ is plain HTTP, so `getUserMedia` is unavailable and no
+// recorder exists in this bundle. The measurement lives on the HTTPS
+// /correction/ hub's "Active speaker" tab (correction_hub.SECTIONS — the
+// household-facing label for the still-internally-"crossover" slug), so this
+// copy is only a pointer to it. Name the TAB, not just the host: typing
+// jts.local/correction lands on the sibling Room tab, and "room correction" is
+// already this copy's name for the later stage you may skip to.
+// Placement geometry is OWNED by jasper/active_speaker/capture_geometry.py and
+// rendered by the capture page — which instruction the household sees depends
+// on the capture kind (capture_relay.spec.BUILDERS). Do NOT restate a distance
+// or an aim instruction here.
 export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
-  'Automatic tuning option: hold the microphone about ' +
-  '2–5 cm from the centre of the driver, pointed straight at it, while its tone ' +
-  'plays — keep the same distance for every driver. A safe applied manual crossover ' +
-  'can proceed to room correction without this step. Measured values replace manual ' +
-  'pins only when you explicitly apply the automatic crossover.';
+  'Automatic tuning option: confirming each driver by ear here is enough to ' +
+  'finish. The automatic crossover measures the drivers for you — open ' +
+  'jts.local/correction and choose the Active speaker tab. A safe applied ' +
+  'manual crossover can proceed to room correction without that step. ' +
+  'Measured values replace manual pins only when you explicitly apply the ' +
+  'automatic crossover.';
 
 // Single generic fallback for the combined-test failure line when the backend
 // commissioning view is unavailable (e.g. its fetch failed). The per-failure-code
