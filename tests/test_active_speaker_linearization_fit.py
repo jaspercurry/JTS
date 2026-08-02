@@ -1643,35 +1643,80 @@ def test_the_bound_catches_a_skirt_a_request_mask_would_have_let_through():
     assert all(f.gain <= 0.0 for f in refused.filters)
 
 
-@pytest.mark.parametrize("center_hz", [700.0, 1500.0, 3000.0])
-@pytest.mark.parametrize("width", [1.05, 1.20, 1.60, 3.00])
-def test_the_bound_is_monotone_it_can_never_raise_gain_at_any_bin(center_hz, width):
-    """The load-bearing safety property, swept rather than argued.
+def _multi_dip_response(specs, *, excited_band_hz=(150.0, 4000.0)):
+    """A driver carrying SEVERAL dips — the shape the monotonicity pathology
+    needs, and the reason a single-dip fixture cannot find it.
 
-    An exclusion may only ever REMOVE gain. It must never raise the realized
-    response at any bin, never introduce a boost filter the unbounded fit did
-    not have, and never turn a refused lift into an emitted one.
-
-    This is pinned because the obvious implementation — zeroing ``wanted``
-    inside the band — violates it. ``_lift_stage``'s suppressions are
-    all-or-nothing and ``design_peq`` is greedy over the residue, so REMOVING
-    demand could unlock a cascade that had been refused wholesale: one
-    measured case went from no boost at all to a +24.06 dB cascade carrying
-    +12.85 dB MORE gain inside the excluded band. Reading the realized
-    cascade instead leaves ``design_peq``'s inputs untouched, which is what
-    makes the property hold by construction.
+    ``specs`` is ``(center_hz, depth_db, width_oct)`` per dip.
     """
-    resp, envelope = _dip_response(depth_db=8.0, center_hz=center_hz)
-    excluded = (center_hz / width, center_hz * width)
+    db = np.zeros_like(_NATIVE_FREQS_HZ)
+    for center_hz, depth_db, width_oct in specs:
+        db = db - _bell(_NATIVE_FREQS_HZ, center_hz, depth_db, width_oct)
+    resp = _driver_response("woofer", db)
+    return resp, _envelope("woofer", resp, excited_band_hz=excited_band_hz)
 
-    def _realized(fit):
-        boosts = tuple(f for f in fit.filters if f.gain > 0.0)
-        if not boosts:
-            return np.zeros_like(envelope.freqs_hz), ()
-        return 20.0 * np.log10(np.maximum(np.abs(
-            complex_correction_response(boosts, envelope.freqs_hz)
-        ), 1e-12)), boosts
 
+def _realized_boost_db(fit, freqs_hz):
+    """The emitted BOOST cascade's realized response, and the boosts."""
+    boosts = tuple(f for f in fit.filters if f.gain > 0.0)
+    if not boosts:
+        return np.zeros_like(freqs_hz), ()
+    return 20.0 * np.log10(np.maximum(
+        np.abs(complex_correction_response(boosts, freqs_hz)), 1e-12,
+    )), boosts
+
+
+#: Two shapes that a REQUEST-mask implementation of the #1967 bound turns
+#: non-monotone, found by sweeping multi-dip responses against that
+#: implementation and pinned here deterministically. They cover both
+#: mechanisms, which are different bugs wearing one symptom:
+#:
+#: * ``unlock`` — the base fit is suppressed WHOLESALE (``exceeds_envelope``)
+#:   and emits nothing; removing demand shrinks the residue enough that the
+#:   cascade fits, so the bound turns "no boost at all" into +7.85 dB.
+#: * ``greedy_relocation`` — both fits emit, but ``design_peq`` is greedy over
+#:   the residue, so a changed residue moves and enlarges filters elsewhere:
+#:   +3.19 dB more gain at some bin than the unbounded fit had.
+#:
+#: A single-dip fixture finds NEITHER (0 of 1500 randomized trials against the
+#: buggy implementation), which is why these are spelled out rather than left
+#: to a sweep.
+_NON_MONOTONE_SHAPES = (
+    (
+        "unlock",
+        ((3011.3, 8.04, 0.236), (3265.9, 8.13, 0.416),
+         (596.8, 8.86, 0.297), (2888.3, 14.41, 0.144)),
+        (1499.8, 4035.1),
+    ),
+    (
+        "greedy_relocation",
+        ((482.8, 14.25, 0.346), (2629.5, 15.45, 0.172), (3244.0, 6.15, 0.298)),
+        (1488.2, 4839.7),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "label,specs,excluded", _NON_MONOTONE_SHAPES,
+    ids=[shape[0] for shape in _NON_MONOTONE_SHAPES],
+)
+def test_the_bound_is_monotone_on_the_shapes_that_break_a_request_mask(
+    label, specs, excluded,
+):
+    """The load-bearing safety property, on the two shapes that falsify the
+    obvious implementation.
+
+    An exclusion may only ever REMOVE gain: never raise the realized response
+    at any bin, never introduce a boost the unbounded fit did not have, never
+    turn a wholesale refusal into an emitted cascade.
+
+    Reading the REALIZED cascade (rather than masking ``wanted``) makes this
+    hold by construction — ``design_peq``'s inputs are untouched, so the
+    cascade is bit-identical and the only thing that can change is whether it
+    is accepted. These cases exist so that a future edit which "simplifies"
+    the bound back onto ``lift_mask`` fails here instead of shipping.
+    """
+    resp, envelope = _multi_dip_response(specs)
     base = fit_driver_linearization(
         resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
     )
@@ -1681,16 +1726,54 @@ def test_the_bound_is_monotone_it_can_never_raise_gain_at_any_bin(center_hz, wid
             allow_boost=True, boost_excluded_bands_hz=(excluded,),
         ),
     )
-    base_db, base_boosts = _realized(base)
-    bounded_db, bounded_boosts = _realized(bounded)
+    base_db, base_boosts = _realized_boost_db(base, envelope.freqs_hz)
+    bounded_db, bounded_boosts = _realized_boost_db(bounded, envelope.freqs_hz)
 
-    assert float(np.max(bounded_db - base_db)) <= 1e-9, (
-        center_hz, width, float(np.max(bounded_db - base_db)),
-    )
+    assert float(np.max(bounded_db - base_db)) <= 1e-9, label
     assert bounded.headroom_cost_db <= base.headroom_cost_db + 1e-9
-    # Either the cascade is untouched, or it was refused outright. A THIRD
-    # outcome -- a different, larger set of boosts -- is the pathology.
-    assert bounded_boosts in (base_boosts, ())
+    # Either the cascade survives untouched, or it is refused outright. A
+    # THIRD outcome — a different, larger set of boosts — is the pathology.
+    assert bounded_boosts in (base_boosts, ()), label
+
+
+def test_the_bound_is_monotone_across_a_swept_population():
+    """The same property as a sweep rather than two cases, so a shape the two
+    above do not represent still has to satisfy it.
+
+    Deterministic seed: this is a population claim, and a flaky population is
+    worse than a small one.
+    """
+    rng = np.random.default_rng(11)
+    worst_rise_db = -np.inf
+    for _ in range(120):
+        specs = [
+            (float(rng.uniform(300.0, 3500.0)),
+             float(rng.uniform(3.0, 16.0)),
+             float(rng.uniform(0.08, 0.5)))
+            for _ in range(int(rng.integers(2, 5)))
+        ]
+        resp, envelope = _multi_dip_response(specs)
+        center = float(rng.uniform(300.0, 3800.0))
+        width = float(rng.uniform(1.03, 2.0))
+        excluded = (center / width, center * width)
+
+        base = fit_driver_linearization(
+            resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        )
+        bounded = fit_driver_linearization(
+            resp, envelope,
+            vocabulary=FitVocabulary(
+                allow_boost=True, boost_excluded_bands_hz=(excluded,),
+            ),
+        )
+        base_db, base_boosts = _realized_boost_db(base, envelope.freqs_hz)
+        bounded_db, bounded_boosts = _realized_boost_db(bounded, envelope.freqs_hz)
+        worst_rise_db = max(worst_rise_db, float(np.max(bounded_db - base_db)))
+        assert bounded_boosts in (base_boosts, ()), (specs, excluded)
+
+    # Exactly zero, not "small": the cascade is either the same object or
+    # absent, so there is no arithmetic that could produce a small positive.
+    assert worst_rise_db == 0.0
 
 
 def test_an_empty_boost_exclusion_is_byte_identical_to_no_exclusion():
