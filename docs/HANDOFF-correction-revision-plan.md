@@ -120,9 +120,14 @@ text stands as written.
 > **P1 landed in R9** (#1989, #1987, #1991, #1994); **P3 landed across R10a and
 > R10b** (#1999, #1998; then #2005, #2009, #2007, #2018, #2016, #2008);
 > **P4's chassis landed in R11** (#1982 the findings reader, #2029 the attempts
-> loop, #2031 the VERIFY evidence gate). **P2 remains unbuilt** — see its rung
-> below. Ratification itself is still Monday's, for every rung including the
-> built ones.
+> loop, #2031 the VERIFY evidence gate). **P2 remains unbuilt.** Ratification
+> itself is still Monday's, for every rung including the built ones.
+>
+> This list is a **summary for orientation**; each rung's own **Status**
+> paragraph below is authoritative for what it shipped and what it did not —
+> notably P4's, which records that the chassis landed with its per-speaker
+> model-error store **still unwired**. If this block and a rung disagree, the
+> rung wins and this block is the bug.
 >
 > The owner gave a **provisional green light to build along the
 > ladder** ahead of ratification (see [the campaign](#the-campaign--rounds-to-monday-2026-08-03-and-beyond)).
