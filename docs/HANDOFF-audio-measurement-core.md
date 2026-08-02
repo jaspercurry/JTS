@@ -1053,7 +1053,7 @@ signal to a compression driver.
 > What is still live, and why this section stays, is the **tier contract**:
 > the trim chain (`baseline_profile._measured_level_trims` →
 > `_derive_corrections`), the provenance ladder, the fail-closed
-> `provisional` behaviour, and the magnitude-only rule that L1 can never
+> `provisional` behavior, and the magnitude-only rule that L1 can never
 > authorize a phase or delay decision. Treat the capture mechanics as the
 > design record; treat the decision rules as current.
 
@@ -1519,12 +1519,13 @@ to de-risk Phase 3.
 ---
 
 **Verified 2026-08-02 — scope, stated exactly.** This pass re-read against
-`7049b668d`, in this worktree: the two module-inventory sections ("What exists
+`7049b668d`, in a worktree pinned to that commit (per the provenance note
+above): the two module-inventory sections ("What exists
 and is production-grade", "What is already shared") including a mechanical diff
 of `jasper/audio_measurement/`'s 27 modules against its own `__init__.py`
 docstring; the "gaps" section end to end; the L1 and L2 product sections; the
 Phase-1 roadmap paragraphs about graph safety and the active-emitter gate; and
-the Risks list. Behaviours newly covered here, each read at its owner:
+the Risks list. Behaviors newly covered here, each read at its owner:
 `snr_policy.worst_band_verdict` / `_worst_snr_key` (equal-verdict tie-break,
 #2026), `snr_policy.unwrap_noise_report` +
 `program_analysis._driver_snr_block` / `_raw_sweep_segment` (the noise
@@ -1545,7 +1546,7 @@ step 1's per-capture `calibration_id` endpoints.
 1 / Wave 2 / Wave 3 "Current state" subsections (still carrying their own
 2026-07-13 – 2026-07-15 dates and the 2026-07-15 header), the `null_walk` /
 `delay_graph` contract paragraphs beyond confirming their symbols and caps
-exist, and every hardware figure anywhere in this file. No hardware behaviour
+exist, and every hardware figure anywhere in this file. No hardware behavior
 was revalidated. The `spatial_combine` / `interference_nulls` calibrated
 constants were confirmed to live in-module and were **not** transcribed here.
 
