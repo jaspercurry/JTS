@@ -220,20 +220,7 @@ impl RingWriter {
         expected.validate_self()?;
         let map = crate::attach_or_create(path, expected, RingRole::Writer)?;
 
-        // Writer attach: continue from the stored write_seq, epoch++ (Release),
-        // stamp pid + heartbeat. Identical to the C writer's attach stamp.
-        let write_seq = map
-            .header_atomic(layout::OFF_WRITE_SEQ)
-            .load(Ordering::Acquire);
-        let epoch = map
-            .header_atomic(layout::OFF_WRITER_EPOCH)
-            .load(Ordering::Acquire);
-        map.header_atomic(layout::OFF_WRITER_EPOCH)
-            .store(epoch + 1, Ordering::Release);
-        map.header_atomic(layout::OFF_WRITER_PID)
-            .store(std::process::id() as u64, Ordering::Relaxed);
-        map.header_atomic(layout::OFF_WRITER_HEARTBEAT_NS)
-            .store(monotonic_ns(), Ordering::Relaxed);
+        let write_seq = map.attach_writer();
 
         // Seed the stall-tracking state: the read_seq we attach against, and a
         // fresh "reader last advanced" stamp so a freshly-attached writer is
@@ -367,15 +354,7 @@ impl RingWriter {
         // Space confirmed (or made by drop-oldest). memcpy the payload into slot
         // (w % n_slots) with plain stores, then store write_seq+1 (Release) so
         // the reader's Acquire load of write_seq sees the complete payload.
-        let slot_index = (w % g.n_slots as u64) as u32;
-        // SAFETY: slot_index < n_slots; samples.len() == samples_per_slot; the
-        // slot payload is exactly slot_bytes == samples_per_slot * 2 bytes.
-        unsafe {
-            let dst = self.map.slot_ptr(slot_index) as *mut u8;
-            for (i, &s) in samples.iter().enumerate() {
-                std::ptr::write_unaligned(dst.add(i * 2) as *mut i16, s);
-            }
-        }
+        self.map.write_i16_slot(w, samples);
         let next = w.wrapping_add(1);
         self.write_seq = next;
         self.map

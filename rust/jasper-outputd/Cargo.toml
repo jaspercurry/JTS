@@ -10,6 +10,9 @@ rust-version = "1.75"
 
 [dependencies]
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
+# Shared policy-light scalar environment parsing. Outputd keeps its own
+# optional-string and strictly-positive geometry policy.
+jasper-env = { path = "../jasper-env" }
 # The shared clock-tracking DLL (spa_dll port). outputd composes it for the
 # observe-only software-AEC reference drift estimate (and, from Inc 3, the
 # converged chip-AEC SRO / content-bridge rate loops). Pure, no ALSA.

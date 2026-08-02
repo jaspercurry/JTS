@@ -125,10 +125,9 @@ impl OutputCore {
         &mut self,
         provider_item_id: Option<String>,
         kind: SegmentKind,
-        gain: f32,
         samples: Vec<i16>,
     ) -> SegmentId {
-        let id = self.start_assistant_segment(provider_item_id, kind, gain);
+        let id = self.start_assistant_segment(provider_item_id, kind);
         self.append_assistant_audio_with_segment_gain(id, samples);
         self.end_assistant_segment(id);
         id
@@ -138,19 +137,17 @@ impl OutputCore {
         &mut self,
         provider_item_id: Option<String>,
         kind: SegmentKind,
-        gain: f32,
     ) -> SegmentId {
-        self.start_assistant_segment_with_profile(provider_item_id, kind, gain, None)
+        self.start_assistant_segment_with_profile(provider_item_id, kind, None)
     }
 
     pub fn start_assistant_segment_with_profile(
         &mut self,
         provider_item_id: Option<String>,
         kind: SegmentKind,
-        fallback_gain: f32,
         profile: Option<AssistantProfile>,
     ) -> SegmentId {
-        let decision = self.loudness.decide_gain(kind, fallback_gain, profile);
+        let decision = self.loudness.decide_gain(profile);
         log_assistant_loudness_decision(kind, &decision);
         let clamped_gain = decision.final_gain_db;
         let id = self
@@ -550,7 +547,6 @@ mod tests {
         core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            -6.0,
             stereo(5000, 4),
         );
 
@@ -566,7 +562,7 @@ mod tests {
         let mut core = OutputCore::new(2);
         authorize_unmuted_assistant(&mut core);
         core.push_content_period(stereo(30_000, 2));
-        core.enqueue_assistant_segment(None, SegmentKind::Cue, 12.0, stereo(30_000, 2));
+        core.enqueue_assistant_segment(None, SegmentKind::Cue, stereo(30_000, 2));
 
         let first = core.step();
         let second = core.step();
@@ -583,7 +579,6 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            20.0,
             stereo(10_000, 2),
         );
 
@@ -613,7 +608,7 @@ mod tests {
     #[test]
     fn pending_assistant_frames_tracks_queue_depth() {
         let mut core = OutputCore::new(2);
-        core.enqueue_assistant_segment(None, SegmentKind::Assistant, -6.0, stereo(100, 4));
+        core.enqueue_assistant_segment(None, SegmentKind::Assistant, stereo(100, 4));
 
         assert_eq!(core.pending_assistant_frames(), 4);
 
@@ -629,7 +624,6 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            -6.0,
             stereo(5000, 2),
         );
 
@@ -663,7 +657,6 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            -6.0,
             stereo(1000, 96),
         );
 
@@ -686,7 +679,7 @@ mod tests {
     #[test]
     fn steady_state_reuses_segment_write_buffer_capacity() {
         let mut core = OutputCore::new(2);
-        core.enqueue_assistant_segment(None, SegmentKind::Assistant, -6.0, stereo(1000, 8));
+        core.enqueue_assistant_segment(None, SegmentKind::Assistant, stereo(1000, 8));
 
         core.step();
         let capacity = core.segment_write_capacity();
@@ -720,7 +713,6 @@ mod tests {
         let segment = core.start_assistant_segment_with_profile(
             None,
             SegmentKind::Assistant,
-            -12.0,
             Some(AssistantProfile {
                 provider: "openai".to_string(),
                 model: "gpt-realtime-2".to_string(),
@@ -736,11 +728,9 @@ mod tests {
         // default envelope. With no observed content:
         // baseline_lufs=target_lufs=-41.0; the profile supplies
         // source_lufs=-30.0, so requested_gain=-41.0-(-30.0)=-11.0; the peak
-        // cap (-3.0-(-18.0)=+15.0) leaves -11.0 unchanged. The -12.0 fallback gain is
-        // ignored once a profile yields a calibrated target (see the passing
-        // `calibrated_profile_targets_baseline_plus_offset`). Had the context not
-        // been cleared, baseline=-20.0 would drive the gain to the dynamic
-        // peak cap instead of the quiet-room target.
+        // cap (-3.0-(-18.0)=+15.0) leaves -11.0 unchanged. Had the context not
+        // been cleared, baseline=-20.0 would drive the gain to the dynamic peak
+        // cap instead of the quiet-room target.
         assert_eq!(core.ledger().segment(segment).gain, -11.0);
     }
 
@@ -750,7 +740,6 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            -6.0,
             stereo(1000, 96),
         );
 
@@ -811,7 +800,6 @@ mod tests {
         let id = core.start_assistant_segment_with_profile(
             Some("s".to_string()),
             SegmentKind::Assistant,
-            0.0,
             Some(profile(-41.0, -3.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, 0.0);
@@ -869,7 +857,6 @@ mod tests {
         let id = core.start_assistant_segment_with_profile(
             Some("s".to_string()),
             SegmentKind::Assistant,
-            0.0,
             Some(profile(-41.0, -20.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, 0.0);
@@ -917,7 +904,6 @@ mod tests {
         let id = core.start_assistant_segment_with_profile(
             Some("s".to_string()),
             SegmentKind::Assistant,
-            0.0,
             Some(profile(-25.0, -20.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, -16.0);
@@ -953,7 +939,6 @@ mod tests {
         let id = core.start_assistant_segment_with_profile(
             Some("s".to_string()),
             SegmentKind::Assistant,
-            0.0,
             Some(profile(-25.0, -20.0)),
         );
         core.append_assistant_audio_with_segment_gain(id, stereo(8000, 8));

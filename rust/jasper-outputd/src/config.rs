@@ -10,6 +10,7 @@
 //! explicit `JASPER_OUTPUTD_*` environment lines.
 
 use anyhow::{Context, Result};
+use jasper_env::{env_f32, env_parse, env_str};
 
 use crate::dac_content::{
     ChannelPick, SUB_DEFAULT_CORNER_HZ, SUB_MAX_CORNER_HZ, SUB_MIN_CORNER_HZ,
@@ -699,10 +700,6 @@ fn validate_buffer(
     Ok(())
 }
 
-fn env_str(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.to_string())
-}
-
 fn env_optional(name: &str) -> Option<String> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Some(value),
@@ -711,19 +708,11 @@ fn env_optional(name: &str) -> Option<String> {
 }
 
 fn env_u32(name: &str, default: u32) -> Result<u32> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => {
-            let parsed = s
-                .trim()
-                .parse::<u32>()
-                .with_context(|| format!("{} must be a positive integer; got {:?}", name, s))?;
-            if parsed == 0 {
-                anyhow::bail!("{} must be > 0", name);
-            }
-            Ok(parsed)
-        }
-        _ => Ok(default),
+    let parsed = env_parse(name, default, "a positive integer")?;
+    if parsed == 0 {
+        anyhow::bail!("{} must be > 0", name);
     }
+    Ok(parsed)
 }
 
 /// Parse an optional channel-width env var, validated to `[lo, hi]` when set.
@@ -745,13 +734,7 @@ fn env_optional_u16(name: &str, lo: u16, hi: u16) -> Result<Option<u16>> {
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => s
-            .trim()
-            .parse::<u64>()
-            .with_context(|| format!("{} must be a non-negative integer; got {:?}", name, s)),
-        _ => Ok(default),
-    }
+    env_parse(name, default, "a non-negative integer")
 }
 
 fn env_i64(name: &str, default: i64) -> Result<i64> {
@@ -771,22 +754,6 @@ fn env_bool(name: &str, default: bool) -> bool {
             "1" | "true" | "yes" | "on"
         ),
         Err(_) => default,
-    }
-}
-
-fn env_f32(name: &str, default: f32) -> Result<f32> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => {
-            let parsed = s
-                .trim()
-                .parse::<f32>()
-                .with_context(|| format!("{} must be a number; got {:?}", name, s))?;
-            if !parsed.is_finite() {
-                anyhow::bail!("{} must be finite", name);
-            }
-            Ok(parsed)
-        }
-        _ => Ok(default),
     }
 }
 

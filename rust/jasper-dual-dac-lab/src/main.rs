@@ -1157,35 +1157,11 @@ fn epoch_ms() -> u128 {
 }
 
 fn json_array(values: &[String]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(|value| json_string(value))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+    serde_json::to_string(values).expect("serializing strings to JSON cannot fail")
 }
 
 fn json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch.is_control() => {
-                use std::fmt::Write;
-                let _ = write!(out, "\\u{:04x}", ch as u32);
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
+    serde_json::to_string(value).expect("serializing a string to JSON cannot fail")
 }
 
 fn print_usage() {
@@ -1303,6 +1279,22 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("duration-sec"));
+    }
+
+    #[test]
+    fn json_helpers_round_trip_controls_and_unicode() {
+        let values = vec![
+            "quote\"slash\\line\ncontrol\u{0001}".to_string(),
+            "café 日本語".to_string(),
+        ];
+        assert_eq!(
+            serde_json::from_str::<String>(&json_string(&values[0])).unwrap(),
+            values[0]
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&json_array(&values)).unwrap(),
+            values
+        );
     }
 
     #[test]

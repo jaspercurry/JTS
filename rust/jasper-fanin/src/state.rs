@@ -682,546 +682,16 @@ impl StateServer {
         }
         buf.push(',');
 
-        // inputs array
-        buf.push_str(r#""inputs":["#);
-        for (i, input) in self.inputs.iter().enumerate() {
-            if i > 0 {
-                buf.push(',');
-            }
-            buf.push('{');
-            push_kv_str(&mut buf, "label", &input.label);
-            buf.push(',');
-            push_kv_str(&mut buf, "pcm", &input.pcm_name);
-            buf.push(',');
-            // source: "direct" on the USB DIRECT lane (reads hw:UAC2Gadget
-            // directly), "lane" on every aloop-reading lane. Always present,
-            // additive (the TRIM-block precedent) — C7.
-            push_kv_str(
-                &mut buf,
-                "source",
-                if input.is_direct { "direct" } else { "lane" },
-            );
-            buf.push(',');
-            // muted: the lane's MIX-MUTE state (mux latest-source-wins arbitration
-            // on a combo/direct box). SEPARATE from the telemetry fields below —
-            // a `muted:true` lane still reports its true pre-mute `frames_read` /
-            // `rms_dbfs` (silenced at the sum, not the capture), which is what mux
-            // reads to keep a muted-but-streaming host "playing". Always present,
-            // flat + greppable (like `source` / the catch-up counters).
-            push_kv_bool(&mut buf, "muted", input.muted.load(Ordering::Relaxed));
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "frames_read",
-                input.frames_read.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            // Per-lane content level (dBFS). Always present, flat + greppable
-            // (like frames_read / the catch-up counters). The mixer overwrites
-            // this every period from the samples the lane contributed; a
-            // digitally-silent / muxed-out / gadget-absent lane reports the -120
-            // floor. mux's combo-liveness gate reads the USB DIRECT lane's value.
-            push_kv_f64(
-                &mut buf,
-                "rms_dbfs",
-                (input.rms_dbfs_x100.load(Ordering::Relaxed) as f64) / 100.0,
-                2,
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "xrun_count",
-                input.xrun_count.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            // Catch-up resync counters (mixer's drain_input_excess). Both
-            // stay 0 on a DAC-locked lane; a growing pair is the operator's
-            // "this lane is free-running and we're drop-resyncing it" signal
-            // (today only the USB host-clock lane). Never escalated.
-            push_kv_u64(
-                &mut buf,
-                "catchup_resync_frames",
-                input.catchup_resync_frames.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "catchup_events",
-                input.catchup_events.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            // TRIM counters (the standing-fill one-shot drop). `trims` is how
-            // many TRIMs actually dropped ≥1 frame on this lane; `trimmed_frames`
-            // is the cumulative total dropped from the resampler ring; `pending`
-            // shows an armed but not-yet-serviced request. All 0/false on a lane
-            // never trimmed (including every unarmed lane), so the shape is
-            // stable for the common case. Always present (unlike the optional
-            // resampler block) — a flat, greppable pair like the catch-up
-            // counters above.
-            buf.push_str(r#""trim":{"#);
-            push_kv_u64(&mut buf, "trims", input.trim.trims.load(Ordering::Relaxed));
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "trimmed_frames",
-                input.trim.trimmed_frames.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_bool(
-                &mut buf,
-                "pending",
-                input.trim.pending.load(Ordering::Relaxed),
-            );
-            buf.push('}');
-            // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
-            // nested object only when armed on this lane — absent for every lane
-            // when the feature is off, so the default STATUS shape is unchanged.
-            if let Some(r) = &input.resampler {
-                buf.push(',');
-                buf.push_str(r#""resampler":{"#);
-                // Presence of `input.resampler` is the arm state; the wire key
-                // remains explicit for compatibility with existing consumers.
-                push_kv_bool(&mut buf, "armed", true);
-                buf.push(',');
-                push_kv_bool(&mut buf, "locked", r.locked.load(Ordering::Relaxed));
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "input_frames",
-                    r.input_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "output_frames",
-                    r.output_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "silence_frames",
-                    r.silence_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "overrun_frames",
-                    r.overrun_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // Stored as i64 milli-ppm in a u64 atomic; reinterpret + scale
-                // back to ppm for display.
-                let ratio_ppm = (r.ratio_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
-                push_kv_f64(&mut buf, "ratio_ppm", ratio_ppm, 2);
-                buf.push(',');
-                // Live ring fill (current) vs. the configured hold target — the
-                // operator's "the resampler engaged and is tracking" proof: a
-                // fill_frames steady near target_fill_frames = locked & holding.
-                push_kv_u64(
-                    &mut buf,
-                    "fill_frames",
-                    r.fill_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // The static acquisition ceiling (target + full cushion) — the
-                // snap-back target, unchanged shape for backward compat.
-                push_kv_u64(&mut buf, "target_fill_frames", r.target_fill_frames);
-                buf.push(',');
-                // The LIVE held target the controller (and the outer DLL) hold
-                // the fill toward RIGHT NOW — equal to target_fill_frames unless
-                // the DEFAULT-OFF post-lock cushion decay has lowered it. This is
-                // the single-source-of-truth setpoint; watch it descend from the
-                // ceiling toward the decay floor when decay is engaged.
-                push_kv_u64(
-                    &mut buf,
-                    "held_target_frames",
-                    r.held_target_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // Post-lock cushion-decay state (all inert while decay is off):
-                // active = actively decaying; floor = the configured decay floor;
-                // frozen_reason = why decay is paused ("" while actively decaying,
-                // else unlocked / not_l0 / cascade / warmup / at_floor).
-                buf.push_str(r#""decay":{"#);
-                push_kv_bool(&mut buf, "active", r.decay_active.load(Ordering::Relaxed));
-                buf.push(',');
-                push_kv_u64(&mut buf, "floor_frames", r.decay_floor_frames);
-                buf.push(',');
-                push_kv_str(
-                    &mut buf,
-                    "frozen_reason",
-                    crate::lane_resampler::DecayFrozenReason::code_str(
-                        r.decay_frozen_reason.load(Ordering::Relaxed),
-                    ),
-                );
-                buf.push('}');
-                buf.push(',');
-                push_kv_u64(&mut buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "unlock_count",
-                    r.unlock_count.load(Ordering::Relaxed),
-                );
-                // OPTIONAL host-compliance persistence block (prime-at-floor).
-                // Rendered only when the DEFAULT-OFF feature is armed on this lane;
-                // absent otherwise (byte-identical STATUS shape). flag_present =
-                // a persisted proof is believed present; proved_at = its epoch-s
-                // timestamp (0 when absent); revoked_reason_last = the last revoke
-                // OR retained-strike reason ("" until one happens);
-                // consecutive_failures = the two-strike probe-fail counter (0 for a
-                // clean proof, 1 after a first spurious probe fail whose proof was
-                // retained; a 2nd fail deletes the proof so it never sits at ≥2).
-                if let Some(c) = &r.compliance {
-                    buf.push(',');
-                    buf.push_str(r#""compliance":{"#);
-                    push_kv_bool(
-                        &mut buf,
-                        "flag_present",
-                        c.flag_present.load(Ordering::Relaxed),
-                    );
-                    buf.push(',');
-                    push_kv_u64(
-                        &mut buf,
-                        "proved_at",
-                        c.proved_at_epoch_s.load(Ordering::Relaxed),
-                    );
-                    buf.push(',');
-                    push_kv_str(
-                        &mut buf,
-                        "revoked_reason_last",
-                        crate::host_compliance::revoke_reason_code_str(
-                            c.revoked_reason_last_code.load(Ordering::Relaxed),
-                        ),
-                    );
-                    buf.push(',');
-                    push_kv_u64(
-                        &mut buf,
-                        "consecutive_failures",
-                        c.consecutive_failures.load(Ordering::Relaxed),
-                    );
-                    buf.push('}');
-                }
-                buf.push('}');
-            }
-            // OPTIONAL USB DIRECT block (C7). Rendered only on the direct lane
-            // (mirrors the optional `resampler` block): device, live presence,
-            // cumulative opens/retries. Absent for every aloop lane, so the
-            // default STATUS shape is unchanged.
-            if let Some(d) = &input.direct {
-                buf.push(',');
-                buf.push_str(r#""direct":{"#);
-                push_kv_str(&mut buf, "device", &d.device);
-                buf.push(',');
-                push_kv_bool(&mut buf, "present", d.present.load(Ordering::Relaxed));
-                buf.push(',');
-                push_kv_bool(&mut buf, "streaming", d.streaming.load(Ordering::Relaxed));
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "stream_starts",
-                    d.stream_starts.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "stream_stops",
-                    d.stream_stops.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "notify_attempts",
-                    d.notify_attempts.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "notify_failures",
-                    d.notify_failures.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // Coarse capture-health observability: "capturing" (present +
-                // flowing), "idle" (no host / attached-but-silent / (re)opening),
-                // or "broken" (the flowing→dead zombie signature). This and the
-                // reopen counters below expose fan-in's local recovery; they do not
-                // authorize a USB lifecycle or composition change. See
-                // crate::mixer::direct_health.
-                push_kv_str(
-                    &mut buf,
-                    "health",
-                    crate::mixer::direct_health_str_from_obs(d),
-                );
-                buf.push(',');
-                push_kv_u64(&mut buf, "opens", d.opens.load(Ordering::Relaxed));
-                buf.push(',');
-                push_kv_u64(&mut buf, "retries", d.retries.load(Ordering::Relaxed));
-                buf.push(',');
-                // Zombie-handle forced reopens (C): a growing value means the
-                // flowing→dead zero-avail latch caught a gadget rebuild — the handle
-                // had been feeding the lane, then `avail_update` returned exactly 0
-                // for ~2 s (UDC rebind / usbsink stop-start underneath a live stream)
-                // — and this lane self-healed the deaf handle rather than needing a
-                // manual fan-in restart.
-                push_kv_u64(&mut buf, "reopens", d.reopens.load(Ordering::Relaxed));
-                buf.push(',');
-                // Liveness-probe forced reopens (C, defect 2026-07-06): the twin
-                // counter for a rebuild caught by the ~1 s `snd_pcm_status` ioctl
-                // finding the open handle dead (ENODEV / Disconnected) while
-                // `avail_update`'s frozen mmap still returned Ok(0) — the signal that
-                // fast path structurally cannot raise. Kept separate from `reopens`
-                // so an operator can tell WHICH signal caught the rebuild; which
-                // fires first for a given rebuild is timing-dependent, so read the
-                // pair as "which probe caught it," not a clean live-vs-idle split.
-                push_kv_u64(
-                    &mut buf,
-                    "card_gen_reopens",
-                    d.card_gen_reopens.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // Negotiated gadget geometry (lever 2). 256/768 by default;
-                // JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES overrides the period and
-                // resolve_direct_buffer_frames derives the requested deep buffer.
-                // buffer_frames is the ACTUALLY-negotiated hwp.get_buffer_size()
-                // (the kernel may round the near-request up), read live so STATUS
-                // matches the running PCM rather than the request.
-                push_kv_u64(&mut buf, "period_frames", d.period_frames as u64);
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "buffer_frames",
-                    d.buffer_frames.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                // drain_avail{} — since-boot drain-ENTRY avail dwell stats
-                // (lever 2). `mean`/`max` in frames; `hist` is a fixed 6-bucket
-                // 64-frame-step histogram (boundaries [0,64,128,192,256,320,+]).
-                // Additive sub-block; absent for every non-direct lane.
-                let s = &d.drain_stats;
-                let count = s.count.load(Ordering::Relaxed);
-                let sum = s.sum.load(Ordering::Relaxed);
-                let mean = if count == 0 {
-                    0.0
-                } else {
-                    (sum as f64) / (count as f64)
-                };
-                buf.push_str(r#""drain_avail":{"#);
-                push_kv_u64(&mut buf, "count", count);
-                buf.push(',');
-                push_kv_f64(&mut buf, "mean", mean, 1);
-                buf.push(',');
-                push_kv_u64(&mut buf, "max", s.max.load(Ordering::Relaxed));
-                buf.push(',');
-                buf.push_str(r#""hist":["#);
-                for (i, bucket) in s.hist.iter().enumerate() {
-                    if i > 0 {
-                        buf.push(',');
-                    }
-                    buf.push_str(&bucket.load(Ordering::Relaxed).to_string());
-                }
-                buf.push(']');
-                buf.push('}');
-                buf.push('}');
-            }
-            buf.push('}');
-        }
-        buf.push(']');
+        self.push_inputs_json(&mut buf);
         buf.push(',');
 
-        // output object
-        buf.push_str(r#""output":{"#);
-        push_kv_str(&mut buf, "pcm", &self.output_pcm);
-        buf.push(',');
-        push_kv_u64(&mut buf, "sample_rate", self.sample_rate as u64);
-        buf.push(',');
-        push_kv_u64(&mut buf, "period_frames", self.period_frames as u64);
-        buf.push(',');
-        push_kv_u64(&mut buf, "buffer_frames", self.output_buffer_frames as u64);
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "frames_written",
-            self.output_frames_written.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "xrun_count",
-            self.output_xrun_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        let output_delay_frames = match self.output_delay_frames.load(Ordering::Relaxed) {
-            OUTPUT_DELAY_UNAVAILABLE => None,
-            frames => Some(frames),
-        };
-        push_kv_u64_opt(&mut buf, "snd_pcm_delay_frames", output_delay_frames);
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "snd_pcm_delay_ms",
-            output_delay_frames.map(|frames| (frames as f64) * 1000.0 / (self.sample_rate as f64)),
-            3,
-        );
+        self.push_output_json(&mut buf);
         buf.push(',');
 
-        // coupling transport echo. `transport:"loopback"` (default) carries no
-        // ring block — byte-identical observability to the pre-coupling daemon.
-        // `transport:"shm_ring"` adds a `ring` block (see below).
-        push_kv_str(&mut buf, "transport", self.coupling.transport);
-        // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
-        // live write_seq-read_seq depth; `published` slots reached a live reader;
-        // `full_waits` is the bounded live-reader back-pressure count. The stuck
-        // vs no-reader drop counts are UN-FOLDED (issue #1524): `stuck_reader_drops`
-        // is a heartbeat-live-but-frozen reader (bounded-wait give-ups + sticky
-        // demotions), `drop_no_reader` a dead/absent reader (normal reload
-        // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
-        // episode. `mirror_frames` / `mirror_drops` are the lossy aloop side-tap's
-        // written-frame and drop counts (never load-bearing; parity with
-        // music_output's frames_written/drops). Only present under shm_ring —
-        // byte-identical observability to today under loopback.
-        if let Some(ring) = &self.coupling.ring {
-            buf.push(',');
-            buf.push_str(r#""ring":{"#);
-            push_kv_str(&mut buf, "path", &ring.path);
-            buf.push(',');
-            push_kv_u64(&mut buf, "slots", ring.slots as u64);
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "occupancy",
-                ring.occupancy.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "published",
-                ring.published.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "full_waits",
-                ring.full_waits.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "stuck_reader_drops",
-                ring.stuck_reader_drops.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "drop_no_reader",
-                ring.drop_no_reader.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_bool(
-                &mut buf,
-                "stall_active",
-                ring.stall_active.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "last_stall_ms",
-                ring.last_stall_ms.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "mirror_frames",
-                ring.mirror_frames.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "mirror_drops",
-                ring.mirror_drops.load(Ordering::Relaxed),
-            );
-            buf.push('}');
-        }
-        buf.push('}');
+        self.push_music_output_json(&mut buf);
         buf.push(',');
 
-        // music_output object — the multi-room sync tap (off on a solo
-        // speaker). `enabled:false` with no further fields when unconfigured;
-        // when configured, `drops` growing => the snapserver consumer is behind.
-        buf.push_str(r#""music_output":{"#);
-        match &self.music_output_pcm {
-            Some(pcm) => {
-                push_kv_bool(&mut buf, "enabled", true);
-                buf.push(',');
-                push_kv_str(&mut buf, "pcm", pcm);
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "frames_written",
-                    self.music_frames_written.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "drops",
-                    self.music_output_drops.load(Ordering::Relaxed),
-                );
-            }
-            None => {
-                push_kv_bool(&mut buf, "enabled", false);
-            }
-        }
-        buf.push('}');
-        buf.push(',');
-
-        buf.push_str(r#""tts":{"#);
-        match &self.tts_metrics {
-            Some(metrics) => {
-                push_kv_bool(&mut buf, "enabled", true);
-                buf.push(',');
-                push_kv_u64(&mut buf, "pending_frames", metrics.pending_frames());
-                buf.push(',');
-                push_kv_u64(&mut buf, "max_pending_frames", metrics.max_pending_frames());
-                buf.push(',');
-                push_kv_u64(&mut buf, "budget_frames", metrics.budget_frames());
-                buf.push(',');
-                push_kv_u64(&mut buf, "dropped_commands", metrics.dropped_commands());
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "dropped_audio_frames",
-                    metrics.dropped_audio_frames(),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "stale_commands_dropped",
-                    metrics.stale_commands_dropped(),
-                );
-                buf.push(',');
-                push_kv_u64(&mut buf, "flush_requests", metrics.flush_requests());
-                buf.push(',');
-                push_kv_u64(&mut buf, "flushed_frames", metrics.flushed_frames());
-                buf.push(',');
-                push_kv_bool(
-                    &mut buf,
-                    "program_duck_active",
-                    metrics.program_duck_active(),
-                );
-                buf.push(',');
-                // Render through the shared writer so fan-in and outputd cannot
-                // drift on the assistant_loudness key set (pinned by a contract
-                // test on both daemons against ASSISTANT_LOUDNESS_STATUS_KEYS).
-                buf.push_str(r#""assistant_loudness":"#);
-                jasper_tts_protocol::loudness::render_assistant_loudness(
-                    &mut buf,
-                    &metrics.loudness_snapshot(),
-                );
-            }
-            None => {
-                push_kv_bool(&mut buf, "enabled", false);
-            }
-        }
-        buf.push('}');
+        self.push_tts_json(&mut buf);
         buf.push(',');
 
         // tap object (C4) — always present. The impulse tap over the USB DIRECT
@@ -1272,6 +742,500 @@ impl StateServer {
 
         buf.push('}');
         buf
+    }
+
+    /// Render the complete per-lane STATUS array. Keeping lane-specific optional
+    /// blocks here leaves snapshot_json responsible only for top-level ordering.
+    fn push_inputs_json(&self, buf: &mut String) {
+        buf.push_str(r#""inputs":["#);
+        for (i, input) in self.inputs.iter().enumerate() {
+            if i > 0 {
+                buf.push(',');
+            }
+            buf.push('{');
+            push_kv_str(buf, "label", &input.label);
+            buf.push(',');
+            push_kv_str(buf, "pcm", &input.pcm_name);
+            buf.push(',');
+            // source: "direct" on the USB DIRECT lane (reads hw:UAC2Gadget
+            // directly), "lane" on every aloop-reading lane. Always present,
+            // additive (the TRIM-block precedent) — C7.
+            push_kv_str(
+                buf,
+                "source",
+                if input.is_direct { "direct" } else { "lane" },
+            );
+            buf.push(',');
+            // muted: the lane's MIX-MUTE state (mux latest-source-wins arbitration
+            // on a combo/direct box). SEPARATE from the telemetry fields below —
+            // a `muted:true` lane still reports its true pre-mute `frames_read` /
+            // `rms_dbfs` (silenced at the sum, not the capture), which is what mux
+            // reads to keep a muted-but-streaming host "playing". Always present,
+            // flat + greppable (like `source` / the catch-up counters).
+            push_kv_bool(buf, "muted", input.muted.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "frames_read",
+                input.frames_read.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            // Per-lane content level (dBFS). Always present, flat + greppable
+            // (like frames_read / the catch-up counters). The mixer overwrites
+            // this every period from the samples the lane contributed; a
+            // digitally-silent / muxed-out / gadget-absent lane reports the -120
+            // floor. mux's combo-liveness gate reads the USB DIRECT lane's value.
+            push_kv_f64(
+                buf,
+                "rms_dbfs",
+                (input.rms_dbfs_x100.load(Ordering::Relaxed) as f64) / 100.0,
+                2,
+            );
+            buf.push(',');
+            push_kv_u64(buf, "xrun_count", input.xrun_count.load(Ordering::Relaxed));
+            buf.push(',');
+            // Catch-up resync counters (mixer's drain_input_excess). Both
+            // stay 0 on a DAC-locked lane; a growing pair is the operator's
+            // "this lane is free-running and we're drop-resyncing it" signal
+            // (today only the USB host-clock lane). Never escalated.
+            push_kv_u64(
+                buf,
+                "catchup_resync_frames",
+                input.catchup_resync_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "catchup_events",
+                input.catchup_events.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            // TRIM counters (the standing-fill one-shot drop). `trims` is how
+            // many TRIMs actually dropped ≥1 frame on this lane; `trimmed_frames`
+            // is the cumulative total dropped from the resampler ring; `pending`
+            // shows an armed but not-yet-serviced request. All 0/false on a lane
+            // never trimmed (including every unarmed lane), so the shape is
+            // stable for the common case. Always present (unlike the optional
+            // resampler block) — a flat, greppable pair like the catch-up
+            // counters above.
+            buf.push_str(r#""trim":{"#);
+            push_kv_u64(buf, "trims", input.trim.trims.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "trimmed_frames",
+                input.trim.trimmed_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_bool(buf, "pending", input.trim.pending.load(Ordering::Relaxed));
+            buf.push('}');
+            // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
+            // nested object only when armed on this lane — absent for every lane
+            // when the feature is off, so the default STATUS shape is unchanged.
+            if let Some(r) = &input.resampler {
+                buf.push(',');
+                buf.push_str(r#""resampler":{"#);
+                // Presence of `input.resampler` is the arm state; the wire key
+                // remains explicit for compatibility with existing consumers.
+                push_kv_bool(buf, "armed", true);
+                buf.push(',');
+                push_kv_bool(buf, "locked", r.locked.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "input_frames", r.input_frames.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "output_frames",
+                    r.output_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "silence_frames",
+                    r.silence_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "overrun_frames",
+                    r.overrun_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Stored as i64 milli-ppm in a u64 atomic; reinterpret + scale
+                // back to ppm for display.
+                let ratio_ppm = (r.ratio_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
+                push_kv_f64(buf, "ratio_ppm", ratio_ppm, 2);
+                buf.push(',');
+                // Live ring fill (current) vs. the configured hold target — the
+                // operator's "the resampler engaged and is tracking" proof: a
+                // fill_frames steady near target_fill_frames = locked & holding.
+                push_kv_u64(buf, "fill_frames", r.fill_frames.load(Ordering::Relaxed));
+                buf.push(',');
+                // The static acquisition ceiling (target + full cushion) — the
+                // snap-back target, unchanged shape for backward compat.
+                push_kv_u64(buf, "target_fill_frames", r.target_fill_frames);
+                buf.push(',');
+                // The LIVE held target the controller (and the outer DLL) hold
+                // the fill toward RIGHT NOW — equal to target_fill_frames unless
+                // the DEFAULT-OFF post-lock cushion decay has lowered it. This is
+                // the single-source-of-truth setpoint; watch it descend from the
+                // ceiling toward the decay floor when decay is engaged.
+                push_kv_u64(
+                    buf,
+                    "held_target_frames",
+                    r.held_target_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Post-lock cushion-decay state (all inert while decay is off):
+                // active = actively decaying; floor = the configured decay floor;
+                // frozen_reason = why decay is paused ("" while actively decaying,
+                // else unlocked / not_l0 / cascade / warmup / at_floor).
+                buf.push_str(r#""decay":{"#);
+                push_kv_bool(buf, "active", r.decay_active.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "floor_frames", r.decay_floor_frames);
+                buf.push(',');
+                push_kv_str(
+                    buf,
+                    "frozen_reason",
+                    crate::lane_resampler::DecayFrozenReason::code_str(
+                        r.decay_frozen_reason.load(Ordering::Relaxed),
+                    ),
+                );
+                buf.push('}');
+                buf.push(',');
+                push_kv_u64(buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "unlock_count", r.unlock_count.load(Ordering::Relaxed));
+                // OPTIONAL host-compliance persistence block (prime-at-floor).
+                // Rendered only when the DEFAULT-OFF feature is armed on this lane;
+                // absent otherwise (byte-identical STATUS shape). flag_present =
+                // a persisted proof is believed present; proved_at = its epoch-s
+                // timestamp (0 when absent); revoked_reason_last = the last revoke
+                // OR retained-strike reason ("" until one happens);
+                // consecutive_failures = the two-strike probe-fail counter (0 for a
+                // clean proof, 1 after a first spurious probe fail whose proof was
+                // retained; a 2nd fail deletes the proof so it never sits at ≥2).
+                if let Some(c) = &r.compliance {
+                    buf.push(',');
+                    buf.push_str(r#""compliance":{"#);
+                    push_kv_bool(buf, "flag_present", c.flag_present.load(Ordering::Relaxed));
+                    buf.push(',');
+                    push_kv_u64(
+                        buf,
+                        "proved_at",
+                        c.proved_at_epoch_s.load(Ordering::Relaxed),
+                    );
+                    buf.push(',');
+                    push_kv_str(
+                        buf,
+                        "revoked_reason_last",
+                        crate::host_compliance::revoke_reason_code_str(
+                            c.revoked_reason_last_code.load(Ordering::Relaxed),
+                        ),
+                    );
+                    buf.push(',');
+                    push_kv_u64(
+                        buf,
+                        "consecutive_failures",
+                        c.consecutive_failures.load(Ordering::Relaxed),
+                    );
+                    buf.push('}');
+                }
+                buf.push('}');
+            }
+            // OPTIONAL USB DIRECT block (C7). Rendered only on the direct lane
+            // (mirrors the optional `resampler` block): device, live presence,
+            // cumulative opens/retries. Absent for every aloop lane, so the
+            // default STATUS shape is unchanged.
+            if let Some(d) = &input.direct {
+                buf.push(',');
+                buf.push_str(r#""direct":{"#);
+                push_kv_str(buf, "device", &d.device);
+                buf.push(',');
+                push_kv_bool(buf, "present", d.present.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_bool(buf, "streaming", d.streaming.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "stream_starts",
+                    d.stream_starts.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "stream_stops", d.stream_stops.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "notify_attempts",
+                    d.notify_attempts.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "notify_failures",
+                    d.notify_failures.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Coarse capture-health observability: "capturing" (present +
+                // flowing), "idle" (no host / attached-but-silent / (re)opening),
+                // or "broken" (the flowing→dead zombie signature). This and the
+                // reopen counters below expose fan-in's local recovery; they do not
+                // authorize a USB lifecycle or composition change. See
+                // crate::mixer::direct_health.
+                push_kv_str(buf, "health", crate::mixer::direct_health_str_from_obs(d));
+                buf.push(',');
+                push_kv_u64(buf, "opens", d.opens.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(buf, "retries", d.retries.load(Ordering::Relaxed));
+                buf.push(',');
+                // Zombie-handle forced reopens (C): a growing value means the
+                // flowing→dead zero-avail latch caught a gadget rebuild — the handle
+                // had been feeding the lane, then `avail_update` returned exactly 0
+                // for ~2 s (UDC rebind / usbsink stop-start underneath a live stream)
+                // — and this lane self-healed the deaf handle rather than needing a
+                // manual fan-in restart.
+                push_kv_u64(buf, "reopens", d.reopens.load(Ordering::Relaxed));
+                buf.push(',');
+                // Liveness-probe forced reopens (C, defect 2026-07-06): the twin
+                // counter for a rebuild caught by the ~1 s `snd_pcm_status` ioctl
+                // finding the open handle dead (ENODEV / Disconnected) while
+                // `avail_update`'s frozen mmap still returned Ok(0) — the signal that
+                // fast path structurally cannot raise. Kept separate from `reopens`
+                // so an operator can tell WHICH signal caught the rebuild; which
+                // fires first for a given rebuild is timing-dependent, so read the
+                // pair as "which probe caught it," not a clean live-vs-idle split.
+                push_kv_u64(
+                    buf,
+                    "card_gen_reopens",
+                    d.card_gen_reopens.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Negotiated gadget geometry (lever 2). 256/768 by default;
+                // JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES overrides the period and
+                // resolve_direct_buffer_frames derives the requested deep buffer.
+                // buffer_frames is the ACTUALLY-negotiated hwp.get_buffer_size()
+                // (the kernel may round the near-request up), read live so STATUS
+                // matches the running PCM rather than the request.
+                push_kv_u64(buf, "period_frames", d.period_frames as u64);
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "buffer_frames",
+                    d.buffer_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // drain_avail{} — since-boot drain-ENTRY avail dwell stats
+                // (lever 2). `mean`/`max` in frames; `hist` is a fixed 6-bucket
+                // 64-frame-step histogram (boundaries [0,64,128,192,256,320,+]).
+                // Additive sub-block; absent for every non-direct lane.
+                let s = &d.drain_stats;
+                let count = s.count.load(Ordering::Relaxed);
+                let sum = s.sum.load(Ordering::Relaxed);
+                let mean = if count == 0 {
+                    0.0
+                } else {
+                    (sum as f64) / (count as f64)
+                };
+                buf.push_str(r#""drain_avail":{"#);
+                push_kv_u64(buf, "count", count);
+                buf.push(',');
+                push_kv_f64(buf, "mean", mean, 1);
+                buf.push(',');
+                push_kv_u64(buf, "max", s.max.load(Ordering::Relaxed));
+                buf.push(',');
+                buf.push_str(r#""hist":["#);
+                for (i, bucket) in s.hist.iter().enumerate() {
+                    if i > 0 {
+                        buf.push(',');
+                    }
+                    buf.push_str(&bucket.load(Ordering::Relaxed).to_string());
+                }
+                buf.push(']');
+                buf.push('}');
+                buf.push('}');
+            }
+            buf.push('}');
+        }
+        buf.push(']');
+    }
+    /// Render output transport, delay, and optional SHM-ring observability.
+    fn push_output_json(&self, buf: &mut String) {
+        buf.push_str(r#""output":{"#);
+        push_kv_str(buf, "pcm", &self.output_pcm);
+        buf.push(',');
+        push_kv_u64(buf, "sample_rate", self.sample_rate as u64);
+        buf.push(',');
+        push_kv_u64(buf, "period_frames", self.period_frames as u64);
+        buf.push(',');
+        push_kv_u64(buf, "buffer_frames", self.output_buffer_frames as u64);
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "frames_written",
+            self.output_frames_written.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "xrun_count",
+            self.output_xrun_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        let output_delay_frames = match self.output_delay_frames.load(Ordering::Relaxed) {
+            OUTPUT_DELAY_UNAVAILABLE => None,
+            frames => Some(frames),
+        };
+        push_kv_u64_opt(buf, "snd_pcm_delay_frames", output_delay_frames);
+        buf.push(',');
+        push_kv_f64_opt(
+            buf,
+            "snd_pcm_delay_ms",
+            output_delay_frames.map(|frames| (frames as f64) * 1000.0 / (self.sample_rate as f64)),
+            3,
+        );
+        buf.push(',');
+
+        // coupling transport echo. `transport:"loopback"` (default) carries no
+        // ring block — byte-identical observability to the pre-coupling daemon.
+        // `transport:"shm_ring"` adds a `ring` block (see below).
+        push_kv_str(buf, "transport", self.coupling.transport);
+        // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
+        // live write_seq-read_seq depth; `published` slots reached a live reader;
+        // `full_waits` is the bounded live-reader back-pressure count. The stuck
+        // vs no-reader drop counts are UN-FOLDED (issue #1524): `stuck_reader_drops`
+        // is a heartbeat-live-but-frozen reader (bounded-wait give-ups + sticky
+        // demotions), `drop_no_reader` a dead/absent reader (normal reload
+        // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
+        // episode. `mirror_frames` / `mirror_drops` are the lossy aloop side-tap's
+        // written-frame and drop counts (never load-bearing; parity with
+        // music_output's frames_written/drops). Only present under shm_ring —
+        // byte-identical observability to today under loopback.
+        if let Some(ring) = &self.coupling.ring {
+            buf.push(',');
+            buf.push_str(r#""ring":{"#);
+            push_kv_str(buf, "path", &ring.path);
+            buf.push(',');
+            push_kv_u64(buf, "slots", ring.slots as u64);
+            buf.push(',');
+            push_kv_u64(buf, "occupancy", ring.occupancy.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(buf, "published", ring.published.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(buf, "full_waits", ring.full_waits.load(Ordering::Relaxed));
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "stuck_reader_drops",
+                ring.stuck_reader_drops.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "drop_no_reader",
+                ring.drop_no_reader.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_bool(
+                buf,
+                "stall_active",
+                ring.stall_active.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "last_stall_ms",
+                ring.last_stall_ms.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "mirror_frames",
+                ring.mirror_frames.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                buf,
+                "mirror_drops",
+                ring.mirror_drops.load(Ordering::Relaxed),
+            );
+            buf.push('}');
+        }
+        buf.push('}');
+    }
+
+    fn push_music_output_json(&self, buf: &mut String) {
+        // music_output object — the multi-room sync tap (off on a solo
+        // speaker). `enabled:false` with no further fields when unconfigured;
+        // when configured, `drops` growing => the snapserver consumer is behind.
+        buf.push_str(r#""music_output":{"#);
+        match &self.music_output_pcm {
+            Some(pcm) => {
+                push_kv_bool(buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(buf, "pcm", pcm);
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "frames_written",
+                    self.music_frames_written.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "drops",
+                    self.music_output_drops.load(Ordering::Relaxed),
+                );
+            }
+            None => {
+                push_kv_bool(buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+    }
+
+    fn push_tts_json(&self, buf: &mut String) {
+        buf.push_str(r#""tts":{"#);
+        match &self.tts_metrics {
+            Some(metrics) => {
+                push_kv_bool(buf, "enabled", true);
+                buf.push(',');
+                push_kv_u64(buf, "pending_frames", metrics.pending_frames());
+                buf.push(',');
+                push_kv_u64(buf, "max_pending_frames", metrics.max_pending_frames());
+                buf.push(',');
+                push_kv_u64(buf, "budget_frames", metrics.budget_frames());
+                buf.push(',');
+                push_kv_u64(buf, "dropped_commands", metrics.dropped_commands());
+                buf.push(',');
+                push_kv_u64(buf, "dropped_audio_frames", metrics.dropped_audio_frames());
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "stale_commands_dropped",
+                    metrics.stale_commands_dropped(),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "flush_requests", metrics.flush_requests());
+                buf.push(',');
+                push_kv_u64(buf, "flushed_frames", metrics.flushed_frames());
+                buf.push(',');
+                push_kv_bool(buf, "program_duck_active", metrics.program_duck_active());
+                buf.push(',');
+                // Render through the shared writer so fan-in and outputd cannot
+                // drift on the assistant_loudness key set (pinned by a contract
+                // test on both daemons against ASSISTANT_LOUDNESS_STATUS_KEYS).
+                buf.push_str(r#""assistant_loudness":"#);
+                jasper_tts_protocol::loudness::render_assistant_loudness(
+                    buf,
+                    &metrics.loudness_snapshot(),
+                );
+            }
+            None => {
+                push_kv_bool(buf, "enabled", false);
+            }
+        }
+        buf.push('}');
     }
 }
 

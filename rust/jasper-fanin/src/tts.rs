@@ -496,7 +496,6 @@ pub struct TtsMixer {
     metrics: TtsMetrics,
     queue: VecDeque<QueuedAudioBlock>,
     pending_samples: u64,
-    current_gain_db: f32,
     active_epoch: u64,
     max_pending_frames: u64,
     program_duck_gain: f32,
@@ -533,7 +532,6 @@ impl TtsMixer {
             metrics: input.metrics,
             queue: VecDeque::new(),
             pending_samples: 0,
-            current_gain_db: DEFAULT_TTS_GAIN_DB,
             active_epoch: 0,
             max_pending_frames: input.max_pending_frames,
             program_duck_gain: gain_db_to_linear(input.program_duck_db),
@@ -755,9 +753,10 @@ impl TtsMixer {
                 continue;
             }
             match queued.command {
-                TtsCommand::GainDb(db) => {
-                    self.current_gain_db = sanitize_tts_gain_db(db);
-                }
+                // Retained as an accepted legacy wire command. Per-segment
+                // loudness context is now the sole gain authority, so there is
+                // deliberately no mutable fallback-gain state to update.
+                TtsCommand::GainDb(_) => {}
                 TtsCommand::Audio(samples) => {
                     if samples.is_empty() {
                         continue;
@@ -947,9 +946,7 @@ impl TtsMixer {
 
     fn begin_segment_gain(&mut self, kind: SegmentKind, profile: Option<AssistantProfile>) -> f32 {
         self.assistant_segment_playback = None;
-        let decision = self
-            .loudness
-            .decide_gain(kind, self.current_gain_db, profile);
+        let decision = self.loudness.decide_gain(profile);
         let gain_db = decision.final_gain_db;
         log_assistant_loudness_decision(kind, &decision);
         self.metrics.mark_loudness(

@@ -63,12 +63,20 @@ name = "jasper-clock"
 version = "0.1.0"
 
 [[package]]
+name = "jasper-env"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "jasper-outputd"
 version = "0.1.0"
 dependencies = [
  "alsa",
  "anyhow",
  "jasper-clock",
+ "jasper-env",
  "jasper-resampler",
  "jasper-ring",
  "jasper-tts-protocol",

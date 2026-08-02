@@ -9,8 +9,8 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 30
-- **fixed**: 610
+- **open**: 15
+- **fixed**: 625
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -248,7 +248,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0304 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_mux_command | nit | W5 | **fixed** | blocking mux operations run off the async event loop |
 | DA-0305 | `jasper/active_speaker/web_commissioning.py` :: _ensure_commission_startup_anchor | nit | W5 | **fixed** | redundant local JSON import removed |
 | DA-0306 | `jasper/aec_engines/dtln.py` :: DTLNEngine.process | nit | W5 | **fixed** | streaming contract now documents complete-hop emission truthfully |
-| DA-0307 | `jasper/assistant_loudness.py` :: AssistantLoudnessProfile.phrase_hash | nit | W5 | **open** | — |
+| DA-0307 | `jasper/assistant_loudness.py` :: AssistantLoudnessProfile.phrase_hash | nit | W5 | **fixed** | unused phrase hash and its write/load plumbing removed from the loudness profile — this branch |
 | DA-0308 | `jasper/audio_runtime_plan.py` :: FaninOutputBufferTarget.detail | nit | W5 | **fixed** | unread detail field removed from resolution DTO |
 | DA-0309 | `jasper/audio_validation.py` :: HardwareValidationRun.latest_path:182 | nit | W5 | **fixed** | unread latest-pointer field removed from run result |
 | DA-0310 | `jasper/audio_validation.py` :: SCHEMA_VERSION:57 / CHIP_AEC_CALIBRATION_REQ | nit | W5 | **fixed** | dead compatibility constants removed |
@@ -335,14 +335,14 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0392 | `jasper/wifi_guardian_persistence.py` :: _parse_env_line | nit | W5 | **fixed** | unreachable newline stripping removed |
 | DA-0393 | `jasper/xvf/xvf_host.py` :: PARAMETERS | nit | W5 | **fixed** | unused compatibility alias removed |
 | DA-0394 | `jasper_aec3/setup.py` :: module | nit | W5 | **fixed** | AEC doc-impact map now includes the full `jasper_aec3/**` package — `697e1a6f6` |
-| DA-0395 | `rust/jasper-clock/src/htimestamp.rs` :: HtimestampGuard (re-exported lib.rs:73-75) | nit | W5 | **open** | — |
+| DA-0395 | `rust/jasper-clock/src/htimestamp.rs` :: HtimestampGuard (re-exported lib.rs:73-75) | nit | W5 | **fixed** | unused public hardware-timestamp guard module and re-exports removed — this branch |
 | DA-0396 | `rust/jasper-clock/src/lib.rs` :: Dll::update_lock | nit | W5 | **fixed** | unused lock-update parameter removed |
 | DA-0397 | `rust/jasper-dual-dac-lab/src/main.rs` :: configure_pcm (:590,594) vs validate_run_con | nit | W5 | **fixed** | buffer/period relationship uses the shared overflow-safe predicate |
-| DA-0398 | `rust/jasper-fanin/src/config.rs` :: cushion_decay_floor_default derivation (:609 | nit | W5 | **open** | — |
+| DA-0398 | `rust/jasper-fanin/src/config.rs` :: cushion_decay_floor_default derivation (:609 | nit | W5 | **fixed** | inverted geometry no longer underflows the derived decay clamp; invalid config falls through validation — this branch |
 | DA-0399 | `rust/jasper-fanin/src/lane_resampler.rs` :: LaneResamplerObservability::armed | nit | W5 | **fixed** | invariant observability field removed |
 | DA-0400 | `rust/jasper-fanin/src/lane_resampler.rs` :: max_prime_periods | nit | W5 | **fixed** | unreachable zero-disable branch and misleading claim removed |
-| DA-0401 | `rust/jasper-fanin/src/mixer.rs` :: DirectCapture subsystem (DirectCapture, Dire | nit | W5 | **open** | — |
-| DA-0402 | `rust/jasper-fanin/src/state.rs` :: snapshot_json | nit | W5 | **open** | — |
+| DA-0401 | `rust/jasper-fanin/src/mixer.rs` :: DirectCapture subsystem (DirectCapture, Dire | nit | W5 | **fixed** | USB-direct capture runtime, recovery, drain, and observability moved to a focused mixer submodule — this branch |
+| DA-0402 | `rust/jasper-fanin/src/state.rs` :: snapshot_json | nit | W5 | **fixed** | state snapshot serialization split into focused input/output/music/TTS block writers — this branch |
 | DA-0403 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::tick_locked (anti-windup gates) | nit | W5 | **fixed** | tautological anti-windup sign guards removed |
 | DA-0404 | `rust/jasper-host-clock/src/lib.rs` :: SlopeEstimator::update | nit | W5 | **fixed** | non-finite fill samples are rejected and pinned |
 | DA-0405 | `rust/jasper-outputd/src/aec_clock.rs` :: SroEstimator::verdict_reason (L250) | nit | W5 | **fixed** | unused duplicate verdict method removed |
@@ -353,7 +353,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0410 | `rust/jasper-ring/src/writer.rs` :: RingWriter::publish | nit | W5 | **fixed** | release builds validate slot payload length before unsafe publication |
 | DA-0411 | `rust/jasper-tts-protocol/src/lib.rs` :: read_command | nit | W5 | **fixed** | command-line reads have an allocation cap |
 | DA-0412 | `rust/jasper-tts-protocol/src/lib.rs` :: read_command (GAIN branch) | nit | W5 | **fixed** | non-finite GAIN commands are rejected |
-| DA-0413 | `rust/jasper-tts-protocol/src/loudness.rs` :: AssistantLoudness::decide_gain | nit | W5 | **open** | — |
+| DA-0413 | `rust/jasper-tts-protocol/src/loudness.rs` :: AssistantLoudness::decide_gain | nit | W5 | **fixed** | unused gain arguments and inert legacy fallback state removed; compatibility key remains an accepted no-op — this branch |
 | DA-0414 | `rust/jasper-tts-protocol/src/loudness.rs` :: KWeightedWindow::short_lufs / window_lufs | nit | W5 | **fixed** | unreachable duplicate loudness fallback removed |
 | DA-0416 | `rust/jasper-usbsink-audio/src/main.rs` :: TapPublisher::poll (lines 1306-1347) | nit | W5 | **mooted** | owning aloop-solo Rust daemon was deleted by #1209 |
 | DA-0417 | `rust/jasper-usbsink-audio/src/main.rs` :: handle_preempt_request (lines 1050-1060) | nit | W5 | **mooted** | owning aloop-solo Rust daemon was deleted by #1209 |
@@ -445,23 +445,23 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0574 | `jasper/web/transit_setup.py` :: _value_for | nit | W3 | **fixed** | transit, voice, and weather share env/state precedence; transit and voice share API-key token validation |
 | DA-0575 | `jasper/web/wifi_setup.py` :: _send / _send_json | nit | W3 | **fixed** | already migrated to canonical JSON responses; stale ledger entry reconciled |
 | DA-0576 | `jasper/wifi_scan_repair.py` :: _write_state | nit | W3 | **fixed** | repair state publication uses canonical atomic text I/O — this branch |
-| DA-0577 | `jasper_aec3/src/aec3_binding_v2.cpp` :: Aec3V2::process():191-228 | nit | W3 | **open** | — |
+| DA-0577 | `jasper_aec3/src/aec3_binding_v2.cpp` :: Aec3V2::process():191-228 | nit | W3 | **fixed** | both native AEC bindings share one 10 ms processing loop — this branch |
 | DA-0578 | `pyproject.toml` :: :125 ([project.optional-dependencies].dev),  | nit | W3 | **fixed** | duplicate pip/uv dev lists now document their dual-frontend purpose and exact-equality guard — this branch |
-| DA-0579 | `rust/jasper-dual-dac-lab/src/main.rs` :: json_string/json_array (:1114-1144) | nit | W3 | **open** | — |
-| DA-0580 | `rust/jasper-fanin/src/config.rs` :: env_str/env_u32/env_f32/env_optional (:924-1 | nit | W3 | **open** | — |
+| DA-0579 | `rust/jasper-dual-dac-lab/src/main.rs` :: json_string/json_array (:1114-1144) | nit | W3 | **fixed** | serde_json now owns dual-DAC JSON escaping with a round-trip contract — this branch |
+| DA-0580 | `rust/jasper-fanin/src/config.rs` :: env_str/env_u32/env_f32/env_optional (:924-1 | nit | W3 | **fixed** | new `jasper-env` crate shares scalar parsing while daemon-specific optional/zero policy stays local — this branch |
 | DA-0581 | `rust/jasper-fanin/src/config.rs` :: input_resampler_enabled/_cushion_decay_enabl | nit | W3 | **fixed** | fan-in enabled-token parsing has one helper |
-| DA-0582 | `rust/jasper-fanin/src/lane_resampler.rs` :: try_lock (also decay::tick) | nit | W3 | **open** | — |
-| DA-0583 | `rust/jasper-fanin/src/mixer.rs` :: read_input :3684 / read_into_resampler_and_r | nit | W3 | **open** | — |
+| DA-0582 | `rust/jasper-fanin/src/lane_resampler.rs` :: try_lock (also decay::tick) | nit | W3 | **fixed** | duplicate incident narrative replaced with a reference to the canonical decay-owner explanation — this branch |
+| DA-0583 | `rust/jasper-fanin/src/mixer.rs` :: read_input :3684 / read_into_resampler_and_r | nit | W3 | **fixed** | direct, ordinary, and resampler input paths share one PCM I/O fate taxonomy — this branch |
 | DA-0584 | `rust/jasper-fanin/src/mixer.rs` :: service_host_compliance :1760 (PROBE_RESULT_ | nit | W3 | **fixed** | host-compliance state reuses the canonical probe-result encoding |
 | DA-0585 | `rust/jasper-fanin/src/state.rs` :: escape_json | nit | W3 | **fixed** | fan-in escaping was already centralized; outputd string serialization now shares one owner too |
-| DA-0586 | `rust/jasper-outputd/src/dac_content.rs` :: Biquad | nit | W3 | **open** | — |
+| DA-0586 | `rust/jasper-outputd/src/dac_content.rs` :: Biquad | nit | W3 | **fixed** | outputd crossover consumes the protocol-owned shared biquad — this branch |
 | DA-0587 | `rust/jasper-outputd/src/ledger.rs` :: PlayoutSegment / PlayoutEvent | nit | W3 | **fixed** | playout event composes the shared segment payload instead of copying every field |
 | DA-0588 | `rust/jasper-outputd/src/state.rs` :: :1265-1270 | nit | W3 | **fixed** | referenced state fields already use typed JSON helpers; stale ledger entry reconciled |
-| DA-0589 | `rust/jasper-outputd/src/state.rs` :: push_kv_str/push_kv_u64/push_kv_bool/push_kv | nit | W3 | **open** | — |
+| DA-0589 | `rust/jasper-outputd/src/state.rs` :: push_kv_str/push_kv_u64/push_kv_bool/push_kv | nit | W3 | **fixed** | one `push_key` helper owns outputd JSON key preambles — this branch |
 | DA-0590 | `rust/jasper-outputd/src/tts.rs` :: db_to_linear | nit | W3 | **fixed** | outputd reuses the protocol crate's canonical dB conversion |
-| DA-0591 | `rust/jasper-ring/src/lib.rs` :: TestRingWriter::create_or_attach / try_publi | nit | W3 | **open** | — |
+| DA-0591 | `rust/jasper-ring/src/lib.rs` :: TestRingWriter::create_or_attach / try_publi | nit | W3 | **fixed** | RingMapping owns writer attachment and slot-copy behavior for production and test writers — this branch |
 | DA-0592 | `rust/jasper-ring/src/lib.rs` :: TestRingWriter::drop | nit | W3 | **fixed** | test writer clears ownership only when it still owns the ring |
-| DA-0593 | `rust/jasper-tts-protocol/src/loudness.rs` :: KWeightingChannel::new / lufs_from_energy | nit | W3 | **open** | — |
+| DA-0593 | `rust/jasper-tts-protocol/src/loudness.rs` :: KWeightingChannel::new / lufs_from_energy | nit | W3 | **fixed** | Rust and Python share named K-weighting coefficients pinned by an exact impulse LUFS golden — this branch |
 | DA-0596 | `rust/jasper-usbsink-audio/src/main.rs` :: HostClockActuator::open (line 1521) | nit | W3 | **mooted** | owning aloop-solo Rust daemon was deleted by #1209 |
 | DA-0597 | `scripts/_extract_wake_corpus.py` :: LEGS:99 | nit | W3 | **fixed** | extractor/scorer leg vocabulary has an exact contract test — this branch |
 | DA-0598 | `scripts/_make_wake_test_track.py` :: load_env():40-53 | nit | W3 | **fixed** | wake-track generation uses canonical env parsing with systemd-compatible precedence — this branch |
