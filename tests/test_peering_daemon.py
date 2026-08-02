@@ -138,6 +138,30 @@ async def test_mode_off_start_is_noop(monkeypatch):
     await d.stop()  # safe to call even though start was a noop
 
 
+async def test_stop_cancels_retained_send_tasks(daemon_setup):
+    daemon, transport = daemon_setup
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocked_send(_payload: bytes) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    transport.send = blocked_send
+    daemon._spawn_send(b"payload")
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    assert len(daemon._send_tasks) == 1
+    await daemon.stop()
+
+    assert cancelled.is_set()
+    assert daemon._send_tasks == set()
+
+
 # ---------- mode=ON, solo arbitration ----------
 
 

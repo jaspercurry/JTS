@@ -32,7 +32,7 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_TARGET_LEVEL,
     RING_SLOT_FRAMES,
 )
-from jasper.ring_negotiation import accept, ioplug_constraints, negotiate
+from tests._ring_negotiation_model import accept, ioplug_constraints, negotiate
 from jasper.sound.camilla_yaml import emit_flat_ring_config
 
 
