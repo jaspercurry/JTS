@@ -24,6 +24,7 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from . import fence_untrusted, tool
+from .google_errors import no_account_error, no_credentials_error
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
@@ -103,44 +104,6 @@ def _serialise_event(item: dict) -> dict:
     return out
 
 
-def _no_account_error(clients: "GoogleClients", attempted: str) -> dict:
-    available = clients.list_account_names()
-    if not available:
-        return {
-            "ok": False,
-            "error": (
-                "No Google accounts linked to this speaker yet. "
-                "Visit jts.local/google to add one."
-            ),
-        }
-    name_list = ", ".join(available)
-    if attempted:
-        return {
-            "ok": False,
-            "error": (
-                f"No Google account named '{attempted}' on this speaker. "
-                f"Available: {name_list}."
-            ),
-        }
-    return {
-        "ok": False,
-        "error": (
-            f"Could not pick a default Google account. "
-            f"Try naming one: {name_list}."
-        ),
-    }
-
-
-def _no_credentials_error(account_name: str) -> dict:
-    return {
-        "ok": False,
-        "error": (
-            f"Google access for {account_name} can't be refreshed. "
-            f"Re-link at jts.local/google."
-        ),
-    }
-
-
 def _api_error(account_name: str, exc: Exception) -> dict:
     """Generic fallback for a googleapiclient HttpError or transport
     failure. Logged with the full traceback for debugging; the model
@@ -214,10 +177,10 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return _no_account_error(clients, account)
+            return no_account_error(clients, account)
         service = clients.build_calendar(canonical)
         if service is None:
-            return _no_credentials_error(canonical)
+            return no_credentials_error(canonical)
         now = datetime.now().astimezone()
         # End-of-day in local time so events that started yesterday
         # but extend into today still surface (Google's timeMin filter
@@ -271,7 +234,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return _no_account_error(clients, account)
+            return no_account_error(clients, account)
         try:
             window_hours = int(hours)
         except (TypeError, ValueError):
@@ -284,7 +247,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         window_hours = min(window_hours, 24 * 30)
         service = clients.build_calendar(canonical)
         if service is None:
-            return _no_credentials_error(canonical)
+            return no_credentials_error(canonical)
         now = datetime.now().astimezone()
         cutoff = now + timedelta(hours=window_hours)
         try:

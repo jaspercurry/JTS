@@ -50,9 +50,23 @@ import glob
 import os
 import re
 import sys
-import wave
 
 import numpy as np
+
+try:
+    from scripts._sync_measure_audio import (
+        UnsupportedSampleWidth,
+        find_energy_onsets,
+        read_wav_mono as _shared_read_wav_mono,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts._sync_measure_audio"}:
+        raise
+    from _sync_measure_audio import (  # type: ignore[no-redef]
+        UnsupportedSampleWidth,
+        find_energy_onsets,
+        read_wav_mono as _shared_read_wav_mono,
+    )
 
 TARGET_P99_MS = 5.0          # docs/HANDOFF-distributed-active.md sync target
 RESYNC_JUMP_MS = 2.0         # consecutive-capture median jump flagged as resync
@@ -71,41 +85,26 @@ def percentile(values, pct):
 
 def read_wav_mono(path):
     """Return (float64 mono samples in [-1,1], sample_rate). Downmix if multi."""
-    with wave.open(path, "rb") as w:
-        nch = w.getnchannels()
-        sw = w.getsampwidth()
-        sr = w.getframerate()
-        raw = w.readframes(w.getnframes())
-    if sw == 2:
-        a = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
-    elif sw == 4:
-        a = np.frombuffer(raw, dtype="<i4").astype(np.float64) / 2147483648.0
-    else:
-        raise ValueError(f"unsupported sample width {sw}")
-    if nch > 1:
-        a = a.reshape((-1, nch)).mean(axis=1)
-    return a, sr
+    try:
+        samples, sample_rate = _shared_read_wav_mono(
+            path,
+            supported_sample_widths=(2, 4),
+            normalize=True,
+        )
+    except UnsupportedSampleWidth as exc:
+        raise ValueError(f"unsupported sample width {exc.sample_width}") from exc
+    return np.asarray(samples, dtype=np.float64), sample_rate
 
 
 # ---------------------------------------------------------------------------
 def find_onsets(x, sr, min_gap_s=0.5):
     """Energy-envelope onset detector for the ~2 ms clicks (~1 s apart)."""
-    win = max(1, int(0.005 * sr))
-    energy = np.convolve(x * x, np.ones(win), mode="same")
-    peak = float(energy.max()) if energy.size else 0.0
-    if peak <= 0.0:
-        return []
-    thresh = peak * 0.15
-    refractory = int(min_gap_s * sr)
-    onsets = []
-    last = -refractory
-    above = energy > thresh
-    idx = np.nonzero(above)[0]
-    for i in idx:
-        if i - last > refractory:
-            onsets.append(int(i))
-            last = i
-    return onsets
+    return find_energy_onsets(
+        x,
+        sr,
+        min_gap_s=min_gap_s,
+        centered_window=True,
+    )
 
 
 def offset_for_onset(x, sr, onset):

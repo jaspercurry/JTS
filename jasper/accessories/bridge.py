@@ -174,20 +174,24 @@ async def _post_once(
 
 def _log_key_action(
     event: str,
-    action: KeyAction,
+    action: KeyAction | None,
     device_name: str,
     key_name: str,
     profile_id: str | None,
     *,
     status: int | None = None,
     err: str | None = None,
+    count: int | None = None,
     level: int = logging.INFO,
 ) -> None:
     fields = {
         "device": device_name,
         "key": key_name,
-        "path": action.path,
     }
+    if count is not None:
+        fields["count"] = count
+    if action is not None:
+        fields["path"] = action.path
     if status is not None:
         fields["status"] = status
     if err is not None:
@@ -443,14 +447,14 @@ class _TapCounter:
             # Tap-count has no mapping — silently drop with a log so
             # the operator can confirm taps are registering but the
             # gesture isn't defined for this device.
-            fields = {
-                "device": self._device_name,
-                "key": self._key_name,
-                "count": count,
-            }
-            if self._profile_id:
-                fields["profile"] = self._profile_id
-            log_event(logger, "knob.tap.unmapped", fields=fields)
+            _log_key_action(
+                "knob.tap.unmapped",
+                None,
+                self._device_name,
+                self._key_name,
+                self._profile_id,
+                count=count,
+            )
             return
         try:
             resp = await self._post(
@@ -458,29 +462,25 @@ class _TapCounter:
                 target.path,
                 target.body or None,
             )
-            fields = {
-                "device": self._device_name,
-                "key": self._key_name,
-                "count": count,
-                "path": target.path,
-                "status": resp.status,
-            }
-            if self._profile_id:
-                fields["profile"] = self._profile_id
-            log_event(logger, "knob.tap", fields=fields)
+            _log_key_action(
+                "knob.tap",
+                target,
+                self._device_name,
+                self._key_name,
+                self._profile_id,
+                count=count,
+                status=resp.status,
+            )
         except ControlError as e:
-            fields = {
-                "device": self._device_name,
-                "key": self._key_name,
-                "count": count,
-                "path": target.path,
-                "err": str(e),
-            }
-            if self._profile_id:
-                fields["profile"] = self._profile_id
-            log_event(
-                logger, "knob.tap.failed",
-                level=logging.WARNING, fields=fields,
+            _log_key_action(
+                "knob.tap.failed",
+                target,
+                self._device_name,
+                self._key_name,
+                self._profile_id,
+                count=count,
+                err=str(e),
+                level=logging.WARNING,
             )
 
 

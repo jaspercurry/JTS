@@ -32,6 +32,7 @@ from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.source_intent import source_intent_enabled
 
+from ._dbus import variant_value
 from .registry import KNOWN_PROFILES, RemoteProfile, lookup_by_name
 
 logger = logging.getLogger(__name__)
@@ -99,12 +100,8 @@ class AccessoryMicPlan:
     active_profiles: tuple[str, ...]
 
 
-def _unwrap(value):
-    return getattr(value, "value", value)
-
-
 def _is_truthy(value) -> bool:
-    return bool(_unwrap(value))
+    return bool(variant_value(value))
 
 
 def adapter_mic_profiles() -> tuple[RemoteProfile, ...]:
@@ -130,7 +127,7 @@ def adapter_mic_services() -> tuple[str, ...]:
 
 def _device_name(props: Mapping[str, object]) -> str:
     for key in ("Alias", "Name"):
-        value = _unwrap(props.get(key))
+        value = variant_value(props.get(key))
         if value:
             return str(value)
     return ""

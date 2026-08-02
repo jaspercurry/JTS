@@ -136,6 +136,134 @@ pub enum ContentRead {
     XrunRecovered,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContentPcmRole {
+    Content,
+    ActiveContent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClassifiedContentRead {
+    read: ContentRead,
+    fill_source: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContentPcmReadSpec<'a> {
+    channels: usize,
+    pcm_name: &'a str,
+    negotiated: NegotiatedPcm,
+    role: ContentPcmRole,
+}
+
+/// Read and classify one nonblocking content-capture period.
+///
+/// Both the coherent-DAC and paired-composite transports consume the same
+/// content PCM contract. Keep the errno mapping, counters, and xrun recovery
+/// here so a new read outcome cannot drift between the two sinks. The caller
+/// still owns transport-specific zero-fill journaling.
+fn read_content_pcm<Read, Recover>(
+    out: &mut [i16],
+    spec: ContentPcmReadSpec<'_>,
+    counters: &mut IoCounters,
+    read: Read,
+    recover: Recover,
+) -> Result<ClassifiedContentRead>
+where
+    Read: FnOnce(&mut [i16]) -> alsa::Result<usize>,
+    Recover: FnOnce(alsa::Error) -> alsa::Result<()>,
+{
+    let requested_frames = out.len() / spec.channels;
+    match read(out) {
+        Ok(frames) => {
+            counters.content_frames_read += frames as u64;
+            if frames == 0 {
+                counters.content_empty_period_count += 1;
+                Ok(ClassifiedContentRead {
+                    read: ContentRead::NoData,
+                    fill_source: "empty",
+                })
+            } else {
+                if frames < requested_frames {
+                    counters.content_partial_period_count += 1;
+                }
+                Ok(ClassifiedContentRead {
+                    read: ContentRead::Frames(frames),
+                    fill_source: "partial",
+                })
+            }
+        }
+        Err(error) => {
+            let errno = error.errno();
+            if errno == libc::EAGAIN {
+                counters.content_eagain_count += 1;
+                counters.content_empty_period_count += 1;
+                return Ok(ClassifiedContentRead {
+                    read: ContentRead::NoData,
+                    fill_source: "eagain",
+                });
+            }
+            if errno != libc::EPIPE && errno != libc::ESTRPIPE {
+                let context = match spec.role {
+                    ContentPcmRole::Content => {
+                        format!("reading outputd content PCM {}", spec.pcm_name)
+                    }
+                    ContentPcmRole::ActiveContent => {
+                        format!("reading outputd active content PCM {}", spec.pcm_name)
+                    }
+                };
+                return Err(error).context(context);
+            }
+
+            counters.content_xrun_count += 1;
+            counters.content_empty_period_count += 1;
+            match spec.role {
+                ContentPcmRole::Content => eprintln!(
+                    "event=outputd.xrun source=content pcm={} count={} errno={} frames_read={} empty_periods={} partial_periods={} eagain_count={} dac_frames_written={} period_frames={} buffer_frames={}",
+                    spec.pcm_name,
+                    counters.content_xrun_count,
+                    errno,
+                    counters.content_frames_read,
+                    counters.content_empty_period_count,
+                    counters.content_partial_period_count,
+                    counters.content_eagain_count,
+                    counters.dac_frames_written,
+                    spec.negotiated.period_frames,
+                    spec.negotiated.buffer_frames,
+                ),
+                ContentPcmRole::ActiveContent => eprintln!(
+                    "event=outputd.xrun source=active_content pcm={} count={} errno={}",
+                    spec.pcm_name, counters.content_xrun_count, errno
+                ),
+            }
+            let recovery_context = match spec.role {
+                ContentPcmRole::Content => "recovering outputd content xrun",
+                ContentPcmRole::ActiveContent => "recovering outputd active content xrun",
+            };
+            recover(error).context(recovery_context)?;
+            Ok(ClassifiedContentRead {
+                read: ContentRead::XrunRecovered,
+                fill_source: "xrun_recovered",
+            })
+        }
+    }
+}
+
+/// Apply the content-lane silence contract and return `(frames_read,
+/// frames_short)` for the transport-specific fill journal line.
+fn zero_fill_content_period(out: &mut [i16], channels: usize, read: ContentRead) -> (usize, usize) {
+    let requested_frames = out.len() / channels;
+    let frames_read = match read {
+        ContentRead::Frames(frames) => frames,
+        ContentRead::NoData | ContentRead::XrunRecovered => 0,
+    };
+    let frames_short = requested_frames.saturating_sub(frames_read);
+    if frames_short > 0 {
+        out[(frames_read * channels)..].fill(0);
+    }
+    (frames_read, frames_short)
+}
+
 pub struct AlsaBackend {
     content: Option<PCM>,
     dac: PCM,
@@ -289,48 +417,29 @@ impl AlsaBackend {
     }
 
     pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
-        let requested_frames = out.len() / (self.channels as usize);
         let read = self.read_content_available(out)?;
-        match read {
-            ContentRead::Frames(frames) => {
-                if frames < requested_frames {
-                    let active = frames * (self.channels as usize);
-                    out[active..].fill(0);
-                    log_content_fill(
-                        &mut self.fill_log,
-                        &self.counters,
-                        &self.content_pcm,
-                        "partial",
-                        requested_frames - frames,
-                    );
-                }
-                Ok(frames)
-            }
-            // Stay EXHAUSTIVE over `ContentRead` — a catch-all here would let a
-            // future variant silently inherit the "empty" label on the audio
-            // path instead of failing the build. `XrunRecovered` is labelled
-            // distinctly because it already printed its own `outputd.xrun`
-            // line; the pair should read as one event, not two unexplained ones.
-            ContentRead::NoData | ContentRead::XrunRecovered => {
-                let source = match read {
-                    ContentRead::XrunRecovered => "xrun_recovered",
-                    _ => "empty",
-                };
-                out.fill(0);
-                log_content_fill(
-                    &mut self.fill_log,
-                    &self.counters,
-                    &self.content_pcm,
-                    source,
-                    requested_frames,
-                );
-                Ok(0)
-            }
-        }
+        // Stay EXHAUSTIVE over `ContentRead` — a catch-all here would let a
+        // future variant silently inherit the "empty" label on the audio path
+        // instead of failing the build. `XrunRecovered` is labelled distinctly
+        // because it already printed its own `outputd.xrun` line; the pair
+        // should read as one event, not two unexplained ones.
+        let source = match read {
+            ContentRead::Frames(_) => "partial",
+            ContentRead::NoData => "empty",
+            ContentRead::XrunRecovered => "xrun_recovered",
+        };
+        let (frames, frames_short) = zero_fill_content_period(out, self.channels as usize, read);
+        log_content_fill(
+            &mut self.fill_log,
+            &self.counters,
+            &self.content_pcm,
+            source,
+            frames_short,
+        );
+        Ok(frames)
     }
 
     pub fn read_content_available(&mut self, out: &mut [i16]) -> Result<ContentRead> {
-        let requested_frames = out.len() / (self.channels as usize);
         let content = self
             .content
             .as_ref()
@@ -338,50 +447,19 @@ impl AlsaBackend {
         let io = content
             .io_i16()
             .context("getting i16 IO handle for outputd content input")?;
-        match io.readi(out) {
-            Ok(frames) => {
-                self.counters.content_frames_read += frames as u64;
-                if frames == 0 {
-                    self.counters.content_empty_period_count += 1;
-                    Ok(ContentRead::NoData)
-                } else if frames < requested_frames {
-                    self.counters.content_partial_period_count += 1;
-                    Ok(ContentRead::Frames(frames))
-                } else {
-                    Ok(ContentRead::Frames(frames))
-                }
-            }
-            Err(e) => {
-                let errno = e.errno();
-                if errno == libc::EAGAIN {
-                    self.counters.content_eagain_count += 1;
-                    self.counters.content_empty_period_count += 1;
-                    Ok(ContentRead::NoData)
-                } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-                    self.counters.content_xrun_count += 1;
-                    self.counters.content_empty_period_count += 1;
-                    eprintln!(
-                        "event=outputd.xrun source=content pcm={} count={} errno={} frames_read={} empty_periods={} partial_periods={} eagain_count={} dac_frames_written={} period_frames={} buffer_frames={}",
-                        self.content_pcm,
-                        self.counters.content_xrun_count,
-                        errno,
-                        self.counters.content_frames_read,
-                        self.counters.content_empty_period_count,
-                        self.counters.content_partial_period_count,
-                        self.counters.content_eagain_count,
-                        self.counters.dac_frames_written,
-                        self.content_negotiated.period_frames,
-                        self.content_negotiated.buffer_frames,
-                    );
-                    content
-                        .try_recover(e, true)
-                        .context("recovering outputd content xrun")?;
-                    Ok(ContentRead::XrunRecovered)
-                } else {
-                    Err(e).context(format!("reading outputd content PCM {}", self.content_pcm))
-                }
-            }
-        }
+        let classified = read_content_pcm(
+            out,
+            ContentPcmReadSpec {
+                channels: self.channels as usize,
+                pcm_name: &self.content_pcm,
+                negotiated: self.content_negotiated,
+                role: ContentPcmRole::Content,
+            },
+            &mut self.counters,
+            |samples| io.readi(samples),
+            |error| content.try_recover(error, true),
+        )?;
+        Ok(classified.read)
     }
 
     pub fn write_dac_period(&mut self, samples: &[i16]) -> Result<()> {
@@ -619,71 +697,36 @@ impl PairedCompositeSink {
     }
 
     pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
-        let requested_frames = out.len() / 4;
         // `io` borrows `self.content` and has a Drop impl, so nothing inside
         // this scope may take `&mut self`. Decide the fill here, journal it
         // after the borrow ends.
-        let outcome = {
+        let classified = {
             let io = self
                 .content
                 .io_i16()
                 .context("getting i16 IO handle for outputd active content input")?;
-            io.readi(out)
+            read_content_pcm(
+                out,
+                ContentPcmReadSpec {
+                    channels: 4,
+                    pcm_name: &self.content_pcm,
+                    negotiated: self.content_negotiated,
+                    role: ContentPcmRole::ActiveContent,
+                },
+                &mut self.counters,
+                |samples| io.readi(samples),
+                |error| self.content.try_recover(error, true),
+            )?
         };
-        let mut fill: Option<(&'static str, usize)> = None;
-        let read = match outcome {
-            Ok(frames) => {
-                self.counters.content_frames_read += frames as u64;
-                if frames == 0 {
-                    self.counters.content_empty_period_count += 1;
-                    out.fill(0);
-                    fill = Some(("empty", requested_frames));
-                } else if frames < requested_frames {
-                    self.counters.content_partial_period_count += 1;
-                    out[(frames * 4)..].fill(0);
-                    fill = Some(("partial", requested_frames - frames));
-                }
-                frames
-            }
-            Err(e) => {
-                let errno = e.errno();
-                if errno == libc::EAGAIN {
-                    self.counters.content_eagain_count += 1;
-                    self.counters.content_empty_period_count += 1;
-                    out.fill(0);
-                    fill = Some(("eagain", requested_frames));
-                    0
-                } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-                    self.counters.content_xrun_count += 1;
-                    self.counters.content_empty_period_count += 1;
-                    eprintln!(
-                        "event=outputd.xrun source=active_content pcm={} count={} errno={}",
-                        self.content_pcm, self.counters.content_xrun_count, errno
-                    );
-                    self.content
-                        .try_recover(e, true)
-                        .context("recovering outputd active content xrun")?;
-                    out.fill(0);
-                    fill = Some(("xrun_recovered", requested_frames));
-                    0
-                } else {
-                    return Err(e).context(format!(
-                        "reading outputd active content PCM {}",
-                        self.content_pcm
-                    ));
-                }
-            }
-        };
-        if let Some((source, frames_short)) = fill {
-            log_content_fill(
-                &mut self.fill_log,
-                &self.counters,
-                &self.content_pcm,
-                source,
-                frames_short,
-            );
-        }
-        Ok(read)
+        let (frames, frames_short) = zero_fill_content_period(out, 4, classified.read);
+        log_content_fill(
+            &mut self.fill_log,
+            &self.counters,
+            &self.content_pcm,
+            classified.fill_source,
+            frames_short,
+        );
+        Ok(frames)
     }
 
     pub fn write_dual_period(&mut self, samples_4ch: &[i16]) -> Result<()> {
@@ -989,6 +1032,158 @@ fn write_dac_fail_closed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    fn test_negotiated_pcm() -> NegotiatedPcm {
+        NegotiatedPcm {
+            sample_rate: 48_000,
+            period_frames: 4,
+            buffer_frames: 8,
+        }
+    }
+
+    fn test_content_read_spec(role: ContentPcmRole) -> ContentPcmReadSpec<'static> {
+        ContentPcmReadSpec {
+            channels: 2,
+            pcm_name: "test_content",
+            negotiated: test_negotiated_pcm(),
+            role,
+        }
+    }
+
+    #[test]
+    fn content_pcm_read_counts_full_success_without_recovery() {
+        let mut out = [1i16; 8];
+        let mut counters = IoCounters::default();
+        let classified = read_content_pcm(
+            &mut out,
+            test_content_read_spec(ContentPcmRole::Content),
+            &mut counters,
+            |_| Ok(4),
+            |_| -> alsa::Result<()> { panic!("full read must not recover") },
+        )
+        .unwrap();
+
+        assert_eq!(classified.read, ContentRead::Frames(4));
+        assert_eq!(counters.content_frames_read, 4);
+        assert_eq!(counters.content_partial_period_count, 0);
+        assert_eq!(counters.content_empty_period_count, 0);
+        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
+        assert_eq!((frames, frames_short), (4, 0));
+        assert_eq!(out, [1; 8]);
+    }
+
+    #[test]
+    fn content_pcm_read_counts_partial_and_zero_fills_unread_frames() {
+        let mut out = [1, 2, 3, 4, 9, 9, 9, 9];
+        let mut counters = IoCounters::default();
+        let classified = read_content_pcm(
+            &mut out,
+            test_content_read_spec(ContentPcmRole::ActiveContent),
+            &mut counters,
+            |_| Ok(2),
+            |_| -> alsa::Result<()> { panic!("partial read must not recover") },
+        )
+        .unwrap();
+
+        assert_eq!(classified.read, ContentRead::Frames(2));
+        assert_eq!(classified.fill_source, "partial");
+        assert_eq!(counters.content_frames_read, 2);
+        assert_eq!(counters.content_partial_period_count, 1);
+        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
+        assert_eq!((frames, frames_short), (2, 2));
+        assert_eq!(out, [1, 2, 3, 4, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn content_pcm_read_counts_empty_and_zero_fills_the_period() {
+        let mut out = [7i16; 8];
+        let mut counters = IoCounters::default();
+        let classified = read_content_pcm(
+            &mut out,
+            test_content_read_spec(ContentPcmRole::Content),
+            &mut counters,
+            |_| Ok(0),
+            |_| -> alsa::Result<()> { panic!("empty read must not recover") },
+        )
+        .unwrap();
+
+        assert_eq!(classified.read, ContentRead::NoData);
+        assert_eq!(classified.fill_source, "empty");
+        assert_eq!(counters.content_frames_read, 0);
+        assert_eq!(counters.content_empty_period_count, 1);
+        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
+        assert_eq!((frames, frames_short), (0, 4));
+        assert_eq!(out, [0; 8]);
+    }
+
+    #[test]
+    fn content_pcm_read_classifies_eagain_without_recovery() {
+        let mut out = [7i16; 8];
+        let mut counters = IoCounters::default();
+        let classified = read_content_pcm(
+            &mut out,
+            test_content_read_spec(ContentPcmRole::ActiveContent),
+            &mut counters,
+            |_| Err(alsa::Error::new("readi", libc::EAGAIN)),
+            |_| -> alsa::Result<()> { panic!("EAGAIN must not recover") },
+        )
+        .unwrap();
+
+        assert_eq!(classified.read, ContentRead::NoData);
+        assert_eq!(classified.fill_source, "eagain");
+        assert_eq!(counters.content_eagain_count, 1);
+        assert_eq!(counters.content_empty_period_count, 1);
+        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
+        assert_eq!((frames, frames_short), (0, 4));
+        assert_eq!(out, [0; 8]);
+    }
+
+    #[test]
+    fn content_pcm_read_recovers_epipe_and_returns_xrun_semantics() {
+        let mut out = [7i16; 8];
+        let mut counters = IoCounters::default();
+        let recovered_errno = Cell::new(None);
+        let classified = read_content_pcm(
+            &mut out,
+            test_content_read_spec(ContentPcmRole::Content),
+            &mut counters,
+            |_| Err(alsa::Error::new("readi", libc::EPIPE)),
+            |error| {
+                recovered_errno.set(Some(error.errno()));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(classified.read, ContentRead::XrunRecovered);
+        assert_eq!(classified.fill_source, "xrun_recovered");
+        assert_eq!(recovered_errno.get(), Some(libc::EPIPE));
+        assert_eq!(counters.content_xrun_count, 1);
+        assert_eq!(counters.content_empty_period_count, 1);
+        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
+        assert_eq!((frames, frames_short), (0, 4));
+        assert_eq!(out, [0; 8]);
+    }
+
+    #[test]
+    fn content_pcm_read_propagates_other_errno_without_touching_counters() {
+        let mut out = [7i16; 8];
+        let mut counters = IoCounters::default();
+        let error = read_content_pcm(
+            &mut out,
+            test_content_read_spec(ContentPcmRole::Content),
+            &mut counters,
+            |_| Err(alsa::Error::new("readi", libc::EBADF)),
+            |_| -> alsa::Result<()> { panic!("fatal read must not recover") },
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("reading outputd content PCM test_content"));
+        assert_eq!(counters, IoCounters::default());
+    }
 
     #[test]
     fn fill_log_gate_prints_the_first_fill_immediately() {

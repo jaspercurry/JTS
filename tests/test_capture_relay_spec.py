@@ -20,6 +20,7 @@ import re
 
 import pytest
 
+import jasper.capture_relay as capture_relay
 from jasper.capture_relay import spec as spec_mod
 from jasper.capture_relay.spec import (
     CAPTURE_PROTOCOL_VERSION,
@@ -37,6 +38,11 @@ from jasper.capture_relay.spec import (
     ui_level_meter,
     ui_steps,
 )
+
+
+def test_package_exports_every_shipped_capture_builder() -> None:
+    for builder in capture_relay.BUILDERS.values():
+        assert getattr(capture_relay, builder.__name__) is builder
 from jasper.audio_measurement.calibration import SUPPORTED_MODELS, supported_model_options
 
 

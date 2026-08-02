@@ -7,10 +7,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 
 from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
+from ..renderer import airplay_now_playing
 from . import tool
 from ..spotify_router import airplay_client_name
 
@@ -83,35 +83,9 @@ async def _mpris_call(method: str) -> None:
         )
 
 
-_MPRIS_TITLE = re.compile(r'string\s+"xesam:title"\s*\n\s*variant\s+string\s+"([^"]*)"')
-_MPRIS_ARTIST = re.compile(
-    r'string\s+"xesam:artist"[^\[]*\[\s*\n\s*string\s+"([^"]*)"'
-)
-_MPRIS_ALBUM = re.compile(r'string\s+"xesam:album"\s*\n\s*variant\s+string\s+"([^"]*)"')
-
-
 async def _mpris_now_playing() -> dict[str, str]:
-    """Read shairport's MPRIS Metadata property and parse out title/artist/album."""
-    proc = await asyncio.create_subprocess_exec(
-        "dbus-send", "--system", "--print-reply",
-        f"--dest={MPRIS_DEST}",
-        MPRIS_PATH,
-        f"{MPRIS_PROPS_IFACE}.Get",
-        f"string:{MPRIS_PLAYER_IFACE}",
-        "string:Metadata",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"mpris metadata failed: {stderr.decode(errors='replace').strip()}"
-        )
-    text = stdout.decode(errors="replace")
-    title = (m.group(1) if (m := _MPRIS_TITLE.search(text)) else "")
-    artist = (m.group(1) if (m := _MPRIS_ARTIST.search(text)) else "")
-    album = (m.group(1) if (m := _MPRIS_ALBUM.search(text)) else "")
-    return {"title": title, "artist": artist, "album": album}
+    """Read Shairport metadata through the renderer's canonical MPRIS parser."""
+    return await airplay_now_playing()
 
 
 async def _detect_source(renderer) -> str:

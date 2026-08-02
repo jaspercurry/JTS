@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 149 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 136 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 491
+- **fixed**: 504
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -121,7 +121,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0175 | `jasper/active_speaker/staging.py` :: stage_protected_startup_config:1722-1821 / p | should-fix | W3 | **fixed** | generated-config classification and Camilla validation gates share one implementation |
 | DA-0176 | `jasper/active_speaker/startup_load.py` :: _atomic_write_json / _base_state / _commissi | should-fix | W3 | **fixed** | startup/commission load state share one base shape and canonical atomic publisher |
 | DA-0177 | `jasper/active_speaker/web_measurement.py` :: capture_preset (line 255) | should-fix | W3 | **fixed** | capture-preset resolution centralized with fail-closed fallback and explicit internal path ownership — #1358 |
-| DA-0178 | `jasper/audio_runtime_plan.py` :: _resolve_profile_floor_int / _resolve_output | should-fix | W3 | **open** | — |
+| DA-0178 | `jasper/audio_runtime_plan.py` :: _resolve_profile_floor_int / _resolve_output | should-fix | W3 | **fixed** | descriptor-driven layered integer resolver preserves both policy wrappers, precedence, provenance, and warnings — this branch |
 | DA-0179 | `jasper/audio_validation.py` :: write_artifact:663 / write_latest_pointer:69 | should-fix | W3 | **fixed** | both diagnostic publishers use one domain serializer and canonical atomic writer — #1360 |
 | DA-0180 | `jasper/cli/aec_bridge.py` :: `_ref_thread` / `_outputd_ref_udp_thread` | should-fix | W3 | **fixed** | both transports share one stateful reference converter and queue/drop seam |
 | DA-0181 | `jasper/cli/aec_tune.py` :: main (--mic-device default) | should-fix | W3 | **fixed** | registry-derived XVF capture identity and WAV-layout validation — #1412 |
@@ -165,7 +165,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0219 | `rust/jasper-fanin/src/impulse_tap.rs` :: module (whole file) vs rust/jasper-usbsink-a | should-fix | W3 | **mooted** | solo USB capture and second impulse-tap module deleted; fan-in is the sole remaining copy — #1209 |
 | DA-0220 | `rust/jasper-fanin/src/xrun_log.rs` :: escape_json (:232) | should-fix | W3 | **fixed** | control bytes now use one canonical JSON escaping path — #1379 |
 | DA-0221 | `rust/jasper-host-clock/src/lib.rs` :: HostClock::begin_probe / HostClock::restart_ | should-fix | W3 | **fixed** | shared `reset_probe_measurement` owns the neutral probe-state reset — this branch |
-| DA-0222 | `rust/jasper-outputd/src/alsa_backend.rs` :: AlsaBackend::read_content_available (L220) / | should-fix | W3 | **open** | — |
+| DA-0222 | `rust/jasper-outputd/src/alsa_backend.rs` :: AlsaBackend::read_content_available (L220) / | should-fix | W3 | **fixed** | both ALSA sinks share one injected-I/O read/classify/count/recovery helper and channel-aware zero fill — this branch |
 | DA-0223 | `rust/jasper-resampler/src/lib.rs` :: minimum_safe_fill_frames :88 | should-fix | W3 | **fixed** | outputd delegates its resampler fill floor to the canonical formula — #1385 |
 | DA-0224 | `scripts/_audit_wake_events.py` :: load_wav():29-40, rms():43-46 | should-fix | W3 | **fixed** | offline wake analyzers share one numerically pinned RMS metric — #1387 |
 | DA-0225 | `scripts/_run_wake_training_phase0.py` :: _safe_to_remove_output:95 | should-fix | W3 | **fixed** | three destructive wake callers share fail-closed self-bound ownership guard — #1374 |
@@ -173,7 +173,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0227 | `scripts/multiroom-spike.sh` :: make_chirp_remote() :247-271 | should-fix | W3 | **fixed** | canonical raw/WAV broadband click generator — #1395 |
 | DA-0228 | `scripts/prepare-wake-livekit-smoke.sh` :: :20-33 | should-fix | W3 | **fixed** | offline wake wrappers share one worktree-aware Python resolver — #1388 |
 | DA-0229 | `scripts/ring-proto/arm-ring-a.sh` :: :373 | should-fix | W3 | **fixed** | Ring A forwards the selected capture PCM under the builder-owned env key — #1378 |
-| DA-0230 | `scripts/s0-sync-measure.py` :: read_wav_mono:72-108 | should-fix | W3 | **open** | — |
+| DA-0230 | `scripts/s0-sync-measure.py` :: read_wav_mono:72-108 | should-fix | W3 | **fixed** | S0 and multiroom measurement scripts share stdlib WAV decoding and energy-onset primitives while retaining their distinct window/downmix contracts — this branch |
 | DA-0231 | `scripts/switch-gemini-model.sh` :: :28-29 | should-fix | W3 | **fixed** | laptop Pi scripts share canonical host/user resolution through `_lib.sh` — #1381 |
 | DA-0232 | `scripts/switch-gemini-model.sh` :: :35-36 | should-fix | W3 | **fixed** | Gemini aliases resolve from the installed catalog and update the effective selector owner — #1389 |
 | DA-0233 | `tests/test_active_speaker_bringup.py` :: _topology | should-fix | W3 | **fixed** | canonical active-speaker topology fixture — #1394 |
@@ -377,9 +377,9 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0503 | `deploy/install.sh` :: find_card | nit | W3 | **open** | — |
 | DA-0504 | `firmware/dial/platformio.ini` :: [env:crowpanel-128-rotary-hmi] | nit | W3 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0505 | `firmware/dial/src/main.cpp` :: postJson / postVolumeAdjust | nit | W3 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
-| DA-0506 | `jasper/_oom_adj.py` :: EXPECTED | nit | W3 | **open** | — |
-| DA-0507 | `jasper/accessories/bridge.py` :: _TapCounter._dispatch / _log_key_action | nit | W3 | **open** | — |
-| DA-0508 | `jasper/accessories/reconcile.py` :: _unwrap / _variant_value | nit | W3 | **open** | — |
+| DA-0506 | `jasper/_oom_adj.py` :: EXPECTED | nit | W3 | **fixed** | executable resilience contract pins Python OOM inventory to every installed unit/drop-in and the canonical ladder — #1347 |
+| DA-0507 | `jasper/accessories/bridge.py` :: _TapCounter._dispatch / _log_key_action | nit | W3 | **fixed** | tap success, failure, and unmapped events share the canonical key-action field builder with stable logfmt order — this branch |
+| DA-0508 | `jasper/accessories/reconcile.py` :: _unwrap / _variant_value | nit | W3 | **fixed** | accessory reconciler and WiiM mic adapter share one DBus Variant unwrapping primitive — this branch |
 | DA-0509 | `jasper/accounts.py` :: Registry.save | nit | W3 | **fixed** | account registry publication uses canonical atomic I/O with explicit mode coverage — this branch |
 | DA-0510 | `jasper/active_speaker/baseline_profile.py` :: _finite_float:138 | nit | W3 | **open** | — |
 | DA-0511 | `jasper/active_speaker/commissioning_coordinator.py` :: build_commissioning_view | nit | W3 | **open** | — |
@@ -390,17 +390,17 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0516 | `jasper/active_speaker/tone_plan.py` :: _clamp_int | nit | W3 | **fixed** | lossy target-output helpers removed with obsolete preset-era planner — #1321 |
 | DA-0517 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_signal_plan | nit | W3 | **open** | — |
 | DA-0518 | `jasper/active_speaker/web_commissioning.py` :: _issue | nit | W3 | **open** | — |
-| DA-0519 | `jasper/aec_sweep.py` :: write_aec3_sweep_config | nit | W3 | **open** | — |
-| DA-0520 | `jasper/audio_hardware/__init__.py` :: :8 | nit | W3 | **open** | — |
+| DA-0519 | `jasper/aec_sweep.py` :: write_aec3_sweep_config | nit | W3 | **fixed** | sweep config publication uses canonical `atomic_write_text` with the existing mode contract — this branch |
+| DA-0520 | `jasper/audio_hardware/__init__.py` :: :8 | nit | W3 | **fixed** | package re-exports the complete DAC registry surface, pinned against `dac.__all__` — this branch |
 | DA-0521 | `jasper/audio_input_view.py` :: _fusion_view | nit | W3 | **open** | — |
-| DA-0522 | `jasper/audio_measurement/deconv.py` :: deconvolve (:156-158) | nit | W3 | **open** | — |
+| DA-0522 | `jasper/audio_measurement/deconv.py` :: deconvolve (:156-158) | nit | W3 | **fixed** | deconvolution and magnitude response share one next-power-of-two primitive — this branch |
 | DA-0523 | `jasper/audio_measurement/quality.py` :: _dbfs (:107-110) | nit | W3 | **open** | — |
 | DA-0524 | `jasper/avahi_service.py` :: render_service | nit | W3 | **fixed** | Avahi publication uses canonical atomic I/O while preserving mode 0644 — this branch |
 | DA-0525 | `jasper/bluetooth/adapter.py` :: :77 | nit | W3 | **open** | — |
 | DA-0526 | `jasper/calibration_agent/cli.py` :: main | nit | W3 | **open** | — |
 | DA-0527 | `jasper/calibration_agent/correction_advisor.py` :: _model_kwargs | nit | W3 | **open** | — |
 | DA-0528 | `jasper/calibration_agent/proposal_sim.py` :: _curve_arrays | nit | W3 | **open** | — |
-| DA-0529 | `jasper/capture_relay/__init__.py` :: __all__ | nit | W3 | **open** | — |
+| DA-0529 | `jasper/capture_relay/__init__.py` :: __all__ | nit | W3 | **fixed** | package exports every builder in the shipped capture-kind registry, including level-ramp and bass-nearfield — this branch |
 | DA-0530 | `jasper/capture_relay/health.py` :: relay_base_from_env | nit | W3 | **open** | — |
 | DA-0531 | `jasper/cli/aec_bridge.py` :: _aec_loop: 5 safe-engine-process blocks (~20 | nit | W3 | **open** | — |
 | DA-0532 | `jasper/cli/airplay_mode.py` :: _read_mode / jasper/web/airplay_setup.py:_cu | nit | W3 | **open** | — |
@@ -426,15 +426,15 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0552 | `jasper/peering/config.py` :: _parse_mode | nit | W3 | **fixed** | config parsing and doctor reporting share one peering boolean vocabulary — this branch |
 | DA-0553 | `jasper/research/state.py` :: _runtime_provider | nit | W3 | **fixed** | runtime provider labels reuse the catalog lookup |
 | DA-0554 | `jasper/tool_state.py` :: write_disabled_tools | nit | W3 | **fixed** | unused partial-state writers removed; `write_tool_state` remains the sole mutation boundary — this branch |
-| DA-0555 | `jasper/tools/calendar.py` :: _no_account_error / _no_credentials_error | nit | W3 | **open** | — |
+| DA-0555 | `jasper/tools/calendar.py` :: _no_account_error / _no_credentials_error | nit | W3 | **fixed** | Calendar and Gmail share one Google account/credential error owner — this branch |
 | DA-0556 | `jasper/tools/spotify.py` :: spotify_play / spotify_play_latest_by_artist | nit | W3 | **fixed** | three Spotify tools share one provider-neutral device-link error builder — this branch |
-| DA-0557 | `jasper/tools/transport.py` :: _mpris_now_playing | nit | W3 | **open** | — |
+| DA-0557 | `jasper/tools/transport.py` :: _mpris_now_playing | nit | W3 | **fixed** | transport delegates AirPlay metadata to the renderer's canonical busctl parser — this branch |
 | DA-0559 | `jasper/voice/daemon_main.py` :: _tts_ready_detail / _warn_if_research_model_ | nit | W3 | **open** | — |
 | DA-0560 | `jasper/voice/openai_session.py` :: ConnectionState / _noisy_transitions | nit | W3 | **open** | — |
 | DA-0561 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn._mark_server_vad / OpenAI | nit | W3 | **fixed** | unused private server-VAD alias removed; public turn method remains canonical — this branch |
 | DA-0562 | `jasper/voice_daemon.py` :: WakeLoop.for_tests | nit | W3 | **open** | — |
 | DA-0563 | `jasper/voice_daemon.py` :: _arbitrate_acquire_drain | nit | W3 | **open** | — |
-| DA-0564 | `jasper/volume_coordinator.py` :: VolumeCoordinator.prepare_source_handoff :69 | nit | W3 | **open** | — |
+| DA-0564 | `jasper/volume_coordinator.py` :: VolumeCoordinator.prepare_source_handoff :69 | nit | W3 | **fixed** | all source-handoff exits share one state-derived result builder; safety flags and timing remain pinned — this branch |
 | DA-0565 | `jasper/weather.py` :: WeatherClient.get_weather | nit | W3 | **fixed** | explicit and default locations share one bounded geocoding path |
 | DA-0566 | `jasper/web/bluetooth_setup.py` :: _read_json (package-wide) | nit | W3 | **fixed** | named Bluetooth, sources, correction, and rooms readers delegate to `read_json_object` with local caps |
 | DA-0567 | `jasper/web/correction_setup.py` :: _dispatch_sync :3306 | nit | W3 | **fixed** | sync WAV upload budget has a named module constant |

@@ -70,7 +70,21 @@ import os
 import socket
 import sys
 import time
-import wave
+
+try:
+    from scripts._sync_measure_audio import (
+        UnsupportedSampleWidth,
+        find_energy_onsets,
+        read_wav_mono as _shared_read_wav_mono,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"scripts", "scripts._sync_measure_audio"}:
+        raise
+    from _sync_measure_audio import (  # type: ignore[no-redef]
+        UnsupportedSampleWidth,
+        find_energy_onsets,
+        read_wav_mono as _shared_read_wav_mono,
+    )
 
 # The working target from docs/HANDOFF-multiroom.md §8: p99 < 5 ms for L/R.
 TARGET_P99_MS = 5.0
@@ -208,22 +222,16 @@ def run_software(args):
 # =============================================================================
 def _read_wav_mono(path):
     """Return (samples:list[int], sample_rate). Mixes to mono if stereo."""
-    with wave.open(path, "rb") as w:
-        n_ch = w.getnchannels()
-        sw = w.getsampwidth()
-        sr = w.getframerate()
-        raw = w.readframes(w.getnframes())
-    if sw != 2:
-        raise ValueError(f"expected 16-bit WAV, got sampwidth={sw}")
-    import array
-
-    a = array.array("h")
-    a.frombytes(raw)
-    if n_ch == 1:
-        return list(a), sr
-    # Mix channels down to mono.
-    mono = [sum(a[i:i + n_ch]) // n_ch for i in range(0, len(a), n_ch)]
-    return mono, sr
+    try:
+        return _shared_read_wav_mono(
+            path,
+            supported_sample_widths=(2,),
+            normalize=False,
+        )
+    except UnsupportedSampleWidth as exc:
+        raise ValueError(
+            f"expected 16-bit WAV, got sampwidth={exc.sample_width}",
+        ) from exc
 
 
 def _find_burst_onsets(samples, sr, min_gap_s=0.5):
@@ -233,24 +241,7 @@ def _find_burst_onsets(samples, sr, min_gap_s=0.5):
     edge of each burst's energy envelope. Good enough to slice out arrivals;
     the fine offset comes from cross-/auto-correlation below.
     """
-    win = max(1, int(0.005 * sr))  # 5 ms energy window
-    energy = []
-    acc = 0
-    for i, s in enumerate(samples):
-        acc += s * s
-        if i >= win:
-            acc -= samples[i - win] * samples[i - win]
-        energy.append(acc)
-    peak = max(energy) if energy else 0
-    thresh = peak * 0.15
-    refractory = int(min_gap_s * sr)
-    onsets = []
-    last = -refractory
-    for i, e in enumerate(energy):
-        if e > thresh and (i - last) > refractory:
-            onsets.append(i)
-            last = i
-    return onsets
+    return find_energy_onsets(samples, sr, min_gap_s=min_gap_s)
 
 
 def _xcorr_offset(a, b, max_lag):

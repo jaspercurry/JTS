@@ -43,6 +43,25 @@ logger = logging.getLogger(__name__)
 MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
 
 
+async def airplay_now_playing() -> dict[str, str]:
+    """Return Shairport's canonical MPRIS title/artist/album projection."""
+    out = await _busctl_get_property(
+        "org.mpris.MediaPlayer2.ShairportSync",
+        "/org/mpris/MediaPlayer2",
+        "org.mpris.MediaPlayer2.Player",
+        "Metadata",
+    )
+    if not out:
+        return {}
+    meta = _parse_mpris_metadata(out)
+    artists = meta.get("xesam:artist") or []
+    return {
+        "title": str(meta.get("xesam:title", "")),
+        "album": str(meta.get("xesam:album", "")),
+        "artist": ", ".join(artists) if isinstance(artists, list) else str(artists),
+    }
+
+
 class RendererClient:
     """Renderer state + AirPlay-pause control. Read-only state queries
     are fail-soft (log + return safe default on transport errors).
@@ -170,21 +189,7 @@ class RendererClient:
         }
 
     async def _ap_currentsong(self) -> dict[str, Any]:
-        out = await _busctl_get_property(
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player",
-            "Metadata",
-        )
-        if not out:
-            return {}
-        meta = _parse_mpris_metadata(out)
-        artists = meta.get("xesam:artist") or []
-        return {
-            "title": meta.get("xesam:title", ""),
-            "album": meta.get("xesam:album", ""),
-            "artist": ", ".join(artists) if isinstance(artists, list) else str(artists),
-        }
+        return await airplay_now_playing()
 
     # ------------------------------------------------------------------
     # pause_airplay — pauses an active AirPlay session via MPRIS so

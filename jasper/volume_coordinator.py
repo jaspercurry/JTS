@@ -1095,8 +1095,15 @@ class VolumeCoordinator:
             await self._read_camilla_volume_and_mute()
         )
 
-        if prev_source == current_source:
-            now = time.monotonic()
+        def _handoff(
+            *,
+            push_ok: bool | None = None,
+            camilla_guarded: bool = False,
+            settled_ms: int = 0,
+            result: str = "ok",
+            detail: str = "",
+        ) -> SourceHandoff:
+            """Build one result from the handoff state accumulated so far."""
             return SourceHandoff(
                 prev_source=prev_source,
                 current_source=current_source,
@@ -1106,10 +1113,17 @@ class VolumeCoordinator:
                 current_mode=current_mode,
                 guard_db=guard_db,
                 camilla_before_db=camilla_before,
-                result="noop",
+                push_ok=push_ok,
+                camilla_guarded=camilla_guarded,
+                settled_ms=settled_ms,
+                result=result,
+                detail=detail,
                 started_at_mono=started,
-                prepared_at_mono=now,
+                prepared_at_mono=time.monotonic(),
             )
+
+        if prev_source == current_source:
+            return _handoff(result="noop")
 
         if current_mode == VolumeMode.CAMILLA_MASTER:
             settled_ms = 0
@@ -1130,20 +1144,9 @@ class VolumeCoordinator:
                     persist=True,
                 )
                 if not ok:
-                    now = time.monotonic()
-                    return SourceHandoff(
-                        prev_source=prev_source,
-                        current_source=current_source,
-                        reason=reason,
-                        level=level,
-                        prev_mode=prev_mode,
-                        current_mode=current_mode,
-                        guard_db=guard_db,
-                        camilla_before_db=camilla_before,
+                    return _handoff(
                         result="failed",
                         detail="camilla_guard_failed",
-                        started_at_mono=started,
-                        prepared_at_mono=now,
                     )
                 level, guard_db, settled_ms, ok = (
                     await self._settle_handoff_guard(
@@ -1152,22 +1155,11 @@ class VolumeCoordinator:
                     )
                 )
                 if not ok:
-                    now = time.monotonic()
-                    return SourceHandoff(
-                        prev_source=prev_source,
-                        current_source=current_source,
-                        reason=reason,
-                        level=level,
-                        prev_mode=prev_mode,
-                        current_mode=current_mode,
-                        guard_db=guard_db,
-                        camilla_before_db=camilla_before,
+                    return _handoff(
                         camilla_guarded=True,
                         settled_ms=settled_ms,
                         result="failed",
                         detail="camilla_guard_catchdown_failed",
-                        started_at_mono=started,
-                        prepared_at_mono=now,
                     )
             else:
                 self._refresh_from_disk()
@@ -1180,20 +1172,11 @@ class VolumeCoordinator:
                         persist=True,
                     )
                     if not ok:
-                        now = time.monotonic()
-                        return SourceHandoff(
-                            prev_source=prev_source,
-                            current_source=current_source,
-                            reason=reason,
-                            level=latest_level,
-                            prev_mode=prev_mode,
-                            current_mode=current_mode,
-                            guard_db=latest_guard_db,
-                            camilla_before_db=camilla_before,
+                        level = latest_level
+                        guard_db = latest_guard_db
+                        return _handoff(
                             result="failed",
                             detail="camilla_guard_catchdown_failed",
-                            started_at_mono=started,
-                            prepared_at_mono=now,
                         )
                     level, guard_db, settled_ms, ok = (
                         await self._settle_handoff_guard(
@@ -1203,37 +1186,15 @@ class VolumeCoordinator:
                         )
                     )
                     if not ok:
-                        now = time.monotonic()
-                        return SourceHandoff(
-                            prev_source=prev_source,
-                            current_source=current_source,
-                            reason=reason,
-                            level=level,
-                            prev_mode=prev_mode,
-                            current_mode=current_mode,
-                            guard_db=guard_db,
-                            camilla_before_db=camilla_before,
+                        return _handoff(
                             camilla_guarded=True,
                             settled_ms=settled_ms,
                             result="failed",
                             detail="camilla_guard_catchdown_failed",
-                            started_at_mono=started,
-                            prepared_at_mono=now,
                         )
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
+            return _handoff(
                 camilla_guarded=True,
                 settled_ms=settled_ms,
-                started_at_mono=started,
-                prepared_at_mono=now,
             )
 
         push_ok = await self._set_push_source_for_handoff(current_source, level)
@@ -1247,20 +1208,7 @@ class VolumeCoordinator:
                     current_source, level,
                 )
         if push_ok:
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
-                push_ok=True,
-                started_at_mono=started,
-                prepared_at_mono=now,
-            )
+            return _handoff(push_ok=True)
 
         ok = await self._set_camilla_db(
             guard_db,
@@ -1268,21 +1216,10 @@ class VolumeCoordinator:
             persist=True,
         )
         if not ok:
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
+            return _handoff(
                 push_ok=False,
                 result="failed",
                 detail="push_failed_and_camilla_guard_failed",
-                started_at_mono=started,
-                prepared_at_mono=now,
             )
         level, guard_db, settled_ms, settle_ok = (
             await self._settle_handoff_guard(
@@ -1291,23 +1228,12 @@ class VolumeCoordinator:
             )
         )
         if not settle_ok:
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
+            return _handoff(
                 push_ok=False,
                 camilla_guarded=True,
                 settled_ms=settled_ms,
                 result="failed",
                 detail="push_failed_camilla_guard_catchdown_failed",
-                started_at_mono=started,
-                prepared_at_mono=now,
             )
         self._record_push_guard(
             current_source,
@@ -1317,23 +1243,12 @@ class VolumeCoordinator:
             context="source_handoff_push_degraded",
             previous_db=camilla_before,
         )
-        now = time.monotonic()
-        return SourceHandoff(
-            prev_source=prev_source,
-            current_source=current_source,
-            reason=reason,
-            level=level,
-            prev_mode=prev_mode,
-            current_mode=current_mode,
-            guard_db=guard_db,
-            camilla_before_db=camilla_before,
+        return _handoff(
             push_ok=False,
             camilla_guarded=True,
             settled_ms=settled_ms,
             result="degraded_safe",
             detail="push_volume_failed_camilla_guarded",
-            started_at_mono=started,
-            prepared_at_mono=now,
         )
 
     async def finalize_source_handoff(self, handoff: SourceHandoff) -> bool:

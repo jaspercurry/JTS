@@ -29,6 +29,7 @@ from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.log_event import log_event
 
+from ._dbus import variant_value
 from .constants import WIIM_REMOTE_2_MIC_UDP_PORT, WIIM_REMOTE_2_NAME_RE
 
 logger = logging.getLogger(__name__)
@@ -76,12 +77,8 @@ class DeviceNotReady(RuntimeError):
     """Raised when the paired WiiM voice characteristic is not available."""
 
 
-def _variant_value(value: Any) -> Any:
-    return getattr(value, "value", value)
-
-
 def _bytes_from_dbus_value(value: Any) -> bytes:
-    raw = _variant_value(value)
+    raw = variant_value(value)
     if raw is None:
         return b""
     if isinstance(raw, bytes):
@@ -92,7 +89,7 @@ def _bytes_from_dbus_value(value: Any) -> bytes:
 
 
 def _uuid(value: Any) -> str:
-    return str(_variant_value(value) or "").lower()
+    return str(variant_value(value) or "").lower()
 
 
 @dataclass(frozen=True)
@@ -121,11 +118,11 @@ def voice_characteristic_candidates(
         props = ifaces.get(BLUEZ_DEVICE_IFACE)
         if props is None:
             continue
-        if not bool(_variant_value(props.get("Connected"))):
+        if not bool(variant_value(props.get("Connected"))):
             continue
         name = str(
-            _variant_value(props.get("Alias"))
-            or _variant_value(props.get("Name"))
+            variant_value(props.get("Alias"))
+            or variant_value(props.get("Name"))
             or ""
         )
         if pattern.search(name):
@@ -145,8 +142,8 @@ def voice_characteristic_candidates(
         if _uuid(char_props.get("UUID")) != HID_REPORT_UUID:
             continue
         flags = {
-            str(_variant_value(flag)).lower()
-            for flag in _variant_value(char_props.get("Flags")) or []
+            str(variant_value(flag)).lower()
+            for flag in variant_value(char_props.get("Flags")) or []
         }
         if "notify" not in flags:
             continue
@@ -400,7 +397,7 @@ async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> No
         def on_device_properties(iface: str, changed: dict, _invalidated: list) -> None:
             if iface != BLUEZ_DEVICE_IFACE or "Connected" not in changed:
                 return
-            if not bool(_variant_value(changed["Connected"])):
+            if not bool(variant_value(changed["Connected"])):
                 done.set()
 
         dev_props.on_properties_changed(on_device_properties)
