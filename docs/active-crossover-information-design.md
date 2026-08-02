@@ -940,10 +940,14 @@ the honest post-fix count is one marginal false refusal, not five.
 Three bands rather than one keeps per-band granularity **on the refusal
 path** — any one band verdicting `insufficient` outranks its `ok` siblings, so
 a capture whose lower shoulder cannot support the null is refused rather than
-cleared by a two-octave average. It does **not** tighten the null-depth cap:
-`worst_band_verdict` breaks equal-verdict ties by table order, not by SNR, so
-among all-`ok` bands the cap is taken against `sweep_low`. That tie-break is
-pre-existing and is tracked separately (issue #2026).
+cleared by a two-octave average. It tightens the null-depth **cap** as well,
+but only since issue #2026 was fixed: `worst_band_verdict` used to break
+equal-verdict ties by table order, so among all-`ok` bands the cap was taken
+against `sweep_low` — up to 17 dB more permissive than the true worst, and
+unstable, since which third came first also moved the reported number. Ties
+now break on the lowest `estimated_snr_db`, with verdict rank still dominant,
+so the cap is proven against the worst of the three and the refusal path is
+unchanged.
 
 Coverage is asserted rather than assumed, and the analyzer fails closed if a
 `raw_ambient_fallback` band reaches the subtraction by EITHER route — the
