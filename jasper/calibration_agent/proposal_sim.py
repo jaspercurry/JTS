@@ -49,6 +49,8 @@ import numpy as np
 from jasper.correction import acceptance as _acceptance
 from jasper.correction import peq as _peq
 
+from .curves import curve_values
+
 # --- Ring / regularization guard --------------------------------------
 #
 # A peaking boost's resonant tail lengthens with Q. Empirically (and per
@@ -165,13 +167,10 @@ def _as_peq_objects(peqs: list[dict[str, float]]) -> list[_peq.PEQ]:
 
 def _curve_arrays(curve: Any) -> tuple[np.ndarray, np.ndarray] | None:
     """Coerce a CurveJSON-ish object/dict into (freqs, mags) arrays."""
-    if curve is None:
+    values = curve_values(curve)
+    if values is None:
         return None
-    freqs = getattr(curve, "freqs_hz", None)
-    mags = getattr(curve, "magnitude_db", None)
-    if freqs is None and isinstance(curve, dict):
-        freqs = curve.get("freqs_hz")
-        mags = curve.get("magnitude_db")
+    freqs, mags = values
     if not isinstance(freqs, (list, tuple, np.ndarray)):
         return None
     if not isinstance(mags, (list, tuple, np.ndarray)):

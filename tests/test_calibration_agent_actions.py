@@ -233,6 +233,30 @@ def test_action_runner_presents_named_target_move_without_side_effect(
     assert result["human_in_loop"]["subjective_judgement_required"] is True
 
 
+def test_action_runner_routes_correction_peq_to_simulation_review() -> None:
+    action = {
+        "type": response.ACTION_PROPOSE_CORRECTION_PEQ,
+        "status": "ready_for_simulation",
+        "execution_ready": False,
+        "requires_simulation": True,
+        "correction_peqs": [{"freq_hz": 80.0, "q": 1.0, "gain_db": -2.0}],
+        "strategy_bounds": {"max_filters": 5},
+        "rationale": "Reduce the measured bass peak.",
+    }
+    run = actions.run_validated_action_plan({
+        "kind": "jts_advisor_response_validation",
+        "accepted": True,
+        "validated_action_plan": [action],
+    })
+
+    assert run["accepted"] is True
+    assert run["status"] == "pending_human"
+    result = run["action_results"][0]
+    assert result["status"] == "ready_for_simulation"
+    assert result["correction_peqs"] == action["correction_peqs"]
+    assert result["human_in_loop"]["role"] == "deterministic_review"
+
+
 def test_action_runner_presents_warmth_target_move_without_side_effect(
     tmp_path: Path,
 ):

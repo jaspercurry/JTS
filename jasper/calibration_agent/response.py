@@ -481,8 +481,6 @@ def _policy_allows(
         ACTION_PROPOSE_TARGET_MOVE: "propose_target_move",
     }.get(action_type, action_type)
     payload = actions.get(policy_id)
-    if payload is None and action_type == ACTION_AUDITION:
-        payload = actions.get("suggest_bounded_peq_strategy")
     if not payload:
         return False, ["advisor policy does not list this action"]
     return bool(payload.get("allowed")), [str(r) for r in payload.get("reasons") or []]

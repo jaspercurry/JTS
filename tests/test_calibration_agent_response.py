@@ -12,6 +12,24 @@ from jasper.calibration_agent import cli, response, tools
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
 
+def test_legacy_strategy_policy_does_not_authorize_preference_audition() -> None:
+    allowed, reasons = response._policy_allows(
+        {
+            "advisor_policy": {
+                "allowed_actions": [{
+                    "id": "suggest_bounded_peq_strategy",
+                    "allowed": True,
+                    "reasons": [],
+                }],
+            },
+        },
+        response.ACTION_AUDITION,
+    )
+
+    assert allowed is False
+    assert reasons == ["advisor policy does not list this action"]
+
+
 def _context(tmp_path: Path) -> dict:
     bundle = tools.load_measurement_bundle(
         bundle_dir=write_golden_correction_bundle(tmp_path),

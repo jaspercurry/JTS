@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 135 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 130 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 505
+- **fixed**: 510
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -259,8 +259,8 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0313 | `jasper/bluetooth/adapter.py` :: _close_pairing_window | nit | W5 | **fixed** | pairing shutdown attempts every BlueZ admission knob before re-raising |
 | DA-0314 | `jasper/bluetooth/models.py` :: UUID_AVRCP | nit | W5 | **fixed** | unused UUID constant removed |
 | DA-0315 | `jasper/bluetooth/models.py` :: _MAC_ALIAS_RE | nit | W5 | **fixed** | static MAC pattern simplified to one readable regex |
-| DA-0316 | `jasper/calibration_agent/actions.py` :: _run_one_action | nit | W5 | **open** | — |
-| DA-0317 | `jasper/calibration_agent/response.py` :: _policy_allows | nit | W5 | **open** | — |
+| DA-0316 | `jasper/calibration_agent/actions.py` :: _run_one_action | nit | W5 | **fixed** | PEQ proposals now follow an explicit simulation-first branch with no apply side effect |
+| DA-0317 | `jasper/calibration_agent/response.py` :: _policy_allows | nit | W5 | **fixed** | removed unreachable legacy policy fallback |
 | DA-0318 | `jasper/capture_relay/alignment.py` :: cross_correlation_alignment | nit | W5 | **fixed** | pathological captures are truncated before float64 normalization |
 | DA-0319 | `jasper/citibike.py` :: CitiBikeClient.resolve_label | nit | W5 | **fixed** | unused client method and test removed |
 | DA-0320 | `jasper/cli/aec_bridge.py` :: LegEmitter.engine_token :581, add_emitter(.. | nit | W5 | **fixed** | never-populated emitter field and parameter removed |
@@ -397,9 +397,9 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0523 | `jasper/audio_measurement/quality.py` :: _dbfs (:107-110) | nit | W3 | **open** | — |
 | DA-0524 | `jasper/avahi_service.py` :: render_service | nit | W3 | **fixed** | Avahi publication uses canonical atomic I/O while preserving mode 0644 — this branch |
 | DA-0525 | `jasper/bluetooth/adapter.py` :: :77 | nit | W3 | **open** | — |
-| DA-0526 | `jasper/calibration_agent/cli.py` :: main | nit | W3 | **open** | — |
-| DA-0527 | `jasper/calibration_agent/correction_advisor.py` :: _model_kwargs | nit | W3 | **open** | — |
-| DA-0528 | `jasper/calibration_agent/proposal_sim.py` :: _curve_arrays | nit | W3 | **open** | — |
+| DA-0526 | `jasper/calibration_agent/cli.py` :: main | nit | W3 | **fixed** | advisor response path is resolved once before output branching |
+| DA-0527 | `jasper/calibration_agent/correction_advisor.py` :: _model_kwargs | nit | W3 | **fixed** | shared no-key sentinel is public and raised directly by the model builder |
+| DA-0528 | `jasper/calibration_agent/proposal_sim.py` :: _curve_arrays | nit | W3 | **fixed** | shared curve-value normalization now serves advisor and simulation paths |
 | DA-0529 | `jasper/capture_relay/__init__.py` :: __all__ | nit | W3 | **fixed** | package exports every builder in the shipped capture-kind registry, including level-ramp and bass-nearfield — this branch |
 | DA-0530 | `jasper/capture_relay/health.py` :: relay_base_from_env | nit | W3 | **open** | — |
 | DA-0531 | `jasper/cli/aec_bridge.py` :: _aec_loop: 5 safe-engine-process blocks (~20 | nit | W3 | **open** | — |

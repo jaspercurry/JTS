@@ -44,6 +44,7 @@ from jasper.log_event import log_event
 from . import key_provisioning, model_client, prompt, response
 from . import proposal_sim
 from .advisor_context import _curve_summary
+from .curves import curve_values
 
 logger = logging.getLogger(__name__)
 
@@ -136,11 +137,10 @@ def _residual_summary(
 
 
 def _pairs(curve: Any) -> list[tuple[float, float]]:
-    freqs = getattr(curve, "freqs_hz", None)
-    mags = getattr(curve, "magnitude_db", None)
-    if freqs is None and isinstance(curve, dict):
-        freqs = curve.get("freqs_hz")
-        mags = curve.get("magnitude_db")
+    values = curve_values(curve)
+    if values is None:
+        return []
+    freqs, mags = values
     if not isinstance(freqs, (list, tuple)) or not isinstance(mags, (list, tuple)):
         return []
     out: list[tuple[float, float]] = []
@@ -153,12 +153,10 @@ def _pairs(curve: Any) -> list[tuple[float, float]]:
 
 
 def _curve_as_dict(curve: Any) -> dict[str, Any] | None:
-    freqs = getattr(curve, "freqs_hz", None)
-    mags = getattr(curve, "magnitude_db", None)
-    if freqs is None and isinstance(curve, dict):
-        return curve if curve.get("freqs_hz") is not None else None
-    if freqs is None or mags is None:
+    values = curve_values(curve)
+    if values is None:
         return None
+    freqs, mags = values
     return {"freqs_hz": list(freqs), "magnitude_db": list(mags)}
 
 
@@ -453,10 +451,7 @@ def _model_kwargs(environ: "dict[str, str] | None"):
     :class:`model_client.AdvisorModelError` when no key is configured."""
     api_key = key_provisioning.read_openai_key(environ=environ)
     if not api_key:
-        raise model_client.AdvisorModelError(
-            "no OpenAI key configured — add one at /voice to enable the "
-            "tuning assistant"
-        )
+        raise model_client.AdvisorModelError(key_provisioning.NO_KEY_NUDGE)
     return api_key, key_provisioning.resolve_tuning_model(environ=environ)
 
 

@@ -111,6 +111,26 @@ def _run_one_action(
     action_type = str(action.get("type") or "")
     execution_ready = bool(action.get("execution_ready"))
 
+    if action_type == response.ACTION_PROPOSE_CORRECTION_PEQ:
+        return {
+            "index": index,
+            "type": action_type,
+            "status": "ready_for_simulation",
+            "executed": False,
+            "pending": True,
+            "side_effect": "none",
+            "correction_peqs": action.get("correction_peqs") or [],
+            "strategy_bounds": action.get("strategy_bounds") or {},
+            "rationale": action.get("rationale"),
+            "human_in_loop": _human_loop(
+                role="deterministic_review",
+                prompt=(
+                    "Simulate and judge this bounded correction proposal before "
+                    "offering any user-confirmed apply."
+                ),
+            ),
+        }
+
     if not execution_ready:
         return {
             "index": index,
