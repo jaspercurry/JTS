@@ -1198,6 +1198,22 @@ def _per_position_candidates(
     ]
 
 
+def _classify_presence(present: int, total: int) -> str:
+    """The invariant/dependent line, in one place.
+
+    Both :func:`identify_interference_nulls` and
+    :func:`classify_dip_position_variance` reach this verdict, and a second
+    copy of the comparison is a second thing to drift when
+    :data:`POSITION_PRESENCE_FRACTION` is re-derived.
+    """
+    fraction = present / total if total else 0.0
+    return (
+        CLASSIFICATION_POSITION_INVARIANT
+        if fraction >= POSITION_PRESENCE_FRACTION
+        else CLASSIFICATION_POSITION_DEPENDENT
+    )
+
+
 def _present_at_positions(
     per_position: Sequence[Sequence[_Candidate]],
     f_hz: float,
@@ -1564,7 +1580,6 @@ def identify_interference_nulls(
             per_position, candidate.f_hz, tau_s,
             RUNG_MATCH_TOLERANCE_SPACINGS, min_depth_db,
         )
-        fraction = present / combined.n_positions if combined.n_positions else 0.0
         predicted = (n + 0.5) / tau_s
         nulls.append(
             IdentifiedNull(
@@ -1577,11 +1592,7 @@ def identify_interference_nulls(
                 r_freq=r_freq,
                 agreement=agreement,
                 depth_db=candidate.depth_db,
-                classification=(
-                    CLASSIFICATION_POSITION_INVARIANT
-                    if fraction >= POSITION_PRESENCE_FRACTION
-                    else CLASSIFICATION_POSITION_DEPENDENT
-                ),
+                classification=_classify_presence(present, combined.n_positions),
                 evidence={
                     "predicted_hz": predicted,
                     "rung_error_spacings": abs(candidate.f_hz - predicted) * tau_s,
@@ -1784,7 +1795,6 @@ def classify_dip_position_variance(
             )
             for position_candidates in per_position
         )
-        fraction = present / n_positions
         dips.append(
             PositionVarianceDip(
                 f_center_hz=float(cand.f_hz),
@@ -1793,11 +1803,7 @@ def classify_dip_position_variance(
                 depth_db=float(cand.depth_db),
                 positions_present=present,
                 positions_total=n_positions,
-                classification=(
-                    CLASSIFICATION_POSITION_INVARIANT
-                    if fraction >= POSITION_PRESENCE_FRACTION
-                    else CLASSIFICATION_POSITION_DEPENDENT
-                ),
+                classification=_classify_presence(present, n_positions),
             )
         )
 
