@@ -358,6 +358,7 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
     sess.predicted_curve = CurveJSON([20.0, 80.0], [0.5, 1.0])
     sess.verify_curve = CurveJSON([20.0, 80.0], [0.25, 1.2])
     sess.repeat_curve = CurveJSON([20.0, 80.0], [1.1, 5.8])
+    sess._emit("state", {"state": "ready"})
 
     snapshot = correction_status.session_snapshot(sess)
     assert sess.snapshot() == snapshot
@@ -400,10 +401,17 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
             "capture_transport",
             "local_capture_setup_bound",
             "level_match",
+            "events",
     }
     assert snapshot["sweep"] == sess.sweep_meta.to_dict()
     assert snapshot["peqs"] == [{"freq_hz": 80.0, "q": 4.0, "gain_db": -3.0}]
     assert snapshot["config_path"] == str(sess.config_path)
+    assert snapshot["events"] == [{
+        "seq": 1,
+        "timestamp": sess.updated_at,
+        "type": "state",
+        "payload": {"state": "ready"},
+    }]
 
     info = correction_status.info_json_payload(sess)
     assert set(info) == {

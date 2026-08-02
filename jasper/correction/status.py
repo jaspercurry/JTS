@@ -409,6 +409,7 @@ def session_snapshot(session: Any) -> dict[str, Any]:
             if session.design_report is not None
             else None
         ),
+        "events": session.events_snapshot(),
     }
 
 

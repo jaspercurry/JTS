@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 91 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 88 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 549
+- **fixed**: 552
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -283,10 +283,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0337 | `jasper/control/system_metrics.py` :: SystemSampler.stop | nit | W5 | **fixed** | unused test-only stop seam and dormant flag removed |
 | DA-0338 | `jasper/control/volume_ops.py` :: _build_spotify_router_or_none / _spotify_emp | nit | W5 | **fixed** | empty-router cache access is serialized under a dedicated lock |
 | DA-0339 | `jasper/control/wifi_guardian_state.py` :: snapshot / _active_ssid / _last_guardian_eve | nit | W5 | **fixed** | blocking Wi-Fi guardian probes run in the aggregate's parallel worker fan-out |
-| DA-0340 | `jasper/correction/acoustic_quality.py` :: _capture_summary / build_acoustic_quality_re | nit | W5 | **open** | — |
+| DA-0340 | `jasper/correction/acoustic_quality.py` :: _capture_summary / build_acoustic_quality_re | nit | W5 | **fixed** | raw capture-quality issues now flow into acoustic summaries and gates |
 | DA-0341 | `jasper/correction/fir_runtime.py` :: stage_fir_artifact | nit | W5 | **fixed** | redundant post-write chmod removed |
 | DA-0342 | `jasper/correction/runtime_safety.py` :: _issue_detail | nit | W5 | **fixed** | shared fallback wording is operation-neutral |
-| DA-0343 | `jasper/correction/session.py` :: SessionEvent / self._events / _emit | nit | W5 | **open** | — |
+| DA-0343 | `jasper/correction/session.py` :: SessionEvent / self._events / _emit | nit | W5 | **fixed** | retained session transition events are exposed on the live status snapshot |
 | DA-0344 | `jasper/correction/session.py` :: _ensure_bundle_dir / _existing_bundle_depend | nit | W5 | **fixed** | unused SessionArtifacts forwarding wrappers removed |
 | DA-0345 | `jasper/cues/manager.py` :: AudioCueManager.status :168 | nit | W5 | **fixed** | stale doctor consumer claim removed from the status docstring — this branch |
 | DA-0346 | `jasper/fanin/buffer_reconcile.py` :: :112 | nit | W5 | **fixed** | dead env alias and import removed |
@@ -326,7 +326,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0381 | `jasper/weather.py` :: WeatherClient._get_json | nit | W5 | **fixed** | invalid successful-response JSON now emits a bounded structured warning before raising — this branch |
 | DA-0382 | `jasper/web/correction_setup.py` :: _handle_interpret / _handle_propose tuning-s | nit | W5 | **open** | — |
 | DA-0383 | `jasper/web/correction_setup.py` :: _handle_start :1345,1385 | nit | W5 | **fixed** | vestigial reservation-transfer flag removed |
-| DA-0384 | `jasper/web/correction_setup.py` :: log_event event names :1246,1358,1886,1919 | nit | W5 | **open** | — |
+| DA-0384 | `jasper/web/correction_setup.py` :: log_event event names :1246,1358,1886,1919 | nit | W5 | **fixed** | correction wizard audit events use dotted domain names, guarded by AST test |
 | DA-0385 | `jasper/web/sound_setup.py` :: _live_draft_profile | nit | W5 | **open** | — |
 | DA-0386 | `jasper/web/tools_setup.py` :: _handle_toggle_pack | nit | W5 | **fixed** | no-op pack toggles no longer emit false mutation audit events; behavior is pinned — this branch |
 | DA-0387 | `jasper/web/transit_setup.py` :: _apply_save | should-fix | W5 | **fixed** | duplicate of DA-0035; BusTime key scrubbed from the same broad-except surface — #1236 |

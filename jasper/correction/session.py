@@ -186,6 +186,14 @@ class SessionEvent:
     type: str
     payload: dict[str, Any]
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seq": self.seq,
+            "timestamp": self.timestamp,
+            "type": self.type,
+            "payload": dict(self.payload),
+        }
+
 
 @dataclass
 class SessionConfig:
@@ -581,6 +589,11 @@ class MeasurementSession:
         )
         self._events.append(ev)
         self.updated_at = ev.timestamp
+
+    def events_snapshot(self) -> list[dict[str, Any]]:
+        """Return point-in-time session events for the live status surface."""
+
+        return [event.to_dict() for event in self._events]
 
     def _cancel_capture_timeout(self) -> None:
         self._state_guard.cancel_capture_timeout()

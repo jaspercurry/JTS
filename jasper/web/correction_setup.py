@@ -2484,7 +2484,7 @@ def _room_readiness() -> _RoomReadiness:
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
         log_event(
             logger,
-            "correction_readiness_unavailable",
+            "correction.readiness_unavailable",
             error_type=type(exc).__name__,
             level=logging.WARNING,
         )
@@ -2570,7 +2570,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not readiness.allowed:
         log_event(
             logger,
-            "correction_start_rejected",
+            "correction.start_rejected",
             reason=readiness.reason,
             level=logging.WARNING,
         )
@@ -2595,7 +2595,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if blocking_state is not None:
         log_event(
             logger,
-            "correction_start_rejected",
+            "correction.start_rejected",
             reason="active_session",
             state=blocking_state,
             level=logging.WARNING,
@@ -2674,7 +2674,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         if mismatch is not None:
             log_event(
                 logger,
-                "correction_start_rejected",
+                "correction.start_rejected",
                 reason="calibration_device_mismatch",
                 provider=getattr(mic_calibration, "provider", ""),
                 level=logging.WARNING,
@@ -2696,7 +2696,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             ]
             log_event(
                 logger,
-                "correction_start_rejected",
+                "correction.start_rejected",
                 reason="browser_audio_path_failed",
                 issue_codes=",".join(
                     str(code) for code in issue_codes if code
@@ -2736,7 +2736,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             ]
             log_event(
                 logger,
-                "correction_start_rejected",
+                "correction.start_rejected",
                 reason="browser_audio_path_failed",
                 issue_codes=",".join(str(code) for code in issue_codes if code),
                 level=logging.WARNING,
@@ -2788,7 +2788,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             _clear_start_slot()
             log_event(
                 logger,
-                "correction_start_state_wait_timeout",
+                "correction.start_state_wait_timeout",
                 session=sess.session_id,
                 level=logging.WARNING,
             )
@@ -3744,7 +3744,7 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             # measurement entry/result screen when storage is unavailable.
             log_event(
                 logger,
-                "correction_report_discovery_failed",
+                "correction.report_discovery_failed",
                 session=getattr(sess, "session_id", ""),
                 error_type=type(exc).__name__,
                 level=logging.WARNING,
@@ -3804,7 +3804,7 @@ def _handle_session_report(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise BadRequest(str(e)) from e
     log_event(
         logger,
-        "correction_session_report",
+        "correction.session_report",
         session=payload.get("session_id") or session_id,
     )
     return payload
@@ -3837,7 +3837,7 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     shutil.rmtree(bundle_dir)
     log_event(
         logger,
-        "correction_session_bundle_deleted",
+        "correction.session_bundle_deleted",
         session=session_id,
         bundle=bundle_dir,
     )
@@ -3914,7 +3914,7 @@ def _handle_local_capture_setup(
 
     log_event(
         logger,
-        "correction_local_capture_setup_bound",
+        "correction.local_capture_setup_bound",
         session=sess.session_id,
         calibrated=mic_calibration is not None,
         browser_audio_level=str(browser_report.get("level") or ""),
@@ -6666,7 +6666,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             public = dict(failure)
             log_event(
                 logger,
-                "correction_homeowner_failure",
+                "correction.homeowner_failure",
                 code=str(public.get("code") or "unknown_failure"),
                 retryable=bool(public.get("retryable")),
                 status=int(status),

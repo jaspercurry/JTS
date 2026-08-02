@@ -413,7 +413,11 @@ def _level_from_issues(issues: list[dict[str, Any]]) -> str:
 
 
 def _capture_summary(report: dict[str, Any]) -> dict[str, Any]:
-    issues: list[dict[str, Any]] = []
+    issues = [
+        dict(issue)
+        for issue in report.get("issues") or []
+        if isinstance(issue, dict)
+    ]
     estimated_snr = _round(report.get("estimated_snr_db"))
     band_snr = [
         band for band in report.get("band_snr") or []
