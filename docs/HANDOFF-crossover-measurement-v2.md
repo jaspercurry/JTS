@@ -2588,24 +2588,39 @@ no retries-as-bodge). Treat these as regression fences.
     contract `test_measure_analysis_is_invariant_to_the_programmed_drive_gain`).
     A fixed room floor subtracted from an invariant is an invariant: measured
     through the production analyzer, a MEASURE played 20 dB quieter into an
-    unchanged room reported the SAME worst-band SNR (86.0 dB woofer / 82.9 dB
-    tweeter) and the same `ok`, while the same-domain reading fell the full
-    20.0 dB, to as low as −2.3 dB. Against that same-domain reading the old
-    number ran +17.3 to +65.1 dB high across 24 band readings — band-dependent
-    and growing as the measurement quietens, so not a correctable
-    offset. So the sentence
-    above ("did the quieter sweep still clear the floor?") was the one thing
-    it could not answer. `program_analysis._driver_snr_block` now makes the
-    branch `driver_acoustics.analyze_driver_capture` always made and #2024 set
+    unchanged room reported the SAME worst-band SNR and the same `ok`, while
+    the same-domain reading fell the full 20 dB. Against that same-domain
+    reading the old number ran **roughly +17 to +65 dB high** — band-dependent,
+    growing as the measurement quietens, and in the quiet arm the honest
+    per-band reading goes a few dB BELOW zero while the old one still said
+    `ok`. A bound rather than a decimal on purpose: those figures come from
+    fixtures at different ambient sigmas and no single number reproduces
+    across them; the load-bearing claim is the trend, pinned exactly by
+    `test_measure_snr_verdict_moves_with_the_measurement_level`. So the
+    sentence above ("did the quieter sweep still clear the floor?") was the
+    one thing it could not answer.
+
+    `program_analysis._driver_snr_block` now makes the branch
+    `driver_acoustics.analyze_driver_capture` always made and #2024 set
     for the summed gate: a `"raw"` noise report — which is every report
     `framed_ambient_band_report` emits, so every ambient a v2 CHECK hands
     forward — pairs with the RAW captured sweep's band levels
     (`window="rectangular"`, #1847's fix for a non-stationary sweep); a
     `"deconvolved"` report still reads the transfer function; a raw report
     with no captured segment to pair against yields NO verdict rather than a
-    cross-domain one. The verdict now tracks the played level dB-for-dB, so
-    more sessions will disclose `reduced` / `insufficient` than did before —
-    still reported, still not a gate.
+    cross-domain one. **Raw is the right side here because that is the domain
+    #1829's level solve aims in** — `_solve_role_gain`'s room arm is
+    `ambient_band_level + required_snr_db + crest_factor_db` off the raw
+    ambient table — so the verdict reads back the solve's own target and can
+    actually check it. #2024 resolved the same "read one domain" rule the
+    other way because the summed gate has no level solve aimed at it. The
+    rectangular window's `10*log10(sweep_len/capture_len)` duty-cycle offset
+    (the reason `_capture_band_levels` warns it is not a drop-in) is 0 dB here
+    because `_raw_sweep_segment` slices exactly `segment.n_samples`.
+
+    The verdict now tracks the played level dB-for-dB, so more sessions will
+    disclose `reduced` / `insufficient` than did before — still reported,
+    still not a gate.
     It is deliberately absent (not guessed) on a conductor rehydrated past
     CHECK, which has no ambient of its own — the report is not persisted
     across that boundary because a noise floor measured at another mic

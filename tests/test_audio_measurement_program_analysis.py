@@ -579,20 +579,55 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
     assert degenerate.snr["worst_relevant"] is None
 
 
-def test_raw_sweep_segment_clamps_instead_of_raising():
-    """`_raw_sweep_segment` never raises on a capture that cannot contain the
-    segment — the locator is what fails a truncated capture, and the SNR
-    verdict must not turn that into an exception inside the analysis."""
+@pytest.mark.parametrize(
+    "label,capture_len,anchor,expected",
+    [
+        ("anchor past the capture end", 1000, 5_000_000, 0),
+        # `anchor + n_samples` lands far enough below zero that a naive
+        # `min(size, anchor + n)` stop is more negative than -size, which numpy
+        # clamps to an empty slice — so this case passes either way and is NOT
+        # the one with teeth.
+        ("anchor far before the capture", 1000, -10**6, 0),
+        # THE case with teeth. `anchor + n_samples` lands in (-capture_len, 0),
+        # so a bare `min(size, ...)` stop is a NEGATIVE index and numpy reads it
+        # as an offset from the END — returning a non-empty slice of the wrong
+        # region as if it were this sweep. Sits mid-range between the two
+        # above, which is exactly why neither of them catches it.
+        ("anchor before the capture, stop lands negative", 1000, -29_000, 0),
+        ("partial overlap at the capture tail", 1000, 998, 2),
+    ],
+)
+def test_raw_sweep_segment_clamps_instead_of_raising(
+    label, capture_len, anchor, expected,
+):
+    """`_raw_sweep_segment` never raises, and never returns the WRONG samples,
+    on a capture that cannot contain the segment.
+
+    The locator is what fails a truncated capture; the SNR verdict must not
+    turn that into an exception inside the analysis — nor quietly hand
+    `band_levels_dbfs` a slice of some other part of the recording, which
+    would produce a confident number about audio this sweep never played.
+    """
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),
         sweep_durations={"woofer": 0.6, "tweeter": 0.5},
     )
     seg = prog.segment("sweep_w")
-    cap = np.zeros(1000)
-    assert program_analysis._raw_sweep_segment(cap, seg, 5_000_000).size == 0
-    assert program_analysis._raw_sweep_segment(cap, seg, -10**6).size == 0
-    assert program_analysis._raw_sweep_segment(cap, seg, 998).size == 2
-    # The ordinary case is the whole scheduled segment, unclamped.
+    got = program_analysis._raw_sweep_segment(np.zeros(capture_len), seg, anchor)
+    assert got.size == expected, label
+
+
+def test_raw_sweep_segment_returns_the_whole_scheduled_segment():
+    """The ordinary case: an in-bounds anchor yields exactly `segment.n_samples`.
+
+    Load-bearing beyond "no clamping happened" — it is what makes the
+    rectangular window's duty-cycle offset zero (see `_driver_snr_block`).
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    seg = prog.segment("sweep_w")
     full = np.zeros(seg.n_samples + 200)
     assert program_analysis._raw_sweep_segment(full, seg, 100).size == seg.n_samples
 

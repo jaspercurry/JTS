@@ -2344,9 +2344,19 @@ def _raw_sweep_segment(
     capture, so a short recording yields a short (or empty) segment instead
     of raising — the SNR verdict is diagnostic, and the locator is what
     fails a truncated capture.
+
+    The ``max(lo, ...)`` in the stop is load-bearing, not defensive tidying:
+    without it, an ``anchor`` far enough before the capture that
+    ``anchor + n_samples`` lands in ``(-capture.size, 0)`` gives a NEGATIVE
+    stop, which numpy reads as an offset from the END — so the function would
+    return a non-empty slice of some other part of the recording and the SNR
+    verdict would state a confident number about audio this sweep never
+    played. No production caller can reach that today (every anchor is
+    ``global_offset + segment.start_sample``, both non-negative), so this
+    guards the contract rather than a live path.
     """
     lo = max(0, anchor)
-    hi = min(capture.size, anchor + segment.n_samples)
+    hi = min(capture.size, max(lo, anchor + segment.n_samples))
     return np.asarray(capture[lo:hi], dtype=np.float64)
 
 
@@ -2376,6 +2386,29 @@ def _driver_snr_block(
       produces, and so every ambient report a v2 CHECK hands forward — pairs
       with the RAW captured sweep's band levels.
 
+    **The deciding reason is the SOLVE's domain, not a general preference.**
+    This verdict exists to check whether #1829's per-driver level solve
+    delivered the SNR it aimed for, and :func:`_solve_role_gain` aims in the
+    RAW domain: its room arm is ``ambient_band_level + required_snr_db +
+    crest_factor_db``, where the ambient level is a row of the raw
+    :func:`~jasper.audio_measurement.snr_policy.framed_ambient_band_report`
+    table. So a raw-with-raw verdict reads back the very quantity the solve
+    targeted — ``_band_required_snr_db(...) + MEASURE_SNR_SOLVE_MARGIN_DB``,
+    i.e. 41 dB where the alignment requirement applies. (The solve's
+    ``crest_factor_db`` term converts its own band-RMS demand into the
+    capture PEAK that ``k_db`` turns into a digital gain; it cancels out of
+    an RMS-vs-RMS SNR and so does not appear in what the verdict reads back.)
+    No other domain can perform that check: an instrument graded in units the
+    solve never used cannot say whether the solve worked.
+
+    **Why #2024 sent the summed-crossover gate the other way.** That gate has
+    no level solve aimed at it — nothing sets the summed sweep's level from a
+    band SNR target — so its only constraint is internal consistency, and the
+    cheapest way to get both sides into one domain there was to keep the
+    deconvolved side and narrow the band table until the raw fallback became
+    unreachable. Same rule ("read one domain"), opposite resolution, because
+    the two paths are anchored to different things.
+
     **Why the raw report cannot be subtracted from the transfer function.**
     The deconvolution divides the capture by the reference sweep regenerated
     at that segment's own ``gain_db``, so the drive cancels exactly and
@@ -2384,14 +2417,18 @@ def _driver_snr_block(
     The room's dBFS floor is not. Subtracting one from the other therefore
     yields a number that does not move when the measurement gets quieter,
     which is precisely the question issue #1830 exists to answer. Measured
-    through this analyzer on a synthetic two-way: a MEASURE played 20 dB
-    quieter into an unchanged room reported the SAME 86.0 dB (woofer) /
-    82.9 dB (tweeter) worst-band SNR and the same ``ok`` verdict, while the
-    same-domain reading fell the full 20.0 dB, to as low as −2.3 dB. Against
-    that same-domain reading the old number ran **+17.3 to +65.1 dB high**
-    across 24 band readings (2 roles x 6 bands x both drive levels) — the
-    error is large, band-dependent, and grows as the measurement quietens,
-    so it is not a constant anyone could have corrected for.
+    through this analyzer on synthetic two-way fixtures: a MEASURE played
+    20 dB quieter into an unchanged room reported the SAME worst-band SNR and
+    the same ``ok`` verdict, while the same-domain reading fell the full
+    20 dB. Against that same-domain reading the old number ran **roughly +17
+    to +65 dB high** — band-dependent, and growing as the measurement
+    quietens, so not an offset anyone could have corrected for; in the quiet
+    arm the honest per-band reading goes a few dB BELOW zero while the old
+    one still said ``ok``. Stated as a bound on purpose: the figures come
+    from fixtures at different ambient sigmas, and no single decimal
+    reproduces across them. The load-bearing claim is the TREND, and that is
+    pinned exactly by
+    ``test_measure_snr_verdict_moves_with_the_measurement_level``.
 
     ``window="rectangular"`` because a sweep is non-stationary: a Hann
     window re-weights a swept sine's frequencies by WHEN they occur, which
@@ -2399,6 +2436,17 @@ def _driver_snr_block(
     ``driver_acoustics._capture_band_levels``. That consumer keeps the Hann
     default only because nothing production reaches it; this path IS
     production, so it takes the documented fix.
+
+    **The duty-cycle offset that makes rectangular unsafe elsewhere is zero
+    here, by construction.** ``_capture_band_levels`` warns that rectangular
+    is not a drop-in because on a PADDED capture it carries a band-independent
+    ``10*log10(sweep_len/capture_len)`` term (5.93 dB across the 0-to-20 s
+    lead sweep it measured). :func:`_raw_sweep_segment` hands this function
+    exactly ``segment.n_samples`` — the sweep and nothing else — so that ratio
+    is 1 and the term is 0 dB. It is the slice width, not the window, that
+    buys this; widening the slice to include lead-in silence would re-arm the
+    offset immediately. Pinned by
+    ``test_raw_sweep_segment_returns_the_whole_scheduled_segment``.
 
     Fails closed: a raw report with no captured segment to pair it against
     produces no verdict at all rather than a cross-domain one. "Not
