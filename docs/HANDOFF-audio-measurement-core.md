@@ -381,7 +381,9 @@ adjacent-pair graph under the writer lock, admit generation and playback,
 persist/reopen strict values only after exact restoration, and consume the
 bounded schedule and evaluator. Legacy direct/browser summed ingress remains
 pre-audio refused; the production `kind=summed` relay supplies recorder bytes
-and generation-specific signed geometry to that host. Active, not this shared
+and generation-specific signed geometry to that host (retired by W5b on
+2026-07-24 — see "The gaps" below; `kind=summed` is no longer a shipped
+capture kind). Active, not this shared
 module, now publishes the candidate, performs exact apply/readback, evaluates
 three post-apply repeats, and exposes the receipt-backed Room decision.
 The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
@@ -469,7 +471,8 @@ create a second retention system.
   (`CaptureIntegrity`: heard / on-schedule / unclipped) in which a check that
   structurally cannot run is `not_evaluated` **with its reason**, never
   collapsed into a pass — `glitch_detected` is the one-bit projection of that
-  record. CHECK's 12 s ambient window is CLIPPED to the capture, never slid
+  record. CHECK's ambient window (`program.DEFAULT_CHECK_AMBIENT_S`, 12 s) is
+  CLIPPED to the capture, never slid
   along it, and shares the pilot window's `AMBIENT_MIN_USABLE_FRACTION`
   degrade — below it, `_ambient_from_capture` returns no samples and an empty
   band report plus `event=program_analysis.ambient_window_unusable`, never a
@@ -515,11 +518,14 @@ create a second retention system.
   2026-08-02 it described 22 of the 27 modules on disk (`correction_lane`,
   `evidence_identity`, `excitation`, `level_solver`, and `room_boundary` are
   unlisted). This doc names the modules and points at their owners rather
-  than restating their design.** Five modules it has never named:
+  than restating their design.** Five modules it has never named, added or
+  substantially extended since:
   `gating.py` (IR gating, first-
   reflection detection, the `f_valid` / `f_trusted` low-frequency floors, and
-  the un-gateable-feature ledger) — which **predates** the 2026-07-17 pass
-  (added 2026-07-12) and was missed by it, not added since — and
+  the un-gateable-feature ledger) — **it predates the 2026-07-17 pass and was
+  missed by it**: the module landed 2026-07-12 with IR gating and the LF
+  validity floor (#1281), and only `f_trusted` plus the un-gateable-feature
+  ledger arrived 2026-07-31 (#1989) — and
   `gate_disclosure.py` (what the gate
   actually bought, priced over the band the DUT radiates) — spec in
   [active-crossover-information-design.md](active-crossover-information-design.md)
@@ -531,36 +537,41 @@ create a second retention system.
   `frame_fit.py` (the least-squares `offset + tilt·log2(f)` frame fitted and
   DISCLOSED before two curves are differenced, so instrument tilt stops being
   reported as model error). Those four DO postdate the pass (2026-07-25 to
-  2026-07-31). All five are reached by the v2 conductor flow, but not all the
-  same way: `crossover_v2_flow` imports `gate_disclosure`, `spatial_combine`,
-  and `interference_nulls` directly (function-scope, matching how it reaches
-  its other cross-package helpers); `frame_fit` arrives through
-  `program_analysis`; and `gating` it deliberately does **not** import at all
-  — its output arrives as a data block on the response, a design choice stated
-  in `crossover_v2_flow._gate_disclosure`'s own docstring. That flow is owned
+  2026-07-31). All five are reached by the v2 conductor flow —
+  `crossover_v2_flow` imports `gate_disclosure`, `spatial_combine`, and
+  `interference_nulls` directly (lazily, inside functions), while `gating` and
+  `frame_fit` BOTH arrive through `program_analysis`; `crossover_v2_flow`
+  deliberately does not import `gating`, reading a gating block purely as data
+  (`_gate_disclosure`'s docstring). That flow is owned
   by
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
   **Their calibrated thresholds are justified in-module, in constant tables
   beside each constant — those tables are the single source of truth for
   those numbers; do not copy a figure out of them into prose.**
-- **Two shared CONSTANTS are homed here for a structural reason worth
+- **Three shared CONSTANTS are homed here for a structural reason worth
   stating**, because it is the property that makes this package the right
   floor: `jasper.correction` and `jasper.active_speaker` import **each
   other**, so neither is below the other, while `jasper/audio_measurement/`
   is imported by both and imports neither. `room_boundary.py` owns the room
   layer's upper band edge (the "350 Hz cap", previously ten independent float
-  literals — see [HANDOFF-correction.md](HANDOFF-correction.md)) and
+  literals — see [HANDOFF-correction.md](HANDOFF-correction.md));
   `correction_lane.py` owns the `correction_substream` ALSA lane name that
   correction sweeps and commissioning captures share (previously five distinct
-  names across eleven files). Those two each have their own SSOT drift-guard
-  test — `tests/test_correction_boundary_ssot.py` and
-  `tests/test_correction_substream_ssot.py` — which fail on a *re-declared
-  literal anywhere in the routed sites*, not merely on a changed value.
-  `excitation.py` is the same *placement* for one value,
+  names across eleven files); and `excitation.py` owns
   `AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS` (−12 dBFS), so the level stage and
-  the measurement stage cannot disagree about the source peak — **but it has
-  no equivalent guard**: the constant is only value-pinned by its consumers'
-  tests, so a second copy declared elsewhere would not be caught.
+  the measurement stage cannot disagree about the source peak.
+  **The three are not guarded to the same strength, and the difference
+  matters.** The first two have AST drift guards
+  (`tests/test_correction_boundary_ssot.py`,
+  `tests/test_correction_substream_ssot.py`) that fail on a *re-declared
+  literal anywhere in the routed sites* — they catch a new copy. The third has
+  a shared-default consistency pin instead
+  (`test_automatic_measurement_source_peak_is_one_shared_default`): it asserts
+  the value is −12.0 and that the sweep generator's default,
+  `driver_acoustics.DEFAULT_AMPLITUDE_DBFS`, and `SessionConfig().amplitude_dbfs`
+  all still agree with it. That catches the known defaults drifting apart; it
+  does **not** catch a second −12.0 scattered somewhere new, and nothing today
+  would fail if one were.
 - `null_walk.py` is the shared decision foundation for active-driver and
   sub-to-mains timing. Its signed coordinate names both possible delay targets
   and maps either sign to a non-negative target-specific DSP operation. It
@@ -1094,14 +1105,16 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    **The recording described here — on this page — is retired** (see the note
    above): as of 2026-08-02 no module under `deploy/assets/sound-profile/`
    calls `getUserMedia` at all, so the `/sound/` page cannot record and
-   `NEARFIELD_LEVEL_MATCH_GUIDANCE` is copy with no recorder behind it. Note
-   this is not a claim about `measurement-audio.js`, which is very much alive:
-   besides `deploy/assets/{balance,sync}/js/main.js`, the cloud phone capture
-   page vendors it (`capture-page/build.sh` copies the canonical shared file
-   into `dist/js/`, and three of its modules import it), and that page is
-   where the live L1 level match now runs — `/crossover/level-match` against
-   the `level_ramp` relay spec. The module moved; this page's use of it went
-   away.
+   `NEARFIELD_LEVEL_MATCH_GUIDANCE` is copy with no recorder behind it. This
+   is **not** a claim about `measurement-audio.js`, which is very much alive.
+   Within `deploy/assets/` only `balance` and `sync` import it — but the file
+   also leaves that tree: `capture-page/build.sh` **copies** the canonical
+   shared module into the phone bundle (`dist/js/`), and
+   `capture-page/js/{main,level-events,ambient-stats}.js` import the copy
+   (the pairing is pinned by `tests/test_capture_page_js.py`). That phone page
+   carries the live L1 level match — `/crossover/level-match` against
+   `capture_relay.spec.build_level_ramp_spec`'s `kind="level_ramp"`. The
+   module moved; this page's use of it went away.
    The correction-native relay flow strengthens that advice into a comparable
    measurement contract: 3 cm from the microphone capsule to the named driver's
    radiating-surface center (horn mouth for a compression driver), on-axis, with
@@ -1471,9 +1484,12 @@ tweeter HP left at 30/80/100 Hz). The predicates are the shared
 (normalize-then-predicate, the same GraphView the ≈4 verifiers use). The
 File-sink program bake (`emit_active_speaker_program_bake_config`, the sixth
 emitter) is *not* gated (no DAC, no driver to over-drive) — safety there is by
-construction, and `classify_camilla_graph`'s matching exemption keys on
-`devices.playback.type == File` rather than on the bake's provenance marker,
-so an ALSA-sink program graph stays blocked under a roleful topology. Scope:
+construction, and `classify_camilla_graph`'s matching exemption keys on the
+File **pipe** rather than on the bake's provenance marker: it requires a
+`type: File` playback sink whose filename is the snapserver FIFO
+(`_playback_is_program_bake_pipe` → `multiroom.leader_config.playback_is_pipe`),
+which is stricter than "a File sink", so an ALSA-sink program graph stays
+blocked under a roleful topology. Scope:
 L0 proves HP-presence + a safe corner FLOOR only — validating that a preset's
 *designed* Fc suits its specific driver is preset-validation's job (follow-up).
 **New failure mode callers handle:** an emit now raises
@@ -1565,14 +1581,19 @@ report's domain picks the signal side, #1830),
 `snr_policy.sweep_excitation_bands` reached from
 `driver_acoustics.analyze_summed_crossover` (#2024), and
 `camilla_yaml._assert_tweeter_outputs_protected`'s emitter set.
-**Four claims were found DRIFTED and corrected**: the duplicated-graph-safety
-gap (every helper it named is gone; it contradicted the roadmap below it), the
+**Five claims were found DRIFTED and corrected**: the duplicated-graph-safety
+gap (not one helper it named still re-implements the invariant; it
+contradicted the roadmap below it), the
 wired-loop route chain (`/crossover/relay-capture` and its backend entry have
-no production caller since W5b), L1 step 1's browser-records clause, and L2
+no production caller since W5b), its surviving TWIN in the Wave 3 subsection
+(the `kind=summed` relay sentence, annotated in place rather than rewritten),
+L1 step 1's browser-records clause, and L2
 step 1's per-capture `calibration_id` endpoints.
 **NOT re-verified in this pass and NOT warranted by the date below:** the Wave
 1 / Wave 2 / Wave 3 "Current state" subsections (still carrying their own
-2026-07-13 – 2026-07-15 dates and the 2026-07-15 header), the `null_walk` /
+2026-07-13 – 2026-07-15 dates and the 2026-07-15 header) — the one `kind=summed`
+annotation there is a pointer to the corrected account below, not a
+re-verification of anything around it — the `null_walk` /
 `delay_graph` contract paragraphs beyond confirming their symbols and caps
 exist, and every hardware figure anywhere in this file. No hardware behavior
 was revalidated. The `spatial_combine` / `interference_nulls` calibrated
