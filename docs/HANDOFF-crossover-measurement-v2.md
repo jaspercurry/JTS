@@ -2589,8 +2589,11 @@ no retries-as-bodge). Treat these as regression fences.
     A fixed room floor subtracted from an invariant is an invariant: measured
     through the production analyzer, a MEASURE played 20 dB quieter into an
     unchanged room reported the SAME worst-band SNR (86.0 dB woofer / 82.9 dB
-    tweeter) and the same `ok`, while the true in-band SNR fell 20.0 dB to as
-    low as −0.7 dB — over-reported by +19 to +59 dB per band. So the sentence
+    tweeter) and the same `ok`, while the same-domain reading fell the full
+    20.0 dB, to as low as −2.3 dB. Against that same-domain reading the old
+    number ran +17.3 to +65.1 dB high across 24 band readings — band-dependent
+    and growing as the measurement quietens, so not a correctable
+    offset. So the sentence
     above ("did the quieter sweep still clear the floor?") was the one thing
     it could not answer. `program_analysis._driver_snr_block` now makes the
     branch `driver_acoustics.analyze_driver_capture` always made and #2024 set

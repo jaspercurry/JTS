@@ -2387,8 +2387,11 @@ def _driver_snr_block(
     through this analyzer on a synthetic two-way: a MEASURE played 20 dB
     quieter into an unchanged room reported the SAME 86.0 dB (woofer) /
     82.9 dB (tweeter) worst-band SNR and the same ``ok`` verdict, while the
-    true in-band SNR fell by 20.0 dB to as low as −0.7 dB. The absolute
-    reading was over-reported by +19 to +59 dB per band.
+    same-domain reading fell the full 20.0 dB, to as low as −2.3 dB. Against
+    that same-domain reading the old number ran **+17.3 to +65.1 dB high**
+    across 24 band readings (2 roles x 6 bands x both drive levels) — the
+    error is large, band-dependent, and grows as the measurement quietens,
+    so it is not a constant anyone could have corrected for.
 
     ``window="rectangular"`` because a sweep is non-stationary: a Hann
     window re-weights a swept sine's frequencies by WHEN they occur, which
