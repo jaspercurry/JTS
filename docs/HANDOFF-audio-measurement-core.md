@@ -526,7 +526,9 @@ create a second retention system.
   position-invariant null-ladder gate that screen is blind to); and
   `frame_fit.py` (the least-squares `offset + tilt·log2(f)` frame fitted and
   DISCLOSED before two curves are differenced, so instrument tilt stops being
-  reported as model error). The flow that consumes all four is owned by
+  reported as model error). All five are reached by the v2 conductor flow —
+  `crossover_v2_flow` imports the first four directly and `frame_fit` arrives
+  through `program_analysis` — and that flow is owned by
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
   **Their calibrated thresholds are justified in-module, in constant tables
   beside each constant — those tables are the single source of truth for
