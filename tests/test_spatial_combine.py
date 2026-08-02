@@ -1541,16 +1541,21 @@ _BELOW_WINDOW_CLOUD_US = (150.0, 400.0)
 # assertion about the screen rather than about emptiness.
 #
 # Two of those counts moved under #1750 (2 -> 0 at (300, 800), 5 -> 4 at
-# (650, 1000)) and the verdict column did not move at all. Both windows have a
-# lower edge that is NOT sample-aligned (14.4 and 31.2 samples at 48 kHz), so
-# unifying the envelope's index bounds on ``ceil`` stopped their envelopes
-# railing on an out-of-window sample; the estimate then lands inside the
-# window but within the edge margin, and ``tau_at_window_lower_edge`` — which
-# returns *before* the rahmonic screen — names it instead. The records were
-# refused before and are refused now; only the more specific of two correct
-# reasons changed. The three windows whose lower edges are unaffected by the
-# boundary ((400, 900) is 19.2 but has nothing to count, (600, 1000) 28.8 and
-# (700, 1000) 33.6 both round the same way) are bit-identical.
+# (650, 1000)) and the verdict column did not move at all. Unifying the
+# envelope's index bounds on ``ceil`` stopped those envelopes railing on an
+# out-of-window sample; the estimate then lands inside the window but within
+# the edge margin, and ``tau_at_window_lower_edge`` — which returns *before*
+# the rahmonic screen — names it instead. The records were refused before and
+# are refused now; only the more specific of two correct reasons changed.
+#
+# Which rows the boundary *can* reach is a property of their edges in
+# samples at 48 kHz, and it is not the same set as the rows that moved:
+# (300, 800) 14.4, (400, 900) 19.2, (650, 1000) 31.2 and (800, 1200)
+# 38.4/57.6 all have at least one edge where ``round`` and ``ceil``/``floor``
+# disagree, while (600, 1000) 28.8 and (700, 1000) 33.6 have neither and are
+# bit-identical by construction. So two of the four reachable rows moved and
+# two did not — (400, 900) has no rahmonic refusals to lose and (800, 1200)
+# keeps all four. Reachable is the necessary condition, not the outcome.
 _RAISED_WINDOW_SWEEP = [
     ((300.0, 800.0), False, GEOMETRY_UNKNOWN, 1, 0),
     ((400.0, 900.0), False, GEOMETRY_UNKNOWN, 0, 0),
@@ -3980,7 +3985,8 @@ def test_detect_echo_finds_the_corpus_bounce(corpus_irs):
         # place the "low-quefrency leakage cannot auto-refuse an honest
         # reading" claim can actually be tested: a real IR carries a real
         # driver response, and the cubic detrend is what keeps it out of the
-        # low quefrencies. Measured 0.329-0.387 against a margin of 2.0. A
+        # low quefrencies. Measured 0.329-0.387 against the shipped
+        # ``RAHMONIC_MARGIN``, asserted against the symbol two lines down. A
         # future change to DETREND_ORDER or the analysis band would show up
         # here first. The bound is 0.45 rather than 0.5 so it is a genuine
         # tripwire on that 0.387 worst case (~16% of headroom) rather than a
@@ -4550,10 +4556,13 @@ def test_ground_plane_positions_report_the_proud_capsule_arrival(ground_plane_ir
     }
     assert set(ground_plane_irs) == set(expected)
 
-    # The sample-aligned lower edge, in us: 8 samples at 48 kHz, written to
-    # the four decimals a caller would. That it resolves to sample 8 rather
-    # than 9 is ``WINDOW_EDGE_SNAP_SAMPLES``' whole job.
-    aligned_search_us = (8.0 / SAMPLE_RATE * 1e6, S0_PROTOCOL_SEARCH_US[1])
+    # The sample-aligned lower edge, in us: 8 samples at 48 kHz, written as
+    # the literal four decimals a caller would — which is #1750's own case,
+    # 8.0000016 samples. Deriving it as ``8.0 / SAMPLE_RATE * 1e6`` instead
+    # gives 166.66666666666666, which round-trips to *exactly* 8.0 and makes
+    # ``WINDOW_EDGE_SNAP_SAMPLES`` a no-op here — the assertions below would
+    # then hold with the snap removed, which is not what this control is for.
+    aligned_search_us = (166.6667, S0_PROTOCOL_SEARCH_US[1])
 
     for position, (ceps, early_us, early_db) in expected.items():
         protocol = detect_echo(

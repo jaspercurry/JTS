@@ -1409,9 +1409,18 @@ def test_s0_ground_plane_does_not_fabricate_an_identification():
 
     The ground-plane leg's own protocol failure (a mic capsule centimetres
     proud of the floor) put a 125-146 us arrival on all three positions at
-    -0.64 to -2.57 dB re direct, and ``detect_echo`` refuses all three with
-    ``earlier_dominant_arrival`` (PR-2's rule; pinned in
-    tests/test_spatial_combine.py). So this cloud has curves with real
+    -0.64 to -2.57 dB re direct, and ``detect_echo`` refuses all three. At
+    *this* test's window — the default (120, 800) us, which contains those
+    arrivals rather than excluding them — the refusal is
+    ``tau_at_window_lower_edge``: the candidates hug the window's lower edge,
+    which is the edge margin's job, not the dominance rule's. (An earlier
+    revision of this docstring said ``earlier_dominant_arrival``. That was
+    never true at the default window on any tree; it is the slug those
+    captures produce through S0's raised protocol window, and since #1750
+    only when that window's lower edge is sample-aligned — both halves are
+    pinned in tests/test_spatial_combine.py.) The assertion below is
+    deliberately slug-agnostic, because what this test needs is only that
+    nothing was usable. So this cloud has curves with real
     structure in them and **no usable arrival at all** — and the gate must
     not turn the proud-capsule arrival, or anything else, into an
     identification.

@@ -314,10 +314,14 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # attribute of ``_two_echo_hazard_sweep`` in tests/test_spatial_combine.py,
 # whose grid literals are the ``_HAZARD_*`` constants beside it, re-derived by
 # test_raised_window_two_echo_hazard_is_bounded_by_the_default_window
-# (``JTS_RAHMONIC_CALIBRATION=1``, ~9 s, measured 2026-07-25). An earlier
+# (``JTS_RAHMONIC_CALIBRATION=1``, ~9 s), which also prints them under
+# ``-s``. Re-measured 2026-08-02 on the unified window boundary and the
+# re-derived ``RAHMONIC_MARGIN``; first committed 2026-07-25. An earlier
 # revision quoted them from a scratch script instead, and a reader
-# reconstructing that grid from this prose got 479 refusals rather than 482 —
-# a described grid is not a grid. The single hand-picked case is pinned
+# reconstructing that grid from this prose got 479 refusals rather than the
+# 482 the script had found (both figures are from that pre-2026-07-25 era,
+# when the margin was 2.0) — a described grid is not a grid. The single
+# hand-picked case is pinned
 # separately by
 # test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one.
 #
@@ -436,13 +440,14 @@ WINDOW_EDGE_MARGIN_STEPS = 1.0
 # costs the caller a whole sample (20.8 us) to honour a 0.000033 us
 # overshoot. ``floor`` has the mirror exposure at the upper edge.
 #
-# **Why 1e-3 of a sample** (20.8 ns at 48 kHz): it absorbs a decimal written
-# to three places or better (a D-decimal microsecond value is off by at most
-# 0.5e-D us, i.e. 2.4e-(D+2) samples at 48 kHz, so D >= 2 is covered with
-# two orders to spare), while being 1000x finer than the sample period it
-# rounds to and ~70 000x finer than the detector's own ~71 us quefrency
-# resolution. No window a caller can meaningfully distinguish moves because
-# of it. Pinned by test_window_edges_snap_to_a_sample_aligned_request.
+# **Why 1e-3 of a sample** (20.833 ns at 48 kHz): a D-decimal microsecond
+# value is off by at most 0.5e-D us, i.e. 2.4e-(D+2) samples at 48 kHz, so
+# this covers a two-decimal edge 4x over and the four decimals a
+# sample-aligned edge actually needs (166.6667) 400x over — while being
+# 1000x finer than the sample period it rounds to and ~3 400x finer than the
+# detector's own ~71.43 us quefrency resolution. No window a caller can
+# meaningfully distinguish moves because of it. Pinned by
+# test_window_edges_snap_to_a_sample_aligned_request.
 WINDOW_EDGE_SNAP_SAMPLES = 1e-3
 
 # Rahmonic screen — the rule that closes the mechanism the edge margin above
@@ -1019,7 +1024,8 @@ class EchoDiagnostic:
         the interesting reading is often the one that did **not** refuse — a
         consumer watching this number creep toward the margin on honest
         detections is watching the screen's headroom erode. The corpus
-        detections sit at 0.329-0.387 against a margin of 2.0 (pinned by
+        detections sit at 0.329-0.387 against the shipped ``RAHMONIC_MARGIN``
+        (pinned by
         test_detect_echo_finds_the_corpus_bounce); the widest reading in the
         calibration sweep's true-positive population is 0.9955 (see
         ``RAHMONIC_MARGIN``).
@@ -1855,8 +1861,10 @@ def detect_echo(
     below" is *necessary* for a candidate to be a rahmonic, not sufficient:
     an honest in-window echo under a stronger unrelated *earlier*
     reflection presents the same evidence and is refused as well. Measured
-    on a committed two-echo grid, 482 of 720 raised-window cases refuse that
-    way, none of the same geometries do at the default window, and the
+    on a committed two-echo grid, most raised-window cases refuse that
+    way and none of the same geometries do at the default window (the
+    counts, which move with ``RAHMONIC_MARGIN``, are quoted once — on
+    ``DEFAULT_ECHO_SEARCH_US``), and the
     remedy is therefore to measure with the default window — which contains
     the earlier reflection rather than excluding it (see
     ``DEFAULT_ECHO_SEARCH_US`` for the figures and the test that re-derives
