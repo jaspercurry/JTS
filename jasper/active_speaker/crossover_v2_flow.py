@@ -1921,10 +1921,10 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # since-corrected 12-capture, two-chain restatement elsewhere to a copy
 # that dropped the phone measure). Primary source: that night's own
 # retention sidecars, tabulated in ``captures/xover-e0-2026-07-21/
-# honesty-guards-proof-20260722/REPORT.md``'s G1 table. This ceiling sits
-# ~6 dB above the clean corpus's worst case and ~12 dB below the corrupt one — wide
-# margin on both sides. A candidate whose OWN predicted ripple is this bad is
-# not a trustworthy basis for auto-apply regardless of what alignment
+# honesty-guards-proof-20260722/REPORT.md``'s G1 table. This ceiling sits ~6
+# dB above the clean corpus's worst case and ~12 dB below the corrupt one —
+# wide margin on both sides. A candidate whose OWN predicted ripple is this
+# bad is not a trustworthy basis for auto-apply regardless of what alignment
 # confidence reported, so this REUSES REASON_LOW_ALIGNMENT_CONFIDENCE (same
 # household action — "measure again" — as the confidence floor and Fix 3's
 # plausibility backstop above; the diag ``guard`` field disambiguates which of

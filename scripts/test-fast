@@ -112,15 +112,39 @@ add_pytest_target_if_present() {
 # own --landing-pytest-targets rather than copying the list here, so the two
 # lanes cannot drift apart; guarded so a diff touching several landing paths
 # only pays for the one subprocess invocation.
+#
+# Captured into a variable and exit-status-checked exactly like the routing-
+# policy block above (not `done < <(...)`): a `while read` loop fed by a
+# failing process substitution has no visibility into that command's exit
+# code, so a broken/patched ci-classify.py that exits non-zero with no
+# output would silently queue zero landing tests and this lane would go
+# green with nothing checked -- the exact false-green class #1973 exists to
+# close. `(( ... == 0 ))` catches the same failure shape the workflow's
+# fast-landing job guards with `(( ${#landing_tests[@]} > 0 ))`.
 _landing_tests_added=false
 add_landing_tests_if_needed() {
   if [[ "${_landing_tests_added}" == true ]]; then
     return
   fi
   _landing_tests_added=true
+  local landing_output
+  if ! landing_output="$(
+    python3 scripts/ci-classify.py --landing-pytest-targets
+  )"; then
+    echo "FATAL: could not resolve landing-page pytest targets" >&2
+    exit 1
+  fi
+  local landing_targets=()
   while IFS= read -r landing_target; do
-    [[ -n "${landing_target}" ]] && add_pytest_target_if_present "${landing_target}"
-  done < <(python3 scripts/ci-classify.py --landing-pytest-targets)
+    [[ -n "${landing_target}" ]] && landing_targets+=("${landing_target}")
+  done <<< "${landing_output}"
+  if (( ${#landing_targets[@]} == 0 )); then
+    echo "FATAL: ci-classify.py --landing-pytest-targets returned no pytest targets" >&2
+    exit 1
+  fi
+  for landing_target in "${landing_targets[@]}"; do
+    add_pytest_target_if_present "${landing_target}"
+  done
 }
 
 add_globbed_tests() {

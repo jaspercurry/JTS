@@ -25,10 +25,13 @@ mechanism under a different macro name. In this workspace's release profile
 ``assert_eq!`` / ``assert_ne!`` abort the daemon outright, same as an
 unguarded ``.expect(``. The ``debug_assert!`` sub-family is the one place
 this differs from the issue's original framing: with no ``debug-assertions
-= true`` override, it compiles to a no-op in that release profile — but it
-still panics in ``cargo test`` and any debug-build developer run (see
-``fake.rs``'s "safe developer runs"), which is the same not-test-gated gap
-this guard exists to close, so it stays in scope.
+= true`` override, it compiles to a no-op in that release profile. This
+repo's own CI (``.github/workflows/tests.yml``) runs ``cargo test --release
+--locked`` for every crate, so CI's own test run does not exercise
+``debug_assert!`` either — the coverage this guard adds for that
+sub-family is an unqualified local ``cargo test`` (no ``--release``) or any
+debug-profile developer run (see ``fake.rs``'s "safe developer runs"),
+neither of which any existing gate checks. It stays in scope for that gap.
 
 CI builds and ``cargo test``s these crates, but cargo cannot run in
 every dev environment and nothing in cargo's gate distinguishes a
@@ -53,8 +56,46 @@ static-source twin (same technique as ``tests/test_outputd_wiring.py``):
   was removed, or its key text changed) also fails, so each list only
   shrinks.
 
-``rust/jasper-dual-dac-lab`` is deliberately out of scope: it is a lab
-measurement tool, not a production daemon.
+``rust/jasper-dual-dac-lab`` is deliberately out of scope: unlike every crate
+in ``RUNTIME_CRATES`` below, it is not a ``path = "../..."`` Cargo dependency
+of either daemon at all -- it has its own standalone binary target and is
+never linked into ``jasper-fanin`` or ``jasper-outputd``. It is a lab
+measurement tool, not code that ships.
+
+``jasper-ring``, ``jasper-resampler``, ``jasper-clock``, and
+``jasper-host-clock`` ARE real ``path`` dependencies of one or both daemons
+and are scanned here for the same reason the daemons' own crates are:
+their code is compiled into and executes as part of the shipped binaries.
+"On the default runtime path" is deliberately not read narrowly as "doing
+its feature's user-visible job" -- construction/status-seeding code that
+runs unconditionally counts too, exactly like an always-constructed
+``PlayoutLedger`` counts here even though it is a one-time startup call, not
+a hot loop (issue #1718's own audit verified this per crate rather than
+trusting a name):
+
+- ``jasper-ring`` looks like an opt-in prototype from its own module doc
+  ("Ring B prototype")  but ``docs/HANDOFF-audio-graph-consolidation.md``'s
+  P4 milestone (LANDED) has the coupling reconciler resolve the DEFAULT
+  coupling to ``shm_ring`` on a full-profile, ring-eligible box (validated
+  on jts.local + jts3; jts4/streambox and jts5 excluded pending
+  profile-specific validation) -- so for the flagship install profile this
+  crate's ``RingReader``/``RingWriter`` code IS the default runtime path,
+  not a corpus/lab-only affair.
+- ``jasper-resampler`` is used unconditionally in ``jasper-fanin``'s mixer
+  for per-lane rate matching (``LaneResampler``) and general RMS/format
+  utilities (``rms_dbfs_i16``, ``convert_s32_to_s16``), independent of
+  coupling mode.
+- ``jasper-clock``'s ``Dll`` is constructed unconditionally as part of
+  ``jasper-outputd``'s ``State`` (``sro_estimator``, ``dac_clock`` fields
+  built on every daemon start) and is the control law inside
+  ``jasper-resampler``'s ``RateController``.
+- ``jasper-host-clock`` reads "Default OFF" in its own module doc, and the
+  combo-mode servo THREAD genuinely is gated behind
+  ``JASPER_FANIN_HOST_CLOCK=enabled`` AND USB Direct armed (both non-default)
+  -- but ``jasper_host_clock::HostClock::new(...).status_fragment()`` runs
+  unconditionally at fan-in startup to seed the disabled ``/state`` fragment
+  even when the feature itself never arms, so the crate's code still
+  executes on every boot.
 """
 from __future__ import annotations
 
@@ -68,6 +109,10 @@ RUNTIME_CRATES = (
     "jasper-fanin",
     "jasper-outputd",
     "jasper-tts-protocol",
+    "jasper-ring",
+    "jasper-resampler",
+    "jasper-clock",
+    "jasper-host-clock",
 )
 
 # Audited runtime ``.expect("...")`` sites, keyed by
@@ -147,6 +192,16 @@ ALLOWED_EXPECTS: dict[tuple[str, str], str] = {
         "implementation only calls serialize_str; serde_json::to_string uses "
         "an in-memory Vec writer whose writes cannot return an error."
     ),
+    # SF4 (issue #1718 gate round): jasper-ring joined RUNTIME_CRATES below.
+    (
+        "jasper-ring/src/lib.rs",
+        "mapped ring geometry was validated before slot access",
+    ): (
+        "Construction invariant: RingMapping's geometry is validated once, "
+        "at attach time, before any RingMapping value can exist at all -- "
+        "slot_ptr can only be called on an already-attached mapping, so "
+        "slot_bytes() cannot be None by the time this runs."
+    ),
 }
 
 # Audited runtime ``assert!``-family sites, keyed by (path relative to
@@ -218,9 +273,10 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "with_dac_delay must not run before a matching prepare_period call "
         "in the same period-loop iteration."
     ),
-    # Issue #1718 listed 7 illustrative core.rs/fake.rs sites; running the
-    # widened scanner against the current tree surfaced 21 total across all
-    # three runtime crates. These are that full, re-derived set.
+    # Issue #1718 listed 7 illustrative core.rs/fake.rs sites (above, part of
+    # the 28 total); running the widened scanner against the current tree
+    # surfaced 28 total across all three runtime crates -- the 7 illustrative
+    # sites above, plus these 21 more below.
     (
         "jasper-fanin/src/lane_resampler.rs",
         "out.len(), self.period_frames * self.channels",
@@ -404,11 +460,98 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "same shape as the others above — every real producer emits whole "
         "interleaved frames."
     ),
+    # SF4 (issue #1718 gate round): jasper-ring and jasper-host-clock joined
+    # RUNTIME_CRATES below, verified on the default runtime path (see the
+    # module docstring's per-crate evidence) rather than assumed off. All
+    # unsafe pointer/atomic accesses below are internal SPSC-ring plumbing:
+    # every offset is a fixed layout::OFF_* constant pinned against the C
+    # header by the golden-layout test, and every length comes from the
+    # SAME geometry the mapping/writer/reader was constructed with -- never
+    # externally supplied.
+    (
+        "jasper-ring/src/lib.rs",
+        "offset + 8 <= HEADER_BYTES",
+    ): (
+        "header_atomic's bounds precondition for the unsafe atomic access "
+        "right below it. Every call site passes a fixed layout::OFF_* "
+        "constant, never a computed or externally supplied offset."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
+        "offset % 8, 0",
+    ): (
+        "header_atomic's alignment precondition for the same unsafe atomic "
+        "access: the fixed layout::OFF_* constants are 8-byte aligned by "
+        "construction (the golden-layout test pins every header offset)."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
+        "offset + 4 <= HEADER_BYTES",
+    ): (
+        "One entry deliberately covers TWO sites with byte-identical "
+        "condition text: header_u32's read-side precondition and "
+        "write_u32's write-side precondition (the reader and writer each "
+        "have their own header accessor). Both are the same bounds check "
+        "as header_atomic above, for the u32 (not atomic) header fields; "
+        "both call sites pass a fixed layout::OFF_* constant."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
+        "off + slot_bytes <= self.len",
+    ): (
+        "slot_ptr's bounds precondition for the unsafe pointer arithmetic "
+        "right below it. The SAFETY comment states the caller guarantee: "
+        "slot_index < n_slots via seq % n_slots, and the mapping is sized "
+        "HEADER_BYTES + n_slots*slot_bytes, so off + slot_bytes cannot "
+        "exceed self.len when that guarantee holds."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
+        "out.len(), g.samples_per_slot()",
+    ): (
+        "try_consume_slot's own doc comment states the exact contract "
+        "(\"out.len() must equal period_frames * channels\"); its only real "
+        "caller (outputd's shm_ring_source.rs) sizes the buffer from the "
+        "same geometry the mapping was attached with."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
+        "samples.len(), g.samples_per_slot()",
+    ): (
+        "try_publish_slot's own doc comment states the exact contract "
+        "(\"samples.len() == samples_per_slot\"); its only real caller "
+        "(fanin's RingOutput/mixer code) sizes samples from the same "
+        "geometry the writer was constructed with."
+    ),
+    (
+        "jasper-ring/src/writer.rs",
+        "ring publish requires exactly one complete slot",
+    ): (
+        "publish's own doc comment states the exact contract "
+        "(\"samples.len() must equal period_frames * channels\"); its only "
+        "real caller is the same fanin RingOutput/mixer code as "
+        "try_publish_slot above, which owns the geometry both share."
+    ),
+    (
+        "jasper-host-clock/src/lib.rs",
+        "CORRECTION_INTEGRAL_GAIN > 0.0 && CORRECTION_INTEGRAL_GAIN <= 0.1",
+    ): (
+        "Compile-time const-context assert (`const _: () = assert!(...)`), "
+        "not a runtime one: the Rust compiler evaluates this at build time "
+        "-- if the condition is false the crate fails to COMPILE, so this "
+        "can never execute (and therefore never panic) in a running "
+        "daemon. Allowlisted for completeness rather than teaching the "
+        "scanner a new const-context exemption for a single site."
+    ),
 }
 
 _ASSERT_FAMILY_PAT = re.compile(r"\b(?:debug_)?assert(?:_eq|_ne)?!\(")
+# The two panic-family constructs with an intentionally empty allowlist:
+# no (file, key) can ever clear them, so their bare presence on a line
+# always disqualifies it, independent of what else is on that same line.
+_BARE_PANIC_PAT = re.compile(r"\.unwrap\(\)|panic!")
 _PANIC_PAT = re.compile(
-    r"\.unwrap\(\)|\.expect\(|panic!|" + _ASSERT_FAMILY_PAT.pattern
+    _BARE_PANIC_PAT.pattern + r"|\.expect\(|" + _ASSERT_FAMILY_PAT.pattern
 )
 _EXPECT_MSG_PAT = re.compile(r'\.expect\(\s*"((?:[^"\\]|\\.)*)"')
 _STRING_PAT = re.compile(r'"(?:[^"\\]|\\.)*"')
@@ -548,25 +691,42 @@ def _runtime_findings() -> _Findings:
                 code = _strip_comments(raw)
                 if not _PANIC_PAT.search(code) or in_test(n):
                     continue
+
+                # Every panic-family construct on the line is checked
+                # independently, not exclusively (issue #1718 gate NIT 5):
+                # a line combining an ALLOWLISTED .expect() with an
+                # UNREGISTERED assert used to short-circuit on the expect
+                # branch's `continue` before the assert branch ever ran,
+                # silently clearing the whole line. `accounted` only
+                # reaches True if every construct present resolves to a
+                # matched, allowlisted entry.
+                accounted = True
+
+                if _BARE_PANIC_PAT.search(code):
+                    # .unwrap()/panic! -- the allowlist for these is
+                    # intentionally empty (module docstring), so their
+                    # presence alone always disqualifies the line,
+                    # independent of whatever else is on it.
+                    accounted = False
+
                 expect_match = _EXPECT_MSG_PAT.search(raw)
                 if expect_match:
                     expect_key = (rel, expect_match.group(1))
                     if expect_key in ALLOWED_EXPECTS:
                         seen_expects.add(expect_key)
-                        continue
-                    violations.append(f"{rel}:{n + 1}: {raw.strip()}")
-                    continue
+                    else:
+                        accounted = False
+
                 if _ASSERT_FAMILY_PAT.search(code):
                     statement = _statement_span(lines, n)
                     assert_key = (rel, _assert_key(statement))
                     if assert_key in ALLOWED_ASSERTS:
                         seen_asserts.add(assert_key)
-                        continue
+                    else:
+                        accounted = False
+
+                if not accounted:
                     violations.append(f"{rel}:{n + 1}: {raw.strip()}")
-                    continue
-                # Bare .unwrap() or panic! -- the allowlist for these is
-                # intentionally empty (module docstring).
-                violations.append(f"{rel}:{n + 1}: {raw.strip()}")
     return _Findings(violations, seen_expects, seen_asserts)
 
 
