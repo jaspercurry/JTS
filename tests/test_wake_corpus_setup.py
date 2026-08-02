@@ -4905,28 +4905,32 @@ def test_mute_mid_recording_stops_clip_and_flags_it(
     # tools must be able to tell them apart.
     assert clips[-1].auto_stopped is False
     assert "event=wake_corpus.mute_stop" in caplog.text
-    # The flag persists into the session metadata sidecar. stop_recording()
-    # appends to the in-memory clip list under the lock, then calls
-    # _save_metadata() OUTSIDE the lock on the same background thread
-    # (jasper/wake_corpus/recording_backend.py:1333-1335) — so the
-    # list_clips() poll above can observe the new clip before the sidecar
-    # write lands. Poll the sidecar itself, with the same deadline
-    # discipline as above, instead of assuming a single read already
-    # caught up (#2044).
+    # The flag persists into the session metadata sidecar.
+    # RecordingBackend.stop_recording appends to the in-memory clip list
+    # under the lock, then calls _save_metadata() OUTSIDE the lock on the
+    # same background thread — so the list_clips() poll above can observe
+    # the new clip before the sidecar write lands. Poll the sidecar itself,
+    # with the same deadline discipline as above, instead of assuming a
+    # single read already caught up (#2044).
     meta_dir = mute_backend._metadata_dir
     deadline = time.time() + 5.0
     data = None
+    last_seen: object = "no sidecar file found"
     while time.time() < deadline:
         matches = list(meta_dir.glob("enroll_*.json"))
         if matches:
             candidate = json.loads(matches[0].read_text())
             candidate_clips = candidate.get("clips") or []
+            last_seen = candidate_clips[-1] if candidate_clips else "clips list empty"
             if candidate_clips and candidate_clips[-1].get("mute_stopped") is True:
                 data = candidate
                 break
         time.sleep(0.02)
     else:
-        pytest.fail("sidecar did not reflect the mute-stopped clip within 5s")
+        pytest.fail(
+            "sidecar did not reflect the mute-stopped clip within 5s; "
+            f"last sidecar state read: {last_seen!r}"
+        )
     assert data is not None
     assert data["clips"][-1]["mute_stopped"] is True
 

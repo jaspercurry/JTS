@@ -241,7 +241,7 @@ this program:
   `setup_status.py`), never upstream of it? A declaration flag that
   the safety authority reads as evidence, instead of measuring the
   topology itself, is a Blocker.
-- **JTS checklist** from `adversarial-review.md` in full — audio
+- **JTS checklist** from the canonical prompt in full — audio
   safety, hardware topology, observability, resilience, performance,
   web/security (CSRF ordering, escaped untrusted strings, no
   `innerHTML` string concatenation), secrets/config, tests, docs.

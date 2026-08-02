@@ -10,13 +10,20 @@
 //! not a test double at all: it is the per-period gain-ramp/mute/reference
 //! render path `OutputCore` runs on every real assistant reply, on both the
 //! ALSA daemon path (`OutputCore::new_for_daemon`, `main.rs::run_alsa`) and
-//! the safe-developer-run path (`main.rs::run_fake`). `FakeDacSink` keeps its
-//! name — in every runtime configuration (tests, safe dev runs, and the real
-//! ALSA daemon, which always constructs it in `discarding()` mode) it never
-//! performs real I/O, so "fake" still accurately describes its behavior; it
-//! moved here only because `OutputCore::commit_prepared_period_with_dac_delay`
-//! calls `dac.write_period(..)` unconditionally, including on the daemon
-//! path — see #1717.
+//! the safe-developer-run path (`main.rs::run_fake`).
+//!
+//! `FakeDacSink` keeps its name (deliberately — the next reader shouldn't
+//! need to re-derive this): the only daemon-reachable construction
+//! (`OutputCore::new_for_daemon`, used by both `run_alsa` and `run_fake`)
+//! always passes `discarding()`, which sets `max_periods = Some(0)` — so
+//! `write_period` returns immediately without storing anything, behaviorally
+//! inert in every configuration the real binary can reach. The plain
+//! accumulating constructor (`FakeDacSink::new()`, `max_periods = None`) is
+//! reachable only from direct unit-test construction via `OutputCore::new()`,
+//! never from `main.rs`. It moved here purely because
+//! `OutputCore::commit_prepared_period_with_dac_delay` calls
+//! `dac.write_period(..)` unconditionally, including on the daemon path —
+//! not because its behavior changed. See #1717.
 
 use std::collections::VecDeque;
 use std::sync::Arc;

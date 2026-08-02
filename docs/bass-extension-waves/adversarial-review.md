@@ -3,8 +3,8 @@
 Every wave PR must pass an **independent adversarial review** before
 merge. Independent means a fresh context: a new Codex session (or a
 separate review subagent) that did not write the code, given ONLY
-this file and the branch — never the implementing session reviewing
-its own reasoning.
+this file, the canonical prompt it points to, and the branch — never
+the implementing session reviewing its own reasoning.
 
 **Loop:** implement → acceptance commands green → run this review in
 a fresh context → implementer fixes **every Blocker and Should-fix

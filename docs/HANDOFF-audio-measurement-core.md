@@ -1137,14 +1137,16 @@ persisted paired evidence around it. See
 
 Tests: `tests/test_active_speaker_crossover_alignment.py` (cal-curve application via
 the null-depth shift, the phase_aware gate at both layers, the relative-margin
-polarity table + delay status, reverse-polarity `expect_null`) and the pure UI
-summary in `tests/js/active_speaker_ui_test.mjs`.
+polarity table + delay status, reverse-polarity `expect_null`).
 **Owed: on-Pi (jts3) calibrated pass** — with the Dayton USB-C near-field on each
 driver, confirm the captured FR is sane and the reverse-polarity null margin reads
 the right polarity; nothing exceeds the 0 dB ceiling. The interactive `main.js`
 render of the proposal card + FR-curve plot, and the timing-locked **delay walk**,
-are the deferred follow-ups (the pure summary helper `crossoverAlignmentSummary` +
-the JSON contract ship here).
+are the deferred follow-ups. The pure summary helper `crossoverAlignmentSummary`
+and its preview route did not ship a foundation for that render to build on: both
+were dead code (exported/computed but never consumed by any shipped JS) and were
+removed in #1788 — the render still needs its own summary helper and data source
+built fresh.
 
 > **Correction (2026-06-21).** The initial cut (#918) proposed a *delay value* from
 > per-driver IR arrival deltas and a one-click confirm POST. A staff review found
