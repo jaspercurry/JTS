@@ -175,6 +175,25 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # event=correction.crossover_v2_speculative_close_failed at WARNING with the
 # exception type + traceback — never a silent path, and never the household's
 # only signal, since the confirm re-raises. Ceilings 623 -> 624 / 816 -> 817.
+#
+# 2026-08-02 (#1967 boost-evidence bound): +1 BLE001 for the cross-position
+# variance check in crossover_v2_flow (``_boost_excluded_bands_hz``). The
+# catch-all is a fail-OPEN disclosure boundary: the check only ever NARROWS
+# boost permission, so an unexpected numeric failure must leave the
+# permission where the gate already had it rather than blanket-refusing boost
+# below 4 kHz on a hiccup. Never silent — it logs
+# ``event=correction.crossover_v2_boost_variance_failed`` at WARNING with the
+# band, and the outcome rides the same
+# ``event=correction.crossover_v2_boost_evidence`` line as every other
+# outcome, with ``variance_reason=variance_check_failed``. Mirrors the
+# classify-only ``_crossover_region_null_registry`` catch three functions up.
+# The ceilings do NOT move: measured on this branch the tree carries 618
+# BLE001 markers against 624, and 798 suppression comments against 817, so
+# the new marker fits inside existing slack. (Spelled "suppression comments"
+# rather than the literal token, which this file counts by substring.) Raising a ratchet that is not binding would
+# hand out slack rather than record debt, which is the opposite of what it is
+# for — the attribution is recorded here instead, the same way the 2026-07-16
+# NET ZERO entry above does.
 MAX_NOQA_MARKERS = 817
 MAX_BLE001_MARKERS = 624
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay

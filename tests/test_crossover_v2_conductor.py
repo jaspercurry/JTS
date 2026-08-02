@@ -10609,6 +10609,13 @@ def test_boost_exclusions_come_from_the_blind_span_below_the_registry_floor(capl
     assert "event=correction.crossover_v2_boost_evidence" in caplog.text
     assert "registry_reason=no_corroborating_arrivals" in caplog.text
     assert f'unadjudicated_span_hz="[1200.0, {floor_hz}]"' in caplog.text
+    # A withhold is WARNING, not INFO: it silently narrows a correction, so it
+    # has to reach a journal a household's operator actually reads.
+    withheld = [
+        r for r in caplog.records
+        if "crossover_v2_boost_evidence" in r.getMessage()
+    ]
+    assert withheld and all(r.levelno == logging.WARNING for r in withheld)
 
 
 def test_a_cloud_whose_positions_agree_loses_no_boost(caplog):
@@ -10632,6 +10639,13 @@ def test_a_cloud_whose_positions_agree_loses_no_boost(caplog):
     # The dip WAS seen — it just did not contradict a boost. A reader must be
     # able to tell that from "nothing was measured".
     assert "n_dips=1 n_position_dependent=0" in caplog.text
+    # ...and withholding nothing is INFO. Only a narrowed correction earns a
+    # WARNING, or the level stops carrying information.
+    kept = [
+        r for r in caplog.records
+        if "crossover_v2_boost_evidence" in r.getMessage()
+    ]
+    assert kept and all(r.levelno == logging.INFO for r in kept)
 
 
 def test_the_boost_bound_fails_open_when_it_cannot_be_computed(caplog):

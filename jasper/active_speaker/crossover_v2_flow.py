@@ -7635,16 +7635,22 @@ class CrossoverV2Conductor:
         :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so below that edge the
         registry contributes no exclusions — not because it was uncertain but
         because it was never asked — and the gate's claim is satisfied in form
-        without being satisfied in substance. Measured on the 2026-07-30 JTS3
-        session: the largest prescribed boost is **+8.06 dB at 3633.6 Hz**,
-        366 Hz under the floor, with the registry returning
-        ``insufficient_evidence`` / ``no_corroborating_arrivals`` and zero
-        exclusions.
+        without being satisfied in substance. On the 2026-07-30 JTS3 session
+        the registry returned ``insufficient_evidence`` /
+        ``no_corroborating_arrivals`` with zero exclusions (re-derived from
+        that session's own ``cloud_measure.json``), while its largest
+        prescribed boost was **+8.06 dB at 3633.6 Hz** — 366 Hz under the
+        floor. That boost figure is the owner's, from the offline replay
+        recorded on issue #1967; it is quoted here rather than re-derived, and
+        no test pins it.
 
         **What this does and, more importantly, what it does not.** It runs
         :func:`~jasper.audio_measurement.interference_nulls.classify_dip_position_variance`
-        over the blind span and withholds boost at the dips the cloud's own
-        positions DISAGREE about. It does **not** grant boost anywhere: a
+        over the blind span and hands the dips the cloud's own positions
+        DISAGREE about to the fit vocabulary, which refuses a lift whose
+        realized cascade would put significant gain in one. It cannot grant
+        boost anywhere — the bound is monotone by construction (see
+        :func:`~jasper.active_speaker.linearization_fit._lift_stage`) and a
         ``position_invariant`` dip is left exactly as the gate already had it.
         That asymmetry is deliberate and is not this conductor's call to make
         — ``interference_nulls``' module docstring ("position-invariance says
@@ -9217,9 +9223,9 @@ class CrossoverV2Conductor:
         # registry contributes no exclusions at all, so `allowed_depth_db` is
         # never zeroed there and the hazard named above — "granting boost
         # there would let the fit EQ a null" — is exactly what the gate
-        # cannot rule out in the band where it is blind. Measured: the
-        # 2026-07-30 session's largest prescribed boost is +8.06 dB at
-        # 3633.6 Hz, 366 Hz under the floor.
+        # cannot rule out in the band where it is blind. The 2026-07-30
+        # session's largest prescribed boost sat 366 Hz under the floor; see
+        # `_boost_excluded_bands_hz` for the figure and its provenance.
         #
         # `boost_excluded_bands_hz` is the substantive half. It is composed
         # by `_boost_excluded_bands_hz` from the SAME closed cloud, carries

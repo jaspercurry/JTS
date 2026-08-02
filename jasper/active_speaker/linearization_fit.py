@@ -69,14 +69,17 @@ boost still enforces the cut-only invariant with an explicit ``raise`` before
 returning (not a bare ``assert`` — a hardware-bound safety invariant must
 survive ``python -O``; see :func:`fit_driver_linearization`), pinned by a test.
 
-**Lift is also bounded away from bands the cloud's positions disagree about**
-(#1967). :attr:`FitVocabulary.boost_excluded_bands_hz` is the second bound on
-the same lift mask, and it is composed the same way: this module is handed
-bands, never evidence, and knows nothing about clouds or positions. What the
-composer puts there is the narrow, decided case — the cross-position check
-positively CONTRADICTED boosting at those bins — never "no evidence was
-available", because withholding boost wherever nothing was measured is the
-blunt gate the owner's 2026-07-27 ruling rejected. Cuts are again untouched.
+**Lift is also refused when its realized cascade lands gain in a band the
+cloud's positions disagree about** (#1967).
+:attr:`FitVocabulary.boost_excluded_bands_hz` is the second REALIZED-response
+bound, alongside #1968's stopband guard and enforced identically — on the
+emitted cascade, over the whole grid, at the same ``SIGNIFICANT_GAIN_DB``.
+Composed the same way as every other bound here: this module is handed bands,
+never evidence, and knows nothing about clouds or positions. What the composer
+puts there is the narrow, decided case — the cross-position check positively
+CONTRADICTED boosting at those bins — never "no evidence was available",
+because withholding boost wherever nothing was measured is the blunt gate the
+owner's 2026-07-27 ruling rejected. Cuts are again untouched.
 
 **The fit domain is whatever grid the caller's ``EnvelopeCurve`` was
 composed on** — :data:`~jasper.active_speaker.linearization_envelope.
@@ -406,9 +409,11 @@ class FitVocabulary:
     #: Per-filter boost ceiling. TOTAL boost is uncapped by design (owner
     #: ruling); this bounds one biquad's realization, not the correction.
     per_filter_boost_cap_db: float = PER_FILTER_BOOST_CAP_DB
-    #: Bands where the LIFT stage may not ask for gain, even under
-    #: ``allow_boost`` (#1967). Cuts are untouched: this narrows one move,
-    #: which is why it lives on the vocabulary rather than in the envelope's
+    #: Bands the LIFT stage's REALIZED cascade may not put significant gain
+    #: into (#1967). Enforced on the emitted response rather than on the
+    #: request — see :func:`_lift_stage` for the two measured pathologies a
+    #: request mask has. Cuts are untouched: this narrows one move, which is
+    #: why it lives on the vocabulary rather than in the envelope's
     #: ``allowed_depth_db`` — that array is direction-agnostic and zeroing it
     #: would forbid a legitimate cut at the same bins.
     #:
@@ -2058,10 +2063,18 @@ def _lift_stage(
     ``test_a_mask_limited_guard_would_miss_these_bins_entirely`` pins the
     distinction.
 
+    **The boost-evidence bound (#1967)** is the second realized-response
+    check, and it is here rather than on ``lift_mask`` for the reasons
+    measured at its own call site below. ``vocabulary.boost_excluded_bands_hz``
+    carries the bands the composer's cross-position evidence CONTRADICTED
+    boosting at; a realized cascade putting more than
+    :data:`~jasper.active_speaker.branch_target.SIGNIFICANT_GAIN_DB` inside one
+    is refused as ``"boost_excluded_band"``.
+
     Suppressed (named, never silent) when no filter slots remain, when
     ``design_peq`` cannot realize the residue, when the realized cascade
-    overshoots the envelope's own allowance, or when it puts gain in the
-    stopband.
+    overshoots the envelope's own allowance, when it puts gain in the
+    stopband, or when it puts gain in a boost-excluded band.
     """
     if not vocabulary.allow_boost:
         return _Lift(tuple(filters), 0.0, 0.0, 0.0, "")
@@ -2173,6 +2186,45 @@ def _lift_stage(
             tuple(reduced), requested_db, from_reduced_cuts_db, 0.0,
             "stopband_gain",
         )
+
+    # #1967's boost-evidence bound, enforced the SAME way and for the same
+    # reason: on the cascade that will actually be emitted, over the whole
+    # grid, at the same :data:`SIGNIFICANT_GAIN_DB`.
+    #
+    # **Why not a mask on the request.** Zeroing ``wanted`` inside these bands
+    # was the obvious implementation and it is wrong twice, both measured on
+    # this stage. It confines bell CENTRES and not their SKIRTS, so
+    # ``design_peq`` simply places filters at the band edges and the skirts
+    # refill it — on a single dip at a realistic half-depth width it removed
+    # 3.66 dB and left +9.93 dB inside the band the evidence contradicted.
+    # And it is NOT MONOTONE: this stage's suppressions are all-or-nothing and
+    # ``design_peq`` is greedy over the residue, so REMOVING demand can unlock
+    # a cascade that was previously refused wholesale — one measured case went
+    # from "no boost at all" to a +24.06 dB cascade carrying +12.85 dB MORE
+    # gain inside the excluded band. Both pathologies are the one the docstring
+    # above already rejects for #1809, arriving by the same route.
+    #
+    # Reading the realized cascade has neither problem. ``wanted``, the
+    # residue and ``design_peq``'s inputs are all untouched, so the cascade
+    # designed here is bit-identical with and without this bound and the only
+    # thing that can change is whether it is ACCEPTED — which makes the bound
+    # monotone by construction: it can never raise the gain at any bin.
+    #
+    # All-or-nothing, deliberately, and it is the blunt end of the trade: a
+    # driver whose realized cascade spills into one contradicted dip loses its
+    # whole lift, not just that band. That is the posture the stopband guard
+    # above already takes, and dropping "the offending filters until it fits"
+    # would be an arbitrary ordering presented as a measurement (the same
+    # argument ``interference_nulls.EXCLUSION_CAP_FRACTION`` makes). The cut
+    # stages keep everything they placed, and the reason is named rather than
+    # silent.
+    for excluded_lo_hz, excluded_hi_hz in vocabulary.boost_excluded_bands_hz:
+        excluded = (grid_hz >= excluded_lo_hz) & (grid_hz <= excluded_hi_hz)
+        if np.any(realized_db[excluded] > SIGNIFICANT_GAIN_DB):
+            return _Lift(
+                tuple(reduced), requested_db, from_reduced_cuts_db, 0.0,
+                "boost_excluded_band",
+            )
     return _Lift(
         tuple([*reduced, *boosts]), requested_db, from_reduced_cuts_db,
         float(np.max(realized_db)), "",
@@ -2187,6 +2239,7 @@ LIFT_SUPPRESSION_REASONS: frozenset[str] = frozenset({
     "no_realizable_boost",
     "exceeds_envelope",
     "stopband_gain",
+    "boost_excluded_band",
 })
 
 
@@ -2377,16 +2430,6 @@ def fit_driver_linearization(
         radiating_lo_hz, radiating_hi_hz = radiating_band_hz
         lift_mask = band_mask & (
             (grid_hz >= radiating_lo_hz) & (grid_hz <= radiating_hi_hz)
-        )
-    # #1967's boost-evidence bound, applied on the SAME mask #1809's is —
-    # so both narrowings of "where may this driver ask for gain" arrive at
-    # the lift stage as one array, and the stage keeps its single
-    # ``wanted_mask``. A bin excluded here is still fully available to the
-    # cut stages above, which is the whole reason this is not an envelope
-    # term.
-    for excluded_lo_hz, excluded_hi_hz in vocabulary.boost_excluded_bands_hz:
-        lift_mask = lift_mask & ~(
-            (grid_hz >= excluded_lo_hz) & (grid_hz <= excluded_hi_hz)
         )
     fit_lo_hz = float(grid_hz[fit_lo_idx])
     fit_hi_hz = float(grid_hz[fit_hi_idx])

@@ -60,6 +60,7 @@ from jasper.active_speaker.linearization_fit import (
     reduce_cuts_for_lift,
     solve_shared_level_frame,
 )
+from jasper.active_speaker.branch_target import SIGNIFICANT_GAIN_DB
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.correction.peq import PEQ, predicted_response
@@ -1570,19 +1571,14 @@ def test_boost_cannot_fill_an_envelope_excluded_band():
     assert fit.headroom_cost_db == 0.0
 
 
-def test_boost_excluded_bands_withhold_lift_without_touching_the_cut_side():
-    """#1967's boost-only bound: a band the composer's cross-position evidence
-    CONTRADICTS boosting at attracts no gain — while the envelope's own
-    allowance there is untouched, so a cut at the same bins is still permitted.
+def test_a_realized_cascade_landing_in_a_boost_excluded_band_is_refused():
+    """#1967's bound, at its own surface: the cascade that will actually be
+    emitted may not put significant gain into a band the composer's
+    cross-position evidence contradicted.
 
-    That separation is the whole reason this rides on the vocabulary instead
-    of on ``allowed_depth_db``: the envelope's array is direction-agnostic, so
-    zeroing it would forbid a legitimate cut to buy a boost refusal.
-
-    The control matters as much as the assertion. The SAME response and
-    envelope with an empty exclusion list must still boost, or this test would
-    pass just as well against a fit that had stopped boosting for some
-    unrelated reason.
+    The control matters as much as the assertion — the SAME response and
+    envelope with an empty exclusion list must still boost, or this would pass
+    against a fit that had stopped boosting for an unrelated reason.
     """
     resp, envelope = _dip_response(depth_db=8.0, center_hz=1500.0)
 
@@ -1590,23 +1586,111 @@ def test_boost_excluded_bands_withhold_lift_without_touching_the_cut_side():
         resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
     )
     boosts = [f for f in control.filters if f.gain > 0.0]
-    assert boosts, "control must boost, or the guard below proves nothing"
-    assert any(900.0 <= f.freq <= 2600.0 for f in boosts)
+    assert boosts and any(900.0 <= f.freq <= 2600.0 for f in boosts)
 
-    withheld = fit_driver_linearization(
+    refused = fit_driver_linearization(
         resp, envelope,
         vocabulary=FitVocabulary(
             allow_boost=True, boost_excluded_bands_hz=((900.0, 2600.0),),
         ),
     )
-    assert not [
-        f for f in withheld.filters if f.gain > 0.0 and 900.0 <= f.freq <= 2600.0
-    ]
+    assert all(f.gain <= 0.0 for f in refused.filters)
+    assert refused.headroom_cost_db == 0.0
+    assert refused.lift_suppressed_reason == "boost_excluded_band"
+
     # The cut side is untouched: the envelope still allows real depth across
-    # the excluded span, which is exactly what an envelope-term implementation
-    # would have destroyed.
+    # the excluded span, which is what an envelope-term implementation would
+    # have destroyed.
     in_band = (envelope.freqs_hz >= 900.0) & (envelope.freqs_hz <= 2600.0)
     assert float(np.min(envelope.allowed_depth_db[in_band])) > 0.05
+
+
+def test_the_bound_catches_a_skirt_a_request_mask_would_have_let_through():
+    """The reason this is a REALIZED-response check and not a mask on
+    ``wanted`` — the same argument ``_lift_stage``'s docstring already makes
+    for #1809.
+
+    A bell whose CENTRE is pushed outside the excluded band still fills it
+    through its skirt. Measured here: masking the request leaves real gain
+    inside the band, and the shipped bound refuses that cascade instead.
+    """
+    resp, envelope = _dip_response(depth_db=8.0, center_hz=1500.0)
+    excluded = (1380.0, 1630.0)
+
+    control = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    boosts = tuple(f for f in control.filters if f.gain > 0.0)
+    assert boosts
+
+    # What a request-mask implementation would have shipped: every bell centre
+    # outside the band, yet the realized cascade still gains inside it.
+    realized_db = 20.0 * np.log10(np.maximum(
+        np.abs(complex_correction_response(boosts, envelope.freqs_hz)), 1e-12,
+    ))
+    inside = (
+        (envelope.freqs_hz >= excluded[0]) & (envelope.freqs_hz <= excluded[1])
+    )
+    assert float(np.max(realized_db[inside])) > SIGNIFICANT_GAIN_DB
+
+    refused = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(
+            allow_boost=True, boost_excluded_bands_hz=(excluded,),
+        ),
+    )
+    assert refused.lift_suppressed_reason == "boost_excluded_band"
+    assert all(f.gain <= 0.0 for f in refused.filters)
+
+
+@pytest.mark.parametrize("center_hz", [700.0, 1500.0, 3000.0])
+@pytest.mark.parametrize("width", [1.05, 1.20, 1.60, 3.00])
+def test_the_bound_is_monotone_it_can_never_raise_gain_at_any_bin(center_hz, width):
+    """The load-bearing safety property, swept rather than argued.
+
+    An exclusion may only ever REMOVE gain. It must never raise the realized
+    response at any bin, never introduce a boost filter the unbounded fit did
+    not have, and never turn a refused lift into an emitted one.
+
+    This is pinned because the obvious implementation — zeroing ``wanted``
+    inside the band — violates it. ``_lift_stage``'s suppressions are
+    all-or-nothing and ``design_peq`` is greedy over the residue, so REMOVING
+    demand could unlock a cascade that had been refused wholesale: one
+    measured case went from no boost at all to a +24.06 dB cascade carrying
+    +12.85 dB MORE gain inside the excluded band. Reading the realized
+    cascade instead leaves ``design_peq``'s inputs untouched, which is what
+    makes the property hold by construction.
+    """
+    resp, envelope = _dip_response(depth_db=8.0, center_hz=center_hz)
+    excluded = (center_hz / width, center_hz * width)
+
+    def _realized(fit):
+        boosts = tuple(f for f in fit.filters if f.gain > 0.0)
+        if not boosts:
+            return np.zeros_like(envelope.freqs_hz), ()
+        return 20.0 * np.log10(np.maximum(np.abs(
+            complex_correction_response(boosts, envelope.freqs_hz)
+        ), 1e-12)), boosts
+
+    base = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    bounded = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(
+            allow_boost=True, boost_excluded_bands_hz=(excluded,),
+        ),
+    )
+    base_db, base_boosts = _realized(base)
+    bounded_db, bounded_boosts = _realized(bounded)
+
+    assert float(np.max(bounded_db - base_db)) <= 1e-9, (
+        center_hz, width, float(np.max(bounded_db - base_db)),
+    )
+    assert bounded.headroom_cost_db <= base.headroom_cost_db + 1e-9
+    # Either the cascade is untouched, or it was refused outright. A THIRD
+    # outcome -- a different, larger set of boosts -- is the pathology.
+    assert bounded_boosts in (base_boosts, ())
 
 
 def test_an_empty_boost_exclusion_is_byte_identical_to_no_exclusion():
