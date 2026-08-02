@@ -167,13 +167,14 @@ correct diffs. These rules are hard constraints, not suggestions:
 
 After your acceptance commands pass and before merge, the branch must
 survive the **independent adversarial review** defined in
-[`adversarial-review.md`](adversarial-review.md) — the canonical JTS
-staff-maintainer review prompt (COAH bar: separation of concerns,
-single source of truth, safety, observability, resilience, tests,
-docs). The loop is specified there: fresh reviewing context (never
-the implementing session), fix every Blocker and Should-fix, re-run
-until a clean pass, paste the final verdict into the PR. A wave PR
-without a clean review verdict does not merge — the orchestrator
+[`adversarial-review.md`](adversarial-review.md) — this program's
+review gate, built on the canonical JTS staff-maintainer review prompt
+(`.claude/commands/adversarial-review.md`; COAH bar: separation of
+concerns, single source of truth, safety, observability, resilience,
+tests, docs). The loop is specified there: fresh reviewing context
+(never the implementing session), fix every Blocker and Should-fix,
+re-run until a clean pass, paste the final verdict into the PR. A wave
+PR without a clean review verdict does not merge — the orchestrator
 treats a missing or failed gate the same as red CI.
 
 ## Stop-and-report protocol
