@@ -174,7 +174,7 @@ def _write_aec_mode(mode: str) -> None:
     """Atomic write of the AEC mode key, preserving leg keys."""
     if mode not in ("auto", "disabled"):
         raise ValueError(f"invalid mode: {mode!r}")
-    _atomic_rewrite_env(
+    locked_update_env_file(
         _AEC_MODE_FILE,
         {
             "JASPER_AEC_MODE": mode,
@@ -192,7 +192,7 @@ def _write_aec_leg(leg: str, enabled: bool) -> None:
     reconciler since it has the actual mode + presence context."""
     if leg not in _TOGGLE_TO_TOKEN:
         raise ValueError(f"invalid leg: {leg!r}")
-    _atomic_rewrite_env(
+    locked_update_env_file(
         _AEC_MODE_FILE,
         {
             _TOGGLE_TO_ENV_KEY[leg]: "1" if enabled else "0",
@@ -231,14 +231,11 @@ def _write_audio_input_profile(profile: str) -> None:
     normalized = normalize_audio_input_profile(profile, default="")
     if not normalized or normalized == "custom":
         raise ValueError(f"invalid profile: {profile!r}")
-    _atomic_rewrite_env(_AEC_MODE_FILE, profile_env_updates(normalized))
-
-
-def _atomic_rewrite_env(path: str, updates: dict) -> None:
-    """Read-modify-write of a systemd env file. Updates the given keys,
-    preserves all others. Cooperating writers are serialized with an
-    advisory flock, and readers see atomic whole-file replacement."""
-    locked_update_env_file(path, updates, mode=0o644)
+    locked_update_env_file(
+        _AEC_MODE_FILE,
+        profile_env_updates(normalized),
+        mode=0o644,
+    )
 
 
 def _read_wake_threshold() -> float:

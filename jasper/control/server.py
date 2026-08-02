@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
 
 from ..http_security import management_read_allowed, mutating_request_allowed
+from ..atomic_io import locked_update_env_file
 from ..audio_quality import (  # noqa: F401 - route-mixin dependency exports
     apply_requested_converter as _apply_audio_quality,
     normalize_converter as _normalize_audio_converter,
@@ -560,7 +561,9 @@ def _write_audio_input_profile(profile: str) -> None:
 
 
 def _atomic_rewrite_env(path: str, updates: dict) -> None:
-    _aec_endpoints._atomic_rewrite_env(path, updates)
+    """Compatibility patch seam for grouping env persistence."""
+
+    locked_update_env_file(path, updates, mode=0o644)
 
 
 def _read_wake_threshold() -> float:

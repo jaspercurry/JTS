@@ -4156,6 +4156,21 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     ), "aggregate timeout must emit a greppable event= line"
 
 
+@pytest.mark.asyncio
+async def test_wifi_guardian_snapshot_runs_off_aggregate_event_loop(monkeypatch):
+    caller_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def fake_snapshot():
+        seen.append(threading.get_ident())
+        return {"enabled": False}
+
+    monkeypatch.setattr(state_aggregate.wifi_guardian_state, "snapshot", fake_snapshot)
+
+    assert await state_aggregate._wifi_guardian_snapshot() == {"enabled": False}
+    assert seen and seen[0] != caller_thread
+
+
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):
     """When JASPER_HA_URL/TOKEN are unset, /state.home_assistant returns
     configured=false with no error — fail-soft for the dashboard."""

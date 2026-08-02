@@ -621,6 +621,12 @@ async def _outputd_status(
     return await local_status_json("/run/jasper-outputd/control.sock")
 
 
+async def _wifi_guardian_snapshot() -> dict[str, Any]:
+    """Run bounded nmcli/journal probes off the aggregate event loop."""
+
+    return await asyncio.to_thread(wifi_guardian_state.snapshot)
+
+
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Add on/off wizard availability to mux source status.
 
@@ -895,6 +901,7 @@ async def _get_state(
             outputd_st,
             mux_st,
             aec_status,
+            wifi_guardian,
         ) = await asyncio.wait_for(
             asyncio.gather(
                 _camilla_status(),
@@ -905,6 +912,7 @@ async def _get_state(
                 _outputd_status(local_status_json=local_status_json),
                 _mux_status(),
                 _aec_status(),
+                _wifi_guardian_snapshot(),
             ),
             timeout=_STATE_AGGREGATE_BUDGET_SEC,
         )
@@ -1233,7 +1241,7 @@ async def _get_state(
             # most recent `event=wifi_guardian.*` journal line — there's
             # no resident daemon to ask (the guardian is Type=oneshot).
             # Fail-soft inside the snapshot itself; never raises.
-            "wifi_guardian": wifi_guardian_state.snapshot(),
+            "wifi_guardian": wifi_guardian,
             # Boot-loop guard (cross-boot circuit breaker for the T5.1
             # StartLimitAction=reboot ladder). Fresh marker read per
             # call; {"ran": false} when the oneshot hasn't run this

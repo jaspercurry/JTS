@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 94 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 91 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 546
+- **fixed**: 549
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -276,13 +276,13 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0330 | `jasper/config.py` :: 255-257,684-689 | nit | W5 | **fixed** | removed dead secondary-Camilla statefile config field |
 | DA-0331 | `jasper/config.py` :: 318-319,330-331 | nit | W5 | **fixed** | removed dead Spotify and Google wizard bind fields |
 | DA-0332 | `jasper/config.py` :: Config.camilla2_host / camilla2_port / camil | nit | W5 | **fixed** | removed seven dead fields whose runtime owners read env directly |
-| DA-0333 | `jasper/control/aec_endpoints.py` :: _atomic_rewrite_env | nit | W5 | **open** | — |
+| DA-0333 | `jasper/control/aec_endpoints.py` :: _atomic_rewrite_env | nit | W5 | **fixed** | env persistence now calls the canonical atomic update owner directly |
 | DA-0334 | `jasper/control/server.py` :: :484, :487, :490, :496, :497, :506 | nit | W5 | **fixed** | extracted-domain re-export aliases, including the final Spotify remnant, removed |
 | DA-0335 | `jasper/control/server.py` :: _aec_full_status | nit | W5 | **open** | — |
 | DA-0336 | `jasper/control/state_aggregate.py` :: _camilla_status | nit | W5 | **fixed** | fail-soft Camilla probe failures emit a structured debug event |
 | DA-0337 | `jasper/control/system_metrics.py` :: SystemSampler.stop | nit | W5 | **fixed** | unused test-only stop seam and dormant flag removed |
-| DA-0338 | `jasper/control/volume_ops.py` :: _build_spotify_router_or_none / _spotify_emp | nit | W5 | **open** | — |
-| DA-0339 | `jasper/control/wifi_guardian_state.py` :: snapshot / _active_ssid / _last_guardian_eve | nit | W5 | **open** | — |
+| DA-0338 | `jasper/control/volume_ops.py` :: _build_spotify_router_or_none / _spotify_emp | nit | W5 | **fixed** | empty-router cache access is serialized under a dedicated lock |
+| DA-0339 | `jasper/control/wifi_guardian_state.py` :: snapshot / _active_ssid / _last_guardian_eve | nit | W5 | **fixed** | blocking Wi-Fi guardian probes run in the aggregate's parallel worker fan-out |
 | DA-0340 | `jasper/correction/acoustic_quality.py` :: _capture_summary / build_acoustic_quality_re | nit | W5 | **open** | — |
 | DA-0341 | `jasper/correction/fir_runtime.py` :: stage_fir_artifact | nit | W5 | **fixed** | redundant post-write chmod removed |
 | DA-0342 | `jasper/correction/runtime_safety.py` :: _issue_detail | nit | W5 | **fixed** | shared fallback wording is operation-neutral |
