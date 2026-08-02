@@ -652,10 +652,13 @@ S0_ECHO_BAND_HZ = (5000.0, 19_000.0)
 # clamps nothing.
 #
 # The clamp's COST is still worth pinning — it is the mechanism's own
-# behaviour, and it moves the headline number in the flattering direction —
-# so the test keeps measuring it, at the floor the artifact used to produce.
-# Sourcing it from a constant means the guard no longer depends on a detector
-# bug to have a subject.
+# behaviour, and it moves the headline number in the flattering direction — so
+# ``test_the_validity_floor_clamp_costs_the_low_band`` keeps measuring it, at
+# the floor the artifact used to produce. Sourcing it from a constant means
+# that guard no longer depends on a detector bug to have a subject, and it is
+# why the two facts now have separate tests with separate failure names:
+# ``test_the_real_s0_positions_no_longer_collapse_a_gate`` owns "the corpus no
+# longer produces a clamping floor", this constant owns "clamping costs this".
 CLAMP_FLOOR_HZ = 1777.8
 
 
@@ -712,26 +715,71 @@ def test_the_real_s0_session_shows_one_number_at_every_surface(monkeypatch):
 
 
 @corpus.requires_s0_curves
-def test_the_real_s0_worst_position_floor_clamps_the_low_band(monkeypatch):
+def test_the_real_s0_positions_no_longer_collapse_a_gate():
+    """#1790's regression guard: no S0 position collapses its own gate.
+
+    NEW 2026-08-02 (#2045) — see ``tests._flat_lin_corpus`` "The 2026-08-02
+    re-pin era". Until PR #1991, ``cloud_04`` alone reported
+    ``floor_source="measured_reflection"`` at a **1777.8 Hz** validity floor:
+    a reflection "found" 3 samples past the search-window open, which is the
+    field instance #1991's prominence vote was written to reject. It
+    propagated through the group ``max()`` and flipped a band verdict
+    fail→pass — so a detector artifact was silently re-grading the speaker.
+
+    All ten positions now gate to the search-span bound at 142.857 Hz, which
+    is below the spec table's 250 Hz edge, so the group's own floor clamps
+    NOTHING: same bins, same reference, same verdict.
+
+    This half was carved out of the old
+    ``test_the_real_s0_worst_position_floor_clamps_the_low_band``, whose name
+    described the artifact rather than the speaker. The clamp MECHANISM's cost
+    is still pinned, next door, at an explicit floor.
+    """
+    combined = _s0_combined()
+    floors = {
+        pid: corpus.s0_position_driver_response(corpus.S0_MAIN, pid)[0].validity_floor_hz
+        for pid in sorted(corpus._session_groups(corpus.S0_MAIN))
+    }
+    assert len(floors) == 10
+    assert sorted(floors)[0] == "cloud_01"
+    assert all(f == pytest.approx(142.857, abs=1e-3) for f in floors.values())
+
+    # ...so the group's own worst floor sits below the spec table's lowest
+    # graded edge, and clamping at it is a no-op. This is the assertion that
+    # would have gone quietly vacuous had the old test's pins simply been
+    # bumped from 1777.8 to 142.857.
+    unclamped = assemble_cloud_group_result(combined, echo_band_hz=S0_ECHO_BAND_HZ)
+    natural_worst = max(floors.values())
+    assert natural_worst < unclamped["spec"]["bands"][0]["f_lo_hz"]
+    natural = assemble_cloud_group_result(
+        combined, echo_band_hz=S0_ECHO_BAND_HZ, validity_floor_hz=natural_worst,
+    )
+    assert natural["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"]
+    assert natural["spec"]["reference_db"] == pytest.approx(
+        unclamped["spec"]["reference_db"], abs=1e-9
+    )
+    assert natural["spec"]["bands"][0]["passed"] == (
+        unclamped["spec"]["bands"][0]["passed"]
+    )
+
+
+@corpus.requires_s0_curves
+def test_the_validity_floor_clamp_costs_the_low_band(monkeypatch):
     """The clamp's measured cost, stated and pinned rather than assumed.
 
-    **RE-WORKED 2026-08-02 (#2045), and this one is more than a re-pin** — see
-    ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era". This test used to
-    take its floor from the corpus: nine positions gated to 142.86 Hz and
-    ``cloud_04`` alone collapsed to 1777.8 Hz, so the group ``max()`` clamped
-    the low band and every cost below was the consequence. PR #1991 showed
-    that collapse was a FALSE EARLY FIRE — it is the #1790 field instance the
-    prominence vote was written to reject — and with it gone all ten positions
-    gate to 142.857 Hz, below the spec table's 250 Hz edge, so the group's
-    natural floor now clamps nothing.
+    **RE-WORKED 2026-08-02 (#2045)** — see ``tests._flat_lin_corpus`` "The
+    2026-08-02 re-pin era". This test used to take its floor FROM the corpus,
+    where ``cloud_04``'s collapsed gate supplied 1777.8 Hz. PR #1991 showed
+    that collapse was a false early fire (#1790) and removed it, so the
+    corpus's own floor now clamps nothing —
+    ``test_the_real_s0_positions_no_longer_collapse_a_gate`` next door is that
+    fact's guard.
 
-    Mechanically re-pinning would therefore have left a test named "clamps the
-    low band" proving that a clamp does nothing. The costs below are the
-    CLAMP MECHANISM's own behaviour and are worth guarding on their own, so
-    the floor is now the explicit :data:`CLAMP_FLOOR_HZ` — the value the
-    artifact used to produce — and the corpus's new reality (all ten at the
-    search-span bound, natural clamp a no-op) is asserted first, which makes
-    this a regression guard for #1790 as well.
+    The costs below are the CLAMP MECHANISM's own behaviour and are worth
+    guarding whether or not this corpus happens to produce a clamping floor,
+    so the floor is now the explicit :data:`CLAMP_FLOOR_HZ` — the value the
+    artifact used to produce. Sourcing it from a constant is what keeps this
+    guard from depending on a detector bug to have a subject.
 
     Clamping at that floor costs, measured 2026-08-02:
 
@@ -757,32 +805,7 @@ def test_the_real_s0_worst_position_floor_clamps_the_low_band(monkeypatch):
     mask grew is not convergence" rule).
     """
     combined = _s0_combined()
-    floors = {
-        pid: corpus.s0_position_driver_response(corpus.S0_MAIN, pid)[0].validity_floor_hz
-        for pid in sorted(corpus._session_groups(corpus.S0_MAIN))
-    }
-    # #1790's regression guard. EVERY position gates to the search-span bound
-    # now; before PR #1991 cloud_04 alone reported a measured reflection at
-    # 1777.8 Hz, and that reading was the detector firing early, not a room.
-    assert len(floors) == 10
-    assert sorted(floors)[0] == "cloud_01"
-    assert all(f == pytest.approx(142.857, abs=1e-3) for f in floors.values())
-
     unclamped = assemble_cloud_group_result(combined, echo_band_hz=S0_ECHO_BAND_HZ)
-
-    # ...so the group's own worst floor now sits below the spec table's lowest
-    # graded edge, and clamping at it is a no-op: same bins, same reference.
-    # This is the assertion that would have gone quietly vacuous had the pins
-    # simply been bumped.
-    natural_worst = max(floors.values())
-    assert natural_worst < unclamped["spec"]["bands"][0]["f_lo_hz"]
-    natural = assemble_cloud_group_result(
-        combined, echo_band_hz=S0_ECHO_BAND_HZ, validity_floor_hz=natural_worst,
-    )
-    assert natural["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"]
-    assert natural["spec"]["reference_db"] == pytest.approx(
-        unclamped["spec"]["reference_db"], abs=1e-9
-    )
 
     # The mechanism itself, exercised at the floor the artifact used to make.
     clamped = assemble_cloud_group_result(

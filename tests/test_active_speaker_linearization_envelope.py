@@ -1449,11 +1449,13 @@ def test_s0_position_stability_calibration_populations(s0_main_captures):
     re-pin era". Exactly the two groupings that CONTAIN cloud_04 moved
     (``main_all_10`` and ``main_tweeter_height_6``); ``main_hand_width_low_4``
     (cloud_07-10), ``desk_front_edge_3`` and ``ground_plane_3`` are
-    byte-identical, which is the control on the change. Both moves are in the
-    direction the fix predicts: removing cloud_04's truncated-window artifact
-    makes the positions agree BETTER, so sigma falls -- most visibly on the
-    six-position subgroup (0.340 -> 0.190 dB), where cloud_04 carries more
-    weight -- and the stability limit loosens with it (23.82 -> 24.00 dB).
+    byte-identical, which is the control on the change.
+
+    The two moves are NOT the same direction, and the difference is worth
+    reading rather than smoothing over: on the six-position subgroup every
+    column improves; on the ten-position cloud sigma_min and se_min fall while
+    sigma_max/se_max rise slightly and the limit TIGHTENS 12.29 -> 12.26 dB,
+    still 0.26 dB clear of ``PER_FILTER_CUT_CAP_DB``.
     """
     from tests._flat_lin_corpus import (
         S0_DESK_EDGE,
@@ -1592,7 +1594,16 @@ def test_s0_position_stability_narrows_the_envelope_but_not_the_fit(s0_replay):
 def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     """THE acceptance, on the declared-``compression_horn`` regime.
 
-    Measured 2026-07-26. The registry identifies three rungs over 5-19 kHz --
+    Measured 2026-07-26, INTERVALS RE-PINNED 2026-08-02 (#2045) for PR
+    #1991's prominence vote, which re-gates ``cloud_04`` -- see
+    ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era". The three
+    intervals moved by at most 28 Hz an edge (8016-9427 -> 8015-9428,
+    10842-12348 -> 10841-12351, 14280-15679 -> 14276-15651); everything else
+    below -- the fourteen zeroed grid bins, the fit band, the two filter
+    centres and the suppression reason -- is unchanged, which is why only the
+    interval list is re-pinned.
+
+    The registry identifies three rungs over 5-19 kHz --
     8015-9428, 10841-12351 and 14276-15651 Hz. With the merged mask composed
     in, the envelope allows **exactly 0.0 dB** at all fourteen envelope-grid
     bins inside them (against 2.82-22.80 dB without it), the fit places **no

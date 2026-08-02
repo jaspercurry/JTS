@@ -16,7 +16,7 @@ Two layers:
 * **Corpus-gated.** The exact wiring assembly fed the real S0 main-leg cloud,
   pinning the numbers this module's docstrings and the plan doc's "S0
   executed" section already state (geometry locked, screen excludes 0 of
-  5462 bins in 8-16 kHz, the null registry excludes ~2949) so a regression
+  5462 bins in 8-16 kHz, the null registry excludes ~2938) so a regression
   that silently drops the null registry's contribution is caught against
   real hardware data, not only a synthetic proxy.
 """

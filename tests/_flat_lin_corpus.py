@@ -57,11 +57,17 @@ not just that test's own.
 The 2026-08-02 re-pin era (#2045)
 ---------------------------------
 
-Every corpus reading that moved between PR #1753 (where these pins were set,
-``2a7060ab1``) and 2026-08-02 moved for ONE reason, established by ablation
-rather than assumed: **PR #1991** (``540d169f5``, "a crossing must stand out to
-become a window bound") added the prominence vote to the first-reflection
-detector.
+Every corpus reading that moved **since the 2026-07-27 re-pin** (PR-U1's
+corpus-reader alignment fix, the era recorded in :func:`sweep_anchor`) moved
+for ONE reason, established by ablation rather than assumed: **PR #1991**
+(``540d169f5``, "a crossing must stand out to become a window bound") added
+the prominence vote to the first-reflection detector.
+
+The window matters. These pins were originally set at PR #1753
+(``2a7060ab1``), but PR-U1 already re-derived a subset of them on 2026-07-27,
+so "everything since #1753" would cover two separate causes. This section is
+scoped to the later one; a value carrying a ``RE-PINNED 2026-07-27`` note
+beside it belongs to the earlier.
 
 On this corpus that vote changes exactly one capture. ``cloud_04`` alone used
 to report ``floor_source="measured_reflection"`` at a **1777.8 Hz** validity

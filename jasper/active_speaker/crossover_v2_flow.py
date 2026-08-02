@@ -4362,28 +4362,38 @@ def assemble_cloud_group_result(
       per-capture ``_flatness_tracking`` did when a capture had no floor --
       would throw away the 2-16 kHz evidence over an unverified lower edge.
 
-    Regime, measured on the S0 main leg 2026-07-27 (``test_flat_spec_ssot.py``
-    pins every figure below): the spec table's lower edge is 250 Hz and NINE
-    of that session's ten positions gate to 142.9 Hz, where the clamp changes
-    no graded number at all -- every band figure, the reference level, the
-    verdict, and the whole gauge are byte-identical (only the report-wide
+    Regime, measured on the S0 main leg 2026-07-27, RE-DERIVED 2026-08-02
+    (#2045): the spec table's lower edge is 250 Hz and **all ten** of that
+    session's positions gate to 142.857 Hz, where the clamp changes no graded
+    number at all -- every band figure, the reference level, the verdict, and
+    the whole gauge are byte-identical (only the report-wide
     ``excluded_intervals`` gains the sub-250 Hz region it removed, which is
-    why the gauge quotes spec-band BIN counts and not an interval count). The
-    tenth, ``cloud_04``, collapsed to **1777.8 Hz**, so the group floor is
-    1777.8 Hz and the clamp:
+    why the gauge quotes spec-band BIN counts and not an interval count). **So
+    the group floor on this corpus is 142.857 Hz and the clamp is a no-op**,
+    which ``test_flat_spec_ssot.test_the_real_s0_positions_no_longer_collapse_a_gate``
+    pins.
 
-    * moves **1009 bins** out of the 250 Hz-2 kHz band;
-    * **re-centres the reference** -27.2670 -> -28.3166 dB (-1.0495 dB),
+    It was not always. Until PR #1991, ``cloud_04`` reported a measured
+    reflection at **1777.8 Hz** and the group floor was 1777.8 Hz -- but that
+    reading was the first-reflection detector firing early, the #1790 field
+    instance the prominence vote was written to reject. The COST of clamping
+    is still worth stating, because it is the mechanism's own behaviour and it
+    moves the headline in the flattering direction; measured at that same
+    floor supplied explicitly (``test_flat_spec_ssot.CLAMP_FLOOR_HZ``, pinned
+    by ``test_the_validity_floor_clamp_costs_the_low_band``), clamping:
+
+    * moves **987 bins** out of the 250 Hz-2 kHz band;
+    * **re-centres the reference** -27.2386 -> -28.3062 dB (-1.0676 dB),
       because the reference is a power mean over non-excluded 250 Hz-8 kHz
       bins and the clamp removed the loud low end of it;
-    * moves the HEADLINE ``max_db`` -8.9399 -> -7.8903 dB, i.e. **+1.0495 dB
+    * moves the HEADLINE ``max_db`` -8.9389 -> -7.8713 dB, i.e. **+1.0676 dB
       in the FLATTERING direction** -- exactly the reference shift, because
       the worst bin (15999.7 Hz) survives the clamp, so its deviation moves
       one-for-one with the reference. This is the first number the ledger
       line prints and it moves FURTHER than the RMS does;
-    * takes the pooled RMS 3.7649 -> 3.1524 dB (-0.6125 dB);
-    * **flips the 250 Hz-2 kHz band verdict**, +4.1637 dB (fail) ->
-      -1.2855 dB (pass), since ``BandResult.passed`` is
+    * takes the pooled RMS 3.8031 -> 3.1740 dB (-0.6291 dB);
+    * **flips the 250 Hz-2 kHz band verdict**, +4.2458 dB (fail) ->
+      -1.2146 dB (pass), since ``BandResult.passed`` is
       ``abs(max_deviation_db) <= tolerance_db``. Overall stays False here
       only because the other two bands still fail on their own.
 

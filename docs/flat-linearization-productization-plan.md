@@ -1286,17 +1286,21 @@ sub-250 Hz region — caught by the contract test's own byte-identity assertion.
 `cloud_validity_floor_hz` takes the group's WORST (highest) gate floor, mirroring
 `_measure_validity_floor_hz`'s existing "worse of the two branches" rule, and
 those bins leave the spec evaluation (deviations AND reference — a
-non-measurement must not re-centre the target either). On the S0 main leg nine
-of ten positions gate to 142.9 Hz, below the 250 Hz spec edge, so the clamp is
-a no-op there. `cloud_04` collapsed to **1777.8 Hz**, and clamping at that floor
-costs, all pinned by `tests/test_flat_spec_ssot.py`: **1009 bins** leave the
-250 Hz–2 kHz band (7698 → 6689 graded); the reference re-centres
-**−27.2670 → −28.3166 dB**; the **headline `max_db` moves −8.9399 → −7.8903 dB,
-i.e. +1.0495 dB in the FLATTERING direction** — exactly the reference shift,
+non-measurement must not re-centre the target either). On the S0 main leg, as
+re-derived 2026-08-02 (#2045), **all ten** positions gate to 142.857 Hz, below
+the 250 Hz spec edge, so the group's own floor makes the clamp a **no-op**.
+(Until PR #1991 `cloud_04` reported a measured reflection at **1777.8 Hz** and
+set the group floor; that reading was the detector firing early — the #1790
+instance the prominence vote rejects.) Clamping at that floor supplied
+explicitly still costs, all pinned by `tests/test_flat_spec_ssot.py`:
+**987 bins** leave the
+250 Hz–2 kHz band (7678 → 6691 graded); the reference re-centres
+**−27.2386 → −28.3062 dB**; the **headline `max_db` moves −8.9389 → −7.8713 dB,
+i.e. +1.0676 dB in the FLATTERING direction** — exactly the reference shift,
 because the worst bin (15999.7 Hz) survives the clamp and its deviation tracks
 the reference one-for-one, so the first number the ledger line prints moves
-*further* than the RMS does; the pooled RMS moves 3.7649 → 3.1524 dB; and the
-250 Hz–2 kHz **band verdict FLIPS**, +4.1637 dB (fail) → −1.2855 dB (pass),
+*further* than the RMS does; the pooled RMS moves 3.8031 → 3.1740 dB; and the
+250 Hz–2 kHz **band verdict FLIPS**, +4.2458 dB (fail) → −1.2146 dB (pass),
 since `passed` is `abs(max) ≤ tolerance` (overall stays False only because the
 other two bands fail on their own). The **direction is response-shape dependent
 and measured on this corpus only** — here the removed region sat above the

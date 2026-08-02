@@ -244,15 +244,22 @@ DEFAULT_MIN_NULL_DEPTH_DB = 2.5
 # constant needs no companion bound on n.
 #
 # **0.15 spacings, against a measured worst case of 0.0933.** Measured
-# 2026-07-25 on the four S0 cloud groupings, each fitted independently
+# 2026-07-25 on the four S0 cloud groupings, each fitted independently, MAIN
+# LEG ROW RE-DERIVED 2026-08-02 (#2045) for PR #1991's prominence vote
 # (re-derived by test_s0_main_leg_identifies_the_8_to_16_khz_family and
 # test_s0_ladder_calibration_populations_bracket_the_constants):
 #
 #   grouping                      rung errors (spacings)      worst
-#   main leg, all 10 positions    0.0872 / 0.0300 / 0.0251    0.0872
+#   main leg, all 10 positions    0.0830 / 0.0264 / 0.0256    0.0830
 #   main leg, tweeter height (6)  0.0818 / 0.0285 / 0.0232    0.0818
 #   main leg, a hand-width low(4) 0.0933 / 0.0281 / 0.0299    0.0933
 #   desk front edge (3)           0.0926 / 0.0350 / 0.0242    0.0926
+#
+# Only the main-leg row moved. The vote re-gates cloud_04; the hand-width-low
+# and desk-edge groupings do not contain it, and the tweeter-height grouping
+# does but its rung errors are unchanged to four decimals (other columns of
+# its row did move — see R_AGREEMENT_TOLERANCE's table). The worst case is set
+# by a grouping that did not move, so this constant's headroom is unchanged.
 #
 # The worst reading is the **n=2 rung on every one of the four**, at
 # 0.0818-0.0933, against 0.0232-0.0350 for n=3 and n=4 — a systematic offset,
@@ -280,21 +287,23 @@ RUNG_MATCH_TOLERANCE_SPACINGS = 0.15
 # score and shipped tolerance — only ``_longest_consecutive`` replaced by
 # ``sorted``:
 #
-#   shipped        tau 298.78 us, rungs [2, 3, 4] at 8659 / 11614 / 14977 Hz,
-#                  24.27 % of the band excluded; the 1864.0 Hz minimum refused
-#                  ``outside_contiguous_run`` at 5.19 dB
-#   gaps allowed   tau 298.56 us, rungs [0, 2, 3, 4] at **1864** / 8659 /
-#                  11614 / 14977 Hz, 27.21 % excluded — n=1 skipped entirely
+#   shipped        tau 298.75 us, rungs [2, 3, 4] at 8646 / 11627 / 14977 Hz,
+#                  24.18 % of the band excluded; the 1846.4 Hz minimum refused
+#                  ``outside_contiguous_run`` at 5.14 dB
+#   gaps allowed   tau 298.55 us, rungs [0, 2, 3, 4] at **1846** / 8646 /
+#                  11627 / 14977 Hz, 26.99 % excluded — n=1 skipped entirely
 #
 # The extra rung is the **1.8 kHz lobing dip**, which the plan's two-mechanism
 # verdict establishes is a *different mechanism* from the comb — uncorrelated
 # with it across positions, and physically impossible for the ~320 us arrival
 # to have cut ("S0 executed" section b). Without this rule the gate excludes
 # it from correction as a comb rung, and passes both corroborations while
-# doing it (gap -7.26 %, agreement 0.0260 — the deepest rung sets r_freq, so
+# doing it (gap -7.13 %, agreement 0.0327 — the deepest rung sets r_freq, so
 # a wrong extra rung does not move it). Contiguity is the only thing standing
 # between the registry and that claim. Re-derived by
 # test_contiguity_is_what_keeps_the_1_8_khz_dip_out_of_the_registry.
+# FIGURES RE-DERIVED 2026-08-02 (#2045) for PR #1991's prominence vote, which
+# re-gates cloud_04 — the counterfactual itself is unchanged.
 #
 # **Two regimes where this counterfactual does *not* appear, stated so the one
 # above is not over-read.** At 5-19 kHz the two agree exactly (rungs [2, 3, 4]
@@ -377,16 +386,28 @@ MIN_CORROBORATING_POSITIONS = 2
 # gate as one-sided; it is an absolute disagreement for a reason.
 #
 # **0.10, calibrated one-sided against a measured positive population.**
-# 2026-07-25, the four S0 cloud groupings (re-derived by
-# test_s0_ladder_calibration_populations_bracket_the_constants):
+# 2026-07-25, the four S0 cloud groupings, RE-DERIVED 2026-08-02 (#2045)
+# (re-derived by test_s0_ladder_calibration_populations_bracket_the_constants):
 #
 #   grouping                      r_time    r_freq    agreement
-#   main leg, all 10 positions    0.3750    0.3490    0.0260
-#   main leg, tweeter height (6)  0.3747    0.3506    0.0240
+#   main leg, all 10 positions    0.3765    0.3438    0.0327
+#   main leg, tweeter height (6)  0.3748    0.3479    0.0269
 #   main leg, a hand-width low(4) 0.3785    0.3374    0.0410
 #   desk front edge (3)           0.3559    0.3746    0.0187
 #
-# Worst 0.0410; 0.10 clears it by 2.44x. **There is no measured negative
+# Two of the four rows moved, and only those two: PR #1991's prominence vote
+# re-gates cloud_04, which the main leg and the tweeter-height subgroup
+# contain and the other two do not.
+#
+# The r_freq column is that move alone. The r_time and agreement columns ALSO
+# carried pre-existing drift from the 2026-07-27 re-pin (PR-U1's corpus-reader
+# alignment fix), which had updated the tests but not this table — main leg
+# r_time 0.3750 and agreement 0.0260 were already stale before #1991. Both are
+# corrected here in passing rather than left half-current, since the whole
+# table is being re-derived from one measurement anyway.
+#
+# Worst 0.0410; 0.10 clears it by 2.44x. The worst reading is the hand-width-
+# low grouping's, which did not move, so the headroom is unchanged. **There is no measured negative
 # population** and this constant does not pretend to bisect a gap: the S0
 # session produced exactly one real arrival-and-ladder pair, read four ways.
 # What it does bound is real — an agreement of 0.10 around r = 0.37 is about
@@ -413,27 +434,34 @@ R_AGREEMENT_TOLERANCE = 0.10
 # right bound, and it is the conservative one — a bigger r means a deeper
 # permitted null means fewer acquittals.
 #
-# **1.25 dB, centred in a measured 1.96 dB gap**, measured 2026-07-25 on the
-# S0 corpus at the shipped depth statistic (re-derived by
+# **1.25 dB, inside a measured 2.81 dB gap**, measured 2026-07-25 on the
+# S0 corpus at the shipped depth statistic, RE-DERIVED 2026-08-02 (#2045) for
+# PR #1991's prominence vote (re-derived by
 # test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling and
 # test_s0_ladder_calibration_populations_bracket_the_constants):
 #
 # * **Must not acquit — 12 genuine rungs**, the 8-16 kHz family across the
-#   four cloud groupings, reading **-3.94 to +0.27 dB** relative to their own
+#   four cloud groupings, reading **-4.05 to +0.27 dB** relative to their own
 #   ceiling. The ceiling figure is the binding one: the desk-edge leg's
 #   11.6 kHz rung genuinely reads 0.27 dB *over* its ceiling, which is what a
 #   3-position cloud's noise looks like against a bound this tight, and is why
 #   the margin cannot be zero.
 # * **Must acquit — the S0 1.8 kHz lobing dip**, on the six tweeter-height
-#   positions where the S0 report measured it deepest: **+2.23 dB** over the
-#   ceiling (9.24 dB measured against a 7.01 dB ceiling for r = 0.3829). The
+#   positions where the S0 report measured it deepest: **+3.08 dB** over the
+#   ceiling (10.08 dB measured against a 7.01 dB ceiling for r = 0.3829). The
 #   plan's "S0 executed" section b calls this dip *physically impossible* for
 #   the ~320 us arrival to have caused, on exactly this arithmetic, and the
 #   two-mechanism verdict rests on it.
 #
-# 1.25 sits 0.98 dB above the genuine population's ceiling and 0.98 dB below
-# the acquittal case — centred to two decimal places, in the natural unit,
-# which is dB. **It is a 1.96 dB gap between 12 readings and 1**, from one
+# 1.25 sits 0.98 dB above the genuine population's ceiling and 1.83 dB below
+# the acquittal case. **It is NO LONGER CENTRED**, and that is the honest
+# reading rather than a rounding: until #1991 the gap was 1.96 dB and 1.25 sat
+# 0.98 dB from each end, but the vote deepened the acquitted dip 9.24 ->
+# 10.08 dB while the genuine population's ceiling held at +0.27 dB, so the gap
+# widened to 2.81 dB asymmetrically. The binding side is unchanged: this
+# constant is still 0.98 dB clear of acquitting a real rung, which is the
+# direction that matters, because an acquittal is what REMOVES a null from the
+# registry. **It is a 2.81 dB gap between 12 readings and 1**, from one
 # speaker and one session; that is thin, it is stated rather than smoothed
 # over, and the acquittal population is the one to widen first.
 #
