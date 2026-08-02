@@ -36,7 +36,14 @@ import pytest
 from scipy.signal import fftconvolve, resample_poly
 
 from jasper.audio_measurement import analysis as analysis_mod
-from jasper.audio_measurement import deconv, gate_disclosure, gating, program_analysis
+from jasper.audio_measurement import (
+    deconv,
+    gate_disclosure,
+    gating,
+    program_analysis,
+    snr_policy,
+)
+from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.frame_fit import fit_frame
 from jasper.audio_measurement.program import (
@@ -380,6 +387,184 @@ def test_measure_uses_check_ambient_for_snr_verdicts():
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
     assert all(r.snr is None for r in res_none.driver_responses)
+
+
+# --------------------------------------------------------------------------- #
+# #1830 — the per-driver SNR verdict must be a MEASUREMENT of the level played
+#
+# `_measure_priors` carrying CHECK's ambient report (#1972) made the verdict
+# populate, but it was still being subtracted from the deconvolved transfer
+# function, whose whole point is that the drive cancels
+# (`test_measure_analysis_is_invariant_to_the_programmed_drive_gain`). So the
+# revived instrument could not see the one thing #1829's SNR-solved levels made
+# it exist to see. These pin the units, not the physics.
+# --------------------------------------------------------------------------- #
+
+# The two relevant bands at FC_HZ: `relevant_hz` is (FC_HZ/2, FC_HZ*2), and
+# `transition` (350-1000 Hz) and `mid` (1000-4000 Hz) are the CROSSOVER_SNR_BANDS_HZ
+# entries overlapping it. Asserted below rather than assumed.
+SNR_RELEVANT_BAND_IDS = ("transition", "mid")
+SNR_DRIVE_BACKOFF_DB = -20.0
+
+
+def _check_measured_ambient(sigma: float, seed: int = 7) -> dict:
+    """CHECK's OWN ambient report, produced by the production analyzer.
+
+    Built by running a real CHECK capture through `analyze_program_capture`
+    rather than hand-shaping a dict. That distinction is the whole reason this
+    defect survived: `test_measure_uses_check_ambient_for_snr_verdicts` above
+    constructs the report by hand, so it never exercised the raw-dBFS shape
+    `_analyze_check` actually emits (`snr_policy.framed_ambient_band_report`,
+    which carries no `domain` key and therefore unwraps as "raw").
+    """
+    chk = build_check_program(_roles(), ambient_s=4.0, pilot_duration_s=0.5)
+    pcm = render_program_pcm(chk)
+    mono = (
+        fftconvolve(pcm[:, 0], _band_impulse(200, 150.0, 6000.0, 1.0))[: pcm.shape[0]]
+        + fftconvolve(pcm[:, 1], _band_impulse(225, 300.0, 20000.0, 0.7))[: pcm.shape[0]]
+    )
+    cap = np.concatenate([np.zeros(500), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(seed).normal(0.0, sigma, cap.size)
+    res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+    assert res.ambient_report is not None and res.ambient_report["bands"]
+    # Premise: this is a RAW-domain report. If CHECK ever starts emitting a
+    # deconvolved one, the verdict's signal side must change with it.
+    assert snr_policy.unwrap_noise_report(res.ambient_report)[0] == "raw"
+    return res.ambient_report
+
+
+def _measure_snr_bands(ambient_report, *, drive_offset_db: float, sigma: float):
+    """{band_id: entry} of the woofer's per-band SNR at a given drive level."""
+    prog = build_measure_program(
+        {"woofer": -11.0 + drive_offset_db, "tweeter": -13.0 + drive_offset_db},
+        _roles(), sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+        noise=sigma,
+    )
+    res = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ, ambient_report=ambient_report),
+        geometry=MeasurementGeometry(),
+    )
+    woofer = next(r for r in res.driver_responses if r.role == "woofer")
+    assert woofer.snr is not None
+    return woofer.snr, {b["band_id"]: b for b in woofer.snr["bands"]}
+
+
+def test_measure_snr_verdict_moves_with_the_measurement_level():
+    """A 20 dB quieter MEASURE into an unchanged room must read 20 dB worse.
+
+    THE regression for #1830. The verdict was revived by threading CHECK's
+    ambient report into MEASURE's priors, but the signal side stayed
+    `magnitude_band_levels` on the deconvolved transfer function — a quantity
+    the deconvolution makes invariant to the programmed drive by construction.
+    Subtracting a fixed dBFS room floor from an invariant leaves an invariant:
+    before this fix both drive levels below reported the SAME worst-band SNR
+    to 0.0 dB, so the instrument #1829 needed — "is the quieter per-driver
+    response still clear of the floor?" — was structurally unable to answer.
+    """
+    sigma = 3e-4
+    ambient = _check_measured_ambient(sigma)
+
+    loud_block, loud = _measure_snr_bands(ambient, drive_offset_db=0.0, sigma=sigma)
+    _quiet_block, quiet = _measure_snr_bands(
+        ambient, drive_offset_db=SNR_DRIVE_BACKOFF_DB, sigma=sigma,
+    )
+
+    # Premise: these are the bands the decision is actually scoped to.
+    assert loud_block["relevant_hz"] == [FC_HZ / 2.0, FC_HZ * 2.0]
+    for band_id in SNR_RELEVANT_BAND_IDS:
+        lo, hi = loud[band_id]["band_hz"]
+        assert hi > FC_HZ / 2.0 and lo < FC_HZ * 2.0
+
+    # Compared per band_id, never via `worst_relevant`: which band wins a tie
+    # is snr_policy's business and must not be what this test rests on.
+    for band_id in SNR_RELEVANT_BAND_IDS:
+        moved = quiet[band_id]["estimated_snr_db"] - loud[band_id]["estimated_snr_db"]
+        assert moved == pytest.approx(SNR_DRIVE_BACKOFF_DB, abs=0.5), (
+            f"{band_id} SNR moved {moved:.2f} dB for a "
+            f"{SNR_DRIVE_BACKOFF_DB:.0f} dB quieter measurement — the verdict is "
+            "being read out of the drive-invariant deconvolved domain again"
+        )
+        assert loud[band_id]["method"] == "fft_band_power_difference"
+
+
+def test_measure_backed_off_into_a_noisy_room_reports_insufficient():
+    """The behaviour change #1830 ships, stated as the household sees it.
+
+    One room, one pair of drivers, two MEASURE levels. The louder one clears
+    `DRIVER.snr_ok_db` in both bands the crossover decision reads; backing the
+    drive off by 20 dB — which is what #1829's SNR solve does when the room
+    allows it — puts both bands under `DRIVER.snr_warn_db`, and the shipped
+    magnitude verdict for that is `insufficient` (`snr_policy._band_verdict`).
+
+    So a session that passes today can begin disclosing `insufficient` after
+    this fix. That is the instrument working: before it, the quiet arm below
+    reported the loud arm's verdict, because the number never moved.
+
+    Asserts the overall verdict, not which band carries it — every relevant
+    band lands on the same verdict, so `worst_relevant`'s tie-break cannot
+    change the answer.
+    """
+    # Chosen so the loud arm clears `snr_ok_db` in both relevant bands and the
+    # 20 dB back-off puts both under `snr_warn_db` — the verdict has to cross
+    # BOTH thresholds for this to pin the grading rather than one edge of it.
+    sigma = 1.2e-2
+    room = _check_measured_ambient(sigma)
+
+    loud_block, loud = _measure_snr_bands(room, drive_offset_db=0.0, sigma=sigma)
+    quiet_block, quiet = _measure_snr_bands(
+        room, drive_offset_db=SNR_DRIVE_BACKOFF_DB, sigma=sigma,
+    )
+
+    assert loud_block["verdict"] == "ok", (
+        "control arm must pass, or the failing arm proves nothing"
+    )
+    assert quiet_block["verdict"] == "insufficient"
+    for band_id in SNR_RELEVANT_BAND_IDS:
+        assert loud[band_id]["estimated_snr_db"] >= DRIVER.snr_ok_db
+        assert loud[band_id]["verdict"] == "ok"
+        entry = quiet[band_id]
+        assert entry["estimated_snr_db"] < DRIVER.snr_warn_db
+        assert entry["verdict"] == "insufficient"
+        assert entry["shortfall_db"] > 0.0
+
+
+def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
+    """Fail closed: a raw noise report with no raw capture to pair it against
+    yields NO verdict, never a cross-domain one.
+
+    `_driver_response`'s ambient argument is optional and its raw-capture
+    argument is too, so nothing but this rule stops the two sides of the
+    subtraction from drifting back apart. The deconvolved arm below is the
+    other half: a report that says it IS deconvolved still reads the transfer
+    function, which is the only domain pairing that was ever correct here.
+    """
+    ir = _band_impulse(200, 150.0, 6000.0, 1.0)
+    raw_report = {"schema_version": 1, "bands": [
+        {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
+    ]}
+
+    unpaired = program_analysis._driver_response(
+        "woofer", ir, SR, calibration=None, ambient_report=raw_report,
+        fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
+    )
+    assert unpaired.snr is None
+
+    deconvolved = program_analysis._driver_response(
+        "woofer", ir, SR, calibration=None,
+        ambient_report={**raw_report, "domain": "deconvolved"},
+        fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
+    )
+    assert deconvolved.snr is not None
+    # Only "mid" has a matching noise row; the rest report method "none".
+    mid = next(b for b in deconvolved.snr["bands"] if b["band_id"] == "mid")
+    assert mid["method"] == "deconvolved_band_difference"
 
 
 def test_measure_no_drift_delay_is_tight():
