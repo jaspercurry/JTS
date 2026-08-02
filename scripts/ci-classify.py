@@ -180,6 +180,13 @@ DOCS_HAND_REGISTERED_READERS = {
     ),
 }
 DOCS_TEST_FILES = (
+    # Discovered by the auto-guard because it names "README.md", but the
+    # document in question is the one the replay driver GENERATES into
+    # tmp_path -- no repo document is read, so a docs-only PR cannot break it.
+    # Registered rather than worked around because over-registering is safe
+    # and hiding the literal would blind the guard if this test ever did grow
+    # a real doc read.
+    "tests/test_active_speaker_attempts_replay.py",
     "tests/test_agents_md_toc.py",
     "tests/test_audio_slice_membership_docs.py",
     "tests/test_bass_extension_limiter_protocol.py",

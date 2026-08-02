@@ -31,6 +31,7 @@
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
 | Diagnose one correction level/sweep run with synchronized UMIK audio and speaker gain state | [Correction capture diagnostic](#correction-capture-diagnostic) |
 | Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
+| Replay recorded tuning attempts through the S3 improve/stop policy, and see whether the loop would have claimed an improvement that was only noise | [Attempts-loop replay](#attempts-loop-replay) |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
@@ -960,6 +961,55 @@ stored in the manifest and consumed by the analyzer rather than re-guessed.
 
 See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
 guessing" for the canonical recipes.
+
+---
+
+## Attempts-loop replay
+
+`jasper-active-speaker-attempts-replay`
+([`jasper/cli/active_speaker_attempts_replay.py`](../jasper/cli/active_speaker_attempts_replay.py),
+kernel in [`jasper/active_speaker/attempts_loop.py`](../jasper/active_speaker/attempts_loop.py))
+answers one question: **would the tuning loop have called this an improvement,
+or noise?** It feeds recorded attempts to the S3 improve/stop policy and writes
+down the decision at every step, with the numbers each decision used.
+
+Fully offline — no hardware, no playback, no Pi, no microphone. It reads JSON
+some earlier session already analysed, so it is safe to run on a laptop from a
+checkout and costs nothing but a few milliseconds.
+
+Two banks, either or both in one invocation:
+
+- `--repeat-floor <dir>` — an unchanged-profile repeat study
+  (`captures/repeat-floor-20260731/`). Nothing was tuned between captures, so
+  no consecutive change may reach the claim floor. This is the **control**: it
+  is the only bank that can produce a finding, because it is the only one that
+  knows the right answer in advance.
+- `--sessions <dir>` — recorded commissioning bundles
+  (`captures/r11-loop-proof-corpus/sessions/`), replayed oldest-first as an
+  improvement arc, graded per driver role.
+
+```sh
+PYTHONPATH=. .venv/bin/python -m jasper.cli.active_speaker_attempts_replay \
+  --repeat-floor captures/repeat-floor-20260731 \
+  --sessions captures/r11-loop-proof-corpus/sessions \
+  --out captures/r11-loop-proof-20260802
+```
+
+Writes `report.json` (machine-readable), `README.md` (the attempt table and
+prose), and one model-error store per run into `--out`. **Replay never writes
+to the production store** at `/var/lib/jasper/active_speaker_model_error.json`
+— every store path is injected under `--out`, and a test pins that.
+
+Exit codes are three-state, matching [Offline emit loop](#offline-emit-loop)'s:
+`0` consistent, `1` a finding (the loop read a change on a profile nobody
+touched), `2` no verdict (bad inputs, or nothing gradeable). Absence of
+evidence never reads as a pass.
+
+The banked proof run is `captures/r11-loop-proof-20260802/`. Read that
+directory's `README.md` for what the loop decided on real data, including the
+honest limits — chiefly that the repeat-floor run derives its floor from the
+same pairs it grades, which makes it a self-consistency demonstration rather
+than a validation of the threshold.
 
 ---
 
