@@ -1306,6 +1306,21 @@ levels) rather than assert a cause it never measures; the definite mic
 accusation now lives only on `verify_level_shift`, which holds the
 cross-attempt transfer step.
 
+**Both ambient windows CLIP to the capture, never SLIDE along it (issue
+#1818).** A window's end is computed from its own schedule position, not
+from a start clamped at 0, so a capture that began late yields a SHORTER
+window rather than one that has walked forward onto whatever the program
+scheduled next. CHECK's 12 s window is butted directly against the courtesy
+beeps at [12.0, 12.6) s, and a sliding window read them as room noise: on the
+shipped geometry a 0.6 s late start measured the floor 39.5 dB hot (−70.00 →
+−30.52 dBFS window RMS), poisoning both `snr_floor_ok` and the gain solve, and
+by ~5.9 s late the window had slid onto the PILOTS and refused a quiet room
+outright. Below `AMBIENT_MIN_USABLE_FRACTION` (0.5) of the scheduled window
+both helpers degrade the same honest way — no samples and an EMPTY band
+report, so `snr_floor_ok` is False and the gain solve discloses
+`no_ambient_evidence` — rather than estimating a floor from a fragment. One
+constant, one policy, both windows.
+
 The RESULT screen (phone end screen + wizard `done` screen) states the
 outcome plainly first ("Your speaker is tuned. If it sounds worse than
 before, you can undo.") with the measured numbers (trims/delay/polarity/

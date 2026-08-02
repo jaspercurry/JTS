@@ -47,6 +47,7 @@ from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.frame_fit import fit_frame
 from jasper.audio_measurement.program import (
+    AMBIENT_SEGMENT_ID,
     KIND_SWEEP,
     PHASE_MEASURE,
     RoleBand,
@@ -65,6 +66,7 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
+    AMBIENT_MIN_USABLE_FRACTION,
     AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
     GAIN_MAX_DIGITAL_PEAK_DBFS,
@@ -94,6 +96,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     PilotObservation,
     _aligned_branch_tf,
+    _ambient_from_capture,
     _band_average_db,
     _band_exclusive_pieces,
     _build_candidate,
@@ -107,6 +110,7 @@ from jasper.audio_measurement.program_analysis import (
     _n_fft_for,
     _peak_dbfs,
     _ripple_db,
+    _snr_floor_ok,
     _solve_gain_plan,
     _sweep_occurrence_index,
     analysis_diagnostic_summary,
@@ -2066,6 +2070,165 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
 
 
 # --------------------------------------------------------------------------- #
+# CHECK's ambient window CLIPS on a late capture, never SLIDES (issue #1818)
+# --------------------------------------------------------------------------- #
+#
+# The shipped CHECK program is 12 s of ambient silence at [0, 12 s) followed
+# IMMEDIATELY by the courtesy prelude — 0.6 s of -18 dBFS beeps at
+# [12.0, 12.6) s (`crossover_v2_flow.COURTESY_PRELUDE_ENABLED` is True). A
+# window whose end is computed from the CLAMPED start walks forward onto those
+# beeps on a capture that began late. Measured on that shipped geometry over a
+# -70 dBFS floor: a 0.6 s late start read the window RMS 39.5 dB hot (-70.00
+# -> -30.52 dBFS) and the worst framed band 21.8 dB hot (-74.65 -> -52.85),
+# and by ~5.9 s late the window had slid onto the PILOTS (-23.18 dBFS), which
+# flipped `snr_floor_ok` False and refused a perfectly quiet room.
+#
+# The fixtures below use a SHORT (2 s) ambient window for runtime; the
+# mechanism they exercise is the beep adjacency, which is identical at either
+# length because the composer butts the prelude against the window's end.
+
+AMBIENT_FIXTURE_FLOOR_DBFS = -70.0
+
+
+def _check_ambient_program(*, ambient_s: float = 2.0):
+    """A CHECK program with the shipped beep-adjacency: courtesy prelude
+    spliced in immediately after the ambient window."""
+    return build_check_program(
+        _check_roles(), ambient_s=ambient_s, pilot_duration_s=0.6,
+        courtesy_prelude=True,
+    )
+
+
+def _ambient_fixture_capture(program, *, seed: int = 11) -> np.ndarray:
+    """The program's own PCM (so the beeps are real, at their programmed
+    level) over a known -70 dBFS room floor."""
+    mono = render_program_pcm(program).sum(axis=1).astype(np.float64)
+    floor = np.random.default_rng(seed).normal(
+        0.0, 10 ** (AMBIENT_FIXTURE_FLOOR_DBFS / 20.0), mono.size
+    )
+    return mono + floor
+
+
+def _rms_dbfs(samples: np.ndarray) -> float:
+    return 20.0 * math.log10(max(float(np.sqrt(np.mean(samples ** 2))), 1e-12))
+
+
+def test_check_ambient_window_clips_on_a_late_capture_never_slides_onto_the_beeps():
+    """#1818: a late-started capture yields a SHORTER window, not one that has
+    walked forward onto the courtesy beeps.
+
+    Both halves matter. The window must be clipped (its length shrinks by
+    exactly the lost head), and what it measures must still be the room —
+    the -70 dBFS floor, not the -18 dBFS beep sitting immediately after the
+    window's scheduled end. Computing ``end`` from the clamped start instead
+    reads this same fixture ~40 dB hot, which poisons `_snr_floor_ok` AND the
+    gain solve that reads the same report.
+    """
+    prog = _check_ambient_program()
+    amb = prog.segment(AMBIENT_SEGMENT_ID)
+    cap = _ambient_fixture_capture(prog)
+
+    late = int(round(0.6 * SR))
+    samples, report = _ambient_from_capture(cap[late:], SR, amb, -late)
+
+    assert samples is not None
+    # Clipped at the window's own scheduled end: shorter by exactly the head
+    # the capture missed. A slid window would still be `amb.n_samples` long.
+    assert samples.size == amb.n_samples - late
+    # And it is still the ROOM. The beep would drag this up by tens of dB.
+    assert _rms_dbfs(samples) == pytest.approx(AMBIENT_FIXTURE_FLOOR_DBFS, abs=1.5)
+    worst = max(b["level_dbfs"] for b in report["bands"])
+    assert worst < AMBIENT_FIXTURE_FLOOR_DBFS + 15.0
+
+
+def test_check_ambient_window_is_unchanged_for_an_on_time_capture():
+    """The #1818 fix is a no-op whenever the window's schedule position is
+    non-negative — i.e. every ordinary capture, which leads the program.
+
+    Pinned by reconstructing the window from its own schedule position and
+    demanding bit equality of BOTH returned values, so a future edit to the
+    slicing cannot quietly move the ordinary path while fixing the late one.
+    """
+    prog = _check_ambient_program()
+    amb = prog.segment(AMBIENT_SEGMENT_ID)
+    cap = np.concatenate([
+        np.zeros(GLOBAL_OFFSET), _ambient_fixture_capture(prog),
+    ])
+
+    samples, report = _ambient_from_capture(cap, SR, amb, GLOBAL_OFFSET)
+
+    begin = GLOBAL_OFFSET + amb.start_sample
+    expected = cap[begin:begin + amb.n_samples]
+    assert samples is not None
+    assert np.array_equal(samples, expected)
+    assert report == snr_policy.framed_ambient_band_report(expected, SR, percentile=95)
+
+
+@pytest.mark.parametrize(
+    "kept_samples_delta,expect_evidence", [(0, True), (-1, False)],
+)
+def test_check_ambient_min_usable_fraction_is_pinned_at_its_boundary(
+    kept_samples_delta, expect_evidence,
+):
+    """`AMBIENT_MIN_USABLE_FRACTION` pinned AT its boundary, inclusive —
+    CHECK's window now shares the pilot window's constant AND its policy.
+
+    Exactly the shape of the sibling assertion on `_pilot_ambient_samples`
+    (`test_crossover_v2_program_pilots.py`): the offset is supplied rather
+    than recovered by correlation, so "exactly at the fraction is KEPT, one
+    sample under is dropped" is an exact statement about the constant.
+    """
+    prog = _check_ambient_program()
+    amb = prog.segment(AMBIENT_SEGMENT_ID)
+    cap = _ambient_fixture_capture(prog)
+
+    kept = int(AMBIENT_MIN_USABLE_FRACTION * amb.n_samples) + kept_samples_delta
+    global_offset = -(amb.start_sample + amb.n_samples - kept)
+    samples, report = _ambient_from_capture(cap, SR, amb, global_offset)
+
+    if expect_evidence:
+        assert samples is not None and samples.size == kept
+        assert report["bands"]
+    else:
+        assert samples is None
+        assert report["bands"] == []
+
+
+def test_check_ambient_below_the_usable_fraction_degrades_to_disclosed_no_evidence():
+    """Too little window left ⇒ the analysis says "no evidence" rather than
+    estimating a floor from a couple of hundred samples.
+
+    The degradation is fail-closed and DISCLOSED on both consumers of the
+    report: `_snr_floor_ok` refuses (a missing floor is not a passing floor),
+    and the gain solve reaches its `GAIN_BOUND_NO_AMBIENT_EVIDENCE` bound
+    rather than solving against a fabricated number. This is the honest
+    direction — the pre-#1818 code answered instead with a window that had
+    slid onto the beeps and the pilots.
+    """
+    prog = _check_ambient_program()
+    amb = prog.segment(AMBIENT_SEGMENT_ID)
+    cap = _ambient_fixture_capture(prog)
+
+    # Late by more than half the window ⇒ under the usable fraction.
+    late = int(round(0.75 * amb.n_samples))
+    samples, report = _ambient_from_capture(cap[late:], SR, amb, -late)
+
+    assert samples is None
+    assert report["bands"] == []
+    assert _snr_floor_ok(report, -10.5) is False
+
+    # End-to-end, through the real offset recovery: the whole CHECK analysis
+    # reaches the disclosed no-evidence bound rather than a solved gain.
+    res = analyze_program_capture(prog, cap[late:], SR, priors=MeasurementPriors())
+    assert res.ambient_report["bands"] == []
+    assert res.gain_plan is not None
+    assert res.gain_plan.snr_floor_ok is False
+    assert res.gain_plan.role_solves
+    for solve in res.gain_plan.role_solves.values():
+        assert solve.bound_by == GAIN_BOUND_NO_AMBIENT_EVIDENCE
+
+
+# --------------------------------------------------------------------------- #
 # MEASURE level solve — as quiet as the fit's SNR need allows (issue #1825)
 # --------------------------------------------------------------------------- #
 #
@@ -2866,19 +3029,73 @@ def test_channel_map_survives_concurrent_room_rumble():
     assert old_fraction < 0.5
 
 
-def test_channel_map_fails_when_no_driver_played():
-    """No pilot signal at all (pure noise capture) ⇒ channel-map still fails.
-    Neither driver's own band ever rises above its ambient, so TARGET fails
-    for both roles regardless of how quiet/loud the room noise floor is."""
+def test_channel_map_fails_when_one_driver_never_played():
+    """The realistic miswire — one driver plays, the other is silent.
+
+    This is the case that protects a household, and it is the one the
+    band-relative rise test was built for: the WORKING driver anchors
+    `_global_offset`, so every segment locates correctly and the ambient
+    window is real. The silent role's own band then shows ~0 dB of rise over
+    that ambient and fails TARGET, while the working role clears it by a wide
+    margin.
+
+    Pinned per-ROLE (not just on the session verdict) because a per-role
+    regression here is exactly what would let a miswired speaker commission.
+    """
+    roles = _check_roles()
+    chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
+    pcm = render_program_pcm(chk)
+    # The woofer plays and anchors offset recovery; the tweeter never does.
+    mono = pcm[:, 0]
+    cap = np.concatenate([np.zeros(500), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(5).normal(0.0, 3e-5, cap.size)
+
+    res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+
+    # A real ambient window was measured, so the rise test genuinely ran.
+    assert res.ambient_report["bands"]
+    by_role = {p.role: p for p in res.pilots}
+    assert by_role["tweeter"].channel_map_ok is False
+    assert by_role["tweeter"].channel_map_target_rise_db == pytest.approx(0.0, abs=1.0)
+    assert by_role["woofer"].channel_map_ok is True
+    assert by_role["woofer"].channel_map_target_rise_db > 20.0
+    assert res.channel_map_ok is False
+
+
+def test_check_refuses_a_capture_with_no_program_in_it_at_all():
+    """No pilot signal anywhere (pure noise capture) ⇒ CHECK refuses.
+
+    With nothing to correlate against, `_global_offset` anchors on the first
+    stimulus (``pilot_woofer_lo``) and returns a MEANINGLESS offset — measured
+    -47794 on this fixture, i.e. the window's scheduled span lies almost
+    entirely before the capture began. Since #1818 the ambient helper answers
+    that honestly ("no evidence") instead of fabricating a window from
+    ``capture[0:n]``, which is what the pre-#1818 clamped-start slice did — a
+    window that was only accidentally right, because a capture normally leads
+    the program and so happens to open on real room noise.
+
+    What must hold is that the SESSION is refused, and it is, three
+    independent ways. Per-role channel-map detail is deliberately NOT asserted
+    here: with no ambient evidence `_channel_map_ok` documents a fallback to
+    the original total-in-band-energy-fraction test (no rise concept without
+    an ambient window), and white noise against the tweeter's 2.5-20 kHz
+    declared band does put most of its energy in band — a true statement about
+    a capture that contains no program. Per-role protection is pinned on the
+    realistic miswire fixture above, where the offset is sound.
+    """
     roles = _check_roles()
     chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
     pcm = render_program_pcm(chk)
     n = pcm.shape[0] + 500 + 5000
     cap = np.random.default_rng(31).normal(0.0, 3e-4, n)
+
     res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+
+    assert res.ambient_report["bands"] == []       # honest: no evidence
     assert res.channel_map_ok is False
-    for pilot in res.pilots:
-        assert pilot.channel_map_ok is False
+    assert res.linearity_ok is False
+    assert res.gain_plan is not None
+    assert res.gain_plan.snr_floor_ok is False
 
 
 # --------------------------------------------------------------------------- #
