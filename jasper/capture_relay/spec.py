@@ -1983,9 +1983,28 @@ def build_crossover_sweep_spec(
         # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT`` the way
         # the capture page's own prelude line does — spelled out because a
         # household counts beeps, and pinned by the same test.
+        #
+        # It says "HAS" and "TONES", and both words are load-bearing (#1979).
+        # It used to say "is … a rising tone", which was false for the two
+        # captures a household hears FIRST:
+        #
+        #   * "is" read as an exhaustive description of the whole measurement,
+        #     but CHECK opens on a 12 s room-noise window
+        #     (``program.DEFAULT_CHECK_AMBIENT_S``) BEFORE the beeps. "has"
+        #     names the elements and their order without claiming nothing
+        #     precedes them. This screen does not restate the window because
+        #     the capture page already narrates it live, with a countdown
+        #     ("Listening to the room for about N seconds", capture-page/js/
+        #     main.js) — per-phase narration is the page's job, not consent's.
+        #   * no program in the session plays exactly ONE rising tone: CHECK
+        #     plays four pilot chirps and no sweep at all, MEASURE plays two
+        #     pilots then six sweeps (2 drivers × ``MEASURE_REPEAT_COUNT``),
+        #     and a prompted cloud position plays two pilots then one sweep.
+        #     The plural is the one shape true of all three; a count here would
+        #     need three different sentences for three different phases.
         steps.append(
-            "Each measurement is three short beeps, a pause, and then a rising "
-            "tone — loud, but no louder than JTS needs to hear itself over the "
+            "Each measurement has three short beeps, a pause, and then rising "
+            "tones — loud, but no louder than JTS needs to hear itself over the "
             "room"
         )
     steps.extend(

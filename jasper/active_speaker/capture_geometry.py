@@ -370,6 +370,28 @@ def driver_placement_instruction(role: str) -> str:
     )
 
 
+# --- Aiming the microphone ---------------------------------------------------
+# The three fixed-axis instructions below used to end "Aim it according to its
+# calibration file." — an instruction a phone cannot follow, because a phone mic
+# has no calibration file (`jasper.web.correction_setup._relay_calibration_from_
+# setup` returns None for exactly that case) and a phone is the mic most
+# households bring. So the copy names the physical aim direction the way this
+# module's own near-field instruction already does ("pointed straight at it"),
+# and demotes the calibration file to the conditional it always was: a UMIK-2
+# owner who loaded the 90° curve really is told to aim elsewhere.
+#
+# Device-agnostic rather than conditional-on-tier BY NECESSITY, not preference:
+# calibration presence is not knowable where this copy is rendered. Both call
+# sites — `capture_relay.spec.build_crossover_sweep_spec` and
+# `web.correction_setup`'s fixed-axis level target — build the string before the
+# household has picked a mic on the phone, and the one calibration-shaped
+# argument in reach (`default_setup_calibration`) is an optional prefill HINT
+# that legacy callers omit even when a calibration exists. Plumbing real
+# calibration state through two layers to vary one clause would buy a worse
+# sentence than one honest one.
+_AIM_CLAUSE = "pointed at the speaker unless its calibration file says otherwise"
+
+
 def reference_axis_driver_placement_instruction(role: str) -> str:
     """Canonical stationary axis shared by each isolated-driver capture."""
 
@@ -377,7 +399,7 @@ def reference_axis_driver_placement_instruction(role: str) -> str:
     return (
         "Place the microphone capsule on the tweeter axis, exactly level with "
         "the centre of the tweeter or horn mouth, about 1 metre away when the "
-        "room permits. Aim it according to its calibration file. Keep the "
+        f"room permits, {_AIM_CLAUSE}. Keep the "
         f"microphone and speaker completely still while measuring the {role} "
         "and every other driver in this set."
     )
@@ -389,7 +411,7 @@ def summed_placement_instruction() -> str:
     return (
         "Place the microphone capsule on the tweeter axis, exactly level with "
         "the centre of the tweeter or horn mouth, about 1 metre away when the "
-        "room permits. Aim it according to its calibration file, then keep the "
+        f"room permits, {_AIM_CLAUSE}. Then keep the "
         "microphone and speaker completely still for every normal- and "
         "reverse-polarity combined-driver capture in this measurement set."
     )
@@ -422,8 +444,7 @@ def cloud_walk_placement_instruction() -> str:
     return (
         "Start with the microphone capsule on the tweeter axis, exactly level "
         "with the centre of the tweeter or horn mouth, about 1 metre away when "
-        "the room permits — that spot is your mark. Aim it according to its "
-        "calibration file."
+        f"the room permits, {_AIM_CLAUSE} — that spot is your mark."
     )
 
 
