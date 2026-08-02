@@ -3278,6 +3278,20 @@ def _ambient_from_capture(
     start = max(0, begin)
     end = min(capture.size, begin + ambient_seg.n_samples)
     if end - start < AMBIENT_MIN_USABLE_FRACTION * ambient_seg.n_samples:
+        # Never a silent degrade: this is the difference between "the room was
+        # quiet" and "we never heard the room", and it costs the household a
+        # commissioning attempt. The LOG carries the surviving-audio truth
+        # (how much window was left, how late the capture was) rather than the
+        # report — the report keeps the one shape `snr_policy` owns, so
+        # widening it here would make this function a second author of it.
+        log_event(
+            logger,
+            "program_analysis.ambient_window_unusable",
+            level=logging.WARNING,
+            scheduled_samples=int(ambient_seg.n_samples),
+            surviving_samples=int(max(0, end - start)),
+            capture_late_samples=int(max(0, -begin)),
+        )
         empty = np.empty(0, dtype=np.float64)
         return None, snr_policy.framed_ambient_band_report(empty, sample_rate, percentile=95)
     samples = capture[start:end]

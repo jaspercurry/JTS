@@ -3066,8 +3066,9 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
     """No pilot signal anywhere (pure noise capture) ⇒ CHECK refuses.
 
     With nothing to correlate against, `_global_offset` anchors on the first
-    stimulus (``pilot_woofer_lo``) and returns a MEANINGLESS offset — measured
-    -47794 on this fixture, i.e. the window's scheduled span lies almost
+    stimulus (``pilot_woofer_lo``) and returns a MEANINGLESS offset (order
+    -10^4 samples; the exact value is an argmax over noise and is not stable
+    across environments), i.e. the window's scheduled span lies almost
     entirely before the capture began. Since #1818 the ambient helper answers
     that honestly ("no evidence") instead of fabricating a window from
     ``capture[0:n]``, which is what the pre-#1818 clamped-start slice did — a

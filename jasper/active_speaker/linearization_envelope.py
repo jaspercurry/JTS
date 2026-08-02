@@ -1094,8 +1094,8 @@ def compose_envelope(
     # up, the composed envelope carried 1.4846 dB of allowed depth at that
     # very bin and stayed non-zero to 18912.3 Hz, putting the fit band's top
     # edge at 18390.9 Hz -- above the frequency the mic is trusted to resolve
-    # anything at. `>=` rather than `np.isclose` is deliberate: the rule is
-    # about an EXACT zero, and a bin holding a genuinely tiny but non-zero
+    # anything at. `<= 0.0` rather than `np.isclose` is deliberate: the rule
+    # is about an EXACT zero, and a bin holding a genuinely tiny but non-zero
     # permission should keep it rather than be rounded away.
     hard_zero_mask = smoothable_value <= 0.0
     masked_depth_db = np.where(in_band_mask, smoothable_value, 0.0)

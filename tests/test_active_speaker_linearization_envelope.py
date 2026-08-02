@@ -1750,8 +1750,16 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     punching a hole and continuing. On ``compression_horn`` -- whose class
     prior does not zero until 20 kHz -- the exclusion still punches holes
     inside a shared band, exactly as before. Filters are identical either
-    way, so this is a change in the band the fit REPORTS, not in what the
-    speaker plays.
+    way **on this cut-only arm**, so here the change is in the band the fit
+    REPORTS, not in what the speaker plays. That scoping is load-bearing and
+    does NOT generalize: on the reachable BOOST arm (``allow_boost``, no
+    cloud exclusions) the narrowed envelope DOES move the emitted filters --
+    it adds a +4.6785 dB Peaking boost at 10223.7 Hz (a +4.6506 dB branch-
+    chain peak once neighbours sum). That is safe by the existing headroom
+    contract, not by luck: ``branch_headroom_db`` rises 0.0000 -> 5.6506 dB
+    and the emitter subtracts it pre-split, so the bin lands -1.0000 dB re
+    unity -- exactly ``HEADROOM_MARGIN_DB``, since the charge IS peak plus
+    that margin. The runtime contract re-proves it downstream.
     """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     measured_db = np.interp(
