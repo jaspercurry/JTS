@@ -342,23 +342,52 @@ async def test_drain_resets_on_flush():
     assert p.expected_drain_at() == 0.0
 
 
-async def test_wait_drained_sleeps_until_deadline():
-    """End-to-end: wait_drained on a non-idle player blocks until
-    the deadline elapses (within event-loop scheduling jitter)."""
+async def test_wait_drained_sleeps_until_deadline(monkeypatch):
+    """wait_drained must ask for (at least) the deadline's remaining
+    duration — the mechanism the idle watchdog leans on to never end a
+    turn before the last sample exits the DAC.
+
+    A prior version of this test measured real wall-clock elapsed time
+    against a ~50ms + 50ms-slack budget. That flaked under adversarial
+    parallel load (observed elapsed 0.2989s vs. a 0.0998s budget — see
+    https://github.com/jaspercurry/JTS/issues/2066): `asyncio.sleep` only
+    guarantees it won't wake *early*, and has no upper bound on how late
+    a CPU-starved event loop resumes the sleeper. That is a scheduler
+    property outside wait_drained's own control, not a correctness bug —
+    ending a turn *early* is the failure mode this primitive defends
+    against, not sleeping "too long" under contention.
+
+    So pin the mechanism instead of the wall clock: jasper/audio_io.py
+    imports `asyncio` as a full module, so `audio_io_mod.asyncio.sleep`
+    is patchable from the test side — the same seam
+    test_drain_anchors_fresh_after_idle_gap already uses for
+    `audio_io_mod.time.monotonic`. Recording the requested duration
+    instead of actually sleeping removes the flaky scheduler dependency
+    entirely while still asserting the one thing wait_drained computes
+    and controls.
+    """
     p = _make_with_stream()
     wait_sec = 0.05  # keep the test fast
     await p.write(_silence_pcm(sec=wait_sec))
-    start = time.monotonic()
-    remaining = p.expected_drain_at() - start
+    remaining = p.expected_drain_at() - time.monotonic()
     assert remaining > 0.0
+
+    requested: list[float] = []
+
+    async def spy_sleep(delay: float) -> None:
+        requested.append(delay)
+
+    monkeypatch.setattr(audio_io_mod.asyncio, "sleep", spy_sleep)
     await p.wait_drained()
-    elapsed = time.monotonic() - start
-    # The deadline is anchored before write() hands bytes to its worker
-    # thread, so cold thread-pool startup legitimately consumes part of the
-    # PCM duration before this timer starts. Assert against the actual
-    # remaining deadline rather than pretending write() has zero latency.
-    assert elapsed >= remaining - 0.005
-    assert elapsed < remaining + 0.05
+
+    assert len(requested) == 1
+    # No real sleep happens on either side of this comparison, so the only
+    # gap between `remaining` (read above) and wait_drained's own internal
+    # read of the same monotonic clock is a few microseconds of Python
+    # execution — not scheduler jitter. A 10ms epsilon stays far below the
+    # 50ms `wait_sec` used here, so a real logic bug (stale ring end,
+    # wrong chunk duration, double-counting the tail) still fails loudly.
+    assert requested[0] == pytest.approx(remaining, abs=0.01)
 
 
 async def test_drain_unchanged_after_empty_write():
