@@ -15,7 +15,7 @@ import os
 import subprocess
 from types import SimpleNamespace
 
-from jasper.cli.doctor import audio
+from jasper.cli.doctor import audio_runtime as audio
 
 
 def _stage_assets(monkeypatch, tmp_path, *, so=True, conf=True, shm=True):

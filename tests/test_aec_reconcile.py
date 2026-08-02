@@ -4,14 +4,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import socket
 import subprocess
-import tempfile
-import threading
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -32,6 +27,7 @@ from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
 )
+from tests.status_socket_fixtures import JsonStatusSocket
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -236,57 +232,6 @@ def _outputd_status_payload(
             },
         },
     }
-
-
-@contextmanager
-def _fake_outputd_status_socket(payload: dict):
-    """Serve one small STATUS JSON fixture over a short-path UDS."""
-
-    with tempfile.TemporaryDirectory(prefix="jts-aec-", dir="/tmp") as root:
-        socket_path = str(Path(root) / "outputd.sock")
-        ready = threading.Event()
-        stop = threading.Event()
-        errors: list[BaseException] = []
-
-        def serve() -> None:
-            try:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
-                    srv.bind(socket_path)
-                    srv.listen()
-                    srv.settimeout(0.1)
-                    ready.set()
-                    while not stop.is_set():
-                        try:
-                            conn, _ = srv.accept()
-                        except socket.timeout:
-                            continue
-                        with conn:
-                            try:
-                                conn.recv(1024)
-                            except OSError:
-                                pass
-                            conn.sendall(json.dumps(payload).encode("utf-8"))
-            except OSError as exc:
-                errors.append(exc)
-                ready.set()
-
-        thread = threading.Thread(target=serve, daemon=True)
-        thread.start()
-        assert ready.wait(2.0), "fake outputd STATUS socket did not start"
-        if errors:
-            raise errors[0]
-        try:
-            yield socket_path
-        finally:
-            stop.set()
-            try:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                    client.settimeout(0.1)
-                    client.connect(socket_path)
-                    client.sendall(b"STATUS\n")
-            except OSError:
-                pass
-            thread.join(2.0)
 
 
 def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None:
@@ -1054,14 +999,15 @@ def test_auto_profile_does_not_promote_uncodified_dac_from_short_clock_sample(
     )
     _write_card(tmp_path, channels=6)
 
-    with _fake_outputd_status_socket(
+    with JsonStatusSocket(
         _outputd_status_payload(verdict="coherent", status="locked"),
+        name="outputd.sock",
     ) as socket_path:
         result = _run_reconcile(
             tmp_path,
             "--reason",
             "test",
-            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": socket_path},
+            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": str(socket_path)},
         )
 
     assert result.returncode == 0, result.stderr
@@ -1085,14 +1031,15 @@ def test_explicit_chip_profile_parks_for_compensable_verdict(
     _write_profile_mode(tmp_path, "xvf_chip_aec")
     _write_card(tmp_path, channels=6)
 
-    with _fake_outputd_status_socket(
+    with JsonStatusSocket(
         _outputd_status_payload(verdict="compensable", status="locked"),
+        name="outputd.sock",
     ) as socket_path:
         result = _run_reconcile(
             tmp_path,
             "--reason",
             "test",
-            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": socket_path},
+            extra_env={"JASPER_OUTPUTD_CONTROL_SOCKET": str(socket_path)},
         )
 
     assert result.returncode == 0, result.stderr

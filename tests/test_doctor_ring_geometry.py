@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import struct
 
-from jasper.cli.doctor import audio
+from jasper.cli.doctor import audio_runtime as audio
 
 
 def _write_conf(tmp_path, *, capture_n_slots=2):

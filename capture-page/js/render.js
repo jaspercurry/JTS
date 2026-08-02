@@ -35,9 +35,10 @@ function el(doc, tag, className) {
   return node;
 }
 
-// The ONLY way text from the spec reaches the DOM. textContent never parses
-// markup, so any HTML/JS in the string is inert.
-function setText(node, text) {
+// The shared boundary for text that reaches the DOM. The fixed spec renderer
+// and the guided setup shell both use it, so Pi-supplied calibration labels
+// and hints receive the same inert-text treatment as spec.ui content.
+export function setText(node, text) {
   node.textContent = typeof text === "string" ? text : "";
 }
 

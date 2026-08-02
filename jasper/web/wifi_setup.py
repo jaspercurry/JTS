@@ -1100,7 +1100,7 @@ def connect_new(
         )
 
     # Rollback: restore the previously-active profile if there was one.
-    if prev_profile and prev_profile != ssid:
+    if prev_profile:
         rb = _run_nmcli(
             ["nmcli", "--wait", str(_ROLLBACK_WAIT),
              "connection", "up", prev_profile],

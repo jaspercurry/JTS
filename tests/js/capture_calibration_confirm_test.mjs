@@ -45,6 +45,7 @@ if (/^import\s/m.test(withoutImports)) {
 
 const injected = `
 const acceptedAcknowledgement = () => null;
+const setText = (node, text) => { node.textContent = typeof text === "string" ? text : ""; };
 const createMonoRecorder = async () => { throw new Error("unused"); };
 const delayMs = async () => {};
 const safeReturnUrl = () => "";
@@ -169,6 +170,15 @@ function findButtons(node, out = []) {
     findButtons(child, out);
   }
   return out;
+}
+
+function findNodeById(node, id) {
+  for (const child of node.children || []) {
+    if (child.getAttribute && child.getAttribute("id") === id) return child;
+    const nested = findNodeById(child, id);
+    if (nested) return nested;
+  }
+  return null;
 }
 
 function buttonLabeled(screenEl, label) {
@@ -364,6 +374,31 @@ async function testHintWithoutResolvableRendersTodaysPicker() {
   assert.equal(headingText(screenEl), "Calibration");
   assert.equal(buttonLabeled(screenEl, "One tap to confirm"), null);
   assert.equal(client.posted.length, 0, "nothing is submitted by merely rendering");
+  ok();
+}
+
+async function testPiSuppliedCalibrationLabelRendersAsInertText() {
+  const { renderCalibration } = await loadModule();
+  installDom();
+  const screenEl = makeScreenEl();
+  const hostile = '<img src=x onerror="globalThis.pwned=true"><script>pwned</script>';
+  const spec = specWithHint(
+    { resolvable: undefined },
+    { calibration_models: [{ key: "hostile", label: hostile, aliases: [] }] },
+  );
+
+  renderCalibration(screenEl, { spec, client: makeSetupClient(), screenEl });
+  const root = { children: screenEl.children };
+  const mode = findNodeById(root, "calibration-mode");
+  mode.value = "serial";
+  mode._listeners.change[0]();
+
+  const model = findNodeById(root, "calibration-model");
+  assert.ok(model);
+  assert.equal(model.children.length, 1);
+  assert.equal(model.children[0].textContent, hostile);
+  assert.deepEqual(model.children[0].children, []);
+  assert.equal(globalThis.pwned, undefined);
   ok();
 }
 
@@ -603,6 +638,7 @@ const tests = [
   testModelLabelResolutionAndFallbacks,
   testConfirmSubmitsStoredPayloadShape,
   testHintWithoutResolvableRendersTodaysPicker,
+  testPiSuppliedCalibrationLabelRendersAsInertText,
   testStoredRejectionFallsBackToPickerWithPlainSentence,
   testUseDifferentMicrophoneFallsBackWithoutSubmit,
   testSilentHintAppliesWhenResolvableAndNothingChosen,

@@ -19,8 +19,8 @@ helpers), the module/stylesheet contract, and that the public surface +
 key routes the lazy loader depends on are preserved.
 
 The broader recorder behaviour (RecordingBackend state machine, metadata,
-routing, the SSE level meter, bridge reconfiguration) is covered by
-``tests/test_wake_corpus_setup.py``.
+routing, the SSE level meter, bridge reconfiguration) is split by concern
+across ``tests/test_wake_corpus_*.py``.
 """
 from __future__ import annotations
 

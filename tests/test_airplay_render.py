@@ -4,14 +4,12 @@
 
 from __future__ import annotations
 
-import json
 import os
-import socket
 import subprocess
-import tempfile
-import threading
 import textwrap
 from pathlib import Path
+
+from tests.status_socket_fixtures import JsonStatusSocket
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -133,71 +131,6 @@ def _render(
     return target.read_text(), result
 
 
-class _FakeStatusSocket:
-    def __init__(self, path: Path, payload: dict):
-        # AF_UNIX socket paths are short on macOS. Keep the actual socket
-        # under /tmp even when pytest's tmp_path is deeply nested.
-        self._tmpdir = Path(tempfile.mkdtemp(prefix="jts-airplay-"))
-        self.path = self._tmpdir / path.name
-        self.payload = payload
-        self._ready = threading.Event()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-
-    def __enter__(self) -> Path:
-        self._thread.start()
-        assert self._ready.wait(timeout=2), f"fake status socket did not bind: {self.path}"
-        return self.path
-
-    def __exit__(self, *_exc: object) -> None:
-        self._stop.set()
-        try:
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client.settimeout(0.2)
-            client.connect(str(self.path))
-            client.close()
-        except OSError:
-            pass
-        self._thread.join(timeout=2)
-
-    def _serve(self) -> None:
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(self.path))
-        server.listen()
-        server.settimeout(0.2)
-        self._ready.set()
-        try:
-            while not self._stop.is_set():
-                try:
-                    conn, _addr = server.accept()
-                except TimeoutError:
-                    continue
-                with conn:
-                    conn.settimeout(0.2)
-                    try:
-                        conn.recv(1024)
-                    except OSError:
-                        pass
-                    try:
-                        conn.sendall(json.dumps(self.payload).encode("utf-8") + b"\n")
-                    except BrokenPipeError:
-                        pass
-        finally:
-            server.close()
-            try:
-                self.path.unlink()
-            except FileNotFoundError:
-                pass
-            try:
-                self._tmpdir.rmdir()
-            except OSError:
-                pass
-
-
 def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: Path):
     # target_level=4096, chunksize=1024 -> 3072 Camilla frames.
     # fan-in output=1024; outputd DAC=3072.
@@ -291,9 +224,9 @@ def test_airplay_renderer_picks_up_alternate_outputd_dac_buffer_size(tmp_path: P
 
 
 def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
-    with _FakeStatusSocket(
-        tmp_path / "outputd.sock",
+    with JsonStatusSocket(
         {"dac": {"snd_pcm_delay_frames": 1024}},
+        name="outputd.sock",
     ) as outputd_status:
         rendered, _ = _render(
             tmp_path,
@@ -314,12 +247,12 @@ def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
 
 
 def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
-    with _FakeStatusSocket(
-        tmp_path / "fanin.sock",
+    with JsonStatusSocket(
         {"output": {"snd_pcm_delay_frames": 1536}},
-    ) as fanin_status, _FakeStatusSocket(
-        tmp_path / "outputd.sock",
+        name="fanin.sock",
+    ) as fanin_status, JsonStatusSocket(
         {"dac": {"snd_pcm_delay_frames": 1024}},
+        name="outputd.sock",
     ) as outputd_status:
         rendered, _ = _render(
             tmp_path,

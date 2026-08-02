@@ -25,6 +25,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 MIC_DEVICE="${MIC_DEVICE:-hw:CARD=Array,DEV=0}"
@@ -43,7 +44,9 @@ remote_cmd=$(
     "${PROBE_TIMEOUT_SECONDS}"
 )
 
-ssh "${PI_USER}@${PI_HOST}" "${remote_cmd}" <<'REMOTE'
+{
+cat "${SCRIPT_DIR}/_aec_probe_service_guard.sh"
+cat <<'REMOTE'
 set -euo pipefail
 
 MIC_DEVICE="$1"
@@ -55,53 +58,7 @@ REF_UDP_HOST="$6"
 REF_UDP_PORT="$7"
 PROBE_TIMEOUT_SECONDS="$8"
 
-shairport_was_active=0
-nqptp_was_active=0
-voice_was_active=0
-bridge_was_active=0
-
-unit_active() {
-  sudo systemctl is-active --quiet "$1"
-}
-
-stop_if_active() {
-  local unit="$1"
-  local state_var="$2"
-  if unit_active "${unit}"; then
-    printf -v "${state_var}" '1'
-    sudo systemctl stop "${unit}"
-  fi
-}
-
-restore_services() {
-  local restore_rc=0
-  set +e
-  if [[ "${bridge_was_active}" == "1" ]]; then
-    sudo systemctl reset-failed jasper-aec-bridge.service || restore_rc=1
-    sudo systemctl start jasper-aec-bridge.service || restore_rc=1
-  fi
-  if [[ "${voice_was_active}" == "1" ]]; then
-    sudo systemctl start jasper-voice.service || restore_rc=1
-  fi
-  if [[ "${nqptp_was_active}" == "1" ]]; then
-    sudo systemctl restart nqptp.service || restore_rc=1
-  fi
-  if [[ "${shairport_was_active}" == "1" ]]; then
-    sudo systemctl restart shairport-sync.service || restore_rc=1
-  fi
-  return "${restore_rc}"
-}
-
-on_exit() {
-  local rc=$?
-  restore_services
-  local restore_rc=$?
-  if [[ "${rc}" -eq 0 ]]; then
-    exit "${restore_rc}"
-  fi
-  exit "${rc}"
-}
-trap on_exit EXIT
+install_aec_probe_service_guard
 
 stop_if_active shairport-sync.service shairport_was_active
 stop_if_active jasper-voice.service voice_was_active
@@ -364,3 +321,4 @@ for ch in range(mic.shape[1]):
     )
 PY
 REMOTE
+} | ssh "${PI_USER}@${PI_HOST}" "${remote_cmd}"

@@ -217,6 +217,17 @@ def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
     assert "-q --tb=short --ignore=tests/voice_eval -n 4" in test_merge
 
 
+def test_ci_compiles_both_host_safe_ring_benchmarks() -> None:
+    """Keep the C benchmark entry points inside the host build gate."""
+    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
+    makefile = (ROOT / "c" / "jts-ring-ioplug" / "Makefile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "run: make test bench" in workflow
+    assert "bench: ring_writer_bench ring_reader_bench" in makefile
+
+
 def test_test_lane_scripts_are_agent_facing_and_executable() -> None:
     """Agents should have stable commands instead of inventing test strategy."""
 

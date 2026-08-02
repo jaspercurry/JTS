@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from jasper.cli.doctor import audio
+from jasper.cli.doctor import audio_runtime as audio
 
 _RAWFILE_CFG = """\
 devices:

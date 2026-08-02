@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 15
-- **fixed**: 625
+- **open**: 0
+- **fixed**: 639
 - **in-progress**: 0
-- **mooted**: 36
+- **mooted**: 37
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
   undone; the two features now have separate owners and a guard)
 - **deferred**: 0
@@ -210,7 +210,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0266 | `tests/test_web_correction_setup.py` :: test_known_post_routes_reach_csrf_guard | should-fix | W4 | **fixed** | exact 45-route runtime/HANDOFF inventory equality plus route-before-CSRF coverage — #1427 |
 | DA-0267 | `jasper/route_latency/tap_client.py` :: TapClient.status | nit | W5 | **mooted** | `TapStatus` and `TapClient.status` were removed with the retired route-latency status API — #1209 |
 | DA-0268 | `PLAN.md` :: 150 | nit | W5 | **fixed** | roadmap now points at the shipped stale-volume clamp controls |
-| DA-0269 | `capture-page/js/main.js` :: renderCalibration():247-351 | nit | W5 | **open** | — |
+| DA-0269 | `capture-page/js/main.js` :: renderCalibration():247-351 | nit | W5 | **fixed** | Pi-supplied calibration copy now crosses the shared inert-text rendering boundary, with hostile-label coverage — this branch |
 | DA-0270 | `capture-page/js/render.js` :: :118 | nit | W5 | **fixed** | unused capture renderer test export removed |
 | DA-0271 | `deploy/assets/app.css` :: .ico--lg:207 | nit | W5 | **fixed** | unused icon-size variant removed |
 | DA-0272 | `deploy/assets/chat/js/main.js` :: state.csrfToken:26 / csrfPresent:83 | nit | W5 | **fixed** | dead chat CSRF read/state plumbing removed; shared HTTP helper remains mutation owner |
@@ -331,7 +331,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0388 | `jasper/web/transit_setup.py` :: _handle_geocode | nit | W5 | **fixed** | successful geocoding is audited without logging household location data — this branch |
 | DA-0389 | `jasper/web/voice_setup.py` :: _load_state | nit | W5 | **fixed** | unused pre-secret-split state reader removed; `_load_merged` remains the live owner — this branch |
 | DA-0390 | `jasper/web/weather_setup.py` :: main | nit | W5 | **fixed** | wizard CLI accepts an explicit argv like its siblings |
-| DA-0391 | `jasper/web/wifi_setup.py` :: connect_new | nit | W5 | **open** | — |
+| DA-0391 | `jasper/web/wifi_setup.py` :: connect_new | nit | W5 | **fixed** | failed reconnects reactivate the previous profile even when its name matches the requested SSID — this branch |
 | DA-0392 | `jasper/wifi_guardian_persistence.py` :: _parse_env_line | nit | W5 | **fixed** | unreachable newline stripping removed |
 | DA-0393 | `jasper/xvf/xvf_host.py` :: PARAMETERS | nit | W5 | **fixed** | unused compatibility alias removed |
 | DA-0394 | `jasper_aec3/setup.py` :: module | nit | W5 | **fixed** | AEC doc-impact map now includes the full `jasper_aec3/**` package — `697e1a6f6` |
@@ -364,9 +364,9 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0422 | `scripts/claim-librespot.sh` :: cleanup, :52-59 and :98 | nit | W5 | **fixed** | per-process in-memory claim state replaces the stale global `/tmp` sentinel — this branch |
 | DA-0423 | `scripts/onboard.sh` :: :447-452 | nit | W5 | **fixed** | identical URL-host branches collapsed |
 | DA-0424 | `scripts/rename-speaker.sh` :: :1 | nit | W5 | **fixed** | operator script is executable |
-| DA-0425 | `scripts/wake-rate-test.sh` :: OUT_REMOTE:75 | nit | W5 | **open** | — |
+| DA-0425 | `scripts/wake-rate-test.sh` :: OUT_REMOTE:75 | nit | W5 | **fixed** | capture scripts clean up only their validated `/tmp` directory on every exit — this branch |
 | DA-0426 | `scripts/xvf-interrogate.sh` :: usage:43-47 | nit | W5 | **fixed** | usage extraction now includes the complete final state-restoration text — #1306 |
-| DA-0497 | `capture-page/index.html` :: :187 | nit | W3 | **open** | — |
+| DA-0497 | `capture-page/index.html` :: :187 | nit | W3 | **fixed** | capture-page module cache stamps and generalized one-key-per-module guard already landed — `a4baa877d` |
 | DA-0498 | `deploy/assets/correction/js/main.js` :: pollState:2919 | nit | W3 | **fixed** | autolevel status is resolved once per poll |
 | DA-0499 | `deploy/assets/correction/js/main.js` :: reportIssueList:1766 vs renderQuality:868 /  | nit | W3 | **fixed** | browser-audio quality rendering reuses the shared issue-list renderer |
 | DA-0500 | `deploy/assets/sound-profile/js/main.js` :: prepareSummedTest :5266, stopSummedTest :538 | nit | W3 | **fixed** | summed-test actions share one async busy/render/error/restoration bracket with failure regression — this branch |
@@ -467,17 +467,17 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0598 | `scripts/_make_wake_test_track.py` :: load_env():40-53 | nit | W3 | **fixed** | wake-track generation uses canonical env parsing with systemd-compatible precedence — this branch |
 | DA-0599 | `scripts/_prepare_wake_training_workdir.py` :: _safe_to_remove_output:105 | nit | W3 | **mooted** | destructive output ownership proof was centralized; remaining tiny domain wrappers intentionally differ — #1374 |
 | DA-0600 | `scripts/_waveform_fusion_experiment.py` :: :54 | nit | W3 | **fixed** | experiment reuses the canonical OpenWakeWord verifier-stub installer — this branch |
-| DA-0601 | `scripts/aec-probe-xvf-ref-level.sh` :: restore_services:76 | nit | W3 | **open** | — |
+| DA-0601 | `scripts/aec-probe-xvf-ref-level.sh` :: restore_services:76 | nit | W3 | **fixed** | both remote AEC probes source one shared service-state and restoration guard — this branch |
 | DA-0602 | `scripts/airplay-receiver-timing-proof.py` :: estimate_lag:428 | nit | W3 | **mooted** | the old timing tool was replaced; the surviving estimators intentionally implement different correlation semantics — #1341 |
 | DA-0603 | `scripts/build-wake-negative-feature-bank.sh` :: :15-22 | nit | W3 | **mooted** | wake-training launchers now share a worktree-aware environment resolver — #1388 |
 | DA-0604 | `scripts/capture-chip-mic.sh` :: :41-45 | nit | W3 | **mooted** | duplicate `capture-satellite-amoled.sh` retired with the bespoke ESP32 stack — `8c7330aff` |
-| DA-0605 | `scripts/capture-reference-condition.sh` :: :189-216 | nit | W3 | **open** | — |
+| DA-0605 | `scripts/capture-reference-condition.sh` :: :189-216 | nit | W3 | **fixed** | diagnostic capture scripts share one PCM16 WAV statistics CLI while preserving strict/nonfatal policy — this branch |
 | DA-0606 | `scripts/check-firmware-builds.sh` :: :35-37 | nit | W3 | **mooted** | optional ESP32 firmware build surface retired — `8c7330aff` |
 | DA-0607 | `tests/js/relay_worker_test.mjs` :: :28,662-701 | nit | W3 | **fixed** | all 14 capture/relay suites with this runner shape share one failure-preserving harness — this branch |
-| DA-0608 | `tests/js/sound_profile_harness.mjs` :: summedSummary (:3162) | nit | W3 | **open** | — |
+| DA-0608 | `tests/js/sound_profile_harness.mjs` :: summedSummary (:3162) | nit | W3 | **fixed** | summed-measurement fixture moved beside the shared harness builders and now serves earlier profile/combined-test cases — this branch |
 | DA-0609 | `tests/test_active_speaker_environment.py` :: _valid_config | nit | W3 | **fixed** | active-speaker suites share one successful Camilla validation fixture — this branch |
 | DA-0610 | `tests/test_aec_bridge_systemd.py` :: _value_for | nit | W3 | **fixed** | systemd contract suites share a last-assignment-aware directive parser — this branch |
-| DA-0611 | `tests/test_aec_reconcile.py` :: _fake_outputd_status_socket | nit | W3 | **open** | — |
+| DA-0611 | `tests/test_aec_reconcile.py` :: _fake_outputd_status_socket | nit | W3 | **fixed** | AEC and AirPlay suites share one bounded one-response Unix status server fixture — this branch |
 | DA-0612 | `tests/test_aec_reconcile.py` :: _fake_systemctl | nit | W3 | **fixed** | shell reconciler suites share one argv-recording systemctl double — this branch |
 | DA-0613 | `tests/test_camilla_pipe_guard_script.py` :: _runtime_safe_graph_script / _write_statefil | nit | W3 | **fixed** | Camilla guard suites share runtime-contract script, statefile, and pipe-config fixtures — this branch |
 | DA-0614 | `tests/test_capture_relay_session.py` :: FakeRelayBackend | nit | W3 | **fixed** | relay session and correction-adapter suites share one faithful superset backend — this branch |
@@ -485,10 +485,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0616 | `tests/test_control_systemd.py` :: _value_for | nit | W3 | **fixed** | control and sibling systemd tests use the shared directive parser — this branch |
 | DA-0617 | `tests/test_cues_generator.py` :: test_cues_are_provider_agnostic | nit | W3 | **fixed** | duplicate provider-agnostic cue scan removed; the canonical registry guard remains — this branch |
 | DA-0618 | `tests/test_doctor.py` :: _citibike_cfg | nit | W3 | **fixed** | Citi Bike config fixture composes the suite's canonical fresh-config builder — this branch |
-| DA-0619 | `tests/test_doctor.py` :: _mock_nmcli_proc | nit | W3 | **open** | — |
-| DA-0620 | `tests/test_doctor.py` :: _patch_asound_conf | nit | W3 | **open** | — |
+| DA-0619 | `tests/test_doctor.py` :: _mock_nmcli_proc | nit | W3 | **fixed** | network-doctor tests share one CompletedProcess builder — this branch |
+| DA-0620 | `tests/test_doctor.py` :: _patch_asound_conf | nit | W3 | **mooted** | doctor-domain split separated the helpers; asound owner now also models stale-topology state and is not the renderer abstraction — `eabf2a0c7` |
 | DA-0621 | `tests/test_doctor_memory_resilience.py` :: _make_oom_run / _make_start_limit_action_run | nit | W3 | **fixed** | memory-resilience tests share one batched systemctl-show wire double — this branch |
-| DA-0622 | `tests/test_doctor_secrets_manifest.py` :: _supp_groups / _user (vs test_doctor_privsep | nit | W3 | **open** | — |
+| DA-0622 | `tests/test_doctor_secrets_manifest.py` :: _supp_groups / _user (vs test_doctor_privsep | nit | W3 | **fixed** | secrets and privsep manifests use the canonical systemd assignment parsers — this branch |
 | DA-0623 | `tests/test_doctor_usbsink.py` :: test_usbsink_state_active_no_state_file (rep | nit | W3 | **mooted** | usbsink doctor tests were rewritten; audited repeated path block no longer exists |
 | DA-0624 | `tests/test_gemini_session.py` :: _SC / _Resp | nit | W3 | **fixed** | Gemini lifecycle suites share SDK response, content, usage, resumption, and GoAway doubles — this branch |
 | DA-0625 | `tests/test_install_outputd_ready_nonfatal.py` :: _install_text | nit | W3 | **fixed** | outputd installer guards reuse the canonical installer-surface reader — this branch |
@@ -502,13 +502,13 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0634 | `tests/test_tools_gmail.py` :: _make_clients | nit | W3 | **fixed** | Calendar and Gmail tests share executable and Google-client fakes — this branch |
 | DA-0635 | `tests/test_tools_transport.py` :: FakeRouter | nit | W3 | **fixed** | Spotify and transport tests share renderer, account-client, and router fakes — this branch |
 | DA-0636 | `tests/test_voice_daemon_end_turn_reentry.py` :: class _FakeTurn | nit | W3 | **fixed** | voice-daemon lifecycle suites share one configurable live-turn fake — this branch |
-| DA-0637 | `tests/test_wake_corpus_setup.py` :: test_index_html_is_valid_shape, test_render_ | nit | W3 | **open** | — |
+| DA-0637 | `tests/test_wake_corpus_setup.py` :: test_index_html_is_valid_shape, test_render_ | nit | W3 | **fixed** | five duplicate document-shell/CSRF checks removed; web wake-corpus suite remains their owner — this branch |
 | DA-0638 | `tests/test_wake_corpus_setup.py` :: test_metadata_written_per_session:418 (+9 re | nit | W3 | **fixed** | enrollment tests share one exact-single-session metadata reader — this branch |
 | DA-0639 | `tests/test_web_speaker_setup.py` :: _FakeHandler | nit | W3 | **fixed** | duplicate of DA-0240; subsumed by shared wizard handler — #1397 |
 | DA-0640 | `tests/test_web_wifi_setup.py` :: _make_request | nit | W3 | **fixed** | four wizard suites share canonical real-handler construction — this branch |
 | DA-0641 | `tests/test_wifi_setup_guardian_hooks.py` :: _mock_proc / _scripted_nmcli | nit | W3 | **fixed** | Wi-Fi suites share completed-process and scripted nmcli doubles — this branch |
 | DA-0642 | `tests/voice_eval/regression/test_spotify.py` :: _playback_skip / _ha_action_skip / _require_ | nit | W3 | **fixed** | voice-eval side-effect and Google-account gates centralized — this branch |
-| DA-0643 | `c/jts-ring-ioplug/Makefile` :: bench | nit | W4 | **open** | — |
+| DA-0643 | `c/jts-ring-ioplug/Makefile` :: bench | nit | W4 | **fixed** | CI compiles both host-safe benchmark entry points — this branch |
 | DA-0644 | `deploy/systemd/camillagui.service` :: :20 | nit | W4 | **fixed** | backend/socket/proxy lifecycle and installer activation contracts now have direct tests — this branch |
 | DA-0645 | `jasper/active_speaker/audible_policy.py` :: audible_role_block_code:35 | nit | W4 | **fixed** | missing, empty, and disallowed protection fail closed; protected high-frequency dome remains eligible — #1428 |
 | DA-0646 | `jasper/bluetooth/handlers/__init__.py` :: pick | nit | W4 | **fixed** | Bluetooth handler registry order, HID overlap, A2DP profiles, and default-last catch-all directly pinned — #1429 |
@@ -527,7 +527,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0659 | `tests/js/sound_profile_harness.mjs` :: :4355 (final console.log) | nit | W4 | **fixed** | harness result no longer carries an unobservable hard-coded ok=true sentinel — #1437 |
 | DA-0660 | `tests/js/sound_profile_harness.mjs` :: dispatchToggle (:590-601) | nit | W4 | **fixed** | toggle harness models selector matching and capture listeners; setup-open state survives rerender — #1437 |
 | DA-0661 | `tests/test_active_speaker_cli.py` :: :315 | nit | W4 | **fixed** | obsolete repo-wide-ignored E402 suppressions removed — #1438 |
-| DA-0662 | `tests/test_active_speaker_setup_status.py` :: import:21 | nit | W4 | **open** | — |
+| DA-0662 | `tests/test_active_speaker_setup_status.py` :: import:21 | nit | W4 | **fixed** | setup-status tests import canonical builders from the shared active-speaker fixture module — this branch |
 | DA-0663 | `tests/test_analyze_wake_corpus_quality.py` :: pytest_approx | nit | W4 | **fixed** | unnecessary local approximation shim replaced with `pytest.approx` — this branch |
 | DA-0664 | `tests/test_audio_hardware_reconcile.py` :: 105 | nit | W4 | **fixed** | unused TTS env-file variable removed from the reconciler fixture — this branch |
 | DA-0665 | `tests/test_dependency_groups.py` :: module scope | nit | W4 | **fixed** | dependency contracts split from build, CI, workflow, mypy, and supply-chain contracts — this branch |
@@ -540,7 +540,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0672 | `tests/test_tools_spotify.py` :: test_revoked_then_relinked_recovers_without_ | nit | W4 | **fixed** | real same-clock 30-second router refresh cooldown exercised without force-resetting state — #1426 |
 | DA-0673 | `tests/test_usbsink_volume_bridge.py` :: test_run_retries_discovery_after_transient_m | nit | W4 | **fixed** | retry behavior and `amixer` timeout handling are asserted in separate tests — this branch |
 | DA-0674 | `tests/test_volume_diagnostics.py` :: build_volume_policy_snapshot | nit | W4 | **fixed** | volume diagnostics cover guard precedence, metadata parity, epsilon, source, fallback, and malformed fields — this branch |
-| DA-0675 | `tests/test_wake_corpus_setup.py` :: :1-4307 (whole file) | nit | W4 | **open** | — |
+| DA-0675 | `tests/test_wake_corpus_setup.py` :: :1-4307 (whole file) | nit | W4 | **fixed** | monolithic wake-corpus suite split into six concern-based modules plus shared fixtures with collection-count invariant — this branch |
 | DA-0676 | `tests/test_web_rooms_setup.py` :: test_post_swap_rollback_failure_is_surfaced | nit | W4 | **fixed** | rollback-failure test now drives one explicit request instead of discarding a duplicate setup call — this branch |
 | DA-0677 | `tests/voice_eval/regression/test_barge_in_openai.py` :: truncate_lines / _AUDIO_END_MS_RE | nit | W4 | **fixed** | regression parser accepts both canonical JSON and logfmt structured records — this branch |
 | DA-0002 | `jasper/capture_relay/alignment.py` :: assert_alignment_confident | blocker | W0 | **fixed** | Room relay measurement/repeat/verify now emits its persisted direct-arrival proxy through `event=capture_relay.alignment` in observe mode; Room and caller-less bass-nearfield specs no longer falsely advertise a hard gate, and Room fails closed if its registered spec claims one before fleet calibration. Existing crossover and sync hard gates remain per-flow — this branch |

@@ -183,6 +183,51 @@ def test_connect_new_rolls_back_on_failure(monkeypatch):
     assert "HomeNet" in msg
 
 
+def test_connect_new_reactivates_same_profile_on_failure(monkeypatch):
+    """A failed reconnect can leave the already-active profile deactivated.
+
+    Rollback must therefore reactivate it even when its profile name matches
+    the requested SSID.
+    """
+    calls = []
+    monkeypatch.setattr(
+        wifi_setup,
+        "_current_wifi",
+        lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
+    )
+    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        wifi_setup,
+        "_run_nmcli_secret",
+        lambda cmd, *, timeout=10: _completed(
+            cmd,
+            returncode=4,
+            stderr="Error: Connection activation failed.",
+        ),
+    )
+
+    def fake_run(cmd, *, timeout=10, log_argv=True):
+        calls.append(list(cmd))
+        return _completed(cmd)
+
+    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
+
+    ok, message = wifi_setup.connect_new("HomeNet", "secretpw")
+
+    assert ok is False
+    assert calls == [
+        [
+            "nmcli",
+            "--wait",
+            str(wifi_setup._ROLLBACK_WAIT),
+            "connection",
+            "up",
+            "HomeNet",
+        ]
+    ]
+    assert message.endswith("Restored previous network (HomeNet).")
+
+
 def test_connect_new_worst_path_matches_declared_timeout_ceiling(monkeypatch):
     """Drive the real serialized fail path without sleeping: current-profile
     reads, profile lookup, visible + hidden attempts, cleanup, and rollback."""

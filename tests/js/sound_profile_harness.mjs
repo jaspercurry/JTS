@@ -548,6 +548,24 @@ function profileCommissioningView(overrides = {}) {
   });
 }
 
+function summedSummary(latestSummedTests, overrides = {}) {
+  return {
+    required_driver_count: 2,
+    captured_driver_count: 2,
+    driver_measurements_complete: true,
+    required_summed_group_count: 1,
+    validated_summed_group_count: 0,
+    summed_validation_complete: false,
+    latest_driver_measurements: {
+      "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+      "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
+    },
+    latest_summed_tests: latestSummedTests,
+    latest_summed_validations: {},
+    ...overrides,
+  };
+}
+
 function setupHarness(fetchHandler, options = {}) {
   const elements = new Map();
   const absent = new Set();
@@ -1665,18 +1683,7 @@ async function testMeasuredDriversOpenProfileStep() {
     })),
     "./active-speaker/measurements": () => Promise.resolve(response({
       status: "needs_summed_validation",
-      summary: {
-        required_driver_count: 2,
-        captured_driver_count: 2,
-        driver_measurements_complete: true,
-        required_summed_group_count: 1,
-        validated_summed_group_count: 0,
-        summed_validation_complete: false,
-        latest_driver_measurements: {
-          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-        },
-        latest_summed_tests: {
+      summary: summedSummary({
           main: {
             captured: false,
             audio_emitted: false,
@@ -1686,9 +1693,7 @@ async function testMeasuredDriversOpenProfileStep() {
               message: "could not open the combined active-speaker test path",
             }],
           },
-        },
-        latest_summed_validations: {},
-      },
+        }),
       permissions: { may_compile_baseline: false },
       issues: [],
     })),
@@ -1769,22 +1774,16 @@ async function testAppliedProfileEditContinueOpensProfileStep() {
   };
   const measurements = {
     status: "needs_driver_measurements",
-    summary: {
-      required_driver_count: 2,
+    summary: summedSummary({}, {
       captured_driver_count: 0,
       driver_checks_complete: false,
       driver_measurements_complete: false,
-      required_summed_group_count: 1,
-      validated_summed_group_count: 0,
-      summed_validation_complete: false,
       latest_driver_checks: {
         "main:woofer": { speaker_group_id: "main", role: "woofer", captured: true },
         "main:tweeter": { speaker_group_id: "main", role: "tweeter", captured: true },
       },
       latest_driver_measurements: {},
-      latest_summed_tests: {},
-      latest_summed_validations: {},
-    },
+    }),
     issues: [],
   };
   const fetchHandler = baseFetch({
@@ -1889,20 +1888,7 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
     })),
     "./active-speaker/measurements": () => Promise.resolve(response({
       status: "needs_summed_validation",
-      summary: {
-        required_driver_count: 2,
-        captured_driver_count: 2,
-        driver_measurements_complete: true,
-        required_summed_group_count: 1,
-        validated_summed_group_count: 0,
-        summed_validation_complete: false,
-        latest_driver_measurements: {
-          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-        },
-        latest_summed_tests: {},
-        latest_summed_validations: {},
-      },
+      summary: summedSummary({}),
       permissions: { may_compile_baseline: false },
       issues: [],
     })),
@@ -3156,21 +3142,13 @@ async function testCompiledProfileApplyBlockStaysUnderstandable() {
     })),
     "./active-speaker/measurements": () => Promise.resolve(response({
       status: "ready_for_baseline",
-      summary: {
-        required_driver_count: 2,
-        captured_driver_count: 2,
-        driver_measurements_complete: true,
-        required_summed_group_count: 1,
+      summary: summedSummary({}, {
         validated_summed_group_count: 1,
         summed_validation_complete: true,
-        latest_driver_measurements: {
-          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-        },
         latest_summed_validations: {
           main: { validated: true, outcome: "blend_ok" },
         },
-      },
+      }),
       permissions: { may_compile_baseline: true },
       issues: [],
     })),
@@ -4595,23 +4573,6 @@ async function testDriverMicCaptureIsRemovedFromSoundFlow() {
     fail("driver follow-up should point mic work to the separate HTTPS flow", { html });
   }
   return { driverMicCaptureIsRemovedFromSoundFlow: true };
-}
-
-function summedSummary(latestSummedTests) {
-  return {
-    required_driver_count: 2,
-    captured_driver_count: 2,
-    driver_measurements_complete: true,
-    required_summed_group_count: 1,
-    validated_summed_group_count: 0,
-    summed_validation_complete: false,
-    latest_driver_measurements: {
-      "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-      "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-    },
-    latest_summed_tests: latestSummedTests,
-    latest_summed_validations: {},
-  };
 }
 
 async function testSummedByEarValidationExcludesMicCapture() {

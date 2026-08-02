@@ -186,34 +186,7 @@ echo
 echo ">>> sanity stats:"
 PY="${REPO_ROOT}/.venv/bin/python"
 [[ -x "$PY" ]] || PY=python3
-"$PY" - "$OUT_LOCAL" <<'PYEOF'
-import math, os, struct, sys, wave
-out_dir = sys.argv[1]
-for name in sorted(os.listdir(out_dir)):
-    if not name.endswith(".wav"):
-        continue
-    path = os.path.join(out_dir, name)
-    try:
-        with wave.open(path, "rb") as w:
-            n = w.getnframes()
-            sr = w.getframerate()
-            ch = w.getnchannels()
-            sw = w.getsampwidth()
-            data = w.readframes(n)
-        if sw == 2 and ch == 1 and n > 0:
-            s = struct.unpack(f"<{n}h", data[: n * 2])
-            peak = max(abs(x) for x in s) if s else 0
-            rms = math.sqrt(sum(x * x for x in s) / max(n, 1))
-            print(
-                f"  {name:18s} {n/sr:5.1f}s {sr:5d} Hz {ch}ch  "
-                f"peak={peak:6d} ({20*math.log10(max(peak,1)/32768):+5.1f} dBFS)  "
-                f"RMS={rms:6.0f} ({20*math.log10(max(rms,1)/32768):+5.1f} dBFS)"
-            )
-        else:
-            print(f"  {name}  (sr={sr} ch={ch} sw={sw} frames={n})")
-    except Exception as exc:
-        print(f"  {name}  (failed: {exc})")
-PYEOF
+"$PY" "${REPO_ROOT}/scripts/_wav_stats.py" "$OUT_LOCAL"
 
 echo
 echo "Done. ${OUT_LOCAL}"

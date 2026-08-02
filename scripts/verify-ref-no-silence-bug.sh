@@ -34,6 +34,21 @@ OUT_LOCAL="$REPO_ROOT/logs/ref-verify-$TS"
 OUT_REMOTE="/tmp/ref-verify-$TS"
 mkdir -p "$OUT_LOCAL"
 
+cleanup_remote_capture() {
+    case "$OUT_REMOTE" in
+        /tmp/ref-verify-*) ;;
+        *)
+            echo "WARN: refusing to clean unexpected remote path: $OUT_REMOTE" >&2
+            return
+            ;;
+    esac
+    printf -v remote_capture_q '%q' "$OUT_REMOTE"
+    ssh "${PI_USER}@${PI_HOST}" "sudo rm -rf -- ${remote_capture_q}" \
+        >/dev/null 2>&1 \
+        || echo "WARN: could not remove remote capture directory $OUT_REMOTE" >&2
+}
+trap cleanup_remote_capture EXIT
+
 echo "═══════════════════════════════════════════════════════"
 echo "  Verify AEC ref signal has no alternating-silence bug"
 echo "═══════════════════════════════════════════════════════"

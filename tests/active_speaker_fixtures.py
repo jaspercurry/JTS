@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.measurement import (
+    record_driver_measurement,
+    record_summed_test_artifact,
+    record_summed_validation,
+)
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
@@ -140,4 +147,166 @@ def mono_output_topology(
             "speaker_groups": speaker_groups,
             "routing": routing,
         }
+    )
+
+
+def dual_apple_output_topology() -> OutputTopology:
+    """Build the suite's standard two-DAC active-speaker topology."""
+    return mono_output_topology(
+        topology_name="Bench mono",
+        device_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        device_label="Dual Apple USB-C DACs",
+        physical_output_count=4,
+        card_id="",
+    )
+
+
+def safe_measurement_session(
+    *,
+    role: str,
+    output_index: int,
+    playback_id: str,
+) -> dict:
+    target = {
+        "speaker_group_id": "mono",
+        "role": role,
+        "driver_role": role,
+        "output_index": output_index,
+    }
+    return {
+        "status": "armed",
+        "quiet_start": {
+            "status": "floor_confirmed",
+            "floor_audio_confirmed": True,
+            "current_target": target,
+            "last_operator_result": {
+                "accepted": True,
+                "outcome": "heard_correct_driver",
+                "playback_id": playback_id,
+                "target": target,
+            },
+        },
+    }
+
+
+def standard_driver_research(
+    *,
+    tweeter_gain_db: float = -18.5,
+    with_subwoofer: bool = False,
+) -> dict:
+    drivers = [
+        {
+            "role": "woofer",
+            "model": "Epique E150HE-44",
+            "recommended_lowpass_hz": 2500,
+            "usable_frequency_range_hz": [45, 5000],
+            "sources": ["https://example.test/woofer"],
+        },
+        {
+            "role": "tweeter",
+            "model": "F110M-8",
+            "recommended_highpass_hz": 2500,
+            "do_not_test_below_hz": 1200,
+            "gain_offset_db": tweeter_gain_db,
+            "sources": ["https://example.test/tweeter"],
+        },
+    ]
+    if with_subwoofer:
+        drivers.append(
+            {
+                "role": "subwoofer",
+                "model": "Sub driver",
+                "recommended_lowpass_hz": 80,
+                "usable_frequency_range_hz": [20, 200],
+                "sources": ["https://example.test/sub"],
+            }
+        )
+    return {
+        "artifact_schema_version": 1,
+        "kind": DRIVER_RESEARCH_KIND,
+        "drivers": drivers,
+        "crossover_candidates": [
+            {
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": 2500,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+            }
+        ],
+    }
+
+
+def standard_design_draft(
+    topology: OutputTopology,
+    *,
+    tweeter_gain_db: float = -18.5,
+    with_subwoofer: bool = False,
+) -> dict:
+    return build_design_draft(
+        topology,
+        driver_research=standard_driver_research(
+            tweeter_gain_db=tweeter_gain_db,
+            with_subwoofer=with_subwoofer,
+        ),
+        created_at="2026-06-14T12:00:00Z",
+    )
+
+
+def standard_measurements(topology: OutputTopology, tmp_path: Path) -> dict:
+    state_path = tmp_path / "measurements.json"
+    for role in ("woofer", "tweeter"):
+        output_index = 0 if role == "woofer" else 1
+        playback_id = f"playback-{role}"
+        record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "role": role,
+                "outcome": "heard_correct_driver",
+                "observed_mic_dbfs": -42.0,
+                "test_level_dbfs": -68.0,
+                "playback_id": playback_id,
+            },
+            safe_session=safe_measurement_session(
+                role=role,
+                output_index=output_index,
+                playback_id=playback_id,
+            ),
+            state_path=state_path,
+            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
+        )
+    record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "playback": {
+                "status": "completed",
+                "backend": "aplay",
+                "playback_id": "summed-playback-audible",
+                "audio_emitted": True,
+                "artifact": {
+                    "wav_basename": "tone_summed-playback-audible.wav",
+                    "metadata_basename": "tone_summed-playback-audible.json",
+                    "target_output_indices": [0, 1],
+                    "channel_count": 2,
+                },
+                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+            },
+        },
+        state_path=state_path,
+        now="2026-06-14T12:02:30Z",
+    )
+    return record_summed_validation(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "outcome": "blend_ok",
+            "observed_mic_dbfs": -40.0,
+            "polarity": "normal",
+            "delay_ms": 0.0,
+            "summed_test_id": "summed-playback-audible",
+        },
+        state_path=state_path,
+        now="2026-06-14T12:03:00Z",
     )

@@ -441,7 +441,7 @@ requires_docs_when = [
   "Wake model registry, thresholds, wake-event schema, corpus capture legs, scoring, labeling, or review tooling changes.",
 ]
 verification = [
-  "pytest tests/test_wake_setup.py tests/test_wake_events.py tests/test_wake_score.py tests/test_wake_review.py tests/test_wake_corpus_setup.py",
+  "pytest tests/test_wake_setup.py tests/test_wake_events.py tests/test_wake_score.py tests/test_wake_review.py tests/test_wake_corpus_*.py",
 ]
 
 [[subsystem]]

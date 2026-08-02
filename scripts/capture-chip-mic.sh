@@ -18,6 +18,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECONDS_=${1:-10}
 TS=$(date +%Y%m%d-%H%M%S)
 OUT=${2:-captures/chip-mic-${TS}.wav}
@@ -31,16 +32,6 @@ echo "(make noise within the next ${SECONDS_} seconds)"
 ssh "$PI" "arecord -D plughw:CARD=Array,DEV=0 -f S16_LE -r 16000 -c 1 -d ${SECONDS_} -t wav 2>/dev/null" > "$OUT"
 
 # Quick stats
-python3 - <<PYEOF
-import wave, math, struct
-with wave.open('$OUT', 'rb') as w:
-    n = w.getnframes()
-    pcm = w.readframes(n)
-samples = struct.unpack('<' + 'h'*n, pcm[:n*2])
-mean = sum(samples)/n
-rms = math.sqrt(sum((x-mean)**2 for x in samples)/n)
-peak = max(abs(x) for x in samples)
-print(f'  {n} samples ({n/16000:.2f}s)  mean={mean:+.1f}  RMS={rms:.0f} ({20*math.log10(max(rms,1e-9)/32768):+.1f} dBFS)  peak={peak} ({20*math.log10(max(peak,1e-9)/32768):+.1f} dBFS)')
-PYEOF
+python3 "${SCRIPT_DIR}/_wav_stats.py" --strict "$OUT"
 
 echo "Wrote ${OUT}"

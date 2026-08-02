@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from jasper.cli.doctor import audio
+from jasper.cli.doctor import audio_runtime
 
 
 def test_check_loopback_reports_present_card(monkeypatch) -> None:
@@ -60,9 +61,9 @@ def test_check_fanin_binary_installed_reports_missing(
     tmp_path: Path,
 ) -> None:
     binary = tmp_path / "jasper-fanin"
-    monkeypatch.setattr(audio, "Path", lambda _path: binary)
+    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
 
-    result = audio.check_fanin_binary_installed()
+    result = audio_runtime.check_fanin_binary_installed()
 
     assert result.name == "jasper-fanin binary"
     assert result.status == "fail"
@@ -79,9 +80,9 @@ def test_check_fanin_binary_installed_reports_nonexecutable(
     binary = tmp_path / "jasper-fanin"
     binary.write_bytes(b"fan-in")
     binary.chmod(0o644)
-    monkeypatch.setattr(audio, "Path", lambda _path: binary)
+    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
 
-    result = audio.check_fanin_binary_installed()
+    result = audio_runtime.check_fanin_binary_installed()
 
     assert result.name == "jasper-fanin binary"
     assert result.status == "fail"
@@ -97,9 +98,9 @@ def test_check_fanin_binary_installed_reports_executable_size(
     binary = tmp_path / "jasper-fanin"
     binary.write_bytes(b"x" * 2500)
     binary.chmod(0o755)
-    monkeypatch.setattr(audio, "Path", lambda _path: binary)
+    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
 
-    result = audio.check_fanin_binary_installed()
+    result = audio_runtime.check_fanin_binary_installed()
 
     assert result.name == "jasper-fanin binary"
     assert result.status == "ok"

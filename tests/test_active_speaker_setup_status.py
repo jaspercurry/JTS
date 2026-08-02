@@ -32,13 +32,13 @@ from jasper.output_topology import (
     OutputTopologyError,
     save_output_topology,
 )
-from tests.active_speaker_fixtures import mono_output_topology
-from tests.test_active_speaker_baseline_profile import (
-    _draft,
-    _dual_apple_topology,
-    _measurements,
-    _safe_session,
-    _valid_config,
+from tests.active_speaker_fixtures import (
+    dual_apple_output_topology as _dual_apple_topology,
+    mono_output_topology,
+    safe_measurement_session as _safe_session,
+    standard_design_draft as _draft,
+    standard_measurements as _measurements,
+    valid_camilla_config as _valid_config,
 )
 
 

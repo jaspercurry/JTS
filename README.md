@@ -349,7 +349,8 @@ computer gets a mono USB input.
   saved networks in a collapse section with Forget. Backed by
   `nmcli`. On Pi 5 brcmfmac scan suppression, `/wifi/scan` attempts a
   bounded non-disruptive self-heal before falling back to manual join.
-  Connect rolls back to the previous network on failure
+  Connect rolls back to the previous network on failure, including when a
+  reconnect attempt disrupted that same currently-active profile
   (`nmcli --wait 30 dev wifi connect` + explicit `connection up
   <previous>` on non-zero exit). Saved profiles are hardened to keep
   retrying after router/ISP flaps, and a no-resident-RAM recovery timer

@@ -432,7 +432,7 @@ code pass:
 | `/aec` / `/wake/` displayed mic state | `jasper-control` server helpers; tests in `tests/test_control_aec_state.py` and `tests/test_web_wake_setup.py` | First read-only consumer of `audio_profile_state`; UI should stop reconstructing profile semantics independently. |
 | `/state.aec` audio-profile snapshot | Additive mirror of `/aec` inside `jasper-control`'s one-shot state payload | Same `audio_profile_state` payload as `/aec`, for dashboard/doctor/CLI consumers that need one request. |
 | Doctor wake/AEC checks | `jasper/cli/doctor.py` functions around AEC mode, wake legs, bridge, XVF firmware, DTLN | Doctor should consume the same read-only profile state and add validation-artifact checks. |
-| Corpus comparison profile | `jasper/web/wake_corpus_setup.py`; bridge corpus flags; tests in `tests/test_wake_corpus_setup.py` | Corpus profile should be a test-only `AudioProfile` superset, not a separate flag vocabulary. |
+| Corpus comparison profile | `jasper/web/wake_corpus_setup.py`; bridge corpus flags; tests in `tests/test_wake_corpus_*.py` | Corpus profile should be a test-only `AudioProfile` superset, not a separate flag vocabulary. |
 
 The high-value first code change is therefore **not** to add another
 toggle. It is to add one import-cheap, side-effect-free state builder

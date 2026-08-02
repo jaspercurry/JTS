@@ -5,7 +5,6 @@
 """Unit tests for the jasper-doctor network domain."""
 
 import subprocess
-from types import SimpleNamespace
 
 
 from jasper.cli import doctor
@@ -18,6 +17,21 @@ from .doctor_test_support import (
 # -------------------------------------------------- active WiFi connection
 
 
+def _completed(
+    args=("command",),
+    *,
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+):
+    return subprocess.CompletedProcess(
+        args=args,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def _nmcli_active_run(stdout: str):
     """Build a fake `_run` returning ``stdout`` for any nmcli invocation.
 
@@ -27,13 +41,7 @@ def _nmcli_active_run(stdout: str):
 
     def fake_run(argv, *a, **kw):
         calls.append(list(argv))
-
-        class FakeRun:
-            returncode = 0
-            stdout = ""
-
-        FakeRun.stdout = stdout
-        return FakeRun()
+        return _completed(argv, stdout=stdout)
 
     fake_run.calls = calls  # type: ignore[attr-defined]
     return fake_run
@@ -89,11 +97,7 @@ def test_active_wifi_connection_nonzero_returncode(monkeypatch):
     """nmcli failure → (None, None), not a crash."""
 
     def fake_run(argv, *a, **kw):
-        class FakeRun:
-            returncode = 1
-            stdout = ""
-
-        return FakeRun()
+        return _completed(argv, returncode=1)
 
     monkeypatch.setattr(doctor.network, "_run", fake_run)
     assert doctor.network._active_wifi_connection("nmcli") == (None, None)
@@ -105,9 +109,9 @@ def test_active_wifi_connection_nonzero_returncode(monkeypatch):
 def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
     def fake_run(cmd, timeout=5.0):
         assert cmd == ["iw", "reg", "get"]
-        return subprocess.CompletedProcess(
+        return _completed(
             cmd,
-            returncode,
+            returncode=returncode,
             stdout=stdout,
             stderr="boom" if returncode else "",
         )
@@ -180,13 +184,10 @@ country DE: DFS-ETSI
 
 def _mock_nmcli_proc(stdout: str = "", returncode: int = 0):
     """Synthesize a CompletedProcess for `_run` to return."""
-    import subprocess
-
-    return subprocess.CompletedProcess(
-        args=["nmcli"],
+    return _completed(
+        ["nmcli"],
         returncode=returncode,
         stdout=stdout,
-        stderr="",
     )
 
 
@@ -479,7 +480,7 @@ def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
     monkeypatch.setattr(
         doctor.network,
         "_run",
-        lambda *a, **k: SimpleNamespace(returncode=0, stdout="enabled\n", stderr=""),
+        lambda *a, **k: _completed(stdout="enabled\n"),
     )
     r = doctor.check_wifi_recover_timer()
     assert r.status == "ok"
@@ -491,7 +492,7 @@ def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
     monkeypatch.setattr(
         doctor.network,
         "_run",
-        lambda *a, **k: SimpleNamespace(returncode=1, stdout="disabled\n", stderr=""),
+        lambda *a, **k: _completed(returncode=1, stdout="disabled\n"),
     )
     r = doctor.check_wifi_recover_timer()
     assert r.status == "warn"
@@ -504,7 +505,7 @@ def test_check_wifi_recover_timer_not_installed_skips(monkeypatch):
     monkeypatch.setattr(
         doctor.network,
         "_run",
-        lambda *a, **k: SimpleNamespace(
+        lambda *a, **k: _completed(
             returncode=1,
             stdout="",
             stderr="Failed to get unit file state ...: No such file or directory\n",

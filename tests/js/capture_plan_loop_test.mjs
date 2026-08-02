@@ -339,6 +339,7 @@ const acceptedAcknowledgement = (spec, refs) => (
     ? { schema_version: 1, id: spec.acknowledgement.id, binding_id: spec.acknowledgement.binding_id, accepted: true }
     : null
 );
+const setText = (node, text) => { node.textContent = typeof text === "string" ? text : ""; };
 const createMonoRecorder = async () => {
   globalThis.__recorderCalls = (globalThis.__recorderCalls || 0) + 1;
   if (globalThis.__recorderError) throw globalThis.__recorderError;

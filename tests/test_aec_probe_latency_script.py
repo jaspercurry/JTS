@@ -39,17 +39,12 @@ def test_probe_uses_only_outputd_final_reference() -> None:
 def test_probe_restores_only_services_that_were_active_at_entry() -> None:
     text = _script_text()
 
-    assert "trap on_exit EXIT" in text
+    assert 'cat "${SCRIPT_DIR}/_aec_probe_service_guard.sh"' in text
+    assert "install_aec_probe_service_guard" in text
     assert "stop_if_active shairport-sync.service shairport_was_active" in text
     assert "stop_if_active jasper-voice.service voice_was_active" in text
     assert "stop_if_active jasper-aec-bridge.service bridge_was_active" in text
-    assert '[[ "${bridge_was_active}" == "1" ]]' in text
-    assert "sudo systemctl reset-failed jasper-aec-bridge.service" in text
-    assert "sudo systemctl start jasper-aec-bridge.service" in text
-    assert '[[ "${voice_was_active}" == "1" ]]' in text
-    assert "sudo systemctl start jasper-voice.service" in text
-    assert "local restore_rc=$?" in text
-    assert 'exit "${restore_rc}"' in text
+    assert "if unit_active nqptp.service" in text
 
 
 def test_probe_exposes_chip_beam_channel_selection() -> None:
