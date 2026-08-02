@@ -621,8 +621,9 @@ round's own deeper E2E — every screen, screenshots banked.
 > display-rounded 0.2), attempt budget 3/4 labeled policy-not-
 > measurement. On 16 real repeats of an unchanged profile: zero
 > improvement claims, 13× stop_floor (worst consecutive delta
-> 0.0854 dB — half the floor), two attempts quarantined as
-> not-comparable. Session arc: tweeter Δ2.2694 continues, woofer
+> 0.0854 dB — half the floor), two comparisons refused on
+> comparability (one bad capture; its clean successor then had no
+> comparable predecessor). Session arc: tweeter Δ2.2694 continues, woofer
 > Δ0.1347 stop-floors — all deltas labeled **model-graded** (no banked
 > bundle carries a realized post-apply grade; the per-speaker
 > model-error store, rung P4's seam, starts honestly empty). Bank
