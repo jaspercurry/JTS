@@ -3285,6 +3285,16 @@ worktree do not have that protection. So:
   current commit, keep it until you deliberately preserve or discard that work.
 - **Periodic sweep (human-in-the-loop, ~weekly):** `git worktree list` to review,
   remove the clean/stale ones, then `git worktree prune`.
+- **Never `git stash` in agent worktrees.** The stash stack is shared across
+  every worktree of the repo; on 2026-08-02 two parallel agents' stash pushes
+  crossed (each popped the other's WIP into its tree — both caught it by
+  diff-audit). Revert probes with `git checkout -- <file>` /
+  `git show <ref>:<path>`, and before any push run
+  `git diff origin/main...HEAD --stat` and confirm every hunk is yours. Ad-hoc
+  file snapshots (cp to a scratchpad) carry the same staleness hazard — restore
+  from git refs, not copies. In shared scratchpad directories, use
+  uniquely-named files (two agents overwrote each other's generic `pr-body.md`
+  the same night).
 
 Automated backstop (already configured): `.claude/worktrees/` is gitignored (via
 `.claude/*`), and `cleanupPeriodDays` in `.claude/settings.local.json` makes

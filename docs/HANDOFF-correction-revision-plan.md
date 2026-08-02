@@ -160,7 +160,7 @@ safe once the objective carries the crossover context), #1974 (**moved R12 →
 R9** — inconclusive copy blames a reflection on a path with none; R9's exit
 requires the gate disclosure to RENDER, and the screens carrying that copy are
 the render slot, so the two ship together), #1750 (**R12** —
-`detect_echo` bounds round outside the search window), #1790 (gating v2 —
+`detect_echo` bounds round outside the search window, closed), #1790 (gating v2 —
 detection, aggregation, anomaly policy), #1783 (chart paints below the validity
 floor, legend blames interference), #1859 (byte-identical DSP, 3–7.7 dB apart —
 frame or physical?), #1857 (worst-band pointer anchored on a full-range mean),
@@ -694,6 +694,37 @@ speaker the owner walks up to on Monday is the one the round left working.
 > **Slip rule.** If anything slips past Monday it is **R12's UX half** — never
 > the P1 → P3 → P4 chain.
 
+> **Outcome (2026-08-02, R12 close — campaign close).** Slice 1: the Monday
+> runbook rewritten and adversarially fact-checked to 0/0 (blocker caught and
+> fixed: the never-built #1941 stages had been described as built). Slice 2:
+> copy honesty merged (#2035 — #1978/#1979/#1962; the #1979 fix corrected the
+> issue's own premise). Then the owner directed the deferred backlog INTO the
+> round mid-day ("do them tonight"), expanding scope to the full
+> measurement-math and hygiene sweep: #2036 (#1660 wrong-cal identity, durable
+> binding state), #2037 (#1830 — the prescribed 2-line fix had already landed
+> unnoticed in #1972; the real fix was cross-domain SNR units), #2038 (#2026
+> tie-break + honest 6.4 dB level-solve disclosure; #2027 offline half
+> inconclusive-with-findings, stays open), #2039 (#1983/#1789
+> already-fixed-on-main closures, #1973 landing-lane guard, #2015 corpus SSOT,
+> #1718 assert ratchet widened to 7 crates after overturning a default-off
+> assumption), #2040 (#2003 third un-named cancel-swallow site found,
+> #1833/#1832 escape containment, #1985 exit reroute), #2042 (#1818 window
+> clips-not-slides — the defect withheld the level solve's ~14-17 dB
+> reduction on late captures (never above the flat-target clamp); #1752
+> exact-zero hardening; three-lens panel, all lenses 0/0), #2043 (#1750
+> boundary unification + full recalibration; the module's pre-registered
+> prediction reproduced to 4 dp). Exit: deployed 5a3266f8f; the guarded
+> fixed-mic pass ran in guard-constrained form — a live conductor session is
+> structurally blocked on this box (it would overwrite the parked Monday
+> candidate), so the pass banked analysis-layer E2E on four real capture pairs
+> (per-band SNR alive 4/4 with the correct passband signature; ambient window
+> clipping verified on real data; the consent sentence composed live verbatim;
+> full byte-identical state proof, parked candidate untouched) — bank
+> `captures/r12-e2e-pass-20260802/`. New follow-ups: #2041, #2044, #2045,
+> #2046. Cuts that remain by design: the #1941 stages and in-flow/browser E2E
+> stay Monday-gated; #1774/#1883 (corpus-pin remainder) and the R11 debt list
+> are ordinary backlog.
+
 ### R13 — measure-and-validate day *(Monday 2026-08-03, owner)*
 
 **Territory:** hardware and rulings; no code territory.
@@ -735,7 +766,7 @@ only safe after the objective lands, and the tag says so.
 - **Attribution work orders** (owner: [`attribution-stage-plan.md`](attribution-stage-plan.md) §7) — #1866 (the direction and its rulings), #1933 (flow-first WO-2/WO-3), #1869 (WO-3 alignment evidence gaps), #1922 (WO-4: per-driver level-sanity gate and named-driver attribution), #1873 + #1924 (WO-5's deterministic-mismatch discriminator and its copy — **#1924 R8**), #1791 (WO-8 room-correction regime).
 - **Two-stage chassis (T1–T3)** — #1806. WO-6 and WO-7 both sit on it; the ladder does not change that.
 - **Crossover-v2 flow and product surface** — #1947, #1872, #1863, #1862, #1840, #1788, #1706, #1703, #1684, #1650, #1671, #1665, #1833, #1832, #1926, #1925, #1913, #1860, #1950.
-- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7, **plus Stage 6 built in R12 and merge-gated on the Monday hardware re-run**), #1979 (**R12**), #1978 (**R12**), #1961, #1865, #1962, #1985 (Crossover review's "Leave it as it is" exits to an unrelated HTTPS interstitial — found by the R8 slice check; untagged).
+- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7 and Stage 6 **not built; Monday-gated**, see the R12 outcome), #1979 (**R12**, closed), #1978 (**R12**, closed), #1961, #1865, #1962 (closed), #1985 (Crossover review's "Leave it as it is" exits to an unrelated HTTPS interstitial — found by the R8 slice check; untagged, closed).
 - **Capture page and relay platform** — #1792 (**R12** — the publish gate R12's UX build sits behind), #1861, #1975 (**R12**).
 - **Hardware bench sessions** — #1848 (JTS3 commissioning acceptance). The owner-attended delay/reflector bench is indexed under rung P3 instead, because its output is a P3 input.
 - **Corpus and evidence tooling** — #1884 (corpus-pin visibility in CI).
@@ -760,34 +791,35 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-02 (R10b AND R11 closed in one bookkeeping pass —
-                the R10b session ended without updating this block; its
-                outcome is reconstructed in the R10 entry above)
-jts3_sha:       14b8d9c96 — verified deployed (build.txt status=ok),
-                jasper-doctor 0 failed steady-state / 5 known warnings
-active_round:   R12 — polish + the Monday package ONLY; the campaign
-                ends with it. Brief:
-                captures/NEXT-SESSION-PROMPT-round-12.md (carries the
-                owner's four-layer vision lens + two-stop-kernels rule)
-active_rung:    P4 chassis LANDED offline — attempts loop + per-speaker
-                model-error store (#2029), VERIFY capture-integrity
-                gate (#2031). Live wiring Monday-gated (#2033). Ladder
-                ratification still Monday's
-last_round:     R11 (emit verdict MATCHED on jts3 — 0.004/0.006 dB max
-                vs the 1.705 dB defect class; loop proven on recorded
-                data — zero false claims on 16 real repeats, floor
-                computed 2×p95 = 0.17016 dB; VERIFY glitch honesty
-                #1971 closed; debt batch published live 20260802.1;
-                every PR gated 0/0, one fix round each)
-next_mission:   R12 via captures/NEXT-SESSION-PROMPT-round-12.md
-blocked_on:     Monday-gated: ladder P0–P4 ratification, Q-E, the
-                enclosure-hole timeline, the mic-replacement repeat-floor
-                arm, H3-swap scheduling, the #1990 §B fit-margin
-                threshold decision, the parked candidate 8ca42d15… +
-                browser-pixel pass, the raw-σ ruling (#1954 comment),
-                bins-vs-centres clamp binding, delay adoption (evidence
-                banked in captures/r10b-delay-search-20260801/), and
-                the live loop wiring (#2033)
+date:           2026-08-02 (R12 closed — THE CAMPAIGN IS CLOSED; Monday
+                2026-08-03 is R13, the owner's hands-on day)
+jts3_sha:       5a3266f8f — verified deployed (build.txt status=ok,
+                install 2026-08-02T10:17-04:00), jasper-doctor 0 failed /
+                5 known warnings (post-E2E run, banked in
+                captures/r12-e2e-pass-20260802/)
+active_round:   none — campaign closed. Monday runs off
+                captures/MONDAY-RUNBOOK-2026-08-03.md (fact-checked to
+                0 blockers / 0 should-fixes, two fix rounds); anything
+                still open is ordinary backlog at normal pace
+last_round:     R12 (the Monday package + copy honesty, then an
+                owner-directed evening sweep: 8 PRs merged closing 18
+                issues — #2035 #2036 #2037 #2038 #2039 #2040 #2042
+                #2043; every PR through an independent adversarial gate
+                to 0/0, #2042 through a three-lens safety panel; #2027
+                advanced with banked findings and stays open; new issues
+                filed #2041 #2044 #2045 #2046)
+next_mission:   Monday: the runbook. After Monday: ordinary backlog
+blocked_on:     Monday rulings (unchanged queue — see the runbook):
+                ladder P0-P4, Q-E, enclosure-hole timeline, raw-σ
+                (#1954), bins-vs-centres, #1990 §B, delay adoption,
+                #1941 stage plan, parked candidate 8ca42d15… +
+                browser-pixel pass, mic-replacement repeat-floor arm,
+                H3-swap scheduling, live loop wiring (#2033). Plus one
+                new hazard note: a fresh measurement session OVERWRITES
+                the parked candidate (hydrate invalidates CHECK/MEASURE
+                evidence) — A-7's choices are the only safe entry. The
+                live measure_diag confirmation of #2037 rides Monday's
+                re-walk (bank: captures/r12-e2e-pass-20260802/)
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1461,7 +1493,12 @@ of which scale with the program rather than with the prose. Splitting either
 into a second file would defeat the one-spine purpose, so the length is a
 deliberate, recorded exception — not licence for the spine's *prose* to grow.
 
-**Verification scope.** The spine (charter, ladder, campaign, research index,
+**Verification scope.** The **2026-08-02 pass re-verified only the CURRENT
+POSITION block, the campaign's R11–R12 entries, and the R12 tags in the issue
+index** — against `5a3266f8f`, with every PR and issue number in those sections
+re-read from `gh`. The rest of the spine carries its prior verification forward
+and was not re-read; the date below is not a warranty on it. That prior pass:
+the spine (charter, ladder, campaign, research index,
 issue index, CURRENT POSITION, the handoff/issue contract) was verified
 2026-07-31 against `5c7029b63`: every issue number re-read from `gh`, every
 research artifact re-read at its banked path, and every WO claim re-read in
@@ -1475,4 +1512,4 @@ below the spine is an unchanged 2026-07-12 snapshot and was NOT re-verified** �
 per the documentation paradigm, historical sections are deliberately not kept in
 sync with code. Do not read the date below as a warranty on appendix facts.
 
-Last verified: 2026-07-31
+Last verified: 2026-08-02
