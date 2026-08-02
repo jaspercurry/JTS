@@ -44,6 +44,7 @@ from jasper.dsp_apply import (
     dsp_apply_lock_path,
     last_dsp_apply_state,
 )
+from tests._async_wait import wait_signalled
 from tests.test_active_speaker_commissioning_service import (
     _complete_candidate_evidence,
     _service_harness,
@@ -782,12 +783,12 @@ async def test_repeated_cancellation_preserves_exact_restore_outcome(
             validate=_valid,
         )
     )
-    await asyncio.wait_for(candidate_loaded.wait(), timeout=2.0)
+    await wait_signalled(candidate_loaded, "candidate load completed", producer=task)
     mutation = harness.run_store.current_live_mutation(harness.plan.authority.run)
     assert mutation is not None and mutation.status == "mutation_pending"
 
     task.cancel()
-    await asyncio.wait_for(restore_started.wait(), timeout=2.0)
+    await wait_signalled(restore_started, "restore began", producer=task)
     task.cancel()
     await asyncio.sleep(0)
     task.cancel()
@@ -919,7 +920,7 @@ async def test_restart_with_pending_mutation_performs_live_exact_restore(
 
         monkeypatch.setattr(apply_module, "dsp_writer_lock", delayed_writer)
         task = asyncio.create_task(restore)
-        await asyncio.wait_for(writer_waiting.wait(), timeout=2.0)
+        await wait_signalled(writer_waiting, "writer lock wait began", producer=task)
         task.cancel()
         await asyncio.sleep(0)
         assert not task.done()
