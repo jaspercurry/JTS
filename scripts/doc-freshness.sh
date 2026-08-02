@@ -72,8 +72,15 @@ while IFS= read -r d; do docs+=("$d"); done \
 if (( include_all )); then
   while IFS= read -r d; do docs+=("$d"); done \
     < <(find . -maxdepth 1 -name '*.md' -type f 2>/dev/null | sed 's|^\./||' | sort)
+  # No -maxdepth: nested non-HANDOFF docs are 92 of the 208 `.md` files under
+  # docs/ (2026-08-02) and were entirely invisible to this report while this
+  # find was capped at depth 1 — including docs/calibration-agent/**, which
+  # the product READS at runtime and whose footers are ~68-70 days old. Being
+  # invisible, they could never have tripped the threshold at ANY age; that is
+  # the defect, not the current age. `--all` already promises "top-level +
+  # non-HANDOFF docs/"; capping the depth quietly broke that promise.
   while IFS= read -r d; do docs+=("$d"); done \
-    < <(find docs -maxdepth 1 -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
+    < <(find docs -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
 fi
 
 missing_footer_rows=()

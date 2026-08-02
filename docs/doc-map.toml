@@ -51,13 +51,23 @@ title = "CI gates and branch protection"
 safety = "safe-ci"
 code = [
   ".github/workflows/tests.yml",
+  # The executable test lanes and the PR lane classifier. AGENTS.md's "Agent
+  # test routing" names these scripts as the source of truth for what a lane
+  # runs ("update the script first, then adjust this short routing note and
+  # CONTRIBUTING.md"), so a lane change here is exactly the case that must
+  # scan those two docs.
+  "scripts/test-fast",
+  "scripts/test-merge",
+  "scripts/_test_lane.sh",
+  "scripts/ci-classify.py",
+  "scripts/check-js-syntax.sh",
 ]
 docs = [
   "CONTRIBUTING.md",
   "AGENTS.md",
 ]
 requires_docs_when = [
-  "A required check name, Python/Rust/shell CI gate, lint/test placement, matrix coverage, or branch-protection expectation changes.",
+  "A required check name, Python/Rust/shell CI gate, lint/test placement, matrix coverage, branch-protection expectation, or what a named test lane (`scripts/test-fast` / `scripts/test-merge`) actually runs changes.",
 ]
 verification = [
   "python3 scripts/docs-impact.py --validate-only",
@@ -561,6 +571,11 @@ code = [
   "jasper/camilla_config_contract.py",
   "jasper/web/sound_setup.py",
   "jasper/dsp_apply.py",
+  # The BlueALSA probe backs the Bluetooth source's volume carrier:
+  # volume_coordinator.py and volume_observers.py both import
+  # `active_transport_path` from it, so a change to the probe's shape or its
+  # negative-cache behaviour reaches the volume path directly.
+  "jasper/bluealsa_probe.py",
 ]
 docs = [
   "docs/HANDOFF-volume.md",

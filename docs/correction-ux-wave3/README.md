@@ -29,13 +29,13 @@ land in the order below except where a prompt says otherwise.
 
 | Workstream | Prompt file | Depends on |
 |---|---|---|
-| W3.1 Single entry + active/passive declaration | `w3.1-declaration-and-gating.md` | none |
-| W3.2 One crossover surface | `w3.2-one-crossover-surface.md` | W3.1 merged |
-| W3.3 Stepper + instruction placement | `w3.3-stepper-and-instructions.md` | W3.2 merged |
-| W3.4 Room flow parity | `w3.4-room-flow-parity.md` | W3.3 merged |
-| W3.5 Jargon + copy sweep | `w3.5-jargon-and-copy-sweep.md` | W3.3 merged (touches the same files W3.3 rewrites) |
-| W3.6 Conventions + docs | `w3.6-conventions-and-docs.md` | none — safe to run any time, including in parallel with everything else |
-| W3.7 Region-scoped quality gates (design task) | `w3.7-region-scoped-gating-design.md` | none for the investigation; run last so its design note reflects the post-W3.1–3.5 code shape |
+| W3.1 Single entry + active/passive declaration | [`w3.1-declaration-and-gating.md`](w3.1-declaration-and-gating.md) | none |
+| W3.2 One crossover surface | [`w3.2-one-crossover-surface.md`](w3.2-one-crossover-surface.md) | W3.1 merged |
+| W3.3 Stepper + instruction placement | [`w3.3-stepper-and-instructions.md`](w3.3-stepper-and-instructions.md) | W3.2 merged |
+| W3.4 Room flow parity | [`w3.4-room-flow-parity.md`](w3.4-room-flow-parity.md) | W3.3 merged |
+| W3.5 Jargon + copy sweep | [`w3.5-jargon-and-copy-sweep.md`](w3.5-jargon-and-copy-sweep.md) | W3.3 merged (touches the same files W3.3 rewrites) |
+| W3.6 Conventions + docs | [`w3.6-conventions-and-docs.md`](w3.6-conventions-and-docs.md) | none — safe to run any time, including in parallel with everything else |
+| W3.7 Region-scoped quality gates (design task) | [`w3.7-region-scoped-gating-design.md`](w3.7-region-scoped-gating-design.md) | none for the investigation; run last so its design note reflects the post-W3.1–3.5 code shape |
 
 Every workstream prompt **incorporates this README by reference**.
 Codex: read this file completely before your workstream file.

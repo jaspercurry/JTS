@@ -278,9 +278,13 @@ inherits it from the repo instead of being told.
   Safety-critical changes — audio/hearing safety, the CamillaDSP graph,
   DSP math, or secrets — escalate from one reviewer to a
   perspective-diverse panel (correctness, hearing-safety, and resilience
-  lenses), a practice already running in
-  [docs/HANDOFF-correction-revision-plan.md](docs/HANDOFF-correction-revision-plan.md)'s
-  "Execution model (orchestration)" section.
+  lenses). Worked example: PR #2042 (CHECK's ambient window) went through a
+  three-lens panel, all lenses to 0/0 — recorded in the **R12 outcome** block
+  of
+  [docs/HANDOFF-correction-revision-plan.md](docs/HANDOFF-correction-revision-plan.md).
+  (That file's "Execution model (orchestration)" section describes the same
+  practice, but it sits in the file's **historical appendix** — read it for
+  how the practice was originally specified, not for current state.)
 - **The handoff rule.** Every session-handoff prompt
   (`captures/NEXT-SESSION-PROMPT-*.md` and any equivalent) MUST restate
   the conductor rule, the gate rule, and the values below. A handoff
