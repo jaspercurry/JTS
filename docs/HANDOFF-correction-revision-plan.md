@@ -562,6 +562,26 @@ working flow**, never beside it.
 > pins; the live envelope confirmation rides the same Monday runbook
 > items.
 
+> **R10b outcome (2026-08-01; recorded at R11 close).** The R10b session
+> ended without updating this spine — this block is reconstructed from
+> main's merge history plus the banked artifacts, and the gap itself is
+> the lesson (end-of-round bookkeeping is part of the round). The
+> alignment + emit half landed at 0/0: #2005 (the summed model carries
+> the **committed** delay — `summed_model_residual_delay_us`, the one
+> derivation), #2009 (the offline emit loop through the real pinned
+> binary — the shelf-Q class catchable before an apply), #2007 (the fit
+> grades its claims on the filters it emits), #2018 (the emit loop's
+> determinism proof folded onto the fixed sibling helper), #2016 (every
+> spec band's own deviation disclosed beside the worst-band pointer),
+> #2008 (rectangular-window band levels on the room-correction sweep
+> path). Delay-search evidence banked for the Monday ruling
+> (`captures/r10b-delay-search-20260801/` — the best delay sits outside
+> current adoption policy); the deconvolution-tilt question settled
+> small per the round-11 brief (~19% of the mystery tilt — not the
+> culprit; bench in `captures/r10b-epsilon-bench-20260801/`). The emit
+> bench had **not** yet run on a real speaker — that proof became R11's
+> first slice.
+
 ### R11 — the loop round (rung P4 / WO-7 chassis + live fixed-mic validation) *(Saturday night 08-01 / Sunday 2026-08-02)*
 
 **Territory:** the conductor/report layer — `crossover_v2_flow`,
@@ -586,6 +606,48 @@ evidence.
 geometry, and stops correctly. The standing slice exit is subsumed here by the
 round's own deeper E2E — every screen, screenshots banked.
 
+> **R11 outcome (2026-08-02).** The two proofs the campaign promised,
+> delivered **offline-first per the round-11 brief**, which deliberately
+> cut this entry's in-flow run and browser E2E (both Monday-gated; R12
+> absorbs them only if the rulings clear). (1) **Emit verdict on the
+> real speaker: MATCHED** — first hardware run of #2009's bench (jts3,
+> CamillaDSP 4.1.3, the applied 2026-07-29 baseline tune): woofer max
+> 0.004 dB @ 775 Hz, tweeter 0.006 dB @ 9227 Hz, exact-render regime
+> against the 1.705 dB defect class; bank
+> `captures/r11-emit-verdict-20260801/`; operational gap filed as
+> #2032. (2) **The attempts loop, proven on recorded data** (#2029):
+> predecessor-basis only, repeat-averaging capped at 4, claim floor
+> **computed** as 2×p95 (0.17016 dB from P0's 0.08508 — never the
+> display-rounded 0.2), attempt budget 3/4 labeled policy-not-
+> measurement. On 16 real repeats of an unchanged profile: zero
+> improvement claims, 13× stop_floor (worst consecutive delta
+> 0.0854 dB — half the floor), two attempts quarantined as
+> not-comparable. Session arc: tweeter Δ2.2694 continues, woofer
+> Δ0.1347 stop-floors — all deltas labeled **model-graded** (no banked
+> bundle carries a realized post-apply grade; the per-speaker
+> model-error store, rung P4's seam, starts honestly empty). Bank
+> `captures/r11-loop-proof-20260802/`. (3) **The evidence gate made
+> real** — #2031 (fixes #1971): VERIFY captures carry a per-check
+> integrity record (locate confidence, schedule residual with the
+> ceiling inherited-and-labeled from the MEASURE corpus, clipped-run;
+> `not_evaluated` first-class, never a pass) and the verdict refuses to
+> grade glitched evidence ahead of the tracking grade. Follow-ups
+> #2030 (two secondary observations) and #2033 (wire capture_integrity
+> into the loop's STOP_EVIDENCE when the live flow feeds it — today the
+> live path is safe by construction: glitched captures auto-retry
+> before becoming grades). Debt lane (#2028, the round's one debt PR at
+> the 1-in-5 cap): the shared summed-sweep stimulus persists as
+> `summed_program.wav` — named for what it is so `{phase}_program.wav`
+> presence stays a truthful phase-reach signal; the capture-page
+> cache-key guard generalized to every module, build 20260802.1
+> published and verified live on both hosts; #1950 confirmed
+> already-fixed by #1958 and closed on live-mutation proof. Every PR
+> passed an independent adversarial gate to 0/0; all three substantive
+> PRs took exactly one fix round — the gates caught real defects each
+> time, including an absence-of-evidence-reads-as-pass bug in the
+> loop's own replay tool. jts3 left deployed at the round's merged tip
+> (`14b8d9c96`, doctor 0 failed steady-state / 5 known warnings).
+
 ### R12 — polish + convergence *(Sunday 2026-08-02 / Monday-am buffer)*
 
 **Territory:** copy and UX surfaces — `capture_relay/spec`, `capture-page/`,
@@ -604,6 +666,20 @@ campaign reflection; and the Monday package — runbook final, rulings queued
 **with their graphs already generated** (the Q-E frame-drag reframe figure is
 already done — `captures/replay-scorecard-20260731/figures/fig-h-issue-1857-qe-frame-choice.png`,
 generated in R8; R12 confirms the rest), and the round-13 Monday-E2E brief.
+
+> **Re-scope (2026-08-02, R11 close).** Written before R11 ran, this
+> entry's list has moved: #1971, #1973, and #1975 landed in R11
+> (#2031, #2028). Per the round-11 and round-12 briefs **the campaign
+> ends at R12**: the round is the Monday package (runbook + rulings
+> with graphs) and the copy-honesty set (#1974 / #1978 / #1979, #1962
+> if trivially in reach). The #1941 stages and the in-flow/browser E2E
+> remain Monday-gated; the corpus-pin trio, #1948, and the nit ledgers
+> move to ordinary backlog — named cuts, not omissions. The
+> authoritative brief is `captures/NEXT-SESSION-PROMPT-round-12.md`,
+> which also carries the owner's re-affirmed four-layer vision lens and
+> the two-stop-kernels rule (if the room lane ever wants floor-aware
+> stopping, it reuses the attempts kernel with its own floor stats —
+> never a third kernel).
 
 **Validation:** offline; UX review.
 
@@ -680,36 +756,34 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-01 (R9 closed AND R10a landed, one owner-extended
-                session)
-jts3_sha:       0280eb91a — verified deployed (build.txt status=ok),
+date:           2026-08-02 (R10b AND R11 closed in one bookkeeping pass —
+                the R10b session ended without updating this block; its
+                outcome is reconstructed in the R10 entry above)
+jts3_sha:       14b8d9c96 — verified deployed (build.txt status=ok),
                 jasper-doctor 0 failed steady-state / 5 known warnings
-active_round:   R10b — the objective round's alignment + emit half
-                (summed model carries committed delay + trim; offline
-                emit loop through the render harness; delay search).
-                Next session's work: captures/NEXT-SESSION-PROMPT-round-10.md
-                covers it (DoD items 1–2 done — item 2's exit metric
-                holds, zero stopband filters on all four branch/arm
-                cells, the guard demonstrated structurally rather than
-                on-corpus; start at item 3)
-active_rung:    P3, second half. P1 COMPLETE (R9 outcome block); P3's
-                target + guards half LANDED (R10a outcome block); ladder
+active_round:   R12 — polish + the Monday package ONLY; the campaign
+                ends with it. Brief:
+                captures/NEXT-SESSION-PROMPT-round-12.md (carries the
+                owner's four-layer vision lens + two-stop-kernels rule)
+active_rung:    P4 chassis LANDED offline — attempts loop + per-speaker
+                model-error store (#2029), VERIFY capture-integrity
+                gate (#2031). Live wiring Monday-gated (#2033). Ladder
                 ratification still Monday's
-last_round:     R9 (five PRs 0/0, replay regression clean, our-chain
-                certification banked, honest-split slice) + R10a (#1999
-                fit objective, #1998 variance cap, both 0/0 multi-round;
-                crossover-region residual −43%/−47% banked; deployed)
-next_mission:   R10b via captures/NEXT-SESSION-PROMPT-round-10.md
+last_round:     R11 (emit verdict MATCHED on jts3 — 0.004/0.006 dB max
+                vs the 1.705 dB defect class; loop proven on recorded
+                data — zero false claims on 16 real repeats, floor
+                computed 2×p95 = 0.17016 dB; VERIFY glitch honesty
+                #1971 closed; debt batch published live 20260802.1;
+                every PR gated 0/0, one fix round each)
+next_mission:   R12 via captures/NEXT-SESSION-PROMPT-round-12.md
 blocked_on:     Monday-gated: ladder P0–P4 ratification, Q-E, the
                 enclosure-hole timeline, the mic-replacement repeat-floor
                 arm, H3-swap scheduling, the #1990 §B fit-margin
-                threshold decision, the two R9 runbook items (parked
-                candidate 8ca42d15… + browser-pixel pass), and the two
-                R10a ratification items: the raw-σ ruling (#1954
-                comment) and bins-vs-centres clamp binding (worst-found
-                ~11.6 dB between-centre residue, ~17% stable share,
-                per-design max_overshoot_db published). #1993 settled
-                and closed, both halves
+                threshold decision, the parked candidate 8ca42d15… +
+                browser-pixel pass, the raw-σ ruling (#1954 comment),
+                bins-vs-centres clamp binding, delay adoption (evidence
+                banked in captures/r10b-delay-search-20260801/), and
+                the live loop wiring (#2033)
 ```
 
 ## How this document relates to session handoffs and issues
