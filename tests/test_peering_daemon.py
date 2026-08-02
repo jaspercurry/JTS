@@ -18,7 +18,6 @@ sockets. The state machine and dispatch logic run unmodified.
 from __future__ import annotations
 
 import asyncio
-import secrets
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,10 +30,7 @@ from jasper.peering.transport import (
     IncomingClaim,
     IncomingWake,
 )
-
-
-def _short_socket_path() -> str:
-    return f"/tmp/jts-pt-{secrets.token_hex(4)}.sock"
+from tests._socket_paths import short_unix_socket_path as _short_socket_path
 
 
 def _cfg(mode=PeeringMode.ON, primary=False) -> PeeringConfig:

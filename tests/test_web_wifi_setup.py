@@ -19,13 +19,13 @@ import http
 import json
 import logging
 import subprocess
-from email.message import Message
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from jasper.web import wifi_setup
+from tests._web_test_helpers import make_real_handler
 
 
 def _render(csrf_token: str = "tok-abcdefghijklmnopqrstuvwx") -> str:
@@ -323,34 +323,18 @@ def _make_request(path: str, body: bytes = b"", cookies: str = "",
     skip BaseHTTPRequestHandler.__init__'s socket plumbing) and bolt the request
     I/O onto it. Returns (handler, captured) where ``captured`` exposes
     ``.status`` and ``.body`` after do_GET/do_POST runs."""
-    handler_cls = wifi_setup._make_handler()
-    h = handler_cls.__new__(handler_cls)
-    h.path = path
-    h.headers = Message()
-    h.headers["Content-Length"] = str(len(body))
-    h.headers["Content-Type"] = "application/json"
+    headers = {}
     if cookies:
-        h.headers["Cookie"] = cookies
+        headers["Cookie"] = cookies
     if csrf_header:
-        h.headers["X-CSRF-Token"] = csrf_header
-    h.rfile = BytesIO(body)
-    h.wfile = BytesIO()
-    h.client_address = ("127.0.0.1", 0)
-
-    captured = {"status": None, "responses": [], "headers": []}
-    # Override the network-touching surface of BaseHTTPRequestHandler so the
-    # real helper methods (_send_json etc.) run without a socket.
-    def capture_response(status, *args, **kwargs):
-        captured["status"] = int(status)
-        captured["responses"].append(int(status))
-
-    h.send_response = capture_response
-    h.send_response_only = h.send_response
-    h.send_header = lambda name, value: captured["headers"].append((name, value))
-    h.end_headers = lambda: None
-    h.send_error = lambda status, *a, **k: captured.__setitem__("status", int(status))
-    h.log_message = lambda *a, **k: None
-    return h, captured
+        headers["X-CSRF-Token"] = csrf_header
+    return make_real_handler(
+        wifi_setup._make_handler(),
+        path,
+        body=body,
+        headers=headers,
+        content_type="application/json",
+    )
 
 
 class _TrackingReader(BytesIO):

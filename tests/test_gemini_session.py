@@ -11,10 +11,14 @@ pipeline with hand-built fake response objects matching the SDK's shape.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from typing import Any
 
 import pytest
+
+from tests._gemini_fakes import GoAway as _GoAway
+from tests._gemini_fakes import Response as _Resp
+from tests._gemini_fakes import Response as _GoAwayResp
+from tests._gemini_fakes import ServerContent as _SC
+from tests._gemini_fakes import Usage as _Usage
 
 try:
     from jasper.voice.gemini_session import (
@@ -31,31 +35,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@dataclass
-class _SC:
-    """Stand-in for response.server_content."""
-    turn_complete: bool = False
-    interrupted: bool = False
-
-
-@dataclass
-class _Resp:
-    """Stand-in for the SDK's response objects. _dispatch only uses
-    getattr() so any object with the right attributes works."""
-    data: bytes | None = None
-    tool_call: Any = None
-    server_content: _SC | None = None
-    usage_metadata: Any = None
-
-
-@dataclass
-class _Usage:
-    """Stand-in for response.usage_metadata. Gemini reports these as a
-    counter cumulative for the WebSocket's lifetime."""
-    prompt_token_count: int = 0
-    response_token_count: int = 0
-
-
 async def _run_turn(conn: "GeminiLiveConnection", cum_in: int, cum_out: int):
     """Open a fresh turn on `conn`, feed it one server message carrying
     the cumulative usage counter + turn_complete, and return the turn.
@@ -70,24 +49,6 @@ async def _run_turn(conn: "GeminiLiveConnection", cum_in: int, cum_out: int):
         server_content=_SC(turn_complete=True),
     ))
     return turn
-
-
-@dataclass
-class _GoAway:
-    """Stand-in for response.go_away. The SDK exposes `time_left` as a
-    datetime.timedelta; the receive loop only reads it via getattr."""
-    time_left: Any = None
-
-
-@dataclass
-class _GoAwayResp:
-    """Response object carrying only a GoAway (no server_content)."""
-    go_away: Any = None
-    server_content: Any = None
-    tool_call: Any = None
-    data: bytes | None = None
-    session_resumption_update: Any = None
-    usage_metadata: Any = None
 
 
 class _FakeReceiveSession:

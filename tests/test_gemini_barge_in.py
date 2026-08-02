@@ -32,10 +32,11 @@ Gemini TTS" proof is a SKIPPED voice-eval placeholder — see
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from typing import Any
 
 import pytest
+
+from tests._gemini_fakes import Response as _Resp
+from tests._gemini_fakes import ServerContent as _SC
 
 try:
     from google.genai import types as genai_types
@@ -52,25 +53,6 @@ except ImportError:
 pytestmark = pytest.mark.skipif(
     not _HAVE_GENAI, reason="google-genai not installed in this environment"
 )
-
-
-@dataclass
-class _SC:
-    """Stand-in for ``response.server_content`` (getattr-only access)."""
-
-    turn_complete: bool = False
-    interrupted: bool = False
-
-
-@dataclass
-class _Resp:
-    """Stand-in for the SDK's response objects. ``_on_response`` only uses
-    ``getattr()`` so any object with the right attributes works."""
-
-    data: bytes | None = None
-    tool_call: Any = None
-    server_content: _SC | None = None
-    usage_metadata: Any = None
 
 
 def _turn(conn: "GeminiLiveConnection") -> "GeminiLiveTurn":

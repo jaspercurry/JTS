@@ -21,25 +21,19 @@ from datetime import datetime, timezone
 import pytest
 
 from jasper import google_creds as gc
-from jasper.google_creds import GoogleAccount, GoogleClients, GoogleRegistry
+from jasper.google_creds import GoogleClients, GoogleRegistry
 from jasper.tools import ToolRegistry, UntrustedContentMonitor, build_tool, dispatch_tool
 from jasper.tools import _FENCE_CLOSE, _FENCE_TAG  # fence markers for adversarial asserts
 from jasper.tools import gmail as gmail_mod
 from jasper.tools.gmail import make_gmail_tools
+from tests._google_client_fakes import FakeExecutable as _FakeExecutable
+from tests._google_client_fakes import make_google_clients as _make_clients
 
 
 _FENCE_OPEN_PREFIX = f"[{_FENCE_TAG} from gmail"
 
 
 # --- fake gmail surface -------------------------------------------
-
-
-class _FakeExecutable:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def execute(self):
-        return self.payload
 
 
 class _FakeMessages:
@@ -94,23 +88,6 @@ class _FakeGmailService:
 
 
 # --- helpers ------------------------------------------------------
-
-
-def _make_clients(monkeypatch, *, accounts=("jasper", "brittany"), service=None):
-    monkeypatch.setattr(
-        gc, "load_credentials", lambda account, **kw: object(),
-    )
-    r = GoogleRegistry()
-    for i, name in enumerate(accounts):
-        r.add_or_update(GoogleAccount(name=name), make_default=(i == 0))
-
-    def factory(api_name, version, creds):
-        return service
-
-    return GoogleClients(
-        registry=r, client_id="x", client_secret="y",
-        service_factory=factory,
-    )
 
 
 def _b64url(text: str) -> str:

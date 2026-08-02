@@ -22,13 +22,12 @@ from __future__ import annotations
 
 import http
 import json
-from email.message import Message
-from io import BytesIO
 from typing import Any
 
 import pytest
 
 from jasper.web import home_assistant_setup as ha
+from tests._web_test_helpers import make_real_handler
 
 
 # ---------------------------------------------------------------------------
@@ -228,30 +227,13 @@ def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
     ``.status`` / ``.sent_headers`` (with a ``header_values(name)`` reader),
     matching the attribute surface the handler tests assert against.
     """
-    handler_cls = _handler_cls()
-    h = handler_cls.__new__(handler_cls)
-    h.path = path
-    h.headers = Message()
-    h.headers["Content-Length"] = str(len(body))
-    h.headers["Content-Type"] = "application/x-www-form-urlencoded"
+    headers = {}
     if cookies:
-        h.headers["Cookie"] = cookies
-    h.rfile = BytesIO(body)
-    h.wfile = BytesIO()
-    h.client_address = ("127.0.0.1", 0)
-
-    h.status = None
-    h.sent_headers = []
-    h.send_response = lambda status, *a, **k: setattr(h, "status", int(status))
-    h.send_response_only = h.send_response
-    h.send_header = lambda name, value: h.sent_headers.append((name, value))
-    h.end_headers = lambda: None
-    h.send_error = lambda status, *a, **k: setattr(h, "status", int(status))
-    h.log_message = lambda *a, **k: None
-    h.header_values = lambda name: [
-        v for n, v in h.sent_headers if n.lower() == name.lower()
-    ]
-    return h
+        headers["Cookie"] = cookies
+    handler, _ = make_real_handler(
+        _handler_cls(), path, body=body, headers=headers,
+    )
+    return handler
 
 
 def test_public_surface_is_stable():

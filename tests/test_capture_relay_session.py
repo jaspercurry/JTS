@@ -13,15 +13,11 @@ no network and no live Worker.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
 import threading
-import urllib.parse
 
 import pytest
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from jasper.capture_relay import client as relay_client_module
 from jasper.capture_relay import crypto
@@ -49,176 +45,8 @@ from jasper.capture_relay.session import (
 )
 from jasper.capture_relay.spec import build_room_sweep_spec
 from jasper.capture_relay.spec import build_crossover_sweep_spec
-
-_CAPTURE_PAGE = {
-    "schema_version": 1,
-    "capture_protocol_version": 3,
-    "supported_capture_protocol_versions": [3],
-    "capture_page_build": "20260727.2",
-}
-
-
-class FakeRelayBackend:
-    """In-memory transport mirroring the Worker's Pi-facing endpoints."""
-
-    def __init__(self) -> None:
-        self.sessions: dict[str, dict] = {}
-        # Phone events are ALWAYS authenticated (the unauthenticated protocol-1
-        # path is deleted), so the fake phone needs the session's E2E content
-        # key to mint a valid envelope. The real relay never learns this key —
-        # only this in-memory stand-in for the phone does.
-        self.content_keys: dict[str, bytes] = {}
-
-    def bind_phone(self, session) -> None:
-        """Hand the fake phone the E2E key it would read from the tap link."""
-        self.content_keys[session.session_id] = session.content_key
-
-    def _authenticate(self, sid, event, *, auth_session=None, sequence=1):
-        if auth_session is not None:
-            return authenticated_phone_event(
-                auth_session.content_key,
-                auth_session.session_id,
-                event,
-                sequence=sequence,
-            )
-        key = self.content_keys.get(sid)
-        if key is None:
-            raise AssertionError(
-                f"no content key bound for {sid} — call backend.bind_phone(session); "
-                "every phone event must be authenticated"
-            )
-        return authenticated_phone_event(key, sid, event, sequence=sequence)
-
-    def __call__(self, method, url, headers, body):
-        path = urllib.parse.urlsplit(url).path
-        parts = [p for p in path.split("/") if p]
-        auth = headers.get("Authorization", "")
-        token = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
-
-        def jr(status, obj):
-            return RelayResponse(status, {}, json.dumps(obj).encode())
-
-        if parts == ["sessions"] and method == "POST":
-            reg = json.loads(body)
-            self.sessions[reg["session_id"]] = {
-                "capture_spec": reg["capture_spec"],  # opaque string, verbatim
-                "upload_token": reg["upload_token"],
-                "pull_token": reg["pull_token"],
-                "max_upload_bytes": reg["max_upload_bytes"],
-                "state": "pending",
-                "event": None,
-                "host_event": None,
-                "integrity": None,
-                "blob": None,
-            }
-            return jr(201, {"session_id": reg["session_id"], "state": "pending"})
-
-        if len(parts) >= 2 and parts[0] == "sessions":
-            sid = parts[1]
-            sub = parts[2] if len(parts) > 2 else ""
-            s = self.sessions.get(sid)
-            if not s:
-                return jr(404, {"error": "not_found"})
-            if sub in ("status", "blob", "") and token != s["pull_token"]:
-                return jr(401, {"error": "unauthorized"})
-            if sub == "status" and method == "GET":
-                return jr(
-                    200,
-                    {
-                        "state": s["state"],
-                        "size": len(s["blob"] or b""),
-                        "integrity": s["integrity"],
-                        "event": s["event"],
-                        "host_event": s["host_event"],
-                        "expires_at": 0,
-                    },
-                )
-            if sub == "host-event" and method == "POST":
-                if token != s["pull_token"]:
-                    return jr(401, {"error": "unauthorized"})
-                s["host_event"] = json.loads(body)
-                return jr(200, {"ok": True})
-            if sub == "blob" and method == "GET":
-                if s["state"] != "ready":
-                    return jr(409, {"error": "not_ready"})
-                return RelayResponse(
-                    200,
-                    {
-                        "x-plaintext-length": str(s["integrity"]["plaintext_len"]),
-                        "x-plaintext-sha256": s["integrity"]["sha256"],
-                    },
-                    s["blob"],
-                )
-            if sub == "" and method == "DELETE":
-                del self.sessions[sid]
-                return RelayResponse(204, {}, b"")
-        return jr(404, {"error": "not_found"})
-
-    # --- phone simulation ---
-    def phone_arm(
-        self,
-        sid,
-        device=None,
-        *,
-        noise_floor=None,
-        setup=None,
-        acknowledgement=None,
-        capture_page=None,
-        auth_session=None,
-        sequence=1,
-    ):
-        event = {
-            "armed": True,
-            "capture_page": dict(capture_page or _CAPTURE_PAGE),
-        }
-        if device is not None:
-            event["device"] = device
-        if noise_floor is not None:
-            event["noise_floor"] = noise_floor
-        if setup is not None:
-            event["setup"] = setup
-        if acknowledgement is not None:
-            event["acknowledgement"] = acknowledgement
-        self.sessions[sid]["event"] = self._authenticate(
-            sid, event, auth_session=auth_session, sequence=sequence
-        )
-
-    def phone_setup_validate(self, sid, setup, *, token="setup-token", sequence=1):
-        self.sessions[sid]["event"] = self._authenticate(
-            sid,
-            {
-                "setup_validate": True,
-                "setup_token": token,
-                "setup": setup,
-                "capture_page": dict(_CAPTURE_PAGE),
-            },
-            sequence=sequence,
-        )
-
-    def phone_abort(self, sid, reason="backgrounded", *, sequence=1):
-        self.sessions[sid]["event"] = self._authenticate(
-            sid, {"aborted": True, "abort_reason": reason}, sequence=sequence
-        )
-
-    def phone_upload(self, sid, content_key, wav):
-        iv = os.urandom(crypto.IV_BYTES)
-        blob = iv + AESGCM(content_key).encrypt(iv, wav, None)
-        s = self.sessions[sid]
-        s["blob"] = blob
-        s["integrity"] = {
-            "plaintext_len": len(wav),
-            "sha256": hashlib.sha256(wav).hexdigest(),
-        }
-        s["state"] = "ready"
-
-    def phone_upload_corrupt(self, sid, content_key, wav):
-        # Valid ciphertext but a wrong integrity claim — must fail loud on the Pi.
-        iv = os.urandom(crypto.IV_BYTES)
-        blob = iv + AESGCM(content_key).encrypt(iv, wav, None)
-        s = self.sessions[sid]
-        s["blob"] = blob
-        s["integrity"] = {"plaintext_len": len(wav), "sha256": "0" * 64}
-        s["state"] = "ready"
+from tests._capture_relay_fake import CAPTURE_PAGE as _CAPTURE_PAGE
+from tests._capture_relay_fake import FakeRelayBackend
 
 
 def _mint(backend):

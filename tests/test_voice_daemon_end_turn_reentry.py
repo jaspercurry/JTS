@@ -27,40 +27,7 @@ from __future__ import annotations
 
 import asyncio
 
-
-class _FakeTurn:
-    """Minimal LiveTurn stand-in covering the surface _end_turn reads."""
-
-    def __init__(self) -> None:
-        self.end_input_calls = 0
-        self.release_calls = 0
-
-    def last_chunk_at(self) -> float:
-        return 0.0
-
-    def last_activity_at(self) -> float:
-        return 0.0
-
-    async def end_input(self) -> None:
-        self.end_input_calls += 1
-
-    async def release(self) -> None:
-        self.release_calls += 1
-
-    def usage_tokens(self) -> dict[str, int]:
-        return {"input_tokens": 0, "output_tokens": 0}
-
-    def usage_breakdown(self):
-        return None
-
-    def bytes_sent(self) -> int:
-        return 0
-
-    def chunks_received(self) -> int:
-        return 0
-
-    def turn_lost(self) -> bool:
-        return False
+from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 
 
 class _FakeUsageStore:

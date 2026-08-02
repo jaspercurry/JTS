@@ -36,18 +36,12 @@ start with a name that includes the query.
 """
 from __future__ import annotations
 
-import os
-
 import pytest
+
+from tests.voice_eval.regression._guards import playback_skip as _playback_skip
 
 
 PASS_K = 3
-
-
-def _playback_skip() -> bool:
-    """True if the user has opted out of playback-affecting tests
-    for this run. Set `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1` to skip."""
-    return os.environ.get("JASPER_VOICE_EVAL_SKIP_PLAYBACK", "").strip() == "1"
 
 
 @pytest.mark.parametrize("trial", range(PASS_K))

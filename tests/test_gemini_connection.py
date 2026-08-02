@@ -28,6 +28,11 @@ from typing import Any
 
 import pytest
 
+from tests._gemini_fakes import GoAway as _GoAway
+from tests._gemini_fakes import Response as _Resp
+from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
+from tests._gemini_fakes import ServerContent as _ServerContent
+
 try:
     from jasper.voice.gemini_session import (
         ConnectionState,
@@ -46,35 +51,6 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Fake SDK plumbing.
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class _ServerContent:
-    turn_complete: bool = False
-    interrupted: bool = False
-
-
-@dataclass
-class _ResumptionUpdate:
-    new_handle: str | None = None
-
-
-@dataclass
-class _GoAway:
-    time_left: float | None = None
-
-
-@dataclass
-class _Resp:
-    """Stand-in for SDK response objects. _on_response and the connection's
-    receive loop both use getattr() so any object with the right attributes
-    works."""
-    data: bytes | None = None
-    tool_call: Any = None
-    server_content: _ServerContent | None = None
-    usage_metadata: Any = None
-    session_resumption_update: _ResumptionUpdate | None = None
-    go_away: _GoAway | None = None
 
 
 class _FakeSession:

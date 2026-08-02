@@ -35,6 +35,8 @@ what pin timing promises.
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Callable
 
 #: Generous by design — every coordination point these tests use settles
 #: in milliseconds when it settles at all, so anything near this bound
@@ -73,3 +75,19 @@ async def wait_signalled(
         if cause is not None:
             detail += f"; the task expected to signal it died first: {cause!r}"
         raise AssertionError(detail) from cause
+
+
+async def wait_until(
+    predicate: Callable[[], bool],
+    *,
+    timeout: float = 1.0,
+    interval: float = 0.01,
+) -> None:
+    """Poll an in-memory condition without duplicating async timeout loops."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(interval)
+    raise AssertionError("condition not met before timeout")

@@ -15,54 +15,7 @@ from jasper.conversation_history import (
     RETENTION_MAX_ROWS_ENV,
 )
 from jasper.research import DONE, ResearchJob
-
-class _FakeTurn:
-    def __init__(
-        self,
-        user_text: str | None,
-        assistant_text: str | None,
-        *,
-        metadata: dict | str | None = None,
-    ) -> None:
-        self._user_text = user_text
-        self._assistant_text = assistant_text
-        self._metadata = metadata
-
-    def last_chunk_at(self) -> float:
-        return 0.0
-
-    def last_activity_at(self) -> float:
-        return 0.0
-
-    async def end_input(self) -> None:
-        return None
-
-    async def release(self) -> None:
-        return None
-
-    def usage_tokens(self) -> dict[str, int]:
-        return {"input_tokens": 0, "output_tokens": 0}
-
-    def usage_breakdown(self):
-        return None
-
-    def bytes_sent(self) -> int:
-        return 0
-
-    def chunks_received(self) -> int:
-        return 0
-
-    def turn_lost(self) -> bool:
-        return False
-
-    def user_transcript(self) -> str | None:
-        return self._user_text
-
-    def assistant_transcript(self) -> str | None:
-        return self._assistant_text
-
-    def conversation_metadata(self) -> dict | str | None:
-        return self._metadata
+from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 
 
 class _FakeUsageStore:

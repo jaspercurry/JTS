@@ -17,39 +17,14 @@ either.
 """
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
-from typing import Iterable
 from unittest.mock import patch
 
 import pytest
 
 from jasper import wifi_guardian_persistence
-
-
-def _mock_proc(returncode: int = 0, stdout: str = "", stderr: str = ""):
-    return subprocess.CompletedProcess(
-        args=["nmcli"], returncode=returncode,
-        stdout=stdout, stderr=stderr,
-    )
-
-
-def _scripted_nmcli(steps: Iterable[subprocess.CompletedProcess]):
-    """Build a side_effect that returns the next CompletedProcess on
-    each call. Tests script the exact sequence of nmcli responses they
-    want the wizard's call-sites to see."""
-    steps_iter = iter(steps)
-
-    def side_effect(cmd, *args, **kwargs):
-        try:
-            return next(steps_iter)
-        except StopIteration:
-            # Default: succeed with empty stdout. Catches "the call
-            # site issued more nmclis than the test scripted" without
-            # forcing every test to enumerate every probe.
-            return _mock_proc()
-
-    return side_effect
+from tests._nmcli_fakes import mock_proc as _mock_proc
+from tests._nmcli_fakes import scripted_nmcli as _scripted_nmcli
 
 
 def _stash_path(tmp_path: Path) -> Path:

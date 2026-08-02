@@ -49,21 +49,12 @@ Three-assertion shape:
 """
 from __future__ import annotations
 
-import os
-
 import pytest
+
+from tests.voice_eval.regression._guards import playback_skip as _ha_action_skip
 
 
 PASS_K = 3
-
-
-def _ha_action_skip() -> bool:
-    """True if the user has opted out of physical-side-effect tests for
-    this run. Reuses `JASPER_VOICE_EVAL_SKIP_PLAYBACK` so a single env
-    var silences both playback control AND smart-home actions — the
-    operator rarely wants one but not the other while the household is
-    home."""
-    return os.environ.get("JASPER_VOICE_EVAL_SKIP_PLAYBACK", "").strip() == "1"
 
 
 @pytest.mark.parametrize("trial", range(PASS_K))

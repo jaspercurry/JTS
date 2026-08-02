@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 77 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 61 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 563
+- **fixed**: 579
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -481,8 +481,8 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0610 | `tests/test_aec_bridge_systemd.py` :: _value_for | nit | W3 | **fixed** | systemd contract suites share a last-assignment-aware directive parser — this branch |
 | DA-0611 | `tests/test_aec_reconcile.py` :: _fake_outputd_status_socket | nit | W3 | **open** | — |
 | DA-0612 | `tests/test_aec_reconcile.py` :: _fake_systemctl | nit | W3 | **fixed** | shell reconciler suites share one argv-recording systemctl double — this branch |
-| DA-0613 | `tests/test_camilla_pipe_guard_script.py` :: _runtime_safe_graph_script / _write_statefil | nit | W3 | **open** | — |
-| DA-0614 | `tests/test_capture_relay_session.py` :: FakeRelayBackend | nit | W3 | **open** | — |
+| DA-0613 | `tests/test_camilla_pipe_guard_script.py` :: _runtime_safe_graph_script / _write_statefil | nit | W3 | **fixed** | Camilla guard suites share runtime-contract script, statefile, and pipe-config fixtures — this branch |
+| DA-0614 | `tests/test_capture_relay_session.py` :: FakeRelayBackend | nit | W3 | **fixed** | relay session and correction-adapter suites share one faithful superset backend — this branch |
 | DA-0615 | `tests/test_control_server.py` :: class FakePopen (L833, 911, 943, 979, 1012,  | nit | W3 | **fixed** | command-dispatch tests share one minimal recording `Popen` factory — this branch |
 | DA-0616 | `tests/test_control_systemd.py` :: _value_for | nit | W3 | **fixed** | control and sibling systemd tests use the shared directive parser — this branch |
 | DA-0617 | `tests/test_cues_generator.py` :: test_cues_are_provider_agnostic | nit | W3 | **fixed** | duplicate provider-agnostic cue scan removed; the canonical registry guard remains — this branch |
@@ -492,24 +492,24 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0621 | `tests/test_doctor_memory_resilience.py` :: _make_oom_run / _make_start_limit_action_run | nit | W3 | **fixed** | memory-resilience tests share one batched systemctl-show wire double — this branch |
 | DA-0622 | `tests/test_doctor_secrets_manifest.py` :: _supp_groups / _user (vs test_doctor_privsep | nit | W3 | **open** | — |
 | DA-0623 | `tests/test_doctor_usbsink.py` :: test_usbsink_state_active_no_state_file (rep | nit | W3 | **mooted** | usbsink doctor tests were rewritten; audited repeated path block no longer exists |
-| DA-0624 | `tests/test_gemini_session.py` :: _SC / _Resp | nit | W3 | **open** | — |
+| DA-0624 | `tests/test_gemini_session.py` :: _SC / _Resp | nit | W3 | **fixed** | Gemini lifecycle suites share SDK response, content, usage, resumption, and GoAway doubles — this branch |
 | DA-0625 | `tests/test_install_outputd_ready_nonfatal.py` :: _install_text | nit | W3 | **fixed** | outputd installer guards reuse the canonical installer-surface reader — this branch |
-| DA-0627 | `tests/test_peering_uds.py` :: _short_socket_path | nit | W3 | **open** | — |
-| DA-0628 | `tests/test_research_scheduler.py` :: _wait_for | nit | W3 | **open** | — |
-| DA-0629 | `tests/test_route_latency_tap_transport.py` :: short_sock_path | nit | W3 | **open** | — |
+| DA-0627 | `tests/test_peering_uds.py` :: _short_socket_path | nit | W3 | **fixed** | peering socket tests use one shared short unique UDS-path factory — this branch |
+| DA-0628 | `tests/test_research_scheduler.py` :: _wait_for | nit | W3 | **fixed** | scheduler and announcement tests share a bounded asynchronous wait helper — this branch |
+| DA-0629 | `tests/test_route_latency_tap_transport.py` :: short_sock_path | nit | W3 | **fixed** | route-latency suites share one named socket-path fixture — this branch |
 | DA-0630 | `tests/test_sound_setup.py` :: test_active_speaker_protection_and_stage_con | nit | W3 | **open** | — |
 | DA-0631 | `tests/test_sound_setup_commission.py` :: test_summed_test_audio_path_loads_plays_roll | nit | W3 | **open** | — |
-| DA-0632 | `tests/test_system_setup.py` :: _http_post / _http_post_json / _http_post_wi | nit | W3 | **open** | — |
+| DA-0632 | `tests/test_system_setup.py` :: _http_post / _http_post_json / _http_post_wi | nit | W3 | **fixed** | dashboard CSRF acquisition and POST execution consolidated behind one helper — this branch |
 | DA-0633 | `tests/test_tool_budget.py` :: test_model_facing_descriptions_stay_under_bu | nit | W3 | **fixed** | model-description budget derives the shipped set from `EXPECTED_TOOL_NAMES`, not a count literal — this branch |
-| DA-0634 | `tests/test_tools_gmail.py` :: _make_clients | nit | W3 | **open** | — |
-| DA-0635 | `tests/test_tools_transport.py` :: FakeRouter | nit | W3 | **open** | — |
-| DA-0636 | `tests/test_voice_daemon_end_turn_reentry.py` :: class _FakeTurn | nit | W3 | **open** | — |
+| DA-0634 | `tests/test_tools_gmail.py` :: _make_clients | nit | W3 | **fixed** | Calendar and Gmail tests share executable and Google-client fakes — this branch |
+| DA-0635 | `tests/test_tools_transport.py` :: FakeRouter | nit | W3 | **fixed** | Spotify and transport tests share renderer, account-client, and router fakes — this branch |
+| DA-0636 | `tests/test_voice_daemon_end_turn_reentry.py` :: class _FakeTurn | nit | W3 | **fixed** | voice-daemon lifecycle suites share one configurable live-turn fake — this branch |
 | DA-0637 | `tests/test_wake_corpus_setup.py` :: test_index_html_is_valid_shape, test_render_ | nit | W3 | **open** | — |
 | DA-0638 | `tests/test_wake_corpus_setup.py` :: test_metadata_written_per_session:418 (+9 re | nit | W3 | **fixed** | enrollment tests share one exact-single-session metadata reader — this branch |
 | DA-0639 | `tests/test_web_speaker_setup.py` :: _FakeHandler | nit | W3 | **fixed** | duplicate of DA-0240; subsumed by shared wizard handler — #1397 |
-| DA-0640 | `tests/test_web_wifi_setup.py` :: _make_request | nit | W3 | **open** | — |
-| DA-0641 | `tests/test_wifi_setup_guardian_hooks.py` :: _mock_proc / _scripted_nmcli | nit | W3 | **open** | — |
-| DA-0642 | `tests/voice_eval/regression/test_spotify.py` :: _playback_skip / _ha_action_skip / _require_ | nit | W3 | **open** | — |
+| DA-0640 | `tests/test_web_wifi_setup.py` :: _make_request | nit | W3 | **fixed** | four wizard suites share canonical real-handler construction — this branch |
+| DA-0641 | `tests/test_wifi_setup_guardian_hooks.py` :: _mock_proc / _scripted_nmcli | nit | W3 | **fixed** | Wi-Fi suites share completed-process and scripted nmcli doubles — this branch |
+| DA-0642 | `tests/voice_eval/regression/test_spotify.py` :: _playback_skip / _ha_action_skip / _require_ | nit | W3 | **fixed** | voice-eval side-effect and Google-account gates centralized — this branch |
 | DA-0643 | `c/jts-ring-ioplug/Makefile` :: bench | nit | W4 | **open** | — |
 | DA-0644 | `deploy/systemd/camillagui.service` :: :20 | nit | W4 | **fixed** | backend/socket/proxy lifecycle and installer activation contracts now have direct tests — this branch |
 | DA-0645 | `jasper/active_speaker/audible_policy.py` :: audible_role_block_code:35 | nit | W4 | **fixed** | missing, empty, and disallowed protection fail closed; protected high-frequency dome remains eligible — #1428 |
@@ -532,7 +532,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0662 | `tests/test_active_speaker_setup_status.py` :: import:21 | nit | W4 | **open** | — |
 | DA-0663 | `tests/test_analyze_wake_corpus_quality.py` :: pytest_approx | nit | W4 | **fixed** | unnecessary local approximation shim replaced with `pytest.approx` — this branch |
 | DA-0664 | `tests/test_audio_hardware_reconcile.py` :: 105 | nit | W4 | **fixed** | unused TTS env-file variable removed from the reconciler fixture — this branch |
-| DA-0665 | `tests/test_dependency_groups.py` :: module scope | nit | W4 | **open** | — |
+| DA-0665 | `tests/test_dependency_groups.py` :: module scope | nit | W4 | **fixed** | dependency contracts split from build, CI, workflow, mypy, and supply-chain contracts — this branch |
 | DA-0666 | `tests/test_doctor.py` :: test_run_async_parallelizes_blocking_checks_ | nit | W4 | **fixed** | concurrency proof uses an active-worker counter instead of a wall-clock threshold — this branch |
 | DA-0667 | `tests/test_doctor_usbsink.py` :: 1180 | nit | W4 | **mooted** | the stale env-drift fixture and obsolete route key were removed by later test restructuring — later mainline refactor |
 | DA-0668 | `tests/test_sound_setup.py` :: :1 | nit | W4 | **fixed** | sound setup suite now declares its module purpose — this branch |
@@ -541,10 +541,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0671 | `tests/test_sources_setup_usbsink.py` :: _patch_config | nit | W4 | **fixed** | later source-wizard test refactor removed the unused helper |
 | DA-0672 | `tests/test_tools_spotify.py` :: test_revoked_then_relinked_recovers_without_ | nit | W4 | **fixed** | real same-clock 30-second router refresh cooldown exercised without force-resetting state — #1426 |
 | DA-0673 | `tests/test_usbsink_volume_bridge.py` :: test_run_retries_discovery_after_transient_m | nit | W4 | **fixed** | retry behavior and `amixer` timeout handling are asserted in separate tests — this branch |
-| DA-0674 | `tests/test_volume_diagnostics.py` :: build_volume_policy_snapshot | nit | W4 | **open** | — |
+| DA-0674 | `tests/test_volume_diagnostics.py` :: build_volume_policy_snapshot | nit | W4 | **fixed** | volume diagnostics cover guard precedence, metadata parity, epsilon, source, fallback, and malformed fields — this branch |
 | DA-0675 | `tests/test_wake_corpus_setup.py` :: :1-4307 (whole file) | nit | W4 | **open** | — |
 | DA-0676 | `tests/test_web_rooms_setup.py` :: test_post_swap_rollback_failure_is_surfaced | nit | W4 | **fixed** | rollback-failure test now drives one explicit request instead of discarding a duplicate setup call — this branch |
-| DA-0677 | `tests/voice_eval/regression/test_barge_in_openai.py` :: truncate_lines / _AUDIO_END_MS_RE | nit | W4 | **open** | — |
+| DA-0677 | `tests/voice_eval/regression/test_barge_in_openai.py` :: truncate_lines / _AUDIO_END_MS_RE | nit | W4 | **fixed** | regression parser accepts both canonical JSON and logfmt structured records — this branch |
 | DA-0002 | `jasper/capture_relay/alignment.py` :: assert_alignment_confident | blocker | W0 | **open (partially mitigated)** | the *question* is gated on crossover (three floors — `ALIGNMENT_CONFIDENCE_TRUST_FLOOR` 0.6 decides build/auto-apply, plus locate floors 0.3/0.1; #1589/#1661/#1838) and `/sync` (own peak-parity `MIN_CONFIDENCE` 0.35, pre-audit); `room_sweep` ungated; `bass_nearfield` has no production flow. This *function* still has no reachable production caller — #1384's lone call site sits behind an `ambient_duration_s` no live path supplies. Nothing reads `validity.require_alignment`. No DA-0002 work has landed; docs corrected #1214 + #1881; per-flow map + observe-first rollout tracked in #1882 — see "Open owner decisions" §1 |
 | DA-0001 | `deploy/assets/rooms/js/main.js` :: makeBondCard().sync() — appendChildren call  | blocker | W0 | **fixed** | ReferenceError fixed + regression test — #1214 |
 | DA-0076 | `AGENTS.md` :: "Cue regeneration" paragraph, Voice provider | should-fix | W2 | **fixed** | doc corrected — #1216 |

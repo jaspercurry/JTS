@@ -47,20 +47,12 @@ actually playing. The harness has no guaranteed playback state, so:
 """
 from __future__ import annotations
 
-import os
-
 import pytest
+
+from tests.voice_eval.regression._guards import playback_skip as _playback_skip
 
 
 PASS_K = 3
-
-
-def _playback_skip() -> bool:
-    """True if the user has opted out of playback-affecting tests for
-    this run. Set `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1` to skip. Mirrors
-    test_spotify.py's guard so one env var silences every
-    playback-touching scenario."""
-    return os.environ.get("JASPER_VOICE_EVAL_SKIP_PLAYBACK", "").strip() == "1"
 
 
 def _assert_transport_outcome(call, *, trial: int, transcript_path) -> None:

@@ -30,6 +30,7 @@ import urllib.parse
 import urllib.request
 from email.message import Message
 from io import BytesIO
+from typing import Any
 
 
 CSRF_COOKIE_NAME = "jts_csrf"
@@ -93,6 +94,59 @@ class FakeHandler:
             for header, value in self.sent_headers
             if header.lower() == name.lower()
         ]
+
+
+def make_real_handler(
+    handler_cls,
+    path: str,
+    *,
+    body: bytes = b"",
+    headers: dict[str, str] | None = None,
+    content_type: str | None = "application/x-www-form-urlencoded",
+    content_length: str | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Instantiate a real wizard handler without its socket constructor."""
+
+    handler = handler_cls.__new__(handler_cls)
+    handler.path = path
+    handler.headers = Message()
+    handler.headers["Content-Length"] = (
+        str(len(body)) if content_length is None else content_length
+    )
+    if content_type is not None:
+        handler.headers["Content-Type"] = content_type
+    for name, value in (headers or {}).items():
+        handler.headers[name] = value
+    handler.rfile = BytesIO(body)
+    handler.wfile = BytesIO()
+    handler.client_address = ("127.0.0.1", 0)
+
+    captured: dict[str, Any] = {"status": None, "responses": [], "headers": []}
+
+    def capture_response(status: int, *args: object, **kwargs: object) -> None:
+        captured["status"] = int(status)
+        captured["responses"].append(int(status))
+        handler.status = int(status)
+
+    def capture_error(status: int, *args: object, **kwargs: object) -> None:
+        captured["status"] = int(status)
+        handler.status = int(status)
+
+    handler.status = None
+    handler.sent_headers = captured["headers"]
+    handler.send_response = capture_response
+    handler.send_response_only = capture_response
+    handler.send_header = lambda name, value: captured["headers"].append((name, value))
+    handler.end_headers = lambda: None
+    handler.send_error = capture_error
+    handler.address_string = lambda: "127.0.0.1"
+    handler.log_message = lambda *args, **kwargs: None
+    handler.header_values = lambda name: [
+        value
+        for header, value in handler.sent_headers
+        if header.lower() == name.lower()
+    ]
+    return handler, captured
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

@@ -14,27 +14,17 @@ relay, so the whole graft is proven hardware-free.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import hashlib
 import io
 import json
-import os
 from types import SimpleNamespace
-import urllib.parse
 
 import pytest
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from jasper.capture_relay import correction_adapter as adapter
-from jasper.capture_relay import crypto
-from jasper.capture_relay.client import RelayClient, RelayResponse
+from jasper.capture_relay.client import RelayClient
+from tests._capture_relay_fake import CAPTURE_PAGE as _CAPTURE_PAGE
+from tests._capture_relay_fake import FakeRelayBackend
 from tests.active_speaker_fixtures import mono_output_topology
-
-_CAPTURE_PAGE = {
-    "schema_version": 1,
-    "capture_protocol_version": 3,
-    "supported_capture_protocol_versions": [3],
-    "capture_page_build": "20260727.2",
-}
 
 # Every phone event is authenticated — the unauthenticated protocol-1
 # transport these tests used to lean on is deleted, so the fake phone signs
@@ -111,71 +101,6 @@ def _level_pi_session():
         content_key=_CONTENT_KEY,
         spec=build_level_ramp_spec(run_token="test-run-token"),
     )
-
-
-class FakeRelayBackend:
-    """Minimal in-memory relay mirroring the Worker's Pi-facing endpoints."""
-
-    def __init__(self) -> None:
-        self.sessions: dict[str, dict] = {}
-
-    def __call__(self, method, url, headers, body):
-        path = urllib.parse.urlsplit(url).path
-        parts = [p for p in path.split("/") if p]
-        token = (headers.get("Authorization", "") or "").removeprefix("Bearer ")
-
-        def jr(status, obj):
-            return RelayResponse(status, {}, json.dumps(obj).encode())
-
-        if parts == ["sessions"] and method == "POST":
-            reg = json.loads(body)
-            self.sessions[reg["session_id"]] = {
-                "capture_spec": reg["capture_spec"],
-                "pull_token": reg["pull_token"],
-                "state": "pending",
-                "event": None,
-                "integrity": None,
-                "blob": None,
-            }
-            return jr(201, {"session_id": reg["session_id"], "state": "pending"})
-        if len(parts) >= 2 and parts[0] == "sessions":
-            sid, sub = parts[1], (parts[2] if len(parts) > 2 else "")
-            s = self.sessions.get(sid)
-            if not s:
-                return jr(404, {"error": "not_found"})
-            if token != s["pull_token"]:
-                return jr(401, {"error": "unauthorized"})
-            if sub == "status" and method == "GET":
-                return jr(200, {
-                    "state": s["state"], "size": len(s["blob"] or b""),
-                    "integrity": s["integrity"], "event": s["event"], "expires_at": 0,
-                })
-            if sub == "blob" and method == "GET":
-                if s["state"] != "ready":
-                    return jr(409, {"error": "not_ready"})
-                return RelayResponse(200, {
-                    "x-plaintext-length": str(s["integrity"]["plaintext_len"]),
-                    "x-plaintext-sha256": s["integrity"]["sha256"],
-                }, s["blob"])
-            if sub == "" and method == "DELETE":
-                del self.sessions[sid]
-                return RelayResponse(204, {}, b"")
-        return jr(404, {"error": "not_found"})
-
-    def phone_arm(self, sid, device=None, *, sequence=1, content_key=_CONTENT_KEY):
-        event = {"armed": True, "capture_page": dict(_CAPTURE_PAGE)}
-        if device is not None:
-            event["device"] = device
-        self.sessions[sid]["event"] = _authed(
-            event, sequence, session_id=sid, content_key=content_key
-        )
-
-    def phone_upload(self, sid, content_key, wav):
-        iv = os.urandom(crypto.IV_BYTES)
-        s = self.sessions[sid]
-        s["blob"] = iv + AESGCM(content_key).encrypt(iv, wav, None)
-        s["integrity"] = {"plaintext_len": len(wav), "sha256": hashlib.sha256(wav).hexdigest()}
-        s["state"] = "ready"
 
 
 # --- config gate --------------------------------------------------------------

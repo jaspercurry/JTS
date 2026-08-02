@@ -24,6 +24,12 @@ import os
 import subprocess
 from pathlib import Path
 
+from tests._camilla_guard_fixtures import (
+    write_pipe_config as _pipe_config,
+    write_runtime_safe_graph_script,
+    write_statefile as _write_statefile,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-camilla-pipe-guard"
 
@@ -31,41 +37,11 @@ SNAPFIFO_NAME = "snapfifo"
 
 
 def _runtime_safe_graph_script(tmp_path: Path) -> Path:
-    script = tmp_path / "runtime-safe-graph"
-    script.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-statefile=""
-flat=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --statefile) statefile="$2"; shift 2 ;;
-        --flat-config) flat="$2"; shift 2 ;;
-        runtime-safe-graph|--write-statefile|--json) shift ;;
-        *) shift ;;
-    esac
-done
-if [[ "${JASPER_FAKE_RUNTIME_BLOCK:-0}" == "1" || ! -r "$flat" ]]; then
-    printf '{"ok":false,"status":"blocked"}\\n'
-    exit 1
-fi
-tmp="${statefile}.fake.$$"
-if [[ -f "$statefile" ]]; then
-    sed "s|^\\([[:space:]]*config_path:\\).*|\\1 ${flat}|" "$statefile" > "$tmp"
-    if ! grep -q '^[[:space:]]*config_path:' "$tmp"; then
-        { printf 'config_path: %s\\n' "$flat"; cat "$tmp"; } > "${tmp}.with-path"
-        mv "${tmp}.with-path" "$tmp"
-    fi
-else
-    printf 'config_path: %s\\nvolume:\\n- 0.0\\n' "$flat" > "$tmp"
-fi
-mv "$tmp" "$statefile"
-printf '{"ok":true,"status":"select_flat"}\\n'
-""",
-        encoding="utf-8",
+    return write_runtime_safe_graph_script(
+        tmp_path,
+        success_status="select_flat",
+        ensure_config_path=True,
     )
-    script.chmod(0o755)
-    return script
 
 
 def _run(
@@ -93,21 +69,6 @@ def _run(
         ["bash", str(SCRIPT)],
         capture_output=True, text=True, env=env, timeout=20,
     )
-
-
-def _write_statefile(tmp_path: Path, config_path: Path) -> Path:
-    statefile = tmp_path / "statefile.yml"
-    statefile.write_text(f'config_path: "{config_path}"\nvolume: -20.0\n')
-    return statefile
-
-
-def _pipe_config(tmp_path: Path, fifo: Path) -> Path:
-    cfg = tmp_path / "grouping_leader.yml"
-    cfg.write_text(
-        "devices:\n  playback:\n    type: File\n    channels: 2\n"
-        f'    filename: "{fifo}"\n    format: S16_LE\n'
-    )
-    return cfg
 
 
 def _solo_config(tmp_path: Path) -> Path:

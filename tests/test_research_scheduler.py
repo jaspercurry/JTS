@@ -21,6 +21,7 @@ from jasper.research import (
     ResearchResult,
     ResearchScheduler,
 )
+from tests._async_wait import wait_until as _wait_for
 
 
 def _tmp_db_path() -> str:
@@ -28,15 +29,6 @@ def _tmp_db_path() -> str:
     os.close(fd)
     os.unlink(path)
     return path
-
-
-async def _wait_for(predicate, *, timeout: float = 1.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condition not met before timeout")
 
 
 def _job(

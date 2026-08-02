@@ -28,13 +28,12 @@ import json
 import logging
 import threading
 import time
-from email.message import Message
-from io import BytesIO
 from unittest import mock
 
 import pytest
 
 from jasper.web import bluetooth_setup
+from tests._web_test_helpers import make_real_handler
 
 
 # --------------------------------------------------------------------------
@@ -252,42 +251,20 @@ def _make_request(
     Returns the handler instance; read `handler.status` and
     `handler.wfile.getvalue()` after invoking do_GET/do_POST.
     """
-    cls = bluetooth_setup._make_handler()
-    h = cls.__new__(cls)  # bypass socketserver __init__
-    h.path = path
-    h.headers = Message()
-    h.headers["Content-Length"] = (
-        str(len(body)) if content_length is None else content_length
-    )
-    h.headers["Content-Type"] = "application/json"
+    headers = {}
     if cookies:
-        h.headers["Cookie"] = cookies
+        headers["Cookie"] = cookies
     if csrf_header:
-        h.headers["X-CSRF-Token"] = csrf_header
-    h.rfile = BytesIO(body)
-    h.wfile = BytesIO()
-    h.client_address = ("127.0.0.1", 0)
-
-    # Capture the response status; the real _send_html/_send_json adapters and
-    # their shared response helpers call send_response()/send_header()/end_headers().
-    h.status = None
-    h.sent_headers = []
-
-    def _send_response(code, *a, **k):
-        h.status = int(code)
-
-    def _send_header(name, value):
-        h.sent_headers.append((name, value))
-
-    def _send_error(code, *a, **k):
-        h.status = int(code)
-
-    h.send_response = _send_response
-    h.send_response_only = _send_response
-    h.send_header = _send_header
-    h.end_headers = lambda: None
-    h.send_error = _send_error
-    return h
+        headers["X-CSRF-Token"] = csrf_header
+    handler, _ = make_real_handler(
+        bluetooth_setup._make_handler(),
+        path,
+        body=body,
+        headers=headers,
+        content_type="application/json",
+        content_length=content_length,
+    )
+    return handler
 
 
 def test_public_surface_is_stable():
