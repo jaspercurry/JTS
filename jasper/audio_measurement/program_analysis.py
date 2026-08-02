@@ -819,7 +819,13 @@ class CaptureIntegrity:
         return {
             "glitched": self.glitched,
             "checks": [
-                {"name": c.name, "status": c.status, **({"reason": c.reason} if c.reason else {})}
+                {
+                    "name": c.name,
+                    "status": c.status,
+                    # Present only where there IS one, so a consumer cannot
+                    # read an empty string as a stated reason.
+                    **({"reason": c.reason} if c.reason else {}),
+                }
                 for c in self.checks
             ],
             "locate_confidence_min": self.locate_confidence_min,
