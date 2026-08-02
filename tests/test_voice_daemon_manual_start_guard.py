@@ -20,6 +20,8 @@ import asyncio
 import logging
 import types
 
+from ._async_wait import wait_signalled
+
 
 class _SpyCalls:
     """Records that a side-effecting coroutine was awaited."""
@@ -139,7 +141,9 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
     monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", fake_sleep)
 
     assert await wl.measurement_pause() == "ok"
-    await timer_started.wait()
+    await wait_signalled(
+        timer_started, "auto-clear timer started", producer=wl._measurement_safety_task
+    )
     release_timer.set()
     await wl._measurement_safety_task
 

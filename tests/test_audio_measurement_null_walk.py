@@ -22,6 +22,8 @@ from jasper.audio_measurement.null_walk import (
     summarize_candidate,
 )
 
+from ._async_wait import wait_signalled
+
 
 def _capture(depth: float, **acoustic_overrides):
     acoustic = {
@@ -637,7 +639,7 @@ async def test_runner_cancellation_during_capture_restores_before_propagating(ca
             restore_predecessor=_restore_recorder(restored),
         )
     )
-    await capture_started.wait()
+    await wait_signalled(capture_started, "null-walk capture started", producer=task)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -686,7 +688,7 @@ async def test_runner_cancellation_settles_candidate_apply_before_restore():
             restore_predecessor=restore,
         )
     )
-    await apply_started.wait()
+    await wait_signalled(apply_started, "candidate apply started", producer=task)
     task.cancel()
     task.cancel()
     await asyncio.sleep(0)
@@ -719,7 +721,7 @@ async def test_runner_preserves_apply_failure_that_finishes_after_cancellation()
             restore_predecessor=_restore_recorder(restored),
         )
     )
-    await apply_started.wait()
+    await wait_signalled(apply_started, "candidate apply started", producer=task)
     task.cancel()
     release_apply.set()
 
@@ -785,9 +787,9 @@ async def test_runner_repeated_cancellation_cannot_interrupt_restore():
             restore_predecessor=restore,
         )
     )
-    await capture_started.wait()
+    await wait_signalled(capture_started, "null-walk capture started", producer=task)
     task.cancel()
-    await restore_started.wait()
+    await wait_signalled(restore_started, "predecessor restore started", producer=task)
     task.cancel()
     await asyncio.sleep(0)
     assert restored == []
@@ -823,7 +825,7 @@ async def test_runner_cancellation_during_success_cleanup_waits_for_restore():
             restore_predecessor=restore,
         )
     )
-    await restore_started.wait()
+    await wait_signalled(restore_started, "predecessor restore started", producer=task)
     task.cancel()
     release_restore.set()
 
@@ -857,7 +859,7 @@ async def test_runner_preserves_cleanup_cancellation_when_restore_fails_after_su
             restore_predecessor=fail_restore,
         )
     )
-    await restore_started.wait()
+    await wait_signalled(restore_started, "predecessor restore started", producer=task)
     task.cancel("cleanup")
     await asyncio.sleep(0)
     release_restore.set()
@@ -899,7 +901,7 @@ async def test_runner_preserves_body_failure_cleanup_cancellation_and_restore_fa
             restore_predecessor=fail_restore,
         )
     )
-    await restore_started.wait()
+    await wait_signalled(restore_started, "predecessor restore started", producer=task)
     task.cancel("cleanup")
     await asyncio.sleep(0)
     release_restore.set()
@@ -939,9 +941,9 @@ async def test_runner_preserves_repeated_cancellation_and_restore_failure():
             restore_predecessor=fail_restore,
         )
     )
-    await capture_started.wait()
+    await wait_signalled(capture_started, "null-walk capture started", producer=task)
     task.cancel("original")
-    await restore_started.wait()
+    await wait_signalled(restore_started, "predecessor restore started", producer=task)
     task.cancel("cleanup")
     await asyncio.sleep(0)
     release_restore.set()

@@ -15,6 +15,8 @@ from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.engine import BluetoothEngine, _format_dbus_error
 from jasper.bluetooth.models import BluetoothDevice, UUID_HOGP
 
+from ._async_wait import wait_signalled
+
 
 def _wiim_device() -> BluetoothDevice:
     return BluetoothDevice.from_props(
@@ -365,7 +367,9 @@ async def test_scan_refresh_replaces_timer_without_stacking_stop_calls():
     assert first_expiry is not None
     assert refreshed_expiry is not None
     assert refreshed_expiry is not first_expiry
-    await adapter.stop_entered.wait()
+    await wait_signalled(
+        adapter.stop_entered, "adapter.stop_discovery entered", producer=refreshed_expiry
+    )
     adapter.release_stop.set()
     await refreshed_expiry
     await asyncio.sleep(0)
@@ -406,7 +410,9 @@ async def test_scan_refresh_wins_exact_expiry_race_and_remains_discovering():
     await engine.start_discovery(duration_s=0)
     first_expiry = engine._scan_task
     assert first_expiry is not None
-    await adapter.stop_entered.wait()
+    await wait_signalled(
+        adapter.stop_entered, "adapter.stop_discovery entered", producer=first_expiry
+    )
 
     refresh = asyncio.create_task(engine.start_discovery(duration_s=60))
     await asyncio.sleep(0)
@@ -859,7 +865,9 @@ async def test_engine_stop_during_start_does_not_resurrect_scan_or_timer():
     observer = engine._observer
 
     start = asyncio.create_task(engine.start_discovery(duration_s=60))
-    await adapter.start_entered.wait()
+    await wait_signalled(
+        adapter.start_entered, "adapter.start_discovery entered", producer=start
+    )
     stop = asyncio.create_task(engine.stop())
     await asyncio.sleep(0)
     assert engine._closing is True

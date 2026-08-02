@@ -20,6 +20,8 @@ from jasper.bass_extension.bench.activation import (
     temporary_bass_activation,
 )
 
+from ._async_wait import wait_signalled
+
 PREDECESSOR_YAML = "filters: {}\npipeline: []\n"
 CANDIDATE_YAML = "filters:\n  baseline_limiter_woofer:\n    type: Limiter\npipeline: []\n"
 
@@ -256,7 +258,7 @@ async def test_cancellation_still_restores(config_file: Path) -> None:
             await asyncio.sleep(3600)
 
     task = asyncio.ensure_future(run())
-    await entered.wait()
+    await wait_signalled(entered, "bass activation entered", producer=task)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

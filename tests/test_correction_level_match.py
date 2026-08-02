@@ -46,6 +46,7 @@ from jasper.correction.session import (
     ROOM_LEVEL_WINDOW_HIGH_DBFS,
     ROOM_LEVEL_WINDOW_LOW_DBFS,
 )
+from ._async_wait import wait_signalled
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
 )
@@ -1004,7 +1005,9 @@ async def test_stop_after_locked_waits_for_terminal_ack_then_restores(tmp_path):
             sleep=controlled_sleep,
         )
     )
-    await terminal_waiting.wait()
+    await wait_signalled(
+        terminal_waiting, "terminal RampState post-spacing wait", producer=running
+    )
     assert chain._vol != pytest.approx(-30.0)
 
     intent = await sess.begin_autolevel_reset()
@@ -1238,7 +1241,7 @@ async def test_session_ensure_and_restore_share_one_transition_lock(tmp_path):
         return True
 
     ensure = asyncio.create_task(sess.ensure_level_match_volume(blocked_set))
-    await entered.wait()
+    await wait_signalled(entered, "ensure_level_match_volume write entered", producer=ensure)
     restore = asyncio.create_task(sess.restore_level_match_volume(blocked_set))
     await asyncio.sleep(0)
     # Restore cannot pass the in-flight ensure write.

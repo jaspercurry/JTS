@@ -21,6 +21,8 @@ from jasper.audio_measurement import playback
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.correction import playback as correction_playback
 
+from ._async_wait import wait_signalled
+
 
 class _ExitedProcess:
     def __init__(self, returncode: int = 0, stderr: bytes = b"") -> None:
@@ -981,7 +983,7 @@ async def test_continuous_tone_cancel_reaps_and_logs_lifecycle(
     caplog.set_level(logging.INFO, logger=playback.__name__)
     player = playback.TonePlayer(wav_path, alsa_device="test_pcm")
     task = asyncio.create_task(player.play())
-    await wait_started.wait()
+    await wait_signalled(wait_started, "process wait() started", producer=task)
 
     player.cancel()
     await task
@@ -1022,7 +1024,7 @@ async def test_continuous_tone_unconfirmed_cancel_cleanup_is_bounded(
     monkeypatch.setattr(playback, "_PROCESS_CLEANUP_TIMEOUT_S", 0.01)
     player = playback.TonePlayer(wav_path, alsa_device="test_pcm")
     task = asyncio.create_task(player.play())
-    await wait_started.wait()
+    await wait_signalled(wait_started, "process wait() started", producer=task)
 
     player.cancel()
     with pytest.raises(playback.PlaybackError) as caught:

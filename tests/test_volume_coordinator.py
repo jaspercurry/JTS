@@ -1567,7 +1567,7 @@ async def test_nonzero_intent_publishes_before_slow_spotify_dispatch(tmp_path):
     coord._set_spotify = blocked_spotify
 
     operation = asyncio.create_task(coord.set_listening_level(67))
-    await cloud_started.wait()
+    await wait_signalled(cloud_started, "spotify dispatch started", producer=operation)
 
     assert len(published) == 1
     assert published[0].canonical_db == pytest.approx(percent_to_db(67))
@@ -1607,7 +1607,7 @@ async def test_mute_intent_is_local_and_published_before_slow_spotify(
     coord._set_spotify = blocked_spotify
 
     operation = asyncio.create_task(coord.mute())
-    await cloud_started.wait()
+    await wait_signalled(cloud_started, "spotify dispatch started", producer=operation)
 
     assert cam.muted is True
     assert len(published) == 1
@@ -1652,7 +1652,7 @@ async def test_mute_context_publishes_before_blocked_camilla_backstop(
     coord._set_camilla_main_mute = blocked_set_mute
 
     operation = asyncio.create_task(coord.mute())
-    await camilla_started.wait()
+    await wait_signalled(camilla_started, "camilla mute backstop started", producer=operation)
 
     assert len(published) == 1
     assert published[0].muted is True
@@ -1700,7 +1700,7 @@ async def test_overlapping_push_writes_keep_source_persistence_and_context_align
     second._set_spotify = push
 
     older = asyncio.create_task(first.set_listening_level(20))
-    await first_started.wait()
+    await wait_signalled(first_started, "older push write started", producer=older)
     newer = asyncio.create_task(second.set_listening_level(80))
     await asyncio.sleep(0)
     assert newer.done() is False
@@ -1812,7 +1812,7 @@ async def test_context_snapshot_retries_after_concurrent_volume_change(tmp_path)
 
     coord._read_camilla_volume_and_mute = blocked_read
     snapshot = asyncio.create_task(coord.effective_volume_context())
-    await read_started.wait()
+    await wait_signalled(read_started, "camilla volume/mute read started", producer=snapshot)
     await coord.set_listening_level(80)
     release_read.set()
     context = await snapshot
@@ -2319,7 +2319,7 @@ async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):
 
     coord._read_camilla_volume_and_mute = blocked_read
     reconcile = asyncio.create_task(coord.maybe_reconcile_camilla())
-    await read_started.wait()
+    await wait_signalled(read_started, "camilla volume/mute read started", producer=reconcile)
     await coord.note_measurement_active(True)
     release_read.set()
     await reconcile
@@ -2350,7 +2350,7 @@ async def test_measurement_pause_waits_for_in_flight_reconcile_write(tmp_path):
 
     cam.set_volume_db = blocked_set
     reconcile = asyncio.create_task(coord.maybe_reconcile_camilla())
-    await write_started.wait()
+    await wait_signalled(write_started, "camilla volume write started", producer=reconcile)
     pause = asyncio.create_task(coord.note_measurement_active(True))
     await asyncio.sleep(0)
     assert not pause.done()

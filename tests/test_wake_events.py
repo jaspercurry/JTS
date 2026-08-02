@@ -39,6 +39,7 @@ from jasper.wake_events import (
     make_event_id,
 )
 
+from ._async_wait import wait_signalled
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -1182,7 +1183,7 @@ async def test_concurrent_sweeps_do_not_double_scan(tmp_path):
     store._scan_and_prune_blocking = slow_scan
     store._audio_bytes_estimate = None  # force scan path
     t1 = asyncio.ensure_future(store._retention_sweep())
-    await started.wait()
+    await wait_signalled(started, "blocking scan started", producer=t1)
     await store._retention_sweep()  # should skip, not second-scan
     release.set()
     await t1

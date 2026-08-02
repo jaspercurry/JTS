@@ -653,7 +653,7 @@ async def test_window_b_blocked_while_window_a_restore_in_flight(monkeypatch):
             pass
 
     task_a = asyncio.create_task(window_a())
-    await entered_restore.wait()
+    await wait_signalled(entered_restore, "window A mux-gate release entered", producer=task_a)
 
     # B must be refused while A's restore is still in flight.
     with pytest.raises(MeasurementWindowError, match="already in progress"):
