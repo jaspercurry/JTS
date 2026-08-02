@@ -12,11 +12,10 @@ does not play audio, write CamillaDSP state, or persist level changes.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
-from ._common import issue as _issue
+from ._common import finite_float as _finite_float, issue as _issue
 from .calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     MAX_TEST_LEVEL_DBFS,
@@ -183,16 +182,6 @@ def derive_hf_measurement_ceiling_dbfs(
         declared_lf_driver_cap_dbfs - (sens_hf_db - sens_lf_db),
         HF_MEASUREMENT_ABS_CEILING_DBFS,
     )
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(out):
-        return None
-    return out
 
 
 def _current_level(calibration_level: dict[str, Any] | None) -> float:
@@ -364,7 +353,8 @@ def auto_level_decision(
         status = "lower"
         next_level = max(MIN_TEST_LEVEL_DBFS, current - TEST_LEVEL_STEP_DB)
         reason = "microphone reading is too loud"
-    elif meter_status in {"too_quiet", "low"}:
+    elif meter_status in {"too_quiet", "low", "unmeasured"}:
+        operator_controlled = meter_status == "unmeasured"
         if (
             profile.requires_floor_confirmation_above_floor
             and not floor_audio_confirmed
@@ -381,43 +371,26 @@ def auto_level_decision(
             issues.append(_issue(
                 "warning",
                 "auto_level_cap_reached",
-                "mic target was not reached before the driver-specific level cap",
+                (
+                    "operator-controlled raise reached the driver-specific level cap"
+                    if operator_controlled
+                    else "mic target was not reached before the driver-specific level cap"
+                ),
             ))
         else:
             action = "raise"
             status = "raise"
             next_level = min(current + AUDIBLE_RAMP_STEP_DB, max_level)
-            reason = "microphone reading is below the usable window"
+            reason = (
+                "operator-controlled raise toward audible"
+                if operator_controlled
+                else "microphone reading is below the usable window"
+            )
     elif meter_status == "usable":
         action = "hold"
         status = "locked"
         next_level = current
         reason = "microphone reading is in the usable window"
-    elif meter_status == "unmeasured":
-        if (
-            profile.requires_floor_confirmation_above_floor
-            and not floor_audio_confirmed
-        ):
-            action = "hold_for_floor_confirmation"
-            status = "waiting_for_floor_confirmation"
-            next_level = current
-            reason = "quietest-level audio must be confirmed before raising"
-        elif current >= max_level - 1e-6:
-            action = "hold_at_cap"
-            status = "maxed"
-            next_level = max_level
-            reason = "driver-specific auto-level cap reached"
-            issues.append(_issue(
-                "warning",
-                "auto_level_cap_reached",
-                "operator-controlled raise reached the driver-specific level cap",
-            ))
-        else:
-            action = "raise"
-            status = "raise"
-            next_level = min(current + AUDIBLE_RAMP_STEP_DB, max_level)
-            reason = "operator-controlled raise toward audible"
-
     next_level = clamp_test_level_dbfs(next_level)
     if next_level > max_level:
         next_level = max_level

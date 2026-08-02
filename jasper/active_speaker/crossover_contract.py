@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable, Mapping
 
-from ._common import REGION_FC_MATCH_TOLERANCE_HZ
+from ._common import REGION_FC_MATCH_TOLERANCE_HZ, finite_float as _finite_float
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
 TUNING_OWNERS = frozenset({"manual", "automatic"})
@@ -112,14 +112,6 @@ def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    return result if math.isfinite(result) else None
 
 
 def _nonnegative_int(value: Any) -> int:

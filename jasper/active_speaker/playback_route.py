@@ -138,7 +138,7 @@ class ActivePlaybackRouteCapability:
         }
 
 
-def _route_capability(
+def active_playback_route_capability(
     topology: OutputTopology,
     *,
     playback_device: str | None = None,
@@ -197,17 +197,4 @@ def _route_capability(
         subwoofer_group_count=len(subwoofer_groups),
         subwoofer_supported=layout.subwoofer_supported,
         issues=tuple(issues),
-    )
-
-
-def active_playback_route_capability(
-    topology: OutputTopology,
-    *,
-    playback_device: str | None = None,
-) -> ActivePlaybackRouteCapability:
-    """Return the route capacity for active-speaker playback."""
-
-    return _route_capability(
-        topology,
-        playback_device=playback_device,
     )

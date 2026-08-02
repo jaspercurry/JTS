@@ -1891,7 +1891,6 @@ def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
         staged_config=staged_config,
         calibration_level=calibration_level,
         tone_backend=_active_speaker_tone_backend_status(topology),
-        stop_control_available=True,
     )
     log_event(
         logger,

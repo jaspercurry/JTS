@@ -12,7 +12,6 @@ code must pass through before any sound-emitting action is added.
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 import uuid
@@ -22,7 +21,7 @@ from typing import Any, Callable
 
 from jasper.atomic_io import atomic_write_json
 
-from ._common import issue as _issue
+from ._common import finite_float as _finite_float, issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1
@@ -110,14 +109,6 @@ def _nonnegative_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return out if out >= 0 else None
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 def playback_target_signature(target: Any) -> dict[str, Any] | None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -791,6 +792,27 @@ def test_commission_tone_select_fanin_lane_indeterminate_recovery_nested(
         "TEST_SELECT correction correction-measurement",
     ]
     assert all("TEST_RELEASE" not in call for call in calls)
+
+
+def test_async_commission_tone_mux_command_runs_off_event_loop(monkeypatch):
+    worker_thread_ids: list[int] = []
+
+    def command() -> dict:
+        worker_thread_ids.append(threading.get_ident())
+        return {"status": "ok"}
+
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", command)
+
+    async def scenario() -> tuple[int, dict]:
+        loop_thread_id = threading.get_ident()
+        payload = await web._commission_tone_select_fanin_lane_async()
+        return loop_thread_id, payload
+
+    loop_thread_id, payload = asyncio.run(scenario())
+
+    assert payload == {"status": "ok"}
+    assert worker_thread_ids
+    assert worker_thread_ids[0] != loop_thread_id
 
 
 def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):

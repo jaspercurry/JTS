@@ -40,7 +40,11 @@ from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ._common import issue as _issue, region_key as _region_key
+from ._common import (
+    finite_float as _finite_float,
+    issue as _issue,
+    region_key as _region_key,
+)
 from .calibration_level import classify_mic_meter
 from .capture_geometry import REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID
 from .profile import ADJACENT_PAIRS_BY_WAY
@@ -77,14 +81,6 @@ def _utc_now() -> str:
 
 def measurement_state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 def _truthy_flag(value: Any) -> bool:

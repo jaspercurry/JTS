@@ -42,7 +42,11 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ._common import REGION_FC_MATCH_TOLERANCE_HZ, region_key as _region_key
+from ._common import (
+    REGION_FC_MATCH_TOLERANCE_HZ,
+    finite_float as _finite_float,
+    region_key as _region_key,
+)
 from .crossover_alignment import (
     PHASE_AWARE,
     ResolvedMode,
@@ -91,14 +95,6 @@ RESERVED_CROSSOVER_EVENTS = (
     "correction.crossover_level_locked",
     "correction.crossover_level_failed",
 )
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 def driver_crossover_fcs(preset: ActiveSpeakerPreset, role: str) -> tuple[float, ...]:

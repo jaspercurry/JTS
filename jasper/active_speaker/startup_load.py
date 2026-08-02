@@ -53,9 +53,8 @@ from .calibration_level import (
     load_calibration_level_state,
 )
 from .environment import (
-    DEFAULT_CAMILLA_STATEFILE,
     classify_camilla_config_text,
-    parse_camilla_statefile_config_path,
+    read_camilla_statefile_config_path,
 )
 from .path_safety import (
     evaluate_path_safety_evidence,
@@ -65,19 +64,21 @@ from .path_safety import (
     topology_target_signature,
     validate_startup_load_evidence_binding,
 )
+from .graph_evidence import (
+    running_commission_evidence,
+    running_graph_matches_staged_anchor,
+)
 from .safe_playback import load_safe_playback_state
 from .staging import (
     SUMMED_COMMISSION_TARGET_ROLE,
     load_staged_startup_config,
     prepare_driver_commissioning_config,
-    running_commission_evidence,
-    running_graph_matches_staged_anchor,
     staged_config_path,
 )
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+STARTUP_LOAD_SCHEMA_VERSION = 1
 STARTUP_LOAD_PREFLIGHT_KIND = "jts_active_speaker_startup_load_preflight"
 STARTUP_LOAD_STATE_KIND = "jts_active_speaker_startup_load_state"
 DEFAULT_STARTUP_LOAD_STATE_PATH = Path(
@@ -92,6 +93,7 @@ DEFAULT_COMMISSION_LOAD_STATE_PATH = Path(
     "/var/lib/jasper/active_speaker_commission_load.json"
 )
 COMMISSION_LOAD_STATE_ENV = "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE"
+COMMISSION_LOAD_SCHEMA_VERSION = 1
 
 # _live_confirm convergence poll (load_driver_commissioning_config): CamillaDSP
 # acks the inline SetConfig before its readback side reflects the new graph, so
@@ -136,13 +138,14 @@ def startup_load_state_path(path: str | Path | None = None) -> Path:
 def _base_load_state(
     path: Path,
     *,
+    schema_version: int,
     kind: str,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the shared persisted state shape for guarded graph loads."""
 
     state: dict[str, Any] = {
-        "artifact_schema_version": SCHEMA_VERSION,
+        "artifact_schema_version": schema_version,
         "kind": kind,
         "status": "idle",
         "state_path": str(path),
@@ -160,7 +163,11 @@ def _base_load_state(
 
 
 def _base_state(path: Path) -> dict[str, Any]:
-    return _base_load_state(path, kind=STARTUP_LOAD_STATE_KIND)
+    return _base_load_state(
+        path,
+        schema_version=STARTUP_LOAD_SCHEMA_VERSION,
+        kind=STARTUP_LOAD_STATE_KIND,
+    )
 
 
 def load_startup_load_state(
@@ -508,7 +515,6 @@ def build_startup_load_preflight(
     safe_session: dict[str, Any] | None = None,
     path_safety_evidence_path: str | Path | None = None,
     current_config_path: str | Path | None = None,
-    stop_control_available: bool = True,
     require_physical_identity: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
@@ -676,15 +682,6 @@ def build_startup_load_preflight(
                 else "Stop tone playback before loading the active startup config"
             ),
         ),
-        _gate(
-            "stop_control_available",
-            label="Stop control is available",
-            passed=stop_control_available,
-            message=(
-                "Stop is available"
-                if stop_control_available else "Stop must be available"
-            ),
-        ),
     ]
     issues = list(topology_blockers)
     issues.extend(
@@ -722,7 +719,7 @@ def build_startup_load_preflight(
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
     ready = blocker_count == 0 and all(gate["passed"] for gate in gates)
     return {
-        "artifact_schema_version": SCHEMA_VERSION,
+        "artifact_schema_version": STARTUP_LOAD_SCHEMA_VERSION,
         "kind": STARTUP_LOAD_PREFLIGHT_KIND,
         "status": "ready" if ready else "blocked",
         "load_allowed": ready,
@@ -785,7 +782,7 @@ def _loaded_state_payload(
 ) -> dict[str, Any]:
     loaded = status == "loaded"
     return {
-        "artifact_schema_version": SCHEMA_VERSION,
+        "artifact_schema_version": STARTUP_LOAD_SCHEMA_VERSION,
         "kind": STARTUP_LOAD_STATE_KIND,
         "status": status,
         "updated_at": _utc_now(),
@@ -1130,6 +1127,7 @@ def commission_load_state_path(path: str | Path | None = None) -> Path:
 def _commission_base_state(path: Path) -> dict[str, Any]:
     return _base_load_state(
         path,
+        schema_version=COMMISSION_LOAD_SCHEMA_VERSION,
         kind=COMMISSION_LOAD_STATE_KIND,
         extra={
             "target": {},
@@ -1201,7 +1199,7 @@ def _commission_state_payload(
 ) -> dict[str, Any]:
     loaded = status == "loaded"
     return {
-        "artifact_schema_version": SCHEMA_VERSION,
+        "artifact_schema_version": COMMISSION_LOAD_SCHEMA_VERSION,
         "kind": COMMISSION_LOAD_STATE_KIND,
         "status": status,
         "updated_at": _utc_now(),
@@ -1385,18 +1383,7 @@ def mark_commission_load_state_stale(
 def _read_statefile_config_path(statefile_path: str | Path | None) -> str | None:
     """Return the config_path the outputd/CamillaDSP statefile boots into."""
 
-    path = (
-        Path(statefile_path)
-        if statefile_path is not None
-        else Path(
-            os.environ.get("JASPER_CAMILLA_STATEFILE", str(DEFAULT_CAMILLA_STATEFILE))
-        )
-    )
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    return parse_camilla_statefile_config_path(text)
+    return read_camilla_statefile_config_path(statefile_path)
 
 
 def _paths_equal(a: str | Path | None, b: str | Path | None) -> bool:
@@ -1545,7 +1532,7 @@ def build_driver_commission_load_preflight(
         and all(gate["passed"] for gate in gates)
     )
     return {
-        "artifact_schema_version": SCHEMA_VERSION,
+        "artifact_schema_version": COMMISSION_LOAD_SCHEMA_VERSION,
         "kind": COMMISSION_LOAD_PREFLIGHT_KIND,
         "status": "ready" if load_allowed else "blocked",
         "load_allowed": load_allowed,

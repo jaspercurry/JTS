@@ -120,6 +120,10 @@ from .playback import (
 )
 from .topology_tone import build_summed_topology_tone_plan
 from .playback_route import resolve_active_playback_device
+from .graph_evidence import (
+    driver_commission_audible_evidence,
+    running_commission_evidence,
+)
 from .staging import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     COMMISSIONING_CONFIG_KIND,
@@ -127,11 +131,10 @@ from .staging import (
     STAGED_METADATA_PATH_ENV,
     STAGED_STARTUP_CONFIG_KIND,
     compile_preset_from_crossover_preview,
-    driver_commission_audible_evidence,
+    build_passive_mains_with_sub_preset,
     load_staged_startup_config,
     prepare_driver_commissioning_config,
     prepare_summed_commissioning_config,
-    running_commission_evidence,
     stage_protected_startup_config,
 )
 from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight
@@ -405,6 +408,7 @@ __all__ = [
     "build_driver_safety_profile",
     "build_startup_load_preflight",
     "build_startup_load_path_safety_evidence",
+    "build_passive_mains_with_sub_preset",
     "build_summed_topology_tone_plan",
     "COMMISSION_LOAD_PREFLIGHT_KIND",
     "COMMISSION_LOAD_STATE_ENV",

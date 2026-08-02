@@ -42,9 +42,11 @@ from jasper.active_speaker.commission_ramp import (
     record_ramp_operator_ack,
 )
 from jasper.active_speaker.commission_wiring import (
+    CommissionPresetResolutionError,
     commission_load_config,
     commission_seams,
     read_current_config_path,
+    resolve_commission_preset,
     resolve_commission_inputs,
     write_commission_path_safety,
 )
@@ -91,6 +93,8 @@ from jasper.output_topology import (
     save_output_topology,
     set_channel_protection_status,
 )
+
+from ._common import blocker_issue as _issue
 
 logger = logging.getLogger(__name__)
 
@@ -196,10 +200,6 @@ _SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
     "safe_playback": {},
     "issues": [],
 }
-
-
-def _issue(code: str, message: str) -> dict[str, str]:
-    return {"severity": "blocker", "code": code, "message": message}
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
@@ -609,6 +609,32 @@ def _commission_tone_release_fanin_lane(
     return payload
 
 
+async def _commission_tone_select_fanin_lane_async(
+    fanin_gate_context: FaninGateContext | None = None,
+) -> dict[str, Any]:
+    if fanin_gate_context is None:
+        return await asyncio.to_thread(_commission_tone_select_fanin_lane)
+    return await asyncio.to_thread(
+        _commission_tone_select_fanin_lane,
+        fanin_gate_context,
+    )
+
+
+async def _commission_tone_release_fanin_lane_async(
+    *, reason: str, fanin_gate_context: FaninGateContext | None = None,
+) -> dict[str, Any]:
+    if fanin_gate_context is None:
+        return await asyncio.to_thread(
+            _commission_tone_release_fanin_lane,
+            reason=reason,
+        )
+    return await asyncio.to_thread(
+        _commission_tone_release_fanin_lane,
+        reason=reason,
+        fanin_gate_context=fanin_gate_context,
+    )
+
+
 def _commission_tone_issue(exc: BaseException) -> dict[str, str]:
     return {
         "severity": "blocker",
@@ -640,63 +666,50 @@ def _commission_tone_signal_plan(
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from jasper.active_speaker import (
-        DRIVER_TEST_SIGNAL_PLAN_KIND,
-        driver_test_signal_plan,
-        load_active_speaker_preset,
-    )
+    from jasper.active_speaker import DRIVER_TEST_SIGNAL_PLAN_KIND, driver_test_signal_plan
 
     role_id = str(role or "").strip().lower()
     source = "explicit_preset" if preset is not None else "preset_fallback"
-    bound_preset = preset
-    if bound_preset is None and crossover_preview is not None:
-        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
-
+    if preset is None and crossover_preview is not None:
         source = "crossover_preview"
-        topology = topology or load_output_topology()
-        bound_preset, preview_issues, _ = compile_preset_from_crossover_preview(
-            topology,
-            crossover_preview,
+    preset_topology = topology
+    if preset is None and crossover_preview is not None and preset_topology is None:
+        preset_topology = load_output_topology()
+    try:
+        bound_preset = resolve_commission_preset(
+            preset_topology,
+            preset=preset,
+            crossover_preview=crossover_preview,
         )
-        if bound_preset is None:
-            issues = [
-                issue for issue in preview_issues if isinstance(issue, dict)
-            ] or [
-                {
-                    "severity": "blocker",
-                    "code": "commission_tone_preset_unresolved",
-                    "message": (
-                        "could not compile the saved crossover preview into a "
-                        "driver test preset"
-                    ),
-                }
-            ]
-            return {
-                "artifact_schema_version": 1,
-                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
-                "status": "blocked",
-                "role": role_id,
-                "frequency_hz": None,
-                "preset_source": source,
-                "issues": issues,
-            }
-    if bound_preset is None:
-        try:
-            bound_preset = load_active_speaker_preset()
-        except (OSError, ValueError, TypeError) as exc:
-            return {
-                "artifact_schema_version": 1,
-                "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
-                "status": "blocked",
-                "role": role_id,
-                "frequency_hz": None,
-                "preset_source": source,
-                "issues": [{
-                    "severity": "blocker",
-                    "code": "commission_tone_preset_unreadable",
-                    "message": f"could not load active-speaker preset: {exc}",
-                }],
-            }
+    except CommissionPresetResolutionError as exc:
+        issues = exc.issues or [
+            _issue(
+                "commission_tone_preset_unresolved",
+                "could not compile the saved crossover preview into a driver test preset",
+            )
+        ]
+        return {
+            "artifact_schema_version": 1,
+            "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
+            "status": "blocked",
+            "role": role_id,
+            "frequency_hz": None,
+            "preset_source": source,
+            "issues": issues,
+        }
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "artifact_schema_version": 1,
+            "kind": DRIVER_TEST_SIGNAL_PLAN_KIND,
+            "status": "blocked",
+            "role": role_id,
+            "frequency_hz": None,
+            "preset_source": source,
+            "issues": [_issue(
+                "commission_tone_preset_unreadable",
+                f"could not load active-speaker preset: {exc}",
+            )],
+        }
 
     driver_style = (
         _commission_tone_driver_style(
@@ -855,7 +868,7 @@ async def play_commission_tone(
     target_key = _commission_tone_target_key(role=role, group_id=group_id, target=target)
     try:
         wav_path = _commission_tone_wav_path(frequency_hz=frequency_hz)
-        fanin_gate = _commission_tone_select_fanin_lane()
+        fanin_gate = await _commission_tone_select_fanin_lane_async()
     except _COMMISSION_START_ERRORS as exc:
         return _commission_tone_payload(
             status="failed",
@@ -918,7 +931,7 @@ async def play_commission_tone(
                 "started_monotonic": time.monotonic(),
             }
     except (OSError, RuntimeError) as exc:
-        _commission_tone_release_fanin_lane(reason="start_failed")
+        await _commission_tone_release_fanin_lane_async(reason="start_failed")
         return _commission_tone_payload(
             status="failed",
             playback_id=playback_id,
@@ -942,7 +955,7 @@ async def play_commission_tone(
                     and _COMMISSION_TONE_SESSION.get("process") is proc
                 ):
                     _COMMISSION_TONE_SESSION = None
-            _commission_tone_release_fanin_lane(reason="startup_exit")
+            await _commission_tone_release_fanin_lane_async(reason="startup_exit")
             return _commission_tone_payload(
                 status="failed",
                 playback_id=playback_id,
@@ -1036,7 +1049,7 @@ async def start_driver_test(
         raise ValueError("speaker_group_id and role are required")
 
     if force:
-        stop_commission_tone(reason="driver_test_force")
+        await asyncio.to_thread(stop_commission_tone, reason="driver_test_force")
 
     cam = camilla_factory()
     existing = load_commission_load_state()
@@ -1186,7 +1199,10 @@ async def confirm_driver_test(
     prior_ramp = load_ramp_state()
     pending = prior_ramp.get("pending")
     if outcome != "silent":
-        tone_stop = stop_commission_tone(reason=f"ack_{outcome}")
+        tone_stop = await asyncio.to_thread(
+            stop_commission_tone,
+            reason=f"ack_{outcome}",
+        )
     else:
         tone_stop = {"status": "not_stopped", "reason": "silent_retry"}
     cam = camilla_factory()
@@ -1230,7 +1246,10 @@ async def confirm_driver_test(
 async def abort_driver_test(*, camilla_factory: CamillaFactory) -> dict[str, Any]:
     """Hard stop: stop any tone and re-mute the transient driver graph."""
 
-    tone_stop = stop_commission_tone(reason="driver_test_abort")
+    tone_stop = await asyncio.to_thread(
+        stop_commission_tone,
+        reason="driver_test_abort",
+    )
     payload = await abort_ramp(load_config=commission_load_config(camilla_factory()))
     payload["tone_stop"] = tone_stop
     payload["commission"] = commission_status_payload()
@@ -2428,7 +2447,7 @@ async def _play_capture_sweep(
             else None
         )
         duration_s = float(sweep_meta.get("duration_s") or 6.0)
-        fanin_gate = _commission_tone_select_fanin_lane()
+        fanin_gate = await _commission_tone_select_fanin_lane_async()
         await play_sweep(
             wav_path,
             alsa_device=COMMISSION_TONE_ALSA_DEVICE,
@@ -2467,7 +2486,7 @@ async def _play_capture_sweep(
         }
     finally:
         if fanin_gate is not None:
-            _commission_tone_release_fanin_lane(reason="capture_sweep")
+            await _commission_tone_release_fanin_lane_async(reason="capture_sweep")
         try:
             rollback_operation = (
                 rollback_capture_config()
@@ -2746,7 +2765,7 @@ async def play_driver_capture_sweep(
                             _dict_value(load_applied_baseline_profile_state()),
                         )
 
-                    fanin_gate = _commission_tone_select_fanin_lane(
+                    fanin_gate = await _commission_tone_select_fanin_lane_async(
                         fanin_gate_context,
                     )
                     admitted = await play_admitted_driver_capture(
@@ -2870,7 +2889,7 @@ async def play_driver_capture_sweep(
                 }
             finally:
                 if fanin_gate is not None:
-                    _commission_tone_release_fanin_lane(
+                    await _commission_tone_release_fanin_lane_async(
                         reason="capture_sweep",
                         fanin_gate_context=fanin_gate_context,
                     )
@@ -3048,7 +3067,7 @@ async def _play_summed_commission_tone(
     rollback: dict[str, Any] | None = None
     rollback_issue: dict[str, str] | None = None
     try:
-        fanin_gate = _commission_tone_select_fanin_lane()
+        fanin_gate = await _commission_tone_select_fanin_lane_async()
         # Off-loop playback: ``play_sweep`` runs ``aplay`` via
         # ``asyncio.create_subprocess_exec`` and awaits it, so the shared
         # correction loop stays responsive (status polls, SSE progress, the
@@ -3085,7 +3104,7 @@ async def _play_summed_commission_tone(
         )
     finally:
         if fanin_gate is not None:
-            _commission_tone_release_fanin_lane(reason="summed_test")
+            await _commission_tone_release_fanin_lane_async(reason="summed_test")
         try:
             rollback = await _rollback_summed_commissioning_config(
                 camilla_factory=camilla_factory,

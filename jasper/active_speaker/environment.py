@@ -200,6 +200,18 @@ def _statefile_path(path: str | Path | None) -> Path:
     )
 
 
+def read_camilla_statefile_config_path(
+    statefile_path: str | Path | None = None,
+) -> str | None:
+    """Return the config path selected by the durable CamillaDSP statefile."""
+
+    try:
+        text = _statefile_path(statefile_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return parse_camilla_statefile_config_path(text)
+
+
 def _config_path_from_statefile(path: Path) -> tuple[str | None, list[dict[str, str]]]:
     try:
         text = path.read_text(encoding="utf-8")

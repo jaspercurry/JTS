@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 122 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 107 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 518
+- **fixed**: 533
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -237,17 +237,17 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0291 | `firmware/satellite-amoled/src/display.cpp` :: displayShowStatus | nit | W5 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0292 | `firmware/satellite-amoled/src/main.cpp` :: :38-40 | nit | W5 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0293 | `jasper/active_speaker/commission_ramp.py` :: _record_ramp_state:201 | nit | W5 | **fixed** | standard-library import moved to module scope |
-| DA-0294 | `jasper/active_speaker/commissioning_coordinator.py` :: _combined_group_view | nit | W5 | **open** | — |
+| DA-0294 | `jasper/active_speaker/commissioning_coordinator.py` :: _combined_group_view | nit | W5 | **fixed** | removed impossible optional fallback from the combined group view |
 | DA-0295 | `jasper/active_speaker/graph_evidence.py` :: driver_mute_name | nit | W5 | **fixed** | unused verification-vocabulary re-export removed |
-| DA-0296 | `jasper/active_speaker/playback.py` :: start_tone_playback / TonePlaybackBackend | nit | W5 | **open** | — |
-| DA-0297 | `jasper/active_speaker/playback_route.py` :: active_playback_route_capability / _route_ca | nit | W5 | **open** | — |
-| DA-0298 | `jasper/active_speaker/staging.py` :: _passive_mains_with_sub_preset:1119 | nit | W5 | **open** | — |
-| DA-0299 | `jasper/active_speaker/staging.py` :: lines 463-822 (safety-evidence functions) vs | nit | W5 | **open** | — |
+| DA-0296 | `jasper/active_speaker/playback.py` :: start_tone_playback / TonePlaybackBackend | nit | W5 | **fixed** | removed undeclared, never-set protected-startup attribute path |
+| DA-0297 | `jasper/active_speaker/playback_route.py` :: active_playback_route_capability / _route_ca | nit | W5 | **fixed** | public route-capability function now owns the implementation directly |
+| DA-0298 | `jasper/active_speaker/staging.py` :: _passive_mains_with_sub_preset:1119 | nit | W5 | **fixed** | passive-mains-with-sub preset builder is a named public package API |
+| DA-0299 | `jasper/active_speaker/staging.py` :: lines 463-822 (safety-evidence functions) vs | nit | W5 | **fixed** | commissioning graph proof ownership moved to `graph_evidence.py` |
 | DA-0300 | `jasper/active_speaker/staging.py` :: stage_protected_startup_config:1715 / prepar | nit | W5 | **fixed** | emitted config no longer shadows the YAML module |
-| DA-0301 | `jasper/active_speaker/startup_load.py` :: build_startup_load_preflight / stop_control_ | nit | W5 | **open** | — |
+| DA-0301 | `jasper/active_speaker/startup_load.py` :: build_startup_load_preflight / stop_control_ | nit | W5 | **fixed** | removed never-false startup stop-control knob and gate |
 | DA-0302 | `jasper/active_speaker/startup_load.py` :: build_startup_load_preflight, physical_ident | nit | W5 | **fixed** | physical-identity gate result computed once |
 | DA-0303 | `jasper/active_speaker/web_commissioning.py` :: SUMMED_COMMISSION_TONE_BACKEND | nit | W5 | **fixed** | unused backend constant removed |
-| DA-0304 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_mux_command | nit | W5 | **open** | — |
+| DA-0304 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_mux_command | nit | W5 | **fixed** | blocking mux operations run off the async event loop |
 | DA-0305 | `jasper/active_speaker/web_commissioning.py` :: _ensure_commission_startup_anchor | nit | W5 | **fixed** | redundant local JSON import removed |
 | DA-0306 | `jasper/aec_engines/dtln.py` :: DTLNEngine.process | nit | W5 | **fixed** | streaming contract now documents complete-hop emission truthfully |
 | DA-0307 | `jasper/assistant_loudness.py` :: AssistantLoudnessProfile.phrase_hash | nit | W5 | **open** | — |
@@ -381,15 +381,15 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0507 | `jasper/accessories/bridge.py` :: _TapCounter._dispatch / _log_key_action | nit | W3 | **fixed** | tap success, failure, and unmapped events share the canonical key-action field builder with stable logfmt order — this branch |
 | DA-0508 | `jasper/accessories/reconcile.py` :: _unwrap / _variant_value | nit | W3 | **fixed** | accessory reconciler and WiiM mic adapter share one DBus Variant unwrapping primitive — this branch |
 | DA-0509 | `jasper/accounts.py` :: Registry.save | nit | W3 | **fixed** | account registry publication uses canonical atomic I/O with explicit mode coverage — this branch |
-| DA-0510 | `jasper/active_speaker/baseline_profile.py` :: _finite_float:138 | nit | W3 | **open** | — |
-| DA-0511 | `jasper/active_speaker/commissioning_coordinator.py` :: build_commissioning_view | nit | W3 | **open** | — |
-| DA-0512 | `jasper/active_speaker/driver_protection.py` :: auto_level_decision | nit | W3 | **open** | — |
-| DA-0513 | `jasper/active_speaker/playback.py` :: _bounded_int | nit | W3 | **open** | — |
-| DA-0514 | `jasper/active_speaker/runtime_contract.py` :: _statefile_config_path | nit | W3 | **open** | — |
-| DA-0515 | `jasper/active_speaker/startup_load.py` :: SCHEMA_VERSION (line 64) | nit | W3 | **open** | — |
+| DA-0510 | `jasper/active_speaker/baseline_profile.py` :: _finite_float:138 | nit | W3 | **fixed** | active-speaker nullable finite-float coercion is shared in `_common` |
+| DA-0511 | `jasper/active_speaker/commissioning_coordinator.py` :: build_commissioning_view | nit | W3 | **fixed** | captured and required counts are computed once per view |
+| DA-0512 | `jasper/active_speaker/driver_protection.py` :: auto_level_decision | nit | W3 | **fixed** | duplicate quiet and unmeasured ramp branches are unified |
+| DA-0513 | `jasper/active_speaker/playback.py` :: _bounded_int | nit | W3 | **fixed** | playback uses canonical active-speaker integer clamping |
+| DA-0514 | `jasper/active_speaker/runtime_contract.py` :: _statefile_config_path | nit | W3 | **fixed** | Camilla statefile config-path parsing is centralized in `environment` |
+| DA-0515 | `jasper/active_speaker/startup_load.py` :: SCHEMA_VERSION (line 64) | nit | W3 | **fixed** | startup and commissioning artifacts own distinct schema constants |
 | DA-0516 | `jasper/active_speaker/tone_plan.py` :: _clamp_int | nit | W3 | **fixed** | lossy target-output helpers removed with obsolete preset-era planner — #1321 |
-| DA-0517 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_signal_plan | nit | W3 | **open** | — |
-| DA-0518 | `jasper/active_speaker/web_commissioning.py` :: _issue | nit | W3 | **open** | — |
+| DA-0517 | `jasper/active_speaker/web_commissioning.py` :: _commission_tone_signal_plan | nit | W3 | **fixed** | commission preset resolution is centralized in `commission_wiring` |
+| DA-0518 | `jasper/active_speaker/web_commissioning.py` :: _issue | nit | W3 | **fixed** | web commissioning uses the shared blocker-issue builder |
 | DA-0519 | `jasper/aec_sweep.py` :: write_aec3_sweep_config | nit | W3 | **fixed** | sweep config publication uses canonical `atomic_write_text` with the existing mode contract — this branch |
 | DA-0520 | `jasper/audio_hardware/__init__.py` :: :8 | nit | W3 | **fixed** | package re-exports the complete DAC registry surface, pinned against `dac.__all__` — this branch |
 | DA-0521 | `jasper/audio_input_view.py` :: _fusion_view | nit | W3 | **fixed** | shared disabled-reason policy and copy now serve both software fusion toggles |
