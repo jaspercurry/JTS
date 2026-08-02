@@ -5,7 +5,7 @@
 from types import SimpleNamespace
 
 from jasper.tts_routing import FANIN_TTS_SOCKET
-from jasper.voice_daemon import _tts_ready_detail
+from jasper.voice.daemon_main import _tts_ready_detail
 
 
 def test_tts_ready_detail_reports_outputd_socket() -> None:

@@ -816,6 +816,9 @@ class WakeLoop:
         tool_packs: list[dict] | None = None,
         conversation_store: ConversationStore | None = None,
         manual_mics: "list[_ManualMicRuntime] | None" = None,
+        vad: SpeechVAD | None = None,
+        initial_mic_muted: bool | None = None,
+        barge_in_reconcile: InterruptReconcile | None = None,
     ) -> None:
         self._cfg = cfg
         self._tts = tts
@@ -936,7 +939,7 @@ class WakeLoop:
         # model is producing TTS, mic frames are forwarded to Gemini
         # ONLY if the local VAD detects user speech — TTS bleed-through
         # is filtered out, real interrupts pass through.
-        self._vad = SpeechVAD()
+        self._vad = vad if vad is not None else SpeechVAD()
         # Session-state shadow VAD for the chip-direct ("off") leg, when
         # configured. Created in run() and carried on that leg's
         # _LegRuntime; aliased here for _shadow_vad_score_raw / _begin_turn.
@@ -978,7 +981,10 @@ class WakeLoop:
         # restart broke that promise. The dashboard's mic chip surfaces
         # the persisted state so users aren't left wondering why wake
         # isn't responding.
-        self._mic_muted: bool = read_mic_muted(cfg.mic_mute_state_path)
+        self._mic_muted = (
+            read_mic_muted(cfg.mic_mute_state_path)
+            if initial_mic_muted is None else initial_mic_muted
+        )
         if self._mic_muted:
             logger.info(
                 "mic mute: restored from %s (mic is muted at startup)",
@@ -1078,7 +1084,10 @@ class WakeLoop:
         # (server_self_truncates: Gemini no-ops the reconcile, so a real-time
         # provider may resume). Makes the registry's interrupt_reconcile
         # declaration load-bearing, not test-only metadata.
-        self._barge_in_reconcile = resolve_interrupt_reconcile(cfg.voice_provider)
+        self._barge_in_reconcile = (
+            resolve_interrupt_reconcile(cfg.voice_provider)
+            if barge_in_reconcile is None else barge_in_reconcile
+        )
         self._barge_in_run_started_at: float = 0.0
         self._barge_in_run_peak: float = 0.0
         self._barge_in_signalled_this_run: bool = False
@@ -1247,7 +1256,6 @@ class WakeLoop:
             def reset(self) -> None:
                 return None
 
-        self = cls.__new__(cls)
         cfg = SimpleNamespace(
             duck_db=0.0,
             idle_timeout_sec=10.0,
@@ -1267,126 +1275,28 @@ class WakeLoop:
         mic = _TestMic()
         detector = _TestDetector()
         on_ring = deque(maxlen=CAPTURE_RING_FRAMES)
-        self._cfg = cfg
-        self._tts = _TestTts()
-        self._legs = {
-            "on": _LegRuntime(
-                by_token("on"),
-                mic,
-                detector,
-                on_ring,
-            ),
-        }
-        self._manual_mics = {}
-        self._active_manual_source = None
-        self._mic = mic
-        self._detector = detector
-        self._capture_ring_on = on_ring
-        self._capture_ring_off = deque(maxlen=CAPTURE_RING_FRAMES)
-        self._capture_ring_dtln = deque(maxlen=CAPTURE_RING_FRAMES)
-        self._wake_fire_lock = asyncio.Lock()
-        self._fuser = WakeFuser()
-        self._current_condition = DEFAULT_CONDITION
-        self._condition_refreshed_at = 0.0
-        self._connection = _TestConnection()
-        self._ducker = _TestDucker()
-        self._output_gate = AssistantOutputGate()
-        self._turn_output_episode = None
-        self._camilla = None
-        self._content_activity = _TestContentActivity()
-        self._usage_store = _TestUsageStore()
-        self._spend_cap = _TestSpendCap()
-        self._conversation_store = None
-        self._conversation_store_path = None
-        self._conversation_turn_seq = 0
-        self._research_scheduler = None
-        self._research_provider_id = None
-        self._research_model = None
-        self._pending_research = []
-        self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
-        self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
-        self._last_research_failure_announce_at = None
-        self._research_announce_lock = asyncio.Lock()
-        self._research_window_active = False
-        self._research_window_job = None
-        self._research_window_decided = False
-        self._research_window_cancelled_by_wake = False
-        self._research_window_opening_done = None
-        self._stop_event = asyncio.Event()
-        self._volume_coordinator = _TestVolumeCoordinator()
-        self._cues = None
-        self._warned_cues_unconfigured = False
-        self._heartbeat = None
-        self._vad = _TestVad()
-        self._vad_off = None
-        self._state = State.WAKE
-        self._turn = None
-        self._session_id = None
-        self._ending = False
-        self._bg_tasks = set()
-        self._bg_end_scheduled = False
-        self._fire_and_forget = set()
-        self._refractory_until = 0.0
-        self._measurement_active = asyncio.Event()
-        self._measurement_safety_task = None
-        self._mic_muted = False
-        self._chirp_on_pcm = _generate_listening_chirp(going_on=True)
-        self._chirp_off_pcm = _generate_listening_chirp(going_on=False)
-        self._chirp_on_profile = _synthetic_audio_profile(
-            model="synthetic-listening-chirp",
-            voice="wake_start",
-            pcm=self._chirp_on_pcm,
+        self = cls(
+            cfg=cfg,
+            tts=_TestTts(),
+            connection=_TestConnection(),
+            ducker=_TestDucker(),
+            content_activity=_TestContentActivity(),
+            usage_store=_TestUsageStore(),
+            spend_cap=_TestSpendCap(),
+            stop_event=asyncio.Event(),
+            volume_coordinator=_TestVolumeCoordinator(),
+            legs=[
+                _LegRuntime(
+                    by_token("on"),
+                    mic,
+                    detector,
+                    on_ring,
+                ),
+            ],
+            vad=_TestVad(),
+            initial_mic_muted=False,
+            barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
-        self._chirp_off_profile = _synthetic_audio_profile(
-            model="synthetic-listening-chirp",
-            voice="turn_end",
-            pcm=self._chirp_off_pcm,
-        )
-        self._mute_click_on_pcm = _generate_mute_click(going_on=True)
-        self._mute_click_off_pcm = _generate_mute_click(going_on=False)
-        self._mute_click_on_profile = _synthetic_audio_profile(
-            model="synthetic-mute-click",
-            voice="unmute",
-            pcm=self._mute_click_on_pcm,
-        )
-        self._mute_click_off_profile = _synthetic_audio_profile(
-            model="synthetic-mute-click",
-            voice="mute",
-            pcm=self._mute_click_off_pcm,
-        )
-        self._wake_event_at_monotonic = 0.0
-        self._user_speech_seen = False
-        self._silence_started_at = 0.0
-        self._input_ended = False
-        self._turn_started_at_loop = 0.0
-        self._max_silero_score_in_turn = 0.0
-        self._speech_run_started_at = 0.0
-        self._speech_run_max_silero = 0.0
-        self._server_vad_this_turn = False
-        self._max_silero_raw_in_turn = 0.0
-        self._silero_raw_armed_at_ms = None
-        self._silero_aec_armed_at_ms = None
-        self._barge_in_reference_available = _aec_reference_available(
-            cfg.mic_device,
-        )
-        self._barge_in_no_ref_warned = False
-        self._barge_in_active = False
-        # No real provider in the test harness ("test" isn't registered), so
-        # pin a representative reconcile kind so barge.detected / /state work.
-        self._barge_in_reconcile = InterruptReconcile.NEEDS_CLIENT_TRUNCATE
-        self._barge_in_run_started_at = 0.0
-        self._barge_in_run_peak = 0.0
-        self._barge_in_signalled_this_run = False
-        self._barge_in_count = 0
-        self._barge_in_last_at = None
-        self._barge_in_last_leg = None
-        self._pre_roll = deque(maxlen=PRE_ROLL_FRAMES)
-        self._wake_event_store = None
-        self._current_event_id = None
-        self._tool_packs = []
-        self._acquiring = False
-        self._acquire_buffer = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
-        self._peering_current_epoch = ""
         for key, value in overrides.items():
             setattr(self, key if key.startswith("_") else f"_{key}", value)
         if "conversation_store" in overrides or "_conversation_store" in overrides:
@@ -3352,12 +3262,7 @@ class WakeLoop:
             await self._notify_peering_session_started()
 
             try:
-                drained, speech_in_acquire = await drain_acquire_buffer(
-                    self._acquire_buffer, self._turn,  # type: ignore[arg-type]
-                    vad_predict=self._vad.predict,
-                    speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
-                    peak_min=SPEECH_RUN_PEAK_MIN,
-                )
+                drained, speech_in_acquire = await self._drain_acquire_audio()
             except Exception as e:  # noqa: BLE001
                 drained = 0
                 speech_in_acquire = False
@@ -3835,6 +3740,16 @@ class WakeLoop:
             logger.warning("send_audio failed (will end turn): %s", e)
             await self._end_turn()
 
+    async def _drain_acquire_audio(self) -> tuple[int, bool]:
+        """Forward buffered wake/acquire frames into the newly opened turn."""
+        return await drain_acquire_buffer(
+            self._acquire_buffer,
+            self._turn,  # type: ignore[arg-type]
+            vad_predict=self._vad.predict,
+            speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
+            peak_min=SPEECH_RUN_PEAK_MIN,
+        )
+
     async def manual_session_start(self, source: str | None = None) -> str:
         """Trigger a voice session from external IPC (remote hold-to-talk).
         Bypasses the openWakeWord trigger but honors the same gates
@@ -3894,12 +3809,7 @@ class WakeLoop:
             else:
                 await self._begin_turn()
             if source:
-                drained, speech_in_acquire = await drain_acquire_buffer(
-                    self._acquire_buffer, self._turn,  # type: ignore[arg-type]
-                    vad_predict=self._vad.predict,
-                    speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
-                    peak_min=SPEECH_RUN_PEAK_MIN,
-                )
+                drained, speech_in_acquire = await self._drain_acquire_audio()
                 if drained:
                     log_event(
                         logger,
@@ -4542,51 +4452,6 @@ def _optional_turn_data_json(turn: object) -> dict | str | None:
         type(data).__name__,
     )
     return None
-
-
-def _active_voice(*args, **kwargs):
-    from .voice.daemon_main import _active_voice as impl
-    return impl(*args, **kwargs)
-
-
-def _tts_ready_detail(*args, **kwargs):
-    from .voice.daemon_main import _tts_ready_detail as impl
-    return impl(*args, **kwargs)
-
-
-def _make_connection(*args, **kwargs):
-    from .voice.daemon_main import _make_connection as impl
-    return impl(*args, **kwargs)
-
-
-def _build_cues_manager(*args, **kwargs):
-    from .voice.daemon_main import _build_cues_manager as impl
-    return impl(*args, **kwargs)
-
-
-def _schedule_cue_regen(*args, **kwargs):
-    from .voice.daemon_main import _schedule_cue_regen as impl
-    return impl(*args, **kwargs)
-
-
-def _schedule_assistant_loudness_seed(*args, **kwargs):
-    from .voice.daemon_main import _schedule_assistant_loudness_seed as impl
-    return impl(*args, **kwargs)
-
-
-def _build_router(*args, **kwargs):
-    from .voice.daemon_main import _build_router as impl
-    return impl(*args, **kwargs)
-
-
-def _build_registry(*args, **kwargs):
-    from .voice.daemon_main import _build_registry as impl
-    return impl(*args, **kwargs)
-
-
-async def _start_control_socket(*args, **kwargs):
-    from .voice.daemon_main import _start_control_socket as impl
-    return await impl(*args, **kwargs)
 
 
 async def run() -> None:

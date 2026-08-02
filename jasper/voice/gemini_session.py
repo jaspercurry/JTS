@@ -8,11 +8,12 @@ import asyncio
 import logging
 import time as _time
 from collections import deque
-from enum import Enum
 from typing import Awaitable, AsyncIterator, Callable
 
 from google import genai
 from google.genai import types
+
+from jasper.backoff import reconnect_backoff_delay
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
@@ -21,9 +22,13 @@ from ._supervisor import (
     ESCALATION_REPEAT_THRESHOLD,
     DeferredReconnect,
     FailureFingerprint,
-    reconnect_backoff_delay,
 )
-from .session import AudioOutChunk, LiveTurn
+from .session import (
+    CONNECTION_NOISY_TRANSITIONS,
+    AudioOutChunk,
+    ConnectionState,
+    LiveTurn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,32 +140,6 @@ def _is_409_conflict(exc: Exception) -> tuple[bool, int | None]:
     if "409" in msg or "Conflict" in msg:
         return True, status
     return False, status
-
-
-class ConnectionState(Enum):
-    """States for the persistent Gemini Live connection state machine.
-
-    Transitions:
-        IDLE_INIT  -- start()         --> CONNECTING
-        CONNECTING -- handshake ok    --> CONNECTED
-        CONNECTING -- handshake fail  --> RECONNECTING (if retries remain)
-                                       or FAILED (if exhausted)
-        CONNECTED  -- acquire_turn()  --> IN_TURN
-        IN_TURN    -- release()       --> CONNECTED
-        CONNECTED  -- GoAway / drop   --> RECONNECTING
-        IN_TURN    -- GoAway / drop   --> RECONNECTING (active turn marked turn_lost)
-        RECONNECTING -- backoff_wait  --> PAUSED_FOR_BACKOFF (informational)
-        PAUSED_FOR_BACKOFF -- timer   --> CONNECTING
-        any state  -- stop()          --> CLOSED
-    """
-    IDLE_INIT = "idle_init"          # constructed, not yet started
-    CONNECTING = "connecting"
-    CONNECTED = "connected"
-    IN_TURN = "in_turn"
-    RECONNECTING = "reconnecting"
-    PAUSED_FOR_BACKOFF = "paused_for_backoff"
-    FAILED = "failed"
-    CLOSED = "closed"
 
 
 class GeminiLiveTurn:
@@ -605,10 +584,7 @@ class GeminiLiveConnection:
         # Transitions log filter: WAKE/SESSION cycling produces
         # CONNECTED ↔ IN_TURN constantly and floods the journal at INFO;
         # everything else is rare and worth logging.
-        self._noisy_transitions = frozenset({
-            (ConnectionState.CONNECTED, ConnectionState.IN_TURN),
-            (ConnectionState.IN_TURN, ConnectionState.CONNECTED),
-        })
+        self._noisy_transitions = CONNECTION_NOISY_TRANSITIONS
 
         # Active SDK session + context manager (cleared during reconnect).
         self._session = None

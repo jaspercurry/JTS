@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 52 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 45 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 588
+- **fixed**: 595
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -306,15 +306,15 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0360 | `jasper/output_topology.py` :: OutputTopology.output_layout | nit | W5 | **fixed** | unused convenience method and test removed |
 | DA-0361 | `jasper/output_topology.py` :: SpeakerChannel / channel_identity_report | nit | W5 | **fixed** | speaker-channel identity serialization now lives on the domain model |
 | DA-0362 | `jasper/peering/daemon.py` :: _spawn_send | nit | W5 | **open** | — |
-| DA-0363 | `jasper/research/providers/openai_research.py` :: import reconnect_backoff_delay | nit | W5 | **open** | — |
+| DA-0363 | `jasper/research/providers/openai_research.py` :: import reconnect_backoff_delay | nit | W5 | **fixed** | dependency-free reconnect schedule moved to public `jasper.backoff`; research no longer imports private voice internals — this branch |
 | DA-0364 | `jasper/ring_negotiation.py` :: accept | nit | W5 | **open** | — |
 | DA-0365 | `jasper/sound/profile.py` :: ProfileLibraryEntry.to_dict | nit | W5 | **fixed** | profile descriptions survive serialization, overwrite, and rename |
 | DA-0366 | `jasper/tools/packs.py` :: register_packs | nit | W5 | **fixed** | raising pack gates are isolated like build/registration failures |
 | DA-0367 | `jasper/tools/spotify.py` :: _resolve_for_play :470 | nit | W5 | **fixed** | function documentation restored as the actual docstring |
 | DA-0369 | `jasper/voice/daemon_main.py` :: _build_registry | nit | W5 | **fixed** | three accepted-but-unused dependencies removed |
 | DA-0370 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn.__init__:248 | nit | W5 | **fixed** | unread wall-clock start field removed |
-| DA-0371 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn.send_text_context | nit | W5 | **open** | — |
-| DA-0372 | `jasper/voice_daemon.py` :: :4198-4245 | nit | W5 | **open** | — |
+| DA-0371 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn.send_text_context | nit | W5 | **fixed** | text-context send failures now mark the turn lost and close its audio stream, matching other send paths — this branch |
+| DA-0372 | `jasper/voice_daemon.py` :: :4198-4245 | nit | W5 | **fixed** | unreachable daemon-main pass-through shims removed; test/eval callers import the owning module — this branch |
 | DA-0373 | `jasper/voice_daemon.py` :: :84 | nit | W5 | **fixed** | unused compatibility import removed |
 | DA-0374 | `jasper/volume_diagnostics.py` :: PUSH_UNSUPPORTED | nit | W5 | **fixed** | dead reason-code constant removed |
 | DA-0375 | `jasper/wake_corpus/bridge_session.py` :: :1237 | nit | W5 | **fixed** | operational bridge warnings now use stable structured event names and fields — this branch |
@@ -429,11 +429,11 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0555 | `jasper/tools/calendar.py` :: _no_account_error / _no_credentials_error | nit | W3 | **fixed** | Calendar and Gmail share one Google account/credential error owner — this branch |
 | DA-0556 | `jasper/tools/spotify.py` :: spotify_play / spotify_play_latest_by_artist | nit | W3 | **fixed** | three Spotify tools share one provider-neutral device-link error builder — this branch |
 | DA-0557 | `jasper/tools/transport.py` :: _mpris_now_playing | nit | W3 | **fixed** | transport delegates AirPlay metadata to the renderer's canonical busctl parser — this branch |
-| DA-0559 | `jasper/voice/daemon_main.py` :: _tts_ready_detail / _warn_if_research_model_ | nit | W3 | **open** | — |
-| DA-0560 | `jasper/voice/openai_session.py` :: ConnectionState / _noisy_transitions | nit | W3 | **open** | — |
+| DA-0559 | `jasper/voice/daemon_main.py` :: _tts_ready_detail / _warn_if_research_model_ | nit | W3 | **fixed** | daemon-main helpers now have one owner; obsolete voice-daemon forwarding surface removed — this branch |
+| DA-0560 | `jasper/voice/openai_session.py` :: ConnectionState / _noisy_transitions | nit | W3 | **fixed** | provider-neutral connection state and noisy-transition set centralized in `voice.session` — this branch |
 | DA-0561 | `jasper/voice/openai_session.py` :: OpenAIRealtimeTurn._mark_server_vad / OpenAI | nit | W3 | **fixed** | unused private server-VAD alias removed; public turn method remains canonical — this branch |
-| DA-0562 | `jasper/voice_daemon.py` :: WakeLoop.for_tests | nit | W3 | **open** | — |
-| DA-0563 | `jasper/voice_daemon.py` :: _arbitrate_acquire_drain | nit | W3 | **open** | — |
+| DA-0562 | `jasper/voice_daemon.py` :: WakeLoop.for_tests | nit | W3 | **fixed** | test construction now calls the production initializer with explicit VAD/privacy/provider seams instead of redeclaring runtime state — this branch |
+| DA-0563 | `jasper/voice_daemon.py` :: _arbitrate_acquire_drain | nit | W3 | **fixed** | wake and manual-source paths share one acquire-buffer drain operation — this branch |
 | DA-0564 | `jasper/volume_coordinator.py` :: VolumeCoordinator.prepare_source_handoff :69 | nit | W3 | **fixed** | all source-handoff exits share one state-derived result builder; safety flags and timing remain pinned — this branch |
 | DA-0565 | `jasper/weather.py` :: WeatherClient.get_weather | nit | W3 | **fixed** | explicit and default locations share one bounded geocoding path |
 | DA-0566 | `jasper/web/bluetooth_setup.py` :: _read_json (package-wide) | nit | W3 | **fixed** | named Bluetooth, sources, correction, and rooms readers delegate to `read_json_object` with local caps |

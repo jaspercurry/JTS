@@ -403,6 +403,25 @@ async def test_send_text_context_adds_text_item_without_response_create():
         await conn.stop()
 
 
+async def test_send_text_context_failure_marks_turn_lost(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+
+        async def fail(_text: str) -> None:
+            raise OSError("socket closed")
+
+        monkeypatch.setattr(conn, "_send_text_context", fail)
+        await turn.send_text_context("context")
+
+        assert turn.turn_lost() is True
+    finally:
+        await conn.stop()
+
+
 async def test_release_without_commit_does_not_cancel_response():
     """No-speech aborts may have streamed audio but never committed input.
 

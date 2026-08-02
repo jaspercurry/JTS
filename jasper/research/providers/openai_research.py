@@ -14,7 +14,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from jasper.voice._supervisor import reconnect_backoff_delay
+from jasper.backoff import reconnect_backoff_delay
 
 from ..base import (
     RESEARCH_ANSWER_INSTRUCTIONS,

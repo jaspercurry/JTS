@@ -5,9 +5,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, AsyncIterator, Callable, Protocol, runtime_checkable
 
 from ..tools import ToolRegistry
+
+
+class ConnectionState(Enum):
+    """Provider-neutral states for persistent live voice connections."""
+
+    IDLE_INIT = "idle_init"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    IN_TURN = "in_turn"
+    RECONNECTING = "reconnecting"
+    PAUSED_FOR_BACKOFF = "paused_for_backoff"
+    FAILED = "failed"
+    CLOSED = "closed"
+
+
+CONNECTION_NOISY_TRANSITIONS = frozenset({
+    (ConnectionState.CONNECTED, ConnectionState.IN_TURN),
+    (ConnectionState.IN_TURN, ConnectionState.CONNECTED),
+})
 
 
 @dataclass(frozen=True)
