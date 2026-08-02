@@ -555,12 +555,24 @@ The controller should:
 - retain microphone peak and clipping headroom; and
 - keep a visible Stop action while sound is playing.
 
-The SNR verdict is computed after deconvolution, per band, from the accepted
-sweep against the stored ambient capture — never from the raw probe, which
-cannot see the sweep's band-dependent processing gain. The ambient capture
-must be long enough (or repeated) to characterize non-stationary noise, and
-the noise reference uses a percentile or maximum rather than one short quiet
-window.
+The SNR verdict is computed per band, from the accepted sweep against the
+stored ambient capture — never from the short level-finding probe, which is a
+different, shorter signal and cannot stand in for the sweep's band-dependent
+processing gain. **Both sides of the subtraction must be in the same domain,
+and which domain that is follows from what the verdict has to check.** A
+verdict whose job is to confirm a *deconvolved* quantity reads deconvolved
+levels on both sides. A verdict whose job is to confirm that a *level solve*
+delivered the SNR it aimed for reads the domain the solve aimed in: the v2
+per-driver verdict (issue #1830) is graded against the accepted sweep's own
+raw band levels, because `_solve_role_gain` targets
+`ambient_band_level + required_snr_db + crest_factor_db` off the raw ambient
+table, and a reading in any other units cannot say whether that target was
+met. Reading the deconvolved transfer function there would be worse than
+imprecise: the deconvolution divides the drive out, so that number does not
+move when the measurement gets quieter — which is the only thing the verdict
+was asked. The ambient capture must be long enough (or repeated) to
+characterize non-stationary noise, and the noise reference uses a percentile
+or maximum rather than one short quiet window.
 
 SNR thresholds are split by decision class, band-specific, and evaluated on
 the worst band the decision depends on:
@@ -870,6 +882,14 @@ the ones the gate reads. It is not harmless for the SUMMED crossover capture:
 its sweep is only `[fc/2, fc*2]`, so at the shipped crossover frequencies NO
 canonical band is covered and EVERY band deciding the alignment verdict took
 the fallback.
+
+**What this warns against is a raw SUBSTITUTE dropped inside a deconvolved
+subtraction — not reading raw on both sides.** The v2 per-driver verdict
+(#1830) measures the captured sweep and the ambient in raw dBFS *together*,
+matched to the domain `_solve_role_gain` aims in, so no band mixes units and
+the defect above is structurally absent. The rule is "one domain per
+subtraction, chosen by what the verdict must check", not "deconvolved is
+always the right side".
 
 **All numbers below are from synthetic reference-axis captures at an 8 s
 sweep** — 162 cases across six crossover frequencies, three ambient spectra,

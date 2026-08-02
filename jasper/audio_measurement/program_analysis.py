@@ -2332,6 +2332,160 @@ def _radiated_band_hz(segment: Any) -> tuple[float, float] | None:
     return lo, hi
 
 
+def _raw_sweep_segment(
+    capture: np.ndarray, segment: ProgramSegment, anchor: int,
+) -> np.ndarray:
+    """The raw captured samples of one sweep segment, at the SAME schedule
+    anchor :func:`_deconvolve_window` uses.
+
+    Deliberately the scheduled window rather than the located one: the SNR
+    verdict describes the response this anchor produced, so a level read
+    somewhere else would be describing a different capture. Clamped to the
+    capture, so a short recording yields a short (or empty) segment instead
+    of raising — the SNR verdict is diagnostic, and the locator is what
+    fails a truncated capture.
+
+    The ``max(lo, ...)`` in the stop is load-bearing, not defensive tidying:
+    without it, an ``anchor`` far enough before the capture that
+    ``anchor + n_samples`` lands in ``(-capture.size, 0)`` gives a NEGATIVE
+    stop, which numpy reads as an offset from the END — so the function would
+    return a non-empty slice of some other part of the recording and the SNR
+    verdict would state a confident number about audio this sweep never
+    played. No production caller can reach that today (every anchor is
+    ``global_offset + segment.start_sample``, both non-negative), so this
+    guards the contract rather than a live path.
+    """
+    lo = max(0, anchor)
+    hi = min(capture.size, max(lo, anchor + segment.n_samples))
+    return np.asarray(capture[lo:hi], dtype=np.float64)
+
+
+def _driver_snr_block(
+    *,
+    ambient_report: Mapping[str, Any] | None,
+    fc_hz: float | None,
+    freqs: np.ndarray,
+    mag_db: np.ndarray,
+    capture_segment: np.ndarray | None,
+    sample_rate: int,
+) -> dict[str, Any] | None:
+    """The per-driver SC-1 magnitude SNR verdict, read in ONE domain.
+
+    Both sides of an SNR subtraction have to be the same quantity. This
+    function's only real job is picking the signal side to match whichever
+    domain the noise report arrived in — the identical branch
+    :func:`jasper.active_speaker.driver_acoustics.analyze_driver_capture`
+    has always made, and the rule #2024 established for the summed-crossover
+    gate.
+
+    * A ``"deconvolved"`` noise report (a deconvolved+windowed ambient IR run
+      through :func:`~jasper.audio_measurement.snr_policy.magnitude_band_levels`)
+      pairs with the deconvolved transfer-function levels.
+    * A ``"raw"`` report — which is every report
+      :func:`~jasper.audio_measurement.snr_policy.framed_ambient_band_report`
+      produces, and so every ambient report a v2 CHECK hands forward — pairs
+      with the RAW captured sweep's band levels.
+
+    **The deciding reason is the SOLVE's domain, not a general preference.**
+    This verdict exists to check whether #1829's per-driver level solve
+    delivered the SNR it aimed for, and :func:`_solve_role_gain` aims in the
+    RAW domain: its room arm is ``ambient_band_level + required_snr_db +
+    crest_factor_db``, where the ambient level is a row of the raw
+    :func:`~jasper.audio_measurement.snr_policy.framed_ambient_band_report`
+    table. So a raw-with-raw verdict reads back the very quantity the solve
+    targeted — ``_band_required_snr_db(...) + MEASURE_SNR_SOLVE_MARGIN_DB``,
+    i.e. 41 dB where the alignment requirement applies. (The solve's
+    ``crest_factor_db`` term converts its own band-RMS demand into the
+    capture PEAK that ``k_db`` turns into a digital gain; it cancels out of
+    an RMS-vs-RMS SNR and so does not appear in what the verdict reads back.)
+    No other domain can perform that check: an instrument graded in units the
+    solve never used cannot say whether the solve worked.
+
+    **Why #2024 sent the summed-crossover gate the other way.** That gate has
+    no level solve aimed at it — nothing sets the summed sweep's level from a
+    band SNR target — so its only constraint is internal consistency, and the
+    cheapest way to get both sides into one domain there was to keep the
+    deconvolved side and narrow the band table until the raw fallback became
+    unreachable. Same rule ("read one domain"), opposite resolution, because
+    the two paths are anchored to different things.
+
+    **Why the raw report cannot be subtracted from the transfer function.**
+    The deconvolution divides the capture by the reference sweep regenerated
+    at that segment's own ``gain_db``, so the drive cancels exactly and
+    ``mag_db`` is invariant to how loud MEASURE played — a pinned contract
+    (``test_measure_analysis_is_invariant_to_the_programmed_drive_gain``).
+    The room's dBFS floor is not. Subtracting one from the other therefore
+    yields a number that does not move when the measurement gets quieter,
+    which is precisely the question issue #1830 exists to answer. Measured
+    through this analyzer on synthetic two-way fixtures: a MEASURE played
+    20 dB quieter into an unchanged room reported the SAME worst-band SNR and
+    the same ``ok`` verdict, while the same-domain reading fell the full
+    20 dB. Against that same-domain reading the old number ran **roughly +17
+    to +65 dB high** — band-dependent, and growing as the measurement
+    quietens, so not an offset anyone could have corrected for; in the quiet
+    arm the honest per-band reading goes a few dB BELOW zero while the old
+    one still said ``ok``. Stated as a bound on purpose: the figures come
+    from fixtures at different ambient sigmas, and no single decimal
+    reproduces across them. The load-bearing claim is the TREND, and that is
+    pinned exactly by
+    ``test_measure_snr_verdict_moves_with_the_measurement_level``.
+
+    ``window="rectangular"`` because a sweep is non-stationary: a Hann
+    window re-weights a swept sine's frequencies by WHEN they occur, which
+    is issue #1847's measured defect and #2010's open charge against
+    ``driver_acoustics._capture_band_levels``. That consumer keeps the Hann
+    default only because nothing production reaches it; this path IS
+    production, so it takes the documented fix.
+
+    **The duty-cycle offset that makes rectangular unsafe elsewhere is zero
+    here, by construction.** ``_capture_band_levels`` warns that rectangular
+    is not a drop-in because on a PADDED capture it carries a band-independent
+    ``10*log10(sweep_len/capture_len)`` term (5.93 dB across the 0-to-20 s
+    lead sweep it measured). :func:`_raw_sweep_segment` hands this function
+    exactly ``segment.n_samples`` — the sweep and nothing else — so that ratio
+    is 1 and the term is 0 dB. It is the slice width, not the window, that
+    buys this; widening the slice to include lead-in silence would re-arm the
+    offset immediately. Pinned by
+    ``test_raw_sweep_segment_returns_the_whole_scheduled_segment``.
+
+    Fails closed: a raw report with no captured segment to pair it against
+    produces no verdict at all rather than a cross-domain one. "Not
+    measured" is honest; a number in the wrong units is not. A segment that
+    is PRESENT but degenerate (a capture truncated before this sweep, so
+    :func:`_raw_sweep_segment` clamps to fewer than 8 samples) reaches the
+    same destination by the shipped route instead: ``band_levels_dbfs``
+    returns no bands, so the block carries ``verdict: "unknown"`` and an
+    empty band list. Both spellings of "not measured" are honest; they are
+    distinguishable on purpose, because absent means "no evidence was
+    offered" and unknown means "evidence was offered and was unusable".
+    """
+    if ambient_report is None or fc_hz is None:
+        return None
+    noise_domain, noise_bands = snr_policy.unwrap_noise_report(ambient_report)
+    if noise_domain == "deconvolved":
+        capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
+        band_method = "deconvolved_band_difference"
+    elif capture_segment is not None:
+        capture_bands = snr_policy.band_levels_dbfs(
+            capture_segment,
+            sample_rate,
+            snr_policy.CROSSOVER_SNR_BANDS_HZ,
+            window="rectangular",
+        )
+        band_method = "fft_band_power_difference"
+    else:
+        return None
+    return snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
+        capture_bands=capture_bands,
+        noise_bands=noise_bands,
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=(fc_hz / OVERLAP_OCTAVE_RATIO, fc_hz * OVERLAP_OCTAVE_RATIO),
+        model=DRIVER,
+        band_method=band_method,
+    )
+
+
 def _driver_response(
     role: str,
     full_ir: np.ndarray,
@@ -2342,6 +2496,7 @@ def _driver_response(
     fc_hz: float | None,
     n_fft: int,
     radiated_band_hz: tuple[float, float] | None = None,
+    capture_segment: np.ndarray | None = None,
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
 
@@ -2352,6 +2507,11 @@ def _driver_response(
     over-report E5 measured (see
     :mod:`jasper.audio_measurement.gate_disclosure`). Absent, the delta is
     simply not reported — never defaulted.
+
+    ``capture_segment`` is the RAW captured samples of this role's sweep —
+    the signal side of the SNR verdict whenever the noise report is a raw
+    one. See :func:`_driver_snr_block` for why the verdict cannot be built
+    from ``full_ir`` in that case.
     """
     peak_idx = int(np.argmax(np.abs(full_ir)))
     window = deconv.direct_arrival_window(
@@ -2377,19 +2537,14 @@ def _driver_response(
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
 
-    snr_block = None
-    if ambient_report is not None and fc_hz is not None:
-        capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
-        _domain, noise_bands = snr_policy.unwrap_noise_report(ambient_report)
-        snr_block = snr_policy.band_snr_verdicts(
-            decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
-            capture_bands=capture_bands,
-            noise_bands=noise_bands,
-            noise_floor_dbfs_scalar=None,
-            relevant_hz=(fc_hz / OVERLAP_OCTAVE_RATIO, fc_hz * OVERLAP_OCTAVE_RATIO),
-            model=DRIVER,
-            band_method="deconvolved_band_difference",
-        )
+    snr_block = _driver_snr_block(
+        ambient_report=ambient_report,
+        fc_hz=fc_hz,
+        freqs=freqs,
+        mag_db=mag_db,
+        capture_segment=capture_segment,
+        sample_rate=sample_rate,
+    )
     return DriverResponse(
         role=role,
         freqs_hz=freqs,
@@ -4046,6 +4201,9 @@ def _repeat_driver_responses(
             calibration=calibration, ambient_report=ambient_report,
             fc_hz=fc_hz, n_fft=n_fft,
             radiated_band_hz=_radiated_band_hz(seg),
+            capture_segment=_raw_sweep_segment(
+                capture, seg, global_offset + seg.start_sample,
+            ),
         )
         out.append(replace(resp, repeat_index=repeat_index))
     return tuple(out)
@@ -4101,12 +4259,18 @@ def _analyze_measure(
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
                 radiated_band_hz=_radiated_band_hz(seg_w),
+                capture_segment=_raw_sweep_segment(
+                    capture, seg_w, global_offset + seg_w.start_sample,
+                ),
             ),
             _driver_response(
                 seg_t.role, tweeter_full_ir, sample_rate,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
                 radiated_band_hz=_radiated_band_hz(seg_t),
+                capture_segment=_raw_sweep_segment(
+                    capture, seg_t, global_offset + seg_t.start_sample,
+                ),
             ),
         )
     )
