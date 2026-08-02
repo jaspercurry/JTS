@@ -5716,10 +5716,10 @@ def test_bind_production_play_default_config_dir_lock_lands_under_var_lib_camill
     assert str(dsp_apply_lock_path(resolved)).startswith("/var/lib/camilladsp")
 
 
-# --- Issue #1976: the cloud group's stimulus must also land at a stable name --
+# --- Issue #1976: the summed-sweep stimulus must also land at a stable name --
 
 
-def test_cloud_measure_play_also_persists_canonical_verify_program_wav(
+def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
     monkeypatch, tmp_path
 ):
     """Issue #1976: a measure-stage session that walks the pre-apply cloud
@@ -5731,14 +5731,16 @@ def test_cloud_measure_play_also_persists_canonical_verify_program_wav(
 
     Confirmed against real bench data
     (``captures/bench-20260730/bundle-d76b55bc6b67``, a measure-stage-only
-    session): ``cloud_measure_program.wav`` was on disk, ``verify_program.wav``
-    never was, and 28 ``verify_*`` operator-debug ring captures from other
-    sessions (``_maybe_retain_capture``) had no stable filename to
-    deconvolve against for offline replay.
+    session): ``cloud_measure_program.wav`` was on disk, no summed-sweep
+    stimulus was recoverable under a predictable name.
 
-    ``_play`` must now ALSO persist a canonical ``verify_program.wav``
-    alongside the phase-named file whenever the armed phase is CLOUD_MEASURE
-    (or CLOUD_VERIFY) — never only when PHASE_VERIFY is armed."""
+    ``_play`` must now ALSO persist ``summed_program.wav`` alongside the
+    phase-named file whenever the armed phase is CLOUD_MEASURE, CLOUD_VERIFY,
+    or VERIFY itself. This is a NEW, dedicated filename — never
+    ``verify_program.wav`` — because corpus-index tooling derives "which
+    phases this bundle reached" from which ``{phase}_program.wav`` files
+    exist; reusing that name would make a cloud-only bundle false-report
+    having reached VERIFY (adversarial-gate SF1, PR #2028)."""
     import jasper.active_speaker.program_playback as program_playback_mod
     import jasper.audio_measurement.program as program_mod
 
@@ -5780,24 +5782,28 @@ def test_cloud_measure_play_also_persists_canonical_verify_program_wav(
 
     session_dir = tmp_path / "crossover_v2" / "cap_verify_persist_probe"
     assert (session_dir / "cloud_measure_program.wav").exists()
-    assert (session_dir / "verify_program.wav").exists(), (
-        "CLOUD_MEASURE must also persist the canonical verify_program.wav "
-        "alias — a session that never arms a literal VERIFY capture would "
-        "otherwise leave its reusable stimulus un-replayable offline (#1976)"
+    # The phase-named file's presence must stay a reliable phase-reach signal:
+    # CLOUD_MEASURE alone must NOT create a verify_program.wav that would make
+    # this cloud-only session false-report having reached VERIFY.
+    assert not (session_dir / "verify_program.wav").exists()
+    assert (session_dir / "summed_program.wav").exists(), (
+        "CLOUD_MEASURE must also persist the canonical summed_program.wav — "
+        "a session that never arms a literal VERIFY capture would otherwise "
+        "leave its reusable stimulus un-replayable offline (#1976)"
     )
     # Written exactly once each — the alias is not re-derived or re-rendered,
     # just a second write of the SAME program object already validated above.
     assert written == [
         session_dir / "cloud_measure_program.wav",
-        session_dir / "verify_program.wav",
+        session_dir / "summed_program.wav",
     ]
 
 
-def test_cloud_measure_play_does_not_overwrite_existing_verify_program_wav(
+def test_verify_play_does_not_overwrite_existing_summed_program_wav(
     monkeypatch, tmp_path
 ):
     """A CLOUD_VERIFY position captured after the session's own VERIFY anchor
-    must not re-render (or clobber) the verify_program.wav VERIFY already
+    must not re-render (or clobber) the summed_program.wav VERIFY already
     wrote — the alias write is a fill-if-absent, not an unconditional write,
     so repeated cloud positions in one session cost one extra WAV write, not
     N."""
@@ -5844,8 +5850,70 @@ def test_cloud_measure_play_does_not_overwrite_existing_verify_program_wav(
     session_dir = tmp_path / "crossover_v2" / "cap_verify_no_clobber_probe"
     assert write_calls == [
         session_dir / "verify_program.wav",
+        session_dir / "summed_program.wav",
         session_dir / "cloud_verify_program.wav",
-    ], "verify_program.wav must be written once, by VERIFY itself — CLOUD_VERIFY's fill-if-absent check must skip it"
+    ], (
+        "summed_program.wav must be written exactly once, by VERIFY itself "
+        "(the phase-named verify_program.wav write, then the summed_program.wav "
+        "fill) — CLOUD_VERIFY's fill-if-absent check must skip it"
+    )
+
+
+def test_summed_program_wav_persist_failure_is_best_effort(monkeypatch, tmp_path):
+    """A full disk or permissions fault writing the summed_program.wav
+    diagnostic copy must never abort the measurement (adversarial-gate SF4,
+    PR #2028) — matches the ``_maybe_retain_capture`` convention elsewhere in
+    this module: catch, log at WARN, keep going. The phase-named WAV (the
+    file actually played) must still have been written before the failure."""
+    import jasper.active_speaker.program_playback as program_playback_mod
+    import jasper.audio_measurement.program as program_mod
+
+    calls: list[Path] = []
+
+    def flaky_write_program_wav(path, program):
+        calls.append(Path(path))
+        if Path(path).name == "summed_program.wav":
+            raise OSError("ENOSPC: no space left on device")
+        Path(path).write_bytes(b"fake-wav-bytes")
+
+    async def fake_verified_program_aplay(bundle_dir, artifact, **kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr(program_mod, "write_program_wav", flaky_write_program_wav)
+    monkeypatch.setattr(
+        program_playback_mod, "verified_program_aplay", fake_verified_program_aplay
+    )
+    _patch_measurement_window(monkeypatch, [])
+
+    class _FakeEvidenceStore:
+        bundle_dir = tmp_path
+
+        def identify_artifact(self, rel):
+            return SimpleNamespace(fingerprint="fake")
+
+    play = v2host.bind_production_play(
+        run_async=asyncio.run,
+        camilla_factory=lambda: object(),
+        evidence_store=_FakeEvidenceStore(),
+        relay_session_id="cap_summed_persist_fails_probe",
+        topology=object(),
+        preset=object(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="hw:Test",
+        safety_profile={},
+        role_targets={},
+        session_volume_db=-20.0,
+    )
+    # Must not raise — the OSError from the summed_program.wav write is
+    # swallowed, not propagated into the measurement.
+    play(PHASE_CLOUD_MEASURE, object())
+
+    session_dir = tmp_path / "crossover_v2" / "cap_summed_persist_fails_probe"
+    assert (session_dir / "cloud_measure_program.wav").exists(), (
+        "the phase-named WAV that was actually played must persist even "
+        "when the best-effort diagnostic copy fails"
+    )
+    assert not (session_dir / "summed_program.wav").exists()
 
 
 # --- W6 hardware run 3, finding G: local seam OSError vs. relay transport death -

@@ -189,30 +189,39 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
-def test_capture_page_js_importers_of_measurement_audio_share_one_cache_key():
-    """Issue #1975: every capture-page module that imports the shared
-    measurement-audio.js helper must reference the SAME ``?v=`` stamp.
+def test_capture_page_js_modules_have_one_cache_key_each():
+    """Every ``?v=``-stamped module import across capture-page/js/*.js must
+    use the SAME stamp everywhere that module is imported.
 
-    The ``?v=`` query is a cache key, not decoration — two importers pinned to
-    different stamps means the browser treats them as two different module
-    URLs, so a warm cache can end up running two different copies of
-    measurement-audio.js in one page load depending on load order. This is a
-    convergence guard, not just a snapshot of today's value: it fails on ANY
-    future drift, not only the specific level-events.js/20260630-1 regression
-    that #1975 found (the #1959 delta gate caught it, not this test — this
-    test is what should have).
+    Originally written for #1975 as a measurement-audio.js-only check;
+    generalized to the whole bug class (adversarial-gate SF1/SF3, PR #2028)
+    after the gate proved the narrow version was blind to a same-shaped
+    split in a DIFFERENT module: level-events.js has two importers of its
+    own (ambient-stats.js and main.js), and nothing guarded THEM before this
+    — splitting level-events.js's stamp between its two importers stayed
+    green under the old measurement-audio.js-only test.
+
+    The ``?v=`` query is a cache key, not decoration — two importers pinned
+    to different stamps means the browser treats them as two different
+    module URLs, so a warm cache can end up running two different copies of
+    the SAME module in one page load depending on load order. This is a
+    convergence guard over the WHOLE module inventory, not a snapshot of
+    today's values: it fails on any future stamp split in any stamped
+    module, not only the specific measurement-audio.js/level-events.js
+    regressions #1975 happened to find.
     """
     js_dir = _REPO / "capture-page/js"
-    pattern = re.compile(r'measurement-audio\.js\?v=([\w.\-]+)')
-    stamps: dict[str, str] = {}
+    pattern = re.compile(r'from\s+["\']\./([\w-]+\.js)\?v=([\w.\-]+)["\']')
+    # {imported_module: {stamp: [importer filenames using that stamp]}}
+    inventory: dict[str, dict[str, list[str]]] = {}
     for path in sorted(js_dir.glob("*.js")):
-        for match in pattern.finditer(path.read_text(encoding="utf-8")):
-            stamps[path.name] = match.group(1)
-    assert stamps, "expected at least one capture-page module to import measurement-audio.js"
-    distinct = set(stamps.values())
-    assert len(distinct) == 1, (
-        "capture-page/js/*.js importers of measurement-audio.js must share "
-        f"ONE ?v= cache key, found {len(distinct)}: {stamps}"
+        for module, stamp in pattern.findall(path.read_text(encoding="utf-8")):
+            inventory.setdefault(module, {}).setdefault(stamp, []).append(path.name)
+    assert inventory, "expected at least one ?v=-stamped import in capture-page/js/*.js"
+    split = {module: stamps for module, stamps in inventory.items() if len(stamps) > 1}
+    assert not split, (
+        "capture-page/js/*.js modules must be imported at ONE ?v= cache key "
+        f"everywhere they're imported, found a split stamp: {split}"
     )
 
 
