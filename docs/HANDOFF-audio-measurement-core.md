@@ -439,11 +439,15 @@ create a second retention system.
   uncharacterised live one. `band_snr_verdicts` / `cap_null_depth_db` are new,
   consumed by `active_speaker/driver_acoustics.py` and
   `crossover_alignment.py`. Two later corrections change what every SNR
-  number here means: `worst_band_verdict` breaks an EQUAL-verdict tie on the
-  lowest `estimated_snr_db` instead of table order (verdict rank still
+  number here means. First: `worst_band_verdict` breaks an EQUAL-verdict tie
+  on the lowest `estimated_snr_db` instead of table order (verdict rank still
   dominates; a band with no usable number sorts `+inf` so it can never
-  displace one that has a number — `_worst_snr_key`), so both consumers read
-  a stricter number than before; and the ambient report's DOMAIN now picks
+  displace one that has a number — `_worst_snr_key`). Both consumers of the
+  winning entry's `estimated_snr_db` therefore read a stricter number than
+  before — `cap_null_depth_db` caps a null nearer, and
+  `correction_crossover_backend`'s completion-time level correction sizes a
+  larger shortfall, so a session can solve to a HIGHER capture level than it
+  used to. Second: the ambient report's DOMAIN now picks
   the signal side it may be subtracted from — `unwrap_noise_report` tags a
   report `raw` or `deconvolved`, and `program_analysis._driver_snr_block`
   pairs a raw one with the RAW captured sweep segment (`_raw_sweep_segment`,
