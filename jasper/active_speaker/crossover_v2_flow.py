@@ -7676,6 +7676,7 @@ class CrossoverV2Conductor:
         )
 
         registry = result.get("null_registry") or {}
+        n_dependent = 0
         floor_hz = float(self._cloud_echo_band.band_hz[0])
         grid = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
         # The cloud's own gated validity floor is the honest lower edge: below
@@ -7706,6 +7707,10 @@ class CrossoverV2Conductor:
             else:
                 reason = report.reason
                 n_dips = len(report.dips)
+                n_dependent = sum(
+                    dip.classification == CLASSIFICATION_POSITION_DEPENDENT
+                    for dip in report.dips
+                )
                 bands = report.position_dependent_bands_hz
         log_event(
             logger, "correction.crossover_v2_boost_evidence",
@@ -7719,8 +7724,12 @@ class CrossoverV2Conductor:
             unadjudicated_span_hz=[round(v, 3) for v in span],
             variance_reason=reason,
             n_dips=n_dips,
+            # How many of those dips the cloud's positions DISAGREED about —
+            # the only class this bound acts on. `n_dips - n_position_dependent`
+            # is the invariant remainder, which keeps its boost and is exactly
+            # the residual #1868 has to close.
+            n_position_dependent=n_dependent,
             boost_excluded_bands_hz=[[round(lo, 3), round(hi, 3)] for lo, hi in bands],
-            classification=CLASSIFICATION_POSITION_DEPENDENT,
         )
         return bands
 

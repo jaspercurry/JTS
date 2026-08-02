@@ -10549,3 +10549,142 @@ def test_a_verify_that_graded_nothing_claims_no_band():
     assert _run_phase(c, 3, 3)["accepted"] is False
 
     assert c.verify_graded_band_hz is None
+
+
+# --------------------------------------------------------------------------- #
+# #1967 — the boost gate's evidence claim, made substantive
+# --------------------------------------------------------------------------- #
+
+
+def _moving_notch_cloud(notch_hz: list[float]):
+    """A real ``CombinedResponse`` whose positions each carry one narrow notch
+    at their own frequency — so the cross-position check has something to
+    disagree about, below the registry's 4 kHz floor."""
+    from jasper.audio_measurement.spatial_combine import (
+        PositionCapture,
+        combine_positions,
+    )
+
+    freqs = np.fft.rfftfreq(4096, 1.0 / 48_000)
+    log_f = np.log2(np.maximum(freqs, 1.0))
+    baseline = 1.5 * np.sin(2.0 * np.pi * log_f / 1.7)
+    return combine_positions([
+        PositionCapture(
+            position_id=f"p{k:02d}", freqs_hz=freqs,
+            magnitude_db=baseline
+            - 18.0 * np.exp(-0.5 * ((log_f - np.log2(f0)) / 0.06) ** 2),
+            sample_rate=48_000, ir=None,
+        )
+        for k, f0 in enumerate(notch_hz)
+    ])
+
+
+_BLIND_SPAN_RESULT = {"validity_floor_hz": 1200.0, "null_registry": {
+    "classification": "insufficient_evidence", "reason": "no_corroborating_arrivals",
+}}
+
+
+def test_boost_exclusions_come_from_the_blind_span_below_the_registry_floor(caplog):
+    """#1967. The registry's band is floored at ``ECHO_BAND_HF_REGIME_FLOOR_HZ``,
+    so it contributes no exclusions below it — the gate's "null-exclusion stays
+    a measured, registry-gated fact" is unbacked there. This is the check that
+    backs it: dips the cloud's own positions disagree about are withheld from
+    the LIFT vocabulary.
+
+    The disclosure is asserted alongside the value because a bound that
+    silently narrows a correction is the shape this whole area is trying to
+    stop shipping.
+    """
+    c = _cloud_conductor(FakeSeams())
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    bands = c._boost_excluded_bands_hz(
+        _moving_notch_cloud([1800.0] * 5 + [2400.0] * 3), _BLIND_SPAN_RESULT,
+    )
+
+    floor_hz = c._cloud_echo_band.band_hz[0]
+    assert bands, "a cloud whose positions disagree must offer something"
+    # Every offered band sits inside the span the registry could not reach:
+    # above the cloud's own validity floor, below the registry's lower edge.
+    assert all(1200.0 <= lo < hi <= floor_hz for lo, hi in bands), (bands, floor_hz)
+    assert "event=correction.crossover_v2_boost_evidence" in caplog.text
+    assert "registry_reason=no_corroborating_arrivals" in caplog.text
+    assert f'unadjudicated_span_hz="[1200.0, {floor_hz}]"' in caplog.text
+
+
+def test_a_cloud_whose_positions_agree_loses_no_boost(caplog):
+    """The owner's ruling, executable: this bound withholds on CONTRADICTING
+    evidence and never on absent or agreeing evidence.
+
+    Eight positions notched at the same frequency read invariant, so nothing is
+    offered — the +8.06 dB at 3633.6 Hz that motivated #1967 sits in exactly
+    this class and keeps flowing. It is still disclosed, because "the registry
+    could not look here" stays true whatever the check found.
+    """
+    c = _cloud_conductor(FakeSeams())
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    bands = c._boost_excluded_bands_hz(
+        _moving_notch_cloud([1800.0] * 8), _BLIND_SPAN_RESULT,
+    )
+
+    assert bands == ()
+    assert "event=correction.crossover_v2_boost_evidence" in caplog.text
+    assert "boost_excluded_bands_hz=[]" in caplog.text
+    # The dip WAS seen — it just did not contradict a boost. A reader must be
+    # able to tell that from "nothing was measured".
+    assert "n_dips=1 n_position_dependent=0" in caplog.text
+
+
+def test_the_boost_bound_fails_open_when_it_cannot_be_computed(caplog):
+    """Failing CLOSED would blanket-ban boost below 4 kHz on a numeric hiccup,
+    which is the blunt gate this function exists to avoid. Both unusable-input
+    shapes yield today's permission exactly, and say so."""
+    c = _cloud_conductor(FakeSeams())
+    combined = _moving_notch_cloud([1800.0] * 5 + [2400.0] * 3)
+
+    # No blind span at all: the cloud's validity floor is already above the
+    # registry's own floor, so nothing was hidden.
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    assert c._boost_excluded_bands_hz(
+        combined, {"validity_floor_hz": 9000.0, "null_registry": {}},
+    ) == ()
+    assert "variance_reason=no_blind_span" in caplog.text
+
+    # And an unexpected failure inside the check is caught, disclosed at
+    # WARNING, and leaves the permission where it was.
+    caplog.clear()
+    with pytest.MonkeyPatch.context() as mp:
+        import jasper.audio_measurement.interference_nulls as nulls
+
+        def _boom(*a, **k):
+            raise RuntimeError("synthetic")
+
+        mp.setattr(nulls, "classify_dip_position_variance", _boom)
+        assert c._boost_excluded_bands_hz(combined, _BLIND_SPAN_RESULT) == ()
+    assert "event=correction.crossover_v2_boost_variance_failed" in caplog.text
+    assert "variance_reason=variance_check_failed" in caplog.text
+
+
+def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
+    """The wiring, end to end at the conductor's own surface: what
+    ``_boost_excluded_bands_hz`` composes is what ``fit_driver_linearization``
+    is handed. Without this the bound could be computed, logged, and dropped.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    seen: list[tuple[tuple[float, float], ...]] = []
+    real_fit = flow.fit_driver_linearization
+
+    def _spy(resp, envelope, **kwargs):
+        seen.append(kwargs["vocabulary"].boost_excluded_bands_hz)
+        return real_fit(resp, envelope, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "fit_driver_linearization", _spy)
+        mp.setattr(
+            flow.CrossoverV2Conductor, "_boost_excluded_bands_hz",
+            lambda self, combined, result: ((1500.0, 1900.0),),
+        )
+        c = _cloud_conductor(fakes)
+        _walk_measure_cloud_to_close(c)
+
+    assert seen and all(bands == ((1500.0, 1900.0),) for bands in seen)
