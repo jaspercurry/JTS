@@ -1379,7 +1379,6 @@ async def _live_draft_profile(
     profile: SoundProfile,
     *,
     expected_dsp_write_epoch: str,
-    profile_path: str | Path,
     library_path: str | Path | None = None,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
@@ -5410,7 +5409,6 @@ def _make_handler(
                             _live_draft_profile(
                                 profile,
                                 expected_dsp_write_epoch=expected_epoch,
-                                profile_path=profile_path,
                                 library_path=library_path,
                                 config_dir=config_dir,
                                 camilla_factory=camilla_factory,

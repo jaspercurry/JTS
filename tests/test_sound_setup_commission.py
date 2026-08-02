@@ -1020,9 +1020,9 @@ def _record_driver_checks_for_summed_test() -> None:
         )
 
 
-def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
-    monkeypatch, tmp_path
-):
+def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
+    """Install the common summed-test audio boundary and return its probes."""
+
     monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
     controller = _FakeController("placeholder")
     env = _web_commission_env(monkeypatch, tmp_path, controller)
@@ -1081,6 +1081,24 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
         return real_popen(args, *popen_args, **kwargs)
 
     monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    return {
+        "controller": controller,
+        "env": env,
+        "wav_path": wav_path,
+        "processes": processes,
+        "fanin_actions": fanin_actions,
+    }
+
+
+def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
+    monkeypatch, tmp_path
+):
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    env = summed["env"]
+    wav_path = summed["wav_path"]
+    processes = summed["processes"]
+    fanin_actions = summed["fanin_actions"]
 
     async def _run_confirmed_test():
         task = asyncio.create_task(
@@ -1146,43 +1164,16 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
 
 
 def test_summed_test_confirm_before_audio_does_not_validate(monkeypatch, tmp_path):
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
-    controller = _FakeController("placeholder")
-    _web_commission_env(monkeypatch, tmp_path, controller)
-    monkeypatch.setattr(
-        sound_setup,
-        "resolve_commission_inputs",
-        lambda preset=None: (_tone_preset(), None),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        str(tmp_path / "tone-artifacts"),
-    )
-    _record_driver_checks_for_summed_test()
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    processes = summed["processes"]
 
-    wav_path = tmp_path / "summed.wav"
-    wav_path.write_bytes(b"fake wav; subprocess.Popen should not be reached")
-    monkeypatch.setattr(
-        sound_setup,
-        "_combined_speech_stimulus_wav_path",
-        lambda: (
-            wav_path,
-            {
-                "kind": "jts_active_speaker_speech_stimulus",
-                "text": "Like and subscribe to Jasper tech.",
-                "duration_s": 12.0,
-                "duration_ms": 12000,
-            },
-        ),
-    )
-    processes: list[_FakeToneProcess] = []
-
-    def _fake_popen(args, *popen_args, **kwargs):
+    def _record_any_popen(args, *popen_args, **kwargs):
         proc = _FakeToneProcess(list(args))
         processes.append(proc)
         return proc
 
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _record_any_popen)
 
     async def _run_pre_audio_confirm_test():
         load_started = asyncio.Event()
@@ -1232,63 +1223,11 @@ def test_summed_test_confirm_before_audio_does_not_validate(monkeypatch, tmp_pat
 
 
 def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path):
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
-    controller = _FakeController("placeholder")
-    env = _web_commission_env(monkeypatch, tmp_path, controller)
-    monkeypatch.setattr(
-        sound_setup,
-        "resolve_commission_inputs",
-        lambda preset=None: (_tone_preset(), None),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        str(tmp_path / "tone-artifacts"),
-    )
-    _record_driver_checks_for_summed_test()
-
-    wav_path = tmp_path / "summed.wav"
-    wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
-    monkeypatch.setattr(
-        sound_setup,
-        "_combined_speech_stimulus_wav_path",
-        lambda: (
-            wav_path,
-            {
-                "kind": "jts_active_speaker_speech_stimulus",
-                "text": "Like and subscribe to Jasper tech.",
-                "duration_s": 12.0,
-                "duration_ms": 12000,
-            },
-        ),
-    )
-    fanin_actions: list[str] = []
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_select_fanin_lane",
-        lambda: fanin_actions.append("select") or {
-            "active_source": "correction",
-            "test_source": "correction",
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_release_fanin_lane",
-        lambda *, reason: fanin_actions.append(f"release:{reason}") or {
-            "active_source": "airplay",
-            "test_source": None,
-        },
-    )
-    processes: list[_FakeToneProcess] = []
-    real_popen = sound_setup.subprocess.Popen
-
-    def _fake_popen(args, *popen_args, **kwargs):
-        if args and Path(str(args[0])).name == "aplay":
-            proc = _FakeToneProcess(list(args))
-            processes.append(proc)
-            return proc
-        return real_popen(args, *popen_args, **kwargs)
-
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    env = summed["env"]
+    processes = summed["processes"]
+    fanin_actions = summed["fanin_actions"]
 
     async def _run_stop_test():
         task = asyncio.create_task(
@@ -1331,64 +1270,12 @@ def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path)
 
 
 def test_summed_test_watchdog_stops_abandoned_loop(monkeypatch, tmp_path):
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
     monkeypatch.setattr(sound_setup, "SUMMED_TEST_MAX_LOOP_SECONDS", 0.04)
-    controller = _FakeController("placeholder")
-    env = _web_commission_env(monkeypatch, tmp_path, controller)
-    monkeypatch.setattr(
-        sound_setup,
-        "resolve_commission_inputs",
-        lambda preset=None: (_tone_preset(), None),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        str(tmp_path / "tone-artifacts"),
-    )
-    _record_driver_checks_for_summed_test()
-
-    wav_path = tmp_path / "summed.wav"
-    wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
-    monkeypatch.setattr(
-        sound_setup,
-        "_combined_speech_stimulus_wav_path",
-        lambda: (
-            wav_path,
-            {
-                "kind": "jts_active_speaker_speech_stimulus",
-                "text": "Like and subscribe to Jasper tech.",
-                "duration_s": 12.0,
-                "duration_ms": 12000,
-            },
-        ),
-    )
-    fanin_actions: list[str] = []
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_select_fanin_lane",
-        lambda: fanin_actions.append("select") or {
-            "active_source": "correction",
-            "test_source": "correction",
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_release_fanin_lane",
-        lambda *, reason: fanin_actions.append(f"release:{reason}") or {
-            "active_source": "airplay",
-            "test_source": None,
-        },
-    )
-    processes: list[_FakeToneProcess] = []
-    real_popen = sound_setup.subprocess.Popen
-
-    def _fake_popen(args, *popen_args, **kwargs):
-        if args and Path(str(args[0])).name == "aplay":
-            proc = _FakeToneProcess(list(args))
-            processes.append(proc)
-            return proc
-        return real_popen(args, *popen_args, **kwargs)
-
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    controller = summed["controller"]
+    env = summed["env"]
+    processes = summed["processes"]
+    fanin_actions = summed["fanin_actions"]
 
     payload = asyncio.run(
         sound_setup._active_speaker_summed_test_payload(
@@ -1418,63 +1305,11 @@ def test_summed_test_watchdog_stops_abandoned_loop(monkeypatch, tmp_path):
 
 
 def test_summed_test_level_update_reloads_active_loop(monkeypatch, tmp_path):
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
-    controller = _FakeController("placeholder")
-    env = _web_commission_env(monkeypatch, tmp_path, controller)
-    monkeypatch.setattr(
-        sound_setup,
-        "resolve_commission_inputs",
-        lambda preset=None: (_tone_preset(), None),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        str(tmp_path / "tone-artifacts"),
-    )
-    _record_driver_checks_for_summed_test()
-
-    wav_path = tmp_path / "summed.wav"
-    wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
-    monkeypatch.setattr(
-        sound_setup,
-        "_combined_speech_stimulus_wav_path",
-        lambda: (
-            wav_path,
-            {
-                "kind": "jts_active_speaker_speech_stimulus",
-                "text": "Like and subscribe to Jasper tech.",
-                "duration_s": 12.0,
-                "duration_ms": 12000,
-            },
-        ),
-    )
-    fanin_actions: list[str] = []
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_select_fanin_lane",
-        lambda: fanin_actions.append("select") or {
-            "active_source": "correction",
-            "test_source": "correction",
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_release_fanin_lane",
-        lambda *, reason: fanin_actions.append(f"release:{reason}") or {
-            "active_source": "airplay",
-            "test_source": None,
-        },
-    )
-    processes: list[_FakeToneProcess] = []
-    real_popen = sound_setup.subprocess.Popen
-
-    def _fake_popen(args, *popen_args, **kwargs):
-        if args and Path(str(args[0])).name == "aplay":
-            proc = _FakeToneProcess(list(args))
-            processes.append(proc)
-            return proc
-        return real_popen(args, *popen_args, **kwargs)
-
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    env = summed["env"]
+    processes = summed["processes"]
+    fanin_actions = summed["fanin_actions"]
 
     async def _run_level_update_test():
         task = asyncio.create_task(

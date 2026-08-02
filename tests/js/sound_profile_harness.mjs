@@ -1996,6 +1996,86 @@ async function testCombinedTestLevelPostsSelectedBoundedLevel() {
   return { combinedTestLevelPostsSelectedBoundedLevel: true };
 }
 
+async function testCombinedTestFailureRestoresActionAndShowsError() {
+  const failureMessage = "combined output unavailable";
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/measurements": () => Promise.resolve(response({
+      status: "needs_summed_validation",
+      summary: {
+        driver_measurements_complete: true,
+        summed_validation_complete: false,
+        latest_driver_measurements: {
+          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
+          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
+        },
+        latest_summed_tests: {},
+        latest_summed_validations: {},
+      },
+      permissions: {},
+      issues: [],
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "needs_combined_check",
+      test_level: {
+        requested_level_dbfs: -72,
+        min_level_dbfs: -80,
+        max_level_dbfs: 0,
+        step_db: 1,
+      },
+      combined_groups: [{
+        group_id: "main",
+        label: "Main speaker",
+        status: "ready_to_test",
+        status_label: "next",
+        message: "Run the combined speaker test.",
+        actions: {
+          start_combined_test: {
+            id: "start_combined_test",
+            label: "Play combined test",
+            enabled: true,
+            endpoint: "./active-speaker/summed-test",
+            body: {
+              speaker_group_id: "main",
+              audio: true,
+              stimulus: "speech",
+              duration_ms: 12000,
+            },
+          },
+        },
+      }],
+    })),
+    "./active-speaker/summed-test": () => Promise.resolve(response({
+      error: failureMessage,
+    }, false, 503)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({
+    "data-act": "prepare-summed-test",
+    "data-group-id": "main",
+    "data-label": "Main speaker",
+  });
+  for (let i = 0; i < 6; i += 1) await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const statusEl = harness.elements.get("status");
+  if (!html.includes('data-act="prepare-summed-test"') ||
+      html.includes('data-act="stop-summed-test"')) {
+    fail("a failed combined test should restore the Play action", { html });
+  }
+  const expectedStatus = `Could not start the combined speaker test: ${failureMessage}`;
+  if (statusEl.textContent !== expectedStatus || !statusEl.className.includes("err")) {
+    fail("a failed combined test should show the specific error", {
+      expectedStatus,
+      status: statusEl.textContent,
+      className: statusEl.className,
+    });
+  }
+  return { combinedTestFailureRestoresActionAndShowsError: true };
+}
+
 async function testCombinedTestButtonStopsActiveRequest() {
   const start = deferred();
   const stopPosts = [];
@@ -6244,6 +6324,7 @@ results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testAppliedProfileEditContinueOpensProfileStep());
 results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
+results.push(await testCombinedTestFailureRestoresActionAndShowsError());
 results.push(await testCombinedTestButtonStopsActiveRequest());
 results.push(await testReloadedPageRendersReloadSafeStopForActiveTest());
 results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());

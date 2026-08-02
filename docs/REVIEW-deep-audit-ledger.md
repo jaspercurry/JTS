@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 57 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 52 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 583
+- **fixed**: 588
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -324,10 +324,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0379 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend._write_active_session_marke | nit | W5 | **fixed** | active-session and test-mode markers use the canonical atomic JSON publisher — this branch |
 | DA-0380 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend.begin_session | nit | W5 | **fixed** | a dedicated transaction lock serializes in-memory setup with metadata and marker publication — this branch |
 | DA-0381 | `jasper/weather.py` :: WeatherClient._get_json | nit | W5 | **fixed** | invalid successful-response JSON now emits a bounded structured warning before raising — this branch |
-| DA-0382 | `jasper/web/correction_setup.py` :: _handle_interpret / _handle_propose tuning-s | nit | W5 | **open** | — |
+| DA-0382 | `jasper/web/correction_setup.py` :: _handle_interpret / _handle_propose tuning-s | nit | W5 | **fixed** | tuning provider calls, throttling, spend gates, and ledger already extracted to `correction_tuning.py` — `f14732e6c` |
 | DA-0383 | `jasper/web/correction_setup.py` :: _handle_start :1345,1385 | nit | W5 | **fixed** | vestigial reservation-transfer flag removed |
 | DA-0384 | `jasper/web/correction_setup.py` :: log_event event names :1246,1358,1886,1919 | nit | W5 | **fixed** | correction wizard audit events use dotted domain names, guarded by AST test |
-| DA-0385 | `jasper/web/sound_setup.py` :: _live_draft_profile | nit | W5 | **open** | — |
+| DA-0385 | `jasper/web/sound_setup.py` :: _live_draft_profile | nit | W5 | **fixed** | unused profile-path parameter removed from helper, caller, and direct tests — this branch |
 | DA-0386 | `jasper/web/tools_setup.py` :: _handle_toggle_pack | nit | W5 | **fixed** | no-op pack toggles no longer emit false mutation audit events; behavior is pinned — this branch |
 | DA-0387 | `jasper/web/transit_setup.py` :: _apply_save | should-fix | W5 | **fixed** | duplicate of DA-0035; BusTime key scrubbed from the same broad-except surface — #1236 |
 | DA-0388 | `jasper/web/transit_setup.py` :: _handle_geocode | nit | W5 | **fixed** | successful geocoding is audited without logging household location data — this branch |
@@ -371,7 +371,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0497 | `capture-page/index.html` :: :187 | nit | W3 | **open** | — |
 | DA-0498 | `deploy/assets/correction/js/main.js` :: pollState:2919 | nit | W3 | **fixed** | autolevel status is resolved once per poll |
 | DA-0499 | `deploy/assets/correction/js/main.js` :: reportIssueList:1766 vs renderQuality:868 /  | nit | W3 | **fixed** | browser-audio quality rendering reuses the shared issue-list renderer |
-| DA-0500 | `deploy/assets/sound-profile/js/main.js` :: prepareSummedTest :5266, stopSummedTest :538 | nit | W3 | **open** | — |
+| DA-0500 | `deploy/assets/sound-profile/js/main.js` :: prepareSummedTest :5266, stopSummedTest :538 | nit | W3 | **fixed** | summed-test actions share one async busy/render/error/restoration bracket with failure regression — this branch |
 | DA-0501 | `deploy/bin/jasper-render-asound-conf` :: :15 OUTPUT= | nit | W3 | **fixed** | test pins renderer output, `/etc/asound.conf` reader, and installed symlink as one path contract — this branch |
 | DA-0502 | `deploy/install.sh` :: ensure_output_hardware_state | nit | W3 | **open** | — |
 | DA-0503 | `deploy/install.sh` :: find_card | nit | W3 | **open** | — |
@@ -497,8 +497,8 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0627 | `tests/test_peering_uds.py` :: _short_socket_path | nit | W3 | **fixed** | peering socket tests use one shared short unique UDS-path factory — this branch |
 | DA-0628 | `tests/test_research_scheduler.py` :: _wait_for | nit | W3 | **fixed** | scheduler and announcement tests share a bounded asynchronous wait helper — this branch |
 | DA-0629 | `tests/test_route_latency_tap_transport.py` :: short_sock_path | nit | W3 | **fixed** | route-latency suites share one named socket-path fixture — this branch |
-| DA-0630 | `tests/test_sound_setup.py` :: test_active_speaker_protection_and_stage_con | nit | W3 | **open** | — |
-| DA-0631 | `tests/test_sound_setup_commission.py` :: test_summed_test_audio_path_loads_plays_roll | nit | W3 | **open** | — |
+| DA-0630 | `tests/test_sound_setup.py` :: test_active_speaker_protection_and_stage_con | nit | W3 | **fixed** | active-speaker state-path setup consolidated behind one filename-map helper — this branch |
+| DA-0631 | `tests/test_sound_setup_commission.py` :: test_summed_test_audio_path_loads_plays_roll | nit | W3 | **fixed** | summed-test controller/env/driver/speech/fan-in/Popen scaffolding consolidated — this branch |
 | DA-0632 | `tests/test_system_setup.py` :: _http_post / _http_post_json / _http_post_wi | nit | W3 | **fixed** | dashboard CSRF acquisition and POST execution consolidated behind one helper — this branch |
 | DA-0633 | `tests/test_tool_budget.py` :: test_model_facing_descriptions_stay_under_bu | nit | W3 | **fixed** | model-description budget derives the shipped set from `EXPECTED_TOOL_NAMES`, not a count literal — this branch |
 | DA-0634 | `tests/test_tools_gmail.py` :: _make_clients | nit | W3 | **fixed** | Calendar and Gmail tests share executable and Google-client fakes — this branch |

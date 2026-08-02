@@ -1252,6 +1252,43 @@ def _active_speaker_mono_topology_payload(
     }
 
 
+_ACTIVE_SPEAKER_STATE_FILENAMES = {
+    "JASPER_OUTPUT_TOPOLOGY_PATH": "output_topology.json",
+    "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design_draft.json",
+    "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "crossover_preview.json",
+    "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
+    "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR": "tone-artifacts",
+    "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE": "safe-playback.json",
+    "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH": "active_staged.yml",
+    "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "active_staged.json",
+    "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path_safety.json",
+    "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE": "baseline_profile.json",
+    "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH": "active_speaker_baseline.yml",
+}
+
+
+def _set_active_speaker_state_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *extra_env_names: str,
+) -> dict[str, Path]:
+    """Point one test at isolated topology/draft/preview state plus extras."""
+
+    env_names = (
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        *extra_env_names,
+    )
+    paths = {
+        name: tmp_path / _ACTIVE_SPEAKER_STATE_FILENAMES[name]
+        for name in env_names
+    }
+    for name, path in paths.items():
+        monkeypatch.setenv(name, str(path))
+    return paths
+
+
 def _passive_stereo_with_sub_topology_payload(
     *,
     crossover_fc_hz: float | None = None,
@@ -1487,18 +1524,7 @@ def test_active_speaker_crossover_preview_refreshes_current_output_topology(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
-    )
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
 
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(protection_status="required_missing")
@@ -1526,29 +1552,12 @@ def test_active_speaker_summed_test_records_current_artifact(
     from jasper.active_speaker.safe_playback import arm_safe_playback_session
     from jasper.output_topology import load_output_topology
 
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
+    _set_active_speaker_state_paths(
+        monkeypatch,
+        tmp_path,
         "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
-        str(tmp_path / "measurements.json"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        str(tmp_path / "tone-artifacts"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
     )
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(protection_status="present")
@@ -1616,25 +1625,11 @@ def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
+    _set_active_speaker_state_paths(
+        monkeypatch,
+        tmp_path,
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
-        str(tmp_path / "active_staged.yml"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
     )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
     saved = sound_setup._save_output_topology_payload(
@@ -1667,29 +1662,12 @@ def test_active_speaker_path_safety_payload_writes_no_audio_evidence(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
+    _set_active_speaker_state_paths(
+        monkeypatch,
+        tmp_path,
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
-        str(tmp_path / "active_staged.yml"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
-        str(tmp_path / "path_safety.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
     )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
     sound_setup._save_output_topology_payload(
@@ -1729,25 +1707,11 @@ def test_active_speaker_stage_config_route_requires_current_preview(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
+    _set_active_speaker_state_paths(
+        monkeypatch,
+        tmp_path,
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
-        str(tmp_path / "active_staged.yml"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
     )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
     sound_setup._save_output_topology_payload(
@@ -1857,15 +1821,9 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     monkeypatch,
     tmp_path: Path,
 ):
-    topology_path = tmp_path / "output_topology.json"
-    draft_path = tmp_path / "design_draft.json"
-    preview_path = tmp_path / "crossover_preview.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(preview_path),
-    )
+    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
+    preview_path = paths["JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"]
     sound_setup._save_output_topology_payload({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -2059,16 +2017,8 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     )
 
     topology = mono_output_topology(card_id=None)
-    draft_path = tmp_path / "design_draft.json"
-    preview_path = tmp_path / "crossover_preview.json"
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(draft_path),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(preview_path),
-    )
+    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
     monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
     request = build_driver_research_request(
         topology,
@@ -3335,29 +3285,12 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
+    _set_active_speaker_state_paths(
+        monkeypatch,
+        tmp_path,
         "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
-        str(tmp_path / "measurements.json"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
-        str(tmp_path / "baseline_profile.json"),
-    )
-    monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
-        str(tmp_path / "active_speaker_baseline.yml"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
     )
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
     try:
@@ -3710,18 +3643,7 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
     monkeypatch,
     tmp_path: Path,
 ):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
-    )
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
     try:
         server, base = _start_sound_server(tmp_path)
     except PermissionError:
@@ -4627,7 +4549,6 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     payload = await sound_setup._live_draft_profile(
         draft,
         expected_dsp_write_epoch=dsp_write_epoch(),
-        profile_path=profile_path,
         config_dir=config_dir,
         camilla_factory=lambda: fake,
     )
@@ -4666,7 +4587,6 @@ async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(
     payload = await sound_setup._live_draft_profile(
         draft,
         expected_dsp_write_epoch="older-apply",
-        profile_path=tmp_path / "sound_profile.json",
         config_dir=config_dir,
         camilla_factory=lambda: fake,
     )
@@ -4695,7 +4615,6 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
     payload = await sound_setup._live_draft_profile(
         draft,
         expected_dsp_write_epoch="epoch-1",
-        profile_path=tmp_path / "sound_profile.json",
         config_dir=config_dir,
         camilla_factory=lambda: fake,
     )

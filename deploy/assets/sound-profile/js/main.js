@@ -5115,6 +5115,28 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return {ok: false, error: String(e.message || e)};
     }
   }
+  async function runActiveSpeakerAction(options, operation) {
+    options = options || {};
+    patchActiveSpeaker(Object.assign({
+      loading: false,
+      action: options.busyLabel || '',
+      error: ''
+    }, options.beginPatch || {}));
+    render();
+    try {
+      return {ok: true, value: await operation()};
+    } catch (e) {
+      var current = !options.isCurrent || options.isCurrent();
+      if (current) {
+        if (options.onError) options.onError(e);
+        var message = String(e.message || e);
+        patchActiveSpeaker({loading: false, action: '', error: message});
+        if (options.errorPrefix) status(options.errorPrefix + message, true);
+        render();
+      }
+      return {ok: false, current: current, error: e};
+    }
+  }
   async function commissionArm(role, options) {
     options = options || {};
     var group = activeCommissionGroup(currentOutputTopology());
@@ -6339,26 +6361,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     clearSummedTestArmTimer();
     clearSummedTestLevelTimer();
     summedTestLevelUpdate.pending = null;
-    patchActiveSpeaker({
-      loading: false, action: 'Starting combined test',
-      error: '',
-      combinedTestLevelDbfs: requestedLevel
-    });
-    render();
-    summedTestRequest.armTimer = window.setTimeout(function() {
-      if (summedTestRequest.token !== requestToken ||
-          activeSpeaker.action !== 'Starting combined test') {
-        return;
+    var result = await runActiveSpeakerAction({
+      busyLabel: 'Starting combined test',
+      beginPatch: {combinedTestLevelDbfs: requestedLevel},
+      errorPrefix: 'Could not start the combined speaker test: ',
+      isCurrent: function() {
+        return summedTestRequest.token === requestToken;
+      },
+      onError: function() {
+        clearSummedTestArmTimer();
+        if (summedTestRequest.current &&
+            summedTestRequest.current.token === requestToken) {
+          summedTestRequest.current = null;
+        }
       }
-      patchActiveSpeaker({
-        loading: false,
-        action: 'Playing combined test',
-        error: '',
-        combinedTestLevelDbfs: requestedLevel
-      });
-      render();
-    }, SUMMED_TEST_STOP_ARM_MS);
-    try {
+    }, async function() {
+      summedTestRequest.armTimer = window.setTimeout(function() {
+        if (summedTestRequest.token !== requestToken ||
+            activeSpeaker.action !== 'Starting combined test') {
+          return;
+        }
+        patchActiveSpeaker({
+          loading: false,
+          action: 'Playing combined test',
+          error: '',
+          combinedTestLevelDbfs: requestedLevel
+        });
+        render();
+      }, SUMMED_TEST_STOP_ARM_MS);
       var groupView = commissioningGroupView(groupId);
       var action = commissioningGroupAction(groupView, 'start_combined_test');
       var body = Object.assign({
@@ -6388,7 +6418,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           summedTestRequest.current.token === requestToken) {
         summedTestRequest.current.payload = payload;
       }
-      if (summedTestRequest.token !== requestToken) return;
+      if (summedTestRequest.token !== requestToken) return false;
       clearSummedTestArmTimer();
       var appliedLevel = NaN;
       if (payload.calibration_level && payload.calibration_level.test_signal) {
@@ -6417,19 +6447,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           summedTestRequest.current.token === requestToken) {
         summedTestRequest.current = null;
       }
-    } catch (e) {
-      if (summedTestRequest.token !== requestToken) return;
-      clearSummedTestArmTimer();
-      if (summedTestRequest.current &&
-          summedTestRequest.current.token === requestToken) {
-        summedTestRequest.current = null;
-      }
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message
-      });
-      status('Could not start the combined speaker test: ' + e.message, true);
-    }
+      return true;
+    });
+    if (!result.ok || result.value === false) return;
     render();
   }
   async function stopSummedTest(options) {
@@ -6439,12 +6459,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     clearSummedTestArmTimer();
     clearSummedTestLevelTimer();
     summedTestLevelUpdate.pending = null;
-    patchActiveSpeaker({
-      loading: false, action: 'Stopping combined test',
-      error: ''
-    });
-    render();
-    try {
+    var result = await runActiveSpeakerAction({
+      busyLabel: 'Stopping combined test',
+      errorPrefix: 'Could not stop the combined speaker test: ',
+      isCurrent: function() {
+        return summedTestRequest.token === requestToken;
+      }
+    }, async function() {
       var resp = await fetch('./active-speaker/summed-test/stop', {
         method: 'POST',
         headers: jsonHeaders(),
@@ -6453,7 +6474,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'combined speaker stop failed');
-      if (summedTestRequest.token !== requestToken) return payload;
+      if (summedTestRequest.token !== requestToken) {
+        return {payload: payload, stale: true};
+      }
       patchActiveSpeaker({
         loading: false,
         action: '',
@@ -6465,19 +6488,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           'No combined speaker test is playing.' :
           'Combined speaker test stopped.');
       }
-    } catch (e) {
-      if (summedTestRequest.token !== requestToken) return payload;
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        error: e.message
-      });
-      status('Could not stop the combined speaker test: ' + e.message, true);
-      render();
-      throw e;
+      return {payload: payload, stale: false};
+    });
+    if (!result.ok) {
+      if (result.current) throw result.error;
+      return payload;
     }
+    if (result.value.stale) return result.value.payload;
     render();
-    return payload;
+    return result.value.payload;
   }
   async function recordSummedValidation(button) {
     var groupId = button.getAttribute('data-group-id') || '';
@@ -6508,12 +6527,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Run the combined speaker test first, then record what you heard.', true);
       return;
     }
-    patchActiveSpeaker({
-      loading: false, action: 'Saving combined check',
-      error: ''
-    });
-    render();
-    try {
+    var result = await runActiveSpeakerAction({
+      busyLabel: 'Saving combined check',
+      errorPrefix: 'Could not save combined crossover check: '
+    }, async function() {
       var groupView = commissioningGroupView(groupId);
       var action = commissioningGroupAction(groupView, 'record_combined_result');
       var body = Object.assign({}, action && action.body || {}, {
@@ -6561,13 +6578,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           (blocker && blocker.message || 'run the combined test again, then save the result.'),
           true);
       }
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message
-      });
-      status('Could not save combined crossover check: ' + e.message, true);
-    }
+    });
+    if (!result.ok) return;
     render();
   }
   async function saveAndApplyBaselineProfile() {
