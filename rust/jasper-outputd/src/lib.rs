@@ -21,6 +21,11 @@ pub mod alsa_backend;
 // post-DSP mix), mirroring fan-in's assistant_reference so the calibration
 // survives restarts on a grouped follower the way it does solo.
 pub mod assistant_reference;
+// The real per-period assistant render/gain engine (`AssistantSource`) plus
+// the DAC-write sink `OutputCore` calls unconditionally each period
+// (`FakeDacSink`) — both reachable from the real ALSA daemon path, not just
+// tests. See the module doc and #1717.
+pub mod assistant_source;
 pub mod config;
 pub mod content_bridge;
 pub mod core;
