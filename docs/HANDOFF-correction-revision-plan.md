@@ -709,8 +709,9 @@ speaker the owner walks up to on Monday is the one the round left working.
 > #1718 assert ratchet widened to 7 crates after overturning a default-off
 > assumption), #2040 (#2003 third un-named cancel-swallow site found,
 > #1833/#1832 escape containment, #1985 exit reroute), #2042 (#1818 window
-> clips-not-slides — the defect over-drove MEASURE ~14-17 dB on late captures;
-> #1752 exact-zero hardening; three-lens panel, all lenses 0/0), #2043 (#1750
+> clips-not-slides — the defect withheld the level solve's ~14-17 dB
+> reduction on late captures (never above the flat-target clamp); #1752
+> exact-zero hardening; three-lens panel, all lenses 0/0), #2043 (#1750
 > boundary unification + full recalibration; the module's pre-registered
 > prediction reproduced to 4 dp). Exit: deployed 5a3266f8f; the guarded
 > fixed-mic pass ran in guard-constrained form — a live conductor session is
@@ -765,7 +766,7 @@ only safe after the objective lands, and the tag says so.
 - **Attribution work orders** (owner: [`attribution-stage-plan.md`](attribution-stage-plan.md) §7) — #1866 (the direction and its rulings), #1933 (flow-first WO-2/WO-3), #1869 (WO-3 alignment evidence gaps), #1922 (WO-4: per-driver level-sanity gate and named-driver attribution), #1873 + #1924 (WO-5's deterministic-mismatch discriminator and its copy — **#1924 R8**), #1791 (WO-8 room-correction regime).
 - **Two-stage chassis (T1–T3)** — #1806. WO-6 and WO-7 both sit on it; the ladder does not change that.
 - **Crossover-v2 flow and product surface** — #1947, #1872, #1863, #1862, #1840, #1788, #1706, #1703, #1684, #1650, #1671, #1665, #1833, #1832, #1926, #1925, #1913, #1860, #1950.
-- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7, **plus Stage 6 built in R12 and merge-gated on the Monday hardware re-run**), #1979 (**R12**, closed), #1978 (**R12**, closed), #1961, #1865, #1962, #1985 (Crossover review's "Leave it as it is" exits to an unrelated HTTPS interstitial — found by the R8 slice check; untagged).
+- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7 and Stage 6 **not built; Monday-gated**, see the R12 outcome), #1979 (**R12**, closed), #1978 (**R12**, closed), #1961, #1865, #1962 (closed), #1985 (Crossover review's "Leave it as it is" exits to an unrelated HTTPS interstitial — found by the R8 slice check; untagged, closed).
 - **Capture page and relay platform** — #1792 (**R12** — the publish gate R12's UX build sits behind), #1861, #1975 (**R12**).
 - **Hardware bench sessions** — #1848 (JTS3 commissioning acceptance). The owner-attended delay/reflector bench is indexed under rung P3 instead, because its output is a P3 input.
 - **Corpus and evidence tooling** — #1884 (corpus-pin visibility in CI).
@@ -794,7 +795,8 @@ date:           2026-08-02 (R12 closed — THE CAMPAIGN IS CLOSED; Monday
                 2026-08-03 is R13, the owner's hands-on day)
 jts3_sha:       5a3266f8f — verified deployed (build.txt status=ok,
                 install 2026-08-02T10:17-04:00), jasper-doctor 0 failed /
-                5 known warnings after the deploy AND after the E2E pass
+                5 known warnings (post-E2E run, banked in
+                captures/r12-e2e-pass-20260802/)
 active_round:   none — campaign closed. Monday runs off
                 captures/MONDAY-RUNBOOK-2026-08-03.md (fact-checked to
                 0 blockers / 0 should-fixes, two fix rounds); anything
