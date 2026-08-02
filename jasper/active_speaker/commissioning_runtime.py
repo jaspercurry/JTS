@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -27,7 +28,11 @@ from typing import Any, Generic, Literal, TypeAlias, TypeVar, cast
 
 import yaml
 
-from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
+from jasper.audio_measurement.admitted_playback import (
+    PLAYBACK_READMISSION_REFUSED_MESSAGE,
+    GeneratedExcitationWav,
+    PlaybackAdmissionRefused,
+)
 from jasper.audio_measurement.delay_graph import (
     DelayCandidateConfirmation,
     DelayGraphSnapshot,
@@ -58,6 +63,7 @@ from jasper.audio_measurement.null_walk import (
     NullWalkSpec,
 )
 from jasper.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S, dsp_writer_lock
+from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from .baseline_profile import topology_config_fingerprint
@@ -79,6 +85,8 @@ from .test_signal_plan import (
     MIN_DRIVER_TEST_FREQUENCY_HZ,
     SUMMED_SWEEP_DURATION_S,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SUMMED_RUNTIME_LOCK_TIMEOUT_S = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S
 
@@ -1578,12 +1586,38 @@ async def _run_locked(
             raise primary
         if isinstance(primary, asyncio.CancelledError):
             raise CommissioningRuntimeCancelled(side_effects=side_effects) from primary
-        code = primary.code if isinstance(primary, _OperationFailure) else "capture_failed"
-        detail = (
-            primary.detail
-            if isinstance(primary, _OperationFailure)
-            else f"summed capture failed: {type(primary).__name__}: {primary}"
-        )
+        if isinstance(primary, _OperationFailure):
+            code, detail = primary.code, primary.detail
+        elif isinstance(primary, PlaybackAdmissionRefused):
+            # #1832. This is the ONE place the leak string was manufactured:
+            # the generic arm below formats `{type}: {exc}` into `detail`, and
+            # PlaybackAdmissionRefused's own message joins raw admission slugs
+            # ("playback re-admission refused: program_profile_not_confirmed").
+            # commissioning_host re-raises `detail` unchanged, so the class
+            # name AND the slugs travelled together to whatever renders it --
+            # the same leak family as #1820. Contain it HERE rather than at the
+            # host: the host would have to rewrite a string it did not build,
+            # which is two writers for one sentence.
+            #
+            # Household copy comes from the constant beside the exception, the
+            # same one web_commissioning's driver-capture arm renders, so the
+            # two surfaces cannot describe this refusal differently. The slugs
+            # are not dropped -- they go to the journal below, and `from
+            # primary` keeps the original exception on __cause__.
+            code = "playback_readmission_refused"
+            detail = PLAYBACK_READMISSION_REFUSED_MESSAGE
+            log_event(
+                logger,
+                "active_speaker.summed_capture_readmission_refused",
+                level=logging.WARNING,
+                code=code,
+                refusals=",".join(
+                    reason.value for reason in primary.decision.refusal_reasons
+                ),
+            )
+        else:
+            code = "capture_failed"
+            detail = f"summed capture failed: {type(primary).__name__}: {primary}"
         raise CommissioningRuntimeFailure(
             code, detail, side_effects=side_effects
         ) from primary

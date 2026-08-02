@@ -3091,21 +3091,36 @@ def test_prepare_refuses_when_volume_needs_recovery():
     assert "recover" in str(excinfo.value)
 
 
-def test_prepare_refuses_an_unknown_tier_before_touching_anything():
+def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
     """Flow-simplification §3: the wizard posts the household's explicit tier.
     An id this build does not have must be refused BEFORE any relay
     registration or volume mutation, not silently measured as something else —
     so the gate runs ahead of every other one in the preparer.
+
+    The evidence that THIS gate fired moved when #1833 stopped the raw flow
+    text reaching the household: the refusal now carries the classifier's code
+    and the journal carries the constraint. Both still separate it from the
+    volume-recovery gate below it, which is uncoded and says "recover".
     """
+    import logging
+
+    from jasper.active_speaker.crossover_v2_flow import REASON_PROGRAM_UNPLAYABLE
+
     class _Ready:
         needs_recovery = False
 
     v2host.set_volume_plan_for_tests(_Ready())
+    caplog.set_level(logging.WARNING, logger=v2host.__name__)
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
             {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None
         )
-    assert "unknown commission tier" in str(excinfo.value)
+    assert excinfo.value.code == REASON_PROGRAM_UNPLAYABLE
+    assert "recover" not in str(excinfo.value)
+    assert any(
+        "unknown commission tier" in r.getMessage() and "turbo" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():

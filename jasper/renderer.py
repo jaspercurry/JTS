@@ -102,7 +102,20 @@ class RendererClient:
         try:
             writer.write(b"STATUS\n")
             await writer.drain()
-            line = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            # asyncio.timeout(), NOT asyncio.wait_for(): on CPython <= 3.11
+            # wait_for SWALLOWS a CancelledError that arrives in the same
+            # tick its awaited future completes (Lib/asyncio/tasks.py:
+            # `except CancelledError: if fut.done(): return fut.result()`).
+            # VolumeObserver._run is a cancellation-only `while True:` and
+            # reaches this call EVERY tick through a directly-awaited chain
+            # (_tick -> VolumeCoordinator._active_source -> here) with no
+            # asyncio.gather in between to restore the parent's cancel -- so
+            # a swallowed cancel here makes the observer immortal and hangs
+            # VolumeObserver.stop()'s `await self._task` (#2003, same class
+            # as #1935/#1952). Do not "simplify" this back to wait_for while
+            # 3.11 is supported.
+            async with asyncio.timeout(1.0):
+                line = await reader.readline()
         except (asyncio.TimeoutError, ConnectionResetError, OSError) as e:
             logger.debug("mux STATUS failed: %s", e)
             return None

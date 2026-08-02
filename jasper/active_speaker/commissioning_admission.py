@@ -29,6 +29,7 @@ from typing import Any
 import yaml
 
 from jasper.audio_measurement.admitted_playback import (
+    PLAYBACK_READMISSION_REFUSED_MESSAGE,
     CurrentPlaybackAdmissionInputs,
     GeneratedExcitationWav,
     bind_generated_excitation_wav,
@@ -976,7 +977,9 @@ async def play_admitted_driver_capture(
         # already does); the exception message is the one sentence the operator
         # can act on. Same family of causes as that sibling — an identity or a
         # protection proof went stale between preparing and admitting — so it
-        # names the same action.
+        # names the same action, from the sibling's own constant rather than a
+        # second copy of the sentence (#1832): "names the same action" written
+        # as a hand-typed literal is a claim a green suite cannot check.
         refusal_codes = tuple(reason.value for reason in decision.refusal_reasons)
         failed_checks: tuple[str, ...] = ()
         if not initial_evidence.current:
@@ -998,7 +1001,7 @@ async def play_admitted_driver_capture(
             failed_protection_checks=",".join(failed_checks),
         )
         raise ActiveCommissioningAdmissionError(
-            "the live speaker graph changed; start this capture again",
+            PLAYBACK_READMISSION_REFUSED_MESSAGE,
             refusal_codes=refusal_codes,
         )
     generation = persist_generation_admission(

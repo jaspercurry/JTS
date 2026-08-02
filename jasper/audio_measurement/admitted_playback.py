@@ -192,8 +192,36 @@ class AdmittedPlaybackResult:
     admission: PlaybackAdmissionArtifact
 
 
+PLAYBACK_READMISSION_REFUSED_MESSAGE = (
+    "the live speaker graph changed; start this capture again"
+)
+"""What a household is told when a stale-graph re-admission refusal fires.
+
+Owned here, beside :class:`PlaybackAdmissionRefused`, because THREE surfaces
+say it (#1832): ``web_commissioning``'s driver-capture sweep,
+``commissioning_runtime``'s summed capture, and
+``commissioning_admission``'s generation refusal — which is a different
+exception type (``ActiveCommissioningAdmissionError``) but deliberately the
+same sentence, because it is the same family of cause (an identity or a
+protection proof went stale between preparing and admitting) and so names the
+same action. A household sentence with three authors is a drift in waiting,
+and "these two say the same thing" written as two literals is a claim no test
+can check.
+
+NOT the exception's own message: ``str(PlaybackAdmissionRefused(...))`` stays
+the slug join, which is the right thing for the journal and the wrong thing
+for a person. Boundaries own the translation; this is the one translation.
+"""
+
+
 class PlaybackAdmissionRefused(RuntimeError):
-    """The fresh playback-side decision refused audio emission."""
+    """The fresh playback-side decision refused audio emission.
+
+    ``str(exc)`` joins raw admission slugs, so it is operator/journal text and
+    never household copy. Every boundary that surfaces this to a person maps
+    it to :data:`PLAYBACK_READMISSION_REFUSED_MESSAGE` and carries the slugs
+    out separately, from ``decision.refusal_reasons`` (#1820 / #1832).
+    """
 
     def __init__(self, decision: ExcitationAdmission) -> None:
         if not isinstance(decision, ExcitationAdmission) or decision.allowed:

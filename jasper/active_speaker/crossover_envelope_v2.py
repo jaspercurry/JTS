@@ -1178,9 +1178,10 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     and a ``jasper-web`` restart because it lives in durable state with no TTL.
 
     **"Leave it as it is" does not delete the candidate**, deliberately: it
-    ends the journey and returns to the speaker page, and the proposal stays
-    reviewable until a newer measurement replaces it. Deleting on decline would
-    make an accidental tap cost ten captures to undo.
+    ends the journey and returns to the Active speaker entry screen
+    (``/correction/crossover/``), and the proposal stays reviewable until a
+    newer measurement replaces it. Deleting on decline would make an accidental
+    tap cost ten captures to undo.
 
     **No Undo anywhere on this screen (D6).** Undo restores what an apply
     replaced, and stage 1 replaced nothing — offering it here would invite a
@@ -1261,7 +1262,16 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         {
             "id": "review_decline",
             "label": "Leave it as it is",
-            "href": "/correction/",
+            # The Active speaker ENTRY screen, not the generic /correction/
+            # hub. The hub is the Room-correction wizard, whose first act is
+            # a browser-mic HTTPS-transition interstitial -- a different
+            # subsystem's permission flow, landed on by a household whose
+            # context is "I just finished a crossover measurement and chose
+            # to keep things as they are" (#1985). Every other href exit on
+            # this flow names a real destination (/sound/, /correction/room/);
+            # this one named a hub. Declining changes nothing, so the
+            # honest destination is where the journey started.
+            "href": "/correction/crossover/",
             "show_during_relay": True,
         },
     ]

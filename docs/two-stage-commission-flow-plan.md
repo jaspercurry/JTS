@@ -366,9 +366,13 @@ so the candidate's reachability is a contract, not an accident:
   review screen as itself, with "Measure again" as the primary, not as a
   generic apply failure.
 - **"Leave it as it is" does not delete the candidate.** It ends the
-  journey and returns to the speaker page; the proposal stays reviewable
-  until something invalidates it. Deleting on decline would make an
-  accidental tap unrecoverable without re-walking ten captures.
+  journey and returns to the Active speaker entry screen
+  (`/correction/crossover/`); the proposal stays reviewable until
+  something invalidates it. Deleting on decline would make an accidental
+  tap unrecoverable without re-walking ten captures. The destination is
+  named because "the speaker page" was read once as the generic
+  `/correction/` hub, which greets with the Room wizard's browser-mic
+  HTTPS interstitial — another subsystem's permission flow (#1985).
 
 **`headroom_cost_db` carries a cross-era stamp, and D3 puts it in front
 of the household.** Per

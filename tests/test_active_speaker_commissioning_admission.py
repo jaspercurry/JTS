@@ -862,8 +862,16 @@ def test_stale_protection_report_names_failed_checks_and_persists_report(
 
     # The household-facing half: one actionable sentence, no slugs, no check
     # names, no colon-delimited diagnostic tail (this string reaches the DOM).
+    # Asserted against the shared constant, not a re-typed literal: the raise
+    # site's comment claims this refusal "names the same action" as the sibling
+    # PlaybackAdmissionRefused arm, and a hand-copied literal lets that claim go
+    # false with a green suite (#1832).
+    from jasper.audio_measurement.admitted_playback import (
+        PLAYBACK_READMISSION_REFUSED_MESSAGE,
+    )
+
     message = str(excinfo.value)
-    assert message == "the live speaker graph changed; start this capture again"
+    assert message == PLAYBACK_READMISSION_REFUSED_MESSAGE
     for jargon in ("protection_evidence_stale", "graph_volume_ceiling", "refused:"):
         assert jargon not in message
     # The forensic half: slugs on the exception for the caller's payload, and
