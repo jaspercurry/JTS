@@ -56,7 +56,7 @@ from contextlib import (
     asynccontextmanager,
     nullcontext,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -2013,6 +2013,47 @@ def _stored_calibration_model_mismatch(
     return None
 
 
+def _stored_calibration_identity_refused(
+    record: Any, device: Mapping[str, Any] | None
+) -> bool:
+    """``_stored_calibration_model_mismatch`` plus its WARN, as ONE decision.
+
+    Extracted so both points a relay flow can hold the resolved calibration
+    and the phone's device label at the same time consult the same rule and
+    emit the same event, rather than one of them growing a second copy:
+
+    - ``_resolve_relay_calibration`` — the UNBOUND flows, which carry the
+      device straight into resolution (and the v2 crossover path, via
+      ``correction_crossover_v2.resolve_relay_calibration``);
+    - ``_apply_bound_calibration_for_device`` — the BOUND flows, where the
+      calibration is resolved during the ``setup_validate`` handshake, whose
+      payload declares no device at all. The page HAS opened a microphone by
+      then (``requestMicPermissionForSetup``) and the picker screen shows a
+      selected label, but that label is a PREDICTION of what will record; the
+      realized capture device is authoritative only from the first level batch
+      (issue #1660).
+
+    Returns True when the stored calibration belongs to a different mic than
+    the one this capture reports, i.e. when the caller must not apply it.
+    """
+    mismatch = _stored_calibration_model_mismatch(record, device)
+    if mismatch is None:
+        return False
+    device_label = (
+        str(device.get("label") or device.get("browser_label") or "")
+        if isinstance(device, Mapping) else ""
+    )
+    log_event(
+        logger,
+        "correction.calibration_device_identity_mismatch",
+        level=logging.WARNING,
+        stored_model=str(getattr(record, "model", "") or ""),
+        device_label=_short_text(device_label) or "",
+        reason=mismatch,
+    )
+    return True
+
+
 def _relay_device_calibration_block(
     mic_calibration: Any, device: dict[str, Any] | None
 ) -> str | None:
@@ -2059,11 +2100,41 @@ class _RelayLevelIdentity:
 
 
 @dataclass(frozen=True)
+class _BoundRelayCalibration:
+    """What ONE setup binding's calibration choice resolved to.
+
+    ``mode`` is the phone's declared calibration mode, ``record`` the resolved
+    ``CalibrationRecord``, ``serial`` whatever `_save_household_mic` should be
+    told (the raw serial for a vendor lookup, the carried-forward display for a
+    stored re-confirm, ``None`` for an upload), and ``saved`` whether this
+    binding's household-mic write has already happened.
+
+    It exists because "which calibration this binding bound" is one fact with
+    the BINDING's lifetime, not the level match's: a session runs several level
+    matches under one binding (Retry level check, Check verification level), and
+    each must re-decide against its OWN realized microphone.
+    """
+
+    mode: str
+    record: Any
+    serial: str | None = None
+    saved: bool = False
+
+
+@dataclass(frozen=True)
 class _RelaySetupBinding:
-    """Pi-validated identity for one guided microphone setup."""
+    """Pi-validated identity for one guided microphone setup.
+
+    ``calibration`` rides along but is deliberately ``compare=False``: binding
+    EQUALITY means "same setup identity + digest" and is what
+    `_run_relay_level_match` uses to reject a mutated setup mid-run. Letting the
+    resolved calibration into that comparison would make a second level match
+    under an unchanged binding read as "the microphone setup changed".
+    """
 
     binding_id: str
     sha256: str
+    calibration: _BoundRelayCalibration | None = field(default=None, compare=False)
 
 
 def _setup_digest(setup: dict[str, Any]) -> str:
@@ -3318,36 +3389,58 @@ def _handle_calibration_upload(
 def _relay_calibration_from_setup(
     setup: dict[str, Any] | None, *, device: Mapping[str, Any] | None = None,
 ) -> Any | None:
-    """Materialize the phone wizard's calibration choice on the Pi.
+    """Materialize the phone wizard's calibration choice AND persist it.
+
+    Resolve-then-save, in that order: `_resolve_relay_calibration` below owns
+    the resolution (and the identity refusal), this owns the household-mic
+    write. Returns the stored calibration record, or None for phone/no
+    calibration — an unchanged contract for every caller that had one,
+    including `correction_crossover_v2.resolve_relay_calibration`.
+
+    The two halves are split because the BOUND relay flows must resolve at
+    `setup_validate` but must NOT persist there: the realized capture device
+    is not known until the first level batch, so saving at bind time would
+    stamp the household record's `updated_at` as if a mic nobody has seen yet
+    were confirmed. Those flows call the resolver directly and hand the save
+    to `_apply_bound_calibration_for_device`, which runs it only once the
+    device is known and the calibration is actually applied.
+    """
+    bound = _resolve_relay_calibration(setup, device=device)
+    if bound is None:
+        return None
+    _save_household_mic(bound.record, serial=bound.serial)
+    return bound.record
+
+
+def _resolve_relay_calibration(
+    setup: dict[str, Any] | None, *, device: Mapping[str, Any] | None = None,
+) -> _BoundRelayCalibration | None:
+    """Resolve the phone wizard's calibration choice WITHOUT persisting it.
 
     The phone cannot call the Pi directly, so serial/upload/stored choices
     ride the relay event that arms the sweep. This mirrors the local
-    `/calibration/*` handlers and returns the stored calibration record, or
-    None for phone/no calibration.
+    `/calibration/*` handlers and returns the resolved record plus what a
+    later household-mic save would need, or None for phone/no calibration.
 
     Shared by BOTH the room and crossover flows (both drive their level
-    match through `_run_relay_level_match`, which calls this via
-    `_apply_relay_setup_to_session`) — this is the ONE point where a
-    successfully-established relay calibration is persisted as the
-    household's default mic (`_save_household_mic`, Wave-2 household-mic
-    persistence). `mode == "stored"` (the one-tap "Using {mic} — confirm"
-    follow-up) re-confirms an already-remembered calibration rather than
-    establishing a new one, but still counts as success here for the same
-    reason: the household explicitly confirmed intent to use it.
+    match through `_run_relay_level_match`). `mode == "stored"` (the one-tap
+    "Using {mic} — confirm" follow-up) re-confirms an already-remembered
+    calibration rather than establishing a new one, but still counts as
+    success here for the same reason: the household explicitly confirmed
+    intent to use it.
 
     ``device`` (optional, the capture's phone-reported input device — see
     `CaptureResult.device`) is consulted ONLY in the `mode == "stored"`
     branch: a re-confirmed calibration is a passive carry-over the household
     never re-selects a mic for, so it is the one mode where a DIFFERENT
     physical mic can silently ride a stale pairing (the 2026-07-20 incident —
-    see `_stored_calibration_model_mismatch`). A detected mismatch skips the
-    household-mic save (never re-persists the wrong pairing) and returns
-    `None` — the caller's existing "no calibration resolved" path already
-    degrades to an annotated-uncalibrated analysis, never a blocked capture.
-    `serial`/`upload` are the household actively establishing a NEW pairing
-    in the moment, a different risk shape, and are unchanged here — callers
-    that don't have a `device` to offer (the default) see byte-identical
-    behavior.
+    see `_stored_calibration_model_mismatch`). A detected mismatch returns
+    `None`, so no caller applies it and no caller saves it — the existing "no
+    calibration resolved" path already degrades to an annotated-uncalibrated
+    analysis, never a blocked capture. `serial`/`upload` are the household
+    actively establishing a NEW pairing in the moment, a different risk shape,
+    and are unchanged here — callers that don't have a `device` to offer (the
+    default) see byte-identical behavior.
     """
     calibration = setup.get("calibration") if isinstance(setup, dict) else None
     if not isinstance(calibration, dict):
@@ -3366,8 +3459,7 @@ def _relay_calibration_from_setup(
             or "unknown",
             root=_calibration_root(),
         )
-        _save_household_mic(record, serial=serial)
-        return record
+        return _BoundRelayCalibration(mode=mode, record=record, serial=serial)
     if mode == "upload":
         from jasper.audio_measurement.calibration import (
             DEFAULT_SIGN_CONVENTION,
@@ -3396,8 +3488,7 @@ def _relay_calibration_from_setup(
             sign_convention=DEFAULT_SIGN_CONVENTION,
             root=_calibration_root(),
         )
-        _save_household_mic(record)
-        return record
+        return _BoundRelayCalibration(mode=mode, record=record)
     if mode == "stored":
         from jasper.correction.household_mic import (
             HouseholdMicRecord,
@@ -3434,44 +3525,115 @@ def _relay_calibration_from_setup(
                 "the remembered microphone calibration is no longer available; "
                 "set it up again"
             )
-        mismatch = _stored_calibration_model_mismatch(resolved, device)
-        if mismatch is not None:
+        if _stored_calibration_identity_refused(resolved, device):
             # Refuse to apply AND refuse to re-persist the wrong pairing —
             # never a blocked capture (the caller degrades to an annotated-
             # uncalibrated analysis), but never silent either.
-            device_label = (
-                str(device.get("label") or device.get("browser_label") or "")
-                if isinstance(device, Mapping) else ""
-            )
-            log_event(
-                logger,
-                "correction.calibration_device_identity_mismatch",
-                level=logging.WARNING,
-                stored_model=resolved.model,
-                device_label=_short_text(device_label) or "",
-                reason=mismatch,
-            )
             return None
         # `serial=` is documented as the RAW serial, but a stored re-confirm
         # never sees one — the phone only echoes calibration_id + model. The
-        # already-truncated last-4 display is fed back deliberately:
+        # already-truncated last-4 display is carried deliberately:
         # serial_display_from_raw is idempotent for values of <= 4 characters
         # (returns them unchanged), so the household record keeps its
         # "...1234" display across re-confirms instead of blanking it.
-        _save_household_mic(
-            resolved,
+        return _BoundRelayCalibration(
+            mode=mode,
+            record=resolved,
             serial=previous.serial_display if previous is not None else None,
         )
-        return resolved
     raise ValueError(f"unknown calibration mode: {mode}")
 
 
-def _apply_relay_setup_to_session(sess: Any, setup: dict[str, Any] | None) -> None:
-    """Apply phone microphone/calibration setup without changing Room policy."""
+def _apply_relay_setup_to_session(
+    sess: Any,
+    setup: dict[str, Any] | None,
+    *,
+    device: Mapping[str, Any] | None = None,
+) -> None:
+    """Apply phone microphone/calibration setup without changing Room policy.
+
+    ``device`` is this capture's REALIZED input device as the phone reported
+    it, threaded into `_relay_calibration_from_setup` exactly as
+    `correction_crossover_v2.resolve_relay_calibration` does, so a
+    ``mode="stored"`` re-confirm carrying a DIFFERENT mic's calibration is
+    refused rather than applied blind (issue #1660). Callers that have no
+    realized device to offer (the default) keep the previous behavior; the
+    BOUND relay flows bind through `_bind_relay_calibration` instead and
+    re-decide per level match in `_apply_bound_calibration_for_device`.
+    """
     if not isinstance(setup, dict):
         return
     if isinstance(setup.get("calibration"), dict):
-        sess.mic_calibration = _relay_calibration_from_setup(setup)
+        sess.mic_calibration = _relay_calibration_from_setup(setup, device=device)
+
+
+def _bind_relay_calibration(
+    sess: Any, setup: dict[str, Any] | None, binding: _RelaySetupBinding
+) -> _RelaySetupBinding:
+    """Resolve a BOUND setup's calibration and carry it ON the binding.
+
+    Called once per binding, from the `setup_validate` handshake, and returns
+    the binding to store. The realized capture device is not in that payload —
+    the phone declares only ``{setup_validate, setup_token, setup,
+    setup_identity}`` — so nothing is persisted here and no identity decision
+    is made here. Both wait for `_apply_bound_calibration_for_device`, which
+    runs on every level match under this binding once the phone reports the mic
+    that actually recorded.
+
+    The resolved calibration rides the binding rather than a sibling session
+    attribute so it has exactly the binding's lifetime: the crossover lease's
+    reset already clears `relay_setup_binding`, which must not be able to leave
+    a calibration behind it.
+
+    ``sess.mic_calibration`` is still assigned so the session is never left
+    describing a calibration the household did not choose; the per-match
+    decision then confirms or drops it before any sweep can run.
+    """
+    if not isinstance(setup, dict) or not isinstance(setup.get("calibration"), dict):
+        return binding
+    bound = _resolve_relay_calibration(setup)
+    sess.mic_calibration = bound.record if bound is not None else None
+    return replace(binding, calibration=bound)
+
+
+def _apply_bound_calibration_for_device(
+    sess: Any, device: Mapping[str, Any] | None
+) -> None:
+    """Decide THIS level match's calibration, now that the realized mic is known.
+
+    The one decision point for every level match under a setup binding. A
+    session runs several — the shipped Retry level check and Check verification
+    level routes both re-enter `_run_relay_level_match` against the SAME
+    binding — and each must judge its own realized microphone rather than
+    inherit whatever the first match applied (issue #1660). So this is keyed on
+    the binding's own calibration, not on anything local to one match:
+
+    - identity refused → drop the curve, never persist (the analysis degrades
+      to annotated-uncalibrated; the capture is never blocked);
+    - otherwise → apply it, and persist the household mic on the FIRST match
+      that gets this far, so `event=correction.household_mic_saved` never
+      fires for a mic nobody has seen yet, and never re-fires per retry.
+
+    Because the decision re-runs per match, a refused match followed by a
+    correct-mic retry re-applies the calibration on its own.
+    """
+    binding = getattr(sess, "relay_setup_binding", None)
+    if not isinstance(binding, _RelaySetupBinding):
+        return
+    bound = binding.calibration
+    if not isinstance(bound, _BoundRelayCalibration):
+        return
+    if bound.mode == "stored" and _stored_calibration_identity_refused(
+        bound.record, device
+    ):
+        sess.mic_calibration = None
+        return
+    sess.mic_calibration = bound.record
+    if not bound.saved:
+        _save_household_mic(bound.record, serial=bound.serial)
+        sess.relay_setup_binding = replace(
+            binding, calibration=replace(bound, saved=True)
+        )
 
 
 def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -4525,7 +4687,14 @@ async def _run_relay_level_match(
                                         sess, "mic_calibration", None
                                     )
                                     try:
-                                        _apply_relay_setup_to_session(sess, setup)
+                                        # This payload declares no device, so
+                                        # the calibration is only RESOLVED here
+                                        # — the identity decision and the
+                                        # household-mic write both wait for the
+                                        # realized mic on the first level batch.
+                                        candidate_binding = _bind_relay_calibration(
+                                            sess, setup, candidate_binding
+                                        )
                                     except (RuntimeError, ValueError):
                                         sess.mic_calibration = previous_calibration
                                         raise
@@ -4583,6 +4752,7 @@ async def _run_relay_level_match(
                     )
                     if isinstance(context, dict):
                         setup = context.get("setup")
+                        device = context.get("device")
                         if setup_binding_id:
                             _assert_relay_setup_binding(
                                 sess,
@@ -4590,8 +4760,11 @@ async def _run_relay_level_match(
                                 expected_binding_id=setup_binding_id,
                             )
                         elif isinstance(setup, dict):
-                            _apply_relay_setup_to_session(sess, setup)
-                        device = context.get("device")
+                            _apply_relay_setup_to_session(
+                                sess,
+                                setup,
+                                device=device if isinstance(device, Mapping) else None,
+                            )
                         if isinstance(device, dict):
                             candidate_device = _sanitize_input_device(device)
                             if (
@@ -4604,6 +4777,16 @@ async def _run_relay_level_match(
                                     "checks; use the same microphone"
                                 )
                             sess.input_device = candidate_device
+                            # The realized mic is authoritative only here: the
+                            # `setup_validate` payload declares no device, and
+                            # any label the phone held earlier was a prediction
+                            # of what the household would record with. So the
+                            # BOUND flows make their one calibration decision
+                            # now — every level match, not just the one that
+                            # minted the binding (#1660).
+                            _apply_bound_calibration_for_device(
+                                sess, candidate_device
+                            )
                     if (
                         expected_level_identity is not None
                         and _relay_level_identity(sess).calibration_id
