@@ -69,6 +69,15 @@ boost still enforces the cut-only invariant with an explicit ``raise`` before
 returning (not a bare ``assert`` — a hardware-bound safety invariant must
 survive ``python -O``; see :func:`fit_driver_linearization`), pinned by a test.
 
+**Lift is also bounded away from bands the cloud's positions disagree about**
+(#1967). :attr:`FitVocabulary.boost_excluded_bands_hz` is the second bound on
+the same lift mask, and it is composed the same way: this module is handed
+bands, never evidence, and knows nothing about clouds or positions. What the
+composer puts there is the narrow, decided case — the cross-position check
+positively CONTRADICTED boosting at those bins — never "no evidence was
+available", because withholding boost wherever nothing was measured is the
+blunt gate the owner's 2026-07-27 ruling rejected. Cuts are again untouched.
+
 **The fit domain is whatever grid the caller's ``EnvelopeCurve`` was
 composed on** — :data:`~jasper.active_speaker.linearization_envelope.
 DEFAULT_ENVELOPE_GRID_HZ` for every production caller (`compose_envelope`'s
@@ -397,11 +406,27 @@ class FitVocabulary:
     #: Per-filter boost ceiling. TOTAL boost is uncapped by design (owner
     #: ruling); this bounds one biquad's realization, not the correction.
     per_filter_boost_cap_db: float = PER_FILTER_BOOST_CAP_DB
+    #: Bands where the LIFT stage may not ask for gain, even under
+    #: ``allow_boost`` (#1967). Cuts are untouched: this narrows one move,
+    #: which is why it lives on the vocabulary rather than in the envelope's
+    #: ``allowed_depth_db`` — that array is direction-agnostic and zeroing it
+    #: would forbid a legitimate cut at the same bins.
+    #:
+    #: The composer supplies bands its cross-position evidence positively
+    #: CONTRADICTS boosting at; empty (the default) is "nothing contradicted",
+    #: which is every caller before #1967 exactly. This is not a
+    #: "no evidence" list — absence of evidence leaves the band in, because
+    #: withholding boost wherever nothing was measured is the blunt gate the
+    #: owner's ruling rejected.
+    boost_excluded_bands_hz: tuple[tuple[float, float], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "allow_boost": self.allow_boost,
             "per_filter_boost_cap_db": self.per_filter_boost_cap_db,
+            "boost_excluded_bands_hz": [
+                [float(lo), float(hi)] for lo, hi in self.boost_excluded_bands_hz
+            ],
         }
 
 
@@ -2352,6 +2377,16 @@ def fit_driver_linearization(
         radiating_lo_hz, radiating_hi_hz = radiating_band_hz
         lift_mask = band_mask & (
             (grid_hz >= radiating_lo_hz) & (grid_hz <= radiating_hi_hz)
+        )
+    # #1967's boost-evidence bound, applied on the SAME mask #1809's is —
+    # so both narrowings of "where may this driver ask for gain" arrive at
+    # the lift stage as one array, and the stage keeps its single
+    # ``wanted_mask``. A bin excluded here is still fully available to the
+    # cut stages above, which is the whole reason this is not an envelope
+    # term.
+    for excluded_lo_hz, excluded_hi_hz in vocabulary.boost_excluded_bands_hz:
+        lift_mask = lift_mask & ~(
+            (grid_hz >= excluded_lo_hz) & (grid_hz <= excluded_hi_hz)
         )
     fit_lo_hz = float(grid_hz[fit_lo_idx])
     fit_hi_hz = float(grid_hz[fit_hi_idx])

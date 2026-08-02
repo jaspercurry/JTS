@@ -1570,6 +1570,61 @@ def test_boost_cannot_fill_an_envelope_excluded_band():
     assert fit.headroom_cost_db == 0.0
 
 
+def test_boost_excluded_bands_withhold_lift_without_touching_the_cut_side():
+    """#1967's boost-only bound: a band the composer's cross-position evidence
+    CONTRADICTS boosting at attracts no gain — while the envelope's own
+    allowance there is untouched, so a cut at the same bins is still permitted.
+
+    That separation is the whole reason this rides on the vocabulary instead
+    of on ``allowed_depth_db``: the envelope's array is direction-agnostic, so
+    zeroing it would forbid a legitimate cut to buy a boost refusal.
+
+    The control matters as much as the assertion. The SAME response and
+    envelope with an empty exclusion list must still boost, or this test would
+    pass just as well against a fit that had stopped boosting for some
+    unrelated reason.
+    """
+    resp, envelope = _dip_response(depth_db=8.0, center_hz=1500.0)
+
+    control = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    boosts = [f for f in control.filters if f.gain > 0.0]
+    assert boosts, "control must boost, or the guard below proves nothing"
+    assert any(900.0 <= f.freq <= 2600.0 for f in boosts)
+
+    withheld = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(
+            allow_boost=True, boost_excluded_bands_hz=((900.0, 2600.0),),
+        ),
+    )
+    assert not [
+        f for f in withheld.filters if f.gain > 0.0 and 900.0 <= f.freq <= 2600.0
+    ]
+    # The cut side is untouched: the envelope still allows real depth across
+    # the excluded span, which is exactly what an envelope-term implementation
+    # would have destroyed.
+    in_band = (envelope.freqs_hz >= 900.0) & (envelope.freqs_hz <= 2600.0)
+    assert float(np.min(envelope.allowed_depth_db[in_band])) > 0.05
+
+
+def test_an_empty_boost_exclusion_is_byte_identical_to_no_exclusion():
+    """The default is the pre-#1967 fit exactly. ``()`` means "nothing
+    contradicted a boost", never "no evidence was gathered" — the distinction
+    the composer's own docstring turns on."""
+    resp, envelope = _dip_response(depth_db=8.0)
+    assert FitVocabulary(allow_boost=True).boost_excluded_bands_hz == ()
+    before = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    after = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(allow_boost=True, boost_excluded_bands_hz=()),
+    )
+    assert before.to_dict() == after.to_dict()
+
+
 def test_reduce_cuts_for_lift_shrinks_a_cut_instead_of_stacking_a_boost():
     """The first-class operation. Given a wanted lift where one of our own
     filters cuts, the cut shrinks — no slot spent, no headroom spent."""

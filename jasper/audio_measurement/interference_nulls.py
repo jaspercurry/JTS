@@ -582,6 +582,11 @@ CLASSIFICATION_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 # :func:`identify_interference_nulls` can emit them.
 REASON_NO_PER_POSITION_CURVES = "no_per_position_curves"
 REASON_NO_CORROBORATING_ARRIVALS = "no_corroborating_arrivals"
+#: :func:`classify_dip_position_variance` only. A cross-position statistic
+#: over one position is undefined — the same line
+#: :func:`~jasper.audio_measurement.spatial_combine.combine_positions` draws
+#: when it returns an empty ``band_spread`` below N=2.
+REASON_TOO_FEW_POSITIONS = "too_few_positions"
 REASON_NO_CANDIDATE_NULLS = "no_candidate_nulls"
 REASON_NO_LADDER = "no_ladder"
 REASON_LADDER_ARRIVAL_MISMATCH = "ladder_arrival_mismatch"
@@ -1220,6 +1225,47 @@ def _present_at_positions(
 # --------------------------------------------------------------------------- #
 
 
+def _validated_band(
+    combined: CombinedResponse,
+    band_hz: tuple[float, float],
+    min_depth_db: float,
+) -> tuple[float, float]:
+    """The caller's analysis band, checked against this cloud's own grid.
+
+    One rule, shared by :func:`identify_interference_nulls` and
+    :func:`classify_dip_position_variance`, so the two cannot disagree about
+    what a legal band is — a second copy is a second thing to drift.
+
+    Raises:
+      ValueError: on a band that is not a pair of finite numbers with
+        ``0 < lo < hi``, on a band covering fewer than 3 bins of the
+        combined grid, or on a non-positive ``min_depth_db``. All three are
+        caller *configuration*, wrong for the whole cloud at once and
+        unfixable by looking at the data.
+    """
+    try:
+        lo_hz, hi_hz = (float(value) for value in band_hz)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"band_hz must be a pair of finite numbers with 0 < lo < hi, got {band_hz!r}"
+        ) from exc
+    if not (np.isfinite(lo_hz) and np.isfinite(hi_hz)) or not 0.0 < lo_hz < hi_hz:
+        raise ValueError(
+            f"band_hz must be finite and satisfy 0 < lo < hi, got {band_hz}"
+        )
+    if min_depth_db <= 0.0:
+        raise ValueError(f"min_depth_db must be positive, got {min_depth_db}")
+    band = (lo_hz, hi_hz)
+    freqs = np.asarray(combined.freqs_hz, dtype=float)
+    band_idx = np.flatnonzero((freqs >= lo_hz) & (freqs <= hi_hz))
+    if band_idx.size < 3:
+        raise ValueError(
+            f"band_hz {band} covers {band_idx.size} bins of the combined grid "
+            f"({float(freqs[0])}-{float(freqs[-1])} Hz); need at least 3"
+        )
+    return band
+
+
 def _empty_report(
     combined: CombinedResponse,
     band_hz: tuple[float, float],
@@ -1334,27 +1380,11 @@ def identify_interference_nulls(
         :func:`~jasper.audio_measurement.spatial_combine.combine_positions`
         draws.
     """
-    try:
-        lo_hz, hi_hz = (float(value) for value in band_hz)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"band_hz must be a pair of finite numbers with 0 < lo < hi, got {band_hz!r}"
-        ) from exc
-    if not (np.isfinite(lo_hz) and np.isfinite(hi_hz)) or not 0.0 < lo_hz < hi_hz:
-        raise ValueError(
-            f"band_hz must be finite and satisfy 0 < lo < hi, got {band_hz}"
-        )
-    if min_depth_db <= 0.0:
-        raise ValueError(f"min_depth_db must be positive, got {min_depth_db}")
-    band = (lo_hz, hi_hz)
+    band = _validated_band(combined, band_hz, min_depth_db)
+    lo_hz, hi_hz = band
 
     freqs = np.asarray(combined.freqs_hz, dtype=float)
     band_idx = np.flatnonzero((freqs >= lo_hz) & (freqs <= hi_hz))
-    if band_idx.size < 3:
-        raise ValueError(
-            f"band_hz {band} covers {band_idx.size} bins of the combined grid "
-            f"({float(freqs[0])}-{float(freqs[-1])} Hz); need at least 3"
-        )
 
     per_position_diag = np.asarray(combined.per_position_diag_db, dtype=float)
     per_position_raw = np.asarray(combined.per_position_db, dtype=float)
@@ -1602,3 +1632,199 @@ def _sorted_refusals(refusals: Sequence[RefusedCandidate]) -> tuple[RefusedCandi
     """Refusals in ascending frequency — the order a reader scans a chart in,
     and stable regardless of which stage produced each one."""
     return tuple(sorted(refusals, key=lambda r: r.f_center_hz))
+
+
+# --------------------------------------------------------------------------- #
+# Position variance, without the ladder
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class PositionVarianceDip:
+    """One measured dip of the combined curve, with how many of the cloud's
+    positions individually show it.
+
+    ``f_lo_hz`` / ``f_hi_hz`` are the dip's own half-depth interval — the
+    SAME interval :class:`IdentifiedNull` carries and the registry excludes
+    on, from the same :func:`_measure_candidates` pass, so a consumer acting
+    on this record touches exactly the bins the registry would have.
+    """
+
+    f_center_hz: float
+    f_lo_hz: float
+    f_hi_hz: float
+    depth_db: float
+    positions_present: int
+    positions_total: int
+    classification: str
+
+
+@dataclass(frozen=True)
+class PositionVarianceReport:
+    """What :func:`classify_dip_position_variance` found.
+
+    ``position_dependent_bands_hz`` is the merged union of the
+    ``position_dependent`` dips' intervals — the ONE field a consumer should
+    act on, and deliberately the only one this module pre-merges (see the
+    function's docstring for why the invariant ones are not offered in the
+    same shape).
+    """
+
+    band_hz: tuple[float, float]
+    dips: tuple[PositionVarianceDip, ...]
+    position_dependent_bands_hz: tuple[tuple[float, float], ...]
+    n_positions: int
+    min_depth_db: float
+    reason: str
+
+
+def classify_dip_position_variance(
+    combined: CombinedResponse,
+    *,
+    band_hz: tuple[float, float],
+    min_depth_db: float = DEFAULT_MIN_NULL_DEPTH_DB,
+) -> PositionVarianceReport:
+    """Which dips in ``band_hz`` do the cloud's positions *disagree* about?
+
+    :func:`identify_interference_nulls`' classification step (module
+    docstring, stage 6) asks exactly this question, but only ever reaches it
+    for a dip that already cleared an arrival cluster, a consecutive
+    single-tau ladder, and two-way tau/r corroboration. A dip that fails any
+    of those comes back a :class:`RefusedCandidate` **with no position count
+    at all**. This function is that one stage, run on its own, so the
+    question can be asked about a dip the ladder never explained.
+
+    **It is not a second instrument.** Candidates are located and measured by
+    the same :func:`_measure_candidates` pass on the same two combined
+    curves, per-position presence by the same
+    :func:`_per_position_candidates` pass, and the invariant/dependent line
+    by the same :data:`POSITION_PRESENCE_FRACTION`. Nothing here is
+    calibrated separately; the only quantity this function introduces is the
+    proximity below, and it is *derived* rather than chosen.
+
+    **Why not reuse the ladder's own rung tolerance.**
+    :func:`_present_at_positions` matches a position's minimum to a rung in
+    *quefrency* (``|Δf| · τ``), which needs the τ this function has by
+    construction no access to. The resolution-matched analogue is the width
+    of the smoothing window the minima were located through:
+    :func:`_smoothing_bandwidth_hz` at ``combined.diag_fraction``. Two
+    minima closer together than that window are one feature on this curve —
+    the same reasoning ``_fit_ladder``'s own resolvability check already
+    applies to rung spacing.
+
+    **What ``position_invariant`` means here, and what it must not be read
+    as.** It means the dip was individually measurable at at least
+    :data:`POSITION_PRESENCE_FRACTION` of the positions. It is **not** a
+    finding that the dip is a driver property, and it is **not** a licence to
+    EQ it. The module docstring's limit binds this function exactly as it
+    binds the registry: *position-invariance says "this is real"; it does not
+    say "this is correctable"*, and within one session it cannot separate an
+    origin that travels with the speaker from a room path that did not move.
+    ``docs/attribution-stage-plan.md`` §5 rules on the same point for probe
+    P2 — a finding whose only support is position variance stays ``unsure``,
+    with P4 (rotating the speaker) as the adjudicator — and
+    :mod:`jasper.attribution.promotion` routes ``position_invariant`` to
+    ``carve``, not to gain. A consumer that grants an EQ *boost* because a
+    dip is position-invariant has inverted all three.
+
+    ``position_dependent`` is the direction that carries a decision: the
+    positions disagree, so the combined curve's dip is not a property of what
+    the speaker radiates, and correcting it corrects nothing any listener
+    hears. That asymmetry is why ``position_dependent_bands_hz`` is the only
+    pre-merged field.
+
+    Returns a report with ``reason`` set and no dips when the cloud cannot
+    support the question: :data:`REASON_NO_PER_POSITION_CURVES` (a record
+    that never retained them), :data:`REASON_TOO_FEW_POSITIONS` (N < 2), or
+    :data:`REASON_NO_CANDIDATE_NULLS` (nothing in the band cleared
+    ``min_depth_db``). Never raises on *data*.
+
+    Raises:
+      ValueError: on a malformed ``band_hz`` or a non-positive
+        ``min_depth_db`` — caller configuration, the same "malformed config
+        raises, malformed data refuses" line
+        :func:`identify_interference_nulls` draws.
+    """
+    band = _validated_band(combined, band_hz, min_depth_db)
+    freqs = np.asarray(combined.freqs_hz, dtype=float)
+    band_idx = np.flatnonzero((freqs >= band[0]) & (freqs <= band[1]))
+
+    n_positions = int(combined.n_positions)
+    per_position_diag = np.asarray(combined.per_position_diag_db, dtype=float)
+    per_position_raw = np.asarray(combined.per_position_db, dtype=float)
+    if (
+        per_position_diag.ndim != 2
+        or per_position_diag.shape != (n_positions, freqs.size)
+        or per_position_raw.shape != per_position_diag.shape
+    ):
+        return _empty_variance_report(band, n_positions, min_depth_db,
+                                      REASON_NO_PER_POSITION_CURVES)
+    if n_positions < 2:
+        return _empty_variance_report(band, n_positions, min_depth_db,
+                                      REASON_TOO_FEW_POSITIONS)
+
+    min_sep_oct = 1.0 / float(combined.diag_fraction)
+    candidates, _unmeasurable = _measure_candidates(
+        freqs, np.asarray(combined.power_mean_diag_db, dtype=float),
+        np.asarray(combined.power_mean_db, dtype=float), band_idx, min_sep_oct,
+    )
+    material = [c for c in candidates if c.depth_db >= min_depth_db]
+    if not material:
+        return _empty_variance_report(band, n_positions, min_depth_db,
+                                      REASON_NO_CANDIDATE_NULLS)
+
+    per_position = _per_position_candidates(combined, band_idx, min_sep_oct)
+    dips: list[PositionVarianceDip] = []
+    for cand in material:
+        proximity_hz = _smoothing_bandwidth_hz(cand.f_hz, combined.diag_fraction)
+        present = sum(
+            any(
+                abs(c.f_hz - cand.f_hz) <= proximity_hz and c.depth_db >= min_depth_db
+                for c in position_candidates
+            )
+            for position_candidates in per_position
+        )
+        fraction = present / n_positions
+        dips.append(
+            PositionVarianceDip(
+                f_center_hz=float(cand.f_hz),
+                f_lo_hz=float(cand.f_lo_hz),
+                f_hi_hz=float(cand.f_hi_hz),
+                depth_db=float(cand.depth_db),
+                positions_present=present,
+                positions_total=n_positions,
+                classification=(
+                    CLASSIFICATION_POSITION_INVARIANT
+                    if fraction >= POSITION_PRESENCE_FRACTION
+                    else CLASSIFICATION_POSITION_DEPENDENT
+                ),
+            )
+        )
+
+    dependent = np.zeros(freqs.size, dtype=bool)
+    for dip in dips:
+        if dip.classification != CLASSIFICATION_POSITION_DEPENDENT:
+            continue
+        dependent |= (freqs >= dip.f_lo_hz) & (freqs <= dip.f_hi_hz)
+    return PositionVarianceReport(
+        band_hz=band,
+        dips=tuple(sorted(dips, key=lambda d: d.f_center_hz)),
+        position_dependent_bands_hz=merged_true_intervals(freqs, dependent),
+        n_positions=n_positions,
+        min_depth_db=min_depth_db,
+        reason="",
+    )
+
+
+def _empty_variance_report(
+    band: tuple[float, float], n_positions: int, min_depth_db: float, reason: str,
+) -> PositionVarianceReport:
+    """A variance report that classified nothing, carrying why."""
+    return PositionVarianceReport(
+        band_hz=band,
+        dips=(),
+        position_dependent_bands_hz=(),
+        n_positions=n_positions,
+        min_depth_db=min_depth_db,
+        reason=reason,
+    )
