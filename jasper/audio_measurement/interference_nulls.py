@@ -184,13 +184,22 @@ NULL_DEPTH_STATISTIC = "flank(diagnostic) - null(unsmoothed)"
 # **Consequence, stated because it biases one of the tests below.** A dip
 # broader than about one octave has its flanks clipped by this bound, and its
 # depth is therefore understated. The S0 1.8 kHz lobing dip is exactly that
-# shape (its lower flank clips), reads 9.24 dB here against the 10.71 dB the
+# shape (its lower flank clips), reads 10.08 dB here against the 10.71 dB the
 # S0 report measured with hand-picked wider flanks, and is still acquitted by
 # the ceiling test — so the clip narrows that test's margin rather than
 # invalidating it. Understating depth is the safe direction for
 # identification (fewer, shallower nulls) and the unsafe direction for
 # acquittal, which is why ``DEPTH_CEILING_MARGIN_DB`` is calibrated on
 # readings taken *with* the clip in place rather than on the report's numbers.
+#
+# RE-DERIVED 2026-08-02 (#2045) for PR #1991's prominence vote, which re-gates
+# cloud_04 — one of the six tweeter-height positions this dip is measured on.
+# The DIRECTION is unchanged and is the load-bearing part: the clip still
+# understates the dip, still narrows the acquittal margin, and the constant is
+# still calibrated on clipped readings. The MAGNITUDE shrank materially,
+# though, and saying so is the point of a measured comment: the penalty was
+# 1.47 dB (10.71 - 9.24) and is now **0.63 dB** (10.71 - 10.08), so this bound
+# costs the acquittal test less than half what it used to.
 FLANK_SEARCH_MAX_OCT = 0.50
 
 # Minimum depth for a candidate minimum to enter the ladder fit at all, in dB.
@@ -200,8 +209,13 @@ FLANK_SEARCH_MAX_OCT = 0.50
 # test_s0_ladder_calibration_populations_bracket_the_constants):
 #
 #   identified rungs                    12 records, 2.72 - 6.84 dB
-#   material minima no ladder explains   3 records, 2.55 - 4.15 dB
+#   material minima no ladder explains   3 records, 2.88 - 4.15 dB
 #   minima under this floor             36 records, -1.86 - 2.44 dB
+#
+# MIDDLE ROW RE-DERIVED 2026-08-02 (#2045), 2.55 -> 2.88 dB, for PR #1991's
+# prominence vote re-gating cloud_04. The other two rows are unmoved at 2 dp,
+# and the populations still overlap almost completely — which is the whole
+# claim this table exists to make, and it is unchanged.
 #
 # The first two populations **overlap almost completely**. No threshold on
 # depth alone tells a comb rung from an ordinary dip, and this constant does
@@ -1082,10 +1096,15 @@ def _fit_ladder(
     hypothesis however tidily it fits the shallow ones: on the S0 main leg's
     six tweeter-height positions **over 1.2-19 kHz**, a rung-count score
     chose a 168.9 us ladder over the real 298.9 us one — both 3 rungs, the
-    wrong one tidier — by skipping the 6.36 dB null at 11.6 kHz entirely.
+    wrong one tidier — by skipping the 6.31 dB null at 11.6 kHz entirely.
     The band is part of the claim: over 5-19 kHz the two scores agree, because
     the shallow low-frequency minima the count score preferred are out of
     band and there is no tidier three-rung alternative to find.
+
+    RE-DERIVED 2026-08-02 (#2045), 6.36 -> 6.31 dB, for PR #1991's prominence
+    vote re-gating cloud_04 — one of these six tweeter-height positions. No
+    test pins this figure, so it drifted silently until the #2045 gate's
+    value-level sweep; the counterexample it supports is unchanged.
 
     Returns ``(tau_s, {n: candidate index})`` for the longest consecutive run,
     or ``None`` when no hypothesis produced ``MIN_LADDER_RUNGS`` consecutive
