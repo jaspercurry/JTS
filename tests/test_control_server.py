@@ -3273,6 +3273,43 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         assert callable(getattr(srv_mod, name))
 
 
+def test_control_route_bodies_stay_partitioned_by_concern() -> None:
+    """Keep dispatch/security central while route bodies stay modular."""
+    from jasper.control.handlers import (
+        AecRoutes,
+        GroupingRoutes,
+        SystemRoutes,
+        VoiceRoutes,
+        VolumeRoutes,
+    )
+
+    handler = _make_handler(
+        "127.0.0.1",
+        1234,
+        "/nonexistent.sock",
+        ha_status_cache=object(),
+    )
+    assert {"do_GET", "do_POST", "_GET_ROUTES", "_POST_ROUTES"} <= set(
+        handler.__dict__,
+    )
+
+    concern_mixins = (
+        VolumeRoutes,
+        VoiceRoutes,
+        AecRoutes,
+        GroupingRoutes,
+        SystemRoutes,
+    )
+    routed_methods = {
+        *handler._GET_ROUTES.values(),
+        *handler._POST_ROUTES.values(),
+    }
+    for method_name in routed_methods:
+        assert method_name not in handler.__dict__
+        owners = [mixin for mixin in concern_mixins if method_name in mixin.__dict__]
+        assert len(owners) == 1, (method_name, owners)
+
+
 # --- 404 / coordinator-failure ---
 
 

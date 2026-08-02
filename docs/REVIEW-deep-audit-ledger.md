@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 130 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 129 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 510
+- **fixed**: 511
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -51,7 +51,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors | should-fix | W5 | **fixed** | coherent shm-ring plans preserve computed capture/playback mismatches — #1286 |
 | DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **fixed** | runtime DTLN failure now withdraws the leg from live health/capture-plan truth while primary AEC3 continues — #1295 |
 | DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **fixed** | bounded download + pre-flash budget + recovery/unit deadline contract — #1285 |
-| DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **open** | — |
+| DA-0014 | `jasper/control/server.py` :: _make_handler / class Handler | should-fix | W5 | **fixed** | routed actions split into concern-specific handler mixins; security ordering and dispatch remain centralized |
 | DA-0018 | `jasper/multiroom/reconcile.py` :: _ensure_unit_active:1226-1274 | should-fix | W5 | **fixed** | shared reset-failed helper + start OSError containment; recovery probes now fail closed — #1299 |
 | DA-0023 | `jasper/voice/gemini_session.py` :: _open_session / _receive_loop | should-fix | W5 | **fixed** | obsolete object-identity INFO probes removed; concise lifecycle timing retained — #1302 |
 | DA-0025 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2107 | should-fix | W5 | **fixed** | bounded strict unit-state probe fails closed before corpus-mode mutation — #1304 |

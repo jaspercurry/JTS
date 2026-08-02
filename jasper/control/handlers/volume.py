@@ -1,0 +1,297 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""HTTP routes for the volume control-plane concern."""
+
+from __future__ import annotations
+
+from .. import server as _server
+from ._base import ControlHandlerMixin
+
+
+class VolumeRoutes(ControlHandlerMixin):
+    def _get_volume(self) -> None:
+        if self._maybe_forward_pair_action_to_leader():
+            return
+        try:
+            state = _server.asyncio.run(self._get_op())
+        except Exception as e:  # noqa: BLE001
+            _server.logger.exception("get volume failed")
+            self._send_json({"error": str(e)}, status=502)
+            return
+        self._send_json(self._volume_payload(state))
+
+    def _get_source_state(self) -> None:
+        # Source selection state from jasper-mux. This is
+        # separate from the /sources/ wizard (on/off toggles):
+        # selecting a source does not enable or disable any
+        # renderer, it only chooses which active lane the
+        # speaker should pass through.
+        try:
+            result = _server.asyncio.run(_server._mux_socket_command("STATUS"))
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            OSError,
+            _server.asyncio.TimeoutError,
+        ) as e:
+            self._send_json(
+                {"error": f"jasper-mux unreachable: {e}"},
+                status=503,
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            _server.logger.exception("source STATUS failed")
+            self._send_json({"error": str(e)}, status=502)
+            return
+        self._send_json(_server._augment_source_payload(result))
+
+    def _post_volume_adjust(self) -> None:
+        if self._maybe_forward_pair_action_to_leader():
+            return
+        blocked = _server._active_speaker_volume_block()
+        if blocked is not None:
+            self._send_json(
+                {
+                    "error": blocked.get("detail") or "speaker output is not ready",
+                    "active_speaker_setup": blocked,
+                },
+                status=409,
+            )
+            return
+        body = self._read_json()
+        if "delta_percent" not in body:
+            self._send_json(
+                {"error": "missing delta_percent"},
+                status=400,
+            )
+            return
+        try:
+            delta_pct = int(body["delta_percent"])
+        except (TypeError, ValueError):
+            self._send_json(
+                {"error": "delta_percent must be an integer"},
+                status=400,
+            )
+            return
+        try:
+            state = _server.asyncio.run(self._adjust_op(delta_pct))
+        except Exception as e:  # noqa: BLE001
+            _server.logger.exception("adjust volume failed")
+            self._send_json({"error": str(e)}, status=502)
+            return
+        _server.log_event(
+            _server.logger,
+            "volume.adjust",
+            delta_pct=delta_pct,
+            new_pct=state.effective_percent,
+            client=self.address_string(),
+        )
+        self._send_json(self._volume_payload(state))
+
+    def _post_volume_set(self) -> None:
+        if self._maybe_forward_pair_action_to_leader():
+            return
+        blocked = _server._active_speaker_volume_block()
+        if blocked is not None:
+            self._send_json(
+                {
+                    "error": blocked.get("detail") or "speaker output is not ready",
+                    "active_speaker_setup": blocked,
+                },
+                status=409,
+            )
+            return
+        body = self._read_json()
+        # Percent is the canonical listening-level unit. Keep absolute
+        # dB as a compatibility input for existing automation clients.
+        if "percent" in body:
+            try:
+                target_pct = int(body["percent"])
+            except (TypeError, ValueError):
+                self._send_json(
+                    {"error": "percent must be an integer"},
+                    status=400,
+                )
+                return
+        elif "db" in body:
+            try:
+                target_pct = _server._db_to_percent(float(body["db"]))
+            except (TypeError, ValueError):
+                self._send_json(
+                    {"error": "db must be a number"},
+                    status=400,
+                )
+                return
+        else:
+            self._send_json(
+                {"error": "missing db or percent"},
+                status=400,
+            )
+            return
+        # Optional `source` field marks the caller as an
+        # observed source-side change (e.g. host moved its
+        # volume slider on the USB gadget). Route through
+        # observe_source_volume so the coordinator's echo
+        # window and source-active gate apply. Without
+        # `source`, the caller is treated as authoritative
+        # (management UI, HID accessory, voice "louder", etc.).
+        source_name = body.get("source")
+        observation_initial = body.get("observation_initial", False)
+        if not isinstance(observation_initial, bool):
+            self._send_json(
+                {"error": "observation_initial must be a boolean"},
+                status=400,
+            )
+            return
+        observation_applied: bool | None = None
+        try:
+            if source_name:
+                state, observation_applied = _server.asyncio.run(
+                    self._observe_op(
+                        str(source_name),
+                        target_pct,
+                        initial=observation_initial,
+                    ),
+                )
+            else:
+                state = _server.asyncio.run(self._set_op(target_pct))
+        except Exception as e:  # noqa: BLE001
+            _server.logger.exception("set volume failed")
+            self._send_json({"error": str(e)}, status=502)
+            return
+        _server.log_event(
+            _server.logger,
+            "volume.set",
+            new_pct=state.effective_percent,
+            source=source_name or "authoritative",
+            observation_applied=observation_applied,
+            client=self.address_string(),
+        )
+        payload = self._volume_payload(state)
+        if observation_applied is not None:
+            payload["observation_applied"] = observation_applied
+        self._send_json(payload)
+
+    def _post_volume_mute(self) -> None:
+        if self._maybe_forward_pair_action_to_leader():
+            return
+        blocked = _server._active_speaker_volume_block()
+        if blocked is not None:
+            self._send_json(
+                {
+                    "error": blocked.get("detail") or "speaker output is not ready",
+                    "active_speaker_setup": blocked,
+                },
+                status=409,
+            )
+            return
+        # Default is TOGGLE: muted → unmute (restore pre-mute
+        # level), unmuted → mute. Used by HID accessory clicks
+        # (jasper-input) and other one-shot toggle callers. An
+        # optional explicit {"muted": true|false} body sets the
+        # state idempotently — the shape voice's distinct
+        # mute/unmute intents need (additive; absent = toggle).
+        body = self._read_json()
+        explicit = body.get("muted")
+        if explicit is not None and not isinstance(explicit, bool):
+            self._send_json(
+                {"error": "muted must be a boolean"},
+                status=400,
+            )
+            return
+        try:
+            if explicit is None:
+                state = _server.asyncio.run(self._mute_toggle_op())
+            else:
+                state = _server.asyncio.run(self._mute_set_op(explicit))
+        except Exception as e:  # noqa: BLE001
+            _server.logger.exception("mute failed")
+            self._send_json({"error": str(e)}, status=502)
+            return
+        _server.log_event(
+            _server.logger,
+            "volume.mute",
+            new_pct=state.effective_percent,
+            explicit=str(explicit),
+            client=self.address_string(),
+        )
+        self._send_json(self._volume_payload(state))
+        return
+
+    def _post_transport(self) -> None:
+        # Bonded-follower: transport targets the PAIR. A remote paired
+        # to the follower sends play/pause here; with the local
+        # renderer stack parked (dumb-follower profile) the local
+        # mux has nothing to toggle — the leader owns playback, so
+        # the request forwards exactly like /volume*.
+        if self._maybe_forward_pair_action_to_leader():
+            return
+        action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
+        try:
+            result = _server.asyncio.run(_server._dispatch_transport(action))
+        except Exception as e:  # noqa: BLE001
+            _server.logger.exception("transport %s failed", action)
+            self._send_json({"error": str(e)}, status=502)
+            return
+        _server.log_event(
+            _server.logger,
+            "transport.dispatch",
+            action=action,
+            client=self.address_string(),
+        )
+        if "error" in result:
+            self._send_json(result, status=502)
+            return
+        self._send_json(result)
+        return
+
+    def _post_source_select(self) -> None:
+        # POST /source/select body: {"source": "airplay"} or
+        # {"source": "auto"}. The mux validates policy and
+        # forwards the low-level lane choice to fan-in.
+        if self._maybe_forward_pair_action_to_leader():
+            return
+        body = self._read_json()
+        source = str(body.get("source") or "").strip().lower()
+        if source == "auto":
+            cmd = "AUTO"
+        elif source in _server.SOURCE_SELECT_IDS:
+            cmd = f"SELECT {source}"
+        else:
+            choices = ", ".join(sorted(_server.SOURCE_SELECT_IDS))
+            self._send_json(
+                {
+                    "error": (f"source must be {choices}, or auto"),
+                },
+                status=400,
+            )
+            return
+        try:
+            result = _server.asyncio.run(
+                _server._mux_socket_command(cmd, timeout=6.0),
+            )
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            OSError,
+            _server.asyncio.TimeoutError,
+        ) as e:
+            self._send_json(
+                {"error": f"jasper-mux unreachable: {e}"},
+                status=503,
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            _server.logger.exception("source select failed")
+            self._send_json({"error": str(e)}, status=502)
+            return
+        _server.log_event(
+            _server.logger,
+            "source.select",
+            source=source,
+            client=self.address_string(),
+        )
+        self._send_json(_server._augment_source_payload(result))
+        return
