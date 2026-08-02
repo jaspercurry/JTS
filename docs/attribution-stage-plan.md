@@ -668,10 +668,16 @@ actually hit — they are the prototype users):
 - **Artifacts**: one session dir per harness run; JSON with a
   `schema` field and inline field descriptions (no code-reading needed
   to interpret — the v2-state friction); WAVs alongside; honest labels
-  (the #1855 class is a bug here, not a nit — and it is now *located*:
-  `cloud_measure_program.wav` and `verify_program.wav` are byte-identical, so
-  the retention seam takes its phase label from the program rather than the
-  flow, mislabelling **32 of 45** retained sidecars); an index file per corpus
+  (the #1855 class is a bug here, not a nit — it was *located* and then
+  *fixed*: `cloud_measure_program.wav` and `verify_program.wav` were
+  byte-identical, so the retention seam took its phase label from the program
+  rather than the flow, mislabelling **32 of 45** retained sidecars. #1855
+  closed 2026-07-30 — retention now takes its label from the conductor's flow
+  phase, not from program identity. The byte-identity that made the confusion
+  possible was addressed separately in #2028, which persists the shared summed
+  stimulus under its own name, `summed_program.wav`, so that
+  `{phase}_program.wav` presence stays a truthful "which phases this bundle
+  reached" signal instead of a name two phases both answer to); an index file per corpus
   root listing sessions with one-line summaries (the organization friction).
 - **Stable cross-store session identity**: one identifier that survives every
   hop. WO-0 found the corpus split across **four stores that share no

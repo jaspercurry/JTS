@@ -177,10 +177,15 @@ iMM-6C span unchanged and degraded the UMIK span 12× in direct testing — so
 the standing levers are tweeter-sweep bandwidth (Fix 4, #1654) and/or
 energy, decided after the iPhone-chain series. Live trail: #1654 (Fix 4
 shelf + mechanism data), #1652 (anomaly detection/attribution), #1650
-(relay voids), #1656 (calibration identity follows the saved setup — the
-iMM-6C series silently ran under the UMIK's calibration curve;
-magnitude-only impact, but it makes the saved-mic serial-entry UI bug a
-correctness issue).
+(relay voids), #1656 (calibration identity — the iMM-6C series silently ran
+under the UMIK's calibration curve. **That application is fixed**: the stored
+calibration now refuses a device whose label matches a *different* registered
+model (#1660 threaded `device` into the room-relay guard, landed #2036). The
+**surviving, narrower** fact is that identity binds by **model family**, not by
+physical device — two same-model mics with different serials still cross-bind,
+and per-serial entry is unbuilt. This matches
+[`HANDOFF-correction.md`](HANDOFF-correction.md)'s statement of the same
+boundary; the serial-entry remainder is #2053).
 
 **A glitch verdict is a timeline SPLICE, not clock drift (2026-07-27,
 issue #1765).** Across the whole 2026-07-22…27 JTS3 journal (57 MEASURE
@@ -1588,7 +1593,7 @@ unready setup.
 | `agc_behavioral_fail` | CHECK / MEASURE / VERIFY | 1 | the captured two-pilot level delta did not match the programmed one, at an SNR where it should have. The phone's input chain riding gain OR the speaker's own output compressing — the copy names the observation, not a cause it never measures (#1810) |
 | `noisy_room_linearity` | CHECK | 1 | linearity failed *and* the ambient SNR floor failed — room, not phone |
 | `pilot_level_collapse` | MEASURE / cloud / VERIFY | 1 | the quiet pilot never cleared the room's in-band floor, so no level comparison from the pair is evidence — room too loud, or the playback level collapsed (e.g. a correction that dropped the pilot band). Checked BEFORE the linearity branch on all three phases, so a collapsed pair can never surface as the phone's fault (#1810) — and on MEASURE, before the **glitch** branch too (#1838): low SNR causes the glitch signal, so asking the glitch first reported "capture glitched" for a capture nobody could hear |
-| `snr_floor` | CHECK | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16). CHECK-only — the other phases use `pilot_level_collapse` |
+| `snr_floor` | CHECK | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16). **Third producer:** an *unusable* CHECK ambient window — below `AMBIENT_MIN_USABLE_FRACTION` (0.5) of the scheduled window, e.g. a very late capture start — degrades to an EMPTY band report, which `_snr_floor_ok` reads as False and this code then reports. That case means **"we never heard the room"**, not "the room was loud", and the two are indistinguishable in the code but not to the household; the log (`event=program_analysis.ambient_window_unusable`) carries how much window survived. Fuller explanation in the clips-not-slides section (#1818) above. CHECK-only — the other phases use `pilot_level_collapse` |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
 | `clipped` | MEASURE | 1 | auto quieter retry (gain −3 dB). MEASURE-only: VERIFY replays the *identical* program on every attempt (that invariant is what makes the `verify_level_shift` baseline mean anything), so there is no quieter retry to offer — a clipped VERIFY capture is refused as a capture glitch instead (#1971). This row said "MEASURE / VERIFY" until then; no VERIFY path ever returned this code |
 | `drift_baselines_disagree` | MEASURE / VERIFY | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped on MEASURE (#1765), and `integrity=` says which check tripped on VERIFY (#1971, where the class is a spliced timeline or a clipped run). Since #1838 a merely weakly-located sweep is NOT in this class on either phase — it answers `locate_failed` ahead of this branch |

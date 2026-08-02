@@ -980,6 +980,18 @@ conservative way** — which is the point, since the old number was deflated, bu
 it is not a neutral change, and the 35 dB floor has not been re-derived for the
 new semantics (issue #2027).
 
+> **Both figure sets above predate the #2026 tie-break fix — re-derive before
+> consuming them.** The Fc-2000 range (−2.0 to +5.7 dB, median +1.3) and the
+> all-frequency shift (median +7.80 dB, 143 of 162) were measured while
+> `worst_band_verdict` still broke equal-verdict ties by **table order**, so
+> among all-`ok` bands the elected band was `sweep_low`. Since #2026 the tie
+> breaks on the **lowest `estimated_snr_db`** (verdict rank still dominant —
+> see the paragraph above). A different elected band means a different reported
+> number, so **#2027 must re-derive these against post-#2026 code rather than
+> quote them.** The **refusal** counts in this section (43/162 → 5/162) are
+> unaffected: verdict rank still dominates the tie-break, so which band is
+> elected among equals cannot change whether any band verdicts `insufficient`.
+
 ### Measurement validity: gating and the low-frequency floor
 
 A domestic room contaminates a far-field capture with reflections a few

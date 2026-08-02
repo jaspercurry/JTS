@@ -72,8 +72,23 @@ while IFS= read -r d; do docs+=("$d"); done \
 if (( include_all )); then
   while IFS= read -r d; do docs+=("$d"); done \
     < <(find . -maxdepth 1 -name '*.md' -type f 2>/dev/null | sed 's|^\./||' | sort)
+  # No -maxdepth: nested non-HANDOFF docs are 92 of the 208 `.md` files under
+  # docs/ (2026-08-02) and were entirely invisible to this report while this
+  # find was capped at depth 1 — including docs/calibration-agent/**, which
+  # the product READS at runtime and whose footers are ~68-70 days old. Being
+  # invisible, they could never have tripped the threshold at ANY age; that is
+  # the defect, not the current age. `--all` already promises "top-level +
+  # non-HANDOFF docs/"; capping the depth quietly broke that promise.
+  #
+  # OPEN QUESTION — issue #2064: this now also enumerates docs/research/** and
+  # docs/historical/**, which are archival (a research bank's date IS the
+  # fact, so "re-verify and bump the footer" is the WRONG advice for them).
+  # They cross the 90-day threshold around 2026-08-23 and then read as
+  # permanently stale. Deliberately NOT excluded here: choosing which
+  # directories count as archival is a documentation-policy ruling, not a
+  # script default. Read #2064 before adding a prune.
   while IFS= read -r d; do docs+=("$d"); done \
-    < <(find docs -maxdepth 1 -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
+    < <(find docs -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
 fi
 
 missing_footer_rows=()

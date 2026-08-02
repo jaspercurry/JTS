@@ -23,6 +23,57 @@ panel's joint verdict, the corrected headline, and the ladder below. Like every
 `captures/` path in this document it is **gitignored and laptop-durable** — not
 linkable from the repo, and not a substitute for what belongs in-repo.
 
+### The four-layer vision — which layer this program is, and what comes after
+
+The owner's standing lens, re-affirmed 2026-08-02 and written down here because
+it had been living only in session briefs (`captures/NEXT-SESSION-PROMPT-*.md`),
+which are laptop-durable and disappear from a fresh checkout. **Four layers,
+strictly ordered, each its own workstream:**
+
+1. **Bass response** — its own tab, near-field. *Not this program* (the
+   bass-extension program owns it).
+2. **Driver linearization** — **this program**: gating, time-of-flight,
+   detect → hypothesize → prescribe → verify.
+3. **Room correction** — after linearization, and **deliberately simple**: the
+   REW/CamillaDSP pattern, not a second machine.
+4. **Taste EQ** — parametric; already good.
+
+**The ordering rule.** Linearize the speaker first, **room-blind**; only then
+room-correct; only then taste. A layer that runs out of order corrects
+another layer's defect and hides it — this is the rule the rung ladder's
+"stop asking a stage to solve another stage's problem" (rung P3) is the
+program-internal instance of.
+
+**The two-stop-kernels rule — there are exactly two stopping kernels, and
+there will never be a third.**
+
+| Kernel | Owns | Shape |
+|---|---|---|
+| [`jasper/active_speaker/attempts_loop.py`](../jasper/active_speaker/attempts_loop.py) | the linearization lane's attempt loop | floor-aware: compares consecutive attempts against a measured repeat floor |
+| [`jasper/correction/acceptance.py`](../jasper/correction/acceptance.py) | the room lane | the simple accept/revert verdict; keeps that shape |
+
+If room correction ever wants floor-aware stopping, it **reuses the
+attempts-loop kernel with its own floor stats**. It does not grow a
+floor-aware branch of its own, and nobody writes a third kernel.
+
+**Where the layer model itself is owned.** The layer architecture — what each
+layer measures, with which instrument, and when it re-runs — is
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
+Read it for the layers; read this for the workstream order.
+
+> **Honest note on the apparent bass-position difference — flagged, not
+> resolved (owner's call).** The design doc tables **five** layers with bass at
+> position 2 (after driver linearization 1a and crossover integration 1b); the
+> lens above tables **four** with bass response first. The two are answering
+> different questions — the design doc's order is the **graph-composition
+> axis** ("one DSP graph, composed in fixed order"), while the lens above is
+> the **workstream sequence** (which tab a household fills in, and which
+> program builds it). That reading makes them compatible rather than
+> contradictory, but it is a reading, not a ruling: nobody has stated whether
+> bass response is meant to be *measured and set* before driver linearization
+> or merely *composed* after it. Do not silently reconcile them in either
+> direction — put it in the rulings queue.
+
 ## Read the three "P" namespaces before you read anything else
 
 The program grew three independent `P<N>` vocabularies and they collide. This
@@ -60,11 +111,18 @@ text stands as written.
 > **RATIFICATION STATUS — read this before acting on the ladder.**
 > **The ladder as a whole is PENDING OWNER RATIFICATION** (it is decision 1 of
 > the panel's check-in, and sits in the Monday rulings queue). One arm of one
-> rung has been executed: **P0's fixed-mic arm is DONE**, run under the standing
-> autonomous-audio authorization while the owner was away. **No P1–P4
-> implementation has merged** as of `5c7029b63`.
+> rung has been executed by measurement: **P0's fixed-mic arm is DONE**, run
+> under the standing autonomous-audio authorization while the owner was away.
 >
-> The owner has since given a **provisional green light to build along the
+> **Most of the ladder has since been BUILT** under the provisional green light
+> below — so "pending ratification" now means *the conclusions are not settled*,
+> not *the code does not exist*. As of the campaign's close, **P1, P3, and P4's
+> chassis have all landed** across R8–R11; **P2 remains unbuilt.** Each rung's
+> own **Status** paragraph below is authoritative for which PRs shipped and what
+> they did not cover — notably P4's, which records that the chassis landed with
+> its per-speaker model-error store **still unwired**.
+>
+> The owner gave a **provisional green light to build along the
 > ladder** ahead of ratification (see [the campaign](#the-campaign--rounds-to-monday-2026-08-03-and-beyond)).
 > That authorizes *work*, not *conclusions*: a round may ship a rung's code, and
 > still no rung is settled until Monday's ratification and measurement
@@ -76,6 +134,12 @@ text stands as written.
 > either. If the owner declines the ladder, every *superseded-pending* mark
 > reverts, the WO text stands as-is, and the rounds built on that rung are
 > re-scoped rather than defended.
+>
+> (An earlier revision of this callout said "No P1–P4 implementation has merged
+> as of `5c7029b63`". That was true when written and was left standing through
+> four rounds of merges — the drift is recorded rather than quietly overwritten,
+> because a status callout going stale is the failure mode this block exists to
+> prevent.)
 
 ---
 
@@ -153,22 +217,23 @@ what-not-to-change list is explicit: re-derive under P1 rather than widen it).
 *contract* (prove and report what the gate did) is P1's disclosure half.
 
 **Issues.** #1966 (**R9** — adaptive gate never fires; measured reflection
-precedes the search window), #1867 + #1967 (**same mechanism** — the ≥4 kHz
+precedes the search window, closed), #1867 + #1967 (**same mechanism** — the ≥4 kHz
 echo-band floor makes the crossover-region rungs and any crossover-region null
-structurally invisible; **#1967 is scheduled R10**, because the unclamp is only
-safe once the objective carries the crossover context), #1974 (**moved R12 →
+structurally invisible; **#1967 is scheduled R10** and remains open, because the
+unclamp is only safe once the objective carries the crossover context; **#1867
+is closed**), #1974 (**moved R12 →
 R9** — inconclusive copy blames a reflection on a path with none; R9's exit
 requires the gate disclosure to RENDER, and the screens carrying that copy are
-the render slot, so the two ship together), #1750 (**R12** —
+the render slot, so the two ship together, closed), #1750 (**R12** —
 `detect_echo` bounds round outside the search window, closed), #1790 (gating v2 —
 detection, aggregation, anomaly policy), #1783 (chart paints below the validity
 floor, legend blames interference), #1859 (byte-identical DSP, 3–7.7 dB apart —
 frame or physical?), #1857 (worst-band pointer anchored on a full-range mean),
-#1830 (per-band SNR verdict dead where it now matters), #1818 (**R12** — CHECK's
+#1830 (per-band SNR verdict dead where it now matters, closed), #1818 (**R12** — CHECK's
 ambient window slides, pulling courtesy beeps into the floor estimate; it now
 clips like the pilot window and shares its usable-fraction policy, closed),
 #1847 (`band_levels_dbfs`
-Hann-weights chirps — sub-bass reads ~10 dB low), #1938 (**R8** — fixture
+Hann-weights chirps — sub-bass reads ~10 dB low, closed), #1938 (**R8** — fixture
 defaults `trim_db` from the default curves, mislabeling every custom-curve
 caller, closed), #1882 + #1883 (alignment-confidence coverage; `sweep_anchor`
 derivation — **#1883 part 1 is R12**), #1652 (CHECK-SNR gate + noise-attributed
@@ -178,7 +243,19 @@ VERIFY failures), #1672 (per-serial mic cals disagree ~4.7 dB above 8 kHz),
 (`gating.py`'s detector tuning comment points the wrong way — a measured
 spin-out of #1969's certification; the R9 block below says R9 declines to carry
 it, but #1989 **did** carry it, and WO-6 then re-derived the same K walk at the
-shipped vote).
+shipped vote, closed), #1988 (constant-ε regularized deconvolution imposes an
+uncompensated HF tilt on every deconvolved IR — −3 dB corner ≈17 kHz on the
+household sweep; R10b's bench sized it at ~19% of the mystery tilt, so it is a
+real instrument term and not the culprit), #1990 (the follow-up sites P1 left
+alone, plus the measured limit of the notch-bin intersection — §B is a Monday
+ratification input), #2027 (the 35 dB alignment-SNR floor has not been
+re-derived for the sweep-derived band semantics #2024 introduced; R12 advanced
+the offline half inconclusive-with-findings), #2052 (`_channel_map_ok` should
+answer honest-unknown when ambient evidence is absent — deferred from #2042),
+#2054 (cloud-side screens carry no gate disclosure — the half #1994 deferred),
+#2058 (a room-correction session records `verdict:accept` while
+`acoustic_quality` warns — a verdict that hides its own warning is the same
+disclosure failure this rung exists to fix; twin of closed #1813).
 
 ---
 
@@ -191,7 +268,12 @@ of hard-coding 0.0.
 
 **Status.** PENDING RATIFICATION; nothing merged. **Not yet scheduled to a
 round** — the rung that most wants ratification before it is built, since it
-changes what every future capture records.
+changes what every future capture records. **It is now the only unbuilt rung**
+(P1, P3, and P4's chassis all landed R9–R11), which sharpens rather than
+softens the point: everything built above it banks evidence whose pose,
+`floor_source`, and DSP fingerprint are still not persisted. Filed as **#2050**
+so a Monday "ratify P2" ruling lands on a work item rather than only on this
+paragraph.
 
 **Reshapes.** Precedes WO-4: **WO-4's "the mechanism set can be frozen now" is
 superseded-pending**, because a registry citing evidence that cannot say where
@@ -205,11 +287,21 @@ observable, not the v1 build.
 
 **Issues.** #1960 (live jts3 profile carries four boosts current main would not
 emit — provenance), #1976 (bundles omit `verify_program.wav`; 28 verify captures
-un-replayable), #1971 (**R12**, design half — splice/schedule gates structurally
-blind on the VERIFY path), #1864 (plumb declared driver spacing into parallax — the literal
+un-replayable, closed), #1971 (**R11** — design half; splice/schedule gates
+structurally blind on the VERIFY path, closed by #2031), #1864 (plumb declared
+driver spacing into parallax — the literal
 hard-coded 0.0), #1656 (calibration identity follows the saved setup, not the
-physical mic), #1660 (relay path never threads `device` into the calibration
-identity guard).
+physical mic; closed, with the serial-entry remainder split to #2053), #1660 (relay path never threads `device` into the calibration
+identity guard, closed by #2036), #2030 (#1971's two split-out secondary
+observations — `authorizes_playback` False on a confirmed profile, and
+`_global_offset` anchoring on the quietest segment), #2041 (the room
+upload/verify level-match gates are scoped to `capture_transport == "local"`, so
+a relay session can reach analysis with none of the per-run facts a level match
+establishes — ambient floor, locked level, realized device, calibration
+identity; indexed here because "which facts a capture carries" *is* this rung),
+#2050 (the rung's own work item — so a Monday "ratify P2" ruling has somewhere
+to land), #2053 (saved-mic serial entry + calibration-to-physical-device
+binding — the remainder of #1656).
 
 ---
 
@@ -238,7 +330,11 @@ letter) and the bins-vs-centres clamp question (between-centre residue
 is measured-not-bounded — worst-found ~11.6 dB on a 3360-design grid,
 stable-centre share ~17%; every design publishes its own
 `max_overshoot_db` as the real protection). R10b (alignment + emit)
-follows R10a, never precedes what it built.
+follows R10a, never precedes what it built — **landed 2026-08-01**
+(#2005, #2009, #2007, #2018, #2016, #2008); see
+[the R10b outcome](#the-campaign--rounds-to-monday-2026-08-03-and-beyond)
+for what each PR settled and what it left for R11. **The rung's code is
+therefore complete; the rung is not ratified.**
 
 **Reshapes.** Precedes WO-6 and **any delay work** — so **WO-3's delay-adoption
 path (Q-A) is superseded-pending**: no delay value is adopted on model evidence
@@ -254,7 +350,7 @@ what is stable across positions.
 
 **Issues.** #1817 (**R10** — linearization fits a crossover-shaped branch
 against a flat target; the canonical instance, and the source of R10's
-passband-edge rule), #1868 (VERIFY grades measured-vs-model, so a real null the
+passband-edge rule, closed), #1868 (VERIFY grades measured-vs-model, so a real null the
 model reproduces passes), #1954 (**R10** — room layer designs depth on the mean;
 wire per-frequency spatial variance into the cap), #1955 (constrain the
 L/R per-channel axis before Increment 5 exists), #1894 (measurement-adjudicated
@@ -263,7 +359,15 @@ dimensions), #1752 (**R12** — `compose_envelope` smoothing leaks depth past a
 term's own zero; hardened — a term at exactly 0 is now a hard boundary like
 OUT_OF_BAND, closed), #1654 (widen the tweeter sweep to the declared floor — shelved, with a
 revival trigger WO-5 depends on), #1870 (owner bench: adjudicate tweeter delay at
-Fc and name the τ≈303 µs reflector), #1968 (the banked research itself).
+Fc and name the τ≈303 µs reflector), #1968 (the banked research itself), #2006
+(the **room** layer's half of "grade your claims on the filters you emit" —
+`peq.predicted_response`'s Lorentzian reaches two *decisions*, not just
+reports; the linearization half is #2007, landed R10b), #2013 (the
+linearization half's remainder — the claim FRAME still carries a pre-seam
+Lorentzian term that the CD-horn suppression then decides on), #2032 (the emit
+bench has no one-command path from a speaker's applied state — the operational
+gap R11's first hardware run exposed), #2060 (owner decision deferred from
+#2005: should G1's ripple ceiling grade the *applied* model?).
 
 ---
 
@@ -276,9 +380,25 @@ is discarded. P4 is the read path plus the render, the household-wire delta
 labeled honestly as model-vs-model, and per-speaker persistence of VERIFY's
 model error. Cheap — every piece exists; nothing reads it.
 
-**Status.** PENDING RATIFICATION. First rung merged — the findings reader,
-#1982, 2026-07-31; **ratification still pending**. Then **R11** for the
-attempts loop.
+**Status.** PENDING RATIFICATION. First piece merged — the findings reader,
+#1982, 2026-07-31. Then **R11 landed the attempts loop (#2029) and the VERIFY
+evidence gate (#2031)**, so the chassis exists; **ratification still pending**.
+
+**Honest limit of what shipped — the store has no live writer.** The
+per-speaker model-error store
+([`jasper/active_speaker/model_error_store.py`](../jasper/active_speaker/model_error_store.py))
+is real, tested, and **not yet wired to the flow**: `record_model_error` has
+**no caller anywhere outside its own tests** — not in `crossover_v2_flow`, not
+in the envelope, nowhere. The only production writer of the file at all is
+`adopt_floor`, called from the offline replay CLI
+([`jasper/cli/active_speaker_attempts_replay.py`](../jasper/cli/active_speaker_attempts_replay.py)),
+which is why R11's proof ran on recorded data and why the R11 outcome records
+the store as starting "honestly empty". So P4 today is the *read* path plus the
+loop plus the storage shape — **the learn-from-VERIFY seam the rung is named
+for is still open**. Tracked as **#2048** (the store has no live writer) under
+parent **#2049** (live in-flow attempts-loop wiring — the household-visible
+"improved X, stopped because more would be noise" payoff, which has no owner
+until that wiring lands).
 
 **Reshapes.** Precedes WO-6 and WO-7. WO-7's per-attempt
 predicted-vs-measured evidence stream is **unimplementable until P4 exists** —
@@ -287,13 +407,20 @@ it is the same read path. No WO text is contradicted; the dependency is added.
 **Research inputs.** None directly. (The Dirac digest's separate
 position-stability argument lands on rung P3, not here.)
 
-**Issues.** #1964 (done-screen verdict baked at plan-build time), #1965 (Full
-tier reads a block that cannot exist at stage 1 — Full shows less than Express),
+**Issues.** #1964 (done-screen verdict baked at plan-build time, closed),
+#1965 (Full tier reads a block that cannot exist at stage 1 — Full shows less
+than Express, closed),
 #1784 (full-band honest two-panel before/after), #1927 (**R8** — VERIFY
 pilot-transfer baseline never expires — and see P0 finding 1: a fixed baseline accumulates
 drift comparable to the whole floor within ~15 attempts, so this is a rule, not
 just a bug, closed), #1876 (convergence: does a clean-slate re-run reach the same tune?),
-#1844 (LLM-native tuning workbench W1–W4 — the consumer the loop feeds).
+#1844 (LLM-native tuning workbench W1–W4 — the consumer the loop feeds), #2033
+(wire VERIFY's `capture_integrity` into the attempts loop's `STOP_EVIDENCE`
+input once the live flow feeds it — today the live path is safe by
+construction, because glitched captures auto-retry before becoming grades),
+#2048 (the model-error store has no live writer — see Status above), #2049
+(live in-flow attempts-loop wiring; the parent that owns the household-visible
+payoff).
 
 ---
 
@@ -583,7 +710,15 @@ working flow**, never beside it.
 > small per the round-11 brief (~19% of the mystery tilt — not the
 > culprit; bench in `captures/r10b-epsilon-bench-20260801/`). The emit
 > bench had **not** yet run on a real speaker — that proof became R11's
-> first slice.
+> first slice. **Standing slice exit: not performed this round, and not
+> waived at the time.** R11's deploy (`14b8d9c96`) and its pass subsumed
+> it the next day, about 11 h after R10b's last merge, so no round left
+> un-proven code standing for long —
+> but the exit was skipped silently rather than named. Recorded late, and
+> the omission is part of the same R10b bookkeeping lesson as the missing
+> outcome block itself: an exit that something else subsumes afterwards
+> still has to be *stated* at the time, or a later reader cannot tell a
+> skipped gate from a passed one.
 
 ### R11 — the loop round (rung P4 / WO-7 chassis + live fixed-mic validation) *(Saturday night 08-01 / Sunday 2026-08-02)*
 
@@ -659,7 +794,8 @@ the `jasper/web/` wizards, and docs.
 
 **Mission:** make Monday need only the owner's hands and ears.
 
-**Deliverables.** #1941 stages 4-5-7 built (publishing gated behind #1792);
+**Deliverables** *(planned; not built — see the Outcome below)*. #1941 stages
+4-5-7 built (publishing gated behind #1792);
 **#1941 Stage 6 BUILD — the walk reorder — merge-gated on the Monday hardware
 re-run** (no other round builds it, and its acceptance requires "hardware re-run
 on 08-04 before merge"; build it here so Monday's re-run is a *gate*, not a
@@ -755,6 +891,25 @@ Every open program issue appears **exactly once** — under a rung above, or und
 one of the named owners below. The index records *placement*, not progress:
 an issue's state, scope, and remaining work live on the issue.
 
+**The invariant is point-in-time, and says so.** Last reconciled against `gh`
+on **2026-08-02**: 93 open issues, 0 unplaced. A closed issue keeps its
+placement with a `closed` marker so the reader can see *where the work went*,
+not just that it left; the marker sits in the issue's own parenthetical, and
+appears on the first (placement) mention only — a number repeated later in
+prose is a cross-reference, not a second placement. Because issues open and
+close continuously, treat any count here as the date's snapshot and re-run the
+reconciliation rather than trusting it; the invariant that must hold is
+"exactly once", not any particular number.
+
+**The reconciliation, so it can be repeated.** Take the open set from
+`gh issue list --state open --limit 400 --json number`, and take the placed set
+by grepping `#\d+` out of this file's placement zones only — each rung's
+`**Issues.**` paragraph plus the two `###` sections below. Every open number
+must appear in the placed set exactly once; every placed number absent from the
+open set must carry the `closed` marker. Prose cross-references — including a
+number mentioned inside another issue's parenthetical within a zone — and the
+by-owner regrouping inside "Outside the program", do not count as placements.
+
 **Round tags.** An issue scheduled into a campaign round carries a `— Rn` tag
 where it is indexed. **An untagged issue is not yet scheduled**, which is a
 statement about the campaign, not about the issue's importance. Rung and round
@@ -763,23 +918,29 @@ only safe after the objective lands, and the tag says so.
 
 ### Not on a rung — program work with another owner
 
-- **Attribution work orders** (owner: [`attribution-stage-plan.md`](attribution-stage-plan.md) §7) — #1866 (the direction and its rulings), #1933 (flow-first WO-2/WO-3), #1869 (WO-3 alignment evidence gaps), #1922 (WO-4: per-driver level-sanity gate and named-driver attribution), #1873 + #1924 (WO-5's deterministic-mismatch discriminator and its copy — **#1924 R8**), #1791 (WO-8 room-correction regime).
+- **Attribution work orders** (owner: [`attribution-stage-plan.md`](attribution-stage-plan.md) §7) — #1866 (the direction and its rulings), #1933 (flow-first WO-2/WO-3), #1869 (WO-3 alignment evidence gaps), #1922 (WO-4: per-driver level-sanity gate and named-driver attribution), #1873 + #1924 (WO-5's deterministic-mismatch discriminator and its copy — **#1924 R8**, closed), #1791 (WO-8 room-correction regime).
 - **Two-stage chassis (T1–T3)** — #1806. WO-6 and WO-7 both sit on it; the ladder does not change that.
-- **Crossover-v2 flow and product surface** — #1947, #1872, #1863, #1862, #1840, #1788, #1706, #1703, #1684, #1650, #1671, #1665, #1833, #1832, #1926, #1925, #1913, #1860, #1950.
-- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7 and Stage 6 **not built; Monday-gated**, see the R12 outcome), #1979 (**R12**, closed), #1978 (**R12**, closed), #1961, #1865, #1962 (closed), #1985 (Crossover review's "Leave it as it is" exits to an unrelated HTTPS interstitial — found by the R8 slice check; untagged, closed).
-- **Capture page and relay platform** — #1792 (**R12** — the publish gate R12's UX build sits behind), #1861, #1975 (**R12**).
+- **Crossover-v2 flow and product surface** — #1947, #1872 (closed), #1863, #1862, #1840, #1788, #1706, #1703, #1684, #1650, #1671, #1665, #1833 (closed), #1832 (closed), #1926, #1925, #1913, #1860, #1950 (closed), #2055 (wizard-side validation of the declared HF cap — the `excitation_safety_plan.py` known corner), #2056 (mid-session household volume actions move CamillaDSP main volume during a measurement — a W6-checklist hazard that was untracked).
+- **Measurement UX and copy line** — #1941 (**R12** — stages 4-5-7 and Stage 6 **not built; Monday-gated**, see the R12 outcome), #1979 (**R12**, closed), #1978 (**R12**, closed), #1961, #1865, #1962 (closed), #1985 (Crossover review's "Leave it as it is" exits to an unrelated HTTPS interstitial — found by the R8 slice check; untagged, closed), #2051 (O9's free half never shipped — `envelope_limited_by_mic_tier` is applied but no surface discloses it), #2059 (owner decision: #2040's plan-shape copy — `program_unplayable`'s advice is a loose fit for unknown-tier refusals).
+- **Capture page and relay platform** — #1792 (**R12** — the publish gate R12's UX build sits behind), #1861, #1975 (**R11** — landed in #2028's debt lane, not R12 as an earlier revision tagged it; closed).
 - **Hardware bench sessions** — #1848 (JTS3 commissioning acceptance). The owner-attended delay/reflector bench is indexed under rung P3 instead, because its output is a P3 input.
-- **Corpus and evidence tooling** — #1884 (corpus-pin visibility in CI).
-- **Bass Extension program** (separate program, own plan) — #1738, #1723, #1822.
+- **Corpus and evidence tooling** — #1884 (corpus-pin visibility in CI), #1992 (the R7 panel's per-band tilt-removed column does not reproduce — headline scalars do; a banked-artifact reconciliation, not a product defect), #2045 (S0 corpus-gated suites carry pre-existing failures on clean `main`), #2046 (no safe headless per-driver replay lane — `correction_substream` mono-sums to both drivers on the active 2-way graph, so a replayed "woofer-only" program reaches the tweeter; **audio-safety-adjacent**, and the reason R12's E2E pass stayed analysis-layer), #2057 (crossover bundle `artifact_manifest.json` under-reports its contents — 12/12 bundles).
+- **Bass Extension program** (separate program, own plan) — #1738, #1723, #1822, #2022 (the emit-bench render path cannot run on macOS — `RenderBounds` sets a finite `RLIMIT_AS`), #2023 (two load-bearing `render.py` invariants enforced by prose, not a check), #2025 (a campaign can refuse itself mid-run — candidates deduped by exact float but tagged at six significant digits).
 
 ### Outside the program
 
-Named so the boundary is visible, not indexed: #1973 (**R12**, debt), #1952,
-#1948 (**R12**, debt), #1789, #1852, #1842, #1843, #1718, #1717, #1716, #1715,
-#1709, #1678 — enumerated by owner so the boundary can be audited: CI and
-test-infra (#1973, #1716, #1715, #1709), multiroom (#1852, #1842, #1678), Rust
-(#1718, #1717), voice (#1843), daemon runtime (#1952), method tooling (#1948),
+Named so the boundary is visible, not indexed: #1973 (**R12**, debt, closed),
+#1952 (closed), #1948 (**R12**, debt), #1789 (closed), #1852, #1842, #1843,
+#1718 (closed), #1717, #1716 (closed), #1715, #1709, #1678, #2044 (py3.11 test flake —
+the metadata-sidecar write race), #2064 (doc-freshness `--all` vs archival
+dirs — an owner ruling, deadline ~2026-08-23) — enumerated by owner so the
+boundary can be audited: CI and
+test-infra (#1973, #1716, #1715, #1709, #2044), multiroom (#1852, #1842, #1678), Rust
+(#1718, #1717), voice (#1843), daemon runtime (#1952), method and docs tooling
+(#1948, #2064),
 and one correction-subsystem constant with no measurement behaviour (#1789).
+Closed markers appear on the first (placement) mention only; the by-owner
+regrouping repeats the same numbers as a classification, not a second status.
 Each has its own owner and none hangs off a rung. Two
 are pulled into R12 as debt because that round's territory already touches
 them; that schedules the work, it does not adopt them into the program.
@@ -1493,14 +1654,34 @@ of which scale with the program rather than with the prose. Splitting either
 into a second file would defeat the one-spine purpose, so the length is a
 deliberate, recorded exception — not licence for the spine's *prose* to grow.
 
-**Verification scope.** The **2026-08-02 pass re-verified only the CURRENT
-POSITION block, the campaign's R11–R12 entries, and the R12 tags in the issue
-index** — against `5a3266f8f`, with every PR and issue number in those sections
-re-read from `gh`. The rest of the spine carries its prior verification forward
-and was not re-read; the date below is not a warranty on it. That prior pass:
+**Verification scope.** A **second 2026-08-02 pass (the post-campaign
+docs-drift repair)** re-verified, and is warranted by the date below, exactly
+these sections:
+
+- **the charter** — including the newly-written four-layer vision, its ordering
+  rule, and the two-stop-kernels rule (both kernel paths opened and confirmed
+  to exist; the bass-position difference against
+  [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+  is flagged for the owner, deliberately not resolved);
+- **the ratification callout** and the **Status paragraph of every rung
+  P1–P4** — each rung's merged/unbuilt claim re-derived from `main`'s merge
+  history, and P4's "no live writer" claim re-derived by grepping every caller
+  of `record_model_error`;
+- **the whole phase→issue index** — every placed number's open/closed state
+  re-read from `gh` on 2026-08-02, 0 open issues unplaced at that snapshot;
+- **the R10b outcome block** (slice-exit omission) and **R12's Deliverables
+  line** (planned-vs-built).
+
+Everything else in the spine — the rung bodies below their Status lines
+**apart from their Issues lists** (those were re-verified, as part of the index
+above), the campaign's R8–R11 narrative, the research index, CURRENT POSITION,
+and the handoff/issue contract — carries prior verification forward and was
+**not** re-read in this pass. The immediately prior 2026-08-02 pass re-verified the
+CURRENT POSITION block, the campaign's R11–R12 entries, and the R12 tags in the
+issue index against `5a3266f8f`. And before that, on 2026-07-31,
 the spine (charter, ladder, campaign, research index,
 issue index, CURRENT POSITION, the handoff/issue contract) was verified
-2026-07-31 against `5c7029b63`: every issue number re-read from `gh`, every
+against `5c7029b63`: every issue number re-read from `gh`, every
 research artifact re-read at its banked path, and every WO claim re-read in
 [`attribution-stage-plan.md`](attribution-stage-plan.md) §7–§8. That last check
 was **added after the first revision failed it** — rung P0's row had quoted
