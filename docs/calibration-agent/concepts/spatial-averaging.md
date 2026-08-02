@@ -38,7 +38,7 @@ designed.
 For a phone-first JTS flow, multi-position should feel ordinary:
 
 1. Measure the main listening position.
-2. Move the phone slightly left, right, forward, and back.
+2. Move the microphone slightly left, right, forward, and back.
 3. Show whether the bass problems are shared across positions.
 4. Correct only what is repeatable enough to trust.
 

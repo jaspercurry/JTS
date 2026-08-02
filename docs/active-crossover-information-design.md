@@ -470,9 +470,10 @@ one authoritative placement:
 
 > Put the microphone on the reference axis — the tweeter axis, or the design
 > axis named by the speaker profile — at the height that axis is specified
-> for, approximately one metre away when the room permits. Aim it according
-> to the microphone's calibration file. Keep the microphone and speaker
-> completely still until all driver and combined measurements are finished.
+> for, approximately one metre away when the room permits, pointed at the
+> speaker unless its calibration file says otherwise. Keep the microphone and
+> speaker completely still until all driver and combined measurements are
+> finished.
 
 The instruction must state the axis and height concretely, because a few
 centimetres of vertical offset moves the microphone through the crossover

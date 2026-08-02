@@ -301,6 +301,14 @@ def test_crossover_guided_cloud_never_promises_a_stationary_mic():
     # boundaries so a future "understand"/"standing" cannot false-trip this.
     assert not re.search(r"\b(tripod|stands?)\b", label)
 
+    # WHAT YOU WILL HEAR, and both hedges in it are load-bearing (#1979). "has"
+    # rather than "is", because CHECK opens on a 12 s room-noise window BEFORE
+    # the beeps, so an exhaustive description is false for the first capture of
+    # the session; "tones" rather than "a tone", because no phase plays exactly
+    # one (CHECK: four pilot chirps and no sweep; MEASURE: two pilots then six
+    # sweeps; a prompted position: two pilots then one sweep).
+    assert "has three short beeps, a pause, and then rising tones" in orientation
+
     # Per-sweep stillness, kept verbatim and made explicit about what follows
     # it. This is the promise an individual capture depends on.
     assert (
