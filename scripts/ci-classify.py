@@ -198,6 +198,7 @@ DOCS_TEST_FILES = (
     "tests/test_calibration_agent_tools.py",
     "tests/test_capture_page_js.py",
     "tests/test_ci_classifier.py",
+    "tests/test_deep_audit_ledger.py",
     "tests/test_dependency_groups.py",
     "tests/test_doc_staleness_sweep_20260604.py",
     "tests/test_docs_handoff_freshness.py",

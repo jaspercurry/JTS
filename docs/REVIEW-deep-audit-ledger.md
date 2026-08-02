@@ -4,17 +4,19 @@
 > [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
-Last reconciled against `origin/main` (`8e3a32276`), including this branch:
-2026-07-29.
+Last reconciled against `origin/main` (`7049b668d`), including this branch:
+2026-08-02.
 
 ## Status counts
 
-- **open**: 159 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 149 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
 - **fixed**: 491
 - **in-progress**: 0
-- **mooted**: 27
+- **mooted**: 36
+- **reversed**: 1 (DA-0570 — the original consolidation was intentionally
+  undone; the two features now have separate owners and a guard)
 - **deferred**: 0
 
 ## Ledger
@@ -44,8 +46,8 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0004 | `LICENSE` :: §6 Trademarks / §9 Accepting Warranty or Additional Liability | should-fix | W5 | **fixed** | canonical Apache-2.0 terms restored + packaged-license integrity guard — #1293 |
 | DA-0005 | `capture-page/js/main.js` :: boot():604-616 | should-fix | W5 | **fixed** | guided and capture-only Room paths converge on the fixed DATA renderer; Pi spec owns position/trust-repeat copy; browser + builder contracts pinned — this branch |
 | DA-0007 | `deploy/systemd/jasper-usbsink.service` :: Slice=jts-audio.slice membership | should-fix | W5 | **fixed** | doctor derives and checks every protected audio/mic unit — #1287 |
-| DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **open** | — |
-| DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **open** | — |
+| DA-0008 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored | should-fix | W5 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
+| DA-0009 | `firmware/satellite-amoled/src/main.cpp` :: tryConnectStored / improvConnect | should-fix | W5 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0011 | `jasper/audio_runtime_plan.py` :: _route_policy_errors | should-fix | W5 | **fixed** | coherent shm-ring plans preserve computed capture/playback mismatches — #1286 |
 | DA-0012 | `jasper/cli/aec_bridge.py` :: _aec_loop dtln runtime-crash handler (~2147- | should-fix | W5 | **fixed** | runtime DTLN failure now withdraws the leg from live health/capture-plan truth while primary AEC3 continues — #1295 |
 | DA-0013 | `jasper/cli/xvf_firmware_update.py` :: update | should-fix | W5 | **fixed** | bounded download + pre-flash budget + recovery/unit deadline contract — #1285 |
@@ -139,7 +141,7 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0195 | `jasper/correction/session.py` :: prepare_and_play_sweep / prepare_and_play_re | should-fix | W3 | **fixed** | shared prepared-sweep lifecycle; verify now reports duration consistently — this PR |
 | DA-0196 | `jasper/cues/factory.py` :: build_cue_tts_backend :38 | should-fix | W3 | **fixed** | cue rendering + loudness seeding share provider-to-generator dispatch — this PR |
 | DA-0197 | `jasper/fanin/coupling_auto.py` :: usb_gadget_stack_present | should-fix | W3 | **fixed** | USB-role consumers use shared `current_usb_data_role` / `gadget_unavailable_detail` capability contract — #1494 |
-| DA-0198 | `jasper/fanin/coupling_reconcile.py` :: _arm_ring | should-fix | W3 | **open** | — |
+| DA-0198 | `jasper/fanin/coupling_reconcile.py` :: _arm_ring | should-fix | W3 | **fixed** | seven ring-arm failure paths share one fail-safe recovery/log/result owner; stage progress flags preserved — this branch |
 | DA-0199 | `jasper/fanin/coupling_reconcile.py` :: _transport_pipe_shape_ok | should-fix | W3 | **mooted** | transport-pipe path and shape validator deleted; legacy value now fails safe to loopback — #1266 |
 | DA-0200 | `jasper/home_assistant.py` :: read_ha_env_file | should-fix | W3 | **fixed** | Home Assistant state uses canonical status-bearing env reader — this PR |
 | DA-0201 | `jasper/multiroom/active_leader_config.py` :: _camilla | should-fix | W3 | **fixed** | import-light `primary_controller()` owns camilla#1 construction — this PR |
@@ -231,9 +233,9 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0287 | `docs/HANDOFF-mic-quality-v2.md` :: 950-951 | nit | W5 | **fixed** | residual-suppressor section names only shipped controls |
 | DA-0288 | `docs/HANDOFF-usb-low-latency.md` :: 84-87 | nit | W5 | **fixed** | current handoff uses canonical `INPUT_RESAMPLER` family |
 | DA-0289 | `experiments/aec3-v2-deep-tune-spike/sweep.py` :: :29,36-37 | nit | W5 | **fixed** | experiment paths derive from checkout with an overridable build dir |
-| DA-0290 | `firmware/dial/src/display.cpp` :: display_init | nit | W5 | **open** | — |
-| DA-0291 | `firmware/satellite-amoled/src/display.cpp` :: displayShowStatus | nit | W5 | **open** | — |
-| DA-0292 | `firmware/satellite-amoled/src/main.cpp` :: :38-40 | nit | W5 | **open** | — |
+| DA-0290 | `firmware/dial/src/display.cpp` :: display_init | nit | W5 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
+| DA-0291 | `firmware/satellite-amoled/src/display.cpp` :: displayShowStatus | nit | W5 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
+| DA-0292 | `firmware/satellite-amoled/src/main.cpp` :: :38-40 | nit | W5 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0293 | `jasper/active_speaker/commission_ramp.py` :: _record_ramp_state:201 | nit | W5 | **fixed** | standard-library import moved to module scope |
 | DA-0294 | `jasper/active_speaker/commissioning_coordinator.py` :: _combined_group_view | nit | W5 | **open** | — |
 | DA-0295 | `jasper/active_speaker/graph_evidence.py` :: driver_mute_name | nit | W5 | **fixed** | unused verification-vocabulary re-export removed |
@@ -373,8 +375,8 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0501 | `deploy/bin/jasper-render-asound-conf` :: :15 OUTPUT= | nit | W3 | **fixed** | test pins renderer output, `/etc/asound.conf` reader, and installed symlink as one path contract — this branch |
 | DA-0502 | `deploy/install.sh` :: ensure_output_hardware_state | nit | W3 | **open** | — |
 | DA-0503 | `deploy/install.sh` :: find_card | nit | W3 | **open** | — |
-| DA-0504 | `firmware/dial/platformio.ini` :: [env:crowpanel-128-rotary-hmi] | nit | W3 | **open** | — |
-| DA-0505 | `firmware/dial/src/main.cpp` :: postJson / postVolumeAdjust | nit | W3 | **open** | — |
+| DA-0504 | `firmware/dial/platformio.ini` :: [env:crowpanel-128-rotary-hmi] | nit | W3 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
+| DA-0505 | `firmware/dial/src/main.cpp` :: postJson / postVolumeAdjust | nit | W3 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0506 | `jasper/_oom_adj.py` :: EXPECTED | nit | W3 | **open** | — |
 | DA-0507 | `jasper/accessories/bridge.py` :: _TapCounter._dispatch / _log_key_action | nit | W3 | **open** | — |
 | DA-0508 | `jasper/accessories/reconcile.py` :: _unwrap / _variant_value | nit | W3 | **open** | — |
@@ -470,9 +472,9 @@ Last reconciled against `origin/main` (`8e3a32276`), including this branch:
 | DA-0601 | `scripts/aec-probe-xvf-ref-level.sh` :: restore_services:76 | nit | W3 | **open** | — |
 | DA-0602 | `scripts/airplay-receiver-timing-proof.py` :: estimate_lag:428 | nit | W3 | **mooted** | the old timing tool was replaced; the surviving estimators intentionally implement different correlation semantics — #1341 |
 | DA-0603 | `scripts/build-wake-negative-feature-bank.sh` :: :15-22 | nit | W3 | **mooted** | wake-training launchers now share a worktree-aware environment resolver — #1388 |
-| DA-0604 | `scripts/capture-chip-mic.sh` :: :41-45 | nit | W3 | **open** | — |
+| DA-0604 | `scripts/capture-chip-mic.sh` :: :41-45 | nit | W3 | **mooted** | duplicate `capture-satellite-amoled.sh` retired with the bespoke ESP32 stack — `8c7330aff` |
 | DA-0605 | `scripts/capture-reference-condition.sh` :: :189-216 | nit | W3 | **open** | — |
-| DA-0606 | `scripts/check-firmware-builds.sh` :: :35-37 | nit | W3 | **open** | — |
+| DA-0606 | `scripts/check-firmware-builds.sh` :: :35-37 | nit | W3 | **mooted** | optional ESP32 firmware build surface retired — `8c7330aff` |
 | DA-0607 | `tests/js/relay_worker_test.mjs` :: :28,662-701 | nit | W3 | **fixed** | all 14 capture/relay suites with this runner shape share one failure-preserving harness — this branch |
 | DA-0608 | `tests/js/sound_profile_harness.mjs` :: summedSummary (:3162) | nit | W3 | **open** | — |
 | DA-0609 | `tests/test_active_speaker_environment.py` :: _valid_config | nit | W3 | **fixed** | active-speaker suites share one successful Camilla validation fixture — this branch |

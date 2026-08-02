@@ -1873,6 +1873,58 @@ def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
     return False, "ring geometry coherent — CONFIRM stays lightweight"
 
 
+def _fail_ring_arm(
+    do_restart,
+    do_restart_outputd,
+    do_reconcile,
+    desired: str,
+    reason: str,
+    fanin_snapshot: _EnvSnapshot,
+    outputd_snapshot: _EnvSnapshot,
+    *,
+    event_result: str,
+    detail: str,
+    restarted_fanin: bool = False,
+    restarted_outputd: bool = False,
+) -> CouplingResult:
+    """Recover one failed ring-arm stage and publish its common outcome.
+
+    Every ring preflight and ordered daemon step has the same fail-safe contract:
+    force both env files and all three daemons back to loopback, emit one warning,
+    and return a failed arm result.  Keeping that sequence here prevents a new
+    stage from accidentally omitting recovery or reporting different progress
+    flags while each caller still owns its domain-specific event name and detail.
+    """
+    recovered = _recover_to_loopback(
+        do_restart,
+        do_restart_outputd,
+        do_reconcile,
+        fanin_snapshot.path,
+        outputd_snapshot.path,
+        reason,
+    )
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result=event_result,
+        desired=desired,
+        reason=reason,
+        detail=detail or None,
+        recovered=recovered,
+        level=logging.WARNING,
+    )
+    return CouplingResult(
+        ok=False,
+        desired=desired,
+        changed=False,
+        direction="arm",
+        restarted_fanin=restarted_fanin,
+        restarted_outputd=restarted_outputd,
+        detail=detail,
+        recovered=recovered,
+    )
+
+
 def _arm_ring(
     do_restart,
     do_restart_outputd,
@@ -1904,31 +1956,16 @@ def _arm_ring(
     """
     assets_ok, assets_detail = ring_assets_ready()
     if not assets_ok:
-        recovered = _recover_to_loopback(
+        return _fail_ring_arm(
             do_restart,
             do_restart_outputd,
             do_reconcile,
-            fanin_snapshot.path,
-            outputd_snapshot.path,
+            desired,
             reason,
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_ring_assets_missing",
-            desired=desired,
-            reason=reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_assets_missing",
             detail=assets_detail,
-            recovered=recovered,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="arm",
-            detail=assets_detail,
-            recovered=recovered,
         )
 
     # Topology-eligibility preflight: the ring is a full-range stereo single-sink
@@ -1937,31 +1974,16 @@ def _arm_ring(
     # reason. Fail-safe: an unreadable topology does NOT block (outputd guards it).
     topo_ok, topo_detail = ring_topology_ready()
     if not topo_ok:
-        recovered = _recover_to_loopback(
+        return _fail_ring_arm(
             do_restart,
             do_restart_outputd,
             do_reconcile,
-            fanin_snapshot.path,
-            outputd_snapshot.path,
+            desired,
             reason,
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_ring_topology_ineligible",
-            desired=desired,
-            reason=reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_topology_ineligible",
             detail=topo_detail,
-            recovered=recovered,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="arm",
-            detail=topo_detail,
-            recovered=recovered,
         )
 
     # Period-geometry preflight: the conf.d ring period MUST equal outputd's
@@ -1971,31 +1993,16 @@ def _arm_ring(
     # crisp reason (fail-safe: recover to loopback), before bouncing any daemon.
     geom_ok, geom_detail = ring_geometry_ready(outputd_snapshot.text)
     if not geom_ok:
-        recovered = _recover_to_loopback(
+        return _fail_ring_arm(
             do_restart,
             do_restart_outputd,
             do_reconcile,
-            fanin_snapshot.path,
-            outputd_snapshot.path,
+            desired,
             reason,
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_ring_geometry_mismatch",
-            desired=desired,
-            reason=reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_geometry_mismatch",
             detail=geom_detail,
-            recovered=recovered,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="arm",
-            detail=geom_detail,
-            recovered=recovered,
         )
 
     # Migrate a stale, shear-prone JASPER_FANIN_RING_SLOTS FIRST (defect A
@@ -2016,31 +2023,16 @@ def _arm_ring(
     # needing a matching env, where the crisp reason names both values.)
     slot_ok, slot_detail = ring_slot_geometry_ready(fanin_snapshot.text)
     if not slot_ok:
-        recovered = _recover_to_loopback(
+        return _fail_ring_arm(
             do_restart,
             do_restart_outputd,
             do_reconcile,
-            fanin_snapshot.path,
-            outputd_snapshot.path,
+            desired,
             reason,
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_ring_slot_mismatch",
-            desired=desired,
-            reason=reason,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_slot_mismatch",
             detail=slot_detail,
-            recovered=recovered,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="arm",
-            detail=slot_detail,
-            recovered=recovered,
         )
 
     # Stale-ring-file guard (defect A): a ring file left over from a PRIOR geometry
@@ -2052,93 +2044,47 @@ def _arm_ring(
 
     out_ok, out_detail = do_restart_outputd()
     if not out_ok:
-        recovered = _recover_to_loopback(
+        return _fail_ring_arm(
             do_restart,
             do_restart_outputd,
             do_reconcile,
-            fanin_snapshot.path,
-            outputd_snapshot.path,
+            desired,
             reason,
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_ring_outputd_failed",
-            desired=desired,
-            reason=reason,
-            detail=out_detail or None,
-            recovered=recovered,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="arm",
-            restarted_outputd=False,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_outputd_failed",
             detail=out_detail,
-            recovered=recovered,
         )
 
     fan_ok, fan_detail = do_restart()
     if not fan_ok:
-        recovered = _recover_to_loopback(
+        return _fail_ring_arm(
             do_restart,
             do_restart_outputd,
             do_reconcile,
-            fanin_snapshot.path,
-            outputd_snapshot.path,
+            desired,
             reason,
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_ring_fanin_failed",
-            desired=desired,
-            reason=reason,
-            detail=fan_detail or None,
-            recovered=recovered,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="arm",
-            restarted_outputd=True,
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_fanin_failed",
             detail=fan_detail,
-            recovered=recovered,
+            restarted_outputd=True,
         )
 
     cam_ok, cam_detail = do_reconcile(COUPLING_SHM_RING)
     if not cam_ok:
-        recovered = _recover_to_loopback(
+        return _fail_ring_arm(
             do_restart,
             do_restart_outputd,
             do_reconcile,
-            fanin_snapshot.path,
-            outputd_snapshot.path,
+            desired,
             reason,
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_ring_camilla_failed",
-            desired=desired,
-            reason=reason,
-            detail=cam_detail or None,
-            recovered=recovered,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=False,
-            direction="arm",
+            fanin_snapshot,
+            outputd_snapshot,
+            event_result="arm_ring_camilla_failed",
+            detail=cam_detail,
             restarted_fanin=True,
             restarted_outputd=True,
-            detail=cam_detail,
-            recovered=recovered,
         )
 
     log_event(
