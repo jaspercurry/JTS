@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
     _backend_fixture,  # noqa: F401 - imported pytest fixture
+    _block_recording_task_start,
     _patch_udp,  # noqa: F401 - imported pytest fixture
 )
 
@@ -141,6 +143,52 @@ def test_load_session_refuses_during_recording(backend) -> None:
             backend.load_session("anything")
     finally:
         backend.stop_recording()
+
+
+@pytest.mark.parametrize("transition", ["load", "unload", "delete"])
+def test_session_transition_refuses_while_recording_start_is_reserved(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+) -> None:
+    """Session ownership cannot change during the slow UDP-bind window."""
+    first_session_id = backend.begin_session("jasper")
+    active_session_id = backend.begin_session("brittany")
+    entered, release = _block_recording_task_start(monkeypatch)
+    started: list[dict[str, str]] = []
+    errors: list[BaseException] = []
+
+    def start_clip() -> None:
+        try:
+            started.append(backend.start_recording("quiet", "near"))
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover
+            errors.append(exc)
+
+    thread = threading.Thread(target=start_clip)
+    thread.start()
+    assert entered.wait(timeout=2)
+    try:
+        with pytest.raises(
+            wake_corpus_setup.StateError,
+            match="recording or session transition in progress",
+        ):
+            if transition == "load":
+                backend.load_session(first_session_id)
+            elif transition == "unload":
+                backend.unload_session()
+            else:
+                backend.delete_session(active_session_id)
+        assert backend.session_id() == active_session_id
+        active_metadata = backend._find_session_metadata(active_session_id)
+        assert active_metadata is not None and active_metadata.is_file()
+    finally:
+        release.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(started) == 1
+    backend.stop_recording()
 
 
 def test_load_session_unknown_raises(backend) -> None:

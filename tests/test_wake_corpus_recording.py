@@ -26,6 +26,7 @@ from tests.wake_corpus_setup_fixtures import (
     _FakeUdpMicCapture,
     _allow_capture_plan_conformance,
     _backend_fixture,  # noqa: F401 - imported pytest fixture
+    _block_recording_task_start,
     _patch_udp,  # noqa: F401 - imported pytest fixture
     _session_metadata,
     _stub_xvf_runtime,
@@ -1000,6 +1001,97 @@ def test_start_recording_clears_sentinel_on_success(backend) -> None:
             assert backend._current_clip_id is not None
     finally:
         backend.stop_recording()
+
+
+def test_begin_session_refuses_while_recording_start_is_reserved(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow UDP bind cannot be crossed by a new-session transaction."""
+    original_session_id = backend.begin_session("jasper")
+    entered, release = _block_recording_task_start(monkeypatch)
+    started: list[dict[str, str]] = []
+    errors: list[BaseException] = []
+
+    def start_clip() -> None:
+        try:
+            started.append(backend.start_recording("quiet", "near"))
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover
+            errors.append(exc)
+
+    thread = threading.Thread(target=start_clip)
+    thread.start()
+    assert entered.wait(timeout=2)
+    try:
+        assert backend.is_recording() is True
+        with pytest.raises(
+            wake_corpus_setup.StateError,
+            match="initialization in progress",
+        ):
+            backend.begin_session("brittany")
+        assert backend.session_id() == original_session_id
+        assert backend.member() == "jasper"
+    finally:
+        release.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(started) == 1
+    backend.stop_recording()
+
+
+def test_begin_session_refuses_while_stop_is_saving_clip(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stop/WAV/metadata transaction stays bound to its session."""
+    original_session_id = backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.03)
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_write_wav = recording_backend.write_wav
+
+    def blocking_write_wav(path: Path, pcm: bytes) -> None:
+        entered.set()
+        if not release.wait(timeout=2):
+            raise TimeoutError("test did not release clip WAV save")
+        original_write_wav(path, pcm)
+
+    monkeypatch.setattr(recording_backend, "write_wav", blocking_write_wav)
+    stopped: list[wake_corpus_setup.ClipMetadata] = []
+    errors: list[BaseException] = []
+
+    def stop_clip() -> None:
+        try:
+            stopped.append(backend.stop_recording())
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover
+            errors.append(exc)
+
+    thread = threading.Thread(target=stop_clip)
+    thread.start()
+    assert entered.wait(timeout=2)
+    try:
+        with pytest.raises(
+            wake_corpus_setup.StateError,
+            match="initialization in progress",
+        ):
+            backend.begin_session("brittany")
+        assert backend.session_id() == original_session_id
+    finally:
+        release.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(stopped) == 1
+    assert stopped[0].session_id == original_session_id
+    _, metadata = _session_metadata(backend._output_dir.parent)
+    assert [clip["clip_id"] for clip in metadata["clips"]] == [
+        stopped[0].clip_id,
+    ]
 
 
 # ---------------------------------------------------------------------------

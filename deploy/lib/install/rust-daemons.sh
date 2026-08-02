@@ -152,6 +152,12 @@ build_install_rust_daemon() {
     stage_rust_crate "${REPO_DIR}/rust/jasper-tts-protocol" \
         "$(dirname "${cache_dir}")/jasper-tts-protocol"
     chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
+    # Same for the shared environment-parsing crate. Both production daemons
+    # depend on `path = "../jasper-env"`, so source builds need this sibling
+    # staged beside either daemon cache.
+    stage_rust_crate "${REPO_DIR}/rust/jasper-env" \
+        "$(dirname "${cache_dir}")/jasper-env"
+    chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-env"
     # Same for the shared clock crate (jasper-clock) so jasper-outputd's
     # `path = "../jasper-clock"` resolves. Guarded by existence so a branch
     # predating the crate still builds (its daemons don't depend on it).

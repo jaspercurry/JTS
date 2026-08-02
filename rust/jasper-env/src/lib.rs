@@ -4,11 +4,12 @@
 
 //! Shared, policy-light environment parsing for JTS Rust daemons.
 //!
-//! This crate owns only behavior that is identical across consumers: unset or
-//! blank values use the supplied default, numeric parse failures name the key
-//! and raw value, and floating-point values must be finite. Domain policy stays
-//! with the daemon (for example, outputd rejects a zero period while fan-in has
-//! separate positive and non-negative dimensions).
+//! This crate owns only behavior that is identical across consumers: string
+//! reads default only when unset and otherwise preserve the configured value;
+//! scalar parsers default when unset or blank, numeric parse failures name the
+//! key and raw value, and floating-point values must be finite. Domain policy
+//! stays with the daemon (for example, outputd rejects a zero period while
+//! fan-in has separate positive and non-negative dimensions).
 
 use std::str::FromStr;
 
@@ -80,7 +81,17 @@ mod tests {
     }
 
     #[test]
-    fn unset_and_blank_values_use_defaults() {
+    fn string_values_default_only_when_unset() {
+        with_env("JASPER_ENV_TEST_STRING", None, || {
+            assert_eq!(env_str("JASPER_ENV_TEST_STRING", "fallback"), "fallback");
+        });
+        with_env("JASPER_ENV_TEST_STRING", Some("  "), || {
+            assert_eq!(env_str("JASPER_ENV_TEST_STRING", "fallback"), "  ");
+        });
+    }
+
+    #[test]
+    fn scalar_unset_and_blank_values_use_defaults() {
         with_env("JASPER_ENV_TEST_U32", None, || {
             assert_eq!(
                 env_parse("JASPER_ENV_TEST_U32", 17_u32, "an integer").unwrap(),

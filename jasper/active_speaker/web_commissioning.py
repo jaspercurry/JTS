@@ -612,12 +612,40 @@ def _commission_tone_release_fanin_lane(
 async def _commission_tone_select_fanin_lane_async(
     fanin_gate_context: FaninGateContext | None = None,
 ) -> dict[str, Any]:
-    if fanin_gate_context is None:
-        return await asyncio.to_thread(_commission_tone_select_fanin_lane)
-    return await asyncio.to_thread(
-        _commission_tone_select_fanin_lane,
-        fanin_gate_context,
+    """Acquire the test lane without orphaning a late thread-side success."""
+
+    select_operation = (
+        asyncio.to_thread(_commission_tone_select_fanin_lane)
+        if fanin_gate_context is None
+        else asyncio.to_thread(
+            _commission_tone_select_fanin_lane,
+            fanin_gate_context,
+        )
     )
+    select_task = asyncio.create_task(select_operation)
+    try:
+        # ``to_thread`` workers keep running after their awaiting task is
+        # cancelled. Shield this worker so cancellation cannot detach us from
+        # a TEST_SELECT that may still land and start a mux lease.
+        return await asyncio.shield(select_task)
+    except asyncio.CancelledError:
+
+        async def _settle_select_then_release() -> dict[str, Any]:
+            try:
+                await select_task
+            except _TASK_SETTLE_ERRORS:
+                # The synchronous selector owns indeterminate-response
+                # recovery. If it did not return successfully, there is no
+                # successful acquisition for this async boundary to release.
+                return {"status": "not_acquired"}
+            return await _commission_tone_release_fanin_lane_async(
+                reason="select_cancelled",
+                fanin_gate_context=fanin_gate_context,
+            )
+
+        cleanup_task = asyncio.create_task(_settle_select_then_release())
+        await _await_restore_task_resilient(cleanup_task)
+        raise
 
 
 async def _commission_tone_release_fanin_lane_async(

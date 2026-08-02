@@ -271,6 +271,7 @@ code = [
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/bluealsa-aplay.service.d/**",
   "scripts/airplay-receiver-timing-proof.py",
+  "rust/jasper-env/**",
   "rust/jasper-fanin/**",
   "rust/jasper-outputd/**",
   "jasper/fanin/**",

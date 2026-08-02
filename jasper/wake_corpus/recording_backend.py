@@ -26,7 +26,8 @@ import subprocess
 import threading
 import time
 import uuid
-from contextlib import AsyncExitStack
+from collections.abc import Iterator
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -394,12 +395,14 @@ class RecordingBackend:
         # AND from the loop thread (auto-stop timer); the lock makes
         # all observers see consistent state.
         self._lock = threading.Lock()
-        # Serialize the complete begin-session transaction, including the
-        # metadata and crash-recovery marker writes that happen after the
-        # in-memory state lock is released. A non-blocking acquire makes a
-        # concurrent HTTP request fail clearly instead of publishing two
-        # overlapping session initializations.
-        self._begin_session_lock = threading.Lock()
+        # Serialize complete session/recording lifecycle transactions whose
+        # slow I/O happens after _lock is released: begin/load/unload/delete,
+        # UDP capture start, clip stop/save, and clip deletion. A start
+        # reservation alone is not enough: without this guard a session
+        # switch can pass its state check while RecordingTask.start() is
+        # binding ports, or while stop_recording() is publishing WAVs and
+        # metadata for the prior session.
+        self._lifecycle_lock = threading.Lock()
         self._session_id: str | None = None
         self._member: str | None = None
         # Whether THIS session includes the truly-raw mic 0 leg. Set
@@ -485,6 +488,27 @@ class RecordingBackend:
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result()
 
+    @contextmanager
+    def _lifecycle_transaction(
+        self,
+        busy_message: str,
+        *,
+        wait: bool = False,
+    ) -> Iterator[None]:
+        """Own one complete state-plus-I/O lifecycle transaction.
+
+        Ordinary HTTP mutations fail fast when another transition owns the
+        backend. Stop waits instead: automatic/mute-triggered stops must not
+        be lost merely because a short metadata mutation won the race.
+        """
+        acquired = self._lifecycle_lock.acquire(blocking=wait)
+        if not acquired:
+            raise StateError(busy_message)
+        try:
+            yield
+        finally:
+            self._lifecycle_lock.release()
+
     # ----- session + clip state -------------------------------------
 
     def session_id(self) -> str | None:
@@ -501,7 +525,10 @@ class RecordingBackend:
 
     def is_recording(self) -> bool:
         with self._lock:
-            return self._current is not None
+            return (
+                self._current is not None
+                or self._starting_clip_id is not None
+            )
 
     def mic_muted(self) -> bool:
         """Fresh read of the persisted household mic-mute flag.
@@ -872,9 +899,9 @@ class RecordingBackend:
         capture_plan: dict[str, Any] | None = None,
     ) -> str:
         """Open one session transaction, refusing concurrent initializers."""
-        if not self._begin_session_lock.acquire(blocking=False):
-            raise StateError("can't begin session: initialization in progress")
-        try:
+        with self._lifecycle_transaction(
+            "can't begin session: initialization in progress",
+        ):
             return self._begin_session(
                 member,
                 corpus_profile=corpus_profile,
@@ -887,8 +914,6 @@ class RecordingBackend:
                 aec3_sweep_source=aec3_sweep_source,
                 capture_plan=capture_plan,
             )
-        finally:
-            self._begin_session_lock.release()
 
     def _begin_session(
         self,
@@ -1132,6 +1157,10 @@ class RecordingBackend:
         "already in progress" error instead of racing into a UDP-bind
         failure.
         """
+        with self._lifecycle_transaction("recording already in progress"):
+            return self._start_recording(condition, distance)
+
+    def _start_recording(self, condition: str, distance: str) -> dict[str, str]:
         if condition not in CONDITIONS:
             raise ValueError(
                 f"unknown condition {condition!r}; expected {CONDITIONS}",
@@ -1283,6 +1312,15 @@ class RecordingBackend:
         self, auto: bool = False, mute_stopped: bool = False,
     ) -> ClipMetadata:
         """Stop the current recording, save WAVs, return metadata."""
+        with self._lifecycle_transaction(
+            "can't stop recording: lifecycle transition in progress",
+            wait=True,
+        ):
+            return self._stop_recording(auto=auto, mute_stopped=mute_stopped)
+
+    def _stop_recording(
+        self, auto: bool = False, mute_stopped: bool = False,
+    ) -> ClipMetadata:
         with self._lock:
             if self._current is None:
                 raise StateError("no recording in progress")
@@ -1379,6 +1417,12 @@ class RecordingBackend:
 
         Returns True if the clip existed and was deleted, False if
         not found (or already deleted)."""
+        with self._lifecycle_transaction(
+            "can't delete clip: lifecycle transition in progress",
+        ):
+            return self._delete_clip(clip_id)
+
+    def _delete_clip(self, clip_id: str) -> bool:
         with self._lock:
             clip = next(
                 (c for c in self._clips
@@ -1563,8 +1607,14 @@ class RecordingBackend:
         Refuses if a recording is in progress (would orphan the clip).
         Refuses if the target session doesn't exist.
         """
+        with self._lifecycle_transaction(
+            "can't load session: recording or session transition in progress",
+        ):
+            return self._load_session(session_id)
+
+    def _load_session(self, session_id: str) -> dict[str, Any]:
         with self._lock:
-            if self._current is not None:
+            if self._current is not None or self._starting_clip_id is not None:
                 raise StateError(
                     "can't load session: recording in progress",
                 )
@@ -1600,6 +1650,12 @@ class RecordingBackend:
         loaded later, but a page refresh or server restart starts from
         a blank new-session form.
         """
+        with self._lifecycle_transaction(
+            "can't unload session: recording or session transition in progress",
+        ):
+            return self._unload_session()
+
+    def _unload_session(self) -> str | None:
         with self._lock:
             if self._current is not None or self._starting_clip_id is not None:
                 raise StateError(
@@ -1624,8 +1680,14 @@ class RecordingBackend:
         the in-memory state (operator now needs to begin a new
         session or load another).
         """
+        with self._lifecycle_transaction(
+            "can't delete session: recording or session transition in progress",
+        ):
+            return self._delete_session(session_id)
+
+    def _delete_session(self, session_id: str) -> dict[str, int]:
         with self._lock:
-            if self._current is not None:
+            if self._current is not None or self._starting_clip_id is not None:
                 raise StateError(
                     "can't delete session: recording in progress",
                 )

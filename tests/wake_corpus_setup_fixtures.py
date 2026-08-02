@@ -108,6 +108,33 @@ def _allow_capture_plan_conformance(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _block_recording_task_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[threading.Event, threading.Event]:
+    """Pause RecordingTask.start after the backend reserves its slot.
+
+    This exposes the lifecycle window deterministically without sleeping or
+    touching UDP implementation details. The release wait is bounded so a
+    failed producer cannot hang the suite.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    original_start = recording_backend.RecordingTask.start
+
+    async def blocking_start(task: recording_backend.RecordingTask) -> None:
+        entered.set()
+        if not release.wait(timeout=2):
+            raise TimeoutError("test did not release RecordingTask.start")
+        await original_start(task)
+
+    monkeypatch.setattr(
+        recording_backend.RecordingTask,
+        "start",
+        blocking_start,
+    )
+    return entered, release
+
+
 # ---------------------------------------------------------------------------
 # Fake UDP capture — yields fixed frames at a fast rate, deterministic.
 # ---------------------------------------------------------------------------

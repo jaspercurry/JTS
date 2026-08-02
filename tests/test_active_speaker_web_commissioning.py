@@ -815,6 +815,156 @@ def test_async_commission_tone_mux_command_runs_off_event_loop(monkeypatch):
     assert worker_thread_ids[0] != loop_thread_id
 
 
+@pytest.mark.parametrize(
+    ("fanin_gate_context", "expected_calls"),
+    [
+        (
+            None,
+            [
+                "TEST_SELECT correction active-speaker-commissioning",
+                "TEST_RELEASE active-speaker-commissioning",
+            ],
+        ),
+        (
+            web.FaninGateContext(
+                owner="correction-measurement",
+                restore_label="correction",
+            ),
+            [
+                "TEST_SELECT correction correction-measurement",
+                "TEST_SELECT correction correction-measurement",
+            ],
+        ),
+    ],
+)
+def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
+    monkeypatch,
+    fanin_gate_context,
+    expected_calls,
+):
+    """Cancellation cannot orphan a late successful mux TEST_SELECT.
+
+    ``asyncio.to_thread`` cannot stop its worker. Model the mux committing the
+    selection only after caller cancellation, then cancel the caller again
+    while release/restore is blocked. Cancellation must not propagate until
+    the same owner has given the standalone gate back or restored the nested
+    outer label.
+    """
+
+    select_started = threading.Event()
+    allow_select_response = threading.Event()
+    cleanup_started = threading.Event()
+    allow_cleanup_response = threading.Event()
+    calls: list[str] = []
+
+    def delayed_mux_command(cmd: str) -> dict:
+        calls.append(cmd)
+        if len(calls) == 1:
+            select_started.set()
+            assert allow_select_response.wait(timeout=2.0)
+        else:
+            cleanup_started.set()
+            assert allow_cleanup_response.wait(timeout=2.0)
+        return {"active_source": "correction"}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", delayed_mux_command)
+
+    async def wait_for_thread_event(event: threading.Event) -> None:
+        while not event.is_set():
+            await asyncio.sleep(0)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            web._commission_tone_select_fanin_lane_async(fanin_gate_context)
+        )
+        await wait_for_thread_event(select_started)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False
+
+        allow_select_response.set()
+        await wait_for_thread_event(cleanup_started)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False
+
+        allow_cleanup_response.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert calls == expected_calls
+
+
+def test_play_commission_tone_cancellation_during_select_releases_before_exit(
+    monkeypatch,
+):
+    """The continuous-tone caller cannot lose ownership before it gets a gate.
+
+    This caller has no payload/FaninGateContext yet while TEST_SELECT is in
+    flight. Its cancellation therefore depends on the async selection boundary
+    completing owner-scoped cleanup before the request exits.
+    """
+
+    select_started = threading.Event()
+    allow_select_response = threading.Event()
+    cleanup_finished = threading.Event()
+    calls: list[str] = []
+
+    def delayed_mux_command(cmd: str) -> dict:
+        calls.append(cmd)
+        if len(calls) == 1:
+            select_started.set()
+            assert allow_select_response.wait(timeout=2.0)
+        else:
+            cleanup_finished.set()
+        return {"active_source": "correction"}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", delayed_mux_command)
+    monkeypatch.setattr(
+        web,
+        "_commission_tone_signal_plan",
+        lambda **_kwargs: {"status": "ready", "frequency_hz": 180.0},
+    )
+    monkeypatch.setattr(web, "_commission_tone_wav_path", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(
+        web.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("playback started after cancellation"),
+    )
+
+    async def wait_for_thread_event(event: threading.Event) -> None:
+        while not event.is_set():
+            await asyncio.sleep(0)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            web.play_commission_tone(
+                role="woofer",
+                level_dbfs=-30.0,
+                playback_id="cancel-before-select-response",
+            )
+        )
+        await wait_for_thread_event(select_started)
+        task.cancel()
+        allow_select_response.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert cleanup_finished.is_set()
+
+    asyncio.run(scenario())
+
+    assert calls == [
+        "TEST_SELECT correction active-speaker-commissioning",
+        "TEST_RELEASE active-speaker-commissioning",
+    ]
+
+
 def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
     """Boundary mocks for a play_driver_capture_sweep() run that leave the
     REAL _commission_tone_select/release_fanin_lane() in place — only the
