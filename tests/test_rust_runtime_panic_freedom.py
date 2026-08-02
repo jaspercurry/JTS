@@ -192,7 +192,7 @@ ALLOWED_EXPECTS: dict[tuple[str, str], str] = {
         "implementation only calls serialize_str; serde_json::to_string uses "
         "an in-memory Vec writer whose writes cannot return an error."
     ),
-    # SF4 (issue #1718 gate round): jasper-ring joined RUNTIME_CRATES below.
+    # SF4 (issue #1718 gate round): jasper-ring joined RUNTIME_CRATES above.
     (
         "jasper-ring/src/lib.rs",
         "mapped ring geometry was validated before slot access",
@@ -274,9 +274,11 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "in the same period-loop iteration."
     ),
     # Issue #1718 listed 7 illustrative core.rs/fake.rs sites (above, part of
-    # the 28 total); running the widened scanner against the current tree
-    # surfaced 28 total across all three runtime crates -- the 7 illustrative
-    # sites above, plus these 21 more below.
+    # the 28 total); running the widened scanner against the three original
+    # runtime crates (jasper-fanin, jasper-outputd, jasper-tts-protocol --
+    # RUNTIME_CRATES above has since grown to seven, see the SF4 entries
+    # further below) surfaced 28 total: the 7 illustrative sites above, plus
+    # these 21 more below.
     (
         "jasper-fanin/src/lane_resampler.rs",
         "out.len(), self.period_frames * self.channels",
@@ -461,7 +463,7 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
         "interleaved frames."
     ),
     # SF4 (issue #1718 gate round): jasper-ring and jasper-host-clock joined
-    # RUNTIME_CRATES below, verified on the default runtime path (see the
+    # RUNTIME_CRATES above, verified on the default runtime path (see the
     # module docstring's per-crate evidence) rather than assumed off. All
     # unsafe pointer/atomic accesses below are internal SPSC-ring plumbing:
     # every offset is a fixed layout::OFF_* constant pinned against the C
