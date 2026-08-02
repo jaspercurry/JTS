@@ -508,15 +508,19 @@ create a second retention system.
   (`QualityModel.null_cap_margin_db`, 10 dB). Both new fields default
   identically across `ROOM`/`DRIVER`/`RAMP`, so room correction (which does
   not call `snr_policy` yet) is unaffected.
-- **The package kept growing after this doc's 2026-07-17 pass. The nearest
+- **The package outgrew this section, and the 2026-07-17 pass did not catch
+  up. The nearest
   thing to a live module inventory is the package's own `__init__.py`
   docstring — read that first, but do not treat it as complete: on
   2026-08-02 it described 22 of the 27 modules on disk (`correction_lane`,
   `evidence_identity`, `excitation`, `level_solver`, and `room_boundary` are
   unlisted). This doc names the modules and points at their owners rather
-  than restating their design.** Added since: `gating.py` (IR gating, first-
+  than restating their design.** Five modules it has never named:
+  `gating.py` (IR gating, first-
   reflection detection, the `f_valid` / `f_trusted` low-frequency floors, and
-  the un-gateable-feature ledger) and `gate_disclosure.py` (what the gate
+  the un-gateable-feature ledger) — which **predates** the 2026-07-17 pass
+  (added 2026-07-12) and was missed by it, not added since — and
+  `gate_disclosure.py` (what the gate
   actually bought, priced over the band the DUT radiates) — spec in
   [active-crossover-information-design.md](active-crossover-information-design.md)
   "Measurement validity", plan in [gating-v2-plan.md](gating-v2-plan.md);
@@ -526,9 +530,15 @@ create a second retention system.
   position-invariant null-ladder gate that screen is blind to); and
   `frame_fit.py` (the least-squares `offset + tilt·log2(f)` frame fitted and
   DISCLOSED before two curves are differenced, so instrument tilt stops being
-  reported as model error). All five are reached by the v2 conductor flow —
-  `crossover_v2_flow` imports the first four directly and `frame_fit` arrives
-  through `program_analysis` — and that flow is owned by
+  reported as model error). Those four DO postdate the pass (2026-07-25 to
+  2026-07-31). All five are reached by the v2 conductor flow, but not all the
+  same way: `crossover_v2_flow` imports `gate_disclosure`, `spatial_combine`,
+  and `interference_nulls` directly (function-scope, matching how it reaches
+  its other cross-package helpers); `frame_fit` arrives through
+  `program_analysis`; and `gating` it deliberately does **not** import at all
+  — its output arrives as a data block on the response, a design choice stated
+  in `crossover_v2_flow._gate_disclosure`'s own docstring. That flow is owned
+  by
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
   **Their calibrated thresholds are justified in-module, in constant tables
   beside each constant — those tables are the single source of truth for
@@ -542,11 +552,15 @@ create a second retention system.
   literals — see [HANDOFF-correction.md](HANDOFF-correction.md)) and
   `correction_lane.py` owns the `correction_substream` ALSA lane name that
   correction sweeps and commissioning captures share (previously five distinct
-  names across eleven files). `excitation.py` is the same shape for one value:
+  names across eleven files). Those two each have their own SSOT drift-guard
+  test — `tests/test_correction_boundary_ssot.py` and
+  `tests/test_correction_substream_ssot.py` — which fail on a *re-declared
+  literal anywhere in the routed sites*, not merely on a changed value.
+  `excitation.py` is the same *placement* for one value,
   `AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS` (−12 dBFS), so the level stage and
-  the measurement stage cannot disagree about the source peak. Each has its
-  own SSOT drift-guard test (`tests/test_correction_boundary_ssot.py`,
-  `tests/test_correction_substream_ssot.py`).
+  the measurement stage cannot disagree about the source peak — **but it has
+  no equivalent guard**: the constant is only value-pinned by its consumers'
+  tests, so a second copy declared elsewhere would not be caught.
 - `null_walk.py` is the shared decision foundation for active-driver and
   sub-to-mains timing. Its signed coordinate names both possible delay targets
   and maps either sign to a non-negative target-specific DSP operation. It
@@ -708,7 +722,12 @@ create a second retention system.
   them at reduced confidence; fewer than two refuses the set.
   This closes the prior live-hardware `acoustic.snr: null` path without making
   the probe's raw RMS an acoustic SNR verdict.
-- **Phantom noise-floor fix (2026-07-17).** The mechanism above — ambient
+- **Phantom noise-floor fix (2026-07-17).** *(Noted 2026-08-02, not fixed:
+  `snr_policy.excitation_covered_bands`' docstring sends the reader to
+  "docs/HANDOFF-audio-measurement-core.md 'SNR' section" — there is no such
+  heading in this file, and **this bullet is what that pointer means**. Fixing
+  it is a code edit, so it was left for the owner of that module rather than
+  done in a docs-only pass.)* The mechanism above — ambient
   noise deconvolved through the SAME regularized inverse as the signal —
   has a blind spot: outside the reference sweep's own excited range
   `[f1, f2]` (a per-driver CONFIRMED safe band, routinely narrower than the
@@ -864,11 +883,13 @@ create a second retention system.
   ≈4 parallel paths.~~ **CLOSED** — this bullet described the pre-slice-2
   world and contradicted the roadmap below it, which is where the work is
   recorded (Phase 1 slices 2a / 2b / 2b-follow-up, plus the 2026-07-03
-  active-emitter gate). Verified 2026-08-02: every private helper it named is
-  gone. `runtime_contract._commission_mutes` is now
-  `_commission_mute_states(view: GraphView)`; `_pipeline_contains` is the
-  shared `graph_safety.pipeline_contains_chain`; `_filter_params` is an
-  import alias for `graph_evidence.filter_params`; `staging`'s
+  active-emitter gate). Verified 2026-08-02: **not one of the helpers it named
+  still re-implements the invariant locally** — some were deleted, the rest
+  now delegate. `runtime_contract._commission_mutes` is gone, replaced by
+  `_commission_mute_states(view: GraphView)`; `_pipeline_contains` is gone,
+  replaced by the shared `graph_safety.pipeline_contains_chain`;
+  `_filter_params` survives as a *name* only, an import alias for
+  `graph_evidence.filter_params`; `staging`'s
   `_parse_generated_filters` / `_pipeline_contains_chain` /
   `_running_filter_matches` survive only as historical cross-references
   inside `graph_safety`'s own docstrings. `_all_commission_mutes_engaged`,
@@ -1070,12 +1091,17 @@ one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
    [`measurement-audio.js`](../deploy/assets/shared/js/measurement-audio.js).
    Placement copy lives on the page (`active-speaker-ui.js`
    `NEARFIELD_LEVEL_MATCH_GUIDANCE`).
-   **The browser-records half is retired** (see the note above): as of
-   2026-08-02 `measurement-audio.js` is imported only by
-   `deploy/assets/{balance,sync}/js/main.js`, and no module under
-   `deploy/assets/sound-profile/` calls `getUserMedia` at all — the `/sound/`
-   page cannot record and the guidance string is copy without a recorder
-   behind it.
+   **The recording described here — on this page — is retired** (see the note
+   above): as of 2026-08-02 no module under `deploy/assets/sound-profile/`
+   calls `getUserMedia` at all, so the `/sound/` page cannot record and
+   `NEARFIELD_LEVEL_MATCH_GUIDANCE` is copy with no recorder behind it. Note
+   this is not a claim about `measurement-audio.js`, which is very much alive:
+   besides `deploy/assets/{balance,sync}/js/main.js`, the cloud phone capture
+   page vendors it (`capture-page/build.sh` copies the canonical shared file
+   into `dist/js/`, and three of its modules import it), and that page is
+   where the live L1 level match now runs — `/crossover/level-match` against
+   the `level_ramp` relay spec. The module moved; this page's use of it went
+   away.
    The correction-native relay flow strengthens that advice into a comparable
    measurement contract: 3 cm from the microphone capsule to the named driver's
    radiating-surface center (horn mouth for a compression driver), on-axis, with
