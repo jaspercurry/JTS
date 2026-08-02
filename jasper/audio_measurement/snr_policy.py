@@ -557,14 +557,30 @@ def _band_overlaps(band_hz: Any, lo_hz: float, hi_hz: float) -> bool:
     return b_hi > lo_hz and b_lo < hi_hz
 
 
-def _cap_snr_value(band: Mapping[str, Any]) -> float:
+def _worst_snr_key(band: Mapping[str, Any]) -> float:
     """A band's ``estimated_snr_db`` as a comparable tie-break key.
 
-    A missing, unparseable, or non-finite number sorts as ``+inf`` — the most
-    PERMISSIVE value — so such a band never displaces one carrying a real
-    number. That is the safe direction: :func:`cap_null_depth_db` cannot cap
-    against a number it does not have, so electing the numberless band would
-    silently remove the cap rather than tighten it.
+    Lower sorts worse. Both consumers of the winning entry's SNR read a
+    number the measurement must actually support, so both want the minimum:
+    :func:`cap_null_depth_db` proves a reported null depth against it, and
+    ``jasper.web.correction_crossover_backend``'s completion-time level
+    correction subtracts it from the solver's requirement to size a
+    playback-level shortfall.
+
+    A missing or unparseable number sorts as ``+inf`` — the most PERMISSIVE
+    value — so such a band never displaces one carrying a real number. That
+    is the safe direction: neither consumer can act on a number it does not
+    have, so electing the numberless band would silently REMOVE the cap and
+    the correction rather than tighten them.
+
+    Non-finite numbers share that bucket, ``-inf`` included. That looks
+    backwards for ``-inf`` (arithmetically the worst possible SNR) and is
+    deliberate: ``-inf`` is a degenerate sentinel, not a measurement, so it
+    is no more actionable than a missing value. It is also unreachable
+    through :func:`band_snr_verdicts`, which is the only builder of these
+    entries — a ``-inf`` SNR verdicts ``insufficient`` in every decision
+    class, so verdict RANK selects such a band before this key is ever
+    consulted against an ``ok`` sibling.
     """
     snr = _to_float(band.get("estimated_snr_db"))
     if snr is None or not math.isfinite(snr):
@@ -585,12 +601,23 @@ def worst_band_verdict(
     * ``verdict`` — the REFUSAL signal. Ranks insufficient > reduced > ok, and
       dominates the selection: one ``insufficient`` band vetoes its ``ok``
       siblings however good its own SNR is.
-    * ``estimated_snr_db`` — the number :func:`cap_null_depth_db` proves a
-      reported null depth against. Among entries of EQUAL verdict rank the
-      LOWEST one wins, so this is the minimum over the window, not whichever
-      band happened to come first in the table (issue #2026: a positional pick
-      capped a null against a band up to 17 dB more permissive than the true
-      worst, and made the reported figure depend on table order).
+    * ``estimated_snr_db`` — the number two live consumers grade against.
+      :func:`cap_null_depth_db` proves a reported null depth against it
+      (alignment class), and ``jasper.web.correction_crossover_backend``'s
+      completion-time level correction subtracts it from the solver's
+      requirement to size a playback-level shortfall (magnitude class — the
+      route ``analyze_driver_capture`` and
+      ``program_analysis._driver_response`` feed). Among entries of EQUAL
+      verdict rank the LOWEST one wins, so this is the minimum over the
+      window, not whichever band happened to come first in the table (issue
+      #2026: a positional pick graded against a band up to 17 dB more
+      permissive than the true worst, and made the reported figure depend on
+      table order).
+
+      Both consumers therefore read a stricter number than before #2026: a
+      null caps nearer, and a level correction sizes a larger shortfall — so a
+      session can solve to a HIGHER capture level than it used to. That is the
+      corrected behaviour, not a new demand; see :func:`_worst_snr_key`.
 
     An entry whose ``verdict`` is "unknown" (or anything unrecognized) never
     wins — it carries no evidence, so it can neither veto nor clear the
@@ -613,7 +640,7 @@ def worst_band_verdict(
         if verdict not in _VERDICT_RANK:
             continue
         rank = _VERDICT_RANK[verdict]
-        snr = _cap_snr_value(band)
+        snr = _worst_snr_key(band)
         if worst is None or rank > worst_rank or (
             rank == worst_rank and snr < worst_snr
         ):

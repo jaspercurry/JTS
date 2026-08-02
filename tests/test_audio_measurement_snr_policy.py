@@ -40,7 +40,7 @@ import math
 import numpy as np
 import pytest
 
-from jasper.audio_measurement import program_analysis, snr_policy, sweep
+from jasper.audio_measurement import level_solver, program_analysis, snr_policy, sweep
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.correction import acoustic_quality
 from jasper.correction import session as correction_session
@@ -729,6 +729,71 @@ def test_band_snr_verdicts_worst_relevant_is_the_lowest_snr_ok_band():
         30.0, block["worst_relevant"], DRIVER.null_cap_margin_db
     )
     assert (reported, capped) == (pytest.approx(28.0), True)
+
+
+def test_magnitude_worst_relevant_is_the_lowest_of_equal_insufficient_bands():
+    """The LIVE magnitude route, which is where the tie-break actually bites.
+
+    ``analyze_driver_capture`` and ``program_analysis._driver_response`` both
+    call :func:`band_snr_verdicts` with ``decision_class="magnitude"`` over the
+    canonical six-band table, and a noisy room routinely puts EVERY band in the
+    driver's window at the same ``insufficient`` verdict — the exact shape
+    ``jasper.web.correction_crossover_backend``'s completion-time correction
+    reads (its own comment cites hardware run 19: 16.3 / 13.4 / 7.8 dB).
+
+    `worst_relevant` there is not a display value: the backend computes
+    ``shortfall_db = driver_solve_requirement_db(DRIVER) - worst_band_snr_db``
+    and hands it to the level solve, so grading against the first band in table
+    order UNDERSTATES the shortfall and solves too quiet.
+    """
+    capture_bands = [
+        {"band_id": "sub_bass", "band_hz": [20.0, 80.0], "level_dbfs": -30.0},
+        {"band_id": "bass", "band_hz": [80.0, 160.0], "level_dbfs": -30.0},
+        {"band_id": "upper_bass", "band_hz": [160.0, 350.0], "level_dbfs": -30.0},
+        {"band_id": "transition", "band_hz": [350.0, 1000.0], "level_dbfs": -30.0},
+        {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -30.0},
+        {"band_id": "treble", "band_hz": [4000.0, 12000.0], "level_dbfs": -30.0},
+    ]
+    noise_bands = [
+        {"band_id": "sub_bass", "level_dbfs": -44.2},    # 14.2 dB, first in table
+        {"band_id": "bass", "level_dbfs": -43.7},        # 13.7 dB
+        {"band_id": "upper_bass", "level_dbfs": -37.8},  #  7.8 dB <- the true worst
+        {"band_id": "transition", "level_dbfs": -43.2},  # 13.2 dB
+        {"band_id": "mid", "level_dbfs": -60.0},         # 30.0 dB, outside window
+        {"band_id": "treble", "level_dbfs": -60.0},      # 30.0 dB, outside window
+    ]
+    block = snr_policy.band_snr_verdicts(
+        decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
+        capture_bands=capture_bands,
+        noise_bands=noise_bands,
+        noise_floor_dbfs_scalar=None,
+        relevant_hz=(40.0, 400.0),  # a woofer passband
+        model=DRIVER,
+        band_method="deconvolved_band_difference",
+    )
+
+    # The refusal signal is unchanged — every in-window band is insufficient.
+    assert block["verdict"] == "insufficient"
+    assert {
+        b["band_id"] for b in block["bands"]
+        if b["band_hz"][1] > 40.0 and b["band_hz"][0] < 400.0
+    } == {"sub_bass", "bass", "upper_bass", "transition"}
+    assert all(
+        b["verdict"] == "insufficient" for b in block["bands"]
+        if b["band_hz"][1] > 40.0 and b["band_hz"][0] < 400.0
+    )
+
+    # ...but the graded number is the lowest, not `sub_bass`'s 14.2 dB.
+    assert block["worst_relevant"]["band_id"] == "upper_bass"
+    assert block["worst_relevant"]["estimated_snr_db"] == pytest.approx(7.8)
+
+    # And that is what the level solve sizes its shortfall from.
+    required_db = level_solver.driver_solve_requirement_db(DRIVER)
+    shortfall_db = required_db - block["worst_relevant"]["estimated_snr_db"]
+    assert shortfall_db == pytest.approx(required_db - 7.8)
+    # Grading against the first band in table order would understate it by
+    # 6.4 dB of playback level.
+    assert shortfall_db - (required_db - 14.2) == pytest.approx(6.4)
 
 
 # ---------- cap_null_depth_db -------------------------------------------------
