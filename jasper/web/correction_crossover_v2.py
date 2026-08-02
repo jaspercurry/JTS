@@ -260,7 +260,11 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     So classify FIRST and carry the code out. The message comes from the same
     :data:`~jasper.active_speaker.crossover_v2_flow.REASON_REGISTRY` entry the
     phone's failure screen renders, so the two surfaces cannot disagree, and
-    the ``code=`` gives the 400 body that reason's own ``next_action``.
+    the ``code=`` lets the 400 body pick up that reason's ``next_action`` when
+    it declares one. ``program_unplayable`` — the only code this function can
+    produce today, since that is where the classifier puts the whole
+    ``CrossoverV2FlowError`` family — declares none, so today's 400 carries the
+    sentence alone.
 
     The raw text is logged here rather than dropped: this is the one site that
     discards it, and it is the only place the failed constraint is named. The

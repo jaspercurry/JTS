@@ -485,18 +485,28 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
 # `asyncio.gather` is NOT affected: its own `_cancel_requested` bookkeeping
 # re-raises the parent's cancellation once its children finish, whether or not
 # a child swallowed its own. That already cleared _tick's gathered readers
-# (#1952). What it does not clear are _tick's DIRECTLY awaited chains, and
-# there are exactly two:
+# (#1952). What it does not clear are _tick's DIRECTLY awaited chains. There
+# are FOUR of them, reaching THREE terminal call sites -- enumerate the chains,
+# not the `wait_for` grep, or the next audit will miss the two that only look
+# like coordinator bookkeeping:
 #
-#   every tick   _tick -> VolumeCoordinator._active_source
-#                      -> RendererClient.selected_source        (renderer.py)
-#   on transition _tick -> apply_active_source_transition
-#                      -> _set_push_source_for_handoff -> _set_bluetooth
-#                      -> bluealsa_probe.list_pcms              (bluealsa_probe.py)
-#                      -> _busctl_set_property             (volume_coordinator.py)
+#   1. every tick   _tick:150 -> VolumeCoordinator._active_source
+#                             -> RendererClient.selected_source   (renderer.py)
+#   2. on transition _tick:156 -> apply_active_source_transition
+#                             -> _set_push_source_for_handoff -> _set_bluetooth
+#                             -> bluealsa_probe.list_pcms      (bluealsa_probe.py)
+#                             -> _busctl_set_property     (volume_coordinator.py)
+#   3. on observation _tick:182/184 -> _maybe_observe
+#                             -> observe_source_volume (its own _active_source,
+#                                volume_coordinator.py:726/739) -> as chain 1
+#   4. every tick   _tick:193 -> maybe_reconcile_camilla (_active_source at
+#                                volume_coordinator.py:1900/1944) -> as chain 1
 #
-# All three are pinned below. They live together because the invariant they
-# protect is one loop's, not three modules'.
+# Chains 3 and 4 need no separate fix -- they terminate at the same
+# selected_source chain 1 does -- but they are why "insulate the two chains I
+# can see" would have been the wrong frame. Three terminal sites, pinned
+# below. They live together because the invariant they protect is one loop's,
+# not three modules'.
 #
 # NOTE ON WHAT THESE TESTS CAN OBSERVE: CPython 3.12 rewrote wait_for on top of
 # asyncio.timeout(), so on 3.12/3.13 these pass with or without the fix. The
