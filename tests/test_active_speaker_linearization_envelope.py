@@ -1180,28 +1180,53 @@ def test_position_stability_limit_rejects_bad_tier_and_a_thin_cloud():
         )
 
 
-# The worst cross-position spread the S0 main leg produced: sigma 3.0878 dB
+# The worst cross-position spread the S0 main leg produced: sigma 3.0957 dB
 # in the 16 kHz band across N = 10 positions. Committed as literals so the
 # test below is HARDWARE-FREE and runs in CI -- the corpus test that measured
 # them (test_s0_position_stability_calibration_populations) is env-gated and
 # skips there, which is exactly the gap this constant closes.
-_S0_WORST_BAND_SIGMA_DB = 3.0878
+#
+# RE-DERIVED 2026-08-02 (#2045), 3.0878 -> 3.0957, for PR #1991's prominence
+# vote re-gating cloud_04 -- see tests._flat_lin_corpus "The 2026-08-02 re-pin
+# era".
+#
+# **This literal is a FROZEN STAND-IN for an env-gated corpus measurement, and
+# it must be re-derived whenever that corpus moves.** Nothing in CI can catch
+# it going stale: the test below happily keeps passing against a number the
+# hardware no longer produces, because the corpus test that would disagree is
+# skipped there. That is the #1884 failure mode (corpus CI invisibility) in
+# miniature -- and it is not hypothetical, it is how this constant survived
+# #1991 while every env-gated reading around it moved. Re-derive it through
+# position_stability_limit against the live corpus; do not transcribe it.
+_S0_WORST_BAND_SIGMA_DB = 3.0957
 _S0_WORST_BAND_N_POSITIONS = 10
 
 
 def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
-    """Guards the 0.29 dB margin the whole position-stability design rests on.
+    """Guards the 0.26 dB margin the whole position-stability design rests on.
 
     ``position_stability_limit`` is inert on a protocol-following cloud only
-    because the S0 main leg's worst standard error (3.0878/sqrt(10) =
-    0.976 dB) maps to **12.29 dB** at ``reference`` tier, which is above the
+    because the S0 main leg's worst standard error (3.0957/sqrt(10) =
+    0.979 dB) maps to **12.26 dB** at ``reference`` tier, which is above the
     fit's 12 dB ``PER_FILTER_CUT_CAP_DB`` -- so ``min(12, allowed_depth)``
     never moves and the emitted filters are unchanged.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote -- see
+    ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era" and the
+    frozen-stand-in warning on :data:`_S0_WORST_BAND_SIGMA_DB` above. The
+    margin got THINNER, 0.29 -> 0.26 dB, which is the direction that matters
+    for a guard whose whole job is that this limit stays above the cut cap.
+
+    (The 4-dp figure quoted in ``position_stability_limit``'s own docstring is
+    12.2579 dB -- that is the corpus's real bands. This test drives one
+    synthetic band from the 4-dp rounded constant above and gets 12.2581 dB.
+    Same measurement, two roundings, well inside this test's own 0.01 dB
+    tolerance; both are stated so the pair cannot read as a contradiction.)
 
     **The hazard this exists for.** :data:`_SIGMA_TOLERABLE_DB` is now shared
     by two terms. A future retune motivated by *repeatability* -- tightening
     ``reference`` from 0.5 to 0.4 dB, a perfectly reasonable thing to want --
-    drops that same limit to 9.83 dB, and the stability term starts binding
+    drops that same limit to 9.81 dB, and the stability term starts binding
     the emitted fit on a cloud nobody thought had changed. The
     ``test_position_stability_limit_shares_the_mapping_with_repeatability``
     contract cannot catch it (both terms move together, so they stay in
@@ -1221,7 +1246,7 @@ def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
     assert inside.any()
     shipped_limit_db = float(limit[inside].min())
 
-    assert shipped_limit_db == pytest.approx(12.29, abs=0.01)
+    assert shipped_limit_db == pytest.approx(12.26, abs=0.01)
     assert shipped_limit_db >= PER_FILTER_CUT_CAP_DB
 
     # The counterfactual that makes this test load-bearing, from the same
@@ -1234,7 +1259,7 @@ def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
     tightened_limit_db = ENVELOPE_CEILING_SENTINEL_DB * min(
         1.0, 0.4 / standard_error_db
     )
-    assert tightened_limit_db == pytest.approx(9.83, abs=0.01)
+    assert tightened_limit_db == pytest.approx(9.81, abs=0.01)
     assert tightened_limit_db < PER_FILTER_CUT_CAP_DB
 
 
@@ -1767,7 +1792,7 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     hardening showing through.** ``class_prior_limit`` for ``unknown`` is
     exactly 0 from 12 kHz up, so the composed envelope now ends there
     instead of carrying blurred depth past it; the second identified null
-    (10842-12348 Hz) then reaches that zero with nothing correctable left
+    (10841-12351 Hz) then reaches that zero with nothing correctable left
     between them, and the masked band stops at 10513.6 Hz rather than
     punching a hole and continuing. On ``compression_horn`` -- whose class
     prior does not zero until 20 kHz -- the exclusion still punches holes
