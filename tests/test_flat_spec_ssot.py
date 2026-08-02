@@ -640,6 +640,27 @@ def test_an_unavailable_pipeline_degrades_honestly_at_every_surface():
 
 S0_ECHO_BAND_HZ = (5000.0, 19_000.0)
 
+# The validity floor the clamp's cost is measured at.
+#
+# It is an EXPLICIT constant rather than a reading taken off this corpus, and
+# that changed on 2026-08-02 (#2045). Until PR #1991, ``cloud_04`` reported a
+# measured reflection here and the group's own ``max()`` floor WAS 1777.8 Hz —
+# but that reflection was a false early fire (the #1790 field instance #1991
+# was written to fix), so the number was an artifact of the detector rather
+# than a property of the room. #1991 removed it and all ten positions now gate
+# to 142.857 Hz, which is below the spec table's low-band edge and therefore
+# clamps nothing.
+#
+# The clamp's COST is still worth pinning — it is the mechanism's own
+# behaviour, and it moves the headline number in the flattering direction — so
+# ``test_the_validity_floor_clamp_costs_the_low_band`` keeps measuring it, at
+# the floor the artifact used to produce. Sourcing it from a constant means
+# that guard no longer depends on a detector bug to have a subject, and it is
+# why the two facts now have separate tests with separate failure names:
+# ``test_the_real_s0_positions_no_longer_collapse_a_gate`` owns "the corpus no
+# longer produces a clamping floor", this constant owns "clamping costs this".
+CLAMP_FLOOR_HZ = 1777.8
+
 
 def _s0_combined():
     captures = corpus.s0_position_captures(corpus.S0_MAIN)
@@ -659,12 +680,19 @@ def test_the_real_s0_session_shows_one_number_at_every_surface(monkeypatch):
     chain (10 positions, echo band 5-19 kHz, no validity-floor clamp — the
     unclamped case, so these are directly comparable to
     ``test_crossover_v2_cloud_pipeline.py``'s own S0 pins): worst deviation
-    -8.94 dB at ~16.0 kHz in the 8-16 kHz band, pooled RMS 3.76 dB, 3054 of
-    7698 spec-band bins excluded. The -8.94 dB figure is the same
+    -8.94 dB at ~16.0 kHz in the 8-16 kHz band, pooled RMS 3.80 dB, 3074 of
+    7678 spec-band bins excluded. The -8.94 dB figure is the same
     comb-contaminated top-octave read the plan doc's "S0 executed" § d
     quotes as -8.94 dB and explicitly forbids quoting as "the speaker's top
     octave" — it reproduces here to the digit, which is the point: one
     construction, and it agrees with the forensics.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote re-gating
+    ``cloud_04`` — see ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era".
+    The pooled RMS and the bin counts moved (3.7649 → 3.8031 dB, 3054/7698 →
+    3074/7678) and the reference re-centred −27.2670 → −27.2386 dB. The
+    HEADLINE is the point and it survives to the digit the plan doc quotes:
+    −8.9399 → −8.9389 dB still reads −8.94 dB at the same 15999.7 Hz bin.
     """
     result = assemble_cloud_group_result(_s0_combined(), echo_band_hz=S0_ECHO_BAND_HZ)
     assert result["available"] is True
@@ -672,43 +700,99 @@ def test_the_real_s0_session_shows_one_number_at_every_surface(monkeypatch):
     _assert_one_number_everywhere(views)
 
     gauge = views["pipeline"]
-    assert gauge["max_db"] == pytest.approx(-8.9399, abs=5e-4)
+    assert gauge["max_db"] == pytest.approx(-8.9389, abs=5e-4)
     assert gauge["max_hz"] == pytest.approx(15999.7, abs=0.5)
     assert gauge["max_band_hz"] == [8000.0, 16000.0]
     assert gauge["tolerance_db"] == 2.5
-    assert gauge["rms_db"] == pytest.approx(3.7649, abs=5e-4)
-    assert gauge["n_bins"] == 7698
-    assert gauge["n_excluded"] == 3054
+    assert gauge["rms_db"] == pytest.approx(3.8031, abs=5e-4)
+    assert gauge["n_bins"] == 7678
+    assert gauge["n_excluded"] == 3074
     assert gauge["passed"] is False
     # The reference the deviations are measured against, pinned because the
     # clamp test below moves it and the headline number moves WITH it.
-    assert result["spec"]["reference_db"] == pytest.approx(-27.2670, abs=5e-4)
+    assert result["spec"]["reference_db"] == pytest.approx(-27.2386, abs=5e-4)
     assert result["validity_floor_hz"] is None
 
 
 @corpus.requires_s0_curves
-def test_the_real_s0_worst_position_floor_clamps_the_low_band(monkeypatch):
+def test_the_real_s0_positions_no_longer_collapse_a_gate():
+    """#1790's regression guard: no S0 position collapses its own gate.
+
+    NEW 2026-08-02 (#2045) — see ``tests._flat_lin_corpus`` "The 2026-08-02
+    re-pin era". Until PR #1991, ``cloud_04`` alone reported
+    ``floor_source="measured_reflection"`` at a **1777.8 Hz** validity floor:
+    a reflection "found" 3 samples past the search-window open, which is the
+    field instance #1991's prominence vote was written to reject. It
+    propagated through the group ``max()`` and flipped a band verdict
+    fail→pass — so a detector artifact was silently re-grading the speaker.
+
+    All ten positions now gate to the search-span bound at 142.857 Hz, which
+    is below the spec table's 250 Hz edge, so the group's own floor clamps
+    NOTHING: same bins, same reference, same verdict.
+
+    This half was carved out of the old
+    ``test_the_real_s0_worst_position_floor_clamps_the_low_band``, whose name
+    described the artifact rather than the speaker. The clamp MECHANISM's cost
+    is still pinned, next door, at an explicit floor.
+    """
+    combined = _s0_combined()
+    floors = {
+        pid: corpus.s0_position_driver_response(corpus.S0_MAIN, pid)[0].validity_floor_hz
+        for pid in sorted(corpus._session_groups(corpus.S0_MAIN))
+    }
+    assert len(floors) == 10
+    assert sorted(floors)[0] == "cloud_01"
+    assert all(f == pytest.approx(142.857, abs=1e-3) for f in floors.values())
+
+    # ...so the group's own worst floor sits below the spec table's lowest
+    # graded edge, and clamping at it is a no-op. This is the assertion that
+    # would have gone quietly vacuous had the old test's pins simply been
+    # bumped from 1777.8 to 142.857.
+    unclamped = assemble_cloud_group_result(combined, echo_band_hz=S0_ECHO_BAND_HZ)
+    natural_worst = max(floors.values())
+    assert natural_worst < unclamped["spec"]["bands"][0]["f_lo_hz"]
+    natural = assemble_cloud_group_result(
+        combined, echo_band_hz=S0_ECHO_BAND_HZ, validity_floor_hz=natural_worst,
+    )
+    assert natural["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"]
+    assert natural["spec"]["reference_db"] == pytest.approx(
+        unclamped["spec"]["reference_db"], abs=1e-9
+    )
+    assert natural["spec"]["bands"][0]["passed"] == (
+        unclamped["spec"]["bands"][0]["passed"]
+    )
+
+
+@corpus.requires_s0_curves
+def test_the_validity_floor_clamp_costs_the_low_band(monkeypatch):
     """The clamp's measured cost, stated and pinned rather than assumed.
 
-    Nine of the S0 main leg's ten positions gate down to 142.86 Hz — below
-    the spec table's 250 Hz edge, so the clamp would be a no-op. The tenth,
-    ``cloud_04``, collapsed to **1777.8 Hz** (a ~0.56 ms window — a very
-    early reflection at that spot), and because the combined curve is a power
-    mean ACROSS positions, every bin below that carries cloud_04's
-    truncated-window artifact at 1/10 weight.
+    **RE-WORKED 2026-08-02 (#2045)** — see ``tests._flat_lin_corpus`` "The
+    2026-08-02 re-pin era". This test used to take its floor FROM the corpus,
+    where ``cloud_04``'s collapsed gate supplied 1777.8 Hz. PR #1991 showed
+    that collapse was a false early fire (#1790) and removed it, so the
+    corpus's own floor now clamps nothing —
+    ``test_the_real_s0_positions_no_longer_collapse_a_gate`` next door is that
+    fact's guard.
 
-    Clamping at the group's worst floor therefore costs, measured 2026-07-27:
+    The costs below are the CLAMP MECHANISM's own behaviour and are worth
+    guarding whether or not this corpus happens to produce a clamping floor,
+    so the floor is now the explicit :data:`CLAMP_FLOOR_HZ` — the value the
+    artifact used to produce. Sourcing it from a constant is what keeps this
+    guard from depending on a detector bug to have a subject.
 
-    * 1009 bins leave the 250 Hz-2 kHz band (7698 -> 6689 graded);
-    * the reference re-centres -27.2670 -> -28.3166 dB;
-    * the HEADLINE ``max_db`` moves -8.9399 -> -7.8903 dB — **+1.0495 dB in
+    Clamping at that floor costs, measured 2026-08-02:
+
+    * 987 bins leave the 250 Hz-2 kHz band (7678 -> 6691 graded);
+    * the reference re-centres -27.2386 -> -28.3062 dB;
+    * the HEADLINE ``max_db`` moves -8.9389 -> -7.8713 dB — **+1.0676 dB in
       the flattering direction**, exactly the reference shift, because the
       worst bin (15999.7 Hz) survives the clamp and its deviation tracks the
       reference one-for-one. It moves FURTHER than the RMS does, and it is
       the first number the ledger line prints;
-    * the pooled RMS moves 3.7649 -> 3.1524 dB (-0.6125 dB);
-    * and the 250 Hz-2 kHz band **VERDICT FLIPS**, +4.1637 dB (fail) ->
-      -1.2855 dB (pass), because ``passed`` is ``abs(max) <= tolerance``.
+    * the pooled RMS moves 3.8031 -> 3.1740 dB (-0.6291 dB);
+    * and the 250 Hz-2 kHz band **VERDICT FLIPS**, +4.2458 dB (fail) ->
+      -1.2146 dB (pass), because ``passed`` is ``abs(max) <= tolerance``.
 
     The direction is response-shape dependent and measured on THIS corpus
     only: the removed region sat above the surviving reference here, so
@@ -721,51 +805,41 @@ def test_the_real_s0_worst_position_floor_clamps_the_low_band(monkeypatch):
     mask grew is not convergence" rule).
     """
     combined = _s0_combined()
-    floors = {
-        pid: corpus.s0_position_driver_response(corpus.S0_MAIN, pid)[0].validity_floor_hz
-        for pid in sorted(corpus._session_groups(corpus.S0_MAIN))
-    }
-    assert floors["cloud_04"] == pytest.approx(1777.8, abs=0.1)
-    assert sorted(floors)[0] == "cloud_01"
-    assert all(
-        f == pytest.approx(142.857, abs=1e-3)
-        for pid, f in floors.items() if pid != "cloud_04"
-    )
-    worst = max(floors.values())
-
     unclamped = assemble_cloud_group_result(combined, echo_band_hz=S0_ECHO_BAND_HZ)
+
+    # The mechanism itself, exercised at the floor the artifact used to make.
     clamped = assemble_cloud_group_result(
-        combined, echo_band_hz=S0_ECHO_BAND_HZ, validity_floor_hz=worst,
+        combined, echo_band_hz=S0_ECHO_BAND_HZ, validity_floor_hz=CLAMP_FLOOR_HZ,
     )
-    assert clamped["validity_floor_hz"] == pytest.approx(1777.8, abs=0.1)
+    assert clamped["validity_floor_hz"] == pytest.approx(CLAMP_FLOOR_HZ, abs=0.1)
     assert (
-        clamped["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"] - 1009
+        clamped["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"] - 987
     )
 
     # The reference re-centring, and the headline number that rides it.
-    assert clamped["spec"]["reference_db"] == pytest.approx(-28.3166, abs=5e-4)
-    assert clamped["flatness"]["max_db"] == pytest.approx(-7.8903, abs=5e-4)
+    assert clamped["spec"]["reference_db"] == pytest.approx(-28.3062, abs=5e-4)
+    assert clamped["flatness"]["max_db"] == pytest.approx(-7.8713, abs=5e-4)
     reference_shift = (
         clamped["spec"]["reference_db"] - unclamped["spec"]["reference_db"]
     )
     max_shift = clamped["flatness"]["max_db"] - unclamped["flatness"]["max_db"]
-    assert reference_shift == pytest.approx(-1.0495, abs=5e-4)
+    assert reference_shift == pytest.approx(-1.0676, abs=5e-4)
     # Equal and opposite: the worst bin survives the clamp, so the headline
     # number is displaced by exactly the reference, no more and no less.
     assert max_shift == pytest.approx(-reference_shift, abs=1e-9)
     # And it moves FURTHER than the RMS — the number a reader sees first is
     # the number the clamp perturbs most.
     rms_shift = clamped["flatness"]["rms_db"] - unclamped["flatness"]["rms_db"]
-    assert clamped["flatness"]["rms_db"] == pytest.approx(3.1524, abs=5e-4)
+    assert clamped["flatness"]["rms_db"] == pytest.approx(3.1740, abs=5e-4)
     assert abs(max_shift) > abs(rms_shift)
 
     # The band VERDICT flip, not merely a number shift.
     low_before = unclamped["spec"]["bands"][0]
     low_after = clamped["spec"]["bands"][0]
     assert (low_before["f_lo_hz"], low_before["f_hi_hz"]) == (250.0, 2000.0)
-    assert low_before["max_deviation_db"] == pytest.approx(4.1637, abs=5e-4)
+    assert low_before["max_deviation_db"] == pytest.approx(4.2458, abs=5e-4)
     assert low_before["passed"] is False
-    assert low_after["max_deviation_db"] == pytest.approx(-1.2855, abs=5e-4)
+    assert low_after["max_deviation_db"] == pytest.approx(-1.2146, abs=5e-4)
     assert low_after["passed"] is True
     # Overall still fails — the other two bands fail on their own merits, so
     # the flip is visible per band rather than flattering the whole verdict.

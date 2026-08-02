@@ -617,11 +617,19 @@ def position_stability_limit(
     ranges min-max:
 
       grouping                      N    sigma_db      sigma/sqrt(N)  limit dB
-      main leg, all 10 positions   10    0.946-3.088   0.299-0.976    12.29-24
-      main leg, tweeter height      6    0.340-1.234   0.139-0.504    23.82-24
+      main leg, all 10 positions   10    0.923-3.096   0.292-0.979    12.26-24
+      main leg, tweeter height      6    0.190-1.222   0.078-0.499    24.00-24
       main leg, a hand-width low    4    0.964-3.029   0.482-1.514     7.92-24
       desk front edge               3    0.306-1.735   0.177-1.002    11.98-24
       ground plane                  3    0.362-3.173   0.209-1.832     6.55-24
+
+    RE-DERIVED 2026-08-02 (#2045) for PR #1991's prominence vote, which
+    re-gates ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02
+    re-pin era". Only the two rows CONTAINING cloud_04 moved; the last three
+    are byte-identical, which is the control. The two moves differ in
+    direction and that is worth reading: the six-position subgroup improves on
+    every column, while the ten-position cloud's sigma_min/se_min fall but its
+    sigma_max/se_max RISE slightly, so its limit TIGHTENS 12.29 -> 12.26 dB.
 
     Every grouping's tightest limit is its **16 kHz band** except the ground
     plane's, whose 8 kHz band is worse; the low bands sit at the sentinel
@@ -648,10 +656,10 @@ def position_stability_limit(
     fit actually consumes, ``min(12, allowed_depth)``, so the emitted filters
     come out byte-identical either way: on the plan's own cloud shape
     (fundamental 1's 8-12 positions — the ten-position main leg) the
-    standard error stays at or under 0.976 dB and the tightest limit is
-    **12.29 dB**, just above the fit's own 12 dB per-filter cut cap. A
+    standard error stays at or under 0.979 dB and the tightest limit is
+    **12.2579 dB**, just above the fit's own 12 dB per-filter cut cap. A
     protocol-following cloud pays nothing; the term is holding a ceiling
-    that is simply above where the fit was already bound. That 0.29 dB is
+    that is simply above where the fit was already bound. That 0.26 dB is
     the whole margin, and it is thin — a hardware-free test
     (``test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap``)
     pins it against a retune of the shared tolerance table, because the

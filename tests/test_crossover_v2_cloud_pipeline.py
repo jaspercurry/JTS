@@ -16,7 +16,7 @@ Two layers:
 * **Corpus-gated.** The exact wiring assembly fed the real S0 main-leg cloud,
   pinning the numbers this module's docstrings and the plan doc's "S0
   executed" section already state (geometry locked, screen excludes 0 of
-  5462 bins in 8-16 kHz, the null registry excludes ~2949) so a regression
+  5462 bins in 8-16 kHz, the null registry excludes ~2938) so a regression
   that silently drops the null registry's contribution is caught against
   real hardware data, not only a synthetic proxy.
 """
@@ -686,11 +686,17 @@ def test_the_real_s0_cloud_is_identified_and_excluded_by_the_full_assembly():
     # The union DOES exclude bins in 8-16 kHz — the screen alone (asserted
     # zero above) could not have produced this on its own. Pinned to the
     # exact figures (N2 review finding, 2026-07-26), not just >0/==0: 5462
-    # total bins in this band on the S0 corpus's analysis grid, 2949 of them
+    # total bins in this band on the S0 corpus's analysis grid, 2938 of them
     # excluded by the union -- the same numbers this module's docstrings and
     # the plan doc's "S0 executed" section quote.
+    #
+    # RE-PINNED 2026-08-02 (#2045), 2949 -> 2938 excluded, for PR #1991's
+    # prominence vote re-gating cloud_04 -- see tests._flat_lin_corpus "The
+    # 2026-08-02 re-pin era". The band's TOTAL bin count (5462) is unmoved,
+    # so this is the union covering slightly less of the same band, not a
+    # different grid.
     assert band_8_16k["n_bins"] == 5462
-    assert band_8_16k["n_excluded"] == 2949
+    assert band_8_16k["n_excluded"] == 2938
     merged_excluded_in_band = band_8_16k["n_excluded"]
 
     # The "delete one input" collapse, made explicit: screen-only accounting
@@ -1156,9 +1162,9 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
     """The disclosure owner decision 1 committed to, against real hardware
     data. Measured 2026-07-27 on the S0 main leg (10 positions, JTS3 — the same
     cloud PR-4's own corpus acceptance uses, at the same band): the null gate
-    identifies THREE rungs of one ladder inside 8-16 kHz — 8.7, 11.6 and
+    identifies THREE rungs of one ladder inside 8-16 kHz — 8.6, 11.6 and
     15.0 kHz — at a fitted τ of 299 µs, with r 0.376 in the time domain against
-    0.349 implied by the null depths. All three classify
+    0.344 implied by the null depths. All three classify
     ``position_invariant``. (These are this pipeline's own figures on this
     grouping; the plan doc's § b quotes the S0 kit's independently-computed
     0.373/0.342 for the same session, which is a different construction and
@@ -1172,6 +1178,15 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
     0.376, and only because ``cloud_04`` re-registers and joins the
     corroborating set. The identified ladder is untouched — same three rungs,
     same centres, same τ, same ``r_freq``, same disclosure sentence.
+
+    RE-PINNED AGAIN 2026-08-02 (#2045) for PR #1991's prominence vote, which
+    re-gates ``cloud_04`` a second time — see ``tests._flat_lin_corpus`` "The
+    2026-08-02 re-pin era". This time the first rung's centre moved enough to
+    change its ROUNDED label, 8.7 → 8.6 kHz, so the disclosure SENTENCE the
+    household reads moves with it; ``r_freq`` follows the depths 0.349 →
+    0.344. The ladder itself still holds: same three rungs, same n, same
+    ``position_invariant`` classification, same τ (299 µs) and same
+    ``r_time`` (0.376).
 
     Two properties beyond the numbers:
 
@@ -1194,14 +1209,14 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
     top = by_band[(8000.0, 16000.0)]
     nulls = [r for r in top["intervals"] if r["source"] == "identified_null"]
     assert len(nulls) == 3
-    assert [round(r["f_center_hz"] / 1000.0, 1) for r in nulls] == [8.7, 11.6, 15.0]
+    assert [round(r["f_center_hz"] / 1000.0, 1) for r in nulls] == [8.6, 11.6, 15.0]
     assert [r["n"] for r in nulls] == [2, 3, 4]
     assert all(r["classification"] == "position_invariant" for r in nulls)
     assert round(nulls[0]["tau_us"]) == 299
     assert round(nulls[0]["r_time"], 3) == 0.376
-    assert round(nulls[0]["r_freq"], 3) == 0.349
+    assert round(nulls[0]["r_freq"], 3) == 0.344
     assert top["disclosure"] == (
-        "Interference nulls at 8.7 kHz, 11.6 kHz and 15.0 kHz — a delayed copy "
+        "Interference nulls at 8.6 kHz, 11.6 kHz and 15.0 kHz — a delayed copy "
         "of the sound arrives 0.30 ms later. EQ cannot fill these, so they are "
         "left out of correction and out of this band's grading."
     )
@@ -1209,7 +1224,13 @@ def test_the_real_s0_carve_out_discloses_the_measured_comb():
     # The screen's own catch, in a different band, from a different instrument.
     low = by_band[(250.0, 2000.0)]
     assert [r["source"] for r in low["intervals"]] == ["position_screen"]
-    assert 1700.0 < low["intervals"][0]["f_lo_hz"] < 1900.0
+    # The 1.7-1.9 kHz dip. A BOUND, not a pin: what matters is that the screen
+    # caught the dip in this band, not the bin it started on. Widened at the
+    # bottom 2026-08-02 (#2045) because PR #1991's cloud_04 re-gate moved the
+    # interval's start 1729.2 -> 1697.0 Hz — a 32 Hz move that is still the
+    # same dip, and a tighter bound here would only re-break on the next
+    # honest re-read.
+    assert 1650.0 < low["intervals"][0]["f_lo_hz"] < 1900.0
     assert low["expert"] == "", "the screen carries no τ/r to disclose"
 
     # A clean band says nothing at all.

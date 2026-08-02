@@ -1180,28 +1180,53 @@ def test_position_stability_limit_rejects_bad_tier_and_a_thin_cloud():
         )
 
 
-# The worst cross-position spread the S0 main leg produced: sigma 3.0878 dB
+# The worst cross-position spread the S0 main leg produced: sigma 3.0957 dB
 # in the 16 kHz band across N = 10 positions. Committed as literals so the
 # test below is HARDWARE-FREE and runs in CI -- the corpus test that measured
 # them (test_s0_position_stability_calibration_populations) is env-gated and
 # skips there, which is exactly the gap this constant closes.
-_S0_WORST_BAND_SIGMA_DB = 3.0878
+#
+# RE-DERIVED 2026-08-02 (#2045), 3.0878 -> 3.0957, for PR #1991's prominence
+# vote re-gating cloud_04 -- see tests._flat_lin_corpus "The 2026-08-02 re-pin
+# era".
+#
+# **This literal is a FROZEN STAND-IN for an env-gated corpus measurement, and
+# it must be re-derived whenever that corpus moves.** Nothing in CI can catch
+# it going stale: the test below happily keeps passing against a number the
+# hardware no longer produces, because the corpus test that would disagree is
+# skipped there. That is the #1884 failure mode (corpus CI invisibility) in
+# miniature -- and it is not hypothetical, it is how this constant survived
+# #1991 while every env-gated reading around it moved. Re-derive it through
+# position_stability_limit against the live corpus; do not transcribe it.
+_S0_WORST_BAND_SIGMA_DB = 3.0957
 _S0_WORST_BAND_N_POSITIONS = 10
 
 
 def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
-    """Guards the 0.29 dB margin the whole position-stability design rests on.
+    """Guards the 0.26 dB margin the whole position-stability design rests on.
 
     ``position_stability_limit`` is inert on a protocol-following cloud only
-    because the S0 main leg's worst standard error (3.0878/sqrt(10) =
-    0.976 dB) maps to **12.29 dB** at ``reference`` tier, which is above the
+    because the S0 main leg's worst standard error (3.0957/sqrt(10) =
+    0.979 dB) maps to **12.26 dB** at ``reference`` tier, which is above the
     fit's 12 dB ``PER_FILTER_CUT_CAP_DB`` -- so ``min(12, allowed_depth)``
     never moves and the emitted filters are unchanged.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote -- see
+    ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era" and the
+    frozen-stand-in warning on :data:`_S0_WORST_BAND_SIGMA_DB` above. The
+    margin got THINNER, 0.29 -> 0.26 dB, which is the direction that matters
+    for a guard whose whole job is that this limit stays above the cut cap.
+
+    (The 4-dp figure quoted in ``position_stability_limit``'s own docstring is
+    12.2579 dB -- that is the corpus's real bands. This test drives one
+    synthetic band from the 4-dp rounded constant above and gets 12.2581 dB.
+    Same measurement, two roundings, well inside this test's own 0.01 dB
+    tolerance; both are stated so the pair cannot read as a contradiction.)
 
     **The hazard this exists for.** :data:`_SIGMA_TOLERABLE_DB` is now shared
     by two terms. A future retune motivated by *repeatability* -- tightening
     ``reference`` from 0.5 to 0.4 dB, a perfectly reasonable thing to want --
-    drops that same limit to 9.83 dB, and the stability term starts binding
+    drops that same limit to 9.81 dB, and the stability term starts binding
     the emitted fit on a cloud nobody thought had changed. The
     ``test_position_stability_limit_shares_the_mapping_with_repeatability``
     contract cannot catch it (both terms move together, so they stay in
@@ -1221,7 +1246,7 @@ def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
     assert inside.any()
     shipped_limit_db = float(limit[inside].min())
 
-    assert shipped_limit_db == pytest.approx(12.29, abs=0.01)
+    assert shipped_limit_db == pytest.approx(12.26, abs=0.01)
     assert shipped_limit_db >= PER_FILTER_CUT_CAP_DB
 
     # The counterfactual that makes this test load-bearing, from the same
@@ -1234,7 +1259,7 @@ def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
     tightened_limit_db = ENVELOPE_CEILING_SENTINEL_DB * min(
         1.0, 0.4 / standard_error_db
     )
-    assert tightened_limit_db == pytest.approx(9.83, abs=0.01)
+    assert tightened_limit_db == pytest.approx(9.81, abs=0.01)
     assert tightened_limit_db < PER_FILTER_CUT_CAP_DB
 
 
@@ -1443,6 +1468,19 @@ def test_s0_position_stability_calibration_populations(s0_main_captures):
     floor. Each row is (N, sigma range, standard-error range, limit range) --
     the same rows the docstring prints, so the table cannot drift from the
     measurement.
+
+    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote, which
+    re-gates ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02
+    re-pin era". Exactly the two groupings that CONTAIN cloud_04 moved
+    (``main_all_10`` and ``main_tweeter_height_6``); ``main_hand_width_low_4``
+    (cloud_07-10), ``desk_front_edge_3`` and ``ground_plane_3`` are
+    byte-identical, which is the control on the change.
+
+    The two moves are NOT the same direction, and the difference is worth
+    reading rather than smoothing over: on the six-position subgroup every
+    column improves; on the ten-position cloud sigma_min and se_min fall while
+    sigma_max/se_max rise slightly and the limit TIGHTENS 12.29 -> 12.26 dB,
+    still 0.26 dB clear of ``PER_FILTER_CUT_CAP_DB``.
     """
     from tests._flat_lin_corpus import (
         S0_DESK_EDGE,
@@ -1463,8 +1501,8 @@ def test_s0_position_stability_calibration_populations(s0_main_captures):
     }
     expected = {
         # name: (N, sigma_lo, sigma_hi, se_lo, se_hi, limit_lo, worst_band_hz)
-        "main_all_10": (10, 0.946, 3.088, 0.299, 0.976, 12.29, 16_000.0),
-        "main_tweeter_height_6": (6, 0.340, 1.234, 0.139, 0.504, 23.82, 16_000.0),
+        "main_all_10": (10, 0.923, 3.096, 0.292, 0.979, 12.26, 16_000.0),
+        "main_tweeter_height_6": (6, 0.190, 1.222, 0.078, 0.499, 24.00, 16_000.0),
         "main_hand_width_low_4": (4, 0.964, 3.029, 0.482, 1.514, 7.92, 16_000.0),
         "desk_front_edge_3": (3, 0.306, 1.735, 0.177, 1.002, 11.98, 16_000.0),
         "ground_plane_3": (3, 0.362, 3.173, 0.209, 1.832, 6.55, 8000.0),
@@ -1581,8 +1619,17 @@ def test_s0_position_stability_narrows_the_envelope_but_not_the_fit(s0_replay):
 def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     """THE acceptance, on the declared-``compression_horn`` regime.
 
-    Measured 2026-07-26. The registry identifies three rungs over 5-19 kHz --
-    8016-9427, 10842-12348 and 14280-15679 Hz. With the merged mask composed
+    Measured 2026-07-26, INTERVALS RE-PINNED 2026-08-02 (#2045) for PR
+    #1991's prominence vote, which re-gates ``cloud_04`` -- see
+    ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era". The three
+    intervals moved by at most 28 Hz an edge (8016-9427 -> 8015-9428,
+    10842-12348 -> 10841-12351, 14280-15679 -> 14276-15651); everything else
+    below -- the fourteen zeroed grid bins, the fit band, the two filter
+    centres and the suppression reason -- is unchanged, which is why only the
+    interval list is re-pinned.
+
+    The registry identifies three rungs over 5-19 kHz --
+    8015-9428, 10841-12351 and 14276-15651 Hz. With the merged mask composed
     in, the envelope allows **exactly 0.0 dB** at all fourteen envelope-grid
     bins inside them (against 2.82-22.80 dB without it), the fit places **no
     filter** anywhere near them (its two peaking cuts sit at 2388.9 and
@@ -1605,7 +1652,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     first null, so the fit keeps its PERMISSION to correct above 8 kHz. That
     is not the same as demonstrating correction up there, and this corpus
     cannot demonstrate it: every filter either fit emits sits at 2388.9 or
-    3533.4 Hz, well below the first null at 8016 Hz, because the CD-horn
+    3533.4 Hz, well below the first null at 8015 Hz, because the CD-horn
     continuation stage -- the stage that would place HF content -- suppresses
     itself at ``insufficient_repeats`` on a corpus giving each position two
     occurrences (``LinearizationFit.hf_continuation_suppressed_reason``,
@@ -1617,7 +1664,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     grid = DEFAULT_ENVELOPE_GRID_HZ
     intervals = s0_replay.registry.excluded_bands_hz
     assert [(round(lo), round(hi)) for lo, hi in intervals] == [
-        (8016, 9427), (10842, 12348), (14280, 15679),
+        (8015, 9428), (10841, 12351), (14276, 15651),
     ]
 
     bare = _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=False)
@@ -1745,7 +1792,7 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     hardening showing through.** ``class_prior_limit`` for ``unknown`` is
     exactly 0 from 12 kHz up, so the composed envelope now ends there
     instead of carrying blurred depth past it; the second identified null
-    (10842-12348 Hz) then reaches that zero with nothing correctable left
+    (10841-12351 Hz) then reaches that zero with nothing correctable left
     between them, and the masked band stops at 10513.6 Hz rather than
     punching a hole and continuing. On ``compression_horn`` -- whose class
     prior does not zero until 20 kHz -- the exclusion still punches holes

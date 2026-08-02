@@ -101,11 +101,13 @@ Why 4 prompted positions and not the floated 3:
 - **The envelope's evidence discount (σ/√N) applies at whatever express
   actually measures.** `position_stability_limit`'s S0 calibration
   (`tests/test_active_speaker_linearization_envelope.py`) is **not
-  monotone in N**: 10 positions → 12.29 dB, but the one 4-position
+  monotone in N**: 10 positions → 12.26 dB, but the one 4-position
   reading (7.92 dB) comes from a deliberately degenerate one-height
   subset (`S0_MAIN_HAND_WIDTH_LOW`) whose σ is inflated by the
   documented clean break at cloud_07, and a 6-position one-height
-  subset reads 23.82 dB — *looser* than the full cloud. Express's
+  subset reads 24.00 dB — *looser* than the full cloud, and since
+  2026-08-02 (#2045) it sits at the ceiling sentinel outright, so the
+  non-monotonicity is now as stark as it can get. Express's
   dispersed 4-position walk is structurally unlike any of those
   subsets, so **its limit is unmeasured until the JTS3 product smoke**.
   The honest statement is only this: the term is present, computed

@@ -1168,18 +1168,25 @@ the envelope, and the doctor, so a live surface can tell a combed room apart
 from one capture's collapsed gate.
 
 Measured cost on the S0 main leg (all pinned by
-[`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py)): nine of
-ten positions gate to 142.9 Hz — below the 250 Hz spec edge, so the clamp is a
-no-op and changes no graded number. `cloud_04` collapsed to 1777.8 Hz, and
-clamping there moves **1009 bins** out of the 250 Hz–2 kHz band, re-centres
-the reference **−27.2670 → −28.3166 dB**, moves the **headline `max_db`
-−8.9399 → −7.8903 dB (+1.0495 dB, the flattering direction — exactly the
-reference shift, since the worst bin survives the clamp)**, moves the pooled
-RMS 3.7649 → 3.1524 dB, and **flips the 250 Hz–2 kHz band verdict** from
-+4.1637 dB (fail) to −1.2855 dB (pass). The headline number therefore moves
-*further* than the RMS, and the direction is response-shape dependent —
-measured on this corpus, not a property of the clamp. It is the same speaker
-graded on fewer bins, visible in the gauge's own `n_bins`/`n_excluded` pair.
+[`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py)), re-derived
+2026-08-02 (#2045): **all ten** positions gate to 142.857 Hz — below the 250 Hz
+spec edge, so the group's own floor makes the clamp a **no-op** that changes no
+graded number.
+
+That is a change. Until PR #1991 `cloud_04` reported a measured reflection at
+1777.8 Hz and the group floor was 1777.8 Hz, but that reading was the
+first-reflection detector firing early (the #1790 instance the prominence vote
+rejects). The clamp's cost is still pinned, now at that floor supplied
+explicitly (`CLAMP_FLOOR_HZ`): clamping there moves **987 bins** out of the
+250 Hz–2 kHz band, re-centres the reference **−27.2386 → −28.3062 dB**, moves
+the **headline `max_db` −8.9389 → −7.8713 dB (+1.0676 dB, the flattering
+direction — exactly the reference shift, since the worst bin survives the
+clamp)**, moves the pooled RMS 3.8031 → 3.1740 dB, and **flips the 250 Hz–2 kHz
+band verdict** from +4.2458 dB (fail) to −1.2146 dB (pass). The headline number
+therefore moves *further* than the RMS, and the direction is response-shape
+dependent — measured on this corpus, not a property of the clamp. It is the
+same speaker graded on fewer bins, visible in the gauge's own
+`n_bins`/`n_excluded` pair.
 
 *Deferred alternative:* per-position, per-bin validity masking inside
 `combine_positions` (mask each position below its own floor, keep the other
