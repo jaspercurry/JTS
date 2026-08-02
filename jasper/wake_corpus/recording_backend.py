@@ -34,6 +34,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.atomic_io import atomic_write_json
 from jasper.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
@@ -393,6 +394,12 @@ class RecordingBackend:
         # AND from the loop thread (auto-stop timer); the lock makes
         # all observers see consistent state.
         self._lock = threading.Lock()
+        # Serialize the complete begin-session transaction, including the
+        # metadata and crash-recovery marker writes that happen after the
+        # in-memory state lock is released. A non-blocking acquire makes a
+        # concurrent HTTP request fail clearly instead of publishing two
+        # overlapping session initializations.
+        self._begin_session_lock = threading.Lock()
         self._session_id: str | None = None
         self._member: str | None = None
         # Whether THIS session includes the truly-raw mic 0 leg. Set
@@ -551,7 +558,6 @@ class RecordingBackend:
             return
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         path = self._active_session_marker_path()
-        tmp = path.with_suffix(path.suffix + ".tmp")
         data = {
             "session_id": session_id,
             "member": member,
@@ -559,9 +565,7 @@ class RecordingBackend:
                 timespec="seconds",
             ),
         }
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
-        tmp.replace(path)
+        atomic_write_json(path, data)
 
     def _clear_active_session_marker(self) -> None:
         try:
@@ -584,16 +588,13 @@ class RecordingBackend:
         """
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         path = self._test_mode_marker_path()
-        tmp = path.with_suffix(path.suffix + ".tmp")
         data = {
             "entered_at": datetime.now(timezone.utc).isoformat(
                 timespec="seconds",
             ),
         }
         try:
-            with open(tmp, "w") as f:
-                json.dump(data, f, indent=2)
-            tmp.replace(path)
+            atomic_write_json(path, data)
         except OSError as e:
             logger.warning("failed to write test-mode marker: %s", e)
 
@@ -858,6 +859,38 @@ class RecordingBackend:
         self.note_test_mode_exited()
 
     def begin_session(
+        self,
+        member: str,
+        corpus_profile: str = PROFILE_STANDARD,
+        include_raw_mic_0: bool = False,
+        include_dtln: bool = True,
+        include_usb_mic: bool = False,
+        include_usb_dtln: bool = False,
+        include_xvf_raw0_dtln: bool = False,
+        include_aec3_sweep: bool = False,
+        aec3_sweep_source: str | None = None,
+        capture_plan: dict[str, Any] | None = None,
+    ) -> str:
+        """Open one session transaction, refusing concurrent initializers."""
+        if not self._begin_session_lock.acquire(blocking=False):
+            raise StateError("can't begin session: initialization in progress")
+        try:
+            return self._begin_session(
+                member,
+                corpus_profile=corpus_profile,
+                include_raw_mic_0=include_raw_mic_0,
+                include_dtln=include_dtln,
+                include_usb_mic=include_usb_mic,
+                include_usb_dtln=include_usb_dtln,
+                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+                include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=aec3_sweep_source,
+                capture_plan=capture_plan,
+            )
+        finally:
+            self._begin_session_lock.release()
+
+    def _begin_session(
         self,
         member: str,
         corpus_profile: str = PROFILE_STANDARD,

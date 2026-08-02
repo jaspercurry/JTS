@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 61 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 57 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 579
+- **fixed**: 583
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -317,12 +317,12 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0372 | `jasper/voice_daemon.py` :: :4198-4245 | nit | W5 | **open** | — |
 | DA-0373 | `jasper/voice_daemon.py` :: :84 | nit | W5 | **fixed** | unused compatibility import removed |
 | DA-0374 | `jasper/volume_diagnostics.py` :: PUSH_UNSUPPORTED | nit | W5 | **fixed** | dead reason-code constant removed |
-| DA-0375 | `jasper/wake_corpus/bridge_session.py` :: :1237 | nit | W5 | **open** | — |
+| DA-0375 | `jasper/wake_corpus/bridge_session.py` :: :1237 | nit | W5 | **fixed** | operational bridge warnings now use stable structured event names and fields — this branch |
 | DA-0376 | `jasper/wake_corpus/bridge_session.py` :: :153 | nit | W5 | **fixed** | unused leg-name re-export removed |
-| DA-0377 | `jasper/wake_corpus/bridge_session.py` :: _enabled_legs_from_metadata:1552 | nit | W5 | **open** | — |
+| DA-0377 | `jasper/wake_corpus/bridge_session.py` :: _enabled_legs_from_metadata:1552 | nit | W5 | **fixed** | unreachable AEC3 reinsertion branches removed after the canonical sweep-path return — this branch |
 | DA-0378 | `jasper/wake_corpus/bridge_session.py` :: voice_daemon_active:2109 | nit | W5 | **fixed** | redundant function-local subprocess import removed — #1304 |
-| DA-0379 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend._write_active_session_marke | nit | W5 | **open** | — |
-| DA-0380 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend.begin_session | nit | W5 | **open** | — |
+| DA-0379 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend._write_active_session_marke | nit | W5 | **fixed** | active-session and test-mode markers use the canonical atomic JSON publisher — this branch |
+| DA-0380 | `jasper/wake_corpus/recording_backend.py` :: RecordingBackend.begin_session | nit | W5 | **fixed** | a dedicated transaction lock serializes in-memory setup with metadata and marker publication — this branch |
 | DA-0381 | `jasper/weather.py` :: WeatherClient._get_json | nit | W5 | **fixed** | invalid successful-response JSON now emits a bounded structured warning before raising — this branch |
 | DA-0382 | `jasper/web/correction_setup.py` :: _handle_interpret / _handle_propose tuning-s | nit | W5 | **open** | — |
 | DA-0383 | `jasper/web/correction_setup.py` :: _handle_start :1345,1385 | nit | W5 | **fixed** | vestigial reservation-transfer flag removed |

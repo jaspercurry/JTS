@@ -277,6 +277,44 @@ def test_begin_session_rejects_during_recording(backend) -> None:
         backend.stop_recording()
 
 
+def test_begin_session_rejects_concurrent_initialization(
+    backend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    session_ids: list[str] = []
+
+    def blocking_audio_context(**_kwargs: object) -> dict[str, object]:
+        entered.set()
+        assert release.wait(timeout=2)
+        return {"test": True}
+
+    monkeypatch.setattr(
+        recording_backend,
+        "build_session_audio_context",
+        blocking_audio_context,
+    )
+
+    def initialize() -> None:
+        session_ids.append(backend.begin_session("jasper"))
+
+    thread = threading.Thread(target=initialize)
+    thread.start()
+    assert entered.wait(timeout=2)
+    try:
+        with pytest.raises(
+            wake_corpus_setup.StateError,
+            match="initialization in progress",
+        ):
+            backend.begin_session("brittany")
+    finally:
+        release.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert len(session_ids) == 1
+
+
 # ---------------------------------------------------------------------------
 # start_recording / stop_recording
 # ---------------------------------------------------------------------------
@@ -2768,8 +2806,9 @@ def test_bridge_env_rollback_deletes_new_file_and_logs_one_restart_failure(
     assert not env_path.exists()
     assert attempts == 2
     assert caplog.messages == [
-        "bridge env rollback restart failed after corpus-output configure "
-        "failure: Command '['systemctl', 'restart']' timed out after 1.0 seconds"
+        "event=wake_corpus.bridge_rollback_restart_failed "
+        "failure_context=configure error=\"Command '['systemctl', 'restart']' "
+        "timed out after 1.0 seconds\""
     ]
 
 
