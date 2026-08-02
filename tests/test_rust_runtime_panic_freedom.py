@@ -213,10 +213,10 @@ ALLOWED_EXPECTS: dict[tuple[str, str], str] = {
 # ``.unwrap()``/``.expect(``/``panic!``-only pattern.
 ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     (
-        "jasper-outputd/src/fake.rs",
+        "jasper-outputd/src/assistant_source.rs",
         "channels must be > 0",
     ): (
-        "Construction invariant: FakeAssistantSource::new's channels argument "
+        "Construction invariant: AssistantSource::new's channels argument "
         "is the daemon's own compile-time CHANNELS constant at every real call "
         "site (OutputCore::with_dac), never externally supplied input."
     ),

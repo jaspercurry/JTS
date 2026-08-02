@@ -2879,17 +2879,6 @@ async def apply_profile(
     return payload
 
 
-async def apply_measured_profile(
-    *, expected_candidate_fingerprint: str, camilla_factory: CamillaFactory
-) -> dict[str, Any]:
-    """Compatibility wrapper for callers that explicitly apply measurements."""
-    return await apply_profile(
-        tuning_owner="automatic",
-        expected_candidate_fingerprint=expected_candidate_fingerprint,
-        camilla_factory=camilla_factory,
-    )
-
-
 async def start_driver_test(
     raw: dict[str, Any],
     *,

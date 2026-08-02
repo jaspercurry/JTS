@@ -2,15 +2,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Output-owner core with fake transports for tests and developer runs.
+//! Output-owner core. `assistant` is the real production render/gain engine
+//! (`assistant_source::AssistantSource`); `content`/`dac` are fake transports
+//! for tests and safe developer runs.
 
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use crate::fake::{
-    DrainedPlayback, FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentPlayback,
-    SegmentWrite,
+use crate::assistant_source::{
+    AssistantSource, DrainedPlayback, FakeDacSink, SegmentPlayback, SegmentWrite,
 };
+use crate::fake::FakeContentSource;
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
 use crate::loudness::{
     linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
@@ -31,7 +33,7 @@ pub struct OutputCore {
     period_frames: u32,
     format: AudioFormat,
     content: FakeContentSource,
-    assistant: FakeAssistantSource,
+    assistant: AssistantSource,
     dac: FakeDacSink,
     next_reference_sequence: u64,
     ledger: PlayoutLedger,
@@ -83,7 +85,7 @@ impl OutputCore {
             period_frames,
             format,
             content: FakeContentSource::new(),
-            assistant: FakeAssistantSource::new(CHANNELS as usize),
+            assistant: AssistantSource::new(CHANNELS as usize),
             dac,
             next_reference_sequence: 0,
             ledger: PlayoutLedger::new(SAMPLE_RATE),

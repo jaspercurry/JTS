@@ -17,7 +17,6 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/startup-load guarded startup-load/rollback state
   GET  /active-speaker/commission-state per-driver commission + Stage-5 ramp state
   GET  /active-speaker/commissioning-view backend-owned setup view/actions/copy
-  GET  /active-speaker/crossover-alignment preview the L2 crossover-alignment proposal
   GET  /active-speaker/design-draft saved speaker design/research evidence
   GET  /active-speaker/crossover-preview saved no-audio crossover preview
   GET  /active-speaker/measurements saved driver and summed validation evidence
@@ -4389,105 +4388,6 @@ def _active_speaker_summed_validation_active_conflict(
     }
 
 
-def _active_speaker_alignment_curves(
-    measurements: dict[str, Any],
-    group: str | None,
-) -> dict[str, Any]:
-    """Collect the surfaced per-driver + summed FR curves for the alignment preview.
-
-    These are the (calibrated) magnitude shapes the maintainer eyeballs to tweak
-    Fc/slope by hand — this feature never auto-rewrites Fc/slope.
-    """
-    curves: dict[str, Any] = {"drivers": {}, "summed": None}
-    latest = measurements.get("latest_by_target")
-    if isinstance(latest, dict):
-        for rec in latest.values():
-            if not isinstance(rec, dict):
-                continue
-            if group and rec.get("speaker_group_id") != group:
-                continue
-            role = rec.get("role")
-            acoustic = rec.get("acoustic")
-            if (
-                isinstance(role, str)
-                and isinstance(acoustic, dict)
-                and acoustic.get("fr_curve")
-            ):
-                curves["drivers"][role] = acoustic["fr_curve"]
-    summed = measurements.get("latest_summed_by_group")
-    if isinstance(summed, dict) and group:
-        rec = summed.get(group)
-        if isinstance(rec, dict):
-            acoustic = rec.get("acoustic")
-            if isinstance(acoustic, dict) and acoustic.get("fr_curve"):
-                curves["summed"] = acoustic["fr_curve"]
-    return curves
-
-
-def _active_speaker_crossover_alignment_payload(
-    requested_mode: str | None = None,
-    speaker_group_id: str | None = None,
-) -> dict[str, Any]:
-    """Preview the L2 crossover-alignment proposal from current measurement state.
-
-    Reads the recorded per-driver arrivals + summed null depth and proposes a SAFE
-    delay/polarity refinement (``phase_aware`` granted only when the contributing
-    captures were calibrated), plus the per-driver + summed FR curves for the
-    maintainer. Read-only — the operator applies via the confirm POST.
-    """
-    from jasper.active_speaker.commissioning_capture import (
-        build_crossover_alignment_proposal,
-    )
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-    )
-    from jasper.active_speaker.crossover_contract import (
-        preset_matches_applied_profile,
-    )
-    from jasper.active_speaker.crossover_alignment import PHASE_AWARE
-    from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.setup_status import read_active_speaker_setup_status
-
-    topology = load_output_topology()
-    preset = _active_speaker_capture_preset(topology)
-    measurements = load_measurement_state(topology)
-    setup = read_active_speaker_setup_status()
-    applied_profile = load_applied_baseline_profile_state()
-    protected_profile = (
-        setup.get("protected_profile") if isinstance(setup, dict) else None
-    )
-    expected_profile_context_id = (
-        str(protected_profile.get("candidate_fingerprint") or "")
-        if isinstance(protected_profile, dict)
-        and preset_matches_applied_profile(preset, applied_profile)
-        else ""
-    )
-    result = build_crossover_alignment_proposal(
-        preset,
-        measurements,
-        requested_mode=requested_mode or PHASE_AWARE,
-        speaker_group_id=speaker_group_id,
-        expected_profile_context_id=expected_profile_context_id or None,
-        expected_applied_profile=applied_profile,
-    )
-    result["curves"] = _active_speaker_alignment_curves(
-        measurements, result.get("speaker_group_id")
-    )
-    proposal = (
-        result.get("proposal") if isinstance(result.get("proposal"), dict) else {}
-    )
-    log_event(
-        logger,
-        "sound.active_speaker_crossover_alignment",
-        status=str(result.get("status")),
-        mode=str((result.get("mode") or {}).get("mode")),
-        authorized=str(proposal.get("authorized")),
-        polarity_action=str(proposal.get("polarity_action")),
-        delay_status=str(proposal.get("delay_status")),
-    )
-    return result
-
-
 def _active_speaker_baseline_profile_payload(
     *,
     write: bool = False,
@@ -4740,7 +4640,6 @@ def _make_handler(
                 "/active-speaker/design-draft",
                 "/active-speaker/crossover-preview",
                 "/active-speaker/measurements",
-                "/active-speaker/crossover-alignment",
                 "/active-speaker/baseline-profile",
                 "/active-speaker/environment",
                 "/active-speaker/safe-playback",
@@ -4815,29 +4714,6 @@ def _make_handler(
                     log_event(
                         logger,
                         "sound.active_speaker_measurements",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
-                    )
-                    self._send_json({"error": str(e)}, status=502)
-                return
-            if path == "/active-speaker/crossover-alignment":
-                try:
-                    query = urllib.parse.parse_qs(
-                        urllib.parse.urlparse(self.path).query
-                    )
-                    self._send_json(
-                        _active_speaker_crossover_alignment_payload(
-                            requested_mode=(query.get("measurement_mode") or [None])[0],
-                            speaker_group_id=(query.get("speaker_group_id") or [None])[
-                                0
-                            ],
-                        )
-                    )
-                except (ValueError, OSError, KeyError) as e:
-                    log_event(
-                        logger,
-                        "sound.active_speaker_crossover_alignment",
                         level=logging.ERROR,
                         exc_info=True,
                         result="error",

@@ -225,11 +225,12 @@ workstream must preserve, unmodified:
 
 After your acceptance commands pass and before merge, the branch must
 survive the **independent adversarial review** defined in
-[`adversarial-review.md`](adversarial-review.md) — the canonical JTS
-staff-maintainer review prompt (COAH bar: separation of concerns,
-single source of truth, safety, observability, resilience, tests,
-docs), extended with two lenses that matter specifically for this
-program:
+[`adversarial-review.md`](adversarial-review.md) — this program's
+review gate, built on the canonical JTS staff-maintainer review prompt
+(`.claude/commands/adversarial-review.md`; COAH bar: separation of
+concerns, single source of truth, safety, observability, resilience,
+tests, docs), extended with two lenses that matter specifically for
+this program:
 
 - **SSOT check**: does the change introduce a second writer for the
   design draft, the crossover envelope, or the new crossover
@@ -240,7 +241,7 @@ program:
   `setup_status.py`), never upstream of it? A declaration flag that
   the safety authority reads as evidence, instead of measuring the
   topology itself, is a Blocker.
-- **JTS checklist** from `adversarial-review.md` in full — audio
+- **JTS checklist** from the canonical prompt in full — audio
   safety, hardware topology, observability, resilience, performance,
   web/security (CSRF ordering, escaped untrusted strings, no
   `innerHTML` string concatenation), secrets/config, tests, docs.
