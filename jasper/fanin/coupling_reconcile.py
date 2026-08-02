@@ -74,6 +74,19 @@ from typing import IO
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import RouteMode, RuntimeEnvAction, fanin_coupling_action
 from jasper.env_file import read_value, remove, upsert
+from jasper.fanin.coupling_auto import (
+    AutoCouplingDecision,
+    COUPLING_CHOICE_ENV_VAR,
+    COUPLING_CHOICE_OPERATOR,
+    RingGate,
+    is_operator_choice,
+    read_marker,
+    read_usb_gadget_available,
+    resolve_auto_decision,
+    ring_install_profile_ready,
+    usb_combo_actions,
+    usbsink_effectively_enabled,
+)
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
@@ -151,6 +164,20 @@ class CouplingResult:
     reconciled_camilla: bool = False
     recovered: bool = False
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class _LoopbackDaemonOps:
+    """Ordered Camilla/fan-in/outputd convergence result for loopback."""
+
+    camilla_ok: bool
+    fanin_ok: bool
+    outputd_ok: bool
+    detail: str
+
+    @property
+    def ok(self) -> bool:
+        return self.camilla_ok and self.fanin_ok and self.outputd_ok
 
 
 @dataclass(frozen=True)
@@ -601,11 +628,6 @@ def reconcile_coupling(
         # coupling flip, so an explicit CLI/HTTP arm is recorded as an operator
         # choice the --auto pass must never override (the revert lever). Absence =
         # auto-owned; presence-and-operator = frozen to the operator's pick.
-        from jasper.fanin.coupling_auto import (
-            COUPLING_CHOICE_ENV_VAR,
-            COUPLING_CHOICE_OPERATOR,
-        )
-
         fanin_new_text, marker_changed = _apply_action(
             fanin_new_text,
             RuntimeEnvAction("set", COUPLING_CHOICE_ENV_VAR, COUPLING_CHOICE_OPERATOR),
@@ -848,17 +870,6 @@ def reconcile_auto(
     the resolved USB hardware capability and ``usb_intent_enabled=None`` reads canonical source
     intent plus current local-source role permission.
     """
-    from jasper.fanin.coupling_auto import (
-        AutoCouplingDecision,
-        default_ring_gates,
-        is_operator_choice,
-        read_usb_gadget_available,
-        read_marker,
-        resolve_auto_decision,
-        usb_combo_actions,
-        usbsink_effectively_enabled as read_usbsink_intent,
-    )
-
     fanin_snapshot = _read_snapshot(env_path)
     outputd_snapshot = _read_snapshot(outputd_env_path)
     marker = read_marker(fanin_snapshot.text)
@@ -868,7 +879,7 @@ def reconcile_auto(
     usb_intent_failure = ""
     if usb_intent_enabled is None:
         try:
-            usb_intent = read_usbsink_intent()
+            usb_intent = usbsink_effectively_enabled()
         except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
             # The source coordinator has already failed the malformed USB source
             # closed, but a previously armed fan-in process can still retain its
@@ -1477,6 +1488,22 @@ def ring_topology_ready_strict() -> tuple[bool, str]:
     return ring_topology_ready(strict_unreadable=True)
 
 
+def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
+    """Return the unattended ring preflights in manual-arm order.
+
+    This factory lives beside the reconciler-owned asset and topology probes it
+    composes.  Keeping the pure decision module independent of this transition
+    owner makes the dependency one-way while still sharing the exact predicates
+    used by a manual arm.  The unattended path deliberately uses the strict
+    topology probe so an unreadable topology fails closed.
+    """
+    return (
+        ("install_profile", ring_install_profile_ready),
+        ("ring_assets", ring_assets_ready),
+        ("ring_topology", ring_topology_ready_strict),
+    )
+
+
 def ring_route_ready(route_mode: RouteMode) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for ROUTE support (defect-F3).
 
@@ -1520,11 +1547,9 @@ def ring_geometry_ready(outputd_text: str) -> tuple[bool, str]:
 
     match = ring_geometry_matches_outputd(_resolved_outputd_period_frames(outputd_text))
     if match.ok:
-        # TODO: if shm_ring later permits operator chunk/target overrides,
-        # feed the resolved emitted values through jasper.ring_negotiation.accept()
-        # here so arm-time refusal uses the same CamillaDSP/ioplug reason. (Not
-        # #1169 — that PR was ring geometry coherence / zombie capture handle /
-        # reconcile storm / %-escaping, unrelated to chunk/target overrides.)
+        # TODO: if shm_ring later permits operator chunk/target overrides, add
+        # a production validation boundary here and keep its source-derived
+        # CamillaDSP/ioplug contract aligned with the CI negotiation model.
         return True, (
             "ring slot geometry matches "
             f"(conf.d period_frames={match.conf_period_frames} == outputd "
@@ -2131,6 +2156,27 @@ def _leaves_live_shm_ring_bridge(prior_outputd_text: str) -> bool:
     )
 
 
+def _run_loopback_daemon_ops(
+    do_restart,
+    do_restart_outputd,
+    do_reconcile,
+) -> _LoopbackDaemonOps:
+    """Run the single ordered daemon sequence that converges to loopback."""
+    cam_ok, cam_detail = do_reconcile(COUPLING_LOOPBACK)
+    fan_ok, fan_detail = do_restart()
+    out_ok, out_detail = do_restart_outputd()
+    detail = "; ".join(
+        d
+        for d in (
+            cam_detail if not cam_ok else "",
+            fan_detail if not fan_ok else "",
+            out_detail if not out_ok else "",
+        )
+        if d
+    )
+    return _LoopbackDaemonOps(cam_ok, fan_ok, out_ok, detail)
+
+
 def _disarm(
     do_restart,
     do_restart_outputd,
@@ -2169,9 +2215,11 @@ def _disarm(
     (``restart_audio_if_needed``, which does stop voice), because that class
     can move the mic/input profile.
     """
-    cam_ok, cam_detail = do_reconcile(COUPLING_LOOPBACK)
-    fan_ok, fan_detail = do_restart()
-    out_ok, out_detail = do_restart_outputd()
+    daemon_ops = _run_loopback_daemon_ops(
+        do_restart,
+        do_restart_outputd,
+        do_reconcile,
+    )
     kick_detail = ""
     if kick_hardware_reconcile is not None:
         kick_ok, kick_fail = kick_hardware_reconcile()
@@ -2186,13 +2234,11 @@ def _disarm(
         )
         if not kick_ok:
             kick_detail = f"audio-hardware reconcile kick failed ({kick_fail})"
-    ok = cam_ok and fan_ok and out_ok
+    ok = daemon_ops.ok
     detail = "; ".join(
         d
         for d in (
-            cam_detail if not cam_ok else "",
-            fan_detail if not fan_ok else "",
-            out_detail if not out_ok else "",
+            daemon_ops.detail,
             kick_detail,
         )
         if d
@@ -2211,9 +2257,9 @@ def _disarm(
         desired=desired,
         changed=True,
         direction="disarm",
-        restarted_fanin=fan_ok,
-        restarted_outputd=out_ok,
-        reconciled_camilla=cam_ok,
+        restarted_fanin=daemon_ops.fanin_ok,
+        restarted_outputd=daemon_ops.outputd_ok,
+        reconciled_camilla=daemon_ops.camilla_ok,
         detail=detail,
     )
 
@@ -2239,7 +2285,6 @@ def _recover_to_loopback(
     oneshot; the content-buffer floor re-emit just waits for the next
     udev/boot/deploy event on this path, same as before #1251.
     """
-    del reason
     try:
         existing = Path(fanin_path).read_text(encoding="utf-8")
     except OSError:
@@ -2266,10 +2311,21 @@ def _recover_to_loopback(
     except OSError:
         return False
     _sync_process_env_for_emit(COUPLING_LOOPBACK, new_outputd)
-    cam_ok, _ = do_reconcile(COUPLING_LOOPBACK)
-    fan_ok, _ = do_restart()
-    out_ok, _ = do_restart_outputd()
-    return cam_ok and fan_ok and out_ok
+    daemon_ops = _run_loopback_daemon_ops(
+        do_restart,
+        do_restart_outputd,
+        do_reconcile,
+    )
+    if not daemon_ops.ok:
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="recovery_daemon_ops_failed",
+            reason=reason,
+            detail=daemon_ops.detail or None,
+            level=logging.WARNING,
+        )
+    return daemon_ops.ok
 
 
 def _read_snapshot(path: str | Path) -> _EnvSnapshot:

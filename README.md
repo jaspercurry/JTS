@@ -401,10 +401,10 @@ jasper/                         Python daemon source
   cli/                          jasper-doctor, jasper-spotify-auth,
                                 jasper-aec-{init,tune,bridge}
   xvf/                          JTS-owned XVF3800 USB control helper
-  mics/                         Per-mic-family profile registry — one
-                                  module per supported mic (xvf3800.py
-                                  today). Identity, firmware variants,
-                                  mixer invariants, helpers. See mics/README.md.
+  mics/                         Per-mic-family profile modules — one concrete
+                                  family today (xvf3800.py). Identity, firmware
+                                  variants, mixer invariants, helpers. See
+                                  mics/README.md.
   transit/                      Modular transit-provider registry —
                                   base Protocol + geocode.py + per-city
                                   providers/. NYC subway + bus + Citi

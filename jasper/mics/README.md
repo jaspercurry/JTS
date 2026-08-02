@@ -18,7 +18,9 @@ doctor checks, the AEC bridge, the reconciler, and BRINGUP.
    DFU path, or a totally different mixer scheme. Only include what
    you need; do NOT pad with `None` or sentinels just to "match
    the shape."
-3. Add it to `PROFILES` in `__init__.py`.
+3. Wire the profile into the runtime detector/reconciler that selects it. Do
+   not add a registry until that registry has a real consumer; the old
+   `PROFILES` mapping was removed because nothing read it.
 4. If the mic needs to be the active AEC mic, the reconciler
    ([deploy/bin/jasper-aec-reconcile](../../deploy/bin/jasper-aec-reconcile))
    currently hardcodes the XVF card name. It'll need an upgrade —

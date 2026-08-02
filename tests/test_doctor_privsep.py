@@ -204,6 +204,19 @@ def test_decorated_checks_are_total_without_systemctl(monkeypatch):
         assert "skipped" in result.detail
 
 
+def test_wiim_remote_mic_has_a_decorated_manifest_check(monkeypatch):
+    sentinel = object()
+    seen = []
+    monkeypatch.setattr(
+        privsep,
+        "_check_daemon",
+        lambda unit: seen.append(unit) or sentinel,
+    )
+
+    assert privsep.check_wiim_remote_mic_readable_inputs() is sentinel
+    assert seen == ["jasper-wiim-remote-mic"]
+
+
 def test_not_installed_unit_skips(monkeypatch):
     monkeypatch.setattr(
         privsep,

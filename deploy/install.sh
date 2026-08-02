@@ -45,6 +45,7 @@ INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
+source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
@@ -1075,6 +1076,22 @@ EOF
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
 }
 
+run_captured_command() {
+    # run_captured_command <output-variable> <command...>
+    # Capture combined stdout/stderr, always replay it, and preserve the
+    # command's success/failure for install steps that need the output again.
+    local output_variable="$1"
+    shift
+    local command_output
+    if ! command_output="$("$@" 2>&1)"; then
+        printf -v "${output_variable}" '%s' "${command_output}"
+        printf '%s\n' "${command_output}"
+        return 1
+    fi
+    printf -v "${output_variable}" '%s' "${command_output}"
+    printf '%s\n' "${command_output}"
+}
+
 ensure_output_hardware_state() {
     # The CamillaDSP latency floor resolver reads the same output-hardware
     # state file the reconciler owns. A fresh install must write it before the
@@ -1082,31 +1099,16 @@ ensure_output_hardware_state() {
     # conservative global 1024/2048 default.
     local output
     echo "  Writing output hardware state before Camilla statefile seed"
-    if ! output="$(JASPER_OUTPUT_HARDWARE_STATE_PATH=/run/jasper-output-hardware/output_hardware.json \
+    if ! run_captured_command output env \
+        JASPER_OUTPUT_HARDWARE_STATE_PATH=/run/jasper-output-hardware/output_hardware.json \
         JASPER_APLAY="${JASPER_APLAY:-aplay}" \
-        /opt/jasper/.venv/bin/python -m jasper.output_hardware --write 2>&1)"; then
-        printf '%s\n' "${output}"
+        /opt/jasper/.venv/bin/python -m jasper.output_hardware --write; then
         return 1
     fi
-    printf '%s\n' "${output}"
 }
 
-render_outputd_cutover_config() {
-    # Design call for #27: generate the seeded flat startup config through the
-    # production outputd graph, with the active DAC profile's Camilla floor, not
-    # a bypass or a hand-edited static YAML. The active-speaker runtime contract
-    # below still decides whether flat is legal for the saved topology.
-    #
-    # Also renders the RING flat startup config (outputd-cutover-ring.yml), the
-    # shm_ring sibling. It is INERT until a coupling arms the rings (loopback
-    # coupling selects the plain cutover), but it MUST exist on disk so a
-    # ring-armed box's statefile seeding can re-seed a ring graph instead of
-    # reverting to loopback (audit finding 5). Rendering it every deploy keeps
-    # the ring graph's fixed low-latency geometry current alongside the loopback
-    # config's active-DAC latency floor.
-    local output
-    echo "  Rendering outputd flat startup configs (loopback DAC floor + ring geometry)"
-    if ! output="$(/opt/jasper/.venv/bin/python - <<'PY' 2>&1
+_render_outputd_cutover_configs() {
+    /opt/jasper/.venv/bin/python - <<'PY'
 from pathlib import Path
 
 from jasper.camilla_config_contract import parse_camilla_devices_config
@@ -1137,11 +1139,26 @@ print(
     f"target_level={ring_devices.get('target_level')} (inert until shm_ring armed)"
 )
 PY
-    )"; then
-        printf '%s\n' "${output}"
+}
+
+render_outputd_cutover_config() {
+    # Design call for #27: generate the seeded flat startup config through the
+    # production outputd graph, with the active DAC profile's Camilla floor, not
+    # a bypass or a hand-edited static YAML. The active-speaker runtime contract
+    # below still decides whether flat is legal for the saved topology.
+    #
+    # Also renders the RING flat startup config (outputd-cutover-ring.yml), the
+    # shm_ring sibling. It is INERT until a coupling arms the rings (loopback
+    # coupling selects the plain cutover), but it MUST exist on disk so a
+    # ring-armed box's statefile seeding can re-seed a ring graph instead of
+    # reverting to loopback (audit finding 5). Rendering it every deploy keeps
+    # the ring graph's fixed low-latency geometry current alongside the loopback
+    # config's active-DAC latency floor.
+    local output
+    echo "  Rendering outputd flat startup configs (loopback DAC floor + ring geometry)"
+    if ! run_captured_command output _render_outputd_cutover_configs; then
         return 1
     fi
-    printf '%s\n' "${output}"
 }
 
 ensure_outputd_camilla_statefile() {
@@ -1155,15 +1172,14 @@ ensure_outputd_camilla_statefile() {
     # persisted coupling from fanin.env (no --coupling passed) and selects the ring
     # config only when the box is ring-armed. Default (loopback) stays on the plain
     # cutover config, byte-for-byte as before.
-    if ! output="$(/opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
+    if ! run_captured_command output \
+        /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
         --statefile /var/lib/camilladsp/outputd-statefile.yml \
         --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
         --ring-flat-config "${CAMILLA_CONF}/outputd-cutover-ring.yml" \
-        --write-statefile 2>&1)"; then
-        printf '%s\n' "${output}"
+        --write-statefile; then
         return 1
     fi
-    printf '%s\n' "${output}"
     if [[ "${JASPER_RESTART_CAMILLA_ON_STATEFILE_REPAIR:-0}" == "1" ]] \
        && [[ "${output}" == *"statefile written: yes"* ]]; then
         echo "  Restarting jasper-camilla.service after statefile repair"
@@ -1241,29 +1257,18 @@ ensure_crossover_camilla_statefile() {
     # JASPER_RESTART_* knob here — only the seed write.
     local output
     echo "  Seeding camilla#2 crossover statefile via active-speaker runtime contract"
-    if ! output="$(/opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
+    if ! run_captured_command output \
+        /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
         --statefile /var/lib/camilladsp/crossover-statefile.yml \
         --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
-        --write-statefile 2>&1)"; then
-        printf '%s\n' "${output}"
+        --write-statefile; then
         return 1
     fi
-    printf '%s\n' "${output}"
 }
 
 find_card() {
     # find_card "<aplay|arecord>" "<grep regex>"
-    local tool="$1" regex="$2"
-    local card
-    card=$("$tool" -L 2>/dev/null \
-        | grep -B1 -iE "$regex" \
-        | grep -oE 'CARD=[^,]+' \
-        | head -1 \
-        | sed 's/CARD=//' \
-        || true)
-    if [[ -n "$card" ]]; then
-        echo "$card"
-    fi
+    jasper_find_alsa_card "$1" "$2"
 }
 
 detect_card() {

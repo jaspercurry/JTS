@@ -289,31 +289,6 @@ def ring_install_profile_ready() -> tuple[bool, str]:
     return True, f"install profile {profile} permits automatic shm_ring"
 
 
-def default_ring_gates() -> "tuple[tuple[str, RingGate], ...]":
-    """The #1169 ring arm preflights the auto pass reuses, in ``_arm_ring`` order.
-
-    Lazily binds the reconciler's own gate helpers so the auto pass gates on the
-    SAME predicates a manual ``shm_ring`` arm would — no second, drift-prone
-    eligibility copy — with ONE deliberate difference: the topology gate is the
-    STRICT (fail-closed-on-unreadable) variant ``ring_topology_ready_strict`` rather
-    than the human-arm ``ring_topology_ready`` (an unattended default must not
-    arm→rollback-churn on a transiently unreadable topology — defect-F4). This
-    factory owns the PROFILE + ASSET + TOPOLOGY gates that need no env text; the
-    reconciler appends the ROUTE-support gate and the two geometry gates (which need the
-    outputd/fanin env text) as bound closures.
-    """
-    from jasper.fanin.coupling_reconcile import (
-        ring_assets_ready,
-        ring_topology_ready_strict,
-    )
-
-    return (
-        ("install_profile", ring_install_profile_ready),
-        ("ring_assets", ring_assets_ready),
-        ("ring_topology", ring_topology_ready_strict),
-    )
-
-
 def read_usb_gadget_available() -> bool:
     """Read the reconciler-owned capability used by every USB consumer."""
 

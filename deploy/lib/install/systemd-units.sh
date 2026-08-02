@@ -69,6 +69,9 @@ install_jasper_support_files() {
         "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
         /usr/local/lib/jasper/jasper-asound-render.sh
     install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh" \
+        /usr/local/lib/jasper/jasper-alsa-card.sh
+    install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
         /usr/local/lib/jasper/jasper-env-file.sh
     # Single canonical core-graph park list, sourced at runtime by
@@ -181,6 +184,70 @@ install_local_audio_graph_unit_files() {
         echo "  ERROR: core audio-graph unit install failed for: ${failed}" >&2
         return 1
     fi
+}
+
+_snapshot_full_unit_install_destination() {
+    local destination="$1" seen
+    if (( ${#install_transaction_paths[@]} > 0 )); then
+        for seen in "${install_transaction_paths[@]}"; do
+            if [[ "${seen}" == "${destination}" ]]; then
+                return 0
+            fi
+        done
+    fi
+    if [[ -e "${destination}" || -L "${destination}" ]]; then
+        command install -d -m 0700 \
+            "${install_transaction_dir}/existing$(dirname "${destination}")"
+        cp -a -- \
+            "${destination}" \
+            "${install_transaction_dir}/existing${destination}"
+        install_transaction_paths+=("${destination}")
+        install_transaction_existed+=(1)
+    else
+        install_transaction_paths+=("${destination}")
+        install_transaction_existed+=(0)
+    fi
+}
+
+_transactional_full_unit_install() {
+    # Directory creation is harmless to retain on rollback. Every file
+    # promotion is snapshotted exactly once before the ordinary atomic
+    # `install` replacement, including installs performed by nested helpers.
+    local arg destination
+    for arg in "$@"; do
+        if [[ "${arg}" == "-d" ]]; then
+            command install "$@"
+            return
+        fi
+    done
+    destination="${!#}"
+    _snapshot_full_unit_install_destination "${destination}"
+    command install "$@"
+}
+
+_rollback_full_unit_install_transaction() {
+    local index destination backup restore
+    # A rollback failure must terminate normally, not recursively re-enter the
+    # ERR trap with a half-consumed backup set.
+    trap - ERR
+    # Stop intercepting `install` before recovery so rollback cannot snapshot
+    # its own restoration work.
+    unset -f install
+    for ((index=${#install_transaction_paths[@]} - 1; index >= 0; index--)); do
+        destination="${install_transaction_paths[index]}"
+        backup="${install_transaction_dir}/existing${destination}"
+        if [[ "${install_transaction_existed[index]}" == "1" ]]; then
+            restore="${destination}.jasper-rollback.$$"
+            rm -f -- "${restore}"
+            cp -a -- "${backup}" "${restore}"
+            mv -f -- "${restore}" "${destination}"
+        else
+            rm -f -- "${destination}"
+        fi
+    done
+    systemctl daemon-reload 2>/dev/null || true
+    rm -rf -- "${install_transaction_dir:?}"
+    echo "  ERROR: rolled back the incomplete full-profile unit generation" >&2
 }
 
 install_streambox_web_unit_files() {
@@ -906,6 +973,20 @@ install_systemd_units() {
     # owners before any profile-specific units are staged or started.
     install_jasper_support_files
     install_local_audio_graph_unit_files
+    # Stage the remaining full-profile generation as one rollback domain. A
+    # failed copy/render restores every destination touched since this point,
+    # reloads systemd against that prior generation, and exits before any unit
+    # enable/start mutation below. The wrapper is removed at commit; a staging
+    # failure exits the installer immediately after rollback.
+    local install_transaction_dir
+    install_transaction_dir="$(mktemp -d /tmp/jasper-full-unit-install.XXXXXX)"
+    local -a install_transaction_paths=()
+    local -a install_transaction_existed=()
+    local install_transaction_errtrace_was_set=0
+    [[ $- == *E* ]] && install_transaction_errtrace_was_set=1
+    set -E
+    trap '_rollback_full_unit_install_transaction' ERR
+    install() { _transactional_full_unit_install "$@"; }
     # The enhanced-AEC installed marker authorizes loading native code. Keep
     # its containing directory outside group-writable StateDirectory=jasper so
     # a non-root service in the shared `jasper` group cannot replace the proof.
@@ -1151,8 +1232,10 @@ install_systemd_units() {
     # card or "auto" so they can no-op/wait safely when absent.
     sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
-        > "${SYSTEMD_DIR}/jasper-dac-init.service"
-    chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
+        > "${install_transaction_dir}/jasper-dac-init.service"
+    install -m 0644 \
+        "${install_transaction_dir}/jasper-dac-init.service" \
+        "${SYSTEMD_DIR}/jasper-dac-init.service"
     # Diagnostic monitor: 1Hz poll on the dongle's Headphone control,
     # logs every change to journald. Companion to jasper-dac-init —
     # if something moves the control after boot, this surfaces when
@@ -1162,8 +1245,10 @@ install_systemd_units() {
         /usr/local/bin/jasper-headphone-monitor
     sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
-        > "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
-    chmod 0644 "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+        > "${install_transaction_dir}/jasper-headphone-monitor.service"
+    install -m 0644 \
+        "${install_transaction_dir}/jasper-headphone-monitor.service" \
+        "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
     # Custom udev rule: re-pins the dongle's Headphone control to 100%
     # on every USB (re-)enumeration AND disables autosuspend on the
     # device. Compensates for two upstream issues:
@@ -1287,6 +1372,18 @@ install_systemd_units() {
     migrate_usbsink_init_to_usbgadget
 
     systemctl daemon-reload
+    # Commit only after systemd accepted the complete generation. Runtime
+    # mutations below are deliberately outside the staging transaction.
+    trap - ERR
+    if [[ "${install_transaction_errtrace_was_set}" == "0" ]]; then
+        set +E
+    fi
+    unset -f install
+    rm -rf -- "${install_transaction_dir:?}"
+
+    # Exercise both cgroup protection slices now as well as enabling them for
+    # boot. jts-mic.slice used to be merely copied despite carrying [Install].
+    systemctl enable --now jts-audio.slice jts-mic.slice
 
     # Hardware-gated USB management network: enable the composite gadget (first
     # gadget unit we enable) and wire the device-activated DHCP. Its condition

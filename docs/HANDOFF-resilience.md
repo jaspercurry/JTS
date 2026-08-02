@@ -737,6 +737,10 @@ in effect, the kernel literally cannot swap those daemons' pages to
 zram — under memory pressure it either keeps the pages in real RAM,
 sheds pages from other (unprotected) cgroups, or OOM-kills the
 audio daemon (a clean restart that's preferable to silent jitter).
+The full-profile installer explicitly enables and starts both
+`jts-audio.slice` and `jts-mic.slice` after the complete unit generation has
+loaded; neither slice relies on a later member start to exercise its
+`[Install]` path.
 
 Why slices rather than `MemorySwapMax=0` on each unit directly:
 expressiveness for future scaling. New audio daemons go into the

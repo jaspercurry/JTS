@@ -518,6 +518,12 @@ def check_usbmic_readable_inputs() -> CheckResult:
     return _check_daemon("jasper-usbmic")
 
 
+@doctor_check(order=23.593, group="privsep")
+def check_wiim_remote_mic_readable_inputs() -> CheckResult:
+    """The WiiM remote-mic adapter must be able to read its pairing state."""
+    return _check_daemon("jasper-wiim-remote-mic")
+
+
 @doctor_check(order=23.595, group="privsep")
 def check_household_secret_readable() -> CheckResult:
     """A PRESENT household_secret must be readable by jasper-control (the

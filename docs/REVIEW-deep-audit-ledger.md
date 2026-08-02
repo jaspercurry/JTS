@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 45 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 31 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 595
+- **fixed**: 609
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -224,8 +224,8 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0278 | `deploy/assets/wake-corpus/js/main.js` :: refreshSessions | nit | W5 | **fixed** | session metadata is escaped before HTML/attribute insertion |
 | DA-0279 | `deploy/install.sh` :: main() / install_profile_legacy_marker_migra | nit | W5 | **fixed** | migration event reports the resolved install profile |
 | DA-0280 | `deploy/lib/install/systemd-units.sh` :: install_grouping_unit_files | nit | W5 | **fixed** | sourced installer functions now keep loop variables local — this branch |
-| DA-0281 | `deploy/lib/install/systemd-units.sh` :: install_systemd_units | nit | W5 | **open** | — |
-| DA-0282 | `deploy/systemd/jts-mic.slice` :: :32 | nit | W5 | **open** | — |
+| DA-0281 | `deploy/lib/install/systemd-units.sh` :: install_systemd_units | nit | W5 | **fixed** | generated unit publication is transactional and rolls back the bounded post-core cohort on failure — this branch |
+| DA-0282 | `deploy/systemd/jts-mic.slice` :: :32 | nit | W5 | **fixed** | full install explicitly enables and starts both audio resource slices — this branch |
 | DA-0283 | `deploy/udev/99-jasper-audio-hardware-reconcile.rules` :: ENV{PRODUCT}=="05ac/110a/*" | nit | W5 | **mooted** | zero-padded variant is an intentional hot-unplug compatibility guard, pinned alongside the observed unpadded udev form |
 | DA-0284 | `docs/HANDOFF-audio-graph-consolidation.md` :: 48 | nit | W5 | **fixed** | obsolete lean-FIFO path reference was removed with the owning lane |
 | DA-0285 | `docs/HANDOFF-calibration-agent.md` :: 790,817,1192 | nit | W5 | **fixed** | cost/provider prose reconciled with shipped advisor names and household cap |
@@ -269,7 +269,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0323 | `jasper/cli/doctor/__init__.py` :: probe_aec_ref_path | nit | W5 | **fixed** | active audible AEC probing moved to dedicated `aec_probe.py` |
 | DA-0324 | `jasper/cli/doctor/audio.py` :: check_fanin_binary_installed..check_aec_cloc | nit | W5 | **fixed** | fan-in, outputd, ring, and runtime checks moved to `audio_runtime.py` |
 | DA-0325 | `jasper/cli/doctor/audio.py` :: check_outputd_service:2311 | nit | W5 | **fixed** | outputd service check decomposed into focused contract helpers |
-| DA-0326 | `jasper/cli/doctor/privsep.py` :: MANIFEST (jasper-wiim-remote-mic) | nit | W5 | **open** | — |
+| DA-0326 | `jasper/cli/doctor/privsep.py` :: MANIFEST (jasper-wiim-remote-mic) | nit | W5 | **fixed** | remote-mic privsep manifest entry now executes the shared daemon contract check — this branch |
 | DA-0327 | `jasper/cli/route_latency_harness.py` :: _cmd_run / _add_analyze_args / _add_schedule | nit | W5 | **fixed** | run CLI no longer accepts an option it always overwrites |
 | DA-0328 | `jasper/cli/system_soak.py` :: :253 | nit | W5 | **fixed** | system-soak calls the public `SystemSampler.read_service_states` boundary — this branch |
 | DA-0329 | `jasper/cli/wake_enroll.py` :: record_window / quadrant_dirs | nit | W5 | **fixed** | unused two-leg compatibility wrappers removed; `record_legs` is the sole capture API — this branch |
@@ -278,7 +278,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0332 | `jasper/config.py` :: Config.camilla2_host / camilla2_port / camil | nit | W5 | **fixed** | removed seven dead fields whose runtime owners read env directly |
 | DA-0333 | `jasper/control/aec_endpoints.py` :: _atomic_rewrite_env | nit | W5 | **fixed** | env persistence now calls the canonical atomic update owner directly |
 | DA-0334 | `jasper/control/server.py` :: :484, :487, :490, :496, :497, :506 | nit | W5 | **fixed** | extracted-domain re-export aliases, including the final Spotify remnant, removed |
-| DA-0335 | `jasper/control/server.py` :: _aec_full_status | nit | W5 | **open** | — |
+| DA-0335 | `jasper/control/server.py` :: _aec_full_status | nit | W5 | **fixed** | monkeypatch-identity routing removed when AEC helper state moved to its owning module — `d2f2247b5` |
 | DA-0336 | `jasper/control/state_aggregate.py` :: _camilla_status | nit | W5 | **fixed** | fail-soft Camilla probe failures emit a structured debug event |
 | DA-0337 | `jasper/control/system_metrics.py` :: SystemSampler.stop | nit | W5 | **fixed** | unused test-only stop seam and dormant flag removed |
 | DA-0338 | `jasper/control/volume_ops.py` :: _build_spotify_router_or_none / _spotify_emp | nit | W5 | **fixed** | empty-router cache access is serialized under a dedicated lock |
@@ -291,23 +291,23 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0345 | `jasper/cues/manager.py` :: AudioCueManager.status :168 | nit | W5 | **fixed** | stale doctor consumer claim removed from the status docstring — this branch |
 | DA-0346 | `jasper/fanin/buffer_reconcile.py` :: :112 | nit | W5 | **fixed** | dead env alias and import removed |
 | DA-0347 | `jasper/fanin/coupling_reconcile.py` :: _resolved_fanin_ring_slots | nit | W5 | **fixed** | unused resolver wrapper removed |
-| DA-0348 | `jasper/fanin/coupling_reconcile.py` :: reconcile_auto | nit | W5 | **open** | — |
+| DA-0348 | `jasper/fanin/coupling_reconcile.py` :: reconcile_auto | nit | W5 | **fixed** | reconciler-owned probes no longer create a reverse import through coupling_auto — this branch |
 | DA-0349 | `jasper/fanin/coupling_reconcile.py` :: reconcile_coupling | nit | W5 | **fixed** | unreachable null-action branch removed |
 | DA-0350 | `jasper/flight_recorder.py` :: RingFlushHandler.flush_buffer | nit | W5 | **fixed** | direct and signal-driven flight-recorder flushes hold the handler lock |
 | DA-0351 | `jasper/google_creds.py` :: GoogleRegistry.save | nit | W5 | **fixed** | Google account registry uses canonical atomic publication and cleanup |
-| DA-0352 | `jasper/mics/__init__.py` :: PROFILES | nit | W5 | **open** | — |
+| DA-0352 | `jasper/mics/__init__.py` :: PROFILES | nit | W5 | **fixed** | unused phantom microphone registry removed; concrete profile ownership documented — this branch |
 | DA-0353 | `jasper/mics/xvf3800.py` :: is_recommended_firmware | nit | W5 | **fixed** | independently dead firmware predicate removed alongside unreachable mixer mutator — #1322 |
 | DA-0354 | `jasper/multiroom/config.py` :: _format_roster | nit | W5 | **fixed** | obsolete private serializer alias removed; `format_roster` remains the public contract — this branch |
-| DA-0355 | `jasper/multiroom/reconcile.py` :: _write_outputd_env:1066-1101 | nit | W5 | **open** | — |
+| DA-0355 | `jasper/multiroom/reconcile.py` :: _write_outputd_env:1066-1101 | nit | W5 | **fixed** | consumer-neutral derived-env writer now emits the correct per-consumer failure event — this branch |
 | DA-0356 | `jasper/music_sources.py` :: is_music_source | nit | W5 | **fixed** | unused predicate removed |
 | DA-0357 | `jasper/mux.py` :: :1020 | nit | W5 | **mooted** | later mux refactor removed the review-tool artifact comment |
 | DA-0358 | `jasper/output_hardware.py` :: _find_controller | nit | W5 | **fixed** | redundant outer USB-name condition removed |
 | DA-0359 | `jasper/output_hardware.py` :: main | nit | W5 | **fixed** | CLI uses the standard `sys.argv` surface |
 | DA-0360 | `jasper/output_topology.py` :: OutputTopology.output_layout | nit | W5 | **fixed** | unused convenience method and test removed |
 | DA-0361 | `jasper/output_topology.py` :: SpeakerChannel / channel_identity_report | nit | W5 | **fixed** | speaker-channel identity serialization now lives on the domain model |
-| DA-0362 | `jasper/peering/daemon.py` :: _spawn_send | nit | W5 | **open** | — |
+| DA-0362 | `jasper/peering/daemon.py` :: _spawn_send | nit | W5 | **fixed** | multicast send tasks retained through completion and cancelled/drained on daemon stop — this branch |
 | DA-0363 | `jasper/research/providers/openai_research.py` :: import reconnect_backoff_delay | nit | W5 | **fixed** | dependency-free reconnect schedule moved to public `jasper.backoff`; research no longer imports private voice internals — this branch |
-| DA-0364 | `jasper/ring_negotiation.py` :: accept | nit | W5 | **open** | — |
+| DA-0364 | `jasper/ring_negotiation.py` :: accept | nit | W5 | **fixed** | source-derived negotiation model moved from production package to its sole CI/test owner — this branch |
 | DA-0365 | `jasper/sound/profile.py` :: ProfileLibraryEntry.to_dict | nit | W5 | **fixed** | profile descriptions survive serialization, overwrite, and rename |
 | DA-0366 | `jasper/tools/packs.py` :: register_packs | nit | W5 | **fixed** | raising pack gates are isolated like build/registration failures |
 | DA-0367 | `jasper/tools/spotify.py` :: _resolve_for_play :470 | nit | W5 | **fixed** | function documentation restored as the actual docstring |
@@ -336,7 +336,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0391 | `jasper/web/wifi_setup.py` :: connect_new | nit | W5 | **open** | — |
 | DA-0392 | `jasper/wifi_guardian_persistence.py` :: _parse_env_line | nit | W5 | **fixed** | unreachable newline stripping removed |
 | DA-0393 | `jasper/xvf/xvf_host.py` :: PARAMETERS | nit | W5 | **fixed** | unused compatibility alias removed |
-| DA-0394 | `jasper_aec3/setup.py` :: module | nit | W5 | **open** | — |
+| DA-0394 | `jasper_aec3/setup.py` :: module | nit | W5 | **fixed** | AEC doc-impact map now includes the full `jasper_aec3/**` package — `697e1a6f6` |
 | DA-0395 | `rust/jasper-clock/src/htimestamp.rs` :: HtimestampGuard (re-exported lib.rs:73-75) | nit | W5 | **open** | — |
 | DA-0396 | `rust/jasper-clock/src/lib.rs` :: Dll::update_lock | nit | W5 | **fixed** | unused lock-update parameter removed |
 | DA-0397 | `rust/jasper-dual-dac-lab/src/main.rs` :: configure_pcm (:590,594) vs validate_run_con | nit | W5 | **fixed** | buffer/period relationship uses the shared overflow-safe predicate |
@@ -373,8 +373,8 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0499 | `deploy/assets/correction/js/main.js` :: reportIssueList:1766 vs renderQuality:868 /  | nit | W3 | **fixed** | browser-audio quality rendering reuses the shared issue-list renderer |
 | DA-0500 | `deploy/assets/sound-profile/js/main.js` :: prepareSummedTest :5266, stopSummedTest :538 | nit | W3 | **fixed** | summed-test actions share one async busy/render/error/restoration bracket with failure regression — this branch |
 | DA-0501 | `deploy/bin/jasper-render-asound-conf` :: :15 OUTPUT= | nit | W3 | **fixed** | test pins renderer output, `/etc/asound.conf` reader, and installed symlink as one path contract — this branch |
-| DA-0502 | `deploy/install.sh` :: ensure_output_hardware_state | nit | W3 | **open** | — |
-| DA-0503 | `deploy/install.sh` :: find_card | nit | W3 | **open** | — |
+| DA-0502 | `deploy/install.sh` :: ensure_output_hardware_state | nit | W3 | **fixed** | mandatory capture-and-replay commands share one portable failure-preserving helper — this branch |
+| DA-0503 | `deploy/install.sh` :: find_card | nit | W3 | **fixed** | installer and hotplug reconciler share one ALSA-card parser — this branch |
 | DA-0504 | `firmware/dial/platformio.ini` :: [env:crowpanel-128-rotary-hmi] | nit | W3 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0505 | `firmware/dial/src/main.cpp` :: postJson / postVolumeAdjust | nit | W3 | **mooted** | bespoke ESP32 dial/AMOLED stack retired — `8c7330aff` |
 | DA-0506 | `jasper/_oom_adj.py` :: EXPECTED | nit | W3 | **fixed** | executable resilience contract pins Python OOM inventory to every installed unit/drop-in and the canonical ladder — #1347 |
@@ -413,10 +413,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0539 | `jasper/correction/level_match.py` :: _env_float | nit | W3 | **fixed** | level matching already consumes canonical `bounded_env_float` |
 | DA-0540 | `jasper/correction/runtime_integrity.py` :: FANIN_CONTROL_SOCKET | nit | W3 | **fixed** | runtime integrity reads the canonical fan-in status socket constant |
 | DA-0541 | `jasper/correction/status.py` :: session_snapshot | nit | W3 | **fixed** | live and persisted session payloads share one common field builder |
-| DA-0542 | `jasper/fanin/coupling_reconcile.py` :: _recover_to_loopback | nit | W3 | **open** | — |
+| DA-0542 | `jasper/fanin/coupling_reconcile.py` :: _recover_to_loopback | nit | W3 | **fixed** | loopback disarm and ARM recovery share one daemon-operation result with retained failure detail — this branch |
 | DA-0543 | `jasper/home_assistant.py` :: 583 | nit | W3 | **fixed** | runtime and doctor use the typed `ha_verify_ssl` field directly; duplicated fallbacks removed — this branch |
 | DA-0544 | `jasper/multiroom/reconcile.py` :: _unit_is_enabled:818, _unit_is_active:835 | nit | W3 | **fixed** | shared tri-state systemd probe consolidates the duplicate wrappers — #1299 |
-| DA-0545 | `jasper/multiroom/reconcile.py` :: main():1560-1568,1639-1647 | nit | W3 | **open** | — |
+| DA-0545 | `jasper/multiroom/reconcile.py` :: main():1560-1568,1639-1647 | nit | W3 | **fixed** | solo fallback owns the duplicated role-reset sequence — this branch |
 | DA-0546 | `jasper/multiroom/runtime_balance.py` :: active_endpoint | nit | W3 | **fixed** | runtime balance reuses the canonical active-member predicate — this branch |
 | DA-0547 | `jasper/mux.py` :: _busctl | nit | W3 | **fixed** | shared async busctl client owns subprocess execution and timeout cleanup |
 | DA-0548 | `jasper/mux.py` :: _busctl | nit | W3 | **fixed** | busctl property decoding is shared across mux and renderer consumers |
