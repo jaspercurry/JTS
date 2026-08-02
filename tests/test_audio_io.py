@@ -342,7 +342,7 @@ async def test_drain_resets_on_flush():
     assert p.expected_drain_at() == 0.0
 
 
-async def test_wait_drained_sleeps_until_deadline(monkeypatch):
+async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
     """wait_drained must ask for (at least) the deadline's remaining
     duration — the mechanism the idle watchdog leans on to never end a
     turn before the last sample exits the DAC.

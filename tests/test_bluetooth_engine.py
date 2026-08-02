@@ -624,7 +624,14 @@ async def test_concurrent_device_operations_share_one_recovered_bus(monkeypatch)
 
     pair_task = asyncio.create_task(collect_pair_events())
     connect_task = asyncio.create_task(engine.connect("CA:AC:04:04:09:D7"))
-    await connector.entered.wait()
+    # No producer= here: pair_task and connect_task race for the one shared
+    # bus-recovery connect() call, and which of them actually reaches
+    # connector.entered.set() is the race this test asserts on
+    # (connector.connect_calls == 1 below proves only one wins). Naming
+    # either task would misattribute a future timeout's cause to the wrong
+    # one -- producer is optional (tests/_async_wait.py), and the bound
+    # alone still turns a hang into a fast, clear failure.
+    await wait_signalled(connector.entered, "shared bus recovery entered")
     await asyncio.sleep(0)
     assert not pair_task.done()
     assert not connect_task.done()

@@ -42,17 +42,13 @@ from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled
 #: first. Fix with `wait_signalled()` and DELETE the entry — the guard
 #: fails on a stale entry too, so this only ever shrinks. Never add.
 #:
-#: The 2026-08-02 tranche shrank this from 41 to 1. The sole survivor,
-#: test_concurrent_device_operations_share_one_recovered_bus, has two
-#: racing producer tasks (pair_task and connect_task) contending for one
-#: shared bus-recovery connect() call — which one actually reaches
-#: `connector.entered.set()` is the very race the test asserts on, so no
-#: single task can be named as `wait_signalled`'s producer without
-#: misattributing a future failure's cause to the wrong task.
-KNOWN_UNBOUNDED_WAITS: frozenset[tuple[str, str]] = frozenset({
-    ("tests/test_bluetooth_engine.py",
-     "test_concurrent_device_operations_share_one_recovered_bus"),
-})
+#: The 2026-08-02 tranche emptied this (was 41). Even a racing-producer
+#: site with no single task nameable as `wait_signalled`'s `producer=` —
+#: test_concurrent_device_operations_share_one_recovered_bus's pair_task
+#: vs. connect_task — still migrates: `producer=` is optional, and the
+#: bound alone (no producer attribution) still turns a hang into a fast,
+#: clear failure instead of leaving the list non-empty.
+KNOWN_UNBOUNDED_WAITS: frozenset[tuple[str, str]] = frozenset()
 
 #: Calls that bound whatever they enclose.
 _BOUNDING_CALLS = frozenset({"wait_for", "timeout", "wait_signalled"})
