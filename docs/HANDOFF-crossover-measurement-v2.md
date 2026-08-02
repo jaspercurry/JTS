@@ -2578,6 +2578,31 @@ no retries-as-bodge). Treat these as regression fences.
     REPORTED verdict, not a gate: nothing in the v2 flow fails a capture on
     it, so a session that starts saying `reduced` or `insufficient` is the
     instrument working, not a new rejection.
+
+    **Both sides of that subtraction are read in ONE domain, and which one
+    the noise report picks (second half of #1830).** Threading the report
+    made the verdict populate, but it was still subtracted from the
+    DECONVOLVED transfer function — and the deconvolution divides the capture
+    by the reference regenerated at the segment's own `gain_db`, so
+    `magnitude_db` is invariant to how loud MEASURE played (the pinned
+    contract `test_measure_analysis_is_invariant_to_the_programmed_drive_gain`).
+    A fixed room floor subtracted from an invariant is an invariant: measured
+    through the production analyzer, a MEASURE played 20 dB quieter into an
+    unchanged room reported the SAME worst-band SNR (86.0 dB woofer / 82.9 dB
+    tweeter) and the same `ok`, while the true in-band SNR fell 20.0 dB to as
+    low as −0.7 dB — over-reported by +19 to +59 dB per band. So the sentence
+    above ("did the quieter sweep still clear the floor?") was the one thing
+    it could not answer. `program_analysis._driver_snr_block` now makes the
+    branch `driver_acoustics.analyze_driver_capture` always made and #2024 set
+    for the summed gate: a `"raw"` noise report — which is every report
+    `framed_ambient_band_report` emits, so every ambient a v2 CHECK hands
+    forward — pairs with the RAW captured sweep's band levels
+    (`window="rectangular"`, #1847's fix for a non-stationary sweep); a
+    `"deconvolved"` report still reads the transfer function; a raw report
+    with no captured segment to pair against yields NO verdict rather than a
+    cross-domain one. The verdict now tracks the played level dB-for-dB, so
+    more sessions will disclose `reduced` / `insufficient` than did before —
+    still reported, still not a gate.
     It is deliberately absent (not guessed) on a conductor rehydrated past
     CHECK, which has no ambient of its own — the report is not persisted
     across that boundary because a noise floor measured at another mic
