@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 82 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 77 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 558
+- **fixed**: 563
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -265,7 +265,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0319 | `jasper/citibike.py` :: CitiBikeClient.resolve_label | nit | W5 | **fixed** | unused client method and test removed |
 | DA-0320 | `jasper/cli/aec_bridge.py` :: LegEmitter.engine_token :581, add_emitter(.. | nit | W5 | **fixed** | never-populated emitter field and parameter removed |
 | DA-0321 | `jasper/cli/aec_bridge.py` :: MIC_DEVICE :157 | nit | W5 | **fixed** | unused import-time mic constant removed |
-| DA-0322 | `jasper/cli/aec_bridge.py` :: _aec_loop setup preamble (~1592-1906) vs loo | nit | W5 | **open** | — |
+| DA-0322 | `jasper/cli/aec_bridge.py` :: _aec_loop setup preamble (~1592-1906) vs loo | nit | W5 | **fixed** | optional-engine construction split into focused builders; steady-state loop retains frame, cue, and failure ownership — this branch |
 | DA-0323 | `jasper/cli/doctor/__init__.py` :: probe_aec_ref_path | nit | W5 | **fixed** | active audible AEC probing moved to dedicated `aec_probe.py` |
 | DA-0324 | `jasper/cli/doctor/audio.py` :: check_fanin_binary_installed..check_aec_cloc | nit | W5 | **fixed** | fan-in, outputd, ring, and runtime checks moved to `audio_runtime.py` |
 | DA-0325 | `jasper/cli/doctor/audio.py` :: check_outputd_service:2311 | nit | W5 | **fixed** | outputd service check decomposed into focused contract helpers |
@@ -402,7 +402,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0528 | `jasper/calibration_agent/proposal_sim.py` :: _curve_arrays | nit | W3 | **fixed** | shared curve-value normalization now serves advisor and simulation paths |
 | DA-0529 | `jasper/capture_relay/__init__.py` :: __all__ | nit | W3 | **fixed** | package exports every builder in the shipped capture-kind registry, including level-ramp and bass-nearfield — this branch |
 | DA-0530 | `jasper/capture_relay/health.py` :: relay_base_from_env | nit | W3 | **fixed** | import-light capture-relay config owner now serves health and control state |
-| DA-0531 | `jasper/cli/aec_bridge.py` :: _aec_loop: 5 safe-engine-process blocks (~20 | nit | W3 | **open** | — |
+| DA-0531 | `jasper/cli/aec_bridge.py` :: _aec_loop: 5 safe-engine-process blocks (~20 | nit | W3 | **fixed** | five fail-soft processing paths now share one degradation helper while primary AEC remains fail-fast — this branch |
 | DA-0532 | `jasper/cli/airplay_mode.py` :: _read_mode / jasper/web/airplay_setup.py:_cu | nit | W3 | **fixed** | CLI and web surfaces share fail-safe AirPlay mode resolution |
 | DA-0533 | `jasper/cli/doctor/audio.py` :: check_apple_dongle_audio:788 | nit | W3 | **fixed** | Apple USB IDs come from the active DAC profile registry |
 | DA-0534 | `jasper/cli/doctor/grouping.py` :: _parse_env_file | nit | W3 | **fixed** | grouping doctor reuses canonical env parsing |
@@ -514,9 +514,9 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0644 | `deploy/systemd/camillagui.service` :: :20 | nit | W4 | **fixed** | backend/socket/proxy lifecycle and installer activation contracts now have direct tests — this branch |
 | DA-0645 | `jasper/active_speaker/audible_policy.py` :: audible_role_block_code:35 | nit | W4 | **fixed** | missing, empty, and disallowed protection fail closed; protected high-frequency dome remains eligible — #1428 |
 | DA-0646 | `jasper/bluetooth/handlers/__init__.py` :: pick | nit | W4 | **fixed** | Bluetooth handler registry order, HID overlap, A2DP profiles, and default-last catch-all directly pinned — #1429 |
-| DA-0647 | `jasper/cli/aec_sweep_config.py` :: main / _restart_bridge | nit | W4 | **open** | — |
-| DA-0648 | `jasper/cli/chip_aec_policy.py` :: main / _query_outputd_status / _shell_assign | nit | W4 | **open** | — |
-| DA-0649 | `jasper/cli/usbsink_volume_main.py` :: main / _run | nit | W4 | **open** | — |
+| DA-0647 | `jasper/cli/aec_sweep_config.py` :: main / _restart_bridge | nit | W4 | **fixed** | direct CLI tests pin validation, JSON errors, and restart/reset-failed policy — this branch |
+| DA-0648 | `jasper/cli/chip_aec_policy.py` :: main / _query_outputd_status / _shell_assign | nit | W4 | **fixed** | direct tests cover status protocol errors, shell quoting, and JSON/shell dispatch — this branch |
+| DA-0649 | `jasper/cli/usbsink_volume_main.py` :: main / _run | nit | W4 | **fixed** | async CLI tests cover completion, signal cancellation, env wiring, logging, and interruption — this branch |
 | DA-0650 | `jasper/fanin/coupling_auto.py` :: read_boot_config_gadget_present | nit | W4 | **fixed** | JTS_BOOT_CONFIG_FILE precedence and JASPER_BOOT_CONFIG_PATH fallback directly pinned — #1430 |
 | DA-0651 | `jasper/web/correction_hub.py` :: section_tabs | nit | W4 | **fixed** | shared correction navigation uses page semantics, one current page, and escaped labels/links — #1431 |
 | DA-0652 | `jasper/web/tools_setup.py` :: module docstring | nit | W4 | **fixed** | tools wizard lightweight-import boundary enforced in a fresh interpreter — #1432 |
