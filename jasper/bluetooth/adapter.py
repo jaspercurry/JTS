@@ -11,6 +11,8 @@ this module is the mechanism.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from dbus_next import BusType, Variant  # type: ignore
@@ -30,6 +32,17 @@ DEFAULT_ADAPTER = "hci0"
 # This is the safety net so even if they forget to flip it back off,
 # the radio closes the pairing window after a few minutes.
 DISCOVERABLE_AUTO_OFF_SEC = 300
+
+
+@asynccontextmanager
+async def _system_bus() -> AsyncIterator[MessageBus]:
+    """Connect one system bus and always disconnect it on exit."""
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        yield bus
+    finally:
+        bus.disconnect()
 
 
 async def _close_pairing_window(props, *, best_effort: bool = False) -> None:
@@ -86,8 +99,7 @@ async def state(adapter: str = DEFAULT_ADAPTER) -> dict[str, Any]:
     discovering, plus our name/alias. Returns a flat JSON-able dict.
     Raises DBusError if bluez itself is unreachable; caller decides
     whether to surface "Bluetooth daemon not running" in the UI."""
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
+    async with _system_bus() as bus:
         _, props = await _adapter(bus, adapter)
         all_props = await props.call_get_all("org.bluez.Adapter1")
         def _v(k, d=None):
@@ -104,31 +116,23 @@ async def state(adapter: str = DEFAULT_ADAPTER) -> dict[str, Any]:
             "discovering": bool(_v("Discovering", False)),
             "uuids": [str(u) for u in (_v("UUIDs", []) or [])],
         }
-    finally:
-        bus.disconnect()
 
 
 async def set_powered(value: bool, adapter: str = DEFAULT_ADAPTER) -> None:
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
+    async with _system_bus() as bus:
         _, props = await _adapter(bus, adapter)
         await props.call_set(
             "org.bluez.Adapter1", "Powered", Variant("b", bool(value)),
         )
-    finally:
-        bus.disconnect()
 
 
 async def set_alias(name: str, adapter: str = DEFAULT_ADAPTER) -> None:
     """Set the adapter's friendly name as shown in Bluetooth pickers."""
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
+    async with _system_bus() as bus:
         _, props = await _adapter(bus, adapter)
         await props.call_set(
             "org.bluez.Adapter1", "Alias", Variant("s", name),
         )
-    finally:
-        bus.disconnect()
 
 
 async def set_discoverable(
@@ -147,8 +151,7 @@ async def set_discoverable(
     false; BlueZ documents Pairable as affecting only incoming pairing
     requests.
     """
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
+    async with _system_bus() as bus:
         _, props = await _adapter(bus, adapter)
         if value:
             try:
@@ -180,8 +183,6 @@ async def set_discoverable(
                 raise
         else:
             await _close_pairing_window(props)
-    finally:
-        bus.disconnect()
 
 
 async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
@@ -192,8 +193,7 @@ async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
     host. Cheap: one ObjectManager.GetManagedObjects round-trip."""
     from .models import is_hid_uuids
 
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
+    async with _system_bus() as bus:
         intro = await bus.introspect(BLUEZ_BUS, "/")
         om = bus.get_proxy_object(
             BLUEZ_BUS, "/", intro,
@@ -211,16 +211,13 @@ async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
             if is_hid_uuids([str(u) for u in uuids]):
                 return True
         return False
-    finally:
-        bus.disconnect()
 
 
 async def remove_device(
     mac: str, adapter: str = DEFAULT_ADAPTER,
 ) -> tuple[bool, str]:
     """Remove a known BlueZ device. Returns (ok, message)."""
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
+    async with _system_bus() as bus:
         a, _ = await _adapter(bus, adapter)
         dev_path = (
             f"/org/bluez/{adapter}/dev_{mac.upper().replace(':', '_')}"
@@ -230,5 +227,3 @@ async def remove_device(
             return True, "removed"
         except DBusError as e:
             return False, str(e)
-    finally:
-        bus.disconnect()

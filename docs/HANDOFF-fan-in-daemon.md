@@ -495,7 +495,7 @@ edges, delivery failures, and patrol repairs without journal guesswork.
 following the same 2 s timeout / fail-soft pattern used for the other
 daemons.
 
-### jasper-doctor checks (`jasper/cli/doctor/audio.py`)
+### jasper-doctor checks (`jasper/cli/doctor/audio_runtime.py`)
 
 Fan-in checks are in the main doctor run-list:
 

@@ -32,6 +32,21 @@ def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
     )
 
 
+def test_active_aec_probe_is_owned_by_dedicated_module(monkeypatch):
+    monkeypatch.setattr(
+        doctor.aec_probe,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="inactive\n"),
+    )
+
+    results = doctor.probe_aec_ref_path()
+
+    assert doctor.probe_aec_ref_path is doctor.aec_probe.probe_aec_ref_path
+    assert [(result.name, result.status) for result in results] == [
+        ("probe — bridge running", "fail")
+    ]
+
+
 def test_assess_aec_output_empty_journal_is_ok():
     """No rms lines = bridge probably just restarted in the assessment
     window. Not a failure, just nothing to evaluate."""

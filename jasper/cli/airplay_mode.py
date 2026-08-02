@@ -27,9 +27,14 @@ import os
 import subprocess
 import sys
 
-MODE_ENV_FILE = "/var/lib/jasper/airplay_mode.env"
+from jasper.airplay_mode import (
+    ENV_VAR,
+    MODE_ENV_FILE,
+    mode_from_env,
+)
+from jasper.env_load import parse_env_text
+
 SHAIRPORT_RESTART_TIMEOUT_SEC = 36.0  # 30s start + 5s stop + client margin
-ENV_VAR = "JASPER_AIRPLAY_FREE_RUNNING"
 
 
 def _read_mode() -> str:
@@ -39,22 +44,9 @@ def _read_mode() -> str:
     (caller surfaces a clean message)."""
     try:
         with open(MODE_ENV_FILE) as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip() != ENV_VAR:
-                    continue
-                v = v.strip()
-                if v.lower() in ("no", "false", "0"):
-                    return "synced"
-                if v.lower() in ("yes", "true", "1"):
-                    return "free-running"
-                return "synced"
+            return mode_from_env(parse_env_text(f.read()))
     except FileNotFoundError:
-        pass
-    return "synced"
+        return mode_from_env({})
 
 
 def _write_mode(mode: str) -> None:

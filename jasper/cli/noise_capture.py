@@ -79,6 +79,8 @@ from jasper.cli.wake_enroll import (
     systemctl,
 )
 
+from ._logging import configure_verbose_logging
+
 logger = logging.getLogger("jasper-noise-capture")
 
 
@@ -381,10 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_verbose_logging(verbose=args.verbose)
 
     if not args.skip_service_toggle:
         require_root()

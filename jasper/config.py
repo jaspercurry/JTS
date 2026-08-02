@@ -248,17 +248,6 @@ class Config:
 
     camilla_host: str
     camilla_port: int
-    # camilla#2 — the endpoint-crossover CamillaDSP instance on an active
-    # leader (docs/HANDOFF-distributed-active.md "Stage B"). Coexists with
-    # the always-on camilla#1 (camilla_host/port above, :1234).
-    # jasper-camilla-crossover.service is not boot-enabled; the multiroom
-    # reconciler arms/tears it down per-reconcile as a box gains/loses the
-    # active-leader role, and jasper.camilla.crossover_controller() is
-    # constructed live by the pair-balance-trim path on that role. These
-    # fields just give code a typed handle to its websocket + statefile.
-    camilla2_host: str
-    camilla2_port: int
-    camilla2_statefile: str
     duck_db: float
     duck_transport: str
     idle_timeout_sec: int
@@ -319,8 +308,6 @@ class Config:
     spotify_device_name: str
     spotify_accounts_path: str
     spotify_setup_url: str
-    spotify_web_bind_host: str
-    spotify_web_bind_port: int
 
     # Google integration: per-household-member Calendar + Gmail OAuth.
     # CLIENT_ID/SECRET come from a single Google Cloud Console OAuth
@@ -331,8 +318,6 @@ class Config:
     google_redirect_uri: str
     google_accounts_path: str
     google_setup_url: str
-    google_web_bind_host: str
-    google_web_bind_port: int
 
     # Top-level URL for the speaker's management dashboard. Used by
     # the audio-cue subsystem to tell the user where to go when they
@@ -685,12 +670,6 @@ class Config:
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
-            camilla2_host=_env("JASPER_CAMILLA2_HOST", "127.0.0.1"),
-            camilla2_port=_env_int("JASPER_CAMILLA2_PORT", 1235),
-            camilla2_statefile=_env(
-                "JASPER_CAMILLA2_STATEFILE",
-                "/var/lib/camilladsp/crossover-statefile.yml",
-            ),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin").strip().lower(),
             # Pre-response idle watchdog: closes the turn after this
@@ -819,15 +798,6 @@ class Config:
             spotify_setup_url=_env(
                 "JASPER_SPOTIFY_SETUP_URL", f"http://{hostname}/spotify"
             ),
-            # Where the jasper-web service listens. Reverse-proxied
-            # from nginx's port 80 — the public surface stays at
-            # jts.local/spotify regardless.
-            spotify_web_bind_host=_env(
-                "JASPER_SPOTIFY_WEB_HOST", "127.0.0.1"
-            ),
-            spotify_web_bind_port=_env_int(
-                "JASPER_SPOTIFY_WEB_PORT", 8765
-            ),
             # Google OAuth client (Calendar + Gmail). One Google Cloud
             # Console OAuth client serves every household member; per-
             # member refresh tokens are stored under google_accounts_path.
@@ -850,12 +820,6 @@ class Config:
             ),
             google_setup_url=_env(
                 "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/google",
-            ),
-            google_web_bind_host=_env(
-                "JASPER_GOOGLE_WEB_HOST", "127.0.0.1",
-            ),
-            google_web_bind_port=_env_int(
-                "JASPER_GOOGLE_WEB_PORT", 8768,
             ),
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"

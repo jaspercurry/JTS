@@ -77,6 +77,41 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
     assert calls == [["lsusb"], ["aplay", "-l"]]
 
 
+def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
+    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
+    monkeypatch.setattr(
+        doctor._shared,
+        "_shared_parse_env_file",
+        lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+    )
+    monkeypatch.setattr(
+        doctor.audio,
+        "_dac_profile_for",
+        lambda _profile_id: SimpleNamespace(usb_ids=("1234:abcd",)),
+    )
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd == ["lsusb"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Bus 001 Device 002: ID 1234:ABCD Test adapter\n",
+                stderr="",
+            )
+        if cmd == ["aplay", "-l"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="card 2: Apple [Apple USB-C to 3.5mm Headphone Jack]\n",
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor.audio, "_run", fake_run)
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "ok"
+
+
 def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple mixer probe should not run")
@@ -746,7 +781,7 @@ def _xrun_section(rate_per_hour, last_xrun_age_ms):
 def test_outputd_xrun_warning_none_when_no_recent_xrun():
     """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
     quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    assert doctor.audio._outputd_xrun_rate_warning(quiet, quiet) is None
+    assert doctor.audio_runtime._outputd_xrun_rate_warning(quiet, quiet) is None
 
 
 def test_outputd_xrun_warning_suppressed_for_stale_burst():
@@ -754,30 +789,30 @@ def test_outputd_xrun_warning_suppressed_for_stale_burst():
     burst) must NOT warn — the WARN is for a sustained, *current* problem."""
     stale = _xrun_section(
         rate_per_hour=50.0,
-        last_xrun_age_ms=doctor.audio._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
+        last_xrun_age_ms=doctor.audio_runtime._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
     )
-    assert doctor.audio._outputd_xrun_rate_warning(stale, stale) is None
+    assert doctor.audio_runtime._outputd_xrun_rate_warning(stale, stale) is None
 
 
 def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
     """A recent xrun with a LOW sustained rate (one transient blip) must not
     warn — only a rate at/above the threshold qualifies."""
     blip = _xrun_section(
-        rate_per_hour=doctor.audio._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
+        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
         last_xrun_age_ms=1000,
     )
-    assert doctor.audio._outputd_xrun_rate_warning(blip, blip) is None
+    assert doctor.audio_runtime._outputd_xrun_rate_warning(blip, blip) is None
 
 
 def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
     """Recent xrun AND a sustained rate at/above threshold → warn, naming the
     offending lane and both fields."""
     hot = _xrun_section(
-        rate_per_hour=doctor.audio._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
+        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
         last_xrun_age_ms=2000,
     )
     quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    reason = doctor.audio._outputd_xrun_rate_warning(quiet, hot)
+    reason = doctor.audio_runtime._outputd_xrun_rate_warning(quiet, hot)
     assert reason is not None
     assert "dac" in reason
     assert "xrun_rate_per_hour" in reason
@@ -788,6 +823,6 @@ def test_outputd_xrun_warning_reports_worst_lane():
     """When both lanes qualify, the higher-rate lane is reported."""
     content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
     dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
-    reason = doctor.audio._outputd_xrun_rate_warning(content, dac)
+    reason = doctor.audio_runtime._outputd_xrun_rate_warning(content, dac)
     assert reason is not None
     assert reason.startswith("dac ")

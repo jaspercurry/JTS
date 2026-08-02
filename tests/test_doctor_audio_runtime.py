@@ -41,7 +41,7 @@ def _patch_asound_conf(
             return stale
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor.audio, "Path", fake_path)
+    monkeypatch.setattr(doctor.audio_runtime, "Path", fake_path)
 
 
 _FANIN_ASOUND = """
@@ -198,7 +198,7 @@ def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
             stdout = active + "\n"
         return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
 
-    monkeypatch.setattr(doctor.audio, "_run", fake_run)
+    monkeypatch.setattr(doctor.audio_runtime, "_run", fake_run)
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
         lambda: "loopback",
@@ -292,11 +292,11 @@ def _host_clock_status(
 
 
 def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
-    l0 = doctor.audio._host_clock_health_from_status(_host_clock_status())
+    l0 = doctor.audio_runtime._host_clock_health_from_status(_host_clock_status())
     assert l0.status == "ok"
     assert "ladder=l0_locked" in l0.detail
 
-    retry = doctor.audio._host_clock_health_from_status(
+    retry = doctor.audio_runtime._host_clock_health_from_status(
         _host_clock_status(ladder="probing", phase="retry_wait", attempt=2, retries=1)
     )
     assert retry.status == "ok"
@@ -309,7 +309,7 @@ def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
     ["probe_noncompliant", "lost_authority", "actuator_unavailable"],
 )
 def test_host_clock_doctor_warns_with_exact_l2_reason(reason):
-    result = doctor.audio._host_clock_health_from_status(
+    result = doctor.audio_runtime._host_clock_health_from_status(
         _host_clock_status(ladder="l2_fallback", reason=reason)
     )
     assert result.status == "warn"
@@ -317,7 +317,7 @@ def test_host_clock_doctor_warns_with_exact_l2_reason(reason):
 
 
 def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch():
-    unavailable = doctor.audio._host_clock_health_from_status(
+    unavailable = doctor.audio_runtime._host_clock_health_from_status(
         _host_clock_status(
             ladder="l2_fallback",
             reason="actuator_unavailable",
@@ -330,7 +330,7 @@ def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch():
     assert "capture_generation=4" in unavailable.detail
     assert "control_generation=None" in unavailable.detail
 
-    mismatch = doctor.audio._host_clock_health_from_status(
+    mismatch = doctor.audio_runtime._host_clock_health_from_status(
         _host_clock_status(control_generation=3)
     )
     assert mismatch.status == "warn"
@@ -528,7 +528,7 @@ def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypa
     fake = _FakeSocket(chunks=[b'{"ok":', b"true}", b""])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
-    payload = doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=1.25)
+    payload = doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=1.25)
 
     assert payload == b'{"ok":true}'
     assert 0 < fake.timeout <= 1.25
@@ -539,11 +539,11 @@ def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypa
 
 
 def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
-    cap = doctor.audio._STATUS_RESPONSE_MAX_BYTES
+    cap = doctor.audio_runtime._STATUS_RESPONSE_MAX_BYTES
     fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b""])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
-    payload = doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+    payload = doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
     assert len(payload) == cap
     assert fake.recv_sizes == [65536] * 17
@@ -555,7 +555,7 @@ def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
     with pytest.raises(OSError, match="exceeds byte limit"):
-        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
     assert fake.recv_sizes == [65536] * 17
     assert fake.closed is True
@@ -565,13 +565,13 @@ def test_status_socket_byte_reader_enforces_total_deadline(monkeypatch):
     fake = _FakeSocket(chunks=[b"x", b"y", b""])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
     monkeypatch.setattr(
-        doctor.audio.time,
+        doctor.audio_runtime.time,
         "monotonic",
         Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1]),
     )
 
     with pytest.raises(TimeoutError, match="deadline exceeded"):
-        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=1.0)
+        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=1.0)
 
     assert fake.recv_sizes == [65536]
     assert fake.closed is True
@@ -587,7 +587,7 @@ def test_status_socket_byte_reader_closes_on_failure(monkeypatch, failure_stage)
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
     with pytest.raises(OSError, match=f"{failure_stage} failed"):
-        doctor.audio._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
     assert fake.closed is True
 
@@ -599,7 +599,7 @@ def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: strict)
 
     with pytest.raises(UnicodeDecodeError):
-        doctor.audio._read_status_socket("/run/test.sock")
+        doctor.audio_runtime._read_status_socket("/run/test.sock")
 
     assert 0 < strict.timeout <= 1.0
     assert strict.closed is True
@@ -617,7 +617,7 @@ def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
 
 def test_check_fanin_service_keeps_one_bounded_status_retry(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(doctor.audio.time, "sleep", lambda _: None)
+    monkeypatch.setattr(doctor.audio_runtime.time, "sleep", lambda _: None)
     first = _FakeSocket(error=OSError("transient refusal"))
     second = _FakeSocket(payload=_fanin_status_payload())
     pending = [first, second]
@@ -1092,7 +1092,7 @@ def test_route_latency_evidence_fails_missing_claim_artifact(monkeypatch, tmp_pa
         lambda: plan,
     )
     monkeypatch.setattr(
-        doctor.audio,
+        doctor.audio_runtime,
         "_route_live_state_issues_for_doctor",
         lambda observed_plan, **_kwargs: (),
     )
@@ -1141,7 +1141,7 @@ def test_route_latency_evidence_warns_when_p99_not_certified(
         lambda: plan,
     )
     monkeypatch.setattr(
-        doctor.audio,
+        doctor.audio_runtime,
         "_route_live_state_issues_for_doctor",
         lambda observed_plan, **_kwargs: (),
     )
@@ -1191,7 +1191,7 @@ def test_route_latency_evidence_passes_certified_promotion_artifact(
         lambda: plan,
     )
     monkeypatch.setattr(
-        doctor.audio,
+        doctor.audio_runtime,
         "_route_live_state_issues_for_doctor",
         lambda observed_plan, **_kwargs: (),
     )
@@ -1240,7 +1240,7 @@ def test_route_latency_evidence_passes_certified_artifact_while_lane_idle(
     resampler = identity["fanin_resampler_config"]
     expected_target = resampler["target_frames"] + resampler["warmup_cushion_frames"]
     monkeypatch.setattr(
-        doctor.audio,
+        doctor.audio_runtime,
         "_read_status_socket",
         lambda _path: {
             "inputs": [
@@ -1290,7 +1290,7 @@ def test_route_latency_live_state_rejects_changed_negotiated_direct_buffer(
     direct = plan.route_latency_identity()["fanin_direct_config"]
     resampler = plan.route_latency_identity()["fanin_resampler_config"]
     monkeypatch.setattr(
-        doctor.audio,
+        doctor.audio_runtime,
         "_read_status_socket",
         lambda _path: {
             "inputs": [
@@ -1315,7 +1315,7 @@ def test_route_latency_live_state_rejects_changed_negotiated_direct_buffer(
         },
     )
 
-    issues = doctor.audio._route_live_state_issues_for_doctor(
+    issues = doctor.audio_runtime._route_live_state_issues_for_doctor(
         plan,
         negotiated_buffer_frames=768,
     )
@@ -1361,7 +1361,7 @@ def test_route_latency_evidence_fails_live_state_mismatch(
         lambda: plan,
     )
     monkeypatch.setattr(
-        doctor.audio,
+        doctor.audio_runtime,
         "_route_live_state_issues_for_doctor",
         lambda observed_plan, **_kwargs: ("live_fanin_resampler_unlocked:usbsink",),
     )

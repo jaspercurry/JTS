@@ -238,6 +238,30 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert issues == ("p99_spacing_unverified",)
 
 
+def test_route_latency_issue_codes_follow_budget_constants(monkeypatch):
+    route = audio_validation.audio_validation_route
+    monkeypatch.setattr(route, "ROUTE_LATENCY_P95_BUDGET_MS", 37.5)
+    monkeypatch.setattr(route, "ROUTE_LATENCY_P99_BUDGET_MS", 43)
+
+    _status, _rec, _certified, issues = route_latency_gate_status(
+        p95_ms=38.0,
+        p99_ms=44.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+    )
+    assert "p95_exceeds_37.5ms" in issues
+
+    _status, _rec, _certified, issues = route_latency_gate_status(
+        p95_ms=37.0,
+        p99_ms=44.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+    )
+    assert issues == ("p99_exceeds_43ms",)
+
+
 def test_make_route_latency_artifact_records_identity_and_certification():
     artifact = make_route_latency_artifact(
         route_id="usb_low_latency_48k",

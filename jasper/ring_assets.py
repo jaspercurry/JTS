@@ -10,7 +10,8 @@ the compiled ioplug ``.so``, the conf.d PCM definitions
 ``/dev/shm/jts-ring`` tmpfs directory. Two consumers share this SSOT so the
 "which files must exist" contract never drifts:
 
-- ``jasper.cli.doctor.audio.check_ring_platform_assets`` — the deploy-time health
+- ``jasper.cli.doctor.audio_runtime.check_ring_platform_assets`` — the
+  deploy-time health
   probe (also open-probes the PCMs; that lives in the doctor because it needs
   ``arecord``/``aplay``).
 - ``jasper.fanin.coupling_reconcile`` — the ``shm_ring`` **activation gate**: the
@@ -31,8 +32,9 @@ import re
 from dataclasses import dataclass
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into (the Pi 5 target).
-# Duplicated as a literal in ``jasper.cli.doctor.audio`` historically; this is now
-# the shared home. The build/install path is ``deploy/lib/install/ring-platform.sh``.
+# Duplicated as a literal in ``jasper.cli.doctor.audio_runtime`` historically;
+# this is now the shared home. The build/install path is
+# ``deploy/lib/install/ring-platform.sh``.
 RING_ALSA_PLUGIN_DIR = "/usr/lib/aarch64-linux-gnu/alsa-lib"
 RING_IOPLUG_SO = "libasound_module_pcm_jts_ring.so"
 RING_CONF_D = "/etc/alsa/conf.d/60-jts-ring.conf"

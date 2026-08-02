@@ -47,6 +47,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from ._logging import configure_verbose_logging
+
 logger = logging.getLogger("jasper-wake-review")
 
 
@@ -522,10 +524,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_verbose_logging(verbose=args.verbose)
 
     if not args.scores_csv.is_file():
         print(f"ERROR: {args.scores_csv} not found", file=sys.stderr)

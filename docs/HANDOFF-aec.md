@@ -1881,7 +1881,9 @@ Captured here so future sessions don't repeat the mistakes.
     which actively plays a quiet sine into `correction_substream`
     and verifies the bridge sees ref signal — useful when the
     bridge's recent journal has no music for the passive check to
-    learn from.
+    learn from. The opt-in audible probe is isolated in
+    `jasper/cli/doctor/aec_probe.py`; passive AEC checks remain in
+    `jasper/cli/doctor/aec.py`.
 
     Refined further on 2026-05-17 (PR #134) for the corner case
     where the entire assessment window has no music at all (a

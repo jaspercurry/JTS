@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 107 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 94 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 533
+- **fixed**: 546
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -254,8 +254,8 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0308 | `jasper/audio_runtime_plan.py` :: FaninOutputBufferTarget.detail | nit | W5 | **fixed** | unread detail field removed from resolution DTO |
 | DA-0309 | `jasper/audio_validation.py` :: HardwareValidationRun.latest_path:182 | nit | W5 | **fixed** | unread latest-pointer field removed from run result |
 | DA-0310 | `jasper/audio_validation.py` :: SCHEMA_VERSION:57 / CHIP_AEC_CALIBRATION_REQ | nit | W5 | **fixed** | dead compatibility constants removed |
-| DA-0311 | `jasper/audio_validation.py` :: lines 213-599 vs 888-2992 | nit | W5 | **open** | — |
-| DA-0312 | `jasper/audio_validation.py` :: route_latency_gate_status:287,310 | nit | W5 | **open** | — |
+| DA-0311 | `jasper/audio_validation.py` :: lines 213-599 vs 888-2992 | nit | W5 | **fixed** | route-latency validation moved to a dedicated module behind the public facade |
+| DA-0312 | `jasper/audio_validation.py` :: route_latency_gate_status:287,310 | nit | W5 | **fixed** | percentile issue codes derive from canonical budget constants |
 | DA-0313 | `jasper/bluetooth/adapter.py` :: _close_pairing_window | nit | W5 | **fixed** | pairing shutdown attempts every BlueZ admission knob before re-raising |
 | DA-0314 | `jasper/bluetooth/models.py` :: UUID_AVRCP | nit | W5 | **fixed** | unused UUID constant removed |
 | DA-0315 | `jasper/bluetooth/models.py` :: _MAC_ALIAS_RE | nit | W5 | **fixed** | static MAC pattern simplified to one readable regex |
@@ -266,16 +266,16 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0320 | `jasper/cli/aec_bridge.py` :: LegEmitter.engine_token :581, add_emitter(.. | nit | W5 | **fixed** | never-populated emitter field and parameter removed |
 | DA-0321 | `jasper/cli/aec_bridge.py` :: MIC_DEVICE :157 | nit | W5 | **fixed** | unused import-time mic constant removed |
 | DA-0322 | `jasper/cli/aec_bridge.py` :: _aec_loop setup preamble (~1592-1906) vs loo | nit | W5 | **open** | — |
-| DA-0323 | `jasper/cli/doctor/__init__.py` :: probe_aec_ref_path | nit | W5 | **open** | — |
-| DA-0324 | `jasper/cli/doctor/audio.py` :: check_fanin_binary_installed..check_aec_cloc | nit | W5 | **open** | — |
-| DA-0325 | `jasper/cli/doctor/audio.py` :: check_outputd_service:2311 | nit | W5 | **open** | — |
+| DA-0323 | `jasper/cli/doctor/__init__.py` :: probe_aec_ref_path | nit | W5 | **fixed** | active audible AEC probing moved to dedicated `aec_probe.py` |
+| DA-0324 | `jasper/cli/doctor/audio.py` :: check_fanin_binary_installed..check_aec_cloc | nit | W5 | **fixed** | fan-in, outputd, ring, and runtime checks moved to `audio_runtime.py` |
+| DA-0325 | `jasper/cli/doctor/audio.py` :: check_outputd_service:2311 | nit | W5 | **fixed** | outputd service check decomposed into focused contract helpers |
 | DA-0326 | `jasper/cli/doctor/privsep.py` :: MANIFEST (jasper-wiim-remote-mic) | nit | W5 | **open** | — |
 | DA-0327 | `jasper/cli/route_latency_harness.py` :: _cmd_run / _add_analyze_args / _add_schedule | nit | W5 | **fixed** | run CLI no longer accepts an option it always overwrites |
 | DA-0328 | `jasper/cli/system_soak.py` :: :253 | nit | W5 | **fixed** | system-soak calls the public `SystemSampler.read_service_states` boundary — this branch |
 | DA-0329 | `jasper/cli/wake_enroll.py` :: record_window / quadrant_dirs | nit | W5 | **fixed** | unused two-leg compatibility wrappers removed; `record_legs` is the sole capture API — this branch |
-| DA-0330 | `jasper/config.py` :: 255-257,684-689 | nit | W5 | **open** | — |
-| DA-0331 | `jasper/config.py` :: 318-319,330-331 | nit | W5 | **open** | — |
-| DA-0332 | `jasper/config.py` :: Config.camilla2_host / camilla2_port / camil | nit | W5 | **open** | — |
+| DA-0330 | `jasper/config.py` :: 255-257,684-689 | nit | W5 | **fixed** | removed dead secondary-Camilla statefile config field |
+| DA-0331 | `jasper/config.py` :: 318-319,330-331 | nit | W5 | **fixed** | removed dead Spotify and Google wizard bind fields |
+| DA-0332 | `jasper/config.py` :: Config.camilla2_host / camilla2_port / camil | nit | W5 | **fixed** | removed seven dead fields whose runtime owners read env directly |
 | DA-0333 | `jasper/control/aec_endpoints.py` :: _atomic_rewrite_env | nit | W5 | **open** | — |
 | DA-0334 | `jasper/control/server.py` :: :484, :487, :490, :496, :497, :506 | nit | W5 | **fixed** | extracted-domain re-export aliases, including the final Spotify remnant, removed |
 | DA-0335 | `jasper/control/server.py` :: _aec_full_status | nit | W5 | **open** | — |
@@ -396,18 +396,18 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0522 | `jasper/audio_measurement/deconv.py` :: deconvolve (:156-158) | nit | W3 | **fixed** | deconvolution and magnitude response share one next-power-of-two primitive — this branch |
 | DA-0523 | `jasper/audio_measurement/quality.py` :: _dbfs (:107-110) | nit | W3 | **fixed** | public measurement dBFS converter now serves correction evidence too |
 | DA-0524 | `jasper/avahi_service.py` :: render_service | nit | W3 | **fixed** | Avahi publication uses canonical atomic I/O while preserving mode 0644 — this branch |
-| DA-0525 | `jasper/bluetooth/adapter.py` :: :77 | nit | W3 | **open** | — |
+| DA-0525 | `jasper/bluetooth/adapter.py` :: :77 | nit | W3 | **fixed** | BlueZ operations share one async system-bus lifecycle guard |
 | DA-0526 | `jasper/calibration_agent/cli.py` :: main | nit | W3 | **fixed** | advisor response path is resolved once before output branching |
 | DA-0527 | `jasper/calibration_agent/correction_advisor.py` :: _model_kwargs | nit | W3 | **fixed** | shared no-key sentinel is public and raised directly by the model builder |
 | DA-0528 | `jasper/calibration_agent/proposal_sim.py` :: _curve_arrays | nit | W3 | **fixed** | shared curve-value normalization now serves advisor and simulation paths |
 | DA-0529 | `jasper/capture_relay/__init__.py` :: __all__ | nit | W3 | **fixed** | package exports every builder in the shipped capture-kind registry, including level-ramp and bass-nearfield — this branch |
 | DA-0530 | `jasper/capture_relay/health.py` :: relay_base_from_env | nit | W3 | **fixed** | import-light capture-relay config owner now serves health and control state |
 | DA-0531 | `jasper/cli/aec_bridge.py` :: _aec_loop: 5 safe-engine-process blocks (~20 | nit | W3 | **open** | — |
-| DA-0532 | `jasper/cli/airplay_mode.py` :: _read_mode / jasper/web/airplay_setup.py:_cu | nit | W3 | **open** | — |
-| DA-0533 | `jasper/cli/doctor/audio.py` :: check_apple_dongle_audio:788 | nit | W3 | **open** | — |
+| DA-0532 | `jasper/cli/airplay_mode.py` :: _read_mode / jasper/web/airplay_setup.py:_cu | nit | W3 | **fixed** | CLI and web surfaces share fail-safe AirPlay mode resolution |
+| DA-0533 | `jasper/cli/doctor/audio.py` :: check_apple_dongle_audio:788 | nit | W3 | **fixed** | Apple USB IDs come from the active DAC profile registry |
 | DA-0534 | `jasper/cli/doctor/grouping.py` :: _parse_env_file | nit | W3 | **fixed** | grouping doctor reuses canonical env parsing |
 | DA-0535 | `jasper/cli/doctor/grouping.py` :: _parse_systemd_environment | nit | W3 | **fixed** | one doctor-shared systemd environment parser serves grouping and renderer checks — this branch |
-| DA-0536 | `jasper/cli/wake_enroll.py` :: main | nit | W3 | **open** | — |
+| DA-0536 | `jasper/cli/wake_enroll.py` :: main | nit | W3 | **fixed** | interactive wake maintenance CLIs share verbose logging setup |
 | DA-0537 | `jasper/control/uds.py` :: _voice_socket_command / _mux_socket_command | nit | W3 | **mooted** | the clients now have materially different deadline and cancellation contracts; forced unification would erase policy — later mainline refactors |
 | DA-0538 | `jasper/correction/acoustic_quality.py` :: _round | nit | W3 | **fixed** | correction evidence serializers share one finite-rounding helper |
 | DA-0539 | `jasper/correction/level_match.py` :: _env_float | nit | W3 | **fixed** | level matching already consumes canonical `bounded_env_float` |
@@ -442,7 +442,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0569 | `jasper/web/rooms_setup.py` :: _lan_target (~line 692-719) vs jasper/multir | nit | W3 | **fixed** | one IPv4-only LAN predicate now owns validation and outbound SSRF policy — #1309 |
 | DA-0570 | `jasper/web/sound_setup.py` :: :2139 | nit | W3 | **reversed** | was fixed in #1793 by aliasing the commission tone to `VOLUME_FLOOR_TONE_ALSA_DEVICE`; #1950 undid that alias deliberately. Two unrelated features happened to share the box's single correction substream, so retuning the volume-floor tone would have silently retargeted the commission tone. They are again separate constants with the same literal, and that is intended. The commission-tone constants now have one owner (`active_speaker.web_commissioning`), pinned by `tests/test_commission_tone_single_owner.py`. |
 | DA-0571 | `jasper/web/sound_setup.py` :: _active_speaker_play_summed_commission_tone | nit | W3 | **fixed** | audible test subprocesses share one bounded terminate/kill helper |
-| DA-0572 | `jasper/web/speaker_setup.py` :: _systemctl / _unit_active | nit | W3 | **open** | — |
+| DA-0572 | `jasper/web/speaker_setup.py` :: _systemctl / _unit_active | nit | W3 | **fixed** | speaker and source wizards share bounded systemd state probes |
 | DA-0573 | `jasper/web/transit_setup.py` :: _mask_key | nit | W3 | **fixed** | transit key rendering reuses canonical secret masking |
 | DA-0574 | `jasper/web/transit_setup.py` :: _value_for | nit | W3 | **fixed** | transit, voice, and weather share env/state precedence; transit and voice share API-key token validation |
 | DA-0575 | `jasper/web/wifi_setup.py` :: _send / _send_json | nit | W3 | **fixed** | already migrated to canonical JSON responses; stale ledger entry reconciled |

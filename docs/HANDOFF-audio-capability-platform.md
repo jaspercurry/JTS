@@ -129,7 +129,10 @@ The foundation is partly built:
   `xvf_software_aec3` is retained as compatibility vocabulary; ordinary
   managed-XVF resolution cannot activate it.
 - `jasper/audio_validation.py` owns schema-v1 audio-validation
-  artifacts at `/var/lib/jasper/audio-validation/`. Artifacts are
+  artifacts at `/var/lib/jasper/audio-validation/`, while
+  `jasper/audio_validation_route.py` owns route-latency gates and live
+  fan-in/outputd identity assessment behind the same public import surface.
+  Artifacts are
   immutable timestamped JSON files keyed by mic/DAC/profile/status;
   `latest.json` is only the cheap status-surface pointer.
   `jasper-audio-validate` writes the first bounded producer artifact:

@@ -60,6 +60,8 @@ import numpy as np
 
 from jasper.wake_conditions import CORPUS_DIR_CONDITIONS
 
+from ._logging import configure_verbose_logging
+
 logger = logging.getLogger("jasper-wake-score")
 
 
@@ -436,10 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_verbose_logging(verbose=args.verbose)
 
     if not args.corpus_dir.is_dir():
         print(f"ERROR: {args.corpus_dir} is not a directory", file=sys.stderr)
