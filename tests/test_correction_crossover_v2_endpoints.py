@@ -5716,6 +5716,138 @@ def test_bind_production_play_default_config_dir_lock_lands_under_var_lib_camill
     assert str(dsp_apply_lock_path(resolved)).startswith("/var/lib/camilladsp")
 
 
+# --- Issue #1976: the cloud group's stimulus must also land at a stable name --
+
+
+def test_cloud_measure_play_also_persists_canonical_verify_program_wav(
+    monkeypatch, tmp_path
+):
+    """Issue #1976: a measure-stage session that walks the pre-apply cloud
+    group (CLOUD_MEASURE) plays the SAME excitation object a literal VERIFY
+    capture would — ``_program_for_phase`` in crossover_v2_flow.py returns
+    ``self._verify_program`` for every phase in ``SUMMED_SWEEP_PHASES`` — but
+    a session that never arms PHASE_VERIFY itself used to leave that reusable
+    stimulus discoverable only under its cloud-phase filename.
+
+    Confirmed against real bench data
+    (``captures/bench-20260730/bundle-d76b55bc6b67``, a measure-stage-only
+    session): ``cloud_measure_program.wav`` was on disk, ``verify_program.wav``
+    never was, and 28 ``verify_*`` operator-debug ring captures from other
+    sessions (``_maybe_retain_capture``) had no stable filename to
+    deconvolve against for offline replay.
+
+    ``_play`` must now ALSO persist a canonical ``verify_program.wav``
+    alongside the phase-named file whenever the armed phase is CLOUD_MEASURE
+    (or CLOUD_VERIFY) — never only when PHASE_VERIFY is armed."""
+    import jasper.active_speaker.program_playback as program_playback_mod
+    import jasper.audio_measurement.program as program_mod
+
+    written: list[Path] = []
+
+    def fake_write_program_wav(path, program):
+        written.append(Path(path))
+        Path(path).write_bytes(b"fake-wav-bytes")
+
+    async def fake_verified_program_aplay(bundle_dir, artifact, **kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr(program_mod, "write_program_wav", fake_write_program_wav)
+    monkeypatch.setattr(
+        program_playback_mod, "verified_program_aplay", fake_verified_program_aplay
+    )
+    _patch_measurement_window(monkeypatch, [])
+
+    class _FakeEvidenceStore:
+        bundle_dir = tmp_path
+
+        def identify_artifact(self, rel):
+            return SimpleNamespace(fingerprint="fake")
+
+    play = v2host.bind_production_play(
+        run_async=asyncio.run,
+        camilla_factory=lambda: object(),
+        evidence_store=_FakeEvidenceStore(),
+        relay_session_id="cap_verify_persist_probe",
+        topology=object(),
+        preset=object(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="hw:Test",
+        safety_profile={},
+        role_targets={},
+        session_volume_db=-20.0,
+    )
+    play(PHASE_CLOUD_MEASURE, object())
+
+    session_dir = tmp_path / "crossover_v2" / "cap_verify_persist_probe"
+    assert (session_dir / "cloud_measure_program.wav").exists()
+    assert (session_dir / "verify_program.wav").exists(), (
+        "CLOUD_MEASURE must also persist the canonical verify_program.wav "
+        "alias — a session that never arms a literal VERIFY capture would "
+        "otherwise leave its reusable stimulus un-replayable offline (#1976)"
+    )
+    # Written exactly once each — the alias is not re-derived or re-rendered,
+    # just a second write of the SAME program object already validated above.
+    assert written == [
+        session_dir / "cloud_measure_program.wav",
+        session_dir / "verify_program.wav",
+    ]
+
+
+def test_cloud_measure_play_does_not_overwrite_existing_verify_program_wav(
+    monkeypatch, tmp_path
+):
+    """A CLOUD_VERIFY position captured after the session's own VERIFY anchor
+    must not re-render (or clobber) the verify_program.wav VERIFY already
+    wrote — the alias write is a fill-if-absent, not an unconditional write,
+    so repeated cloud positions in one session cost one extra WAV write, not
+    N."""
+    import jasper.active_speaker.program_playback as program_playback_mod
+    import jasper.audio_measurement.program as program_mod
+
+    write_calls: list[Path] = []
+
+    def fake_write_program_wav(path, program):
+        write_calls.append(Path(path))
+        Path(path).write_bytes(b"fake-wav-bytes")
+
+    async def fake_verified_program_aplay(bundle_dir, artifact, **kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr(program_mod, "write_program_wav", fake_write_program_wav)
+    monkeypatch.setattr(
+        program_playback_mod, "verified_program_aplay", fake_verified_program_aplay
+    )
+    _patch_measurement_window(monkeypatch, [])
+
+    class _FakeEvidenceStore:
+        bundle_dir = tmp_path
+
+        def identify_artifact(self, rel):
+            return SimpleNamespace(fingerprint="fake")
+
+    play = v2host.bind_production_play(
+        run_async=asyncio.run,
+        camilla_factory=lambda: object(),
+        evidence_store=_FakeEvidenceStore(),
+        relay_session_id="cap_verify_no_clobber_probe",
+        topology=object(),
+        preset=object(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="hw:Test",
+        safety_profile={},
+        role_targets={},
+        session_volume_db=-20.0,
+    )
+    play(PHASE_VERIFY, object())
+    play(PHASE_CLOUD_VERIFY, object())
+
+    session_dir = tmp_path / "crossover_v2" / "cap_verify_no_clobber_probe"
+    assert write_calls == [
+        session_dir / "verify_program.wav",
+        session_dir / "cloud_verify_program.wav",
+    ], "verify_program.wav must be written once, by VERIFY itself — CLOUD_VERIFY's fill-if-absent check must skip it"
+
+
 # --- W6 hardware run 3, finding G: local seam OSError vs. relay transport death -
 
 

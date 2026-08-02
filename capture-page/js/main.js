@@ -29,7 +29,7 @@ import {
   watchVisibilityAbort,
   watchVisibilityReacquire,
 } from "./wakelock.js";
-import { runLevelRampProtocol } from "./level-events.js?v=20260716-1";
+import { runLevelRampProtocol } from "./level-events.js?v=20260802-1";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
   assertCaptureProtocolCompatible,
@@ -48,7 +48,7 @@ import {
   float32ToWavBlob,
   rmsToDbfs,
 } from "./measurement-audio.js?v=20260711-4";
-import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260717-1";
+import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260802-1";
 
 const PAGE_VERSION_URL = new URL("../version.json", import.meta.url);
 

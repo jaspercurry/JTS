@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -145,7 +146,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260731.2",
+        "capture_page_build": "20260802.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -153,7 +154,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260731-2" in index_html
+    assert "main.js?v=20260802-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -175,9 +176,44 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # stamp at all before this PR.
     assert 'from "./capture-protocol.js?v=20260727-1"' in main_js
     assert 'from "./transport-integrity.js?v=20260727-1"' in main_js
-    assert 'from "./level-events.js?v=20260716-1"' in main_js
-    assert 'from "./ambient-stats.js?v=20260717-1"' in main_js
+    # Bumped with #1975: level-events.js's OWN import of measurement-audio.js
+    # was stuck at the stale ?v=20260630-1 while main.js and ambient-stats.js
+    # both moved on to ?v=20260711-4 — three importers, two cache keys for one
+    # module, so a warm cache could hold two different copies of
+    # measurement-audio.js in the same page load. Fixed by converging
+    # level-events.js on the current stamp; level-events.js's own content
+    # changed, so every place that imports IT (here, and ambient-stats.js)
+    # bumps too, or a warm-cache phone would keep the stale import forever.
+    assert 'from "./level-events.js?v=20260802-1"' in main_js
+    assert 'from "./ambient-stats.js?v=20260802-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
+
+
+def test_capture_page_js_importers_of_measurement_audio_share_one_cache_key():
+    """Issue #1975: every capture-page module that imports the shared
+    measurement-audio.js helper must reference the SAME ``?v=`` stamp.
+
+    The ``?v=`` query is a cache key, not decoration — two importers pinned to
+    different stamps means the browser treats them as two different module
+    URLs, so a warm cache can end up running two different copies of
+    measurement-audio.js in one page load depending on load order. This is a
+    convergence guard, not just a snapshot of today's value: it fails on ANY
+    future drift, not only the specific level-events.js/20260630-1 regression
+    that #1975 found (the #1959 delta gate caught it, not this test — this
+    test is what should have).
+    """
+    js_dir = _REPO / "capture-page/js"
+    pattern = re.compile(r'measurement-audio\.js\?v=([\w.\-]+)')
+    stamps: dict[str, str] = {}
+    for path in sorted(js_dir.glob("*.js")):
+        for match in pattern.finditer(path.read_text(encoding="utf-8")):
+            stamps[path.name] = match.group(1)
+    assert stamps, "expected at least one capture-page module to import measurement-audio.js"
+    distinct = set(stamps.values())
+    assert len(distinct) == 1, (
+        "capture-page/js/*.js importers of measurement-audio.js must share "
+        f"ONE ?v= cache key, found {len(distinct)}: {stamps}"
+    )
 
 
 def test_capture_page_existing_field_rollout_order_is_pinned():
@@ -637,7 +673,7 @@ def test_capture_page_level_ramp_uses_meter_protocol_without_wav_upload():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert (
-        'import { runLevelRampProtocol } from "./level-events.js?v=20260716-1"'
+        'import { runLevelRampProtocol } from "./level-events.js?v=20260802-1"'
         in main_js
     )
     assert 'spec.kind === "level_ramp"' in main_js

@@ -3561,6 +3561,7 @@ def bind_production_play(
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
     from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_VERIFY,
         SUMMED_SWEEP_PHASES,
         bind_program_playback_seams,
     )
@@ -3578,6 +3579,30 @@ def bind_production_play(
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         write_program_wav(wav_path, program)
         artifact = evidence_store.identify_artifact(wav_rel)
+        if phase in SUMMED_SWEEP_PHASES and phase != PHASE_VERIFY:
+            # Issue #1976. Every SUMMED_SWEEP_PHASES phase plays the SAME
+            # excitation object — ``_program_for_phase`` in
+            # crossover_v2_flow.py returns ``self._verify_program`` for
+            # VERIFY, CLOUD_MEASURE, and CLOUD_VERIFY alike — so a
+            # measure-stage session that walks a pre-apply cloud group
+            # WITHOUT ever arming a literal VERIFY capture (the common
+            # shape: 12 real bundles surveyed 2026-07-29, only 4 ever
+            # reached VERIFY) left this reusable stimulus persisted only
+            # under its cloud-phase name. A 2026-07-31 offline-replay
+            # attempt against a real bench bundle confirmed the gap:
+            # ``cloud_measure_program.wav`` was on disk,
+            # ``verify_program.wav`` never was, and captures from the
+            # operator-debug ring (``_maybe_retain_capture`` below) that
+            # played this same stimulus under a genuine VERIFY had no
+            # stable filename to deconvolve against. Persist the alias
+            # once per session under the canonical name too; content is
+            # guaranteed byte-identical (same ``program`` object), so an
+            # existing file — including one this same check already
+            # wrote for an earlier cloud position — is left alone.
+            verify_wav_rel = f"crossover_v2/{relay_session_id}/{PHASE_VERIFY}_program.wav"
+            verify_wav_path = Path(bundle_dir) / verify_wav_rel
+            if not verify_wav_path.exists():
+                write_program_wav(verify_wav_path, program)
 
         async def _play_body() -> None:
             from jasper.active_speaker.program_playback import (
