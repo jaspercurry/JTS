@@ -712,7 +712,7 @@ working flow**, never beside it.
 > bench had **not** yet run on a real speaker — that proof became R11's
 > first slice. **Standing slice exit: not performed this round, and not
 > waived at the time.** R11's deploy (`14b8d9c96`) and its pass subsumed
-> it the next day — about 11 h after R10b's last merge — so no round left
+> it the next day, about 11 h after R10b's last merge, so no round left
 > un-proven code standing for long —
 > but the exit was skipped silently rather than named. Recorded late, and
 > the omission is part of the same R10b bookkeeping lesson as the missing
@@ -906,9 +906,9 @@ reconciliation rather than trusting it; the invariant that must hold is
 by grepping `#\d+` out of this file's placement zones only — each rung's
 `**Issues.**` paragraph plus the two `###` sections below. Every open number
 must appear in the placed set exactly once; every placed number absent from the
-open set must carry the `closed` marker. Prose cross-references outside those
-zones, and the by-owner regrouping inside "Outside the program", do not count
-as placements.
+open set must carry the `closed` marker. Prose cross-references — including a
+number mentioned inside another issue's parenthetical within a zone — and the
+by-owner regrouping inside "Outside the program", do not count as placements.
 
 **Round tags.** An issue scheduled into a campaign round carries a `— Rn` tag
 where it is indexed. **An untagged issue is not yet scheduled**, which is a
