@@ -1084,10 +1084,14 @@ can never authorize a phase decision:
    playback-clock-locked reverse-polarity null **walk** owned by the internal
    host. The older fail-soft proposal continues to surface only a delay status
    and cannot authorize that value.
-5. **Preview, then apply through the existing measured path.**
-   `GET /active-speaker/crossover-alignment` previews the proposal + the surfaced
-   per-driver/summed FR curves (the maintainer tweaks Fc/slope by hand — this
-   feature NEVER auto-rewrites Fc/slope). To **apply** a polarity decision, the
+5. **Apply through the existing measured path.**
+   `build_crossover_alignment_proposal` computes the polarity/delay-status
+   proposal from the recorded per-driver + summed evidence (the maintainer
+   tweaks Fc/slope by hand — this feature NEVER auto-rewrites Fc/slope). A
+   standalone `GET /active-speaker/crossover-alignment` route used to preview
+   the proposal + the surfaced per-driver/summed FR curves, but nothing in
+   the shipped JS ever fetched it; it was dead code and was removed (#1788).
+   To **apply** a polarity decision, the
    automatic baseline composition may fold an admitted, complete normal/reverse
    pair's polarity decision into per-driver `corrections` (`inverted`) exactly
    like L1's measured level trim. It never consumes `delay_ms` from a capture;

@@ -9,7 +9,6 @@
 import assert from "node:assert/strict";
 
 import {
-  CALIBRATED_ALIGNMENT_GUIDANCE,
   DEFAULT_SUB_CROSSOVER_HZ,
   NEARFIELD_LEVEL_MATCH_GUIDANCE,
   SUB_CROSSOVER_HZ_HI,
@@ -18,7 +17,6 @@ import {
   clampSubwooferCrossoverFcHz,
   commissionPayloadFailure,
   commissioningStepFooter,
-  crossoverAlignmentSummary,
   defaultActiveSpeakerStep,
   levelMatchSummary,
   localSubwooferGroup,
@@ -165,79 +163,6 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
 assert.ok(NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("2–5 cm"));
 assert.ok(/safe applied manual crossover/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 assert.ok(/explicitly apply/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
-
-// --- crossover alignment (L2) summary ---------------------------------------
-
-// Authorized phase-aware proposal: flat in-phase + deep reverse null → keep
-// polarity; flat in-phase → delay status "aligned" (the value is the walk's job).
-{
-  const s = crossoverAlignmentSummary({
-    status: "ok",
-    mode: { mode: "phase_aware", downgraded: false },
-    proposal: {
-      authorized: true,
-      polarity: "normal",
-      polarity_action: "keep",
-      polarity_margin_db: 25,
-      delay_status: "aligned",
-      in_phase_null_depth_db: 2,
-      reverse_null_depth_db: 27,
-      issues: [{ code: "reverse_null_not_captured", message: "flat sum" }],
-    },
-  });
-  assert.equal(s.available, true);
-  assert.equal(s.authorized, true);
-  assert.equal(s.needsCalibratedMic, false);
-  assert.ok(/time-aligned/i.test(s.delayText));
-  assert.ok(/keep/i.test(s.polarityText));
-  assert.ok(/in-phase 2 dB/.test(s.nullText) && /reverse 27 dB/.test(s.nullText));
-  assert.equal(s.issues.length, 1);
-}
-
-// Deep in-phase null → delay status "needs_alignment" (run the walk).
-{
-  const s = crossoverAlignmentSummary({
-    mode: { mode: "phase_aware" },
-    proposal: {
-      authorized: true,
-      polarity: "invert_tweeter",
-      polarity_action: "invert",
-      delay_status: "needs_alignment",
-      in_phase_null_depth_db: 18,
-    },
-  });
-  assert.ok(/alignment walk/i.test(s.delayText));
-  assert.ok(/Invert/i.test(s.polarityText));
-}
-
-// Downgraded (phone): proposal unauthorized → no polarity decision, needs a cal mic.
-{
-  const s = crossoverAlignmentSummary({
-    status: "ok",
-    mode: { mode: "magnitude_only", downgraded: true, reason: "no_calibrated_mic" },
-    proposal: {
-      authorized: false,
-      polarity: "normal",
-      polarity_action: "review",
-      delay_status: "unknown",
-      issues: [{ code: "requires_calibrated_mic", message: "needs a calibrated mic" }],
-    },
-  });
-  assert.equal(s.authorized, false);
-  assert.equal(s.needsCalibratedMic, true);
-  assert.equal(s.delayText, "—");
-  assert.equal(s.polarityText, "—");
-  assert.ok(/calibrated measurement mic/i.test(s.note));
-}
-
-// No proposal yet → not available, with an actionable next-step note.
-{
-  const s = crossoverAlignmentSummary({ status: "no_measurements", proposal: null });
-  assert.equal(s.available, false);
-  assert.ok(/Measure each driver/i.test(s.note));
-}
-assert.equal(crossoverAlignmentSummary(null).available, false);
-assert.ok(/calibrated measurement mic/i.test(CALIBRATED_ALIGNMENT_GUIDANCE));
 
 // --- Local-subwoofer crossover helpers --------------------------------------
 const STEREO_NO_SUB = {
