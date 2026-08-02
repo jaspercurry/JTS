@@ -137,6 +137,8 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
+    INTEGRITY_CHECK_SWEEP_HEARD,
+    CaptureIntegrity,
     GainPlan,
     MeasurementGeometry,
     MeasurementPriors,
@@ -1943,6 +1945,15 @@ MEASURE_PREDICTED_RIPPLE_CEILING_DB = 15.0
 # The two are read by DIFFERENT gates since #1838's D3: the residual ceiling
 # by ``_sweep_schedule_ok`` (a glitch — silent auto-retry), the confidence
 # floor by ``_sweep_locate_confidence_ok`` (too quiet — no retry).
+#
+# Both have a deliberate twin one layer down —
+# ``program_analysis.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`` /
+# ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` — which apply the SAME two judgments to
+# VERIFY's single ``KIND_SUMMED_SWEEP`` (issue #1971), a segment kind neither
+# gate here has ever filtered for. ``program_analysis`` cannot import them
+# from this module without inverting the dependency, so they are duplicated
+# and pinned by tests/test_measurement_integrity_floor_contracts.py: a
+# deliberate move of either number must update BOTH copies and that test.
 SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
@@ -2216,6 +2227,12 @@ def _sweep_locate_confidence_ok(analysis: ProgramAnalysis) -> bool:
     Same ``KIND_SWEEP`` domain as :func:`_sweep_schedule_ok`: the leading
     pilot pair's short, quiet windows locate coarsely by design and would
     manufacture spurious fires here.
+
+    That domain is MEASURE-only, and deliberately stays so. VERIFY's sweep is
+    ``KIND_SUMMED_SWEEP``, and the same judgment is made for it one layer down
+    by ``program_analysis._verify_capture_integrity`` (issue #1971) — where
+    the capture's own record can also say which MEASURE-era checks could not
+    run there at all.
     """
     return all(
         loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
@@ -2248,6 +2265,8 @@ def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
     Filtered to ``KIND_SWEEP`` only — mirrors ``_estimate_drift``'s exclusion
     of the leading pilot pair from residual/drift logic (their short/quiet
     windows locate more coarsely and would manufacture spurious fires here).
+    VERIFY's ``KIND_SUMMED_SWEEP`` is out of this domain on purpose; see
+    :func:`_sweep_locate_confidence_ok` for where its twin lives (#1971).
     No sweeps at all (nothing to judge) passes — the pre-existing
     ``_stimulus_locate_ok`` check, which runs earlier in ``_measure_verdict``'s
     ladder, already covers "nothing usable in this capture".
@@ -2281,6 +2300,21 @@ def _sweep_schedule_diag_fields(
     residual_ms_worst = worst.residual_samples / sample_rate_hz * 1000.0
     confidence_min = min(loc.confidence for loc in sweeps)
     return residual_ms_worst, confidence_min
+
+
+def _capture_integrity_log_field(integrity: CaptureIntegrity | None) -> str:
+    """One logfmt token for a VERIFY capture's integrity verdict (#1971).
+
+    Three values a reader must be able to tell apart, which is why this is not
+    a bool: ``unavailable`` (no record — a pre-#1971 analysis shape, never
+    produced by the live analyze seam), ``ok`` (every evaluated check passed),
+    or the comma-joined names of the checks that FAILED. The companion
+    ``integrity_not_evaluated`` field carries what could not be checked at
+    all, so "ok" never has to stand in for "nobody looked".
+    """
+    if integrity is None:
+        return "unavailable"
+    return ",".join(integrity.failed) if integrity.failed else "ok"
 
 
 def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
@@ -7799,6 +7833,40 @@ class CrossoverV2Conductor:
             # floor cannot establish or move a transfer baseline either, so
             # letting it reach G3 would seed that gate with noise.
             return PhaseVerdict(False, REASON_PILOT_LEVEL_COLLAPSE)
+        # Capture-integrity gate (issue #1971). Ahead of EVERY grade below it,
+        # for the reason ``_measure_verdict`` puts the same class of check
+        # ahead of its own: a spliced or clipped recording is not evidence
+        # about the speaker, so no verdict drawn from it — linearity, the
+        # gate-window comparison, G3's transfer step, or the tracking max — is
+        # worth reporting. Until this existed nothing on the VERIFY path ever
+        # looked: ``glitch_detected`` came from ``_estimate_drift``, which is
+        # structurally MEASURE-only, and both ``_sweep_schedule_ok`` and
+        # ``_sweep_locate_confidence_ok`` filter ``KIND_SWEEP`` while VERIFY's
+        # sweep is ``KIND_SUMMED_SWEEP``.
+        #
+        # ``None`` is the pre-#1971 analysis shape and means NO EVIDENCE —
+        # the same convention ``linearity_ok`` / ``pilot_snr_ok`` use two
+        # lines up, where only an explicit ``False`` refuses. It is not a
+        # silent pass: ``_log_verify_diag`` prints ``integrity=unavailable``
+        # for it, distinct from ``integrity=ok``, and the production analyze
+        # seam always populates the record (pinned by test).
+        #
+        # Two reason codes, because the two failures need different household
+        # actions and #1838's D3 is explicit that they must not share one:
+        # a sweep nobody could hear is a level/mic problem that re-running at
+        # the same level cannot fix (``locate_failed``), while a spliced or
+        # clipped timeline is the transient capture-glitch class §5.2 says
+        # reuses ``drift_baselines_disagree`` rather than minting a new code.
+        # The diag's ``integrity=`` field names which check fired, the way
+        # ``guard=`` disambiguates MEASURE's own shared codes.
+        integrity = analysis.capture_integrity
+        if integrity is not None and integrity.failed:
+            payload = {"capture_integrity": integrity.to_dict()}
+            if INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
+                return PhaseVerdict(False, REASON_LOCATE_FAILED, payload=payload)
+            return PhaseVerdict(
+                False, REASON_DRIFT_BASELINES_DISAGREE, payload=payload,
+            )
         if analysis.linearity_ok is False:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         # Gate-comparability rule (§5.2): a shorter VERIFY gate manufactures
@@ -8360,6 +8428,7 @@ class CrossoverV2Conductor:
         )
 
     def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
+        integrity = analysis.capture_integrity
         tracking = analysis.verify_tracking or {}
         band = tracking.get("tracking_band_hz")
         tracking_band_lo_hz: float | None = None
@@ -8422,6 +8491,26 @@ class CrossoverV2Conductor:
             # fields together are what make that combination legible.
             pilot_snr_ok=analysis.pilot_snr_ok,
             pilot_snr_db=_worst_pilot_snr_db(analysis),
+            # Capture integrity (#1971), disclosed on EVERY verify — pass or
+            # fail. On a pass it is what makes "this capture was comparable" a
+            # measured statement rather than an unexamined one; on a refusal
+            # it names which check fired, which is what tells telemetry a
+            # ``locate_failed`` came from this gate rather than from
+            # ``_stimulus_locate_ok``, and a ``drift_baselines_disagree`` from
+            # a splice rather than a clip. The two scalars are the measured
+            # figures the verdict was drawn from, and are reported even where
+            # the check they feed was ``not_evaluated``.
+            integrity=_capture_integrity_log_field(integrity),
+            integrity_not_evaluated=(
+                ",".join(integrity.not_evaluated) if integrity is not None else ""
+            ),
+            integrity_locate_confidence_min=_rounded(
+                integrity.locate_confidence_min if integrity is not None else None, 4
+            ),
+            integrity_residual_ms_worst=_rounded(
+                integrity.schedule_residual_ms_worst if integrity is not None else None,
+                3,
+            ),
             guard=(
                 "pilot_level_shift" if verdict.code == REASON_VERIFY_LEVEL_SHIFT else ""
             ),

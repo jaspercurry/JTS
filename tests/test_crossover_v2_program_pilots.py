@@ -19,6 +19,8 @@ the repeat sweep).
 """
 from __future__ import annotations
 
+import json
+import logging
 import math
 
 import numpy as np
@@ -36,20 +38,37 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    INTEGRITY_CHECK_CLIPPED_RUN,
+    INTEGRITY_CHECK_DISCONTINUITY_STEP,
+    INTEGRITY_CHECK_REPEAT_EPSILON,
+    INTEGRITY_CHECK_REPEAT_LEVEL,
+    INTEGRITY_CHECK_SWEEP_HEARD,
+    INTEGRITY_CHECK_SWEEP_SCHEDULE,
+    INTEGRITY_CHECK_WITHIN_ROLE_DESYNC,
+    INTEGRITY_FAIL,
+    INTEGRITY_NOT_EVALUATED,
+    INTEGRITY_PASS,
     PILOT_AMBIENT_MIN_USABLE_FRACTION,
     PILOT_MIN_SNR_DB,
     REPEAT_LEVEL_TOLERANCE_DB,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
+    CaptureIntegrity,
     MeasurementGeometry,
     MeasurementPriors,
+    SegmentLocation,
     _global_offset,
     _locate_segments,
     _pilot_ambient_samples,
+    _verify_capture_integrity,
+    analysis_diagnostic_summary,
     analyze_program_capture,
 )
 
 SR = 48_000
 FC_HZ = 1600.0
 GLOBAL_OFFSET = 900
+_ANALYSIS_LOGGER = "jasper.audio_measurement.program_analysis"
 
 
 def _roles() -> list[RoleBand]:
@@ -649,3 +668,266 @@ def test_verify_courtesy_prelude_clean_capture_still_passes():
     )
     assert res.linearity_ok is True
     assert res.summed_ripple_db is not None
+
+
+# --- VERIFY capture integrity (issue #1971) -----------------------------------
+#
+# Before this, ``glitch_detected`` was structurally False on EVERY verify-shaped
+# analysis: it came from ``_estimate_drift``, which needs a repeat pair a mono
+# summed sweep does not have, and the flow's two splice gates
+# (``_sweep_schedule_ok`` / ``_sweep_locate_confidence_ok``) both filter
+# ``KIND_SWEEP`` while VERIFY's sweep is ``KIND_SUMMED_SWEEP``. The checks
+# below are the substitutes the 2026-07-31 P0 repeat-floor bench had to
+# assemble by hand.
+
+
+def _statuses(integrity) -> dict[str, str]:
+    return {c.name: c.status for c in integrity.checks}
+
+
+def _reasons(integrity) -> dict[str, str]:
+    return {c.name: c.reason for c in integrity.checks}
+
+
+def _splice(cap: np.ndarray, at: int, samples: int) -> np.ndarray:
+    """Insert ``samples`` of silence at ``at`` -- one discrete timeline step,
+    the 2026-07-27 hardware shape (everything after it arrives LATE)."""
+    return np.concatenate([cap[:at], np.zeros(samples), cap[at:]])
+
+
+def test_verify_clean_capture_records_a_real_integrity_verdict():
+    """The three evaluable checks pass, and the four that CANNOT run here say
+    so by name instead of quietly reading as a pass."""
+    prog = _verify_pilot_program()
+    cap = _synthesize(prog)
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    integrity = res.capture_integrity
+    assert integrity is not None
+    assert _statuses(integrity) == {
+        INTEGRITY_CHECK_SWEEP_HEARD: INTEGRITY_PASS,
+        INTEGRITY_CHECK_SWEEP_SCHEDULE: INTEGRITY_PASS,
+        INTEGRITY_CHECK_CLIPPED_RUN: INTEGRITY_PASS,
+        INTEGRITY_CHECK_REPEAT_EPSILON: INTEGRITY_NOT_EVALUATED,
+        INTEGRITY_CHECK_REPEAT_LEVEL: INTEGRITY_NOT_EVALUATED,
+        INTEGRITY_CHECK_WITHIN_ROLE_DESYNC: INTEGRITY_NOT_EVALUATED,
+        INTEGRITY_CHECK_DISCONTINUITY_STEP: INTEGRITY_NOT_EVALUATED,
+    }
+    # Every not-evaluated check says WHY, and an evaluated one carries no
+    # reason (the field is the unevaluated-only explanation, not a comment).
+    reasons = _reasons(integrity)
+    assert all(reasons[name] for name in integrity.not_evaluated)
+    assert reasons[INTEGRITY_CHECK_SWEEP_HEARD] == ""
+    # The measured figures the verdicts were drawn from, disclosed on a PASS
+    # too -- a clean corpus needs the same fields a failing one has.
+    assert integrity.locate_confidence_min is not None
+    assert integrity.locate_confidence_min >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+    assert integrity.schedule_residual_ms_worst is not None
+    assert (
+        abs(integrity.schedule_residual_ms_worst) <= SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
+    )
+    assert integrity.clipped_segments == ()
+    assert integrity.glitched is False
+    assert res.glitch_detected is False
+
+
+def test_verify_splice_fails_the_schedule_check_and_flips_glitch_detected():
+    """The defect #1971 names, reproduced: a mid-capture insertion between the
+    leading pilots and the summed sweep. It used to leave ``glitch_detected``
+    False because nothing on this path ever looked."""
+    prog = _verify_pilot_program()
+    cap = _synthesize(prog)
+    sweep = prog.segment("sweep_verify")
+    inserted = int(round(2.0 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * SR))
+    spliced = _splice(cap, GLOBAL_OFFSET + sweep.start_sample - 100, inserted)
+    res = analyze_program_capture(
+        prog, spliced, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    integrity = res.capture_integrity
+    assert integrity is not None
+    assert integrity.failed == (INTEGRITY_CHECK_SWEEP_SCHEDULE,)
+    assert integrity.glitched is True
+    assert res.glitch_detected is True
+    # The sweep was heard perfectly well -- this is a splice, not a level
+    # problem, and the record must not confuse the two.
+    assert _statuses(integrity)[INTEGRITY_CHECK_SWEEP_HEARD] == INTEGRITY_PASS
+    # SIGNED, and in the right direction: everything after the insertion
+    # arrived LATE.
+    assert integrity.schedule_residual_ms_worst is not None
+    assert integrity.schedule_residual_ms_worst > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
+
+
+def test_verify_clip_fails_the_clipped_run_check():
+    prog = _verify_pilot_program()
+    cap = _synthesize(prog)
+    sweep = prog.segment("sweep_verify")
+    clipped = cap.copy()
+    at = GLOBAL_OFFSET + sweep.start_sample + 5_000
+    clipped[at:at + 8] = 1.0
+    res = analyze_program_capture(
+        prog, clipped, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    integrity = res.capture_integrity
+    assert integrity is not None
+    assert integrity.failed == (INTEGRITY_CHECK_CLIPPED_RUN,)
+    assert integrity.clipped_segments == ("sweep_verify",)
+    assert res.glitch_detected is True
+
+
+def test_verify_analysis_always_carries_an_integrity_record():
+    """``None`` means "no evidence" to the conductor's gate, so the live
+    analyze seam must never produce it -- on either VERIFY program shape."""
+    for prog in (
+        _verify_pilot_program(),
+        build_verify_program(FC_HZ, sweep_s=1.5),  # legacy, pilot-less
+    ):
+        res = analyze_program_capture(
+            prog, _synthesize(prog), SR,
+            priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+        )
+        assert res.capture_integrity is not None
+        # The one-bit projection can never disagree with the record it
+        # summarizes -- both are assigned from the same expression.
+        assert res.glitch_detected == res.capture_integrity.glitched
+
+
+def test_measure_analysis_carries_no_verify_integrity_record():
+    """Scope: MEASURE keeps ``_estimate_drift`` as its glitch owner. A record
+    here would be a second answer to one question."""
+    prog = _measure_program()
+    res = analyze_program_capture(
+        prog, _synthesize(prog), SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res.capture_integrity is None
+    assert res.drift is not None
+
+
+def test_verify_integrity_rides_the_retained_capture_sidecar():
+    """The operator forensic dump carries the record flat, like every other
+    block in ``analysis_diagnostic_summary``."""
+    prog = _verify_pilot_program()
+    cap = _synthesize(prog)
+    sweep = prog.segment("sweep_verify")
+    clipped = cap.copy()
+    at = GLOBAL_OFFSET + sweep.start_sample + 5_000
+    clipped[at:at + 8] = 1.0
+    summary = analysis_diagnostic_summary(analyze_program_capture(
+        prog, clipped, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    ))
+    assert summary["integrity_failed"] == INTEGRITY_CHECK_CLIPPED_RUN
+    assert INTEGRITY_CHECK_REPEAT_EPSILON in summary["integrity_not_evaluated"]
+    assert summary["integrity_clipped_segments"] == "sweep_verify"
+    assert summary["integrity_locate_confidence_min"] is not None
+    assert summary["integrity_schedule_residual_ms_worst"] is not None
+
+
+# --- the not-evaluated paths, at the builder (deterministic locations) --------
+
+
+def _sweep_location(*, confidence: float, residual: float) -> SegmentLocation:
+    return SegmentLocation(
+        segment_id="sweep_verify", kind="summed_sweep", role=None,
+        scheduled_start=1_000, located_start=int(1_000 + residual),
+        residual_samples=residual, confidence=confidence,
+        peak_dbfs=-12.0, clipped=False,
+    )
+
+
+def test_unheard_sweep_leaves_the_schedule_check_not_evaluated():
+    """#1838's D3 rule, carried onto VERIFY: a sweep the locator could barely
+    find lands in the wrong place and THEN shows a huge residual. Reporting
+    that residual as a splice would name the symptom, not the cause -- so the
+    schedule check records not-evaluated while the measured residual is still
+    disclosed as evidence."""
+    prog = _verify_pilot_program()
+    huge = 10.0 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * SR
+    integrity = _verify_capture_integrity(prog, SR, [
+        _sweep_location(
+            confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.01, residual=huge,
+        ),
+    ])
+    statuses = _statuses(integrity)
+    assert statuses[INTEGRITY_CHECK_SWEEP_HEARD] == INTEGRITY_FAIL
+    assert statuses[INTEGRITY_CHECK_SWEEP_SCHEDULE] == INTEGRITY_NOT_EVALUATED
+    assert "not confidently located" in (
+        _reasons(integrity)[INTEGRITY_CHECK_SWEEP_SCHEDULE]
+    )
+    # Failed, but only on the check that was actually asked.
+    assert integrity.failed == (INTEGRITY_CHECK_SWEEP_HEARD,)
+    assert integrity.schedule_residual_ms_worst == pytest.approx(huge / SR * 1000.0)
+
+
+def test_sweep_exactly_at_the_confidence_floor_is_heard():
+    """``>=`` at the floor -- the same direction ``_sweep_locate_confidence_ok``
+    trusts it. The two copies are pinned equal by
+    tests/test_measurement_integrity_floor_contracts.py, so their comparison
+    senses have to agree too or the shared number means two things."""
+    prog = _verify_pilot_program()
+    integrity = _verify_capture_integrity(prog, SR, [
+        _sweep_location(confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR, residual=0.0),
+    ])
+    assert _statuses(integrity)[INTEGRITY_CHECK_SWEEP_HEARD] == INTEGRITY_PASS
+
+
+def test_no_summed_sweep_located_is_not_evaluated_never_a_pass():
+    prog = _verify_pilot_program()
+    integrity = _verify_capture_integrity(prog, SR, [])
+    statuses = _statuses(integrity)
+    assert statuses[INTEGRITY_CHECK_SWEEP_HEARD] == INTEGRITY_NOT_EVALUATED
+    assert statuses[INTEGRITY_CHECK_SWEEP_SCHEDULE] == INTEGRITY_NOT_EVALUATED
+    # Nothing to inspect for a clipped run either -- "no stimulus, so nothing
+    # was clipped" would be the same didn't-look pass in a new place.
+    assert statuses[INTEGRITY_CHECK_CLIPPED_RUN] == INTEGRITY_NOT_EVALUATED
+    assert integrity.failed == ()
+    # A record of nothing but not-evaluated is UNEXAMINED, not clean -- and
+    # ``glitched`` is not what tells the two apart; ``not_evaluated`` is.
+    assert integrity.glitched is False
+    assert set(integrity.not_evaluated) == set(statuses)
+    assert integrity.locate_confidence_min is None
+    assert integrity.schedule_residual_ms_worst is None
+
+
+def test_default_capture_integrity_is_empty_not_clean():
+    """A bare ``CaptureIntegrity()`` reports nothing at all: no checks, no
+    failures, no not-evaluated. A consumer asking "was this examined" reads
+    the checks, never the bool."""
+    empty = CaptureIntegrity()
+    assert empty.checks == ()
+    assert empty.failed == () and empty.not_evaluated == ()
+    assert empty.glitched is False
+
+
+def test_integrity_to_dict_is_json_safe_and_carries_the_reasons():
+    prog = _verify_pilot_program()
+    integrity = _verify_capture_integrity(prog, SR, [
+        _sweep_location(confidence=0.9, residual=3.0),
+    ])
+    record = json.loads(json.dumps(integrity.to_dict()))
+    assert record["glitched"] is False
+    by_name = {c["name"]: c for c in record["checks"]}
+    assert by_name[INTEGRITY_CHECK_SWEEP_HEARD]["status"] == INTEGRITY_PASS
+    assert "reason" not in by_name[INTEGRITY_CHECK_SWEEP_HEARD]
+    assert by_name[INTEGRITY_CHECK_REPEAT_EPSILON]["reason"]
+    assert record["clipped_segments"] == []
+
+
+def test_integrity_warns_only_on_a_failure_and_names_both_lists(caplog):
+    """The stable ``event=`` line a corpus sweep greps -- the VERIFY twin of
+    ``program_analysis.glitch``. It names BOTH lists, because a reader has to
+    be able to tell "a check failed" from "a check never ran"."""
+    prog = _verify_pilot_program()
+    over_ceiling = SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * SR * 3
+    with caplog.at_level(logging.WARNING, logger=_ANALYSIS_LOGGER):
+        _verify_capture_integrity(prog, SR, [
+            _sweep_location(confidence=0.9, residual=over_ceiling),
+        ])
+    assert "event=program_analysis.capture_integrity" in caplog.text
+    assert f"failed={INTEGRITY_CHECK_SWEEP_SCHEDULE}" in caplog.text
+    assert INTEGRITY_CHECK_REPEAT_EPSILON in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=_ANALYSIS_LOGGER):
+        _verify_capture_integrity(prog, SR, [
+            _sweep_location(confidence=0.9, residual=0.0),
+        ])
+    assert "event=program_analysis.capture_integrity" not in caplog.text
