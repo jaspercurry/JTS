@@ -571,6 +571,57 @@ def test_material_improvement_bar_is_the_shipped_constant_not_a_copy():
     assert material_improvement_db() == PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
 
 
+def test_kernel_imports_nothing_at_module_scope_but_stdlib():
+    """Import-time lightness, pinned where it is actually decidable.
+
+    Statically, not by watching ``sys.modules``: by the time any test runs,
+    numpy is long since imported by something else, so an in-process check
+    could never fail. Reading this module's own top-level imports is a complete
+    proof — if none of them reaches outside the standard library, importing it
+    cannot pull numpy no matter what the rest of the tree does.
+
+    This is also the guard on the deferred import in
+    :func:`material_improvement_db`. Hoisting that ``crossover_v2_flow`` import
+    to module scope — the obvious "tidy-up" — pulls numpy and scipy into every
+    import of the kernel and fails right here.
+    """
+
+    import ast
+    import sys
+
+    import jasper.active_speaker.attempts_loop as kernel
+
+    tree = ast.parse(inspect.getsource(kernel))
+    module_scope: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            module_scope.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module_scope.append(node.module or "")
+
+    roots = {name.split(".")[0] for name in module_scope if name}
+    # `__future__` is a compiler directive, not a package.
+    allowed = set(sys.stdlib_module_names) | {"__future__"}
+    assert roots <= allowed, (
+        f"kernel imports {sorted(roots - allowed)} at module scope; "
+        "import-time lightness is part of this module's contract"
+    )
+    assert "numpy" not in roots and "scipy" not in roots
+
+
+def test_the_convergence_bar_is_reached_by_a_deferred_import():
+    """The runtime cost the docstring admits to, shown rather than asserted.
+
+    Not a complaint — it is the price of one source of truth for the shipped
+    bar. Pinned so the docstring's admission and the code stay one fact.
+    """
+
+    source = inspect.getsource(material_improvement_db)
+    assert "from jasper.active_speaker.crossover_v2_flow import" in source
+    # ...and it really does resolve to the shipped constant when called.
+    assert material_improvement_db() > 0.0
+
+
 def test_kernel_performs_no_io():
     """The purity claim, checked from the module's own imports.
 

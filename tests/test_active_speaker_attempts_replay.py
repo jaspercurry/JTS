@@ -130,6 +130,52 @@ def _repeat_floor_bank(
     return bank
 
 
+def _alternating_rejection_bank(tmp_path: Path, *, n_captures: int = 6) -> Path:
+    """A bank whose gate rejects every other capture.
+
+    Deviations are present for every repeat — so a floor still derives — but
+    no two *comparable* captures ever land side by side, so not one comparison
+    completes. This is the shape that made the run's gradeability check matter:
+    the kernel still attaches a two-attempt basis to each refusal, and reading
+    that as evidence let a bank with zero magnitudes exit 0.
+    """
+
+    verdicts = [
+        {
+            "repeat": repeat,
+            "accepted": repeat % 2 == 1,
+            "reasons": [] if repeat % 2 == 1 else ["locate_failed"],
+            "sweep_locate_confidence": 0.78 if repeat % 2 == 1 else 0.075,
+        }
+        for repeat in range(1, n_captures + 1)
+    ]
+    rows = [
+        {
+            "repeat": repeat,
+            "reference_repeat": repeat - 1,
+            "max_db_notch_excluded": 0.05,
+            "tracking_band_hz": [1000.0, 4000.0],
+        }
+        for repeat in range(2, n_captures + 1)
+    ]
+    bank = tmp_path / "alternating-fixture"
+    analysis = bank / "analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "refined_A_product_level.json").write_text(
+        json.dumps({
+            "kind": "jts_repeat_floor_refined",
+            "n_captures": n_captures,
+            "n_accepted_by_shipped_gate": sum(1 for v in verdicts if v["accepted"]),
+            "verdicts": verdicts,
+            "shipped_comparator_accepted_pairs": {
+                "vs_predecessor": {"n_pairs_accepted": len(rows), "rows": rows},
+            },
+        }),
+        encoding="utf-8",
+    )
+    return bank
+
+
 def _session(
     root: Path,
     session_id: str,
@@ -257,7 +303,9 @@ def test_repeat_floor_run_carries_the_realized_provenance_label(tmp_path):
         _repeat_floor_bank(tmp_path), budget=AttemptBudget(),
     )
     assert {a.provenance for a in run.attempts} == {PROVENANCE_REALIZED}
-    graded = [d for d in run.decisions if len(d.basis_attempt_ids) == 2]
+    # Decisions that actually compared, not ones that merely named a pair
+    # before refusing it — a two-id basis rides on refusals too.
+    graded = [d for d in run.decisions if d.magnitude_db is not None]
     assert graded and all(d.provenance == PROVENANCE_REALIZED for d in graded)
 
 
@@ -300,6 +348,30 @@ def test_a_pair_spanning_a_gap_is_not_replayed_as_consecutive(tmp_path):
     run = build_repeat_floor_run(bank, budget=AttemptBudget())
     magnitudes = [d.magnitude_db for d in run.decisions if d.magnitude_db]
     assert 99.0 not in magnitudes
+
+
+def test_a_run_where_no_comparison_completed_is_not_gradeable(tmp_path):
+    """Refusals name the pair they declined; that is not evidence of a grade."""
+
+    run = build_repeat_floor_run(
+        _alternating_rejection_bank(tmp_path), budget=AttemptBudget(),
+    )
+    assert all(d.magnitude_db is None for d in run.decisions)
+    # Refusals still carry a two-attempt basis — the trap this pins.
+    assert any(len(d.basis_attempt_ids) == 2 for d in run.decisions)
+    assert run.gradeable is False
+
+
+def test_main_exits_no_verdict_when_nothing_was_ever_compared(tmp_path, capsys):
+    """Absence of evidence must not read as a pass."""
+
+    code, report, _ = _run_main(
+        tmp_path, "--repeat-floor", str(_alternating_rejection_bank(tmp_path)),
+    )
+    assert code == 2
+    assert report["outcome"] == "no_verdict"
+    assert report["ungradeable_runs"] == ["repeat-floor-unchanged-profile"]
+    assert "no verdict" in capsys.readouterr().err
 
 
 def test_repeat_floor_run_refuses_a_bank_it_cannot_read(tmp_path):
@@ -379,6 +451,27 @@ def test_a_refused_fit_is_not_graded(tmp_path):
     for run in runs:
         assert run.attempts[-1].integrity.comparable is False
         assert run.decisions[-1].decision == STOP_EVIDENCE
+
+
+def test_a_bundle_with_two_candidates_is_refused_not_picked_from(tmp_path):
+    """Nothing in a bundle orders its candidates, so a pick would be a coin flip."""
+
+    root = _sessions_dir(tmp_path)
+    second = (
+        root / "aaaa1111/evidence/v1/artifacts/crossover_v2/cap_zzzz9999"
+    )
+    second.mkdir(parents=True)
+    (second / "candidate.json").write_text(
+        (root / "aaaa1111/evidence/v1/artifacts/crossover_v2/cap_aaaa1111"
+         / "candidate.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReplayError) as excinfo:
+        build_session_runs(root, budget=AttemptBudget())
+    assert "undecidable" in str(excinfo.value)
+    # Both capture ids are named, so the operator can disambiguate by hand.
+    assert "cap_aaaa1111" in str(excinfo.value)
+    assert "cap_zzzz9999" in str(excinfo.value)
 
 
 def test_session_runs_refuse_an_arc_shorter_than_two(tmp_path):
@@ -501,16 +594,23 @@ def test_main_refuses_an_impossible_budget(tmp_path, capsys):
 
 
 def test_a_refusing_run_removes_a_previous_runs_verdict(tmp_path):
-    """A stale report beside fresh outputs is a report someone will misread."""
+    """A stale report beside fresh outputs is a report someone will misread.
+
+    The per-run stores go too: an orphaned ``*.model_error.json`` asserts an
+    adopted claim floor, and a threshold with no report beside it is a number
+    someone could pick up and believe.
+    """
 
     out = tmp_path / "out"
     assert main([
         "--repeat-floor", str(_repeat_floor_bank(tmp_path)), "--out", str(out),
     ]) == 0
     assert (out / "report.json").exists()
+    assert list(out.glob("*.model_error.json"))
     assert main(["--repeat-floor", str(tmp_path / "gone"), "--out", str(out)]) == 2
     assert not (out / "report.json").exists()
     assert not (out / "README.md").exists()
+    assert list(out.glob("*.model_error.json")) == []
 
 
 def test_each_run_banks_its_floor_into_its_own_store(tmp_path):

@@ -10,12 +10,26 @@ docstring, that "S3's loop policy — how much improvement counts, how many
 iterations, when to stop — is not here and must not be." **This module is that
 policy.** It is the consumer that instrument was landed ahead of.
 
-Nothing here reads a file, opens a socket, plays audio, or imports numpy. It
-takes attempts that already carry their grades and returns one
-:class:`LoopDecision`. Persistence lives next door in
-:mod:`jasper.active_speaker.model_error_store`; the split is deliberate, so
-"the kernel performs no I/O" is checkable by reading its imports rather than
-by trusting a comment.
+It takes attempts that already carry their grades and returns one
+:class:`LoopDecision`. Two claims about that, scoped exactly, because a claim
+wider than its test is the kind of thing this module exists to refuse:
+
+* **No I/O, ever.** Nothing here reads a file, opens a socket, or plays audio,
+  on any path. Persistence lives next door in
+  :mod:`jasper.active_speaker.model_error_store` precisely so this stays true
+  and checkable rather than merely asserted.
+* **Import-time lightness, not runtime lightness.** Importing this module pulls
+  nothing but the standard library — pinned statically by
+  ``test_kernel_imports_nothing_at_module_scope_but_stdlib``, which reads the
+  module's own top-level imports. **Calling it is a different question.** The
+  convergence check reaches :func:`material_improvement_db`, which
+  deferred-imports :mod:`jasper.active_speaker.crossover_v2_flow` — and that
+  pulls numpy and scipy. So one ``decide_next`` call, on the convergence path
+  only, is not lightweight. That cost buys a single source of truth for the
+  shipped 0.5 dB bar; copying the constant here to stay light would trade a
+  real invariant for an import-graph nicety. The deferred import must stay
+  inside the function: hoisting it to module scope would make the first claim
+  false, and the static test fails if anyone does.
 
 Three rules constrain the kernel, all three measured on jts3 with the mic
 bolted in place on 2026-07-31 and written up in

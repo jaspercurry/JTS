@@ -140,14 +140,22 @@ class Run:
     def gradeable(self) -> bool:
         """Did anything in this run reach a comparison at all?
 
-        A run of one attempt, or one where every attempt was rejected by the
-        instrument's own gate, produced no verdict — and "no verdict" is not a
-        pass.
+        A run of one attempt, or one where the instrument's gate rejected
+        enough captures that no two comparable ones ever landed side by side,
+        produced no verdict — and "no verdict" is not a pass.
+
+        **A magnitude is the only evidence a comparison happened.** A two-id
+        basis is not: the kernel attaches the pair to its *refusals* too
+        (``predecessor_not_comparable``, ``provenance_mismatch``,
+        ``no_deviation_available``, ``direction_unknown_above_floor``) so a
+        reader can see which two attempts it declined to compare. Reading that
+        as evidence let a bank whose gate rejected alternating captures — zero
+        magnitudes anywhere — exit 0 "consistent", which is exactly the
+        absence-of-evidence-as-pass this module's own contract forbids.
         """
 
         return any(
-            decision.basis_attempt_ids and len(decision.basis_attempt_ids) == 2
-            for decision in self.decisions
+            decision.magnitude_db is not None for decision in self.decisions
         )
 
     @property
@@ -390,8 +398,20 @@ _ROLES = ("woofer", "tweeter")
 def _load_sessions(sessions_dir: Path) -> list[dict[str, Any]]:
     """Every session bundle under ``sessions_dir``, oldest first.
 
-    Ordered by the bundle's own ``started_at``, never by directory name — the
-    ids are opaque and sorting them would be sorting nothing.
+    **Bundles** are ordered by the bundle's own ``started_at``, never by
+    directory name — the ids are opaque and sorting them would be sorting
+    nothing.
+
+    **Candidates within one bundle cannot be ordered at all**, so a bundle
+    carrying more than one is refused rather than picked from. Nothing in the
+    bundle timestamps a candidate: ``candidate.json`` has no ``created_at`` or
+    equivalent, and ``artifact_manifest.json`` — which does carry a
+    ``recorded_at`` per artifact — lists only ``info.json`` (checked against
+    both corpus bundles, 2026-08-02). With no ordering key, taking the
+    lexicographically first capture id would be choosing which tune this
+    attempt represents by coin flip, and grading the wrong tune is worse than
+    grading none. If a multi-candidate bundle ever needs replaying, give the
+    manifest a candidate entry and order by that; do not restore a silent pick.
     """
 
     loaded: list[dict[str, Any]] = []
@@ -406,6 +426,13 @@ def _load_sessions(sessions_dir: Path) -> list[dict[str, Any]]:
         )
         if not candidates:
             continue
+        if len(candidates) > 1:
+            raise ReplayError(
+                f"{info_path.parent.name} carries {len(candidates)} candidates "
+                "and nothing in the bundle orders them, so which tune this "
+                "attempt represents is undecidable: "
+                + ", ".join(path.parent.name for path in candidates),
+            )
         candidate = _read_json(candidates[0])
         if not isinstance(candidate, Mapping):
             continue
@@ -943,12 +970,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    # A refusing run must not leave a previous run's verdict beside this run's
-    # fresh outputs, where the next reader would pair them.
+    # A refusing run must not leave a previous run's outputs beside this run's
+    # fresh ones, where the next reader would pair them. That includes the
+    # per-run stores: a `*.model_error.json` asserting an adopted claim floor,
+    # sitting in a directory with no report to explain it, is a threshold
+    # someone could pick up and believe.
     report_path = out_dir / "report.json"
     readme_path = out_dir / "README.md"
     report_path.unlink(missing_ok=True)
     readme_path.unlink(missing_ok=True)
+    for stale_store in out_dir.glob("*.model_error.json"):
+        stale_store.unlink(missing_ok=True)
 
     try:
         budget = AttemptBudget(
