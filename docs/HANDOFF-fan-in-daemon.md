@@ -1070,7 +1070,8 @@ maintainability. Rust wins on all three.
 - **Not aware of source state.** It knows only a selected input label
   or auto/null. Mux owns "current primary", renderer probing,
   source-specific preemption APIs, and user source selection. Current
-  examples: AirPlay loses via shairport-sync MPRIS `Stop`, Spotify via
+  examples: AirPlay loses via shairport-sync `DropSession` with MPRIS `Stop`
+  as a compatibility fallback, Spotify via
   Web API pause or active-only librespot try-restart fallback, and USB via
   fan-in's lane-level MUTE/UNMUTE command.
 - **Not PipeWire.** Per the AGENTS.md "architecture is fixed; swap the

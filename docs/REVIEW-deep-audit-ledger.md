@@ -9,10 +9,10 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 
 ## Status counts
 
-- **open**: 88 (includes DA-0002, re-verified 2026-07-29 and re-classified from
+- **open**: 82 (includes DA-0002, re-verified 2026-07-29 and re-classified from
   `deferred` to `open (partially mitigated)` — the risk is partly covered by
   per-flow gates, but no DA-0002 work has landed)
-- **fixed**: 552
+- **fixed**: 558
 - **in-progress**: 0
 - **mooted**: 36
 - **reversed**: 1 (DA-0570 — the original consolidation was intentionally
@@ -304,7 +304,7 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0358 | `jasper/output_hardware.py` :: _find_controller | nit | W5 | **fixed** | redundant outer USB-name condition removed |
 | DA-0359 | `jasper/output_hardware.py` :: main | nit | W5 | **fixed** | CLI uses the standard `sys.argv` surface |
 | DA-0360 | `jasper/output_topology.py` :: OutputTopology.output_layout | nit | W5 | **fixed** | unused convenience method and test removed |
-| DA-0361 | `jasper/output_topology.py` :: SpeakerChannel / channel_identity_report | nit | W5 | **open** | — |
+| DA-0361 | `jasper/output_topology.py` :: SpeakerChannel / channel_identity_report | nit | W5 | **fixed** | speaker-channel identity serialization now lives on the domain model |
 | DA-0362 | `jasper/peering/daemon.py` :: _spawn_send | nit | W5 | **open** | — |
 | DA-0363 | `jasper/research/providers/openai_research.py` :: import reconnect_backoff_delay | nit | W5 | **open** | — |
 | DA-0364 | `jasper/ring_negotiation.py` :: accept | nit | W5 | **open** | — |
@@ -418,11 +418,11 @@ Last reconciled against `origin/main` (`7049b668d`), including this branch:
 | DA-0544 | `jasper/multiroom/reconcile.py` :: _unit_is_enabled:818, _unit_is_active:835 | nit | W3 | **fixed** | shared tri-state systemd probe consolidates the duplicate wrappers — #1299 |
 | DA-0545 | `jasper/multiroom/reconcile.py` :: main():1560-1568,1639-1647 | nit | W3 | **open** | — |
 | DA-0546 | `jasper/multiroom/runtime_balance.py` :: active_endpoint | nit | W3 | **fixed** | runtime balance reuses the canonical active-member predicate — this branch |
-| DA-0547 | `jasper/mux.py` :: _busctl | nit | W3 | **open** | — |
-| DA-0548 | `jasper/mux.py` :: _busctl | nit | W3 | **open** | — |
-| DA-0549 | `jasper/output_topology.py` :: OutputTopology.status | nit | W3 | **open** | — |
-| DA-0550 | `jasper/output_topology.py` :: _require_id / _optional_id / _text / _bool / | nit | W3 | **open** | — |
-| DA-0551 | `jasper/output_topology.py` :: set_channel_identity_verified / set_channel_ | nit | W3 | **open** | — |
+| DA-0547 | `jasper/mux.py` :: _busctl | nit | W3 | **fixed** | shared async busctl client owns subprocess execution and timeout cleanup |
+| DA-0548 | `jasper/mux.py` :: _busctl | nit | W3 | **fixed** | busctl property decoding is shared across mux and renderer consumers |
+| DA-0549 | `jasper/output_topology.py` :: OutputTopology.status | nit | W3 | **fixed** | topology status composition is split into focused model serializers |
+| DA-0550 | `jasper/output_topology.py` :: _require_id / _optional_id / _text / _bool / | nit | W3 | **fixed** | topology and active-speaker profiles share JSON field coercion primitives |
+| DA-0551 | `jasper/output_topology.py` :: set_channel_identity_verified / set_channel_ | nit | W3 | **fixed** | channel-identity updates share one immutable replacement path |
 | DA-0552 | `jasper/peering/config.py` :: _parse_mode | nit | W3 | **fixed** | config parsing and doctor reporting share one peering boolean vocabulary — this branch |
 | DA-0553 | `jasper/research/state.py` :: _runtime_provider | nit | W3 | **fixed** | runtime provider labels reuse the catalog lookup |
 | DA-0554 | `jasper/tool_state.py` :: write_disabled_tools | nit | W3 | **fixed** | unused partial-state writers removed; `write_tool_state` remains the sole mutation boundary — this branch |

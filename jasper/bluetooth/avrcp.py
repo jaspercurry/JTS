@@ -5,11 +5,11 @@
 """BlueZ AVRCP helpers for receiver-side Bluetooth transport control."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 
 from .. import bluealsa_probe
+from ..busctl import run_busctl, system_busctl
 
 logger = logging.getLogger(__name__)
 
@@ -55,17 +55,9 @@ async def bluetooth_active_device_path() -> str | None:
 
 async def bluetooth_player_paths() -> list[str]:
     """Return BlueZ AVRCP player object paths currently registered."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", "tree", BLUEZ_DEST,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError, OSError) as e:
-        logger.debug("bluez player tree failed: %s", e)
-        return []
-    if proc.returncode != 0:
+    stdout = await system_busctl("tree", BLUEZ_DEST)
+    if stdout is None:
+        logger.debug("bluez player tree failed")
         return []
     return sorted({
         match.group(1).decode("ascii")
@@ -87,18 +79,12 @@ async def bluetooth_player_path() -> str | None:
 
 async def bluetooth_player_status(path: str) -> str:
     """Read org.bluez.MediaPlayer1.Status, or empty string if unknown."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", "get-property",
-            BLUEZ_DEST, path, BLUEZ_PLAYER_IFACE, "Status",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError, OSError) as e:
-        logger.debug("bluez player status failed: %s", e)
-        return ""
-    if proc.returncode != 0:
+    stdout = await system_busctl(
+        "get-property",
+        BLUEZ_DEST, path, BLUEZ_PLAYER_IFACE, "Status",
+    )
+    if stdout is None:
+        logger.debug("bluez player status failed")
         return ""
     match = _BUSCTL_QUOTED_VALUE_RE.search(stdout.decode("utf-8", "replace"))
     return match.group(1).lower() if match else ""
@@ -112,18 +98,14 @@ async def bluetooth_avrcp_call(method: str) -> None:
     if method == "PlayPause":
         status = await bluetooth_player_status(path)
         method = "Pause" if status == "playing" else "Play"
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", "call",
-            BLUEZ_DEST, path, BLUEZ_PLAYER_IFACE, method,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError, OSError) as e:
-        raise RuntimeError(f"bluetooth {method} failed: {e}") from e
-    if proc.returncode != 0:
+    result = await run_busctl(
+        "call",
+        BLUEZ_DEST, path, BLUEZ_PLAYER_IFACE, method,
+    )
+    if result is None:
+        raise RuntimeError(f"bluetooth {method} failed: bus unavailable")
+    if result.returncode != 0:
         raise RuntimeError(
             f"bluetooth {method} failed: "
-            f"{stderr.decode(errors='replace').strip()}"
+            f"{result.stderr.decode(errors='replace').strip()}"
         )

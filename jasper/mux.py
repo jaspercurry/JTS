@@ -91,6 +91,7 @@ from jasper.log_event import log_event
 
 from . import librespot_state, mux_mode_persistence
 from .bluetooth.avrcp import bluetooth_avrcp_call
+from .busctl import system_busctl
 from .control import restart_broker
 from .audio_runtime_plan import (
     SourceRouteDecision,
@@ -2108,16 +2109,8 @@ class Mux:
 async def _busctl(*args: str) -> Optional[str]:
     """Run busctl on the system bus, return stdout on success or
     None on any error. Used by the bounded AirPlay preemption adapter."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError, OSError):
-        return None
-    if proc.returncode != 0:
+    stdout = await system_busctl(*args)
+    if stdout is None:
         return None
     return stdout.decode("utf-8", "replace")
 

@@ -30,6 +30,7 @@ from typing import Any
 
 from . import bluealsa_probe
 from . import librespot_state
+from .busctl import run_busctl
 from .fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
@@ -143,23 +144,19 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
     Transport failures are unknown rather than inactive. The public bool wrapper
     below retains the historical fail-soft behavior for non-mux callers.
     """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", "call",
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.freedesktop.DBus.Properties", "Get", "ss",
-            "org.mpris.MediaPlayer2.Player", "Metadata",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl Metadata probe failed: %s", e)
+    result = await run_busctl(
+        "call",
+        "org.mpris.MediaPlayer2.ShairportSync",
+        "/org/mpris/MediaPlayer2",
+        "org.freedesktop.DBus.Properties", "Get", "ss",
+        "org.mpris.MediaPlayer2.Player", "Metadata",
+    )
+    if result is None:
+        logger.debug("busctl Metadata probe failed")
         return None
-    if proc.returncode != 0:
-        return _airplay_nonzero_observation(stderr)
-    return _AIRPLAY_TITLE_RE.search(stdout) is not None
+    if result.returncode != 0:
+        return _airplay_nonzero_observation(result.stderr)
+    return _AIRPLAY_TITLE_RE.search(result.stdout) is not None
 
 
 async def _airplay_has_metadata_title() -> bool:
@@ -190,26 +187,22 @@ async def airplay_playing_observed() -> bool | None:
         JASPER_AIRPLAY_METADATA_GATE=disabled
     reverts to the pre-fix PlaybackStatus-only behaviour.
     """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", "call",
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.freedesktop.DBus.Properties", "Get", "ss",
-            "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl PlaybackStatus probe failed: %s", e)
+    result = await run_busctl(
+        "call",
+        "org.mpris.MediaPlayer2.ShairportSync",
+        "/org/mpris/MediaPlayer2",
+        "org.freedesktop.DBus.Properties", "Get", "ss",
+        "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
+    )
+    if result is None:
+        logger.debug("busctl PlaybackStatus probe failed")
         return None
-    if proc.returncode != 0:
-        return _airplay_nonzero_observation(stderr)
+    if result.returncode != 0:
+        return _airplay_nonzero_observation(result.stderr)
     # busctl emits a single line like:  v s "Playing"
     # (variant-of-string-of-value). Substring match is robust to
     # leading/trailing whitespace busctl may add.
-    if b'"Playing"' not in stdout:
+    if b'"Playing"' not in result.stdout:
         return False
     # PlaybackStatus is Playing. Corroborate with metadata unless
     # the gate is disabled via the escape-hatch env var.

@@ -272,8 +272,8 @@ movement landing just after our write isn't swallowed.
 
 ### Why polling, not DBus subscriptions
 
-`busctl get-property` is the proven pattern in this codebase
-(`jasper.renderer`, `jasper.mux`). DBus PropertiesChanged
+`busctl get-property` through the bounded `jasper.busctl` subprocess boundary is
+the proven pattern in this codebase. DBus PropertiesChanged
 subscriptions would need a new dependency (dbus-next) and a more
 complex error model (long-lived subscriptions to manage). For our
 use case the ergonomic wins don't materialise: source-side volume

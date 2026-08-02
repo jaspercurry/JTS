@@ -247,6 +247,7 @@ title = "Renderer source policy, fan-in, ALSA, and audio routing"
 safety = "audio-output-risk"
 code = [
   "jasper/music_sources.py",
+  "jasper/busctl.py",
   "jasper/local_sources/**",
   "jasper/mux.py",
   "jasper/renderer.py",

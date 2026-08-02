@@ -59,6 +59,7 @@ from .assistant_volume import (
     volume_context_stamp_boot_ns,
 )
 from .assistant_loudness import tts_envelope_lufs_for_level
+from .busctl import run_busctl
 from .log_event import log_event
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
 from . import volume_diagnostics
@@ -2679,10 +2680,8 @@ class VolumeCoordinator:
 
 
 # ----------------------------------------------------------------------
-# DBus helpers — mirror jasper.renderer's busctl wrappers, extended for
-# property setters. Subprocess+busctl is the proven pattern in this
-# codebase; observers in volume_observers.py use dbus-next for live
-# subscriptions, but one-shot Set ops stay subprocess.
+# DBus helpers — protocol/property policy stays here while the shared busctl
+# boundary owns one-shot subprocess lifecycle and timeout cleanup.
 # ----------------------------------------------------------------------
 
 async def _busctl_set_property(
@@ -2697,33 +2696,22 @@ async def _busctl_set_property(
 ) -> bool:
     """Run `busctl set-property` for one property. Returns True on
     success, False on any error (logged at debug)."""
-    try:
-        # `--` before the typed value so busctl's getopt doesn't
-        # parse leading-`-` values as flag options.
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", bus, "set-property",
-            bus_name, object_path, interface, prop, signature, "--", value,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        # asyncio.timeout(), NOT asyncio.wait_for(): see the note on
-        # RendererClient.selected_source (jasper/renderer.py). This call sits
-        # on VolumeObserver._run's other directly-awaited chain -- _tick ->
-        # apply_active_source_transition -> _set_push_source_for_handoff ->
-        # _set_bluetooth -> here -- so a cancel swallowed by wait_for makes
-        # that cancellation-only loop immortal (#2003). Transition-gated
-        # rather than every-tick, but the same swallow. Do not "simplify"
-        # this back to wait_for while 3.11 is supported.
-        async with asyncio.timeout(2.0):
-            _, stderr = await proc.communicate()
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl set-property %s.%s failed: %s", interface, prop, e)
+    # `--` before the typed value keeps a leading-`-` value out of busctl's
+    # option parser. The shared runner uses asyncio.timeout (not wait_for),
+    # preserving this directly-awaited transition chain's cancellation rule.
+    result = await run_busctl(
+        "set-property",
+        bus_name, object_path, interface, prop, signature, "--", value,
+        bus=bus,
+    )
+    if result is None:
+        logger.debug("busctl set-property %s.%s failed", interface, prop)
         return False
-    if proc.returncode != 0:
+    if result.returncode != 0:
         logger.debug(
             "busctl set-property %s.%s rc=%d stderr=%s",
-            interface, prop, proc.returncode,
-            stderr.decode("utf-8", "replace") if stderr else "",
+            interface, prop, result.returncode,
+            result.stderr.decode("utf-8", "replace") if result.stderr else "",
         )
         return False
     return True
