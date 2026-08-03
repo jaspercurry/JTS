@@ -952,35 +952,41 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-02 (R12 closed — THE CAMPAIGN IS CLOSED; Monday
-                2026-08-03 is R13, the owner's hands-on day)
-jts3_sha:       5a3266f8f — verified deployed (build.txt status=ok,
-                install 2026-08-02T10:17-04:00), jasper-doctor 0 failed /
-                5 known warnings (post-E2E run, banked in
-                captures/r12-e2e-pass-20260802/)
-active_round:   none — campaign closed. Monday runs off
-                captures/MONDAY-RUNBOOK-2026-08-03.md (fact-checked to
-                0 blockers / 0 should-fixes, two fix rounds); anything
-                still open is ordinary backlog at normal pace
-last_round:     R12 (the Monday package + copy honesty, then an
-                owner-directed evening sweep: 8 PRs merged closing 18
-                issues — #2035 #2036 #2037 #2038 #2039 #2040 #2042
-                #2043; every PR through an independent adversarial gate
-                to 0/0, #2042 through a three-lens safety panel; #2027
-                advanced with banked findings and stays open; new issues
-                filed #2041 #2044 #2045 #2046)
-next_mission:   Monday: the runbook. After Monday: ordinary backlog
-blocked_on:     Monday rulings (unchanged queue — see the runbook):
-                ladder P0-P4, Q-E, enclosure-hole timeline, raw-σ
-                (#1954), bins-vs-centres, #1990 §B, delay adoption,
-                #1941 stage plan, parked candidate 8ca42d15… +
-                browser-pixel pass, mic-replacement repeat-floor arm,
-                H3-swap scheduling, live loop wiring (#2033). Plus one
-                new hazard note: a fresh measurement session OVERWRITES
-                the parked candidate (hydrate invalidates CHECK/MEASURE
-                evidence) — A-7's choices are the only safe entry. The
-                live measure_diag confirmation of #2037 rides Monday's
-                re-walk (bank: captures/r12-e2e-pass-20260802/)
+date:           2026-08-03 (R13 owner validation day and overnight evidence /
+                integration review complete)
+jts3_sha:       7cf87029ac1eecf7e3f6016819ad231a41908772 — verified deployed
+                2026-08-03 18:41 EDT (build.txt status=ok); post-settle
+                jasper-doctor: 0 failed / 5 non-critical warnings. Includes
+                #2096's robust VERIFY timeline anchor
+active_round:   none — the campaign remains closed. R13's hands-on record,
+                corrections, and overnight findings live in #2083 and
+                captures/glitch-forensics-20260803/
+last_round:     R13 (owner validation day). #2087 ruled that the predicted-
+                ripple ceiling becomes a brief disclosure, not a hard
+                refusal; shipped in #2088. #2086 records the finite, honest,
+                per-position retry intent, but its #2097 implementation is
+                blocked below. #2091's renderer parking is deprioritized /
+                ordinary backlog
+validation:     applied=true, tier=full, session phases verify/cloud_verify.
+                Local at-mark VERIFY passed (max raw 0.9835 dB; offset
+                -5.868 dB), but only 4 of 5 cloud positions were accepted;
+                cloud=null and the group ended on locate_failed. This is not
+                an "unverified" tune and not an "applied and graded" Full
+                result
+rollback:       Undo remains banked through the retained pre_apply_profile;
+                restoration was not exercised during this run
+follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
+                #2099 owns the fit / spatial-grade / bass-room seam; #2100
+                owns honest Full-stage progress and recovery disclosure
+next_mission:   rerun the entire Full stage 2: local VERIFY plus all five
+                cloud positions. The current protocol cannot honestly resume
+                from only the missing fifth position
+blocked_on:     #2097 remains open and unshipped. Merged #2095 requires an
+                exhausted refusal to equal its evidence-aware reason_message;
+                heard locate_failed ends "Try again." #2097 explicitly
+                forbids retry language on exhaustion and deletes that call
+                site. Both invariants need a new owner/product copy contract;
+                no overnight guess was made
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1654,6 +1660,15 @@ of which scale with the program rather than with the prose. Splitting either
 into a second file would defeat the one-spine purpose, so the length is a
 deliberate, recorded exception — not licence for the spine's *prose* to grow.
 
+**Verification scope.** A **2026-08-03 post-R13 pass** re-verified exactly the
+CURRENT POSITION block against jts3's deployed build marker and doctor result,
+the retained crossover-v2 state and capture ledger, the owner rulings on #2087
+and #2086, #2091's recorded deprioritization, #2097's integration blocker,
+#2083's corrected evidence trail, and the filed contracts #2098–#2100. It did
+**not** re-verify the charter, rung bodies, campaign narrative, research index,
+phase→issue reconciliation, or historical appendix; their previously recorded
+verification scopes remain unchanged.
+
 **Verification scope.** A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
 these sections:
@@ -1693,4 +1708,4 @@ below the spine is an unchanged 2026-07-12 snapshot and was NOT re-verified** �
 per the documentation paradigm, historical sections are deliberately not kept in
 sync with code. Do not read the date below as a warranty on appendix facts.
 
-Last verified: 2026-08-02
+Last verified: 2026-08-03
