@@ -1673,23 +1673,13 @@ experiment, and it is worth running — it can show that the exclusion *bound* a
 what the fit does without it. It cannot say the correction that resulted was
 *right*. Only an injected defect gives you that, and one thing more: a defect on
 demand. The second matters most exactly here, because the null registry's
-*gating* band is floored at 4 kHz (`ECHO_BAND_HF_REGIME_FLOOR_HZ`), so a real
-null below that is never registered at all and the corpus structurally cannot
-carry a labelled case of one. (`_crossover_region_null_registry` asks about that
-region anyway, deliberately without letting the answer gate anything — #1967,
-#1867.)
+*gating* band is floored at 4 kHz (`ECHO_BAND_HF_REGIME_FLOOR_HZ`).
+(`_crossover_region_null_registry` asks about that region anyway, deliberately
+without letting the answer gate anything — #1967, #1867.)
 
 Synthetically the defect is built to order and its answer is known before the
 flow runs, which is what lets a scenario grade the gate's decision rather than
 merely observe it — and that has to exist before a household meets it.
-
-A note on how this paragraph was written, because it is this section's own thesis
-turned on its author. Three successive versions of it claimed the corpus
-*lacked* something — a cloud, a null inside the working band, a counterfactual —
-and measurement falsified all three; one of the three was authored by the
-reviewer rather than the writer, and inherited on the strength of the label. A
-negative claim about a corpus is a strong empirical claim. It needs the same
-measurement a positive one does.
 
 ### The ambition: one scenario per diagnostic criterion
 
@@ -1738,6 +1728,14 @@ sure whether it will help, we have a cheap way to find out — measure — and w
 should take it. Synthetic scenarios are that same ethos turned on the code
 itself: when we are unsure whether the logic reasons correctly about a defect,
 we can build the defect and find out, for the price of a test run.
+
+A note on how the corpus paragraph above was written, because it is this
+section's own thesis turned on its author. Three successive versions of it
+claimed the corpus *lacked* something — a cloud, a null inside the working band,
+a counterfactual — and measurement falsified all three; one of the three was
+authored by the reviewer rather than the writer, and inherited on the strength of
+the label. A negative claim about a corpus is a strong empirical claim. It needs
+the same measurement a positive one does.
 
 ---
 
