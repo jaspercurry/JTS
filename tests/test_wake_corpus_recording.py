@@ -1041,6 +1041,135 @@ def test_begin_session_refuses_while_recording_start_is_reserved(
     backend.stop_recording()
 
 
+def test_manual_stop_fails_fast_while_recording_start_is_reserved(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handler never waits indefinitely behind the slow UDP bind."""
+    backend.begin_session("jasper")
+    entered, release = _block_recording_task_start(monkeypatch)
+    started: list[dict[str, str]] = []
+    start_errors: list[Exception] = []
+
+    def start_clip() -> None:
+        try:
+            started.append(backend.start_recording("quiet", "near"))
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover
+            start_errors.append(exc)
+
+    start_thread = threading.Thread(target=start_clip)
+    start_thread.start()
+    assert entered.wait(timeout=2)
+
+    stop_done = threading.Event()
+    stop_errors: list[Exception] = []
+
+    def stop_clip() -> None:
+        try:
+            backend.stop_recording()
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            stop_errors.append(exc)
+        finally:
+            stop_done.set()
+
+    stop_thread = threading.Thread(target=stop_clip)
+    stop_thread.start()
+    try:
+        assert stop_done.wait(timeout=0.25), (
+            "manual stop blocked behind the lifecycle owner"
+        )
+        assert len(stop_errors) == 1
+        assert isinstance(stop_errors[0], wake_corpus_setup.StateError)
+        assert "lifecycle transition in progress" in str(stop_errors[0])
+    finally:
+        release.set()
+        start_thread.join(timeout=2)
+        stop_thread.join(timeout=2)
+
+    assert not start_thread.is_alive()
+    assert not stop_thread.is_alive()
+    assert start_errors == []
+    assert len(started) == 1
+    backend.stop_recording()
+
+
+@pytest.mark.parametrize(
+    ("trigger_name", "expected_auto", "expected_mute"),
+    [
+        ("_auto_stop_safe", True, False),
+        ("_mute_stop_safe", False, True),
+    ],
+)
+def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+    trigger_name: str,
+    expected_auto: bool,
+    expected_mute: bool,
+) -> None:
+    """Safety stops retain no new frames and eventually publish the clip."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.2)
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.2)
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.03)
+    with backend._lock:
+        task = backend._current
+    assert task is not None and task._task is not None
+
+    # Stand in for a lifecycle owner stalled in filesystem I/O. The safety
+    # worker must return promptly, quiesce capture on the loop, and leave one
+    # bounded-delay retry rather than wait on this mutex.
+    assert backend._lifecycle_lock.acquire(blocking=False)
+    try:
+        trigger = getattr(backend, trigger_name)
+        trigger_thread = threading.Thread(target=trigger)
+        trigger_thread.start()
+        trigger_thread.join(timeout=0.25)
+        assert not trigger_thread.is_alive()
+
+        deadline = time.monotonic() + 1.0
+        while not task._task.done() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert task._task.done(), "safety stop did not quiesce frame capture"
+        assert backend.is_recording() is True
+        with backend._lock:
+            assert backend._pending_stop == (expected_auto, expected_mute)
+            retry_handle = backend._stop_retry_handle
+            assert retry_handle is not None
+            assert backend._stop_retry_attempts >= 1
+        assert retry_handle.interval <= recording_backend.STOP_RETRY_MAX_SEC
+
+        # Repeated triggers merge into the existing timer; they do not spawn
+        # more Timer/worker threads while its owner remains blocked.
+        for _ in range(3):
+            trigger()
+        with backend._lock:
+            assert backend._stop_retry_handle is retry_handle
+            assert backend._stop_retry_attempts == 1
+    finally:
+        backend._lifecycle_lock.release()
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        with backend._lock:
+            pending_stop = backend._pending_stop
+        if not backend.is_recording() and pending_stop is None:
+            break
+        time.sleep(0.01)
+    assert backend.is_recording() is False, (
+        "deferred safety stop was not saved after its owner released"
+    )
+    clips = backend.list_clips()
+    assert len(clips) == 1
+    assert clips[0].auto_stopped is expected_auto
+    assert clips[0].mute_stopped is expected_mute
+    with backend._lock:
+        assert backend._pending_stop is None
+        assert backend._stop_retry_handle is None
+        assert backend._stop_retry_attempts == 0
+
+
 def test_begin_session_refuses_while_stop_is_saving_clip(
     backend,
     monkeypatch: pytest.MonkeyPatch,

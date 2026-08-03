@@ -123,6 +123,15 @@ RESUME_WINDOW_SEC = 3600.0
 # tiny local-file stat+parse, safe on the backend loop.
 MUTE_POLL_INTERVAL_SEC = 1.0
 
+# Safety-triggered stops never wait on the lifecycle mutex. They quiesce the
+# capture immediately, then retry clip publication with one in-flight,
+# capped-backoff threading.Timer until the current short-lived owner releases.
+# This preserves eventual save without mutating the asyncio loop from a worker
+# or stranding an HTTP/worker thread behind I/O of unknown duration.
+STOP_RETRY_INITIAL_SEC = 0.05
+STOP_RETRY_MAX_SEC = 1.0
+_STOP_LIFECYCLE_BUSY = "can't stop recording: lifecycle transition in progress"
+
 # How long after entering corpus test mode we treat the marker as
 # abandoned and self-heal jasper-voice back on. Kept well under the
 # jasper-web 10-min idle-exit window so that whenever the socket re-
@@ -281,6 +290,17 @@ class RecordingTask:
             return 0.0
         return time.monotonic() - self._start_monotonic
 
+    def request_stop(self) -> None:
+        """Cancel frame collection without waiting for clip publication.
+
+        Called on this task's event loop when a privacy/automatic stop races a
+        lifecycle owner. ``stop()`` later gathers the buffered PCM and closes
+        the capture stack; cancellation here ensures no more audio is retained
+        while that bounded-backoff publication retry is pending.
+        """
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
     async def stop(self) -> dict[str, bytes]:
         """Cancel the collection task, return PCM bytes per leg.
 
@@ -438,6 +458,9 @@ class RecordingBackend:
         self._starting_clip_id: str | None = None
         self._auto_stop_handle: Any | None = None  # asyncio.TimerHandle
         self._mute_poll_handle: Any | None = None  # asyncio.TimerHandle
+        self._pending_stop: tuple[bool, bool] | None = None  # auto, mute
+        self._stop_retry_handle: threading.Timer | None = None
+        self._stop_retry_attempts = 0
 
         # Background asyncio loop running in a daemon thread. Lazily
         # created in start() so tests can construct a backend without
@@ -476,6 +499,7 @@ class RecordingBackend:
             self._loop.close()
 
     def shutdown(self) -> None:
+        self._clear_pending_stop()
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread is not None:
@@ -492,16 +516,14 @@ class RecordingBackend:
     def _lifecycle_transaction(
         self,
         busy_message: str,
-        *,
-        wait: bool = False,
     ) -> Iterator[None]:
         """Own one complete state-plus-I/O lifecycle transaction.
 
-        Ordinary HTTP mutations fail fast when another transition owns the
-        backend. Stop waits instead: automatic/mute-triggered stops must not
-        be lost merely because a short metadata mutation won the race.
+        Every caller fails fast when another transition owns the backend.
+        Safety-triggered stops use the separate capped-backoff recovery path;
+        no handler or worker blocks indefinitely on a stalled owner.
         """
-        acquired = self._lifecycle_lock.acquire(blocking=wait)
+        acquired = self._lifecycle_lock.acquire(blocking=False)
         if not acquired:
             raise StateError(busy_message)
         try:
@@ -1284,14 +1306,11 @@ class RecordingBackend:
                 )
 
     def _mute_stop_safe(self) -> None:
-        try:
-            # auto=False: this is not the duration-cap auto-stop — the
-            # pending auto-stop timer must be cancelled, and the clip's
-            # auto_stopped flag must stay False so downstream tools
-            # don't misread a privacy stop as a forgotten Stop click.
-            self.stop_recording(auto=False, mute_stopped=True)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("mute-stop failed: %s", e)
+        # auto=False: a privacy stop must stay distinguishable from the
+        # duration cap even if both timers race. The recovery path makes mute
+        # win while retaining exactly one pending retry.
+        if not self._stop_with_recovery(auto=False, mute_stopped=True):
+            self._schedule_stop_retry(auto=False, mute_stopped=True)
 
     def _auto_stop_threadsafe(self) -> None:
         """Fires on the backend loop when MAX_RECORDING_DURATION_SEC
@@ -1303,20 +1322,129 @@ class RecordingBackend:
         thread.start()
 
     def _auto_stop_safe(self) -> None:
+        if not self._stop_with_recovery(auto=True, mute_stopped=False):
+            self._schedule_stop_retry(auto=True, mute_stopped=False)
+
+    def _quiesce_current_capture(self) -> None:
+        """Stop retaining frames now; clip save may follow on a retry."""
+        with self._lock:
+            task = self._current
+            loop = self._loop
+        if task is not None and loop is not None:
+            loop.call_soon_threadsafe(task.request_stop)
+
+    def _clear_pending_stop(self) -> None:
+        with self._lock:
+            handle = self._stop_retry_handle
+            self._pending_stop = None
+            self._stop_retry_handle = None
+            self._stop_retry_attempts = 0
+        if handle is not None:
+            handle.cancel()
+
+    def _schedule_stop_retry(
+        self,
+        *,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> None:
+        with self._lock:
+            if self._current is None or self._loop is None:
+                self._pending_stop = None
+                self._stop_retry_attempts = 0
+                return
+            previous_auto, previous_mute = self._pending_stop or (False, False)
+            merged_mute = previous_mute or mute_stopped
+            # Privacy is the stronger explanation if mute and duration race.
+            merged_auto = (previous_auto or auto) and not merged_mute
+            self._pending_stop = (merged_auto, merged_mute)
+            if self._stop_retry_handle is not None:
+                return
+            self._stop_retry_attempts += 1
+            exponent = min(self._stop_retry_attempts - 1, 8)
+            delay = min(
+                STOP_RETRY_INITIAL_SEC * (2 ** exponent),
+                STOP_RETRY_MAX_SEC,
+            )
+            retry_timer = threading.Timer(
+                delay,
+                self._retry_pending_stop,
+            )
+            retry_timer.daemon = True
+            self._stop_retry_handle = retry_timer
+            attempt = self._stop_retry_attempts
+        retry_timer.start()
+        if attempt == 1 or attempt & (attempt - 1) == 0:
+            log_event(
+                logger,
+                "wake_corpus.stop_retry_scheduled",
+                attempt=attempt,
+                delay_sec=f"{delay:.3f}",
+                auto=merged_auto,
+                mute_stopped=merged_mute,
+                level=logging.WARNING,
+            )
+
+    def _retry_pending_stop(self) -> None:
+        """One Timer-owned publication attempt; rearm only after it exits."""
+        with self._lock:
+            active_timer = self._stop_retry_handle
+            pending = self._pending_stop
+        if pending is None:
+            return
+        auto, mute_stopped = pending
+        if self._stop_with_recovery(auto=auto, mute_stopped=mute_stopped):
+            return
+        # Keep the fired Timer as the in-flight sentinel through the complete
+        # attempt. Repeated safety triggers merge into _pending_stop while it
+        # is present; only this callback may replace it with the next timer.
+        with self._lock:
+            if self._stop_retry_handle is active_timer:
+                self._stop_retry_handle = None
+            pending = self._pending_stop
+        if pending is not None:
+            auto, mute_stopped = pending
+            self._schedule_stop_retry(
+                auto=auto,
+                mute_stopped=mute_stopped,
+            )
+
+    def _stop_with_recovery(
+        self,
+        *,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> bool:
+        """Quiesce immediately; return whether publication is terminal."""
+        self._quiesce_current_capture()
         try:
-            self.stop_recording(auto=True)
+            self.stop_recording(auto=auto, mute_stopped=mute_stopped)
+        except StateError as e:
+            if str(e) == _STOP_LIFECYCLE_BUSY:
+                return False
+            if str(e) == "no recording in progress":
+                self._clear_pending_stop()
+                return True
+            logger.warning("deferred recording stop refused: %s", e)
         except Exception as e:  # noqa: BLE001
-            logger.warning("auto-stop failed: %s", e)
+            logger.warning("deferred recording stop failed: %s", e)
+        self._clear_pending_stop()
+        return True
 
     def stop_recording(
         self, auto: bool = False, mute_stopped: bool = False,
     ) -> ClipMetadata:
         """Stop the current recording, save WAVs, return metadata."""
+        with self._lock:
+            pending_auto, pending_mute = self._pending_stop or (False, False)
+        mute_stopped = mute_stopped or pending_mute
+        auto = (auto or pending_auto) and not mute_stopped
         with self._lifecycle_transaction(
-            "can't stop recording: lifecycle transition in progress",
-            wait=True,
+            _STOP_LIFECYCLE_BUSY,
         ):
-            return self._stop_recording(auto=auto, mute_stopped=mute_stopped)
+            clip = self._stop_recording(auto=auto, mute_stopped=mute_stopped)
+        self._clear_pending_stop()
+        return clip
 
     def _stop_recording(
         self, auto: bool = False, mute_stopped: bool = False,
