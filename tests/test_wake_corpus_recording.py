@@ -25,13 +25,15 @@ from jasper.web import wake_corpus_setup
 from tests.wake_corpus_setup_fixtures import (
     _FakeUdpMicCapture,
     _allow_capture_plan_conformance,
-    _backend_fixture,  # noqa: F401 - imported pytest fixture
+    _backend_fixture,
     _block_recording_task_start,
-    _patch_udp,  # noqa: F401 - imported pytest fixture
+    _patch_udp,
     _session_metadata,
     _stub_xvf_runtime,
     _use_tmp_bridge_env,
 )
+
+_IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 
 # ---------------------------------------------------------------------------
 # RecordingTask — direct exercise

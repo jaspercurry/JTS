@@ -17,10 +17,12 @@ import pytest
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
-    _backend_fixture,  # noqa: F401 - imported pytest fixture
+    _backend_fixture,
     _block_recording_task_start,
-    _patch_udp,  # noqa: F401 - imported pytest fixture
+    _patch_udp,
 )
+
+_IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 
 
 def test_list_sessions_empty_dir(tmp_path: Path) -> None:

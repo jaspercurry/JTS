@@ -42,7 +42,9 @@ from jasper.route_latency.tap_client import (
     TapClientError,
     parse_tap_socket_reply,
 )
-from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture  # noqa: F401
+from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
+
+_IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 
 _REPO = Path(__file__).resolve().parents[1]
 _FANIN_IMPULSE_TAP_RS = _REPO / "rust" / "jasper-fanin" / "src" / "impulse_tap.rs"

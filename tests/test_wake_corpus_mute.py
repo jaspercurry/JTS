@@ -17,10 +17,16 @@ from jasper.wake_corpus import recording_backend
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
-    _mute_backend_fixture,  # noqa: F401 - imported pytest fixture
-    _mute_path_fixture,  # noqa: F401 - imported pytest fixture
-    _patch_udp,  # noqa: F401 - imported pytest fixture
+    _mute_backend_fixture,
+    _mute_path_fixture,
+    _patch_udp,
     _write_mute,
+)
+
+_IMPORTED_FIXTURES = (
+    _mute_backend_fixture,
+    _mute_path_fixture,
+    _patch_udp,
 )
 
 # ---------------------------------------------------------------------------

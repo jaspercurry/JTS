@@ -21,11 +21,13 @@ from jasper.wake_corpus import bridge_session
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
-    _backend_fixture,  # noqa: F401 - imported pytest fixture
-    _patch_udp,  # noqa: F401 - imported pytest fixture
+    _backend_fixture,
+    _patch_udp,
     _session_metadata,
     _use_tmp_bridge_env,
 )
+
+_IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 
 # ---------------------------------------------------------------------------
 # Raw mic 0 leg — 4th capture leg, opt-in per session
