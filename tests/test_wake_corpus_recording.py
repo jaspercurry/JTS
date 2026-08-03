@@ -1368,6 +1368,164 @@ def test_shutdown_joins_active_retry_before_closing_loop(
     assert backend.list_clips() == []
 
 
+def test_shutdown_joins_admitted_initial_worker_before_closing_loop(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-retry daemon worker is registered before it can run."""
+    backend.begin_session("jasper")
+    started = backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+    assert task is not None
+    generation = (started["clip_id"], task)
+
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    original_quiesce = backend._quiesce_current_capture
+
+    def blocked_quiesce(generation_arg):
+        worker_entered.set()
+        assert release_worker.wait(timeout=2)
+        return original_quiesce(generation_arg)
+
+    monkeypatch.setattr(backend, "_quiesce_current_capture", blocked_quiesce)
+    backend._auto_stop_threadsafe(generation)
+    assert worker_entered.wait(timeout=2)
+    with backend._lock:
+        assert len(backend._safety_workers) == 1
+
+    shutdown_done = threading.Event()
+
+    def shut_down() -> None:
+        backend.shutdown()
+        shutdown_done.set()
+
+    shutdown_thread = threading.Thread(target=shut_down)
+    shutdown_thread.start()
+    try:
+        assert not shutdown_done.wait(timeout=0.05)
+        assert backend._loop_thread is not None and backend._loop_thread.is_alive()
+    finally:
+        release_worker.set()
+    shutdown_thread.join(timeout=2)
+    assert not shutdown_thread.is_alive() and shutdown_done.is_set()
+    assert backend._loop_thread is not None and not backend._loop_thread.is_alive()
+    with backend._lock:
+        assert backend._safety_workers == set()
+    clips = backend.list_clips()
+    assert len(clips) == 1 and clips[0].auto_stopped is True
+
+
+def test_retry_join_timeout_keeps_loop_alive_until_later_shutdown(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded timeout never closes the loop beneath an active Timer."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    monkeypatch.setattr(recording_backend, "STOP_SHUTDOWN_JOIN_SEC", 0.05)
+    backend.begin_session("jasper")
+    started = backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+    assert task is not None
+    generation = (started["clip_id"], task)
+
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    callback_done = threading.Event()
+    original_recovery = backend._stop_with_recovery
+
+    def blocked_recovery(generation_arg, **labels):
+        if isinstance(threading.current_thread(), threading.Timer):
+            callback_entered.set()
+            assert release_callback.wait(timeout=2)
+            try:
+                return original_recovery(generation_arg, **labels)
+            finally:
+                callback_done.set()
+        return original_recovery(generation_arg, **labels)
+
+    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
+    assert backend._lifecycle_lock.acquire(blocking=False)
+    try:
+        backend._auto_stop_safe(generation)
+    finally:
+        backend._lifecycle_lock.release()
+    assert callback_entered.wait(timeout=2)
+
+    started_shutdown = time.monotonic()
+    backend.shutdown()
+    assert time.monotonic() - started_shutdown < 0.5
+    assert backend._loop_thread is not None and backend._loop_thread.is_alive()
+    release_callback.set()
+    assert callback_done.wait(timeout=2)
+    backend.shutdown()
+    assert backend._loop_thread is not None and not backend._loop_thread.is_alive()
+
+
+def test_retry_timer_can_initiate_shutdown_without_self_join(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Timer-owned shutdown skips joining itself and closes safely."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    backend.begin_session("jasper")
+    started = backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+    assert task is not None
+    generation = (started["clip_id"], task)
+    callback_done = threading.Event()
+    original_recovery = backend._stop_with_recovery
+
+    def timer_shutdown(generation_arg, **labels):
+        if isinstance(threading.current_thread(), threading.Timer):
+            backend.shutdown()
+            callback_done.set()
+            return True
+        return original_recovery(generation_arg, **labels)
+
+    monkeypatch.setattr(backend, "_stop_with_recovery", timer_shutdown)
+    assert backend._lifecycle_lock.acquire(blocking=False)
+    try:
+        backend._auto_stop_safe(generation)
+    finally:
+        backend._lifecycle_lock.release()
+    assert callback_done.wait(timeout=2)
+    assert backend._loop_thread is not None and not backend._loop_thread.is_alive()
+    with backend._lock:
+        assert backend._pending_stop is None
+        assert backend._stop_retry_handle is None
+
+
+def test_shutdown_terminal_rejects_start_and_retry_admission(backend) -> None:
+    """No clip or stop worker can be admitted after shutdown linearizes."""
+    backend.begin_session("jasper")
+    started = backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+    assert task is not None and task._task is not None
+    generation = (started["clip_id"], task)
+    backend._quiesce_current_capture(generation)
+    deadline = time.monotonic() + 1
+    while not task._task.done() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert task._task.done()
+    backend.shutdown()
+
+    with pytest.raises(wake_corpus_setup.StateError, match="shutting down"):
+        backend.start_recording("quiet", "near")
+    backend._schedule_stop_retry(
+        generation, auto=True, mute_stopped=False,
+    )
+    backend._auto_stop_threadsafe(generation)
+    with backend._lock:
+        assert backend._pending_stop is None
+        assert backend._stop_retry_handle is None
+        assert backend._safety_workers == set()
+
+
 def test_begin_session_refuses_while_stop_is_saving_clip(
     backend,
     monkeypatch: pytest.MonkeyPatch,

@@ -130,6 +130,7 @@ MUTE_POLL_INTERVAL_SEC = 1.0
 # or stranding an HTTP/worker thread behind I/O of unknown duration.
 STOP_RETRY_INITIAL_SEC = 0.05
 STOP_RETRY_MAX_SEC = 1.0
+STOP_SHUTDOWN_JOIN_SEC = 5.0
 _STOP_LIFECYCLE_BUSY = "can't stop recording: lifecycle transition in progress"
 
 # How long after entering corpus test mode we treat the marker as
@@ -468,6 +469,7 @@ class RecordingBackend:
         self._pending_stop_generation: _StopGeneration | None = None
         self._stop_retry_handle: threading.Timer | None = None
         self._stop_retry_attempts = 0
+        self._safety_workers: set[threading.Thread] = set()
         self._shutdown_started = False
 
         # Background asyncio loop running in a daemon thread. Lazily
@@ -514,18 +516,23 @@ class RecordingBackend:
                 return
             self._shutdown_started = True
             retry_handle = self._stop_retry_handle
+            safety_workers = set(self._safety_workers)
         if retry_handle is not None:
             retry_handle.cancel()
-            # An active Timer may be inside _submit(). Keep the loop alive
-            # until it exits; never attempt to join the callback from itself.
-            if retry_handle is not threading.current_thread():
-                retry_handle.join(timeout=5)
-                if retry_handle.is_alive():
-                    logger.warning(
-                        "wake-corpus shutdown left its loop alive while a "
-                        "stop retry remained active",
-                    )
-                    return
+        # Initial safety workers and Timer retries may be inside _submit().
+        # One shared deadline bounds the total wait; never self-join.
+        current_thread = threading.current_thread()
+        owners = safety_workers | ({retry_handle} if retry_handle else set())
+        deadline = time.monotonic() + STOP_SHUTDOWN_JOIN_SEC
+        for owner in owners:
+            if owner is not current_thread:
+                owner.join(timeout=max(0.0, deadline - time.monotonic()))
+        if any(owner is not current_thread and owner.is_alive() for owner in owners):
+            logger.warning(
+                "wake-corpus shutdown left its loop alive while a stop "
+                "worker remained active",
+            )
+            return
         self._clear_pending_stop()
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -1327,11 +1334,9 @@ class RecordingBackend:
             )
             # stop_recording is sync + blocks on the loop; hand it to a
             # worker thread (same shape as the auto-stop timer).
-            threading.Thread(
-                target=self._mute_stop_safe,
-                args=(generation,),
-                daemon=True,
-            ).start()
+            self._spawn_safety_worker(
+                generation, auto=False, mute_stopped=True,
+            )
             return
         with self._lock:
             if (
@@ -1354,18 +1359,45 @@ class RecordingBackend:
         """Fires on the backend loop when MAX_RECORDING_DURATION_SEC
         elapses. Triggers stop_recording on a worker thread so the
         loop thread doesn't block on its own sync method."""
-        with self._lock:
-            if not self._owns_current_locked(generation):
-                return
-        thread = threading.Thread(
-            target=self._auto_stop_safe,
-            args=(generation,),
-            daemon=True,
+        self._spawn_safety_worker(
+            generation, auto=True, mute_stopped=False,
         )
-        thread.start()
 
     def _auto_stop_safe(self, generation: _StopGeneration) -> None:
         self._safety_stop(generation, auto=True, mute_stopped=False)
+
+    def _spawn_safety_worker(
+        self,
+        generation: _StopGeneration,
+        *,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> None:
+        """Atomically admit one initial worker so shutdown can join it."""
+        worker = threading.Thread(
+            target=self._run_safety_worker,
+            args=(generation, auto, mute_stopped),
+            daemon=True,
+        )
+        with self._lock:
+            if not self._owns_current_locked(generation):
+                return
+            self._safety_workers.add(worker)
+            worker.start()
+
+    def _run_safety_worker(
+        self,
+        generation: _StopGeneration,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> None:
+        try:
+            self._safety_stop(
+                generation, auto=auto, mute_stopped=mute_stopped,
+            )
+        finally:
+            with self._lock:
+                self._safety_workers.discard(threading.current_thread())
 
     def _safety_stop(
         self,
