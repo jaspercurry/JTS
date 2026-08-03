@@ -1538,18 +1538,25 @@ to de-risk Phase 3.
 
 ## Validation ladder — what each instrument can prove
 
-*Added 2026-08-02. This section is a design position, not a status report.*
+*Added 2026-08-02. A design position, not a status report. Its claims were
+checked against the tree at that date, and it is **outside the scope of this
+file's `Last verified:` pass below**, which predates it. "Ladder" here means the
+instruments and what each can prove — unrelated to W6's scripted-then-Chrome
+hardware sequence in
+[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).*
 
-The correction flow has, until now, been validated two ways, and neither can
-answer the question that matters most.
+Two instruments carry the weight of validating the correction flow today, and
+neither can answer the question that matters most.
 
 **Corpus replay** re-runs the shipped code over saved captures and compares
 against what the Pi itself persisted. Where it can reproduce a diagnostic it is
 exact — the 2026-08-02 replay of four banked jts3 CHECK→MEASURE pairs
-(`captures/r12-e2e-pass-20260802/`, gitignored; see
-[testing-tooling.md](testing-tooling.md)) recomputed each capture's CHECK woofer
-pilot SNR and matched the persisted sidecar on all four, to every digit the
-sidecar carries. That makes it an excellent *regression* instrument. But it is
+(`captures/r12-e2e-pass-20260802/`, gitignored; the bank is recorded in the R12
+outcome block of
+[HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md))
+recomputed each capture's CHECK woofer pilot SNR and matched the persisted
+sidecar on all four, to every digit the sidecar carries. That makes it an
+excellent *regression* instrument. But it is
 the model grading itself. It proves the code still computes what it computed
 last time. It cannot tell you that the prescription was **right**, because the
 corpus carries no ground truth: nobody knows what the correct answer was.
@@ -1571,7 +1578,9 @@ prescription look plausible?" — a judgement call, which is what the 2026-08-02
 replay was reduced to — into "did it recover the thing I put in?", which is a
 fact.
 
-This is already the house pattern, not a new idea. `fit_driver_linearization`
+This is already the house pattern in places — what is missing is that it is
+applied *systematically*, as a coverage obligation rather than wherever someone
+happened to reach for it. `fit_driver_linearization`
 is exercised by a synthetic fixture family whose expected outcomes are
 tabulated in the docstring of
 `test_correction_giveback_approximates_spend_on_the_canonical_synthetic`
@@ -1597,6 +1606,15 @@ evidence, "so the time-domain and frequency-domain evidence the gate insists
 must agree really are two views of one physical object rather than two fixtures
 that happen to match." Independence of the *model*, identity of the *object*.
 
+**And a second clause, because the first is necessary but not sufficient: the
+assertion must be against the injected truth, not against another output of the
+same fit.** An independent generator still proves nothing if the check compares
+two numbers the fit produced — that is self-consistency wearing a fixture's
+clothes. `tests/test_interference_nulls.py` is the model to copy: it asserts the
+recovered `tau` and `r` against the values it injected. A scenario that asserts
+only relationships among the fit's own outputs is a regression test, and belongs
+in the same bucket as corpus replay.
+
 ### The boundary — what synthetic scenarios must never claim
 
 They validate **reasoning**, never **measurement**.
@@ -1604,11 +1622,16 @@ They validate **reasoning**, never **measurement**.
 Every genuinely hard failure this system has had lives at the capture boundary:
 pilot SNR, clipping, glitch splices, gating, mic calibration, level collapse. A
 synthetic curve is born clean and skips all of it. One of the four captures in
-the 2026-08-02 replay carried `glitch_detected` — a discrete timeline step in
-the recording, which collapsed its `alignment_confidence` to `0.0` and made its
-reported `epsilon_ppm` an artefact rather than a drift measurement (see
-`jasper/audio_measurement/program_analysis.py`). No synthesized response would
-ever have produced that. So a synthetic scenario can establish that the logic
+the 2026-08-02 replay recorded a −2090.5-sample discontinuity after its `sweep_t`
+segment; downstream of that one physical step its sidecar carries
+`glitch_detected` (via `glitch_inputs=residual_desync`), an
+`alignment_confidence` of `0.0` under
+`alignment_status=delay_exceeds_search_window`, and an `epsilon_ppm` that
+`jasper/audio_measurement/program_analysis.py` documents as "an ARTEFACT of the
+step, not a drift measurement". Those are separate estimators reacting to the
+same defect, not a chain — `_estimate_alignment` never reads the glitch verdict.
+No synthesized response would ever have produced any of it. So a synthetic
+scenario can establish that the logic
 reasons correctly about a defect it was handed; it can never establish that the
 measurement handed it the truth.
 
@@ -1636,19 +1659,28 @@ a constructed comb cloud proves the honesty mask binds the envelope
 `tests/test_crossover_v2_conductor.py`). What is missing is not the wiring —
 it is a scenario that **discriminates**. That last test says so about itself:
 its "no correction is placed inside an identified null" assertion "does not
-discriminate — it holds in the severed case too," because the fit places every
-filter at 150–1485 Hz while the fixture's nulls sit at 7.3–18.3 kHz. There was
-never a filter up there to remove. A null *inside* the correction's own working
-band is what would make that assertion bite, and today the null registry is
-band-clamped away from exactly that region (issue
-[#1967](https://github.com/jaspercurry/JTS/issues/1967)).
+discriminate — it holds in the severed case too," because the fixture's nulls
+sit whole octaves above the highest filter the fit places. There was never a
+filter up there to remove. A null *inside* the correction's own working band is
+what would make that assertion bite, and today the null registry is band-clamped
+away from exactly that region (#1967).
 
-The corpus cannot supply the missing case either: of the five most recent
-`phase == "measure"` captures, exactly **one** carries a cloud at all — and the
-four the 2026-08-02 replay actually ran over are the four that do not.
-Synthetically the case is near-trivial to construct, and constructing it is the
-only way to test the gate's decision against a known answer before a household
-meets it.
+The corpus cannot supply the missing case either — though not for the reason a
+quick look suggests. Clouds are there: of the four captures the 2026-08-02
+replay ran over, two carry a full cloud in their session capsule, and one of
+those carries three corroborated `position_invariant` nulls. What none of them
+carries is a null *inside* the correction's working band; that capsule's three
+sit between 7.5 and 15.4 kHz. So the corpus independently confirms the #1967
+band-clamp rather than working around it. (The clouds are easy to miss because
+the bounded capture ring had rolled by the time the bank was taken — the cloud
+evidence survives durably in the session capsule, not beside the MEASURE
+capture. Counting what is in the ring answers a question about ring residency,
+not about the corpus: exactly the confusion between measurement and content that
+this section exists to name.)
+
+Synthetically the missing case is near-trivial to construct, and constructing it
+is the only way to test the gate's decision against a known answer before a
+household meets it.
 
 ### The ambition: one scenario per diagnostic criterion
 
@@ -1668,9 +1700,21 @@ recorded, not assumed:
   exercise it honestly and hardware or a real capture must;
 - **uncovered** — neither exists yet.
 
-A scenario that cannot discriminate belongs in the third bucket, not the first;
-the comb-cloud case above is the worked example of why that distinction has to
-be recorded rather than inferred from a green run.
+Buckets are not exclusive, and one case in particular needs both: a criterion
+whose *logic* is synthesizable but whose *threshold* was calibrated from a
+corpus — `POSITION_PRESENCE_FRACTION`, `EXCLUSION_CAP_FRACTION`,
+`_S0_WORST_BAND_SIGMA_DB`. A synthetic scenario proves the detector fires above
+the floor; it can never prove the floor sits in the right place. Such a
+criterion is `synthetic` **and** corpus-bound, and recording only the first half
+is how the frozen constant in the next section's last Risks bullet goes stale
+invisibly. Record both.
+
+A scenario that cannot discriminate belongs in **uncovered**, not `synthetic` —
+and since non-discrimination is only knowable by building the negative case, the
+scenario's companion is a severing test that proves the assertion fails when the
+wiring is cut (`test_severing_the_cloud_wiring_changes_the_fit` is the pattern).
+The comb-cloud case above is the worked example of why that has to be recorded
+rather than inferred from a green run.
 
 The value is as much in the second and third buckets as the first: naming a
 criterion capture-bound is what stops someone later mistaking a green synthetic
