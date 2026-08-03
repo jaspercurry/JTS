@@ -3991,6 +3991,7 @@ def build_v2_run_and_consume(
             CaptureBeginRefused,
             CaptureFailed,
             CaptureStopped,
+            TIME_BUDGET_NONE,
             CaptureTimeout,
             expired_time_budget,
             purge,
@@ -4273,12 +4274,16 @@ def build_v2_run_and_consume(
             stops waiting (W6.10 blocker #3).
 
             ``budget`` names WHICH clock ran out (work order D8, issue #1807),
-            or ``""`` when the death was not a timeout at all. Without it the
-            phone renders this event as ``renderPlanExhausted`` — "the speaker
-            reached its measurement attempt limit" — which is simply untrue of
-            an expiry: no attempt limit was reached, a clock ran out, and the
-            two want different things from the household. An older page ignores
-            the field and behaves exactly as it does today.
+            or ``""`` when the death was not a timeout at all. The wire always
+            carries the field: ``""`` is published as ``TIME_BUDGET_NONE``
+            rather than omitted (issue #2083). Omitting it made the phone render
+            this event as ``renderPlanExhausted`` — "the speaker reached its
+            measurement attempt limit" — which is untrue of BOTH the cases that
+            reach here. It is untrue of an expiry (no attempt limit was reached,
+            a clock ran out) and untrue of a transport death (no clock ran out
+            either, the relay went away), and the three want different things
+            from the household. An older page treats the explicit ``"none"`` as
+            an unnamed budget and behaves exactly as it does today.
 
             A watchdog collapse during the "waiting for apply" REVIEW hold
             (``CaptureTimeout``) otherwise left the phone re-posting the same
@@ -4299,7 +4304,7 @@ def build_v2_run_and_consume(
                     pi_session.pull_token,
                     {
                         "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
-                        **({"budget": budget} if budget else {}),
+                        "budget": budget or TIME_BUDGET_NONE,
                     },
                 )
             except (OSError, RuntimeError, ValueError):

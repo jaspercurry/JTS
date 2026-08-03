@@ -1237,3 +1237,47 @@ def test_expired_time_budget_names_the_clock_or_stays_silent():
     assert expired_time_budget(OSError("connection reset")) == ""
     assert expired_time_budget(CaptureAborted("stopped", reason="stopped")) == ""
     assert expired_time_budget(CaptureFailed("bad blob")) == ""
+
+
+def test_transient_relay_failures_are_exactly_the_ones_no_clock_explains():
+    """The retry classifier and the clock classifier must PARTITION relay
+    deaths, not overlap (issue #2083).
+
+    Anything ``expired_time_budget`` can name a clock for is the relay stating
+    a settled fact, and re-polling it would only delay an honest terminal;
+    anything it cannot is either an outage worth one more look or a failure
+    that was never about the transport. Asserting the two functions together
+    is the point — a status that both retried AND read as an expired link
+    would spend the grace re-asking a question already answered.
+    """
+    from jasper.capture_relay.session import (
+        TIME_BUDGET_LINK,
+        expired_time_budget,
+        is_transient_relay_failure,
+    )
+
+    # Retried: the relay is unreachable or unwell, and says nothing about the
+    # session. Mirrors correction_setup._post_relay_host_event's own rule.
+    for exc in (
+        OSError("connection reset"),
+        TimeoutError("timed out"),  # an OSError subclass — the incident's shape
+        RelayError("bad gateway", 502),
+        RelayError("unavailable", 503),
+        RelayError("gateway timeout", 504),
+        RelayError("slow down", 429),
+    ):
+        assert is_transient_relay_failure(exc) is True, exc
+        assert expired_time_budget(exc) == ""  # …and names no clock
+
+    # Never retried: a dead session. These are precisely the statuses
+    # expired_time_budget calls TIME_BUDGET_LINK, so the partition holds.
+    for status in (401, 403, 404, 410):
+        exc = RelayError("dead", status)
+        assert is_transient_relay_failure(exc) is False, status
+        assert expired_time_budget(exc) == TIME_BUDGET_LINK
+
+    # Never retried: a 4xx that is our own bug, and the non-transport failures.
+    assert is_transient_relay_failure(RelayError("bad request", 400)) is False
+    assert is_transient_relay_failure(CaptureFailed("bad blob")) is False
+    assert is_transient_relay_failure(CaptureTimeout("gone")) is False
+    assert is_transient_relay_failure(ValueError("nonsense")) is False

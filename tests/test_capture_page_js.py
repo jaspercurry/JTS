@@ -18,6 +18,7 @@ page covered by the existing Python CI matrix with no extra CI wiring.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -120,6 +121,73 @@ def test_capture_page_expired_link_message_points_back_to_speaker():
     assert "Return to the speaker page" in main_js
 
 
+def test_capture_page_records_the_link_deadline_on_every_status_poll():
+    """One writer for the link deadline, and a pinned set of readers (#2083).
+
+    ``renderSessionExpired`` decides whether it may call a dead session an
+    EXPIRY by reading the deadline the relay published, so that fact is only as
+    good as its coverage: a polling loop that read the status directly would
+    stop refreshing it, and the screen would drift back to guessing.
+
+    This asserts across **capture-page/js/\\*\\*, not just main.js**. The first
+    version of this guard read main.js alone and asserted "the recorder is the
+    sole caller" — which was already false when it landed, because
+    level-events.js has its own direct reader, and a main.js-only guard is
+    blind to exactly the sibling-module drift it exists to catch. Pinning the
+    whole set means a NEW direct reader anywhere on the page fails here and has
+    to justify itself, rather than silently joining the exception.
+    """
+    js_dir = _REPO / "capture-page/js"
+    main_js = (js_dir / "main.js").read_text(encoding="utf-8")
+
+    assert "async function pollPhoneStatus(client)" in main_js
+    assert "function notePhoneStatus(status)" in main_js
+    assert "return notePhoneStatus(await client.fetchPhoneStatus());" in main_js
+    # …and the screen actually consults it rather than asserting a lapse.
+    assert "function linkDeadlinePassed()" in main_js
+    assert "const lapsed = linkDeadlinePassed();" in main_js
+
+    # Every reader of the relay's phone-status on the page, by module. The
+    # deadline has ONE writer (notePhoneStatus); this pins who may read without
+    # going through it.
+    def invocations(source: str) -> int:
+        # Real call sites only: `.fetchPhoneStatus(` skips relay-client.js's own
+        # method DEFINITION (no leading dot) and level-events.js's
+        # `typeof client.fetchPhoneStatus` capability probe (no paren), and
+        # dropping `//` lines keeps prose ABOUT the call — including the
+        # explanatory comment at pollPhoneStatus — from counting as one.
+        return sum(
+            line.count(".fetchPhoneStatus(")
+            for line in source.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+
+    callers = {
+        path.name: invocations(path.read_text(encoding="utf-8"))
+        for path in sorted(js_dir.glob("*.js"))
+        if invocations(path.read_text(encoding="utf-8"))
+    }
+    assert callers == {
+        # The recorder itself — main.js's five polling loops all route here.
+        "main.js": 1,
+        # The DECLARED exception: runLevelRampProtocol polls directly. Safe
+        # because `expires_at` is minted once at registration and never
+        # refreshed, and every reachable path into the ramp records the
+        # deadline first (waitForSetupValidation → pollPhoneStatus). Documented
+        # at main.js's pollPhoneStatus.
+        "level-events.js": 1,
+    }, (
+        "a capture-page module gained or lost a direct phone-status read. If "
+        "this is a NEW polling loop, route it through main.js's "
+        "pollPhoneStatus() so it records the link deadline — a loop that reads "
+        "the status without recording is how renderSessionExpired goes back to "
+        "guessing that a dead session means an expired link."
+    )
+    # …and the screen actually consults it rather than asserting a lapse.
+    assert "function linkDeadlinePassed()" in main_js
+    assert "const lapsed = linkDeadlinePassed();" in main_js
+
+
 def test_capture_page_distinguishes_invalid_link_from_network_failure():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
@@ -146,7 +214,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260802.2",
+        "capture_page_build": "20260803.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -154,7 +222,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260802-2" in index_html
+    assert "main.js?v=20260803-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -187,6 +255,65 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'from "./level-events.js?v=20260802-1"' in main_js
     assert 'from "./ambient-stats.js?v=20260802-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
+
+
+def _capture_page_js_digest() -> str:
+    """A stable digest over every published capture-page JS module."""
+    digest = hashlib.sha256()
+    for path in sorted((_REPO / "capture-page/js").glob("*.js")):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+# The published state of capture-page/js/**, paired with the build stamp it
+# ships under. See the test below for why a digest rather than a rule.
+_CAPTURE_PAGE_JS_DIGEST = (
+    "59c1a8c4830666e5afa5ab97c4a3e5cba85c17c315d3a43f3944cefaea8e3d4b"
+)
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.1"
+
+
+def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
+    """A JS change with STALE stamps must not be able to pass CI (issue #2083).
+
+    The version contract above pins the literals, which catches a HALF bump —
+    `version.json` moved but `index.html` didn't. It cannot catch a MISSING
+    one: leave both stamps alone, change `main.js` freely, and every literal
+    still matches. PR #2084 did exactly that and went green, which would have
+    published a page fix that no warm-cache phone could ever receive (the
+    stamps are the only cache-invalidation mechanism — `build.sh` is a plain
+    `cp` with no content hashing and there is no service worker).
+
+    **What this guard is, stated honestly.** It is a content digest, not a
+    proof. It fails the moment `capture-page/js/**` differs from what was
+    published, and its message names the publish procedure — so the stamps
+    cannot be forgotten in silence. It canNOT mechanically prove the stamps
+    ADVANCED: someone can update the digest below and leave the stamps alone.
+    Nothing hardware-free can close that last step (a git-history check would
+    be CI-only and wrong under shallow clones / rebases), so the guard buys a
+    forced, visible decision rather than an enforcement, and says so here
+    rather than implying more.
+    """
+    assert json.loads((_REPO / "capture-page/version.json").read_text())[
+        "capture_page_build"
+    ] == _CAPTURE_PAGE_JS_DIGEST_BUILD, (
+        "the digest below was recorded against build "
+        f"{_CAPTURE_PAGE_JS_DIGEST_BUILD}; version.json has moved on. Update "
+        "_CAPTURE_PAGE_JS_DIGEST_BUILD in the same edit that updates the digest."
+    )
+    actual = _capture_page_js_digest()
+    assert actual == _CAPTURE_PAGE_JS_DIGEST, (
+        "capture-page/js/** changed. Before this can ship, follow "
+        "capture-page/README.md's publish step 1: bump `capture_page_build` in "
+        "version.json, bump `main.js?v=` in index.html, and bump the `?v=` on "
+        "the import of any module whose own content changed — a warm-cache "
+        "phone keeps the old bundle otherwise. Then record the new state here:\n"
+        f"    _CAPTURE_PAGE_JS_DIGEST = \"{actual}\"\n"
+        f"    _CAPTURE_PAGE_JS_DIGEST_BUILD = \"<the new capture_page_build>\""
+    )
 
 
 def test_capture_page_js_modules_have_one_cache_key_each():

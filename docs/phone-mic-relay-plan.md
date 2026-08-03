@@ -526,10 +526,18 @@ malformed begins are refused loudly; per-event replay is already blocked by the
 authenticated-envelope sequence.
 
 A `capture_set_exhausted` posted by a HOST (rather than by the runner reaching
-its attempt limit) may carry `budget: "step" | "link"` — which clock ran out,
-so the page stops calling a timeout an attempt limit (work order D8). Absent
-from the runner's own exhaustion event, which genuinely is an attempt limit,
-and absent from an older Pi; the page keeps the attempt-limit copy either way.
+its attempt limit) may carry `budget: "step" | "link" | "none"` — which clock
+ran out, so the page stops calling a timeout an attempt limit (work order D8).
+`"none"` is the explicit negative: the session died of a transport outage and
+ran out of neither clock, which the Pi used to signal by omitting the field —
+landing on the attempt-limit copy, a third claim that was equally untrue (issue
+#2083). The session-over poster (`_post_session_over_host_event`) always sends
+one of the three. The field is absent from the runner's own exhaustion event,
+which genuinely is an attempt limit; from an older Pi; and from
+`_post_terminal_failure_host_event`'s no-capture-armed branch, which still posts
+a bare `capture_set_exhausted` for a play-seam/program failure. The page keeps
+the attempt-limit copy for all three, and for any budget name it does not
+recognize.
 
 **Per-capture entries (plan `schema_version: 2` — dormant).** `capture_plan`
 may additionally carry an `entries` table (one `{index, kind_label,
