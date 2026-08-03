@@ -1540,9 +1540,9 @@ to de-risk Phase 3.
 
 *Added 2026-08-02. A design position, not a status report. Its claims were
 checked against the tree at that date, and it is **outside the scope of this
-file's `Last verified:` pass below**, which predates it. "Ladder" here means the
-instruments and what each can prove — unrelated to W6's scripted-then-Chrome
-hardware sequence in
+file's `Last verified:` pass below**, which does not cover it. "Ladder" here
+means the instruments and what each can prove — unrelated to W6's
+scripted-then-Chrome hardware sequence in
 [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).*
 
 Two instruments carry the weight of validating the correction flow today, and
@@ -1658,33 +1658,15 @@ a constructed comb cloud proves the honesty mask binds the envelope
 it is a scenario that **discriminates**. That last test says so about itself:
 its "no correction is placed inside an identified null" assertion "does not
 discriminate — it holds in the severed case too," because the fixture's nulls
-sit whole octaves above the highest filter the fit places. There was never a
-filter up there to remove.
+sit over an octave and a half above the highest filter the fit places. There was
+never a filter up there to remove.
 
-The corpus does not settle it either, and the reason is worth stating exactly,
-because a quick look gets it wrong twice. Clouds are there: of the four captures
-the 2026-08-02 replay ran over, two carry a full cloud in their session capsule.
-So is the case the fixture lacks — one of those capsules carries three
-corroborated `position_invariant` nulls, two of them inside the correction's own
-working band, on a session where boost *was* granted. And no filter landed in a
-null.
-
-That looks like proof the gate works, and it is not. A single observed outcome
-carries no counterfactual: nothing in it separates "the exclusion held the fit
-out of those bands" from "the fit had no reason to go there anyway." Only a case
-you can sever tells those apart, and you cannot sever a capture. The corpus also
-cannot reach the region where it would matter most — that session's fit places
-most of its filters below 4 kHz, and the null registry's *gating* band is floored
-at exactly 4 kHz (`ECHO_BAND_HF_REGIME_FLOOR_HZ`), so a null sitting under the
-bulk of the correction's own work is structurally invisible to the instrument
-that would carve it. `_crossover_region_null_registry` now asks about that region
-anyway, deliberately without letting the answer gate anything (#1967, #1867).
-
-(The clouds are easy to miss because the bounded capture ring had rolled by the
-time the bank was taken — the cloud evidence survives durably in the session
-capsule, not beside the MEASURE capture. Counting what is in the ring answers a
-question about ring residency, not about the corpus: exactly the confusion
-between measurement and content that this section exists to name.)
+The corpus cannot settle it either, and for the reason already given: it carries
+no ground truth. It also carries no counterfactual. A capture records one
+outcome, and nothing in that outcome separates "the exclusion held the fit out of
+those bands" from "the fit had no reason to go there anyway." You cannot sever a
+capture and re-run it. That is not a shortage of captures — it is what a capture
+is.
 
 Synthetically, both the case and its severed twin are near-trivial to construct,
 and constructing them is the only way to test the gate's decision against a known
