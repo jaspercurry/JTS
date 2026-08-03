@@ -8203,6 +8203,10 @@ class CrossoverV2Conductor:
                     # The store already owns this candidate identity with
                     # different numbers. Do not let a fresh recovery capture
                     # create a second truth in journey history or its decision.
+                    # A verify re-arm hydrates the previous candidate's last
+                    # decision; clear that projection too, or the done screen
+                    # will call the prior basis "the latest applied result".
+                    self._last_attempt_decision = None
                     log_event(
                         logger,
                         "correction.crossover_v2_model_error_identity_conflict",

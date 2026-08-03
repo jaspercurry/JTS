@@ -47,6 +47,7 @@ from jasper.active_speaker.attempts_loop import (
     AttemptIntegrity,
     AttemptRecord,
     FloorStats,
+    decide_next,
 )
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
@@ -649,14 +650,52 @@ def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_pat
 def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     tmp_path, caplog,
 ):
-    """A new recovery capture is not assumed byte-for-byte repeatable."""
+    """A recovery conflict cannot reuse the previous candidate's verdict."""
     from jasper.active_speaker.model_error_store import (
         ModelErrorConflictError,
         load_state,
         record_model_error,
     )
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+    from jasper.web import correction_crossover_v2 as v2host
 
     path = tmp_path / "model-error.json"
+    state_path = tmp_path / "v2-state.json"
+    history = (
+        AttemptRecord(
+            attempt_id="candidate-base",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.4,
+            n_graded_bins=120,
+        ),
+        AttemptRecord(
+            attempt_id="candidate-previous",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+            n_graded_bins=120,
+        ),
+    )
+    prior_decision = decide_next(history, _attempt_floor()).to_dict()
+    assert prior_decision["reason"] == REASON_IMPROVEMENT_ABOVE_FLOOR
+    assert prior_decision["basis_attempt_ids"] == [
+        "candidate-base", "candidate-previous",
+    ]
+
+    # The store write won, then the process died before the new journey fact.
+    record_model_error(
+        speaker_id="speaker-a",
+        attempt_id="candidate-current",
+        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        predicted_db=0.0,
+        realized_db=0.9,
+        path=path,
+    )
 
     def record(**observation: Any) -> bool:
         try:
@@ -665,15 +704,6 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
             return False
         return True
 
-    first_fakes = FakeSeams()
-    first = _verify_only_conductor(
-        first_fakes,
-        seams=replace(first_fakes.seams(), record_model_error=record),
-        tuning_attempt_id="candidate-a",
-        speaker_id="speaker-a",
-    )
-    assert _run_phase(first, 1, 1)["accepted"] is True
-
     recovered_fakes = FakeSeams()
     recovered_fakes.verify = lambda program: _verify_analysis(
         program, max_db=0.7, n_graded_bins=80,
@@ -681,7 +711,9 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     recovered = _verify_only_conductor(
         recovered_fakes,
         seams=replace(recovered_fakes.seams(), record_model_error=record),
-        tuning_attempt_id="candidate-a",
+        attempt_history=history,
+        last_attempt_decision=prior_decision,
+        tuning_attempt_id="candidate-current",
         speaker_id="speaker-a",
     )
     with caplog.at_level(logging.WARNING):
@@ -690,13 +722,38 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     records = load_state(path)["model_error"]
     assert len(records) == 1
     assert records[0]["realized_db"] == pytest.approx(0.9)
-    assert recovered.attempt_history == ()
+    assert recovered.attempt_history == history
     assert recovered.last_attempt_decision is None
     assert (
         "event=correction.crossover_v2_model_error_identity_conflict"
         in caplog.text
     )
     assert "correction.crossover_v2_model_error_write_failed" not in caplog.text
+
+    # The host persists the conductor snapshot verbatim. The household surface
+    # must see no attempt sentence—not the hydrated previous candidate's 0.4 dB
+    # claim dressed up as the current result.
+    v2host.set_state_path_for_tests(state_path)
+    try:
+        v2host.persist_conductor_state(recovered, failure_code=None)
+        persisted = v2host.load_v2_state()
+    finally:
+        v2host.set_state_path_for_tests(None)
+    assert persisted["attempts_loop"]["last_decision"] is None
+    assert [
+        item["attempt_id"] for item in persisted["attempts_loop"]["history"]
+    ] == ["candidate-base", "candidate-previous"]
+    envelope = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "done",
+            "verify": persisted["verify"],
+            "candidate": persisted["candidate"],
+            "attempts_loop": persisted["attempts_loop"],
+        },
+    })
+    assert "tracked its prediction" not in envelope["verdict_text"]
 
 
 def test_model_error_store_failure_warns_without_blocking_verify(caplog):
