@@ -295,7 +295,10 @@ hard-coded 0.0), #1656 (calibration identity follows the saved setup, not the
 physical mic; closed, with the serial-entry remainder split to #2053), #1660 (relay path never threads `device` into the calibration
 identity guard, closed by #2036), #2030 (#1971's two split-out secondary
 observations — `authorizes_playback` False on a confirmed profile, and
-`_global_offset` anchoring on the quietest segment), #2041 (the room
+`_global_offset` anchoring on the quietest segment; the anchoring half is
+fixed by #2093, which cross-checks the anchor against an independent witness
+after that shape fabricated three `locate_failed` verdicts on pristine
+captures in the 2026-08-03 live session), #2041 (the room
 upload/verify level-match gates are scoped to `capture_transport == "local"`, so
 a relay session can reach analysis with none of the per-run facts a level match
 establishes — ambient floor, locked level, realized device, calibration
