@@ -46,6 +46,12 @@ because "the flow decided X" is only a finding next to "the right answer was
 Y". Two of the scenarios below deliberately reach the SAME decision from
 OPPOSITE truths — that is the point of the pair, and it is the residual #1967
 names rather than a bug this file is reporting.
+
+**One test here is not a scenario.** The last section guards
+``scripts/severed-twin-replay.py``'s calibration-convention resolution — the
+corpus-replay rung rather than this one. It lives here because it is one pure
+function whose wrong answer is silent, not because the file is about that tool;
+its own section says so.
 """
 
 from __future__ import annotations
