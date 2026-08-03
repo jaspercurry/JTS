@@ -1047,12 +1047,14 @@ sidecar's recorded `diagnostic` block against the banked `candidate.json`'s
 
 *It validates itself and refuses when it cannot.* That same sidecar block is
 the analysis as PERFORMED, so it is ground truth for the replay's own fidelity.
-The tool reproduces 20 of its values and prints no fit unless they all match
-(exit 1 otherwise), so an era-drifted reconstruction fails loudly instead of
-quietly re-reading the evidence. Its own module docstring states the two things
-that gate does **not** cover — the post-T2 delay refinement, and the
-calibration sign convention, which is measurably unpinned by anything this era
-banked. Read it before extending the tool to a delay or level question.
+The tool reproduces 20 of its values and prints no fit unless every one matches
+(exit 1 otherwise, and a field the sidecar never recorded is a refusal too), so
+an era-drifted reconstruction fails loudly instead of quietly re-reading the
+evidence. Its own module docstring states the two things that gate does **not**
+reach — the post-T2 delay refinement, and the calibration sign convention,
+which the tool *derives* from the product's own mic registry but which no
+banked diagnostic can *check*. Read it before extending the tool to a delay or
+level question.
 
 The **fit engine is today's, the capture analysis is the banked era's** — those
 are different claims and the tool only makes the second. A banked candidate's

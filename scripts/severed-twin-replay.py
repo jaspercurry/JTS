@@ -88,7 +88,7 @@ FIDELITY_FIELDS = (
 FIDELITY_TOLERANCE = 5e-3
 
 FIDELITY_NOTE = """\
-Two things this gate does NOT cover, stated because a gate whose reach is
+Two things this gate does not reach, stated because a gate whose reach is
 assumed is worse than one whose reach is known:
 
   1. delay_us / snap_* / predicted_ripple_db are excluded deliberately. The
@@ -98,15 +98,18 @@ assumed is worse than one whose reach is known:
      delay, so the seam does not reach this tool's question — but anyone
      asking a DELAY question here must close it first.
 
-  2. The calibration SIGN CONVENTION is unpinned, and measurably so: running
-     this tool under `sign_convention="response"` changes the fitted filter
-     set and every one of the checked diagnostics still passes. The 20 fields
-     below pin the capture/timing/deconvolution chain; no value banked in this
-     era is a magnitude-domain quantity independent of the fit engine (which
-     has moved several commits since), so none can pin the convention. The
-     calibration FILE is bound by identity against the sidecar's
-     `setup_calibration_id`; the convention rides the same era decision
-     tests/_flat_lin_corpus.py records (jaspercurry/JTS#1774)."""
+  2. The calibration SIGN CONVENTION is DERIVED but not VERIFIED. The tool no
+     longer assumes it: `_sign_convention` recovers the model from the
+     sidecar's own `setup_calibration_id` and asks the product's
+     `SUPPORTED_MODELS`, which is how the Pi resolved it too. What this gate
+     still cannot do is CHECK that answer — flip the convention by hand and
+     the fitted filter set changes while all 20 fields below still pass, because
+     they pin the capture/timing/deconvolution chain and none of them is a
+     magnitude-domain quantity. The banked FILTERS do discriminate (that is how
+     a wrong convention was caught in review), but wiring them in is
+     complicated by the fit engine having moved since the bank. The calibration
+     FILE is bound by NAME against the same id — enough for the honestly-named
+     wrong file, not for a different curve renamed to look right."""
 
 
 @dataclass(frozen=True)

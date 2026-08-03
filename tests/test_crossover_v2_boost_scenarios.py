@@ -50,6 +50,8 @@ names rather than a bug this file is reporting.
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -103,6 +105,35 @@ BLIND_SPAN_HZ = (1200.0, ECHO_BAND_HF_REGIME_FLOOR_HZ)
 # because the depth statistic is a lower bound on the true depth.
 TAU_TOLERANCE_FRACTION = 0.01
 R_TOLERANCE = 0.05
+
+
+def _load_replay_module():
+    """``scripts/severed-twin-replay.py`` as a module.
+
+    It is a script rather than a package module (laptop-only, never shipped to
+    the Pi), and its filename is not an identifier, so it is loaded by path.
+    """
+    import importlib.util
+    import sys
+
+    name = "_severed_twin_replay"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+    path = path / "severed-twin-replay.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec: the module defines dataclasses, and
+    # `dataclasses` resolves each one's own module out of `sys.modules` while
+    # building it.
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
 
 
 def _source_fixed_cloud():
@@ -413,3 +444,53 @@ def test_the_pair_3_boost_is_decided_by_its_own_reach_not_its_centre(q, expect_d
         assert all(
             0.0 < r.realized_max_db < PAIR3_BOOST["gain"] / 2.0 for r in residual
         )
+
+
+# --------------------------------------------------------------------------- #
+# The replay tool's one silent-wrong-answer surface
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("calibration_id", "expected"),
+    [
+        ("minidsp-minidsp_umik2-b7343c0c625b", "response"),
+        ("minidsp-minidsp_umik1-abcdef123456", "response"),
+        ("dayton_audio-dayton_umm6-abcdef123456", "response"),
+        ("", "response"),
+        ("vendor-not_a_registered_model-abc", "response"),
+    ],
+)
+def test_the_replay_asks_the_registry_which_way_a_calibration_file_reads(
+    calibration_id, expected,
+):
+    """``scripts/severed-twin-replay.py`` resolves a banked session's
+    calibration sign convention from the product's own mic registry.
+
+    This has a test because its wrong answer is SILENT and was already wrong
+    once: a vendor file states either the mic's RESPONSE or a CORRECTION, the
+    two differ by a sign, and reading it the wrong way moves every magnitude
+    the fit sees while moving none of the twenty timing/deconvolution
+    diagnostics the replay's fidelity gate checks. The first revision of this
+    harness pinned ``"correction"`` as a literal — correct for the 2026-07-24/25
+    corpus it was borrowed from, wrong for the 2026-07-29 sessions it was
+    applied to, and invisible to every check in the tool.
+
+    The unregistered and empty rows are the ones that matter most: both must
+    reach :data:`~jasper.audio_measurement.calibration.DEFAULT_SIGN_CONVENTION`
+    rather than the old default, which is the same "a missing declaration must
+    not resurrect the old wrong default" rule the registry itself follows.
+    """
+    from jasper.audio_measurement.calibration import (
+        DEFAULT_SIGN_CONVENTION,
+        SUPPORTED_MODELS,
+    )
+
+    replay = _load_replay_module()
+
+    assert replay._sign_convention(calibration_id) == expected
+    # Not a restatement of the literal above: it must be the REGISTRY's answer,
+    # so this fails if the registry moves and the expectation does not.
+    for key, spec in SUPPORTED_MODELS.items():
+        assert replay._sign_convention(f"vendor-{key}-hash") == spec["sign_convention"]
+    assert replay._sign_convention("") == DEFAULT_SIGN_CONVENTION
