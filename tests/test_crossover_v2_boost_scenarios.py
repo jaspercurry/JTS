@@ -128,11 +128,17 @@ def _load_replay_module():
     # `dataclasses` resolves each one's own module out of `sys.modules` while
     # building it.
     sys.modules[name] = module
+    loaded = False
     try:
         spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[name]
-        raise
+        loaded = True
+    finally:
+        # A half-executed module left in `sys.modules` would be handed to every
+        # later caller as if it were fine. `finally` rather than a broad
+        # `except`/`raise`: nothing here wants to inspect the failure, only to
+        # not leave the registration behind.
+        if not loaded:
+            del sys.modules[name]
     return module
 
 
