@@ -42,6 +42,7 @@ from jasper.active_speaker.linearization_fit import (
     _CUT_REDUCTION_EPS_DB,
     _ENVELOPE_NONZERO_EPS_DB,
     _MIN_FILTER_GAIN_DB,
+    _PEAKING_Q_MAX,
     FitVocabulary,
     LinearizationFilter,
     LinearizationFit,
@@ -1670,6 +1671,64 @@ def test_when_every_boost_is_aimed_the_lift_is_empty_and_named():
     # have destroyed.
     in_band = (envelope.freqs_hz >= 1300.0) & (envelope.freqs_hz <= 1700.0)
     assert float(np.min(envelope.allowed_depth_db[in_band])) > 0.05
+
+
+def test_the_action_region_depends_on_q_alone_not_on_how_big_the_boost_is():
+    """Why a RATIO is well-behaved where an absolute threshold was not.
+
+    For a peaking biquad the half-gain-in-dB bandwidth is a function of Q
+    only — the width in octaves is identical at 1 dB and at 12 dB. So
+    "does the band lie inside this filter's action region" asks a question
+    about WHERE the filter works, never about how hard it works, and the
+    criterion cannot be gamed by the size of the boost in either direction.
+
+    An absolute threshold has the opposite property, which is exactly how
+    round 2 became a ban: the bigger the (legitimate) boost, the further its
+    skirt clears any fixed dB line, so large corrections were punished
+    hardest.
+
+    Also pins the ordering by Q, since the whole point is that a broad filter
+    legitimately owns a wider region than a narrow one.
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+
+    def action_region_octaves(q, gain_db):
+        response_db = 20.0 * np.log10(np.maximum(np.abs(
+            complex_correction_response(
+                (LinearizationFilter(
+                    biquad_type="Peaking", freq=1000.0, q=q, gain=gain_db,
+                ),), grid,
+            )
+        ), 1e-12))
+        inside = grid[response_db >= gain_db / 2.0]
+        return float(np.log2(inside.max() / inside.min()))
+
+    widths = {}
+    for q in (0.5, 1.0, 2.0, 4.0, _PEAKING_Q_MAX):
+        at_gain = [action_region_octaves(q, g) for g in (1.0, 6.0, 12.0)]
+        assert max(at_gain) - min(at_gain) < 1e-6, (q, at_gain)
+        widths[q] = at_gain[0]
+
+    # Monotone in Q, and the span is wide enough that the criterion actually
+    # discriminates rather than reducing to "same answer for every filter".
+    assert sorted(widths, key=lambda q: widths[q], reverse=True) == sorted(widths)
+    assert widths[0.5] > 2.0 > widths[_PEAKING_Q_MAX]
+
+
+def test_a_band_off_the_grid_decides_nothing_and_discloses_nothing():
+    """An excluded band the fit's own grid does not reach cannot be evidence
+    about any filter, so it drops nothing AND reports no residual — rather
+    than reporting a confident 0.0 dB for a band nobody looked at."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    boost = LinearizationFilter(
+        biquad_type="Peaking", freq=1000.0, q=2.0, gain=8.0,
+    )
+    kept, dropped, residual = _boost_exclusion_verdicts(
+        [boost], grid, ((30_000.0, 40_000.0),),
+    )
+    assert kept == [boost]
+    assert dropped == []
+    assert residual == []
 
 
 def test_the_drop_criterion_is_relative_to_each_filter_s_own_peak():
