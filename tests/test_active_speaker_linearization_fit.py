@@ -15,6 +15,8 @@ description for the offline sanity numbers.
 """
 from __future__ import annotations
 
+from collections import Counter
+
 import math
 import re
 
@@ -43,6 +45,7 @@ from jasper.active_speaker.linearization_fit import (
     _ENVELOPE_NONZERO_EPS_DB,
     _MIN_FILTER_GAIN_DB,
     _PEAKING_Q_MAX,
+    _PEAKING_Q_MIN,
     FitVocabulary,
     LinearizationFilter,
     LinearizationFit,
@@ -1636,7 +1639,7 @@ def test_a_boost_aimed_at_an_excluded_band_is_dropped_and_its_sibling_kept():
     # A lift DID happen, so there is no whole-lift suppression reason.
     assert bounded.lift_suppressed_reason == ""
     assert len(kept_boosts) == 1
-    assert set(kept_boosts) < set(base_boosts)
+    assert not (Counter(kept_boosts) - Counter(base_boosts))
     assert not (620.0 <= kept_boosts[0].freq <= 800.0)
     # …and the one that went is disclosed with the arithmetic that dropped it.
     assert len(bounded.lift_boost_excluded_drops) == 1
@@ -1713,6 +1716,102 @@ def test_the_action_region_depends_on_q_alone_not_on_how_big_the_boost_is():
     # discriminates rather than reducing to "same answer for every filter".
     assert sorted(widths, key=lambda q: widths[q], reverse=True) == sorted(widths)
     assert widths[0.5] > 2.0 > widths[_PEAKING_Q_MAX]
+
+
+#: Half-gain reach of a peaking bell, in octaves EITHER SIDE of centre, as a
+#: function of Q. Re-derived by the test below rather than quoted: it is the
+#: drop radius of :func:`_boost_exclusion_verdicts`, so it is the number a
+#: future edit to the boost Q floor would move.
+_HALF_GAIN_REACH_OCT = {1.0: 0.68, 0.5: 1.25, 0.3: 1.85}
+
+_Q_FLOOR_CONSEQUENCE = (
+    "The #1967 boost-exclusion drop radius IS the emitted bell's half-gain "
+    "bandwidth, which depends on Q alone: Q=1.0 reaches +/-0.68 oct, Q=0.5 "
+    "+/-1.25 oct, Q=0.3 +/-1.85 oct. Lowering the boost Q floor widens every "
+    "drop decision by the same factor and walks the bound back toward the "
+    "whole-cascade bluntness round 2 was rejected for (94.4% of multi-dip "
+    "fits lost their entire lift). If broader boost bells are genuinely "
+    "wanted, re-derive the drop criterion in the SAME change."
+)
+
+
+def test_the_boost_path_pins_its_own_q_floor_instead_of_inheriting_one():
+    """``design_peq``'s ``q_min`` is a DEFAULT ARGUMENT, not a clamp — a call
+    site that omits it inherits whatever another module happens to default to.
+
+    Since #1967 that floor is load-bearing for a safety property in THIS
+    module (see ``_Q_FLOOR_CONSEQUENCE``), so the lift stage must pass it
+    explicitly. Asserted by capturing the real call's kwargs rather than by
+    reading the source, so a refactor that keeps the text and loses the
+    argument still fails.
+    """
+    import jasper.active_speaker.linearization_fit as fit_mod
+
+    captured: list[dict] = []
+    real = fit_mod.design_peq
+
+    def _spy(*args, **kwargs):
+        captured.append(kwargs)
+        return real(*args, **kwargs)
+
+    resp, envelope = _dip_response(depth_db=8.0, center_hz=1500.0)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fit_mod, "design_peq", _spy)
+        fit = fit_driver_linearization(
+            resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        )
+    assert [f for f in fit.filters if f.gain > 0.0], "need a boosting fit"
+
+    boost_calls = [k for k in captured if k.get("cuts_only") is False]
+    assert boost_calls, "the lift stage never ran"
+    for kwargs in boost_calls:
+        assert "q_min" in kwargs, (
+            "the lift stage must pass q_min EXPLICITLY, not inherit "
+            f"design_peq's default. {_Q_FLOOR_CONSEQUENCE}"
+        )
+        assert kwargs["q_min"] >= 1.0, _Q_FLOOR_CONSEQUENCE
+
+
+def test_no_emitted_boost_is_broader_than_the_pinned_q_floor():
+    """The same invariant at the surface that matters — the filters actually
+    emitted — so a future path that reaches ``design_peq`` some other way is
+    still caught.
+    """
+    for center_hz in (500.0, 1500.0, 3000.0):
+        resp, envelope = _dip_response(depth_db=10.0, center_hz=center_hz)
+        fit = fit_driver_linearization(
+            resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        )
+        for f in fit.filters:
+            if f.gain > 0.0:
+                assert f.q >= _PEAKING_Q_MIN, (
+                    f"boost at {f.freq:.1f} Hz has Q={f.q:.3f} < "
+                    f"{_PEAKING_Q_MIN}. {_Q_FLOOR_CONSEQUENCE}"
+                )
+
+
+def test_the_q_floor_buys_exactly_the_drop_radius_the_criterion_assumes():
+    """The coupling itself, measured rather than asserted in prose: the reach
+    numbers in ``_PEAKING_Q_MIN``'s comment and in the failure message above
+    are re-derived here, so they cannot drift away from the filter maths."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+
+    def reach_octaves(q):
+        gain_db = 8.0
+        response_db = 20.0 * np.log10(np.maximum(np.abs(
+            complex_correction_response((LinearizationFilter(
+                biquad_type="Peaking", freq=1000.0, q=q, gain=gain_db,
+            ),), grid)
+        ), 1e-12))
+        inside = grid[response_db >= gain_db / 2.0]
+        return float(np.log2(inside.max() / inside.min())) / 2.0
+
+    for q, expected_oct in _HALF_GAIN_REACH_OCT.items():
+        assert reach_octaves(q) == pytest.approx(expected_oct, abs=0.02), q
+
+    # And the shipped floor is the tightest of the three, which is the point.
+    assert _PEAKING_Q_MIN == max(_HALF_GAIN_REACH_OCT)
+    assert reach_octaves(_PEAKING_Q_MIN) < reach_octaves(0.5)
 
 
 def test_a_band_off_the_grid_decides_nothing_and_discloses_nothing():
@@ -1863,11 +1962,12 @@ def test_the_bound_is_monotone_on_the_shapes_that_break_a_request_mask(
 
     assert float(np.max(bounded_db - base_db)) <= 1e-9, label
     assert bounded.headroom_cost_db <= base.headroom_cost_db + 1e-9
-    # DROP-ONLY: the surviving boosts are a SUBSET of the unbounded fit's,
-    # filter for filter. A boost that is present but different — moved,
-    # re-Q'd, or enlarged — is the pathology, and it is what a request mask
-    # produced by feeding design_peq a different residue.
-    assert set(bounded_boosts) <= set(base_boosts), label
+    # DROP-ONLY: the surviving boosts are a SUB-MULTISET of the unbounded
+    # fit's, filter for filter. A boost that is present but different —
+    # moved, re-Q'd, or enlarged — is the pathology, and it is what a request
+    # mask produced by feeding design_peq a different residue. Counter rather
+    # than set because a set would silently accept a DUPLICATED filter.
+    assert not (Counter(bounded_boosts) - Counter(base_boosts)), label
 
 
 def test_the_bound_is_monotone_across_a_swept_population():
@@ -1903,7 +2003,7 @@ def test_the_bound_is_monotone_across_a_swept_population():
         base_db, base_boosts = _realized_boost_db(base, envelope.freqs_hz)
         bounded_db, bounded_boosts = _realized_boost_db(bounded, envelope.freqs_hz)
         worst_rise_db = max(worst_rise_db, float(np.max(bounded_db - base_db)))
-        assert set(bounded_boosts) <= set(base_boosts), (specs, excluded)
+        assert not (Counter(bounded_boosts) - Counter(base_boosts)), (specs, excluded)
 
     # Never positive anywhere. The geometric reason is why this is a property
     # and not a tolerance: every boost bell is non-negative at every bin, so

@@ -220,6 +220,28 @@ _ENVELOPE_NONZERO_EPS_DB: float = 0.05
 _MIN_FILTER_GAIN_DB: float = 0.5
 
 _PEAKING_Q_MAX: float = 8.0
+
+# The narrowest a BOOST bell may be. Passed EXPLICITLY at the lift stage's
+# ``design_peq`` call even though it equals that function's own default,
+# because since #1967 it is load-bearing for a safety property in THIS module
+# and an inherited default is not a bound this module controls.
+#
+# **What depends on it.** :func:`_boost_exclusion_verdicts` drops a boost when
+# an excluded band lies inside the filter's own half-gain bandwidth. For a
+# peaking biquad that bandwidth is a function of Q alone (pinned by
+# ``test_the_action_region_depends_on_q_alone_not_on_how_big_the_boost_is``),
+# so the Q floor IS the drop radius:
+#
+#     Q = 1.0  ->  +/- 0.68 octaves     (the shipped bound)
+#     Q = 0.5  ->  +/- 1.25 octaves
+#     Q = 0.3  ->  +/- 1.85 octaves
+#
+# Lowering this widens every drop decision by the same factor and walks the
+# bound back toward the whole-cascade bluntness #1967 round 2 was rejected
+# for — a boost working an octave and a half away would start being read as
+# "aimed at" the band. If a future tuning genuinely needs broader boost
+# bells, re-derive the drop criterion in the same PR; do not move this alone.
+_PEAKING_Q_MIN: float = 1.0
 _PEAKING_FLATNESS_TARGET_DB: float = 1.0
 
 # The RBJ Highshelf's fixed Butterworth Q — mirrors
@@ -2121,18 +2143,23 @@ def _boost_exclusion_verdicts(
                 gain_db=float(boost.gain), realized_in_band_db=aimed[1],
             ))
 
-    residual: list[BoostExclusionResidual] = []
-    for band_hz, mask in band_masks:
-        if kept:
-            surviving_db = 20.0 * np.log10(np.maximum(
-                np.abs(complex_correction_response(tuple(kept), grid_hz)), 1e-12,
-            ))
-            residual_db = float(np.max(surviving_db[mask]))
-        else:
-            residual_db = 0.0
-        residual.append(BoostExclusionResidual(
-            band_hz=band_hz, realized_max_db=residual_db,
+    # Hoisted: the surviving cascade does not change between bands, and this
+    # runs on a Pi.
+    surviving_db = (
+        20.0 * np.log10(np.maximum(
+            np.abs(complex_correction_response(tuple(kept), grid_hz)), 1e-12,
         ))
+        if kept else None
+    )
+    residual = [
+        BoostExclusionResidual(
+            band_hz=band_hz,
+            realized_max_db=(
+                float(np.max(surviving_db[mask])) if surviving_db is not None else 0.0
+            ),
+        )
+        for band_hz, mask in band_masks
+    ]
     return kept, dropped, residual
 
 
@@ -2308,6 +2335,9 @@ def _lift_stage(
         max_boost_db=min(residue_peak_db, vocabulary.per_filter_boost_cap_db),
         cuts_only=False,
         flatness_target_db=_PEAKING_FLATNESS_TARGET_DB,
+        # Explicit, not inherited: this floor is what bounds the #1967 drop
+        # radius to +/- 0.68 octaves. See _PEAKING_Q_MIN's own comment.
+        q_min=_PEAKING_Q_MIN,
         q_max=_PEAKING_Q_MAX,
         min_filter_gain_db=_MIN_FILTER_GAIN_DB,
     )
