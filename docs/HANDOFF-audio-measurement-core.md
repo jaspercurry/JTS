@@ -1536,6 +1536,209 @@ to de-risk Phase 3.
 
 ---
 
+## Validation ladder — what each instrument can prove
+
+*Added 2026-08-02. A design position, not a status report. Its claims were
+checked against the tree at that date, and it is **outside the scope of this
+file's `Last verified:` pass below**, which does not cover it. "Ladder" here
+means the instruments and what each can prove — unrelated to W6's
+scripted-then-Chrome hardware sequence in
+[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).*
+
+Two instruments carry the weight of validating the correction flow today, and
+neither can answer the question that matters most.
+
+**Corpus replay** re-runs the shipped code over saved captures and compares
+against what the Pi itself persisted. Where it can reproduce a diagnostic it is
+exact — the 2026-08-02 replay of four banked jts3 CHECK→MEASURE pairs
+(`captures/r12-e2e-pass-20260802/`, gitignored; the bank is recorded in the R12
+outcome block of
+[HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md))
+recomputed each capture's CHECK woofer pilot SNR and matched the persisted
+sidecar on all four, to every digit the sidecar carries. That makes it an
+excellent *regression* instrument. But it is the model grading itself. It proves
+the code still computes what it computed last time. It cannot tell you that the
+prescription was **right**, because the corpus carries no ground truth: nobody
+knows what the correct answer was.
+
+**Hardware** proves the whole chain, and is the only instrument that can. It is
+also slow, needs a room and a calibrated mic, and — decisively — **cannot
+produce a defect on demand**. You cannot wait for a position-dependent
+interference null to occur naturally in order to test that the flow handles one.
+
+So neither instrument answers: *when the speaker has defect X, does our logic
+prescribe the right correction?*
+
+### The third instrument: synthetic scenarios with ground truth
+
+For a *known* defect you do not need a room. You need a response you built
+yourself, with the defect injected deliberately, so the true answer is known
+before the flow runs. That converts the reviewer's question from "does this
+prescription look plausible?" — a judgement call, which is what the 2026-08-02
+replay was reduced to — into "did it recover the thing I put in?", which is a
+fact.
+
+A banked capture goes further than it first looks, and the section would be
+dishonest not to say so: its *inputs* can be replayed with one varied — severing
+the cloud is the production `cloud is None` branch — so a severed re-fit shows
+whether the evidence actually *bound*. What it still cannot supply is the answer:
+whether the correction that came out was right.
+
+This is already the house pattern in places — what is missing is that it is
+applied *systematically*, as a coverage obligation rather than wherever someone
+happened to reach for it. `fit_driver_linearization` is exercised by a synthetic
+fixture family whose expected outcomes are tabulated in the docstring of
+`test_correction_giveback_approximates_spend_on_the_canonical_synthetic`
+(`tests/test_active_speaker_linearization_fit.py`) — canonical CD-horn deficit,
+live-rig, budget-bound, flattening-cuts-only, and flat, each with its own spend
+and give-back. `tests/test_audio_measurement_harmonics.py` synthesizes notches
+directly (`_synthetic_notch_db`). The spatial dimension has it too:
+`tests/test_interference_nulls.py` builds two-path clouds with a known `tau`
+and `r` and asserts `identify_interference_nulls` recovers them.
+
+### The one rule that makes it worth anything
+
+**The generator must be independent of the model the fit uses.** Build the
+response from driver and crossover transfer functions plus an injected defect,
+and let the fit reach its own conclusion. Generate it by running the fit's model
+backwards and the test is a tautology: it will always recover the defect, and a
+green result means nothing. Any reviewer of a synthetic scenario should check
+this first and reject the scenario if it fails.
+
+`tests/test_interference_nulls.py` states the same rule from the other side: its
+magnitude curve is derived from the *same* impulse response as the timing
+evidence, "so the time-domain and frequency-domain evidence the gate insists
+must agree really are two views of one physical object rather than two fixtures
+that happen to match." Independence of the *model*, identity of the *object*.
+
+**And a second clause, because the first is necessary but not sufficient: the
+assertion must be against the injected truth, not against another output of the
+same fit.** An independent generator still proves nothing if the check compares
+two numbers the fit produced — that is self-consistency wearing a fixture's
+clothes. `tests/test_interference_nulls.py` is the model to copy: it asserts the
+recovered `tau` and `r` against the values it injected. A scenario that asserts
+only relationships among the fit's own outputs is a regression test, and belongs
+in the same bucket as corpus replay.
+
+### The boundary — what synthetic scenarios must never claim
+
+They validate **reasoning**, never **measurement**.
+
+Every genuinely hard failure this system has had lives at the capture boundary:
+pilot SNR, clipping, glitch splices, gating, mic calibration, level collapse. A
+synthetic curve is born clean and skips all of it. One of the four captures in
+the 2026-08-02 replay recorded a −2090.5-sample discontinuity after its
+`sweep_t` segment; downstream of that one physical step its sidecar carries
+`glitch_detected` (via `glitch_inputs=residual_desync`), an
+`alignment_confidence` of `0.0` under
+`alignment_status=delay_exceeds_search_window`, and an `epsilon_ppm` that
+`jasper/audio_measurement/program_analysis.py` documents as "an ARTEFACT of the
+step, not a drift measurement". Those are separate estimators reacting to the
+same defect, not a chain — `_estimate_alignment` never reads the glitch verdict.
+No synthesized response would ever have produced any of it. So a synthetic
+scenario can establish that the logic reasons correctly about a defect it was
+handed; it can never establish that the measurement handed it the truth.
+
+**A synthetic scenario therefore never retires a hardware check.** It narrows
+what hardware time has to cover, which is a real saving on a flow that needs a
+room, a mic, and a quiet house — but the hardware column in *Risks & what to
+verify on hardware* below does not shrink because a scenario went green.
+
+### Why this matters now
+
+The boost-permission gate is `allow_boost` in `crossover_v2_flow`, and it is
+evidence-gated on two conditions: the journey will MEASURE what the speaker did
+with the boost (`_post_apply_verifies`), and the cloud verdict actually reached
+the envelope. Without the second, `compose_envelope` receives no
+`excluded_bands_hz`, `allowed_depth_db` is never zeroed in the registry's
+interference nulls, and the fit could design a boost straight into a null — one
+that reads `matched` at the mark while the spatial arm, the one instrument that
+could contradict it, is absent.
+
+Both halves of that permission decision have conductor tests
+(`test_boost_is_granted_only_to_a_journey_that_will_verify`,
+`test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope`), and
+a constructed comb cloud proves the honesty mask binds the envelope
+(`test_the_clouds_honesty_verdict_reaches_the_fit_envelope`, all in
+`tests/test_crossover_v2_conductor.py`). What is missing is not the wiring —
+it is a scenario that **discriminates**. That last test says so about itself:
+its "no correction is placed inside an identified null" assertion "does not
+discriminate — it holds in the severed case too," because the fixture's nulls
+sit over an octave and a half above the highest filter the fit places. There was
+never a filter up there to remove.
+
+The corpus cannot settle it either, and for the reason already given: it carries
+no ground truth. A severed re-fit of a banked session is a real and cheap
+experiment, and it is worth running — it can show that the exclusion *bound* and
+what the fit does without it. It cannot say the correction that resulted was
+*right*. Only an injected defect gives you that, and one thing more: a defect on
+demand. The second matters most exactly here, because the null registry's
+*gating* band is floored at 4 kHz (`ECHO_BAND_HF_REGIME_FLOOR_HZ`).
+(`_crossover_region_null_registry` asks about that region anyway, deliberately
+without letting the answer gate anything — #1967, #1867.)
+
+Synthetically the defect is built to order and its answer is known before the
+flow runs, which is what lets a scenario grade the gate's decision rather than
+merely observe it — and that has to exist before a household meets it.
+
+### The ambition: one scenario per diagnostic criterion
+
+The boost discriminator is the first case, not the only one. The goal is that
+**every diagnostic criterion the flow applies has a scenario that exercises its
+decision against a known answer** — a criterion nobody can construct a case for
+is a criterion nobody can check.
+
+That is a coverage question, so it needs a coverage artifact rather than good
+intentions. Each criterion lands in one of three buckets, and the bucket is
+recorded, not assumed:
+
+- **synthetic** — the criterion reasons over a curve or a set of curves, so a
+  scenario can hand it a known defect and assert the decision;
+- **capture-bound** — the criterion reasons over recording quality (SNR,
+  clipping, glitch, splice, level collapse), so a synthesized curve cannot
+  exercise it honestly and hardware or a real capture must;
+- **uncovered** — neither exists yet.
+
+Buckets are not exclusive, and one case in particular needs both: a criterion
+whose *logic* is synthesizable but whose *threshold* was calibrated from a
+corpus — `POSITION_PRESENCE_FRACTION`, `EXCLUSION_CAP_FRACTION`,
+`_S0_WORST_BAND_SIGMA_DB`. A synthetic scenario proves the detector fires above
+the floor; it can never prove the floor sits in the right place. Such a
+criterion is `synthetic` **and** corpus-bound, and recording only the first half
+is how the frozen constant in the next section's last Risks bullet goes stale
+invisibly. Record both.
+
+A scenario that cannot discriminate belongs in **uncovered**, not `synthetic` —
+and since non-discrimination is only knowable by building the negative case, the
+scenario's companion is a severing test that proves the assertion fails when the
+wiring is cut (`test_severing_the_cloud_wiring_changes_the_fit` is the pattern).
+The comb-cloud case above is the worked example of why that has to be recorded
+rather than inferred from a green run.
+
+The value is as much in the second and third buckets as the first: naming a
+criterion capture-bound is what stops someone later mistaking a green synthetic
+run for proof that it works, and the uncovered list is the backlog. Adding a
+criterion to the flow should mean adding its scenario or declaring its bucket in
+the same change.
+
+### The ethos this encodes
+
+It is reasonable to apply boost when we believe it will help. When we are not
+sure whether it will help, we have a cheap way to find out — measure — and we
+should take it. Synthetic scenarios are that same ethos turned on the code
+itself: when we are unsure whether the logic reasons correctly about a defect,
+we can build the defect and find out, for the price of a test run.
+
+A note on how the corpus paragraph above was written, because it is this
+section's own thesis turned on its author. Three successive versions of it
+claimed the corpus *lacked* something — a cloud, a null inside the working band,
+a counterfactual — and measurement falsified all three; one of the three was
+authored by the reviewer rather than the writer, and inherited on the strength of
+the label. A negative claim about a corpus is a strong empirical claim. It needs
+the same measurement a positive one does.
+
+---
+
 ## Risks & what to verify on hardware
 
 - **Kernel extraction must preserve load-bearing contracts** (deconv
