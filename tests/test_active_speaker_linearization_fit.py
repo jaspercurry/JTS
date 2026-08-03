@@ -1052,9 +1052,12 @@ _CD_HORN_ANCHOR_HZ = np.array(
     [2000.0, 4000.0, 8000.0, 10000.0, 12000.0, 14000.0, 16000.0, 18000.0, 20000.0]
 )
 _CD_HORN_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -2.5, -5.8, -8.6, -11.5, -13.5, -15.0])
-# The LIVE JTS3 rig's own shape (2026-07-24): a ~14.3 dB top-octave deficit at
-# the reference-tier ceiling. Exceeds PER_FILTER_CUT_CAP_DB, so it exercises the
-# Lowshelf clamp + peaking-residual absorption path.
+# The LIVE JTS3 rig's own shape (2026-07-24): -14.3 dB at the 16 kHz ANCHOR,
+# which the fit measures as a 13.885 dB deficit at its 16444.9 Hz ceiling (the
+# give-back table below pins that). Do not read the anchor as the deficit — they
+# are different numbers, and conflating them is what made the table's row labels
+# drift. Exceeds PER_FILTER_CUT_CAP_DB, so it exercises the Lowshelf clamp +
+# peaking-residual absorption path.
 _CD_HORN_LIVE_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -3.2, -7.4, -11.0, -14.3, -16.0, -17.0])
 
 
@@ -1146,6 +1149,68 @@ def test_cd_horn_realized_cascade_tracks_cut_target_within_tolerance():
     assert float(np.max(np.abs(working - frame_target)[band])) < 2.0
 
 
+# One tabulated row: a label, then the five numeric fields, anchored to the end
+# of the line so the trailing filter count matches whole, not as a prefix.
+_GIVEBACK_ROW_RE = re.compile(
+    r"^(?P<label>\S+)\s+.*?"
+    r"(?P<spend>-?\d+\.\d{3})\s+(?P<giveback>-?\d+\.\d{3})\s+"
+    r"(?P<delta>[-+]\d+\.\d{3})\s+(?P<deficit>-?\d+\.\d{3})\s+(?P<filters>\d+)$"
+)
+
+
+def _parse_giveback_table(doc: str) -> dict[str, tuple[str, ...]]:
+    """Read the give-back table back out of a docstring, keyed by row label, so
+    the test can require it row-for-row. Binding each label to its OWN five
+    fields is the point: a bag of matching substrings passes a table whose rows
+    have been renamed, swapped, or invented.
+
+    A repeated label is rejected rather than overwritten. Keying by label means
+    the LAST row silently wins, so duplicate-a-row-then-edit-it — forgetting to
+    delete the original — would ship a docstring printing digits no assertion
+    ever reads."""
+    rows: dict[str, tuple[str, ...]] = {}
+    for line in doc.splitlines():
+        match = _GIVEBACK_ROW_RE.match(line.strip())
+        if match:
+            label = match["label"]
+            assert label not in rows, f"table has a repeated row label: {label!r}"
+            rows[label] = match.group(
+                "spend", "giveback", "delta", "deficit", "filters"
+            )
+    return rows
+
+
+def _giveback_fixture_family() -> dict[str, LinearizationFit]:
+    """The five synthetic shapes the give-back table below is asserted on, built
+    in ONE place so the table, the budget-binding test and the
+    zero-without-filters test all describe the same fixtures. Keys are the
+    table's own row labels — a table that owns its fixtures cannot drift from
+    the fixtures it describes."""
+    bumped_horn = _cd_horn_db(_NATIVE_FREQS_HZ) + _bell(_NATIVE_FREQS_HZ, 3000.0, 9.0, 0.12)
+    bumped_horn_resp = _tweeter_response(bumped_horn)
+    bumped_woofer = _driver_response("woofer", _bell(_NATIVE_FREQS_HZ, 900.0, 8.0, 0.15))
+    flat_woofer = _driver_response("woofer", np.zeros_like(_NATIVE_FREQS_HZ))
+    return {
+        "canonical": _cd_horn_fit("compression_horn"),
+        "live-rig": _cd_horn_fit("compression_horn", anchor_db=_CD_HORN_LIVE_ANCHOR_DB),
+        "budget-bound": fit_driver_linearization(
+            bumped_horn_resp,
+            compose_envelope(
+                "tweeter", bumped_horn_resp, excited_band_hz=(2000.0, 20000.0),
+                mic_tier="reference", driver_class="compression_horn",
+            ),
+        ),
+        "flattening-cuts-only": fit_driver_linearization(
+            bumped_woofer,
+            _envelope("woofer", bumped_woofer, excited_band_hz=(150.0, 4000.0)),
+        ),
+        "flat": fit_driver_linearization(
+            flat_woofer,
+            _envelope("woofer", flat_woofer, excited_band_hz=(150.0, 4000.0)),
+        ),
+    }
+
+
 def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
     """When the REMAINING normalization budget is smaller than the measured
     top-octave deficit, the spend is capped but measured_deficit_at_ceiling_db
@@ -1159,13 +1224,7 @@ def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
     18 dB budget a deficit that large makes the shape too steep for the
     realization to track, so the fit-quality gate — not the budget — becomes the
     binding constraint and the stage suppresses.)"""
-    mag = _cd_horn_db(_NATIVE_FREQS_HZ) + _bell(_NATIVE_FREQS_HZ, 3000.0, 9.0, 0.12)
-    resp = _tweeter_response(mag)
-    envelope = compose_envelope(
-        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
-        mic_tier="reference", driver_class="compression_horn",
-    )
-    fit = fit_driver_linearization(resp, envelope)
+    fit = _giveback_fixture_family()["budget-bound"]
     assert fit.hf_continuation_spend_db > 0.0
     assert fit.hf_continuation_suppressed_reason == ""
     # Spend capped below the measured deficit by the remaining budget.
@@ -1173,38 +1232,92 @@ def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
     assert fit.hf_continuation_spend_db < MAX_NORMALIZATION_SPEND_DB
 
 
-def test_correction_giveback_approximates_spend_on_the_canonical_synthetic():
+def test_correction_giveback_table_pins_the_fixture_family():
     """The give-back SSOT: ``correction_giveback_db`` is the MEASURED
     before-vs-after power-domain level delta of the driver's core (reference)
     band, reported POSITIVE. On the canonical fired synthetic — a flat core — it
     lands close to the CD-horn spend, which is what makes the flow's anchored
     trim restore the pre-correction level.
 
-    ``spend`` is NOT the definition, only a sanity companion, so the tolerance is
-    1.0 dB rather than 0.5. Measured deltas (giveback − spend) across the fixture
-    family:
+    ``spend`` is NOT the definition, only a sanity companion, so that comparison
+    holds to 1.0 dB rather than 0.5. Across the fixture family (dB; delta is
+    giveback − spend). Every printed digit is parsed back out of this docstring
+    and asserted below, to half a printed digit — the table is a contract on the
+    fit, not decoration:
 
-        canonical (11.4 dB deficit)   spend 11.000  giveback 11.775  +0.775
-        live-rig  (14.3 dB deficit)   spend 11.000  giveback 11.046  +0.046
-        budget-bound (+9 dB bump)     spend  9.880  giveback 12.773  +2.893
-        woofer, flattening cuts only  spend  0.000  giveback  1.458  +1.458
-        flat, no filters              spend  0.000  giveback  0.000   0.000
+        row                   what it is                  spend  giveback   delta  deficit  filters
+        canonical             CD horn, flat core         11.000    11.775  +0.775   11.351        3
+        live-rig              CD horn, deeper rolloff    11.000    11.046  +0.046   13.885        2
+        budget-bound          + a core bump               9.880    12.725  +2.845   11.420        7
+        flattening-cuts-only  woofer, no CD-horn stage    0.000     1.444  +1.444    0.000        1
+        flat                  no filters                  0.000     0.000  +0.000    0.000        0
 
-    (The two deficit cases now share a spend: both exceed the single-shelf
-    realization cap, so both land on it.)
+    (The two deficit cases share a spend: both exceed the single-shelf
+    realization cap, so both land on it. live-rig's -14.3 dB anchor is NOT its
+    deficit — the fit measures 13.885 at its own ceiling.)
 
     The larger deltas are correct, not error: whenever the correction also cuts
     INSIDE the core band (the CD-horn residual peak near the onset, a flattening
     cut on a bumped core) it removes real level there, and the anchor restores
     exactly what was removed. Only the flat-core cases are expected near spend.
+
+    The structural checks below BOUND a mechanical regenerate rather than
+    forbidding one: a uniform give-back shift under ~0.22 dB — canonical's
+    headroom beneath the 1.0 dB companion gate — still satisfies them. Catching
+    a drift smaller than that is the tabulated digits' job, not theirs.
     """
-    fit = _cd_horn_fit("compression_horn")
-    assert fit.hf_continuation_spend_db > 0.0
-    assert fit.correction_giveback_db == pytest.approx(
-        fit.hf_continuation_spend_db, abs=1.0
+    # (spend, giveback, measured deficit, filter count) — the table above.
+    expected = {
+        "canonical": (11.000, 11.775, 11.351, 3),
+        "live-rig": (11.000, 11.046, 13.885, 2),
+        "budget-bound": (9.880, 12.725, 11.420, 7),
+        "flattening-cuts-only": (0.000, 1.444, 0.000, 1),
+        "flat": (0.000, 0.000, 0.000, 0),
+    }
+    family = _giveback_fixture_family()
+    assert set(family) == set(expected)
+    # Half of the last printed digit: every digit the table prints is defended,
+    # and nothing looser is honest about a 3-decimal print. The fit is
+    # deterministic (no optimizer, no RNG), so there is no variance to absorb —
+    # the filter count two lines down has been exact all along.
+    for row, (spend, giveback, deficit, n_filters) in expected.items():
+        fit = family[row]
+        assert fit.hf_continuation_spend_db == pytest.approx(spend, abs=5e-4), row
+        assert fit.correction_giveback_db == pytest.approx(giveback, abs=5e-4), row
+        assert fit.measured_deficit_at_ceiling_db == pytest.approx(deficit, abs=5e-4), row
+        assert len(fit.filters) == n_filters, row
+
+    # Assert what you print: parse the table back out of the docstring and
+    # require it row-for-row, so a renamed, swapped, invented or edited row
+    # fails instead of passing on a bag of matching substrings.
+    assert _parse_giveback_table(
+        test_correction_giveback_table_pins_the_fixture_family.__doc__
+    ) == {
+        row: (
+            f"{spend:.3f}", f"{giveback:.3f}", f"{giveback - spend:+.3f}",
+            f"{deficit:.3f}", str(n_filters),
+        )
+        for row, (spend, giveback, deficit, n_filters) in expected.items()
+    }
+
+    # Structure the prose above depends on, bounded as the docstring says.
+    for row in ("canonical", "live-rig"):  # flat core -> give-back lands near spend
+        fit = family[row]
+        assert fit.hf_continuation_spend_db > 0.0, row
+        assert fit.correction_giveback_db == pytest.approx(
+            fit.hf_continuation_spend_db, abs=1.0
+        ), row
+        # Reported positive (a cut cascade gives level BACK).
+        assert fit.correction_giveback_db > 0.0, row
+    # Cutting INSIDE the core band removes real level there, so those rows sit
+    # further above spend than either flat-core row does.
+    delta = {
+        row: fit.correction_giveback_db - fit.hf_continuation_spend_db
+        for row, fit in family.items()
+    }
+    assert min(delta["budget-bound"], delta["flattening-cuts-only"]) > max(
+        delta["canonical"], delta["live-rig"]
     )
-    # Reported positive (a cut cascade gives level BACK).
-    assert fit.correction_giveback_db > 0.0
 
 
 def test_correction_giveback_is_zero_without_filters_and_positive_with_them():
@@ -1212,17 +1325,12 @@ def test_correction_giveback_is_zero_without_filters_and_positive_with_them():
     filters reports 0.0 give-back; a woofer carrying only ordinary flattening
     cuts still reports a positive give-back, so the flow can anchor BOTH
     branches, not just the CD-horn one."""
-    flat = _driver_response("woofer", np.zeros_like(_NATIVE_FREQS_HZ))
-    flat_fit = fit_driver_linearization(
-        flat, _envelope("woofer", flat, excited_band_hz=(150.0, 4000.0)),
-    )
+    family = _giveback_fixture_family()
+    flat_fit = family["flat"]
     assert flat_fit.filters == ()
     assert flat_fit.correction_giveback_db == 0.0
 
-    bumped = _driver_response("woofer", _bell(_NATIVE_FREQS_HZ, 900.0, 8.0, 0.15))
-    woofer_fit = fit_driver_linearization(
-        bumped, _envelope("woofer", bumped, excited_band_hz=(150.0, 4000.0)),
-    )
+    woofer_fit = family["flattening-cuts-only"]
     assert woofer_fit.filters
     assert woofer_fit.hf_continuation_spend_db == 0.0  # CD-horn stage never ran
     assert woofer_fit.correction_giveback_db > 0.0
