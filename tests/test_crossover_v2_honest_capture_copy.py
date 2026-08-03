@@ -8,20 +8,27 @@ quiet capture. The other three were ``locate_failed`` raised by
 ``program_analysis.capture_integrity`` with ``failed=summed_sweep_heard``,
 and every one of those captures also carried ``pilot_snr_ok=True`` with the
 pilot pair 13.9-15.5 dB over the room's own floor. The speaker had been heard.
-What had actually gone wrong was that the sweeps came back unfindable —
-locate confidence 0.019-0.097 against a 0.3 floor, schedule residuals of
-+14.3 / -18.5 / -2.7 ms, glitch set. Three households' worth of that advice
-sends someone to turn up a volume the measurement had already proved was fine.
+Three households' worth of that advice sends someone to turn up a volume the
+measurement had already proved was fine.
 
 ``summed_sweep_heard`` is a locate-CONFIDENCE check, not a level check — see
 ``program_analysis._verify_capture_integrity``, whose own docstring calls it
 "the summed sweep's own locate confidence". Reading it as "nobody could hear
 the speaker" was the inference; the pilot is the evidence that refutes it.
 
-What is pinned here is therefore not a string but a rule: the sentence follows
-the evidence, and one failure gets ONE account of itself across all three
-surfaces that narrate it (the relay verdict, the budget refusal, the
-envelope).
+**And the obvious replacement inference is false too**, which is why the copy
+these pin names no cause at all. Forensics on the same three WAVs found the
+audio pristine: the analyzer anchored on ``pilot_lo``, the quietest segment in
+the program, missed its gate by an NCC margin of 0.005-0.049, snapped to
+``pilot_hi`` (+1296.5 ms, exactly the pilot spacing, on all three), and the
++/-30 ms search window did the rest. Re-scored whole-capture the same files
+give 0.67-0.82. "The recording was damaged" would have been a third lie. The
+tests below therefore assert what the copy must NOT claim as much as what it
+says — see ``UNSUPPORTED_CAUSE_WORDS``.
+
+What is pinned here is a rule, not a string: the sentence follows the
+evidence, claims nothing the evidence does not carry, and one failure gets ONE
+account of itself across every surface that narrates it.
 """
 
 import logging
@@ -54,15 +61,28 @@ from tests.test_crossover_v2_conductor import (
 # same claim in other words.
 VOLUME_REMEDY_WORDS = ("volume", "louder", "too quiet", "closer")
 
+# The OTHER cause this copy is not entitled to name. Both stories that would
+# explain a locate miss were false on the three real captures — the level was
+# fine and so was the audio — so the sentence reports the failed operation and
+# stops. This guard is what keeps a future "helpful" rewrite from reaching for
+# the nearest plausible cause again, which is the whole bug class.
+UNSUPPORTED_CAUSE_WORDS = ("damag", "corrupt", "glitch", "broken", "lost")
+
 
 def _heard_but_unlocatable(fakes):
-    """The measured defect: pilot heard, summed sweep not findable.
+    """The measured defect: pilot heard, summed sweep scored under its floor.
 
     Confidence sits deliberately BETWEEN the two floors — over
     ``LOCATE_MIN_CONFIDENCE`` so ``_stimulus_locate_ok`` passes and the
     integrity gate is the thing that refuses, under
     ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` so ``summed_sweep_heard`` is what fails.
     That is the exact routing the JTS3 captures took.
+
+    The fixture states the SCORE, not a reason for it — matching what the
+    production gate actually has. On the real captures the low score came from
+    the analyzer's anchor, not from the audio; a fixture that modelled "a bad
+    recording" would quietly re-assert the cause these tests exist to keep out
+    of the copy.
     """
     fakes.verify = lambda program: _verify_analysis(
         program,
@@ -87,7 +107,7 @@ def _never_heard(fakes):
     )
 
 
-def test_a_heard_speaker_with_unfindable_tones_is_not_a_volume_problem():
+def test_a_heard_speaker_that_could_not_be_lined_up_is_not_a_volume_problem():
     """The defect, end to end: same code, and no longer the same advice."""
     fakes = FakeSeams()
     c = _verify_to_apply(fakes)
@@ -111,9 +131,16 @@ def test_a_heard_speaker_with_unfindable_tones_is_not_a_volume_problem():
         assert word not in reason.lower(), (
             f"copy still sends a heard-speaker failure after {word!r}: {reason!r}"
         )
-    # It says the two things that WERE measured.
+    # ...and does not swap one unsupported cause for another. The audio on the
+    # real captures was fine; only the lining-up failed.
+    for word in UNSUPPORTED_CAUSE_WORDS:
+        assert word not in reason.lower(), (
+            f"copy asserts an unestablished cause ({word!r}): {reason!r}"
+        )
+    # It says the two things that WERE measured: the speaker was heard, and
+    # the tones could not be lined up.
     assert "hear the speaker" in reason
-    assert "recording" in reason
+    assert "line up" in reason
 
 
 def test_a_capture_nobody_heard_keeps_the_volume_copy():

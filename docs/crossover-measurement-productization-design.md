@@ -615,7 +615,7 @@ one-reason/one-action copy:
 | `clipped` | MEASURE / VERIFY | 1 (gain-adjusted) | automatic quieter retry, say so |
 | `drift_baselines_disagree` (glitch) | MEASURE | 1 | "capture glitched — retrying" |
 | `delay_exceeds_search_window` | MEASURE | 1 | re-check mic placement vs the picture |
-| `locate_failed` | any capture | 1 | "couldn't hear the speaker — check volume/mic" |
+| `locate_failed` | any capture | 1 | keyed on the pilot since #2085: pilot heard ⇒ "could hear the speaker, couldn't line up the test tones — try again", naming no cause (neither level nor capture damage is established); pilot unheard or unmeasured ⇒ "couldn't hear the speaker — check volume/mic" |
 | `relay_timeout` / session death | any | new session | re-open link; CHECK restarts (evidence invalidated) |
 | `volume_unresolved` | session | — | existing `volume_recovery` screen |
 | `verify_out_of_tolerance` | VERIFY | 2 (re-verify) | offer Re-verify / Re-measure / Restore previous |

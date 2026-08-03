@@ -333,10 +333,30 @@ rejects-and-auto-retries as a glitch when any sweep locates off schedule
 vs ≤1.5 ms on every clean capture — reuses `drift_baselines_disagree`).
 **The locate-confidence half of that gate split off in #1838** into
 `_sweep_locate_confidence_ok` (< 0.3; the xrun signature was 0.07–0.12 vs
-≥0.69 on every clean capture): a sweep the locator can barely find is a
-capture too quiet to hear, not a splice, so it answers `locate_failed`
-("check the volume and the microphone") and does NOT auto-retry a level
-that cannot win.
+≥0.69 on every clean capture): a sweep the locator can barely find is not a
+splice, so it answers `locate_failed` and does NOT auto-retry a level that
+cannot win.
+
+**It is not necessarily a capture that was too quiet, either — that was the
+#1838 reading, and #2085 measured it false.** A JTS3 sitting on 2026-08-03
+produced three `locate_failed` captures whose own leading pilot pair cleared
+the room floor by 13.9–15.5 dB (`pilot_snr_ok=true`) while the sweeps scored
+0.019–0.097. The speaker had been heard. Forensics then found the audio
+pristine as well: `_global_offset` anchors on `pilot_lo` (the quietest segment
+in the program), those three missed `_earliest_strong_peak`'s gate by an NCC
+margin of 0.005–0.049, the anchor snapped to `pilot_hi` — +1296.5 ms, exactly
+the pilot spacing, on all three — and the ±30 ms `SEGMENT_SEARCH_S` window
+then guaranteed every sweep was "not found". Re-scored with a whole-capture
+search the same WAVs give 0.67–0.82. **The anchor is being fixed separately;
+the copy change is what stops the household being blamed meanwhile.**
+
+So the gate measures locate CONFIDENCE and nothing more, and BOTH available
+causal stories ("too quiet", "capture corrupted") can be false at once. The
+copy is therefore no longer a literal on `REASON_LOCATE_FAILED`:
+`locate_failed_message` picks it from `analysis.pilot_snr_ok` — heard ⇒ report
+that JTS could not line up the tones, name no cause, ask for a retry; unheard
+or unmeasured ⇒ the original level/microphone copy. One writer, read by the
+relay verdict, the envelope, and `_refuse` alike.
 
 **Both of those gates are MEASURE-only, and VERIFY got its own in #1971.**
 They filter `KIND_SWEEP`; VERIFY plays one `KIND_SUMMED_SWEEP`, so until
@@ -1670,7 +1690,7 @@ unready setup.
 | `clipped` | MEASURE | 1 | auto quieter retry (gain −3 dB). MEASURE-only: VERIFY replays the *identical* program on every attempt (that invariant is what makes the `verify_level_shift` baseline mean anything), so there is no quieter retry to offer — a clipped VERIFY capture is refused as a capture glitch instead (#1971). This row said "MEASURE / VERIFY" until then; no VERIFY path ever returned this code |
 | `drift_baselines_disagree` | MEASURE / VERIFY | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped on MEASURE (#1765), and `integrity=` says which check tripped on VERIFY (#1971, where the class is a spliced timeline or a clipped run). Since #1838 a merely weakly-located sweep is NOT in this class on either phase — it answers `locate_failed` ahead of this branch |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
-| `locate_failed` | any | 1 | couldn't hear the speaker. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag) |
+| `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). Known gap: the budget-exhaustion refusal inside `authorize_begin` still renders the registry literal |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
 | `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current (evaluation `unconfirmed` / `stale` / `malformed` — all three are cleared by the one confirm action, which saves the visible values and rebuilds the profile). Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** confirm control here, so "confirm the safety limits" would name a button that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |

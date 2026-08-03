@@ -1562,19 +1562,31 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
     and the microphone. The JTS3 session of 2026-08-03 measured that claim
     false three times in one sitting. Every one of those captures carried
     ``pilot_snr_ok=True`` — the leading pilot pair cleared the room's own
-    in-band floor by 13.9-15.5 dB, which is direct evidence from THIS
-    recording that the speaker was heard — while the sweeps came back
-    unlocatable (confidence 0.019-0.097 against a 0.3 floor, schedule
-    residuals of +14.3 / -18.5 / -2.7 ms, glitch set). A household told to
-    check the volume then goes and changes the one thing the measurement had
-    already proved was fine.
+    in-band floor by 13.9-15.5 dB, direct evidence from THIS capture that the
+    speaker was heard — while its sweeps scored 0.019-0.097 against a 0.3
+    floor. A household told to check the volume then goes and changes the one
+    thing the measurement had already proved was fine.
 
-    ``pilot_heard`` is that evidence, and it is the whole discriminator:
+    **The copy names the operation that failed, and stops there.** Forensics
+    on those same three WAVs found the audio pristine: the analyzer had
+    anchored the timeline on ``pilot_lo`` — deliberately the quietest segment
+    in the program — missed the anchor gate by an NCC margin of 0.005-0.049,
+    snapped to ``pilot_hi`` instead, and put every subsequent sweep 1296.5 ms
+    (exactly the pilot spacing) outside a +/-30 ms search window. Re-scored
+    with a whole-capture search the same recordings give 0.67-0.82. So "the
+    recording came back damaged" would have been a THIRD false sentence, told
+    to households whose volume AND whose recording were both fine. What is
+    true in every case — a corrupted capture and this mis-anchor alike — is
+    that JTS could not line up the test tones. That is what the household is
+    told. (The anchor itself is a separate fix in ``program_analysis``; this
+    copy does not depend on it landing, and does not become wrong when it
+    does.)
+
+    ``pilot_heard`` is the discriminator:
 
     * ``True`` — the pilot pair was measurably heard, so "couldn't hear the
-      speaker" is refuted BY THIS CAPTURE. What was observed is that the
-      recording came back without findable test tones; the copy says that and
-      asks for one retry, which is the action that helps a damaged recording.
+      speaker" is refuted BY THIS CAPTURE. The copy reports the lining-up
+      failure and asks for one retry, asserting no cause for it.
     * ``False`` / ``None`` — the pilot failed too, or there is no pilot
       evidence at all. Then the level/microphone reading is either supported
       or simply unknown, and the original copy stands. The registry holds
@@ -1590,8 +1602,8 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
     """
     if pilot_heard:
         return (
-            "JTS could hear the speaker, but couldn't find its test tones in "
-            "the recording. Try again."
+            "JTS could hear the speaker, but couldn't line up the test tones "
+            "in the recording. Try again."
         )
     return (
         "Couldn't hear the speaker clearly. Check the volume and the "
@@ -1697,7 +1709,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # and its copy named the one cause that would explain a miss on its own
         # — an inaudible speaker — on captures whose own pilot pair proved the
         # speaker was heard. The sentence has one writer now
-        # (``locate_failed_message``); what the registry holds is its
+        # (``locate_failed_message``, which also explains why the heard-speaker
+        # branch names no cause at all); what the registry holds is its
         # no-pilot-evidence rendering, true for any reader with no capture in
         # hand. The relay verdict and the envelope both re-render it with the
         # measured fact.
