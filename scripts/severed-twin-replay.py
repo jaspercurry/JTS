@@ -139,6 +139,46 @@ def _load_mono(path: Path) -> np.ndarray:
     return samples[::channels] if channels > 1 else samples
 
 
+def _sign_convention(calibration_id: str) -> str:
+    """How to read this session's calibration file — asked of the product's own
+    registry rather than pinned here.
+
+    ``setup_calibration_id`` is ``provider-modelkey-hash``, so the model key is
+    recoverable and :data:`~jasper.audio_measurement.calibration.SUPPORTED_MODELS`
+    already owns the answer for it. Reading it there rather than hardcoding a
+    literal is the whole point: a vendor file states either the mic's RESPONSE
+    or a CORRECTION, the two differ by a sign, and getting it backwards moves
+    every magnitude the fit reads without moving one timing diagnostic — so
+    nothing else in this tool would notice.
+
+    **Why this is not the corpus constant.**
+    ``tests/_flat_lin_corpus.py``'s ``CORPUS_CALIBRATION_SIGN_CONVENTION`` is
+    ``"correction"``, and that is correct *for the corpus it names* — its own
+    comment scopes it to "the 2026-07-24/25 analyses", performed on the
+    parser's old default. The UMIK entries flipped to ``response`` on
+    2026-07-27 (``d1715135f``, #1776) and the sessions this tool replays were
+    captured on 2026-07-29, i.e. by a Pi already running the fixed parser.
+    Transplanting that constant across the boundary it exists to MARK is the
+    error this function removes; asking the registry cannot make it, because
+    the registry is what the Pi asked too.
+
+    Falls back to
+    :data:`~jasper.audio_measurement.calibration.DEFAULT_SIGN_CONVENTION` for
+    an id naming no registered model — the same "a missing declaration must not
+    resurrect the old wrong default" rule the registry itself follows.
+    """
+    from jasper.audio_measurement.calibration import (
+        DEFAULT_SIGN_CONVENTION,
+        SUPPORTED_MODELS,
+    )
+
+    parts = set(str(calibration_id).split("-"))
+    for key, spec in SUPPORTED_MODELS.items():
+        if key in parts:
+            return str(spec["sign_convention"])
+    return DEFAULT_SIGN_CONVENTION
+
+
 def _regions(preset: dict[str, Any]) -> list[types.SimpleNamespace]:
     """``crossover_regions`` as the duck-typed objects ``sections_by_role``
     reads (it takes attributes, and the bank stores dicts)."""
@@ -238,9 +278,17 @@ def replay_measure(
     )
 
     check, candidate = session.check, session.candidate
-    # The calibration FILE is bound by identity — the sidecar records which
-    # one the session used, and reading a different mic's curve would move
-    # every magnitude the fit reads without moving one checked diagnostic.
+    # The calibration FILE is bound by identity — the sidecar records which one
+    # the session used, and reading a different mic's curve would move every
+    # magnitude the fit reads without moving one checked diagnostic.
+    #
+    # The reach is a NAME match, and deliberately not more: the id's trailing
+    # digest is a serial hash, not a hash of this file's bytes (recomputing
+    # sha256 over the text gives 32b887842910, not b7343c0c625b), so there is
+    # nothing here to verify content against. It therefore catches the
+    # honestly-named wrong file and not a different curve renamed to look
+    # right. That residue is stated rather than closed because closing it needs
+    # a content digest the bank does not carry.
     calibration_id = str(session.sidecar.get("setup_calibration_id") or "")
     if calibration_id and calibration_stem not in calibration_id:
         raise SystemExit(
@@ -272,15 +320,7 @@ def replay_measure(
         _load_mono(session.capture_wav),
         program.sample_rate_hz,
         calibration=parse_calibration_text(
-            calibration_text,
-            # Era-exact: the banked analysis read this UMIK-2 file on the
-            # parser's "correction" default. The file is really a RESPONSE
-            # curve and the product negates it since 2026-07-27; flipping the
-            # corpus to match is jaspercurry/JTS#1774, and doing it here alone
-            # would re-read archived evidence under a convention the session
-            # never used. Same decision, and same reasoning, as
-            # tests/_flat_lin_corpus.py's CORPUS_CALIBRATION_SIGN_CONVENTION.
-            sign_convention="correction",
+            calibration_text, sign_convention=_sign_convention(calibration_id),
         ),
         # No declared spacing: this session's info.json records
         # `placement.acknowledged=False`, and the banked `anchor_delay_us`
@@ -335,6 +375,12 @@ def _fidelity_failures(analysis: Any, want: dict[str, Any]) -> list[str]:
     failures = []
     for field in FIDELITY_FIELDS:
         if field not in want:
+            # A sidecar that never recorded this is a sidecar this gate cannot
+            # reach its stated depth on, so it fails rather than quietly
+            # comparing fewer fields while the caller prints the full count.
+            # Not hypothetical: `1785270237643843_measure_...json` in the same
+            # ring carries no `anchor_delay_us`.
+            failures.append(f"{field}: absent from the sidecar, nothing to check")
             continue
         mine, theirs = got.get(field), want[field]
         if isinstance(mine, float) and isinstance(theirs, (int, float)):
@@ -537,8 +583,9 @@ def main(argv: list[str] | None = None) -> int:
             for line in failures:
                 print(f"    {line}")
             continue
+        compared = sum(f in session.sidecar["diagnostic"] for f in FIDELITY_FIELDS)
         print(f"\n[{session.relay_id}] fidelity OK "
-              f"({len(FIDELITY_FIELDS)} banked diagnostics reproduced)")
+              f"({compared}/{len(FIDELITY_FIELDS)} banked diagnostics reproduced)")
         report(session, {
             arm: refit(session, analysis, arm=arm)
             for arm in ("wired", "severed_exclusion", "severed_cloud")

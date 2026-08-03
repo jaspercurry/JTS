@@ -88,9 +88,11 @@ SOURCE_FIXED_TAU_US = _tau_us(SOURCE_FIXED_DELAY_SAMPLES)
 SOURCE_FIXED_R = 0.37
 N_POSITIONS = 8
 
-# The registry's own analysis band for these fixtures. Above the gating floor
-# by construction — the regime where attribution is possible at all.
-HF_BAND_HZ = (4000.0, 19000.0)
+# The registry's own analysis band for these fixtures. Its lower edge IS the
+# gating floor rather than a literal that happens to equal it today, so
+# "above the floor, where attribution is possible" stays true if the constant
+# ever moves.
+HF_BAND_HZ = (ECHO_BAND_HF_REGIME_FLOOR_HZ, 19000.0)
 # The span a conductor examines below the floor: a cloud's gated validity
 # floor up to the registry's lower edge.
 BLIND_SPAN_HZ = (1200.0, ECHO_BAND_HF_REGIME_FLOOR_HZ)
