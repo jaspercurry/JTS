@@ -1827,7 +1827,11 @@ def test_the_q_floor_buys_exactly_the_drop_radius_the_criterion_assumes():
         assert reach_octaves(q) == pytest.approx(expected_oct, abs=0.02), q
 
     # And the shipped floor is the tightest of the three, which is the point.
-    assert _PEAKING_Q_MIN == max(_HALF_GAIN_REACH_OCT)
+    # Pinned as a LITERAL, house style (test_crossover_v2_crossover_region_registry
+    # pins ECHO_BAND_HF_REGIME_FLOOR_HZ == 4000.0 the same way): a max() over the
+    # documentation table above would fail spuriously the moment someone adds a
+    # Q=2.0 row to it, which is a doc edit, not a policy change.
+    assert _PEAKING_Q_MIN == 1.0
     assert reach_octaves(_PEAKING_Q_MIN) < reach_octaves(0.5)
 
 

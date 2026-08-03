@@ -112,6 +112,13 @@ def _estimate_q(
     peak_db = band_residual_db[peak_idx]
     abs_peak = abs(peak_db)
     if abs_peak < 3.0:
+        # NOTE: the only return path that does NOT clip to [q_min, q_max].
+        # Inert while every caller's floor is below 2.0 (the linearization
+        # fit's is 1.0), but a floor raised above 2.0 would be silently
+        # violated here — and since #1967 that floor bounds a safety
+        # property, not just a shape. Caught by
+        # `test_no_emitted_boost_is_broader_than_the_pinned_q_floor`'s
+        # relative assertion if it ever happens.
         return 2.0
 
     threshold = abs_peak - 3.0
