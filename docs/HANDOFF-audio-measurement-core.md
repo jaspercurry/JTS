@@ -1588,7 +1588,7 @@ This is already the house pattern in places — what is missing is that it is
 applied *systematically*, as a coverage obligation rather than wherever someone
 happened to reach for it. `fit_driver_linearization` is exercised by a synthetic
 fixture family whose expected outcomes are tabulated in the docstring of
-`test_correction_giveback_approximates_spend_on_the_canonical_synthetic`
+`test_correction_giveback_table_pins_the_fixture_family`
 (`tests/test_active_speaker_linearization_fit.py`) — canonical CD-horn deficit,
 live-rig, budget-bound, flattening-cuts-only, and flat, each with its own spend
 and give-back. `tests/test_audio_measurement_harmonics.py` synthesizes notches
