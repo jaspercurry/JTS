@@ -222,11 +222,85 @@ function testOnlyAnEntryThatSuppliesOneOverridesTheFloorWindowCopy() {
   ok();
 }
 
+// ============================================================================
+// 4. The THIRD outcome: no clock ran out at all (issue #2083).
+//
+//    A session killed by the transport ran out of neither budget. The Pi used
+//    to say so by omitting the field, which lands on the attempt-limit copy —
+//    a claim about a third thing that also did not happen. An explicit "none"
+//    gets its own honest sentence, and — the part that keeps this safe — an
+//    unknown name still falls back, so an older Pi and a newer page agree.
+// ============================================================================
+function testATransportDeathNamesNoClockAndSaysSoHonestly() {
+  const spec = specWith({ time_budget: { step_s: 120, session_s: 900 } });
+  const ctx = { spec };
+
+  const none = mod.expiredBudgetCopy(ctx, { budget: "none", index: 2, target: 10 });
+  assert.ok(none, "an explicit 'none' must render its own copy, not fall back");
+  assert.match(none.heading, /lost its connection/i);
+  assert.match(none.body, /lost its connection to the measurement service/i);
+  // It reports progress and the restart, exactly like its two siblings…
+  assert.match(none.body, /measurement 2 of 10/);
+  assert.match(none.body, /whole set in one session/);
+  // …but it must NOT blame a clock, in either direction, or quote a duration:
+  // nothing about time went wrong here.
+  assert.ok(!none.body.includes("between taps"), none.body);
+  assert.ok(!none.body.includes("15 minutes"), none.body);
+  assert.ok(!/attempt limit/i.test(none.body), none.body);
+
+  // The compatibility floor this rests on: a name the page does not know is
+  // still treated as unnamed, so a future Pi vocabulary cannot render raw.
+  assert.equal(mod.expiredBudgetCopy(ctx, { budget: "nonesuch" }), null);
+  ok();
+}
+
+// ============================================================================
+// 5. The page must not claim a lapse it cannot observe (issue #2083).
+//
+//    A dead-session 401/403/404 has two causes that are identical on the wire:
+//    the link's TTL ran out, or the speaker ended the session and purged it.
+//    The relay's published `expires_at` is the ONLY evidence separating them,
+//    and the page had been ignoring it while asserting the first cause — which
+//    is how one transient stall produced a false "Link expired" in front of a
+//    household whose link was still live.
+//
+//    THE ABSENCE CASE IS AGAIN THE POINT: never having polled is not evidence,
+//    so it keeps the unchanged copy.
+// ============================================================================
+function testTheLinkDeadlineIsOnlyClaimedWhenItWasActuallyObservedToPass() {
+  // Never observed -> the page keeps today's link-expired copy. (This is also
+  // a relay that publishes no `expires_at` at all.)
+  assert.equal(mod.linkDeadlinePassed(), true);
+
+  // A deadline still in the future PROVES the link had not lapsed — the one
+  // direction this evidence is used in.
+  mod.notePhoneStatus({ expires_at: Date.now() + 10 * 60 * 1000 });
+  assert.equal(mod.linkDeadlinePassed(), false);
+
+  // Junk never overwrites a good deadline: a poll that omits the field, or
+  // carries a malformed one, leaves the last real answer standing rather than
+  // silently reverting the page to its guess.
+  for (const bad of [{}, { expires_at: null }, { expires_at: "soon" }, { expires_at: 0 }]) {
+    mod.notePhoneStatus(bad);
+    assert.equal(mod.linkDeadlinePassed(), false, JSON.stringify(bad));
+  }
+  assert.equal(mod.linkDeadlinePassed(), false); // …and a null status too
+  mod.notePhoneStatus(null);
+  assert.equal(mod.linkDeadlinePassed(), false);
+
+  // A deadline that has passed is a real lapse, and gets named as one.
+  mod.notePhoneStatus({ expires_at: Date.now() - 1000 });
+  assert.equal(mod.linkDeadlinePassed(), true);
+  ok();
+}
+
 await runTestFunctions(
   [
     testTheBudgetLineOnlyEverQuotesWhatThePiPublished,
     testAnExpiryNamesTheClockAndOnlyWhenTheSpeakerSaid,
     testOnlyAnEntryThatSuppliesOneOverridesTheFloorWindowCopy,
+    testATransportDeathNamesNoClockAndSaysSoHonestly,
+    testTheLinkDeadlineIsOnlyClaimedWhenItWasActuallyObservedToPass,
   ],
   () => passed,
 );

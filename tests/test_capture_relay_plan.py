@@ -31,9 +31,11 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from jasper.capture_relay import crypto
-from jasper.capture_relay.client import RelayClient, RelayResponse
+from jasper.capture_relay.client import RelayClient, RelayError, RelayResponse
 from jasper.capture_relay.integrity import authenticated_phone_event
 from jasper.capture_relay.session import (
+    STATUS_POLL_TRANSIENT_GRACE_S,
+    STATUS_POLL_WARN_BUDGET,
     CaptureActivityProbe,
     CaptureAborted,
     CaptureBeginDeferred,
@@ -1285,6 +1287,256 @@ def test_deferred_begin_does_not_end_the_session_on_stop():
             stop_requested=lambda: stop["requested"],
             **_run_kwargs(),
         )
+
+
+# --- transient status-poll outages (issue #2083) -------------------------------
+#
+# The status poll is the FIRST statement of the runner's loop, and it used to be
+# bare: one 10 s HTTP stall raised straight out of a live measurement, the Pi
+# purged the session, and the household — mid-walk, phone still on the step
+# screen — was shown "Link expired". These pin the tolerance that fixes it AND
+# the two boundaries that must survive it: a sustained outage still ends the
+# session, and a dead-session answer is still fatal on the first read.
+
+
+def _stalling_status(client, clock, *, stalls, stall_s, exc=None):
+    """Make the next ``stalls`` status polls behave like a stalled HTTP call.
+
+    Each one burns ``stall_s`` of the test clock (the way a real request that
+    times out does — the wall time is spent INSIDE the call, which is exactly
+    why the runner's grace is wall-clock rather than a retry count) and then
+    raises. Returns a counter dict so a test can prove how many polls were
+    actually attempted.
+    """
+    real_status = client.status
+    budget = {"left": stalls}
+    counts = {"stalled": 0, "ok": 0}
+
+    def status(*args, **kwargs):
+        if budget["left"] > 0:
+            budget["left"] -= 1
+            counts["stalled"] += 1
+            clock["t"] += stall_s
+            raise (exc if exc is not None else TimeoutError("relay stalled"))
+        counts["ok"] += 1
+        return real_status(*args, **kwargs)
+
+    client.status = status
+    return counts, budget
+
+
+def _walk_clock():
+    """A clock the RUNNER never advances on its own — only a stall or an
+    explicit tick moves it — so a test's wall-time claims are exact."""
+    clock = {"t": 0.0}
+    return clock, (lambda: clock["t"]), (lambda _s: None)
+
+
+def test_one_transient_status_stall_does_not_kill_a_live_session(caplog):
+    """THE INCIDENT (issue #2083). A single 10 s stall on one status poll, in
+    the middle of an otherwise healthy three-capture walk, must be survived —
+    not turned into a dead session and a false "Link expired" screen."""
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    counts, _budget = _stalling_status(client, clock, stalls=1, stall_s=10.0)
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(sleep=sleep, monotonic=monotonic),
+    )
+
+    # The walk finished, unchanged — same captures, same admissions.
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True),
+        (2, 2, True),
+        (3, 3, True),
+    ]
+    assert authorized == [(1, 1), (2, 2), (3, 3)]
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+    # The stall really did happen, and it is not silent: a tolerated outage is
+    # still a WARNING naming how long it had been going.
+    assert counts["stalled"] == 1
+    assert "capture_relay.status_poll_transient" in caplog.text
+    assert "capture_relay.status_poll_gave_up" not in caplog.text
+
+
+def test_transient_status_failures_reset_on_every_success():
+    """The grace is per-OUTAGE, not per-session. Two stalls far apart, each
+    inside the window on its own, must BOTH be survived — which they only can
+    be if a successful poll clears the counter. Without the reset the second
+    stall is measured from the first and ends the session."""
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    real_status = client.status
+    # Two separate one-poll outages, each burning MOST of the grace, separated
+    # by healthy polls. Their combined 20 s dwarfs the 15 s window, so a runner
+    # that never reset would give up inside the second one.
+    stall_at = {3, 9}
+    polls = {"n": 0}
+    counts = {"stalled": 0}
+
+    def status(*args, **kwargs):
+        polls["n"] += 1
+        if polls["n"] in stall_at:
+            counts["stalled"] += 1
+            clock["t"] += 10.0
+            raise TimeoutError("relay stalled")
+        return real_status(*args, **kwargs)
+
+    client.status = status
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(sleep=sleep, monotonic=monotonic),
+    )
+
+    assert counts["stalled"] == 2  # both outages were really exercised
+    assert clock["t"] == 20.0 > STATUS_POLL_TRANSIENT_GRACE_S
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True),
+        (2, 2, True),
+        (3, 3, True),
+    ]
+
+
+def test_a_flapping_relay_cannot_flood_the_journal(caplog):
+    """A relay that alternates fail/succeed must not emit one WARNING per poll
+    for the life of the session.
+
+    The success-reset that makes the tolerance correct is exactly what defeats
+    a per-outage dedupe here: every failure is the FIRST of a fresh outage, so
+    the shape ``last_deferral`` uses for repeated deferrals would not bound
+    this at all. The budget is session-wide; past it the lines drop to DEBUG
+    and the running total keeps the scale visible.
+    """
+    caplog.set_level(logging.DEBUG, logger="jasper.capture_relay.session")
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    real_status = client.status
+    polls = {"n": 0}
+    counts = {"stalled": 0}
+
+    def status(*args, **kwargs):
+        # Three failures per success, repeating. Every success resets the
+        # grace, so the session survives indefinitely and the only thing that
+        # accumulates is log lines — which is the subject here.
+        polls["n"] += 1
+        if polls["n"] % 4:
+            counts["stalled"] += 1
+            raise TimeoutError("relay flapping")
+        return real_status(*args, **kwargs)
+
+    client.status = status
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(sleep=sleep, monotonic=monotonic),
+    )
+
+    # The flap was survived end to end — every failure reset the grace, so the
+    # session never gave up.
+    assert [o.accepted for o in outcomes] == [True, True, True]
+    transient = [
+        r for r in caplog.records
+        if "capture_relay.status_poll_transient" in r.getMessage()
+    ]
+    # Enough failures to matter, and MORE than the budget — otherwise this
+    # would pass without the bound existing.
+    assert counts["stalled"] > STATUS_POLL_WARN_BUDGET
+    assert len(transient) == counts["stalled"]  # every one is still recorded…
+    warnings = [r for r in transient if r.levelno == logging.WARNING]
+    assert len(warnings) == STATUS_POLL_WARN_BUDGET  # …but the WARNINGs are capped
+    # The scale stays readable after the level drops.
+    assert f"tolerated_total={counts['stalled']}" in transient[-1].getMessage()
+
+
+def test_a_sustained_status_outage_still_ends_the_session(caplog):
+    """The other half of the promise. Tolerating a blip must not turn a relay
+    that is genuinely gone into an unbounded poll: once the consecutive run
+    outlasts the grace, the ORIGINAL exception is re-raised, so every caller
+    that classifies it (``expired_time_budget``, the v2 host's relay-death arm)
+    sees exactly what it always saw."""
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    counts, budget = _stalling_status(client, clock, stalls=99, stall_s=10.0)
+
+    with pytest.raises(TimeoutError):
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(sleep=sleep, monotonic=monotonic),
+        )
+
+    # Bounded: it gave up on the SECOND stall (10 s is inside the 15 s window,
+    # 20 s is past it), nowhere near the 99 it was offered.
+    assert counts["stalled"] == 2
+    assert budget["left"] == 97
+    assert "capture_relay.status_poll_gave_up" in caplog.text
+
+
+def test_a_dead_session_answer_is_never_retried():
+    """The boundary the tolerance must not cross. 401/403/404/410 is the relay
+    stating a fact that re-polling cannot change (it is how a purged or expired
+    session answers — see ``expired_time_budget`` and the page's own
+    ``isDeadSessionError``), so it stays fatal on the FIRST read. Retrying it
+    would spend the grace re-asking a question already answered, and delay the
+    honest terminal the household is waiting for."""
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(backend)
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+    clock, monotonic, sleep = _walk_clock()
+    counts, _budget = _stalling_status(
+        client, clock, stalls=99, stall_s=10.0, exc=RelayError("gone", 404)
+    )
+
+    with pytest.raises(RelayError) as excinfo:
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(sleep=sleep, monotonic=monotonic),
+        )
+
+    assert excinfo.value.status == 404
+    assert counts["stalled"] == 1  # raised on the first, never re-polled
+    assert clock["t"] == 10.0  # and burned no extra grace doing it
 
 
 # --- begin ordering: dedup / replay / out-of-order / budget --------------------

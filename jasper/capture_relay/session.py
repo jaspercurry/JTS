@@ -56,6 +56,45 @@ DEFAULT_TTL_S = 900
 DEFAULT_POLL_INTERVAL_S = 0.75
 DEFAULT_TIMEOUT_S = 120.0
 
+# How long the plan runner keeps polling through CONSECUTIVE transport failures
+# on ``client.status`` before it gives up and lets the failure end the session
+# (issue #2083). One 10 s HTTP stall on a single status poll used to kill a live
+# measurement mid-walk: the call is the first statement of the poll loop, and
+# the household — who had done nothing wrong and whose phone was still on the
+# step screen — was then shown "Link expired".
+#
+# The window is anchored at the START of the first failing call, so it bounds
+# WHEN THE RUNNER STOPS RETRYING, not total wall time: a single call may itself
+# burn the relay client's per-request timeout (10 s, ``_RELAY_REGISTER_TIMEOUT_S``
+# — a registration-scoped constant that this poll inherits through the shared
+# ``RelayClient``), so two back-to-back stalls can run ~21 s before the second
+# one is refused. That is the intended shape — one stall survives, a sustained
+# outage still dies promptly — and it is why the bound is wall-clock rather than
+# a retry count: with failures that cost anywhere from ~0 s (connection refused)
+# to 10 s (timeout), a count buys wildly different amounts of patience.
+#
+# This is a TRANSPORT tolerance and deliberately not a liveness change. The
+# phone-inactivity watchdog (``timeout_s`` / ``first_begin_timeout_s``) remains
+# the liveness authority; a tolerated poll skips that deadline check for the
+# retry, so an outage defers the watchdog by at most this window PLUS one
+# request timeout — the last tolerated call can begin at just under 15 s and
+# then burn its own 10 s, so the deadline is next evaluated ~25 s after the
+# outage began. Deferring it is the honest behaviour: while the relay is
+# unreachable the runner has no evidence about the PHONE at all, and firing a
+# "phone never began the next capture" timeout there would blame the household
+# for an outage.
+STATUS_POLL_TRANSIENT_GRACE_S = 15.0
+
+# How many tolerated status polls a session reports at WARNING before the rest
+# drop to DEBUG. Bounds the journal cost of a FLAPPING relay: the grace resets
+# on every success, so alternating fail/succeed makes each failure the FIRST of
+# a fresh outage — a per-outage dedupe (the shape ``last_deferral`` uses for
+# repeated deferrals) would not bound it at all, and at the 0.75 s cadence a
+# 15-minute session could emit several hundred WARNING lines. Every line still
+# carries the running ``tolerated_total``, so the scale stays visible after the
+# level drops, and GIVING UP is always a WARNING regardless of the budget.
+STATUS_POLL_WARN_BUDGET = 10
+
 # The deferred-by-design APPLY-hold budget. When the next plan entry's begin
 # is gated on an external event (``auto_advance == "on_apply"`` — the
 # "applying" hold between MEASURE and VERIFY), the phone is deliberately
@@ -179,6 +218,15 @@ class CapturePageIncompatible(RuntimeError):
 #     from the moment the link was minted and refreshed by nothing.
 TIME_BUDGET_STEP = "step"
 TIME_BUDGET_LINK = "link"
+#: The THIRD answer, and the reason it is a value rather than an absence
+#: (issue #2083). A session that died of a transport outage ran out of neither
+#: clock, and the Pi used to say so by OMITTING the field — which the phone
+#: renders as "the speaker reached its measurement attempt limit", a claim
+#: about a third thing that did not happen either. Sending the negative
+#: explicitly lets the page distinguish "no clock ran out" from "this Pi is too
+#: old to say", which an omission cannot. An older page treats it as an unknown
+#: budget name and falls back to exactly today's copy.
+TIME_BUDGET_NONE = "none"
 
 
 def expired_time_budget(exc: BaseException) -> str:
@@ -204,6 +252,27 @@ def expired_time_budget(exc: BaseException) -> str:
     if isinstance(status, int) and status in (401, 403, 404, 410):
         return TIME_BUDGET_LINK
     return ""
+
+
+def is_transient_relay_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` is a relay OUTAGE worth re-polling, not a verdict.
+
+    The complement of :func:`expired_time_budget`'s dead-session statuses, and
+    the same classification ``jasper.web.correction_setup._post_relay_host_event``
+    already retries on: a socket-level ``OSError`` (``TimeoutError`` and
+    ``urllib``'s ``URLError`` are both subclasses), or a relay answer of 429 /
+    5xx. Everything else — notably the 401/403/404/410 of a purged or expired
+    session — is the relay telling us something true that repeating cannot
+    change, so it must stay fatal.
+
+    Note that an HTTP status never arrives here as an exception from the
+    transport: ``_urllib_transport`` converts ``HTTPError`` into a response and
+    ``RelayClient._require_ok`` re-raises it as ``RelayError``, so the status
+    check below is the ONLY path by which a status is classified.
+    """
+    if isinstance(exc, RelayError):
+        return exc.status == 429 or exc.status >= 500
+    return isinstance(exc, OSError)
 
 
 class RelayCapacityUnavailable(ValueError):
@@ -1546,9 +1615,63 @@ def _poll_capture_plan(
     deadline = monotonic() + (
         first_begin_timeout_s if first_begin_timeout_s is not None else timeout_s
     )
+    # When the current run of CONSECUTIVE status-poll transport failures began
+    # (``None`` while the relay is answering). Anchored at the start of the
+    # first failing call, and cleared by any success — see
+    # STATUS_POLL_TRANSIENT_GRACE_S for why the bound is wall-clock.
+    transient_since: float | None = None
+    # Every tolerated poll this SESSION, across outages — never reset, because
+    # bounding a flap is the whole point (see STATUS_POLL_WARN_BUDGET).
+    transient_total = 0
     while True:
         raise_if_stopped()
-        status = client.status(session.session_id, session.pull_token)
+        attempt_started = monotonic()
+        try:
+            status = client.status(session.session_id, session.pull_token)
+        except (OSError, RelayError) as exc:
+            if not is_transient_relay_failure(exc):
+                raise
+            if transient_since is None:
+                transient_since = attempt_started
+            # Deliberately NOT named waited_s: the timeout path further down
+            # owns that name for a different quantity (which phone-inactivity
+            # budget was in force), and this is how long the RELAY has been
+            # unreachable.
+            stalled_for_s = monotonic() - transient_since
+            if stalled_for_s > STATUS_POLL_TRANSIENT_GRACE_S:
+                # Not an outage any more — a dead relay. Re-raise the ORIGINAL
+                # exception so the caller classifies this exactly as it always
+                # has (``expired_time_budget`` reads its ``status``).
+                log_event(
+                    logger,
+                    "capture_relay.status_poll_gave_up",
+                    level=logging.WARNING,
+                    session_id=session.session_id,
+                    phase=phase,
+                    stalled_for_s=round(stalled_for_s, 1),
+                    tolerated_total=transient_total,
+                    error=type(exc).__name__,
+                )
+                raise
+            transient_total += 1
+            log_event(
+                logger,
+                "capture_relay.status_poll_transient",
+                level=(
+                    logging.WARNING
+                    if transient_total <= STATUS_POLL_WARN_BUDGET
+                    else logging.DEBUG
+                ),
+                session_id=session.session_id,
+                phase=phase,
+                stalled_for_s=round(stalled_for_s, 1),
+                grace_s=STATUS_POLL_TRANSIENT_GRACE_S,
+                tolerated_total=transient_total,
+                error=type(exc).__name__,
+            )
+            sleep(poll_interval_s)
+            continue
+        transient_since = None
         raise_if_stopped()
         status = _verify_phone_event(client, session, event_verifier, status)
         state = classify_status(status)

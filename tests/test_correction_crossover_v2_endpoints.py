@@ -6240,6 +6240,57 @@ def test_a_time_budget_expiry_logs_which_clock_ran_out_and_what_survived(
     assert "accepted_phases=" in lines[0]
 
 
+def test_a_transport_death_tells_the_phone_no_clock_ran_out(monkeypatch):
+    """Issue #2083. A session killed by the TRANSPORT ran out of neither clock,
+    and the Pi must say that in the third value rather than by omission.
+
+    Omitting ``budget`` is not neutral: the phone renders a session-over event
+    with no named clock as ``renderPlanExhausted`` — "the speaker reached its
+    measurement attempt limit" — which is false here. No attempt limit was
+    reached and no budget expired; the relay went away. The three outcomes want
+    three different things from the household, so the wire carries three values.
+    """
+    from jasper.capture_relay import session as session_mod
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
+
+    class _NoPhone:
+        begun = (1, 1)
+
+    conductor = _conductor(backend, session, _NoPhone(), published=[])
+    monkeypatch.setattr(session_mod, "purge", lambda *a, **k: None)
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    # A relay that has stopped answering. The runner's own transient grace
+    # (STATUS_POLL_TRANSIENT_GRACE_S) is what decides how long this is endured
+    # — pinned in tests/test_capture_relay_plan.py — and is collapsed here so
+    # the subject is only what the Pi TELLS THE PHONE once it has given up.
+    monkeypatch.setattr(session_mod, "STATUS_POLL_TRANSIENT_GRACE_S", 0.0)
+
+    def status(*args, **kwargs):
+        raise TimeoutError("relay unreachable")
+
+    monkeypatch.setattr(client, "status", status)
+
+    runner = _build_runner(
+        conductor, VolumeRecorder(), poll_interval_s=0.01, timeout_s=20.0
+    )
+    with pytest.raises(TimeoutError):
+        _run(runner, client, session)
+
+    events = backend.host_events[session.session_id]
+    assert events[-1]["phase"] == "capture_set_exhausted"
+    # Present and explicit — NOT absent. `expired_time_budget` named no clock
+    # for this death, and "none" is how that is published.
+    assert events[-1]["budget"] == session_mod.TIME_BUDGET_NONE == "none"
+
+
 # --- W6 run-6 Blocker M + Finding N: apply's real fingerprint-vocabulary seam ---
 #
 # Every prior test in this file that reaches "applied" fakes the apply gate

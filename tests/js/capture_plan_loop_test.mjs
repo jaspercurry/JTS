@@ -1506,7 +1506,51 @@ async function testSessionTerminalDuringWaitEndsTheSession() {
   await onPlanStart(ctx);
 
   // Terminal "Link expired" — not a stuck waiting screen, and no stale retry.
+  // This client publishes no `expires_at` (an older relay), so the page has no
+  // evidence about the link's clock and keeps exactly this copy — the absence
+  // case that testTheSpeakerEndedItIsNotCalledAnExpiryBelow depends on.
   assert.equal(headingText(ctx.screenEl), "Link expired");
+  ok();
+}
+
+// A session the SPEAKER ended, while the link itself was still live, must not
+// be reported to the household as an expiry (issue #2083). Same terminal path
+// as above; the only difference is that the relay published a deadline still in
+// the future, which is the page's one piece of evidence that no clock ran out.
+//
+// This is the screen the incident put in front of a household whose link was
+// still live, after ONE transient status stall killed their session.
+async function testTheSpeakerEndedItIsNotCalledAnExpiry() {
+  statusHistory.length = 0;
+  const mod = await loadModule();
+  const { onPlanStart } = mod;
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const client = makeSessionOverOnBeginClient();
+  const live = Date.now() + 10 * 60 * 1000; // the link has ~10 minutes left
+  const realFetch = client.fetchPhoneStatus.bind(client);
+  client.fetchPhoneStatus = async () => ({ ...(await realFetch()), expires_at: live });
+  const ctx = makeCtx(spec, client);
+
+  try {
+    await onPlanStart(ctx);
+
+    assert.equal(headingText(ctx.screenEl), "The speaker ended this session");
+    const note = ctx.screenEl.children.find((c) => c.tagName === "P");
+    assert.match(note.textContent, /speaker ended this measurement/i);
+    assert.match(note.textContent, /Return to the speaker page/i);
+    // The false claim this exists to stop, in both of its wordings.
+    assert.ok(!/expired/i.test(note.textContent), note.textContent);
+    assert.ok(!note.textContent.includes("15 minutes"), note.textContent);
+  } finally {
+    // The harness shares ONE module instance across every test in this file, so
+    // the deadline recorded above would otherwise leak forward and flip a later
+    // test's expected copy. Put it back in the past.
+    mod.notePhoneStatus({ expires_at: Date.now() - 1000 });
+  }
   ok();
 }
 
@@ -3855,6 +3899,7 @@ const tests = [
   testAdvanceDeferredHoldHeadingIsANoOpWhenNothingHeld,
   testCountdownNextEntryShowsVisibleCancelableCountdown,
   testSessionTerminalDuringWaitEndsTheSession,
+  testTheSpeakerEndedItIsNotCalledAnExpiry,
   testEveryBeginCarriesTheAppliedCalibrationAndNeverClobbersAnExplicitChoice,
   testSessionWideResourcesAcquiredOnceReleasedOnce,
   testWakeLockHintShowsWhenUnsupportedAndClearsAtTerminal,

@@ -367,6 +367,62 @@ function isDeadSessionError(err) {
   return String((err && err.message) || "") === "not_found";
 }
 
+// The link's own deadline, as last published by the relay (absolute ms since
+// epoch, from `getPhoneStatus` in relay/src/worker.js). `null` until a poll
+// answers.
+//
+// Why the page keeps it (issue #2083): a dead-session 401/403/404 has TWO
+// causes that look identical on the wire — the TTL lapsed, or the Pi ended the
+// session and purged it — and the terminal screen used to assert the first
+// unconditionally. When one transient stall killed a live session mid-walk,
+// the household was told their link had expired while it was still live. This
+// is the only evidence the page has for telling those apart, and it is
+// deliberately used in one direction only: it can prove a link had NOT lapsed
+// yet, which is enough to stop the page making a claim it cannot support.
+let lastSeenExpiresAt = null;
+
+function notePhoneStatus(status) {
+  const expiresAt = Number(status && status.expires_at);
+  if (Number.isFinite(expiresAt) && expiresAt > 0) lastSeenExpiresAt = expiresAt;
+  return status;
+}
+
+// `notePhoneStatus` is the deadline's ONLY writer, and every phone-status read
+// in THIS module goes through here so no polling loop of main.js's own can
+// forget to record it.
+//
+// One reader on the page deliberately stays outside: level-events.js's
+// `runLevelRampProtocol` calls `client.fetchPhoneStatus()` directly. That is
+// safe rather than merely tolerated, and the reason is structural — `expires_at`
+// is minted once at registration (`relay/src/worker.js`'s only writer of it) and
+// never refreshed, so a poll that skips the recorder cannot be carrying news;
+// and every reachable path into the ramp passes through
+// `waitForSetupValidation` → `pollPhoneStatus` first, so the deadline is already
+// recorded before the ramp's loop starts. If either of those ever stops being
+// true, route the ramp through this function.
+// `test_capture_page_records_the_link_deadline_on_every_status_poll` pins the
+// full call-site set across capture-page/js/**, so a NEW direct reader anywhere
+// on the page fails rather than quietly joining the exception.
+async function pollPhoneStatus(client) {
+  return notePhoneStatus(await client.fetchPhoneStatus());
+}
+
+// Whether the link's TTL is known to have lapsed. Answers `true` when no poll
+// ever landed, because "never observed" is not evidence of anything and the
+// unchanged link-expired copy is the safe default there (it is also what a page
+// talking to a relay that publishes no `expires_at` keeps getting).
+//
+// Compares the phone's clock against a server-minted deadline, so a badly-set
+// phone clock can misread this. The error is one-directional by construction: a
+// phone running slow calls a genuine expiry "the speaker ended it", which still
+// sends the household to the speaker page for a fresh link. The reverse — the
+// false expiry claim this exists to stop — needs the phone to be running FAST,
+// past a deadline the relay was still honouring.
+function linkDeadlinePassed() {
+  if (lastSeenExpiresAt === null) return true;
+  return Date.now() >= lastSeenExpiresAt;
+}
+
 function relayBootFailureMessage(err) {
   const message = String(err && err.message || "");
   const status = Number(err && err.status);
@@ -396,7 +452,7 @@ async function waitForSetupValidation(ctx, token) {
   const pollMs = Math.max(100, Math.min(1000, Number(ctx.spec.progress_poll_ms) || 250));
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
-    const status = await ctx.client.fetchPhoneStatus();
+    const status = await pollPhoneStatus(ctx.client);
     const event = (status && status.host_event) || {};
     if (event.phase === "capture_incompatible") {
       throw new Error(event.error || "capture page is incompatible with this speaker");
@@ -544,20 +600,37 @@ function renderStoppedScreen(ctx) {
 // with no retry affordance instead (run-19 defect).
 function renderSessionExpired(ctx) {
   const returnUrl = safeReturnUrl(ctx.spec);
-  // Name the clock (work order D8, issue #1807). A 401/403/404 from the relay
-  // means THIS link is gone — the one budget the relay itself enforces — so
-  // the page can say how long it lasted without guessing. The step budget is
-  // deliberately not mentioned here: it ends the session through the Pi's own
-  // session-over event (renderPlanExhausted's `budget`), not through a dead
-  // relay session, and naming the wrong clock is worse than naming none.
+  // Name the clock ONLY when the clock is what ran out (work order D8, issue
+  // #1807; corrected by issue #2083). A 401/403/404 says the session is gone,
+  // never WHY — the Pi purges on every terminal failure too, so the TTL story
+  // this screen used to tell unconditionally was a guess dressed as a fact, and
+  // a wrong one for the incident that motivated the fix. `linkDeadlinePassed`
+  // is the evidence: past the relay's own published deadline, the lapse is real
+  // and gets named; short of it, the honest statement is that the speaker ended
+  // the session, without inventing a cause the page cannot see. The step budget
+  // is deliberately not mentioned in either branch: it ends the session through
+  // the Pi's own session-over event (renderPlanExhausted's `budget`), not
+  // through a dead relay session, and naming the wrong clock is worse than
+  // naming none.
   const budget = planTimeBudget(ctx.spec);
-  const message = budget
-    ? `This measurement link lasts ${approxMinutes(budget.sessionS)} from when` +
-      " it is created, and this one is past that — return to the speaker page" +
-      " to start again."
-    : "This measurement link expired — return to the speaker page to start again.";
+  const lapsed = linkDeadlinePassed();
+  let heading;
+  let message;
+  if (!lapsed) {
+    heading = "The speaker ended this session";
+    message =
+      "The speaker ended this measurement — it may have lost its connection," +
+      " or been stopped. Return to the speaker page to start again.";
+  } else {
+    heading = "Link expired";
+    message = budget
+      ? `This measurement link lasts ${approxMinutes(budget.sessionS)} from when` +
+        " it is created, and this one is past that — return to the speaker page" +
+        " to start again."
+      : "This measurement link expired — return to the speaker page to start again.";
+  }
   const children = [
-    el("h1", { class: "cap-heading", text: "Link expired" }),
+    el("h1", { class: "cap-heading", text: heading }),
     el("p", { class: "cap-note", text: message }),
   ];
   if (returnUrl) {
@@ -1565,7 +1638,7 @@ async function waitForSweepComplete(client, spec, isAborted, armed = null) {
     if (isAborted()) return false;
     let status;
     try {
-      status = await client.fetchPhoneStatus();
+      status = await pollPhoneStatus(client);
     } catch (err) {
       // ONE slow control request must cost one poll interval, not the session
       // (#1824: a single fetch out of ~60 exceeded relay-client.js's flat
@@ -2473,7 +2546,7 @@ async function waitForCaptureSetComplete(client, spec, isAborted) {
     if (!reconnecting) tick();
     let status;
     try {
-      status = await client.fetchPhoneStatus();
+      status = await pollPhoneStatus(client);
     } catch (err) {
       if (isDeadSessionError(err)) return { deadSession: true };
       if (isRelayConnectivityAbort(err, String((err && err.message) || err))) {
@@ -2952,6 +3025,19 @@ function expiredBudgetCopy(ctx, verdict) {
         `${reached}${restart}`,
     };
   }
+  // NEITHER clock ran out (issue #2083). The Pi says this explicitly rather
+  // than by omission, because omission lands on the attempt-limit copy below —
+  // and "the speaker reached its measurement attempt limit" is a third claim
+  // that is just as untrue as naming a clock would be. No duration is quoted
+  // because no budget is involved: nothing about time went wrong.
+  if (verdict.budget === "none") {
+    return {
+      heading: "The speaker lost its connection",
+      body:
+        "The speaker lost its connection to the measurement service, so it" +
+        ` ended the session.${reached}${restart}`,
+    };
+  }
   return null;
 }
 
@@ -3002,7 +3088,7 @@ async function waitForCaptureAuthorized(client, spec, index, attempt, isAborted)
     if (isAborted()) return { aborted: true };
     let status;
     try {
-      status = await client.fetchPhoneStatus();
+      status = await pollPhoneStatus(client);
     } catch (err) {
       if (isDeadSessionError(err)) return { deadSession: true };
       throw err;
@@ -3105,7 +3191,7 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
     if (!reconnecting) tick();
     let status;
     try {
-      status = await client.fetchPhoneStatus();
+      status = await pollPhoneStatus(client);
     } catch (err) {
       if (isDeadSessionError(err)) return { deadSession: true };
       // Same bound as the sweep wait (#1824 D1): a control request that
@@ -4222,4 +4308,12 @@ export {
   timeBudgetLine,
   entryNoiseNote,
   expiredBudgetCopy,
+  // The link-deadline pair (issue #2083) belongs to the same layer: one
+  // records the only evidence the page has about the relay's own clock, the
+  // other turns it into the single decision the dead-session screen makes.
+  // Exported together because the absence case — never polled — is the one a
+  // full-loop test reaches only by accident, and is exactly the case that must
+  // keep today's copy.
+  notePhoneStatus,
+  linkDeadlinePassed,
 };
