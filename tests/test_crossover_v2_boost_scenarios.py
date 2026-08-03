@@ -53,11 +53,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from jasper.active_speaker.branch_target import SIGNIFICANT_GAIN_DB
 from jasper.active_speaker.crossover_v2_flow import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
     assemble_cloud_group_result,
 )
-from jasper.active_speaker.branch_target import SIGNIFICANT_GAIN_DB
 from jasper.active_speaker.linearization_fit import (
     LinearizationFilter,
     _boost_exclusion_verdicts,
@@ -71,11 +71,10 @@ from jasper.audio_measurement.interference_nulls import (
 )
 from jasper.audio_measurement.spatial_combine import combine_positions
 
-# The SAME generator `test_interference_nulls` grades the null registry with:
-# an IR carrying one direct arrival and one delayed copy, and a magnitude
-# curve taken from that same IR. Imported rather than copied so there is one
-# construction of a two-path cloud in the suite, not two that agree by
-# inspection.
+# The conductor's own test helpers, and the SAME two cloud builders
+# `test_interference_nulls` grades the null registry with. Imported rather than
+# copied so the suite has one construction of each, not two that agree by
+# inspection — and so a change to either builder reaches these scenarios.
 from tests.test_crossover_v2_conductor import FakeSeams, _cloud_conductor
 from tests.test_interference_nulls import _cloud, _notched_cloud, _tau_us
 
