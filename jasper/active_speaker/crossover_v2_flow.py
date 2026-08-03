@@ -1546,6 +1546,59 @@ def verify_inconclusive_message(reflection_measured: bool | None) -> str:
     return f"The check was inconclusive — {cause}. Re-verify to try again."
 
 
+def locate_failed_message(pilot_heard: bool | None) -> str:
+    """``REASON_LOCATE_FAILED``'s household sentence. Single writer (#2085).
+
+    SELECTION, never composition — the same shape
+    :func:`verify_inconclusive_message` above uses, and for the same reason:
+    one code, two honest causes, and a registry that cannot hold one literal
+    true of both.
+
+    ``locate_failed`` fires when the correlator could not place this capture's
+    stimuli (:func:`_stimulus_locate_ok`, :func:`_sweep_locate_confidence_ok`,
+    or VERIFY's ``summed_sweep_heard`` integrity check — all three are
+    locate-CONFIDENCE floors). Its copy asserted the one cause that would
+    explain that on its own: the speaker was not audible, so check the volume
+    and the microphone. The JTS3 session of 2026-08-03 measured that claim
+    false three times in one sitting. Every one of those captures carried
+    ``pilot_snr_ok=True`` — the leading pilot pair cleared the room's own
+    in-band floor by 13.9-15.5 dB, which is direct evidence from THIS
+    recording that the speaker was heard — while the sweeps came back
+    unlocatable (confidence 0.019-0.097 against a 0.3 floor, schedule
+    residuals of +14.3 / -18.5 / -2.7 ms, glitch set). A household told to
+    check the volume then goes and changes the one thing the measurement had
+    already proved was fine.
+
+    ``pilot_heard`` is that evidence, and it is the whole discriminator:
+
+    * ``True`` — the pilot pair was measurably heard, so "couldn't hear the
+      speaker" is refuted BY THIS CAPTURE. What was observed is that the
+      recording came back without findable test tones; the copy says that and
+      asks for one retry, which is the action that helps a damaged recording.
+    * ``False`` / ``None`` — the pilot failed too, or there is no pilot
+      evidence at all. Then the level/microphone reading is either supported
+      or simply unknown, and the original copy stands. The registry holds
+      this rendering, so every reader of ``REASON_REGISTRY`` with no capture
+      in hand gets copy that is true rather than copy that guesses.
+
+    Deliberately keyed on the EVIDENCE, not on which gate fired. The three
+    call sites above measure the same thing (a locate-confidence floor) and
+    the falsifying fact is the same field on the same analysis, so keying on
+    the site would let one measured situation produce two different sentences
+    depending on which floor happened to be checked first — the drift this
+    file already fixed once for the inconclusive copy (#1974).
+    """
+    if pilot_heard:
+        return (
+            "JTS could hear the speaker, but couldn't find its test tones in "
+            "the recording. Try again."
+        )
+    return (
+        "Couldn't hear the speaker clearly. Check the volume and the "
+        "microphone, then try again."
+    )
+
+
 @dataclass(frozen=True)
 class ReasonSpec:
     """One terminal verdict's template + budget + copy (§5.10)."""
@@ -1640,8 +1693,15 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_LOCATE_FAILED: ReasonSpec(
         REASON_LOCATE_FAILED, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "Couldn't hear the speaker clearly. Check the volume and the "
-        "microphone, then try again.",
+        # NOT a literal (issue #2085). This code is a locate-CONFIDENCE floor,
+        # and its copy named the one cause that would explain a miss on its own
+        # — an inaudible speaker — on captures whose own pilot pair proved the
+        # speaker was heard. The sentence has one writer now
+        # (``locate_failed_message``); what the registry holds is its
+        # no-pilot-evidence rendering, true for any reader with no capture in
+        # hand. The relay verdict and the envelope both re-render it with the
+        # measured fact.
+        locate_failed_message(None),
     ),
     REASON_RELAY_TIMEOUT: ReasonSpec(
         REASON_RELAY_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
@@ -1885,6 +1945,56 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
     code for code, spec in REASON_REGISTRY.items()
     if spec.template == TEMPLATE_SILENT_AUTO_RETRY
 )
+
+
+def reason_message(
+    code: str,
+    spec: ReasonSpec,
+    *,
+    pilot_heard: bool | None = None,
+    reflection_measured: bool | None = None,
+) -> str:
+    """The household sentence for ``code``, given what the capture measured.
+
+    **THE single copy selector**, because one failure is narrated on several
+    surfaces that never see each other: the relay verdict the measurement page
+    shows the moment a capture is refused
+    (:meth:`PhaseVerdict.to_relay_dict`), the envelope jts.local serves for
+    the persisted terminal failure
+    (``crossover_envelope_v2._reason_message``), the apply-seam refusal, and
+    :meth:`_refuse`'s accountability refusals. Two codes now choose their copy
+    from evidence rather than holding a literal, and a household looking at
+    two of those surfaces after ONE failure must not be handed two different
+    accounts of it — which is exactly how the inconclusive copy's own bug
+    stayed invisible for as long as it did (#1974). Adding a third
+    evidence-keyed code means adding a branch HERE; a caller that renders
+    ``spec.message`` directly re-opens the gap.
+
+    **One such caller is deliberately still open**: the budget-exhaustion
+    raise inside ``authorize_begin`` renders ``spec.message or spec.banner``,
+    so a ``locate_failed`` session that spends its retry ends on the
+    registry's copy even when this capture's pilot refutes it. That raise sits
+    in the attempt-meter block, which the bounded-retry work owns and is
+    actively rewriting; routing it here is one expression and belongs to
+    whichever change lands second, not to a drive-by edit that would collide.
+
+    ``spec`` is passed in rather than looked up so each caller keeps the
+    existence guard it already had — ``REASON_REGISTRY[code]`` raising
+    ``KeyError`` on an unregistered code is load-bearing in :meth:`_refuse`,
+    whose whole purpose is that a refusal never ships a bare code where a
+    household expects a sentence.
+
+    Facts are keyword-only and each defaults to "not established", so a caller
+    holding none of them gets the registry's own renderings — the same answer
+    reading ``REASON_REGISTRY`` by hand would give.
+    """
+    if code == REASON_LOCATE_FAILED:
+        return locate_failed_message(pilot_heard)
+    if code == REASON_VERIFY_INCONCLUSIVE:
+        return verify_inconclusive_message(reflection_measured)
+    # ``or spec.banner`` for the silent-auto-retry codes, whose household text
+    # IS the banner and whose ``message`` is empty by construction.
+    return spec.message or spec.banner
 
 # --------------------------------------------------------------------------- #
 # tuning constants (PROVISIONAL pending W6 bench validation)
@@ -3366,6 +3476,14 @@ class PhaseVerdict:
     accepted: bool
     code: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    # Whether THIS capture's leading pilot pair cleared the room's own in-band
+    # floor — ``analysis.pilot_snr_ok``, carried verbatim including its ``None``
+    # (no pilot evidence). The one fact ``locate_failed``'s copy branches on
+    # (#2085): it is the direct, same-capture refutation of "couldn't hear the
+    # speaker", so it has to reach the sentence. Carried on the verdict rather
+    # than dug out of ``payload`` because it is decided at the gate, where the
+    # analysis is in hand, and a typed field cannot be misspelled into silence.
+    pilot_heard: bool | None = None
 
     def to_relay_dict(self) -> dict[str, Any]:
         """The mapping ``consume_capture`` returns to ``run_capture_plan``.
@@ -3373,6 +3491,14 @@ class PhaseVerdict:
         Always carries ``accepted``; a rejection adds the reason code + template
         + copy so the phone renders the right §5.10 screen. Every non-``accepted``
         field is relayed verbatim in the ``capture_result`` host event.
+
+        ``reason`` comes from :func:`reason_message`, not from the registry
+        entry directly, so a code whose honest sentence depends on what was
+        measured renders that sentence HERE — on the surface the household is
+        actually looking at when a capture is refused — and not only in the
+        envelope served later. ``pilot_heard`` rides out beside it so the
+        journal and the phone's own record can tell the two accounts apart
+        without re-deriving the discriminator.
         """
         out: dict[str, Any] = {"accepted": self.accepted}
         if self.code is not None:
@@ -3380,9 +3506,10 @@ class PhaseVerdict:
             out.update(
                 code=self.code,
                 template=spec.template,
-                reason=spec.message or spec.banner,
+                reason=reason_message(self.code, spec, pilot_heard=self.pilot_heard),
                 banner=spec.banner,
                 auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES,
+                pilot_heard=self.pilot_heard,
             )
         out.update(self.payload)
         return out
@@ -5341,6 +5468,13 @@ class CrossoverV2Conductor:
         # off ``group_cloud_result(PHASE_CLOUD_VERIFY)["flatness"]`` — no
         # per-attempt stash, because it is not a per-attempt claim.)
         self._last_failure_code: str | None = None
+        # The pilot evidence belonging to ``_last_failure_code`` (#2085).
+        # ALWAYS written together with it — see ``_pilot_heard_for``, which is
+        # the only reader and re-checks the pairing rather than trusting it.
+        # ``None`` is "no pilot evidence for this failure", which is also the
+        # honest value for the failures that never ran a capture at all (an
+        # apply-seam refusal, a delta-probe rollback).
+        self._last_failure_pilot_heard: bool | None = None
         # G3 (measurement-honesty gate, 2026-07-22) — SESSION-SCOPED since
         # #1927. The FIRST usable VERIFY attempt of THIS conductor's own
         # lifetime records its per-role pilot transfer here, and every LATER
@@ -5873,6 +6007,36 @@ class CrossoverV2Conductor:
         return self._last_failure_code
 
     @property
+    def last_failure_pilot_heard(self) -> bool | None:
+        """Pilot evidence for :attr:`last_failure_code` — the host persists it.
+
+        The envelope re-renders the failure's sentence from the pair (#2085),
+        so both halves have to survive the session that produced them. Read
+        through :meth:`_pilot_heard_for` rather than off the attribute, so the
+        pairing is re-checked at the boundary instead of assumed.
+        """
+        return (
+            self._pilot_heard_for(self._last_failure_code)
+            if self._last_failure_code else None
+        )
+
+    def _pilot_heard_for(self, code: str | None) -> bool | None:
+        """The pilot evidence recorded WITH ``code``, else ``None`` (#2085).
+
+        Every writer of ``_last_failure_code`` writes the discriminator beside
+        it, so in practice this returns the stored value. It re-checks anyway
+        because the failure being described is not always the failure last
+        consumed — :meth:`_refuse` can name a code the capture loop never
+        produced — and attaching one capture's evidence to another's code
+        would put a confident, wrong sentence in front of a household. An
+        unknown pairing degrades to "no evidence", which renders the
+        registry's own copy: the honest answer when nothing is established.
+        """
+        if code is None or code != self._last_failure_code:
+            return None
+        return self._last_failure_pilot_heard
+
+    @property
     def armed_capture(self) -> tuple[int, int] | None:
         """The last authorized ``(index, attempt)`` — the host addresses the
         terminal ``capture_result`` host event at a play-seam failure to it."""
@@ -6067,8 +6231,13 @@ class CrossoverV2Conductor:
                 failure_code = ""
             if failure_code:
                 self._last_failure_code = failure_code
+                # The apply seam's own verdict — no capture ran, so there is
+                # no pilot evidence to pair with it (#2085). Written rather
+                # than left alone so a previous capture's evidence cannot
+                # trail into this failure's copy.
+                self._last_failure_pilot_heard = None
                 spec = REASON_REGISTRY.get(failure_code)
-                message = spec.message or spec.banner if spec else failure_code
+                message = reason_message(failure_code, spec) if spec else failure_code
                 raise CaptureBeginRefused(failure_code, message)
             raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
         # Budget: CUMULATIVE per phase by design — the phase's total attempt
@@ -6176,6 +6345,18 @@ class CrossoverV2Conductor:
             )
         else:
             verdict = self._consume_verify(analysis, attempt=attempt)
+        # THIS capture's pilot evidence, attached to whatever verdict came back
+        # — at ONE point, deliberately, rather than at each gate that can
+        # produce ``locate_failed``. Three separate gates already refuse on a
+        # locate-confidence floor (``_stimulus_locate_ok``,
+        # ``_sweep_locate_confidence_ok``, VERIFY's ``summed_sweep_heard``
+        # integrity check), they sit in three different verdict methods, and a
+        # fourth is a plausible addition; per-gate assignment would make
+        # "remembered to carry it" a condition of the copy being honest. Here
+        # it cannot be forgotten, and the fact is the same one regardless of
+        # which floor fired: did the pilot pair clear the room in this
+        # recording. See ``locate_failed_message``.
+        verdict = replace(verdict, pilot_heard=analysis.pilot_snr_ok)
         if verdict.accepted:
             # A position group's PHASE is accepted only when its last index is
             # in; a single-capture phase closes on its own acceptance. Both
@@ -6184,9 +6365,15 @@ class CrossoverV2Conductor:
             self._note_accepted(phase, index)
             self._last_reason.pop(slot, None)
             self._last_failure_code = None
+            self._last_failure_pilot_heard = None
         elif verdict.code is not None:
             self._last_reason[slot] = verdict.code
             self._last_failure_code = verdict.code
+            # Cleared together with the code above and set together with it
+            # here: the envelope renders the persisted failure's sentence from
+            # this pair, and a discriminator outliving its code would describe
+            # one capture with another's evidence.
+            self._last_failure_pilot_heard = verdict.pilot_heard
             if verdict.code == REASON_CLOUD_GEOMETRY_LOCKED:
                 self._geometry_rejections[slot] = (
                     self._geometry_rejections.get(slot, 0) + 1
@@ -6195,6 +6382,15 @@ class CrossoverV2Conductor:
             logger, "correction.crossover_v2_result",
             session_id=self.session_id, phase=phase,
             accepted=verdict.accepted, code=verdict.code or "",
+            # The discriminator behind the sentence the household just read
+            # (#2085). Without it the journal shows four identical
+            # ``code=locate_failed`` lines for what were, on the JTS3 session
+            # that filed this, one genuinely-quiet capture and three whose
+            # pilot pair was heard fine — indistinguishable without opening
+            # the WAVs. ``pilot_heard=`` is emitted on accepted captures too,
+            # so a reader can see the fact was established rather than
+            # guessing whether an absent field means unheard or unlogged.
+            pilot_heard=verdict.pilot_heard,
         )
         return verdict.to_relay_dict()
 
@@ -6345,9 +6541,13 @@ class CrossoverV2Conductor:
         # historical "capture glitched" reports.)
         #
         # Neither branch re-arms: re-running an inaudible measurement at the
-        # same level cannot succeed, and both reason codes already carry the
-        # household action that can ("quiet the room / move the phone closer",
-        # "check the volume and the microphone").
+        # same level cannot succeed, and both reason codes already carry a
+        # household action that can. ``pilot_level_collapse`` names the room
+        # and the level ("quiet the room / move the microphone closer");
+        # ``locate_failed`` picks its own sentence from the pilot evidence
+        # since #2085, because the ORDER here means the locate branch below
+        # is reached only once the pilot has been asked — see
+        # ``locate_failed_message``.
         if analysis.pilot_snr_ok is False:
             # Issue #1810. Also ahead of the linearity branch: below the SNR
             # floor the two-pilot delta is not evidence about anything
@@ -7452,10 +7652,26 @@ class CrossoverV2Conductor:
         link timed out", a false statement about a session that was refused on
         purpose. Raising through this one constructor is what makes the
         registry copy above actually the copy that renders.
+
+        Copy comes from :func:`reason_message`, not from ``spec`` directly
+        (#2085), so a refusal built here renders the same sentence the
+        capture's own relay verdict did. No code routed through this method is
+        evidence-keyed TODAY — the accountability refusals hold literals — but
+        every other render path now asks the selector, and leaving one that
+        does not is how the two accounts diverge again the first time a
+        refusal code grows a fact to branch on.
+
+        The evidence is read BEFORE the stamp below, because
+        ``_pilot_heard_for`` answers "does the evidence I hold belong to this
+        code", and stamping first would make that question answer itself.
         """
         spec = REASON_REGISTRY[code]
+        pilot_heard = self._pilot_heard_for(code)
         self._last_failure_code = code
-        return CaptureBeginRefused(code, spec.message or spec.banner)
+        self._last_failure_pilot_heard = pilot_heard
+        return CaptureBeginRefused(
+            code, reason_message(code, spec, pilot_heard=pilot_heard),
+        )
 
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
@@ -8825,6 +9041,9 @@ class CrossoverV2Conductor:
             seam_bound=self._seams.rollback is not None, error=error,
         )
         self._last_failure_code = code
+        # A delta-probe verdict, not a capture — no pilot evidence belongs to
+        # it, and the prior capture's must not trail in (#2085).
+        self._last_failure_pilot_heard = None
         return code
 
     # --- diagnostic logging (Part 1) ------------------------------------------
@@ -11200,4 +11419,10 @@ __all__ = [
     # therefore cannot live inside either one (issue #1974).
     "verify_inconclusive_cause",
     "verify_inconclusive_message",
+    # The copy selector and the second evidence-keyed sentence (#2085). Same
+    # reason as the pair above, one surface further: ``locate_failed`` is
+    # narrated by the relay verdict, the budget refusal, AND the envelope, so
+    # the sentence cannot live in any of them.
+    "locate_failed_message",
+    "reason_message",
 ]

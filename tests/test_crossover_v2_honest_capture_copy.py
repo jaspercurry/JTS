@@ -1,0 +1,313 @@
+"""``locate_failed`` says what was measured, not what it inferred (#2085).
+
+The defect these pin, measured on JTS3 on 2026-08-03 (issue #2083, entry 6).
+One sitting produced the household sentence "Couldn't hear the speaker
+clearly. Check the volume and the microphone, then try again." four times.
+ONCE it was true — ``pilot_level_collapse``, pilot SNR 11.27 dB, a genuinely
+quiet capture. The other three were ``locate_failed`` raised by
+``program_analysis.capture_integrity`` with ``failed=summed_sweep_heard``,
+and every one of those captures also carried ``pilot_snr_ok=True`` with the
+pilot pair 13.9-15.5 dB over the room's own floor. The speaker had been heard.
+What had actually gone wrong was that the sweeps came back unfindable —
+locate confidence 0.019-0.097 against a 0.3 floor, schedule residuals of
++14.3 / -18.5 / -2.7 ms, glitch set. Three households' worth of that advice
+sends someone to turn up a volume the measurement had already proved was fine.
+
+``summed_sweep_heard`` is a locate-CONFIDENCE check, not a level check — see
+``program_analysis._verify_capture_integrity``, whose own docstring calls it
+"the summed sweep's own locate confidence". Reading it as "nobody could hear
+the speaker" was the inference; the pilot is the evidence that refutes it.
+
+What is pinned here is therefore not a string but a rule: the sentence follows
+the evidence, and one failure gets ONE account of itself across all three
+surfaces that narrate it (the relay verdict, the budget refusal, the
+envelope).
+"""
+
+import logging
+
+import pytest
+
+from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+from jasper.active_speaker.crossover_v2_flow import (
+    LOCATE_MIN_CONFIDENCE,
+    REASON_LOCATE_FAILED,
+    REASON_PILOT_LEVEL_COLLAPSE,
+    REASON_REGISTRY,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    locate_failed_message,
+    reason_message,
+)
+from tests.test_crossover_envelope_v2 import _status
+from tests.test_crossover_v2_conductor import (
+    FakeSeams,
+    _check_analysis,
+    _conductor,
+    _run_phase,
+    _verify_analysis,
+    _verify_to_apply,
+)
+
+# The remedy words the misattribution actually sent households chasing. A
+# capture whose own pilot pair was heard must not carry any of them: "check
+# the volume" is the specific wrong action, and "too quiet" / "louder" are the
+# same claim in other words.
+VOLUME_REMEDY_WORDS = ("volume", "louder", "too quiet", "closer")
+
+
+def _heard_but_unlocatable(fakes):
+    """The measured defect: pilot heard, summed sweep not findable.
+
+    Confidence sits deliberately BETWEEN the two floors — over
+    ``LOCATE_MIN_CONFIDENCE`` so ``_stimulus_locate_ok`` passes and the
+    integrity gate is the thing that refuses, under
+    ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` so ``summed_sweep_heard`` is what fails.
+    That is the exact routing the JTS3 captures took.
+    """
+    fakes.verify = lambda program: _verify_analysis(
+        program,
+        locate_confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.05,
+        pilot_snr_ok=True,
+    )
+
+
+def _never_heard(fakes):
+    """The honest half: nothing located AND the pilot never cleared the room.
+
+    Below ``LOCATE_MIN_CONFIDENCE`` so ``_stimulus_locate_ok`` is the refusing
+    gate — which on the VERIFY ladder runs BEFORE the pilot branch, so this
+    still lands on ``locate_failed`` rather than being intercepted by
+    ``pilot_level_collapse``. Both facts point the same way here, and the
+    original copy is the right copy.
+    """
+    fakes.verify = lambda program: _verify_analysis(
+        program,
+        locate_confidence=LOCATE_MIN_CONFIDENCE - 0.05,
+        pilot_snr_ok=False,
+    )
+
+
+def test_a_heard_speaker_with_unfindable_tones_is_not_a_volume_problem():
+    """The defect, end to end: same code, and no longer the same advice."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    _heard_but_unlocatable(fakes)
+    verdict = _run_phase(c, 3, 3)
+
+    assert verdict["code"] == REASON_LOCATE_FAILED
+    # The refutation travelled with the verdict rather than being re-derived.
+    assert verdict["pilot_heard"] is True
+    # And it really was the sweep-heard integrity check that fired, not some
+    # other route that happens to share the code — otherwise this test would
+    # pass while describing a different failure.
+    failed = [
+        check["name"] for check in verdict["capture_integrity"]["checks"]
+        if check["status"] == "fail"
+    ]
+    assert failed == ["summed_sweep_heard"]
+
+    reason = verdict["reason"]
+    for word in VOLUME_REMEDY_WORDS:
+        assert word not in reason.lower(), (
+            f"copy still sends a heard-speaker failure after {word!r}: {reason!r}"
+        )
+    # It says the two things that WERE measured.
+    assert "hear the speaker" in reason
+    assert "recording" in reason
+
+
+def test_a_capture_nobody_heard_keeps_the_volume_copy():
+    """The branch that was always honest stays exactly as it was."""
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    _never_heard(fakes)
+    verdict = _run_phase(c, 3, 3)
+
+    assert verdict["code"] == REASON_LOCATE_FAILED
+    assert verdict["pilot_heard"] is False
+    assert verdict["reason"] == (
+        "Couldn't hear the speaker clearly. Check the volume and the "
+        "microphone, then try again."
+    )
+
+
+def test_the_discriminator_is_what_chooses_the_sentence():
+    """The mutation guard: flip ONLY the pilot fact, and the copy must move.
+
+    Both scenarios below produce ``locate_failed``. If the copy were keyed on
+    the reason code — the bug — these two sentences would be equal and this
+    assertion is the one that fails. It is deliberately stated as an
+    inequality between two live conductor runs rather than as two literals, so
+    it keeps its meaning when the wording changes.
+    """
+    heard_fakes = FakeSeams()
+    heard = _verify_to_apply(heard_fakes)
+    _heard_but_unlocatable(heard_fakes)
+    heard_verdict = _run_phase(heard, 3, 3)
+
+    unheard_fakes = FakeSeams()
+    unheard = _verify_to_apply(unheard_fakes)
+    _never_heard(unheard_fakes)
+    unheard_verdict = _run_phase(unheard, 3, 3)
+
+    assert heard_verdict["code"] == unheard_verdict["code"] == REASON_LOCATE_FAILED
+    assert heard_verdict["pilot_heard"] is not unheard_verdict["pilot_heard"]
+    assert heard_verdict["reason"] != unheard_verdict["reason"]
+
+
+def test_a_genuinely_quiet_capture_still_gets_its_own_code():
+    """Scope check: the honest quarter of the JTS3 sitting is untouched.
+
+    The one capture that really was too quiet routed to
+    ``pilot_level_collapse``, which owns copy about the room and the level.
+    This change must not have pulled that verdict onto the locate ladder.
+    """
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    # Locates fine; the pilot is what fails. That ordering is what separates
+    # this from `_never_heard` above.
+    fakes.verify = lambda program: _verify_analysis(program, pilot_snr_ok=False)
+    verdict = _run_phase(c, 3, 3)
+
+    assert verdict["code"] == REASON_PILOT_LEVEL_COLLAPSE
+    assert verdict["reason"] == REASON_REGISTRY[REASON_PILOT_LEVEL_COLLAPSE].message
+
+
+def test_the_result_event_distinguishes_the_two_failures(caplog):
+    """Observability: the journal separates them without opening a WAV.
+
+    Four ``code=locate_failed`` lines were indistinguishable in the JTS3
+    journal. The discriminator is now a field on the per-capture result event,
+    so the three-versus-one split is a grep.
+    """
+    fakes = FakeSeams()
+    c = _verify_to_apply(fakes)
+    _heard_but_unlocatable(fakes)
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.crossover_v2_flow"):
+        _run_phase(c, 3, 3)
+
+    lines = [
+        rec.getMessage() for rec in caplog.records
+        if "event=correction.crossover_v2_result" in rec.getMessage()
+    ]
+    assert lines, "no result event was emitted"
+    # ``log_event`` renders booleans lowercase, so this is the literal an
+    # operator would actually grep for.
+    assert any(
+        "code=locate_failed" in line and "pilot_heard=true" in line
+        for line in lines
+    ), lines
+
+
+def test_the_registry_holds_the_no_evidence_rendering():
+    """A reader of ``REASON_REGISTRY`` gets copy that is true, not copy that
+    guesses — the same contract ``verify_inconclusive`` established (#1974).
+
+    With no capture in hand nothing refutes "couldn't hear the speaker", so the
+    registry keeps that sentence. What it must NOT hold is the heard-speaker
+    one, which would assert a measurement the reader never made.
+    """
+    spec = REASON_REGISTRY[REASON_LOCATE_FAILED]
+    assert spec.message == locate_failed_message(None)
+    assert spec.message == locate_failed_message(False)
+    assert spec.message != locate_failed_message(True)
+    # The routing this change is not allowed to touch.
+    assert spec.template == "fix_and_retry"
+    assert spec.retry_budget == 1
+
+
+@pytest.mark.parametrize("pilot_heard", [True, False, None])
+def test_the_selector_is_the_one_voice_for_every_surface(pilot_heard):
+    """One failure, one account of it.
+
+    The relay verdict, the budget refusal, and the envelope each render this
+    sentence from their own surface. They agree because they all ask
+    :func:`reason_message`; a caller that went back to ``spec.message`` would
+    break this.
+    """
+    spec = REASON_REGISTRY[REASON_LOCATE_FAILED]
+    assert reason_message(
+        REASON_LOCATE_FAILED, spec, pilot_heard=pilot_heard,
+    ) == locate_failed_message(pilot_heard)
+
+
+def test_every_capture_of_a_heard_speaker_gets_the_measured_sentence():
+    """CHECK's locate gate reaches the same copy by a different route.
+
+    Deliberately a different gate from the VERIFY-integrity scenario above:
+    the rule is that the sentence follows the evidence, so a second gate
+    firing on the same fact must not need its own wiring to be honest.
+
+    **Where this stops.** Once the retry budget is spent, ``authorize_begin``
+    raises its own ``CaptureBeginRefused`` from inside the attempt-meter
+    block, and that raise still renders the registry literal — so a household
+    that fails twice reads the measured sentence and then the volume advice.
+    That is a known, deliberate gap, not an oversight: the meter is being
+    rewritten by the bounded-retry work, and one expression there belongs to
+    whichever change lands second. It is NOT pinned here, because a test
+    asserting the current wording would pin the bug in place.
+    """
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(
+        program, locate_confidence=0.01, pilot_snr_ok=True,
+    )
+    c = _conductor(fakes)
+
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["code"] == REASON_LOCATE_FAILED
+    assert verdict["pilot_heard"] is True
+    assert "volume" not in verdict["reason"].lower()
+    assert verdict["reason"] == locate_failed_message(True)
+
+
+def test_a_refusal_never_borrows_another_failures_evidence():
+    """``_pilot_heard_for``'s pairing rule, mutated at the boundary.
+
+    A refusal can name a code the capture loop never produced. Handing it the
+    last capture's pilot evidence would put a confident sentence about THIS
+    failure in front of a household using another one's measurement. Unknown
+    pairing degrades to the registry copy, which claims nothing.
+    """
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(
+        program, locate_confidence=0.01, pilot_snr_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert c.last_failure_pilot_heard is True
+
+    # A refusal for a DIFFERENT code: the evidence must not travel with it.
+    refusal = c._refuse(REASON_PILOT_LEVEL_COLLAPSE)
+    assert refusal.user_message == REASON_REGISTRY[REASON_PILOT_LEVEL_COLLAPSE].message
+    assert c.last_failure_pilot_heard is None
+
+
+@pytest.mark.parametrize(
+    ("persisted", "expect_volume_copy"),
+    [
+        ({"pilot_heard": True}, False),
+        ({"pilot_heard": False}, True),
+        # No pilot evidence recorded — a failure that ran no capture, or a
+        # state file written before this shipped. Unknown is not False.
+        ({}, True),
+    ],
+)
+def test_the_envelope_renders_the_persisted_evidence(persisted, expect_volume_copy):
+    """The jts.local page reads the same fact the phone was shown.
+
+    Before this, the envelope rendered the registry literal unconditionally —
+    so a household that saw the honest sentence on the measurement page and
+    then looked at the speaker's own page would have been given the other
+    account of the same failure.
+    """
+    env = build_crossover_envelope_v2(_status(
+        applied=False,
+        failure={"code": REASON_LOCATE_FAILED, **persisted},
+    ))
+    verdict = env["verdict_text"]
+
+    assert verdict == locate_failed_message(persisted.get("pilot_heard"))
+    assert ("volume" in verdict.lower()) is expect_volume_copy
+    # The nudge is the same sentence — two renderings of one verdict on one
+    # screen must not disagree either.
+    assert [n["text"] for n in env["nudges"]] == [verdict]

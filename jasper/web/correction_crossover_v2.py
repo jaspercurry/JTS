@@ -2040,6 +2040,10 @@ def persist_conductor_state(
     # nothing else. An absent property is "nothing reserved", which is what the
     # key's own absence already means downstream.
     ripple_reservation = getattr(conductor, "measure_ripple_reservation", None)
+    # Same duck-typed read, same reason: a stand-in conductor that predates
+    # this field is "no pilot evidence", which is what the key's own absence
+    # means downstream. See the ``failure`` block below for what it renders.
+    failure_pilot_heard = getattr(conductor, "last_failure_pilot_heard", None)
     prior = load_v2_state() or {}
     if hasattr(snap, "attempt_history"):
         attempts_loop_state: dict[str, Any] | None = {
@@ -2238,6 +2242,25 @@ def persist_conductor_state(
                 **(
                     {"refusals": [str(slug) for slug in failure_refusals]}
                     if failure_refusals else {}
+                ),
+                # WHAT THE CAPTURE MEASURED about the speaker being audible —
+                # ``locate_failed``'s copy branches on it (#2085), so the
+                # envelope cannot render this failure's honest sentence
+                # without it. Unlike ``refusals`` above this is NOT forensics:
+                # it reaches the household, through
+                # ``crossover_envelope_v2._reason_message``.
+                #
+                # Present only when established. Absent and ``False`` mean
+                # different things and both are already handled downstream —
+                # absent is "no pilot evidence" (every failure that ran no
+                # capture, plus every state file written before this shipped),
+                # ``False`` is "the pilot was measured and did not clear the
+                # room". Writing a bare ``False`` for the unknown case would
+                # turn a missing measurement into a claim about the room.
+                #
+                **(
+                    {"pilot_heard": bool(failure_pilot_heard)}
+                    if failure_pilot_heard is not None else {}
                 ),
             }
             if failure_code else None
