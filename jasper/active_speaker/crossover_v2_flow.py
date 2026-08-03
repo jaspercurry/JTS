@@ -6474,9 +6474,20 @@ class CrossoverV2Conductor:
         #   byte-identical. The FLOW is unchanged; the artifact gains one
         #   empty, non-fingerprinted field.
         #
-        # The 2026-07-20 "no human Apply gate" ruling is untouched by either
-        # branch: apply is still automatic and still needs no tap; only its
-        # trigger point moves, and only for a session that has a cloud.
+        # Neither branch moves anything but the CANDIDATE BUILD's timing; only
+        # its trigger point moves, and only for a session that has a cloud.
+        #
+        # This paragraph used to read "the 2026-07-20 'no human Apply gate'
+        # ruling is untouched by either branch: apply is still automatic and
+        # still needs no tap", which has been false since the two-stage split
+        # (PR-T3) superseded that ruling. Nothing auto-applies: the candidate
+        # is a PROPOSAL the review screen shows, and the apply is a separate,
+        # explicit household POST to ``/correction/crossover/v2/apply`` — as
+        # ``confirm_cloud_measure_group``'s own docstring already says. Fixed
+        # here rather than left as a follow-up because it sits ~40 lines below
+        # G1's disclosure branch and materially OVERSTATES that change's blast
+        # radius: a reader going top-down would conclude a capture accepted
+        # with a ripple reservation auto-applies without anyone deciding.
         #
         # On the deferring branch ONLY, the analysis is retained rather than
         # consumed — it is the fit's input and must outlive the prompted cloud

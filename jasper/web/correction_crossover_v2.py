@@ -563,7 +563,18 @@ def observe_restore() -> None:
     as journey-scoped (nulled there unconditionally, applied or not), no other
     reader expects it to survive past the live measurement/apply flow it is
     written during, and a key-by-key deletion would leave this exact hole open
-    for the next field someone adds under ``evidence``."""
+    for the next field someone adds under ``evidence``.
+
+    ``measure`` is the fourth (#2087). It carries G1's ripple reservation — a
+    statement about the capture a now-undone tuning was built from — and the
+    same PR that added it also added a ``prior["measure"]`` carry-forward in
+    :func:`persist_conductor_state`, which is structurally the identical
+    resurrection mechanism the ``evidence`` finding above was filed for. It is
+    listed here rather than left to the reachability argument (post-Undo the
+    envelope resolves ``not_applicable``, and ``prepare_v2_verify`` refuses
+    without ``applied``) because that argument makes the field correct by
+    accident, and the accident is one screen-routing change away from being a
+    stale caveat on a live session."""
     state = load_v2_state()
     if state is None:
         return
@@ -579,6 +590,7 @@ def observe_restore() -> None:
     state["gain_plan_db"] = None
     state["evidence"] = None
     state["attempts_loop"] = None
+    state["measure"] = None
     save_v2_state(state)
 
 
@@ -2019,10 +2031,14 @@ def persist_conductor_state(
 
     snap = conductor.snapshot()
     verify_outcome = conductor.verify_outcome
-    # Read through ``getattr`` with a default: this host persists conductors
-    # from more than one build during a rolling deploy, and the property is
-    # newer than some of them. An absent property is "nothing reserved", which
-    # is the same thing the key's own absence means downstream.
+    # Read through ``getattr`` with a default because this function accepts
+    # DUCK-TYPED conductors, not only the real class — the same reason
+    # ``hasattr(snap, "attempt_history")`` reads defensively a few lines down.
+    # Measured, not assumed: a direct attribute read fails 7 tests in
+    # ``test_correction_crossover_v2_endpoints.py``, all of which persist a
+    # stand-in that implements the fields their own assertion is about and
+    # nothing else. An absent property is "nothing reserved", which is what the
+    # key's own absence already means downstream.
     ripple_reservation = getattr(conductor, "measure_ripple_reservation", None)
     prior = load_v2_state() or {}
     if hasattr(snap, "attempt_history"):

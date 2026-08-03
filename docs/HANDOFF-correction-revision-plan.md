@@ -368,7 +368,7 @@ linearization half's remainder — the claim FRAME still carries a pre-seam
 Lorentzian term that the CD-horn suppression then decides on), #2032 (the emit
 bench has no one-command path from a speaker's applied state — the operational
 gap R11's first hardware run exposed), #2060 (owner decision deferred from
-#2005: should G1's ripple ceiling grade the *applied* model?).
+#2005: should G1's ripple threshold grade the *applied* model?).
 
 ---
 

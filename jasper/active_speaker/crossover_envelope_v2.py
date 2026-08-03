@@ -2385,6 +2385,17 @@ def _verify_fail_envelope(
             _verify_expert_details(status, headline_code=code)
             + _verify_level_reference_lines(status)
             + _flatness_details_lines(status)
+            # G1's numbers (#2087). EXPERT ONLY on this screen — no household
+            # sentence, matching the banked-findings precedent (this envelope
+            # passes no ``findings`` either): the household copy here is the
+            # failure's own, and a second caveat beside it would compete with
+            # the one action they are being asked to take.
+            #
+            # The numbers still belong, and arguably most of all here: "the
+            # measurement this tuning was built from was rough" is exactly the
+            # context for a verify that did not settle, and this screen's
+            # reader has already opened the disclosure to look at numbers.
+            + _ripple_reservation_lines(status)
         ),
     )
 

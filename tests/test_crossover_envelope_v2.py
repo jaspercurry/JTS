@@ -3668,6 +3668,31 @@ def test_the_reservation_never_claims_the_result_is_worse():
         assert overclaim not in lowered
 
 
+def test_verify_fail_carries_the_reservation_numbers_but_no_second_sentence():
+    """The failure screen gets G1's numbers and NOT its household sentence.
+
+    Numbers, because "the measurement this tuning was built from was rough" is
+    exactly the context for a verify that did not settle, and this screen's
+    reader has already opened the disclosure to look at numbers.
+
+    No sentence, matching the banked-findings precedent (`_verify_fail_envelope`
+    passes no `findings` either): the household copy here is the failure's own,
+    and a competing caveat beside the one action they are asked to take would
+    dilute it.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        measure=_reservation(),
+    ))
+    assert env["screen"] == "verify_fail"
+    assert (
+        "predicted ripple 15.24 dB, above the 15.0 dB disclosure threshold"
+        in env["expert_details"]
+    )
+    assert all(n["text"] != RIPPLE_RESERVATION_COPY for n in env["nudges"])
+
+
 def test_the_reservation_does_not_displace_the_verified_badge():
     """It is appended BESIDE whichever badge the verify outcome earned, never
     instead of it — the same rule the level-mismatch caveat follows.

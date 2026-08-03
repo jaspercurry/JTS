@@ -3728,6 +3728,10 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     carry-forward in ``persist_conductor_state`` reads ``prior["evidence"]``
     unconditionally, so a stale ``cloud_artifacts`` fingerprint map left behind
     by an Undo would be resurrected on the very next verify-only re-arm.
+
+    ``measure`` is the fourth (#2087): G1's ripple reservation describes the
+    capture the undone tuning was built from, and the same PR added a
+    ``prior["measure"]`` carry-forward with the identical resurrection shape.
     """
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3761,6 +3765,11 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
             "last_decision": {"decision": "stop_floor"},
             "store_count": 1,
         },
+        "measure": {
+            "ripple_reservation": {
+                "predicted_ripple_db": 15.244, "threshold_db": 15.0,
+            }
+        },
     })
     v2host.observe_restore()
     state = v2host.load_v2_state()
@@ -3784,6 +3793,11 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     # verify-only re-arm, describing artifacts from the undone session.
     assert state["evidence"] is None
     assert state["attempts_loop"] is None
+    # #2087's field: a surviving ``measure`` is a reservation about the capture
+    # the UNDONE tuning was built from, and persist_conductor_state's own
+    # ``prior["measure"]`` carry-forward is the same resurrection shape SF-2
+    # found for ``evidence``.
+    assert state["measure"] is None
     assert v2host._applied_gate() is False
 
 
