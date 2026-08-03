@@ -1795,10 +1795,16 @@ def test_no_emitted_boost_is_broader_than_the_pinned_q_floor(width_oct):
     boosts = [f for f in fit.filters if f.gain > 0.0]
     assert boosts, width_oct
     for f in boosts:
-        assert f.q >= _PEAKING_Q_MIN, (
-            f"boost at {f.freq:.1f} Hz has Q={f.q:.3f} < "
-            f"{_PEAKING_Q_MIN}. {_Q_FLOOR_CONSEQUENCE}"
+        # The LITERAL, not ``_PEAKING_Q_MIN``. Comparing an emitted Q against
+        # the constant that produced it is a tautology: lower the constant and
+        # the assertion lowers with it. The shipped floor is 1.0, and moving
+        # it should cost whoever moves it a deliberate edit here — which is
+        # where they meet the consequence.
+        assert f.q >= 1.0, (
+            f"boost at {f.freq:.1f} Hz has Q={f.q:.3f} < 1.0. "
+            f"{_Q_FLOOR_CONSEQUENCE}"
         )
+        assert f.q >= _PEAKING_Q_MIN
 
 
 def test_the_q_floor_buys_exactly_the_drop_radius_the_criterion_assumes():
