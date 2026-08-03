@@ -2942,10 +2942,10 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
 
     # (b) no correction is placed inside an identified null. NOTE: on THIS
     # fixture this assertion does not discriminate — it holds in the severed
-    # case too, because every filter the fit places lands more than an octave
-    # below the lowest null the cloud identifies, so there was never a filter
-    # up there to remove (PR-6a's own corpus acceptance records the same shape
-    # — the exclusion punches holes rather than moving filters).
+    # case too, because every filter the fit places lands over an octave and a
+    # half below the lowest null the cloud identifies, so there was never a
+    # filter up there to remove (PR-6a's own corpus acceptance records the same
+    # shape — the exclusion punches holes rather than moving filters).
     #
     # Stated as a SEPARATION and not as two frequency ranges on purpose: the
     # TOP of the fit's range tracks the shared fixture's bump (the 150 Hz floor
@@ -3053,7 +3053,7 @@ def test_severing_the_cloud_wiring_changes_the_fit(monkeypatch):
 
     **The emitted correction now differs too** (PR-L5). Until L5 the biquads
     and trims were IDENTICAL wired and severed on this fixture — the cut-only
-    fit placed every filter more than an octave below the lowest null the
+    fit placed every filter over an octave and a half below the lowest null the
     cloud identifies (the sibling test's note (b) carries the measured
     separation and the reason it is not written here as two ranges), so the
     exclusion had no filter to move and only narrowed the permitted band. L5
