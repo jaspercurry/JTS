@@ -91,10 +91,13 @@ import numpy as np
 
 from jasper.active_speaker.attempts_loop import (
     PROVENANCE_REALIZED,
+    REASON_ATTEMPT_NOT_COMPARABLE,
+    STOP_EVIDENCE,
     AttemptBudget,
     AttemptIntegrity,
     AttemptRecord,
     FloorStats,
+    LoopDecision,
     decide_next,
 )
 from jasper.active_speaker.linearization_envelope import (
@@ -3089,8 +3092,9 @@ class RecordModelError(Protocol):
         metric: str,
         predicted_db: float,
         realized_db: float,
+        speaker_id: str,
         context: Mapping[str, Any],
-    ) -> int: ...
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -3196,7 +3200,6 @@ class V2ConductorSnapshot:
     # evidence above correctly does not.
     attempt_history: tuple[AttemptRecord, ...] = ()
     last_attempt_decision: Mapping[str, Any] | None = None
-    model_error_store_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -3213,7 +3216,6 @@ class V2ConductorSnapshot:
                 dict(self.last_attempt_decision)
                 if self.last_attempt_decision is not None else None
             ),
-            "model_error_store_count": self.model_error_store_count,
         }
 
 
@@ -3260,10 +3262,7 @@ def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
                     row.get("deviation_from_predecessor_db")
                 ),
                 n_graded_bins=(
-                    int(row["n_graded_bins"])
-                    if isinstance(row.get("n_graded_bins"), int)
-                    and not isinstance(row.get("n_graded_bins"), bool)
-                    else None
+                    _attempt_optional_positive_int(row.get("n_graded_bins"))
                 ),
                 predicted_remaining_improvement_db=_attempt_optional_float(
                     row.get("predicted_remaining_improvement_db")
@@ -3293,6 +3292,12 @@ def _attempt_optional_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _attempt_optional_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def attempt_record_from_verify(
     analysis: ProgramAnalysis, *, attempt_id: str,
 ) -> AttemptRecord:
@@ -3317,6 +3322,8 @@ def attempt_record_from_verify(
             reasons=reasons,
         )
     tracking = analysis.verify_tracking or {}
+    frame = tracking.get("frame")
+    frame = frame if isinstance(frame, Mapping) else {}
     return AttemptRecord(
         attempt_id=str(attempt_id),
         metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
@@ -3325,6 +3332,11 @@ def attempt_record_from_verify(
         grade_db=_attempt_optional_float(
             tracking.get(ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED)
         ),
+        # ``frame.n_bins`` is produced from the exact validity-clamped,
+        # notch-excluded mask VERIFY graded. Carrying it activates the
+        # kernel's denominator-shrink refusal instead of letting a narrower
+        # frequency set look like an acoustic improvement.
+        n_graded_bins=_attempt_optional_positive_int(frame.get("n_bins")),
     )
 
 
@@ -4924,7 +4936,6 @@ class CrossoverV2Conductor:
         attempt_history: Sequence[AttemptRecord] = (),
         attempt_floor: FloorStats | None = None,
         last_attempt_decision: Mapping[str, Any] | None = None,
-        model_error_store_count: int = 0,
         speaker_id: str = "",
         tuning_attempt_id: str = "",
     ) -> None:
@@ -4969,7 +4980,6 @@ class CrossoverV2Conductor:
             dict(last_attempt_decision)
             if isinstance(last_attempt_decision, Mapping) else None
         )
-        self._model_error_store_count = max(0, int(model_error_store_count))
         self._speaker_id = str(speaker_id or "unknown")
         self._tuning_attempt_id = str(tuning_attempt_id or "")
         # Layer-1a linearization (#1668 PR-C): per-role driver class, used by
@@ -5590,10 +5600,6 @@ class CrossoverV2Conductor:
             if self._last_attempt_decision is not None else None
         )
 
-    @property
-    def model_error_store_count(self) -> int:
-        return self._model_error_store_count
-
     def phase_status(self, phase: str) -> str:
         return "accepted" if phase in self._accepted else "pending"
 
@@ -5923,7 +5929,6 @@ class CrossoverV2Conductor:
             cloud_close=self.cloud_close_state,
             attempt_history=tuple(self._attempt_history),
             last_attempt_decision=self._last_attempt_decision,
-            model_error_store_count=self._model_error_store_count,
         )
 
     @classmethod
@@ -5946,7 +5951,6 @@ class CrossoverV2Conductor:
             journey = {
                 "attempt_history": snapshot.attempt_history,
                 "last_attempt_decision": snapshot.last_attempt_decision,
-                "model_error_store_count": snapshot.model_error_store_count,
             }
         # Explicit caller values win for migrations/tests that deliberately
         # replace one journey fact; ordinary production hydration supplies
@@ -8164,8 +8168,24 @@ class CrossoverV2Conductor:
 
         record = attempt_record_from_verify(analysis, attempt_id=attempt_id)
         prospective = [*self._attempt_history, record]
-        if self._attempt_floor is None:
-            decision: dict[str, Any] = {
+        # Evidence refusal outranks grading preconditions. ``decide_next``
+        # requires a real floor, but #2033's integrity result is meaningful
+        # even on a speaker that has not adopted one. Construct the kernel's
+        # typed evidence verdict from its own vocabulary; do not let the
+        # flow-owned no-floor status mask a rejected capture.
+        if not record.integrity.comparable:
+            decision = LoopDecision(
+                decision=STOP_EVIDENCE,
+                reason=REASON_ATTEMPT_NOT_COMPARABLE,
+                attempts_used=len(prospective),
+                budget=AttemptBudget(),
+                floor=self._attempt_floor,
+                basis_attempt_ids=(record.attempt_id,),
+                provenance=record.provenance,
+                notes=record.integrity.reasons,
+            ).to_dict()
+        elif self._attempt_floor is None:
+            decision = {
                 "decision": None,
                 "reason": ATTEMPT_REASON_NO_FLOOR,
                 "attempts_used": len(prospective),
@@ -8209,18 +8229,17 @@ class CrossoverV2Conductor:
             # prediction, whose predicted error is exactly zero. Keeping the
             # pair explicit makes the store's realized−predicted sign contract
             # reproducible without reinterpreting the grade later.
-            count = writer(
+            writer(
+                speaker_id=self._speaker_id,
                 attempt_id=record.attempt_id,
                 metric=record.metric,
                 predicted_db=0.0,
                 realized_db=record.grade_db,
                 context={
                     "session_id": self.session_id,
-                    "speaker_id": self._speaker_id,
                     "provenance": record.provenance,
                 },
             )
-            self._model_error_store_count = max(0, int(count))
         except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
             log_event(
                 logger,

@@ -41,6 +41,7 @@ from jasper.active_speaker.attempts_loop import (
     PROVENANCE_REALIZED,
     REASON_ATTEMPT_NOT_COMPARABLE,
     REASON_BASELINE_ESTABLISHED,
+    REASON_GRADED_BINS_SHRANK,
     REASON_IMPROVEMENT_ABOVE_FLOOR,
     STOP_EVIDENCE,
     AttemptIntegrity,
@@ -406,6 +407,7 @@ def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
     pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
     pilot_snr_ok=None, floor_source=None, residual_samples=0.0,
+    n_graded_bins=120,
     integrity=_INTEGRITY_FROM_LOCATIONS,
 ) -> ProgramAnalysis:
     locations = (
@@ -435,7 +437,12 @@ def _verify_analysis(
         # W6.7 ruling 1: the conductor gates on the notch-excluded max, not the
         # raw ``max_db`` — this fake keeps them equal (a fake with no notch to
         # exclude), so the ``max_db`` parameter still controls the gate.
-        verify_tracking={"rms_db": 0.4, "max_db": max_db, "max_db_notch_excluded": max_db},
+        verify_tracking={
+            "rms_db": 0.4,
+            "max_db": max_db,
+            "max_db_notch_excluded": max_db,
+            "frame": {"n_bins": n_graded_bins},
+        },
         linearity_ok=linearity,
         pilot_snr_ok=pilot_snr_ok,
         pilots=(
@@ -569,9 +576,8 @@ def test_accepted_apply_verify_writes_model_error_exactly_once():
     written: list[dict[str, Any]] = []
     fakes = FakeSeams()
 
-    def record(**observation: Any) -> int:
+    def record(**observation: Any) -> None:
         written.append(dict(observation))
-        return len(written)
 
     c = _verify_only_conductor(
         fakes,
@@ -586,23 +592,60 @@ def test_accepted_apply_verify_writes_model_error_exactly_once():
     assert repeated["accepted"] is True
     assert len(written) == 1
     assert written[0] == {
+        "speaker_id": "speaker-a",
         "attempt_id": "candidate-a",
         "metric": flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
         "predicted_db": 0.0,
         "realized_db": 0.9,
         "context": {
             "session_id": SESSION,
-            "speaker_id": "speaker-a",
             "provenance": PROVENANCE_REALIZED,
         },
     }
     assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
-    assert c.model_error_store_count == 1
     assert c.last_attempt_decision["reason"] == REASON_BASELINE_ESTABLISHED
 
 
+def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_path):
+    """A rebuilt conductor may lack history even though the store write won."""
+    from jasper.active_speaker.model_error_store import (
+        load_state,
+        record_model_error,
+    )
+
+    path = tmp_path / "model-error.json"
+
+    def record(**observation: Any) -> None:
+        record_model_error(path=path, **observation)
+
+    first_fakes = FakeSeams()
+    first = _verify_only_conductor(
+        first_fakes,
+        seams=replace(first_fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    assert _run_phase(first, 1, 1)["accepted"] is True
+    assert len(load_state(path)["model_error"]) == 1
+
+    # Simulate a crash before the host persisted ``first.attempt_history``:
+    # rebuild with no history but the same applied-candidate identity.
+    recovered_fakes = FakeSeams()
+    recovered = _verify_only_conductor(
+        recovered_fakes,
+        seams=replace(recovered_fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    assert _run_phase(recovered, 1, 1)["accepted"] is True
+
+    records = load_state(path)["model_error"]
+    assert [item["attempt_id"] for item in records] == ["candidate-a"]
+    assert [item.attempt_id for item in recovered.attempt_history] == ["candidate-a"]
+
+
 def test_model_error_store_failure_warns_without_blocking_verify(caplog):
-    def fail_write(**_observation: Any) -> int:
+    def fail_write(**_observation: Any) -> None:
         raise OSError("synthetic full disk")
 
     fakes = FakeSeams()
@@ -632,7 +675,15 @@ def test_glitched_verify_reaches_loop_as_stop_evidence():
     ))
     fakes = FakeSeams()
     fakes.verify = lambda program: _verify_analysis(program, integrity=integrity)
-    c = _verify_only_conductor(fakes, tuning_attempt_id="candidate-glitched")
+    # No adopted floor is the production default. Evidence refusal must still
+    # outrank that absent grading precondition (#2033).
+    c = _conductor(
+        fakes,
+        index_phase_map={1: PHASE_VERIFY},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        tuning_attempt_id="candidate-glitched",
+    )
 
     verdict = _run_phase(c, 1, 1)
 
@@ -644,6 +695,38 @@ def test_glitched_verify_reaches_loop_as_stop_evidence():
     assert decision["notes"] == [
         INTEGRITY_CHECK_SWEEP_HEARD,
         INTEGRITY_CHECK_SWEEP_SCHEDULE,
+    ]
+
+
+def test_live_seam_refuses_improvement_when_verify_denominator_shrinks():
+    history = (
+        AttemptRecord(
+            attempt_id="candidate-previous",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+            n_graded_bins=400,
+        ),
+    )
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.6, n_graded_bins=200,
+    )
+    c = _verify_only_conductor(
+        fakes,
+        attempt_history=history,
+        tuning_attempt_id="candidate-latest",
+    )
+
+    verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is True
+    decision = c.last_attempt_decision
+    assert decision["decision"] == STOP_EVIDENCE
+    assert decision["reason"] == REASON_GRADED_BINS_SHRANK
+    assert decision["basis_attempt_ids"] == [
+        "candidate-previous", "candidate-latest",
     ]
 
 

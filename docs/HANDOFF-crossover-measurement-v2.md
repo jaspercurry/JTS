@@ -86,8 +86,13 @@ An accepted applied-candidate VERIFY now crosses one lifecycle seam in
 `max_db_notch_excluded` tracking grade become a realized `AttemptRecord`, and
 the pure [`attempts_loop.py`](../jasper/active_speaker/attempts_loop.py) kernel
 judges that record against the immediately preceding accepted candidate. The
-candidate fingerprint is the attempt identity, so a recovery re-verify cannot
-double-write or masquerade as another tune. Journey-scoped attempt history
+record also carries `verify_tracking.frame.n_bins`, the analyzer-owned count
+of validity-clamped, notch-excluded bins, so the kernel refuses an apparent
+improvement won by grading a narrower denominator. The candidate fingerprint
+is the attempt identity; it survives the verify-session rebind, and the store
+treats an identical retry as an idempotent no-op while refusing a conflicting
+reuse, so a crash/recovery re-verify cannot double-write or masquerade as
+another tune. Journey-scoped attempt history
 survives the relay-session rebind between apply and VERIFY; capture-phase
 evidence remains session-scoped as before. This is rung P4's live seam; see the
 [correction revision spine](HANDOFF-correction-revision-plan.md#rung-p4--wire-the-learning-loop)
@@ -98,12 +103,18 @@ The conductor performs no persistence itself. Its injected writer calls
 the tracking model's predicted error (`0`) and the analyzer's realized error;
 store failures warn at
 `event=correction.crossover_v2_model_error_write_failed` and never reverse an
-accepted flow verdict. Every loop judgment is visible at
+accepted flow verdict. The store's `active_speaker.model_error_recorded` event
+carries the explicit speaker, attempt, metric, and signed error. Every loop
+judgment is visible at
 `event=correction.crossover_v2_attempt_decision`; the existing
-`crossover_v2` state block exposes only the last decision and store count.
+`crossover_v2` state block exposes only the last decision and the store-owned
+record count read fresh at that boundary.
 `crossover_envelope_v2.attempt_loop_verdict_sentence` is the sole household
 copy writer and formats the kernel's reason, provenance, delta, and the floor
-carried on its decision rather than recomputing any of them.
+carried on its decision rather than recomputing any of them. Because this live
+grade measures applied-response agreement with the prediction—not flatness or
+target quality—the sentence says whether prediction tracking moved closer or
+farther, never that the crossover itself improved.
 
 Comparability is defense in depth, not a replacement for VERIFY's existing
 pre-tracking integrity gate. Any evaluated capture-integrity failure maps to
@@ -117,7 +128,10 @@ The claim floor still has one owner and one adoption path:
 path (`adopt_floor` / the replay CLI). The live flow never adopts or invents a
 floor. When none exists it stores the realized attempt and model error but
 labels the decision `ungraded_no_floor`; the household surface explicitly
-makes no improvement claim.
+makes no improvement claim. Capture-integrity refusal outranks that status: a
+glitched no-floor VERIFY still reports the kernel's
+`STOP_EVIDENCE / attempt_not_comparable`, rather than hiding failed evidence
+behind the missing floor.
 
 **2026-07-24 — Layer-1a linearization now EMITS (#1668 PR-D), not yet
 hardware-validated.** The fit engine's output (PR-C) now actually reaches

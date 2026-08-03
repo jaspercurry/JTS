@@ -1442,10 +1442,12 @@ def _attempt_provenance(decision: Mapping[str, Any]) -> str | None:
 
 
 def _attempt_first_sentence(decision: Mapping[str, Any]) -> str:
+    provenance = decision.get("provenance")
+    if provenance not in {PROVENANCE_REALIZED, PROVENANCE_MODEL_GRADED}:
+        return "Recorded the first tracking result without an improvement claim."
     return (
-        f"Recorded the first {PROVENANCE_REALIZED} result; another attempt is "
-        "needed before "
-        "improvement can be judged."
+        f"Recorded the first {provenance} tracking result; another attempt is "
+        "needed before improvement can be judged."
     )
 
 
@@ -1454,7 +1456,10 @@ def _attempt_improved_sentence(decision: Mapping[str, Any]) -> str:
     provenance = _attempt_provenance(decision)
     if amount is None or provenance is None:
         return "The latest attempt was recorded without an improvement claim."
-    return f"Improved the crossover by {amount} dB ({provenance})."
+    return (
+        "The latest applied result tracked its prediction "
+        f"{amount} dB more closely ({provenance})."
+    )
 
 
 def _attempt_floor_sentence(decision: Mapping[str, Any]) -> str:
@@ -1464,7 +1469,7 @@ def _attempt_floor_sentence(decision: Mapping[str, Any]) -> str:
     if magnitude is None or floor_db is None:
         return "Stopped because the instrument could not support another claim."
     return (
-        "Stopped: the remaining difference "
+        "Stopped: the change in prediction tracking from the previous attempt "
         f"({magnitude} dB) is below what this instrument can distinguish "
         f"(floor {floor_db} dB)."
     )
@@ -1481,8 +1486,8 @@ def _attempt_regression_sentence(decision: Mapping[str, Any]) -> str:
         return "The latest attempt did not support an improvement claim."
     amount = _attempt_db(abs(improvement))
     return (
-        f"The latest crossover result was {amount} "
-        f"dB worse ({provenance})."
+        "The latest applied result tracked its prediction "
+        f"{amount} dB less closely ({provenance})."
     )
 
 

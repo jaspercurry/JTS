@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 
@@ -21,16 +22,19 @@ from jasper.active_speaker.model_error_store import (
     DEFAULT_STATE_PATH,
     MAX_MODEL_ERROR_RECORDS,
     MODEL_ERROR_STATE_KIND,
+    ModelErrorConflictError,
     SCHEMA_VERSION,
     STATE_PATH_ENV,
     adopt_floor,
     load_state,
     model_error_state_path,
     record_model_error,
+    store_snapshot,
     stored_floor,
 )
 
 METRIC = "max_db_notch_excluded"
+SPEAKER = "speaker-a"
 
 
 def _floor() -> FloorStats:
@@ -114,34 +118,109 @@ def test_adopting_a_floor_replaces_rather_than_merges(tmp_path):
 def test_adopting_a_floor_preserves_existing_model_error_history(tmp_path):
     path = tmp_path / "store.json"
     record_model_error(
-        attempt_id="a1", metric=METRIC, predicted_db=1.0, realized_db=1.4,
+        speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
+        predicted_db=1.0, realized_db=1.4,
         path=path,
     )
     adopt_floor(_floor(), path=path)
     assert len(load_state(path)["model_error"]) == 1
 
 
-def test_model_error_sign_is_realized_minus_predicted(tmp_path):
+def test_model_error_sign_is_realized_minus_predicted(tmp_path, caplog):
     path = tmp_path / "store.json"
-    state = record_model_error(
-        attempt_id="a1", metric=METRIC,
-        predicted_db=1.0, realized_db=1.4, path=path,
-    )
+    with caplog.at_level(logging.INFO):
+        state = record_model_error(
+            speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
+            predicted_db=1.0, realized_db=1.4, path=path,
+        )
     record = state["model_error"][0]
     # Positive means the hardware came out WORSE than the model promised.
     assert record["error_db"] == pytest.approx(0.4)
+    assert "event=active_speaker.model_error_recorded" in caplog.text
+    assert f"speaker_id={SPEAKER}" in caplog.text
     state = record_model_error(
-        attempt_id="a2", metric=METRIC,
+        speaker_id=SPEAKER, attempt_id="a2", metric=METRIC,
         predicted_db=1.4, realized_db=1.0, path=path,
     )
     assert state["model_error"][0]["error_db"] == pytest.approx(-0.4)
+
+
+def test_model_error_write_is_idempotent_by_stable_observation_identity(
+    tmp_path, caplog,
+):
+    path = tmp_path / "store.json"
+    observation = {
+        "speaker_id": SPEAKER,
+        "attempt_id": "candidate-a",
+        "metric": METRIC,
+        "predicted_db": 0.0,
+        "realized_db": 0.9,
+        "path": path,
+    }
+
+    with caplog.at_level(logging.INFO):
+        first = record_model_error(**observation)
+        repeated = record_model_error(**observation)
+
+    assert len(first["model_error"]) == 1
+    assert len(repeated["model_error"]) == 1
+    assert repeated["model_error"][0]["speaker_id"] == SPEAKER
+    assert "event=active_speaker.model_error_duplicate_ignored" in caplog.text
+    assert f"speaker_id={SPEAKER}" in caplog.text
+
+
+def test_model_error_identity_conflict_refuses_to_replace_the_first_observation(
+    tmp_path,
+):
+    path = tmp_path / "store.json"
+    record_model_error(
+        speaker_id=SPEAKER,
+        attempt_id="candidate-a",
+        metric=METRIC,
+        predicted_db=0.0,
+        realized_db=0.9,
+        path=path,
+    )
+
+    with pytest.raises(ModelErrorConflictError):
+        record_model_error(
+            speaker_id=SPEAKER,
+            attempt_id="candidate-a",
+            metric=METRIC,
+            predicted_db=0.0,
+            realized_db=0.7,
+            path=path,
+        )
+
+    records = load_state(path)["model_error"]
+    assert len(records) == 1
+    assert records[0]["realized_db"] == pytest.approx(0.9)
+
+
+def test_store_snapshot_reads_floor_and_count_as_one_owned_view(tmp_path):
+    path = tmp_path / "store.json"
+    adopt_floor(_floor(), path=path)
+    record_model_error(
+        speaker_id=SPEAKER,
+        attempt_id="candidate-a",
+        metric=METRIC,
+        predicted_db=0.0,
+        realized_db=0.9,
+        path=path,
+    )
+
+    snapshot = store_snapshot(path)
+
+    assert snapshot.floor is not None
+    assert snapshot.floor.metric == METRIC
+    assert snapshot.model_error_count == 1
 
 
 def test_model_error_history_is_newest_first_and_bounded(tmp_path):
     path = tmp_path / "store.json"
     for index in range(MAX_MODEL_ERROR_RECORDS + 8):
         record_model_error(
-            attempt_id=f"a{index}", metric=METRIC,
+            speaker_id=SPEAKER, attempt_id=f"a{index}", metric=METRIC,
             predicted_db=0.0, realized_db=float(index), path=path,
         )
     records = load_state(path)["model_error"]
@@ -163,7 +242,8 @@ def test_over_long_history_on_disk_is_trimmed_on_read(tmp_path):
 def test_context_rides_along_verbatim(tmp_path):
     path = tmp_path / "store.json"
     state = record_model_error(
-        attempt_id="a1", metric=METRIC, predicted_db=1.0, realized_db=1.0,
+        speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
+        predicted_db=1.0, realized_db=1.0,
         path=path, context={"build_sha": "abc123", "band_hz": [1000.0, 4000.0]},
     )
     assert state["model_error"][0]["context"] == {
@@ -207,7 +287,8 @@ def test_writes_are_atomic_and_leave_no_temp_files(tmp_path):
     path = tmp_path / "store.json"
     adopt_floor(_floor(), path=path)
     record_model_error(
-        attempt_id="a1", metric=METRIC, predicted_db=1.0, realized_db=1.1,
+        speaker_id=SPEAKER, attempt_id="a1", metric=METRIC,
+        predicted_db=1.0, realized_db=1.1,
         path=path,
     )
     assert sorted(item.name for item in tmp_path.iterdir()) == ["store.json"]

@@ -60,6 +60,7 @@ from jasper.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
+    from jasper.active_speaker.model_error_store import ModelErrorStoreSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -392,27 +393,22 @@ def clear_v2_state() -> None:
             )
 
 
-def _attempt_loop_store_snapshot() -> tuple[Any, int]:
+def _attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
     """The store-owned floor and current model-error count for one conductor.
 
     The host performs the I/O at conductor construction; the conductor
     receives values and a writer seam, and the attempts kernel remains pure.
     """
-    from jasper.active_speaker.model_error_store import load_state, stored_floor
+    from jasper.active_speaker.model_error_store import store_snapshot
 
-    state = load_state()
-    records = state.get("model_error")
-    count = len(records) if isinstance(records, list) else 0
-    return stored_floor(), count
+    return store_snapshot()
 
 
-def _record_live_model_error(**observation: Any) -> int:
+def _record_live_model_error(**observation: Any) -> None:
     """Production binding for the conductor's fail-soft persistence seam."""
     from jasper.active_speaker.model_error_store import record_model_error
 
-    state = record_model_error(**observation)
-    records = state.get("model_error")
-    return len(records) if isinstance(records, list) else 0
+    record_model_error(**observation)
 
 
 def reset_v2_journey_state() -> None:
@@ -1478,7 +1474,10 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
     attempts = (state or {}).get("attempts_loop")
     attempts = attempts if isinstance(attempts, Mapping) else {}
     last_attempt_decision = attempts.get("last_decision")
-    store_count = attempts.get("store_count")
+    # Count is derived from its persistence owner on every state read. Keeping
+    # a second copy in journey state made crash recovery and offline store
+    # repair observable as two contradictory counts.
+    store_count = _attempt_loop_store_snapshot().model_error_count
     try:
         needs_recovery = bool(session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
@@ -1508,11 +1507,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
                 dict(last_attempt_decision)
                 if isinstance(last_attempt_decision, Mapping) else None
             ),
-            "store_count": (
-                int(store_count)
-                if isinstance(store_count, int) and not isinstance(store_count, bool)
-                and store_count >= 0 else 0
-            ),
+            "store_count": store_count,
         },
         # Flat-linearization plan PR-4: the compact per-group honesty
         # verdict. ``None`` when no group has closed yet — never a fabricated
@@ -2023,9 +2018,6 @@ def persist_conductor_state(
                 if getattr(snap, "last_attempt_decision", None) is not None
                 else None
             ),
-            "store_count": int(
-                getattr(snap, "model_error_store_count", 0) or 0
-            ),
         }
     else:
         prior_attempts = prior.get("attempts_loop")
@@ -2059,7 +2051,8 @@ def persist_conductor_state(
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         # S3 journey state. The conductor is the sole lifecycle owner and the
         # web host serializes its snapshot verbatim; `/state` below projects
-        # only the last decision + store count, never the full history.
+        # only the last decision, never the full history. The store count is
+        # read fresh from its persistence owner at the `/state` boundary.
         "attempts_loop": attempts_loop_state,
         "candidate": _candidate_summary(conductor.candidate),
         "verify": (
@@ -2287,7 +2280,19 @@ def persist_conductor_state(
     if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
         state["applied"] = True
     if state["candidate"] is None and isinstance(prior.get("candidate"), Mapping):
-        if prior.get("session_id") == snap.session_id:
+        # A verify-only re-arm mints a new relay session around the already-
+        # applied candidate. Its conductor intentionally has no candidate
+        # object of its own, but the fingerprint is the attempts loop's stable
+        # write identity; erasing it here turns recovery into a second record.
+        # A measuring session still keeps the old session-scoped rule so a new
+        # journey cannot inherit a stale candidate before it builds its own.
+        if (
+            prior.get("session_id") == snap.session_id
+            or (
+                prior.get("applied") is True
+                and PHASE_MEASURE not in snap.session_phases
+            )
+        ):
             state["candidate"] = dict(prior["candidate"])
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
         if prior.get("session_id") == snap.session_id:
@@ -5099,7 +5104,7 @@ def prepare_v2_session(
     stop_lock = threading.Lock()
 
     prior_raw = load_v2_state()
-    attempt_floor, model_error_store_count = _attempt_loop_store_snapshot()
+    attempt_store = _attempt_loop_store_snapshot()
     prior_loop = (
         prior_raw.get("attempts_loop")
         if isinstance(prior_raw, Mapping) else None
@@ -5120,7 +5125,6 @@ def prepare_v2_session(
                 if isinstance(prior_decision, Mapping)
                 else None
             ),
-            model_error_store_count=model_error_store_count,
         )
         if isinstance(prior_raw, Mapping)
         else None
@@ -5221,8 +5225,7 @@ def prepare_v2_session(
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
-            attempt_floor=attempt_floor,
-            model_error_store_count=model_error_store_count,
+            attempt_floor=attempt_store.floor,
             speaker_id=context.topology.topology_id,
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
@@ -5348,7 +5351,7 @@ def prepare_v2_verify(
             "verification needs an applied measured crossover; measure and "
             "apply first"
         )
-    attempt_floor, model_error_store_count = _attempt_loop_store_snapshot()
+    attempt_store = _attempt_loop_store_snapshot()
     attempts_loop = state.get("attempts_loop")
     attempts_loop = attempts_loop if isinstance(attempts_loop, Mapping) else {}
     prior_attempt_decision = attempts_loop.get("last_decision")
@@ -5494,12 +5497,11 @@ def prepare_v2_verify(
             ),
             verify_pilot_transfer_prior=pilot_transfer_prior,
             attempt_history=attempt_history_from_state(state),
-            attempt_floor=attempt_floor,
+            attempt_floor=attempt_store.floor,
             last_attempt_decision=(
                 dict(prior_attempt_decision)
                 if isinstance(prior_attempt_decision, Mapping) else None
             ),
-            model_error_store_count=model_error_store_count,
             speaker_id=context.topology.topology_id,
             tuning_attempt_id=tuning_attempt_id,
         )

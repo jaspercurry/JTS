@@ -102,6 +102,10 @@ _WIDER_SPOT_DISTANCE = format_position_distance(GEOMETRY_RETRY_OFFSET_CM)
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH",
+        str(tmp_path / "model_error.json"),
+    )
     v2host.reset_session_measurement_pause_for_tests()
     yield
     v2host.set_state_path_for_tests(None)
@@ -1614,8 +1618,10 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
     assert no_current[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
 
 
-def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):
-    """B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
+def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
+    """A new VERIFY relay keeps the applied candidate and its cloud evidence.
+
+    B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
     (``prepare_v2_verify``'s ``index_phase_map={1: PHASE_VERIFY}``) has no
     group phase in ITS OWN session, so ``_cloud_summary`` honestly returns
     ``None`` for it — but the OLD session-id-gated carry-forward turned that
@@ -1631,7 +1637,10 @@ def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):
     production seam ``prepare_v2_verify``'s ``_open`` uses, mirroring
     ``test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm``'s
     own pattern for ``pre_apply_profile``) -> asserts all three surfaces
-    (`/state`, the envelope, the doctor) still see the cloud verdict.
+    (`/state`, the envelope, the doctor) still see the cloud verdict. The
+    candidate assertion also pins #2079's crash/retry write identity: the
+    fingerprint must survive this same new-session rebind so a recovery
+    VERIFY cannot become a second model-error observation.
     """
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
     from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
@@ -1693,6 +1702,7 @@ def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):
     # Surface 1: the durable state itself.
     state = v2host.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
+    assert state["candidate"] == {"fingerprint": "fp-original"}
     assert state["cloud"] == cloud_block
     assert state["evidence"]["cloud_artifacts"] == {
         PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"
@@ -3688,7 +3698,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
             "provenance": "realized",
             "floor": {"claim_floor_db": 0.17},
         },
-        "store_count": 7,
     }
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3696,6 +3705,17 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
         "applied": True,
         "attempts_loop": loop,
     })
+
+    from jasper.active_speaker.model_error_store import record_model_error
+
+    for index in range(7):
+        record_model_error(
+            speaker_id="speaker-a",
+            attempt_id=f"candidate-{index}",
+            metric="max_db_notch_excluded",
+            predicted_db=0.0,
+            realized_db=float(index),
+        )
 
     block = v2host.crossover_v2_status_block()
     assert block["attempts_loop"] == {
