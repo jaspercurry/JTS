@@ -1556,10 +1556,10 @@ outcome block of
 [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md))
 recomputed each capture's CHECK woofer pilot SNR and matched the persisted
 sidecar on all four, to every digit the sidecar carries. That makes it an
-excellent *regression* instrument. But it is
-the model grading itself. It proves the code still computes what it computed
-last time. It cannot tell you that the prescription was **right**, because the
-corpus carries no ground truth: nobody knows what the correct answer was.
+excellent *regression* instrument. But it is the model grading itself. It proves
+the code still computes what it computed last time. It cannot tell you that the
+prescription was **right**, because the corpus carries no ground truth: nobody
+knows what the correct answer was.
 
 **Hardware** proves the whole chain, and is the only instrument that can. It is
 also slow, needs a room and a calibrated mic, and — decisively — **cannot
@@ -1580,9 +1580,8 @@ fact.
 
 This is already the house pattern in places — what is missing is that it is
 applied *systematically*, as a coverage obligation rather than wherever someone
-happened to reach for it. `fit_driver_linearization`
-is exercised by a synthetic fixture family whose expected outcomes are
-tabulated in the docstring of
+happened to reach for it. `fit_driver_linearization` is exercised by a synthetic
+fixture family whose expected outcomes are tabulated in the docstring of
 `test_correction_giveback_approximates_spend_on_the_canonical_synthetic`
 (`tests/test_active_speaker_linearization_fit.py`) — canonical CD-horn deficit,
 live-rig, budget-bound, flattening-cuts-only, and flat, each with its own spend
@@ -1622,8 +1621,8 @@ They validate **reasoning**, never **measurement**.
 Every genuinely hard failure this system has had lives at the capture boundary:
 pilot SNR, clipping, glitch splices, gating, mic calibration, level collapse. A
 synthetic curve is born clean and skips all of it. One of the four captures in
-the 2026-08-02 replay recorded a −2090.5-sample discontinuity after its `sweep_t`
-segment; downstream of that one physical step its sidecar carries
+the 2026-08-02 replay recorded a −2090.5-sample discontinuity after its
+`sweep_t` segment; downstream of that one physical step its sidecar carries
 `glitch_detected` (via `glitch_inputs=residual_desync`), an
 `alignment_confidence` of `0.0` under
 `alignment_status=delay_exceeds_search_window`, and an `epsilon_ppm` that
@@ -1631,9 +1630,8 @@ segment; downstream of that one physical step its sidecar carries
 step, not a drift measurement". Those are separate estimators reacting to the
 same defect, not a chain — `_estimate_alignment` never reads the glitch verdict.
 No synthesized response would ever have produced any of it. So a synthetic
-scenario can establish that the logic
-reasons correctly about a defect it was handed; it can never establish that the
-measurement handed it the truth.
+scenario can establish that the logic reasons correctly about a defect it was
+handed; it can never establish that the measurement handed it the truth.
 
 **A synthetic scenario therefore never retires a hardware check.** It narrows
 what hardware time has to cover, which is a real saving on a flow that needs a
