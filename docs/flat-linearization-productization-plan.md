@@ -1386,7 +1386,9 @@ host's existing `consume()` seam — only the trigger point moves.*
 
 *As shipped: `_measure_verdict` keeps **every** gate it owned (locate, glitch,
 sweep-schedule, clip, linearity, alignment status, the alignment-confidence
-trust floor, Fix-3 plausibility, and G1's predicted-ripple ceiling) because
+trust floor, Fix-3 plausibility, and G1's predicted-ripple check — which since
+the 2026-08-03 ruling on #2087 discloses rather than refuses, but still runs
+here and still reads the analysis) because
 every one of them reads the ANALYSIS, not the candidate — a session doomed at
 sweep two still fails at sweep two rather than after a nine-position walk. The
 one candidate-coupled failure that used to surface there, an analysis with no

@@ -84,7 +84,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     MAX_CLOUD_MEASURE_POSITIONS,
-    MEASURE_PREDICTED_RIPPLE_CEILING_DB,
+    MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
     MIN_CLOUD_MEASURE_POSITIONS,
     MIN_CLOUD_OFFSET_CM,
     MIN_CLOUD_VERIFY_POSITIONS,
@@ -1061,18 +1061,27 @@ def test_implausible_delay_rejects_measure_even_at_high_confidence():
     assert verdict2["accepted"] is True
 
 
-# --- measurement-honesty gate G1: predicted-ripple sanity ceiling -----------------
+# --- measurement-honesty disclosure G1: predicted-ripple reservation --------------
+#
+# These four tests pinned the OPPOSITE behaviour until the owner's 2026-08-03
+# ruling (#2087): crossing the threshold refused the capture and reused
+# ``low_alignment_confidence``. They are transformed rather than deleted, so
+# every boundary the old gate was pinned at is still pinned — the threshold,
+# its exclusive ``>``, and the trims-only skip all survive; only the
+# consequence of crossing it changed from a refusal to a disclosure.
 
 
-def test_predicted_ripple_ceiling_rejects_measure_reusing_low_alignment_confidence():
-    """Measurement-honesty gate G1 (2026-07-22): a candidate whose OWN
-    predicted ripple is implausibly bad — mirrors the 2026-07-22 corrupted-
-    phone-chain hardware evidence (27.316 dB at a confidence that cleared
-    ALIGNMENT_CONFIDENCE_TRUST_FLOOR) — must not auto-apply even though
-    confidence and the Fix 3 plausibility check both pass. Reuses
-    low_alignment_confidence (same household action, "measure again"); the
-    diag ``guard`` field disambiguates it from the other two checks sharing
-    that code in telemetry."""
+def test_predicted_ripple_over_threshold_accepts_and_banks_a_reservation():
+    """Owner ruling #2087: a candidate whose OWN predicted ripple is worse
+    than the calibration corpus — mirrors the 2026-07-22 corrupted-phone-chain
+    hardware evidence (27.316 dB at a confidence that cleared
+    ALIGNMENT_CONFIDENCE_TRUST_FLOOR) — now PROCEEDS carrying an honest
+    reservation instead of refusing.
+
+    The refusal this replaces told a household with a correctly placed
+    microphone to move it (#2085) and killed the session on the attempt meter
+    (#2086). What the capture measured is unchanged; what the household is
+    told about it is the whole change."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(
         program, predicted_ripple_db=27.316,
@@ -1080,17 +1089,46 @@ def test_predicted_ripple_ceiling_rejects_measure_reusing_low_alignment_confiden
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "low_alignment_confidence"
-    assert not fakes.published_candidates
-    assert c.candidate is None
-    assert c.current_phase == PHASE_MEASURE
+    assert verdict["accepted"] is True
+    # No reason code at all — an accepted verdict carries none, which is the
+    # structural difference from the refusal this replaces.
+    assert not verdict.get("code")
+    # The measured value rides WITH the threshold it was judged against, so a
+    # later constant change cannot retro-caption a banked reservation.
+    assert c.measure_ripple_reservation == {
+        "predicted_ripple_db": 27.316,
+        "threshold_db": MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
+    }
 
 
-def test_predicted_ripple_well_under_ceiling_passes():
+def test_predicted_ripple_disclosure_emits_its_own_event(caplog):
+    """The disclosure has a stable ``event=`` line of its own, at WARNING.
+
+    ``guard=`` on the per-capture diag is one field on a line that fires for
+    every capture; this is the line an operator counts or alerts on."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=15.244,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert _run_phase(c, 2, 2)["accepted"] is True
+    assert "event=correction.crossover_v2_ripple_disclosed" in caplog.text
+    assert "predicted_ripple_db=15.244" in caplog.text
+    assert "threshold_db=15.0" in caplog.text
+    assert any(
+        record.levelno == logging.WARNING
+        and "crossover_v2_ripple_disclosed" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_predicted_ripple_well_under_threshold_banks_nothing():
     """A representative value from the 2026-07-22 clean-corpus worst case
-    passes cleanly — the ceiling sits well above it. See
-    ``MEASURE_PREDICTED_RIPPLE_CEILING_DB``'s comment for the corpus
+    passes with NO reservation — the threshold sits well above it, and a clean
+    capture must say nothing rather than reassure. See
+    ``MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB``'s comment for the corpus
     composition AND range; neither is restated here per issue #2015 (the
     range drifted the same way the count once did)."""
     fakes = FakeSeams()
@@ -1101,35 +1139,41 @@ def test_predicted_ripple_well_under_ceiling_passes():
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
+    assert c.measure_ripple_reservation is None
 
 
-def test_predicted_ripple_ceiling_boundary_exact_passes_just_above_fires():
-    """The ceiling is an exclusive upper bound (``>``, not ``>=``) — exactly
-    at the ceiling passes, matching this file's other boundary comparators
-    (e.g. test_alignment_confidence_at_the_trust_floor_is_trusted)."""
+def test_predicted_ripple_threshold_boundary_exact_is_silent_just_above_discloses():
+    """The threshold is an exclusive upper bound (``>``, not ``>=``) — exactly
+    at it banks nothing, matching this file's other boundary comparators
+    (e.g. test_alignment_confidence_at_the_trust_floor_is_trusted). Both sides
+    accept now; the boundary decides whether anything is DISCLOSED."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_CEILING_DB,
+        program, predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
     )
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     assert _run_phase(c, 2, 2)["accepted"] is True
+    assert c.measure_ripple_reservation is None
 
     fakes2 = FakeSeams()
     fakes2.measure = lambda program: _measure_analysis(
-        program, predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_CEILING_DB + 0.01,
+        program,
+        predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB + 0.01,
     )
     c2 = _conductor(fakes2)
     _run_phase(c2, 1, 1)
     verdict2 = _run_phase(c2, 2, 2)
-    assert verdict2["accepted"] is False
-    assert verdict2["code"] == "low_alignment_confidence"
+    assert verdict2["accepted"] is True
+    assert c2.measure_ripple_reservation is not None
 
 
-def test_predicted_ripple_ceiling_skips_when_no_alignment():
-    """A trims-only candidate (no alignment estimate at all) is never
-    ripple-gated — same condition the confidence floor and Fix 3 use (see
-    test_no_alignment_estimate_skips_the_confidence_gate)."""
+def test_predicted_ripple_disclosure_skips_when_no_alignment():
+    """A trims-only candidate (no alignment estimate at all) banks no ripple
+    reservation — the same skip condition the confidence floor and Fix 3 use
+    (see test_no_alignment_estimate_skips_the_confidence_gate), kept through
+    the conversion because a reservation about a candidate built without an
+    alignment estimate would describe something else."""
     from dataclasses import replace
 
     fakes = FakeSeams()
@@ -1140,6 +1184,32 @@ def test_predicted_ripple_ceiling_skips_when_no_alignment():
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
+    assert c.measure_ripple_reservation is None
+
+
+def test_predicted_ripple_reservation_clears_when_a_retake_is_clean():
+    """A re-measured MEASURE that comes back clean CLEARS the reservation.
+
+    The reservation describes the ACCEPTED capture, so it must not outlive the
+    capture it was about — the same reset-at-the-top-of-``_measure_verdict``
+    lifecycle ``_last_measure_guard`` has. Pinned because the failure mode is
+    silent: a stale reservation would caption a clean measurement with a
+    caveat about a capture the household already replaced."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=27.316,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    assert c.measure_ripple_reservation is not None
+
+    fakes.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=9.0,
+    )
+    c._rearm_measure_after_transient()
+    _run_phase(c, 2, 2)
+    assert c.measure_ripple_reservation is None
 
 
 def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target():
@@ -6536,11 +6606,15 @@ def test_measure_diag_logs_full_numbers_on_low_alignment_confidence_rejection(ca
     assert 'guard=""' in caplog.text
 
 
-def test_measure_diag_logs_guard_field_on_ripple_ceiling_fire(caplog):
-    """The diag ``guard`` field distinguishes a G1 fire from the two
-    pre-existing checks (confidence floor, Fix 3 plausibility) that share
-    the SAME reused low_alignment_confidence code — see the two tests
-    above for the "guard empty" counterpart on each of those."""
+def test_measure_diag_logs_guard_field_on_ripple_disclosure(caplog):
+    """The diag ``guard`` field still names G1 on an ACCEPTED capture (#2087).
+
+    Transformed from the pre-ruling pin, which asserted ``guard=ripple_ceiling``
+    on a refusal. The value changed with the behaviour: its siblings name
+    checks that REFUSED, so a path that now accepts must not keep a refusal's
+    vocabulary. This is what keeps the existing per-capture telemetry able to
+    find these captures — and asserting ``accepted`` alongside it is the point,
+    since a reader of this field can no longer infer a rejection from it."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(
@@ -6549,9 +6623,9 @@ def test_measure_diag_logs_guard_field_on_ripple_ceiling_fire(caplog):
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
-    assert verdict["code"] == "low_alignment_confidence"
+    assert verdict["accepted"] is True
     assert "event=correction.crossover_v2_measure_diag" in caplog.text
-    assert "guard=ripple_ceiling" in caplog.text
+    assert "guard=ripple_disclosure" in caplog.text
     assert "predicted_ripple_db=27.316" in caplog.text
 
 

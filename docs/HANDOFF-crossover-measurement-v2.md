@@ -321,10 +321,13 @@ which is the input that work needs — see the diagnostics section below.
 **Measurement-honesty gates (2026-07-22 night).** Three additive acceptance
 gates convert the corrupted-capture signatures above into honest
 refusals/retries — no selection math and no VERIFY comparison semantics
-changed. MEASURE refuses a candidate whose `predicted_ripple_db` exceeds
-`MEASURE_PREDICTED_RIPPLE_CEILING_DB` (15 dB; the corrupted phone solve
-predicted 27.3 dB where every clean capture that day predicted 4.4–9.0 —
-reuses `low_alignment_confidence`, same household action). MEASURE
+changed. **G1 is no longer one of the refusals: since the owner's 2026-08-03
+ruling (#2087) it DISCLOSES.** MEASURE accepts a candidate whose
+`predicted_ripple_db` exceeds `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB`
+(15 dB; the corrupted phone solve predicted 27.3 dB where every clean capture
+that day predicted 4.4–9.0) and banks a reservation the household reads as one
+plain sentence on the review and done screens — see "G1 discloses, it does not
+refuse" below. MEASURE
 rejects-and-auto-retries as a glitch when any sweep locates off schedule
 (`_sweep_schedule_ok`: |residual| > 5 ms; the xrun signature was −25…−28 ms
 vs ≤1.5 ms on every clean capture — reuses `drift_baselines_disagree`).
@@ -1678,7 +1681,7 @@ unready setup.
 | `volume_unresolved` | session | — | the `volume_recovery` screen |
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
 | `verify_level_shift` | VERIFY | 2 | G3, session-scoped since #1927 — the recording chain moved DURING this sitting, so the capture is not evidence about the speaker. Structurally unreachable on a session's FIRST usable attempt. Same verify-fail screen; its copy (#1924) is written for the fact that ONE string renders where "try again" is two different controls — the measurement page's in-session re-arm, which re-compares the same reference and can repeat, and the wizard's fresh session, which re-baselines and settles it in one capture. So it names the visible primary and makes Re-measure / Undo the escalation *if the retry repeats*, commanding neither |
-| `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18) |
+| `low_alignment_confidence` | MEASURE | 1 | **TWO causes, since #2087 took away a third.** Alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18). The **G1 predicted-ripple** check reused this code as an undocumented third cause until the owner's 2026-08-03 ruling, and that reuse is exactly what made the ruling necessary: a high ripple says the two branches summed incoherently on this rig, which the copy above answers by telling a household to move a microphone that was often already right (#2085), and the refusal then consumed the attempt budget until the session died (#2086). G1 now discloses instead — see "G1 discloses, it does not refuse" below. The `guard` diag field still separates the two remaining causes (empty for both) from G1's `ripple_disclosure`, which now rides an **accepted** capture |
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 | `driver_levels_disagree` | confirm seam | 0 (hard stop) | **TWO gates share this code** — the household's remedy is identical, so one sentence serves both, and `event=` separates them in the journal (`_assert_accountable` runs the frame gate first, as the more specific diagnosis). (a) `event=…_level_frame_refused` — linearization-integrity PR-L5's shared level FRAME: the two measured estimates of where the drivers sit relative to each other (`solve_branch_trims`' mirrored ±1-octave power average and the fit's `driver_core_level_db` median) disagree by more than `LEVEL_FRAME_AGREEMENT_TOLERANCE_DB`, so no trim derived from them can be trusted. Since #1929 that median is read over each driver's **radiating band** — declared `measurement_band_hz` spans routinely reach past Fc, and a median that counts a driver's own crossover stopband refused healthy speakers (2026-07-30 field session, 3.395 dB). **Since the #1866 frame-gate ruling (2026-07-30) the frame gate no longer refuses on a disagreement alone**: it consults gate (b)'s realized-level verdict for the same candidate, and when THAT passes it banks the disagreement as an M7 finding (`event=…_level_frame_finding`, WARNING, carrying both estimators' per-role levels, both bands, and the realized difference; persisted to the bundle as `findings_measure.json`) and the session **proceeds — the same tune, not refused**. Read "proceeds" precisely: it commits the anchor the fit always computed, which is `giveback + system − core` (the trim term cancels), so the committed inter-driver placement is set by the CORE-MEDIAN frame — the *disputed* estimator — and gate (b) grades the OUTCOME rather than picking a winner between the two frames. The ruling's own wording ("proceeds on the near-Fc anchor (the trim solve)") describes the opposite; the corrected mechanism above is the **ratified** one (owner confirmed 2026-07-30, #1866 comment 5137494519). `event=…_level_frame_refused` therefore now means both instruments failed — or, on a path that is fail-closed and today unreachable, that no realized verdict existed at all. Why: #1929 removed a structural bias from one estimator but not the residual, which scales with ordinary driver shape (a pair identical by construction reads 0.910 dB apart; ~1.33 dB per dB/octave of woofer passband tilt on top), so the gate was refusing healthy speakers whose OUTPUT every other instrument graded fine. (b) `event=…_level_match_refused` — PR-L4 item 1: after the committed trim the two drivers' *realized* levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. Both refuse BEFORE the apply thread starts, so the speaker is untouched |
 | `correction_not_an_improvement` | confirm seam | 0 (hard stop) | PR-L4 item 2: the PREDICTED post-apply response fails the flat spec and is not better than the measured pre-apply state by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. Also refused before the apply. **Since rung P3 / R10b both of its terms carry the committed residual delay, which does not cancel between them and narrows the margin as the residual grows** — see "VERIFY compares the applied response with the summed model at the committed delay" below for the measured curve and why the onset is capture-specific |
@@ -1686,6 +1689,37 @@ unready setup.
 | `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back |
 | `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
 | `correction_rollback_failed` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the probe found one of the three defects above AND the automatic rollback could not run (no binding, a refused restore, or a seam that raised). The correction is therefore **still applied**, and this row exists so the copy says so instead of promising a restore that did not happen. Names Undo as the manual action |
+
+**G1 discloses, it does not refuse (owner ruling, 2026-08-03, #2087).** A
+predicted ripple above `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` accepts the
+capture, banks `{predicted_ripple_db, threshold_db}`, and carries an honest
+reservation to the household. The threshold survives as the disclosure
+trigger; only what crossing it *does* changed.
+
+Where it surfaces: `event=correction.crossover_v2_ripple_disclosed` (WARNING)
+in the journal; `guard=ripple_disclosure` on the existing per-capture
+`correction.crossover_v2_measure_diag` line — **paired with `accepted=true`,
+so that field can no longer be read as "a check refused"**; one `info` nudge
+(`crossover_v2_ripple_reservation`) on the review and done screens; and the
+measured pair in those screens' collapsed expert details. State lives at
+`state["measure"]["ripple_reservation"]` and carries across the stage-2 bundle
+hop on the same `PHASE_MEASURE`-absent predicate the banked-findings
+projection uses — without that the caveat would reach the screen where a
+household DECIDES and not the one that tells them the speaker is tuned.
+
+Why it was a bad refusal, from the live 2026-08-03 bench validation: a capture
+at 15.244 dB was refused 58 s after an identically-positioned 11.324 dB
+capture was accepted, at alignment confidences 0.677 and 0.677 — both well
+clear of the 0.6 trust floor, so confidence was never the discriminator the
+reused reason code claimed. The household was told to move a correctly-placed
+microphone, and the attempt meter then ended the session. The threshold's own
+calibration corpus was collected on clean rigs at 4.4–9.0 dB; a room and
+recording chain that simply sit at 11–15 dB are the case the ruling addresses.
+
+The reservation is scoped deliberately narrowly. It qualifies the EVIDENCE,
+never the outcome: `predicted_ripple_db` says how coherently two branches can
+sum at all, not how the speaker will sound, and every accountability gate
+below still grades the correction itself on this candidate.
 
 **The accountability veto guards the confirm seam.** PR-6b's
 `_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
@@ -2285,15 +2319,18 @@ proposition from fix-2 (`0b7ab5eb7`, reverted 2026-07-21):
    prediction would agree with it — a closed loop. Since #1649 the delay is
    selected by the physical peak-gap anchor plus a gated local-peak snap, and
    summed flatness is evidence only. The loop is gone.
-3. **The veto a candidate could formerly talk past is still on the old
+3. **The number a candidate could formerly talk past is still on the old
    instrument.** `CrossoverCandidate.predicted_ripple_db` — the sole input to
-   the G1 `MEASURE_PREDICTED_RIPPLE_CEILING_DB` capture-quality gate — is still
-   measured on the independently aligned sum, deliberately, so a candidate
-   cannot use its own delay term to lower it. This is a real evasion path, not
+   the G1 `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` capture-quality threshold —
+   is still measured on the independently aligned sum, deliberately, so a
+   candidate cannot use its own delay term to lower it. That threshold
+   discloses rather than refuses since #2087, and the argument survives the
+   change intact: a reservation a capture can talk its way out of is as
+   dishonest as a veto it could. This is a real evasion path, not
    a theoretical one: sweeping the residual across the ±(period/6) radius on
    the banked 2026-07-30 capture, **32 of 84** sampled residuals score BELOW
    the zero-residual 14.8831 dB, bottoming at 14.0744 dB — and that capture
-   sits 0.12 dB under the 15.0 dB ceiling.
+   sits 0.12 dB under the 15.0 dB threshold.
 4. **Fix 3's plausibility rail is unchanged**: the applied delay still has to
    sit inside the preset's declared `delay_range_ms` ± margin.
 
@@ -2978,4 +3015,8 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-07-30
+Last verified: 2026-08-03 — re-verified the MEASURE-phase acceptance section,
+the terminal-code cause table's `low_alignment_confidence` row, and the
+predicted-ripple frame claim against `crossover_v2_flow.py` /
+`crossover_envelope_v2.py` / `correction_crossover_v2.py` while landing the
+#2087 ruling. Sections outside that path carry their 2026-07-30 verification.

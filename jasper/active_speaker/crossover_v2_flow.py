@@ -1934,27 +1934,46 @@ ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
 # the confidence floor above.
 ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 
-# Measurement-honesty gate G1 (2026-07-22): a corrupted phone-chain MEASURE
-# capture on 2026-07-22 hardware built a candidate whose ``predicted_ripple_db``
-# was 27.316 dB at an alignment confidence (0.703) that cleared
-# ALIGNMENT_CONFIDENCE_TRUST_FLOOR above — the candidate auto-applied, then
-# failed three VERIFYs at 5.3-6.7 dB. Every clean MEASURE that same day
+# Measurement-honesty disclosure G1 (2026-07-22; converted from a refusal to a
+# disclosure by owner ruling on 2026-08-03, issue #2087): a corrupted
+# phone-chain MEASURE capture on 2026-07-22 hardware built a candidate whose
+# ``predicted_ripple_db`` was 27.316 dB at an alignment confidence (0.703) that
+# cleared ALIGNMENT_CONFIDENCE_TRUST_FLOOR above — the candidate auto-applied,
+# then failed three VERIFYs at 5.3-6.7 dB. Every clean MEASURE that same day
 # predicted 4.387-9.031 dB — 13 captures precisely: 4 on UMIK-2, 8 on
 # iMM-6C, 1 accepted phone-chain measure. This composition is OWNED here;
 # cite this comment rather than re-quoting a count (issue #2015 traced a
 # since-corrected 12-capture, two-chain restatement elsewhere to a copy
 # that dropped the phone measure). Primary source: that night's own
 # retention sidecars, tabulated in ``captures/xover-e0-2026-07-21/
-# honesty-guards-proof-20260722/REPORT.md``'s G1 table. This ceiling sits ~6
+# honesty-guards-proof-20260722/REPORT.md``'s G1 table. This threshold sits ~6
 # dB above the clean corpus's worst case and ~12 dB below the corrupt one —
-# wide margin on both sides. A candidate whose OWN predicted ripple is this
-# bad is not a trustworthy basis for auto-apply regardless of what alignment
-# confidence reported, so this REUSES REASON_LOW_ALIGNMENT_CONFIDENCE (same
-# household action — "measure again" — as the confidence floor and Fix 3's
-# plausibility backstop above; the diag ``guard`` field disambiguates which of
-# the three actually fired in telemetry). PROVISIONAL pending W6 bench
-# validation, same status as every other MEASURE-phase gate in this block.
-MEASURE_PREDICTED_RIPPLE_CEILING_DB = 15.0
+# wide margin on both sides.
+#
+# **It is a DISCLOSURE TRIGGER, not a gate — the owner's 2026-08-03 ruling on
+# #2087.** It refused captures until then, and the refusal was wrong in the way
+# a hard quality ceiling is usually wrong: a household whose room and hardware
+# simply sit above a corpus collected on better rigs was told to move a
+# correctly-placed microphone, and the session died on the attempt meter. The
+# live 2026-08-03 bench validation is the case that settled it — 15.244 dB
+# refused 58 s after an identically-positioned 11.324 dB capture was accepted,
+# both at alignment confidence ~0.677, so confidence was never the
+# discriminator the reused reason code claimed it was. Crossing this threshold
+# now means the session PROCEEDS and says so: the capture is accepted, the
+# measured value is banked as a reservation, and the household reads one plain
+# sentence on the screens that offer and report the tuning. Nothing about the
+# threshold's calibration changed; only what crossing it does.
+#
+# What did NOT change, stated because a reader will ask: the trust floor, the
+# delay-plausibility backstop, the SNR/linearity/glitch verdicts and every
+# accountability gate below still REFUSE. This one number stopped being a veto
+# because a bad ripple describes how well two branches can sum in this room on
+# this rig — a thing the household cannot act on by moving anything — and not
+# a defect in the capture that measuring again would fix.
+#
+# PROVISIONAL pending W6 bench validation, same status as every other
+# MEASURE-phase threshold in this block.
+MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 
 # Measurement-honesty gate G2 (2026-07-22): an ``event=outputd.xrun`` playback
 # glitch on 2026-07-22 hardware shifted a MEASURE capture's three sweeps
@@ -5386,16 +5405,38 @@ class CrossoverV2Conductor:
         # the one that just established the baseline). ``_log_verify_diag``
         # reads it for the ``pilot_transfer_step_db`` diagnostic field.
         self._verify_pilot_transfer_step_db: float | None = None
-        # Which (if any) measurement-honesty gate produced the LAST MEASURE
+        # Which (if any) measurement-honesty check produced the LAST MEASURE
         # verdict — reset at the top of every ``_measure_verdict`` call so a
         # stale value from a PRIOR attempt can never leak into this attempt's
-        # diagnostic. G1/G2 both reuse an existing reason code shared with a
-        # pre-existing check (REASON_LOW_ALIGNMENT_CONFIDENCE /
-        # REASON_DRIFT_BASELINES_DISAGREE respectively), so the reason code
-        # alone cannot tell telemetry which check actually fired — this side
-        # channel can. Read by ``_log_measure_diag``; never consulted by
-        # ``_measure_verdict`` itself, so a bug here cannot change a verdict.
+        # diagnostic. G2 and the sweep-locate floor reuse an existing reason
+        # code shared with a pre-existing check
+        # (REASON_DRIFT_BASELINES_DISAGREE / REASON_LOCATE_FAILED), so the
+        # reason code alone cannot tell telemetry which check actually fired —
+        # this side channel can. Read by ``_log_measure_diag``; never consulted
+        # by ``_measure_verdict`` itself, so a bug here cannot change a verdict.
+        #
+        # NOT every value here is a refusal any more. Since the #2087 ruling G1
+        # writes ``ripple_disclosure`` on a capture it ACCEPTS, so a reader
+        # must pair this field with ``accepted=`` on the same diag line rather
+        # than treating a non-empty value as a rejection. The value was renamed
+        # from ``ripple_ceiling`` at that point precisely so the vocabulary
+        # cannot be mistaken for its refusing siblings.
         self._last_measure_guard: str = ""
+        # G1's banked reservation (owner ruling 2026-08-03, issue #2087), or
+        # ``None`` when the accepted MEASURE had nothing to reserve about.
+        # ``{"predicted_ripple_db": float, "threshold_db": float}`` — see
+        # ``_note_ripple_reservation``.
+        #
+        # Reset at the top of every ``_measure_verdict`` call, exactly like the
+        # two diagnostics above, and that lifecycle is the contract rather than
+        # bookkeeping: it makes the reservation describe THE ACCEPTED CAPTURE
+        # and no other. A household who re-measures and lands a clean capture
+        # has the reservation cleared by that accept — which is correct, and is
+        # why this is one record rather than an accumulating list. MEASURE
+        # accepts at most once per session (the flow moves on to the cloud
+        # group), so the surviving value always belongs to the capture the
+        # candidate was built from.
+        self._measure_ripple_reservation: dict[str, Any] | None = None
         # SF3 (2026-07-24 adversarial review): which linearization path this
         # attempt's candidate build took — set by ``_linearization_eligible``
         # (the ineligible branches) and ``_fit_linearization`` (fitted vs the
@@ -5772,6 +5813,24 @@ class CrossoverV2Conductor:
     @property
     def measure_gate_window_ms(self) -> float | None:
         return self._measure_gate_window_ms
+
+    @property
+    def measure_ripple_reservation(self) -> dict[str, Any] | None:
+        """G1's banked reservation about the accepted MEASURE, or ``None``.
+
+        ``{"predicted_ripple_db": float, "threshold_db": float}`` — the host
+        persists it, ``crossover_v2_status_block`` projects it, and the
+        envelope turns it into one household sentence plus one expert line.
+        ``None`` means the accepted capture summed as coherently as the
+        calibration corpus did, and the screens then say nothing at all: a
+        clean measurement has no reservation, and inventing a "no concerns"
+        line would spend a household's attention on a non-event.
+
+        Copied on the way out, like every other dict-valued property on this
+        class, so a caller cannot reach back into the conductor's state.
+        """
+        reservation = self._measure_ripple_reservation
+        return dict(reservation) if reservation else None
 
     @property
     def verify_pilot_transfer_reference(self) -> Mapping[str, Any] | None:
@@ -6218,10 +6277,50 @@ class CrossoverV2Conductor:
         self._safe_log_diag(self._log_measure_diag, analysis, verdict)
         return verdict
 
+    def _note_ripple_reservation(self, predicted_ripple_db: float) -> None:
+        """Bank G1's reservation about the capture being accepted (#2087).
+
+        Records the fact and says so in the journal. It decides nothing —
+        the caller has already decided to proceed, and this method must never
+        acquire a branch that could change that, or the ruling would quietly
+        grow a gate back.
+
+        ``guard`` keeps carrying this in ``correction.crossover_v2_measure_diag``
+        so the existing per-capture telemetry can still find these captures,
+        but the VALUE is ``ripple_disclosure`` rather than the old
+        ``ripple_ceiling``: the field's siblings name checks that REFUSED, and
+        leaving a refusal's vocabulary on a path that now accepts would mislead
+        exactly the reader that field exists for. The dedicated event below is
+        the stable line to alert or count on — ``guard`` is one field on a
+        diagnostic that fires on every capture, accepted or not.
+
+        WARNING level, deliberately. The session proceeds, so this is not an
+        error; but the household is being handed a tuning built on a capture
+        the calibration corpus says is unusually incoherent, and an operator
+        reading the journal at INFO would have to know to look for it.
+        """
+        self._last_measure_guard = "ripple_disclosure"
+        self._measure_ripple_reservation = {
+            "predicted_ripple_db": float(predicted_ripple_db),
+            # The threshold rides WITH the value rather than being re-read at
+            # render time. A screen showing "12.4 dB, above 15.0" would be a
+            # lie the moment the constant moves, and the disclosure is a
+            # statement about what was true when the capture was judged.
+            "threshold_db": float(MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB),
+        }
+        log_event(
+            logger, "correction.crossover_v2_ripple_disclosed",
+            level=logging.WARNING,
+            session_id=self.session_id,
+            predicted_ripple_db=round(float(predicted_ripple_db), 3),
+            threshold_db=float(MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB),
+        )
+
     def _measure_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call — a stale value from a PRIOR attempt must never
         # leak into THIS attempt's diagnostic (see __init__'s comment).
         self._last_measure_guard = ""
+        self._measure_ripple_reservation = None
         self._last_linearization_outcome = ""
         self._last_linearized_predicted_sum = None
         self._last_realized_level_match = None
@@ -6314,23 +6413,34 @@ class CrossoverV2Conductor:
             and not alignment_delay_plausible(analysis.alignment.delay_us, self._preset)
         ):
             return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
-        # Measurement-honesty gate G1 (2026-07-22): a candidate whose OWN
-        # predicted ripple is this bad is not a trustworthy basis for
-        # auto-apply, regardless of what alignment confidence or the Fix 3
-        # plausibility check above reported — see
-        # MEASURE_PREDICTED_RIPPLE_CEILING_DB for the evidence. Reuses the
-        # SAME re-measure guidance as the two checks above (identical
-        # household action); the ``guard`` diag field disambiguates which of
-        # the three actually fired. Skipped when there is no candidate or no
-        # alignment estimate (a trims-only path) — mirrors the confidence
-        # gate's own skip condition above.
+        # Measurement-honesty DISCLOSURE G1 (2026-07-22; owner ruling
+        # 2026-08-03, issue #2087). **This branch does not refuse.** A
+        # predicted ripple above the threshold says the two branches sum less
+        # coherently in this room, on this rig, than the calibration corpus
+        # did — see MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB for the evidence and
+        # for why the owner converted it. So the capture is ACCEPTED and the
+        # measurement carries an honest reservation to the household instead of
+        # sending them to move a microphone that was never the problem.
+        #
+        # Deliberately NOT a `return` — control falls through to the same
+        # candidate build every accepted MEASURE runs, so the reservation
+        # changes what the household is TOLD and nothing about what is built,
+        # fitted, gated, or applied. Every accountability gate below
+        # (``_assert_accountable``'s level-frame, realized-level and
+        # predicted-improvement refusals) still runs unchanged on this
+        # candidate, which is what keeps "proceed" from meaning "unchecked".
+        #
+        # Skipped when there is no candidate or no alignment estimate (a
+        # trims-only path) — the same skip condition the gate carried, kept
+        # because a reservation about a candidate that does not exist would
+        # describe nothing.
         if (
             analysis.candidate is not None
             and analysis.alignment is not None
-            and analysis.candidate.predicted_ripple_db > MEASURE_PREDICTED_RIPPLE_CEILING_DB
+            and analysis.candidate.predicted_ripple_db
+            > MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB
         ):
-            self._last_measure_guard = "ripple_ceiling"
-            return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
+            self._note_ripple_reservation(analysis.candidate.predicted_ripple_db)
         if analysis.candidate is None:
             # Fail FAST, at the capture that produced the unusable analysis.
             # Until the 2026-07-27 timing move this raise happened one call
@@ -11035,7 +11145,7 @@ __all__ = [
     "CAPTURE_PLAN_MAX_ATTEMPTS",
     "V2_FIRST_BEGIN_TIMEOUT_S",
     "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
-    "MEASURE_PREDICTED_RIPPLE_CEILING_DB",
+    "MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB",
     "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
     "SWEEP_LOCATE_CONFIDENCE_FLOOR",
     "VERIFY_PILOT_TRANSFER_STEP_CEILING_DB",

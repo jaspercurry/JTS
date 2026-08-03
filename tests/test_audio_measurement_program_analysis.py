@@ -1504,7 +1504,7 @@ def test_predicted_sum_carries_the_committed_delay_and_ripple_does_not():
     """**The R10b change.** The persisted ``predicted_sum`` models the sum the
     speaker will actually produce under the COMMITTED delay; the candidate's
     ``predicted_ripple_db`` deliberately stays on the independently-aligned
-    instrument the G1 capture-quality ceiling was calibrated against.
+    instrument the G1 capture-quality threshold was calibrated against.
 
     Both curves are rebuilt here from the same public primitives, so this pins
     the exact residual (``selected − anchor``, i.e. ``snap_delta_us``) rather
@@ -1781,7 +1781,7 @@ def test_snap_production_path_preserves_parallax_contract(
     ]
     lo_hz = max([lo_hz, *floors])
     # `predicted_ripple_db` reads the INDEPENDENTLY ALIGNED sum — the
-    # capture-quality instrument the G1 ripple ceiling was calibrated on, which
+    # capture-quality instrument the G1 ripple threshold was calibrated on, which
     # deliberately did not follow the persisted curve onto the committed-delay
     # model at rung P3 / R10b. So this reconstruction stays five-argument.
     predicted_aligned = predicted_branch_sum(

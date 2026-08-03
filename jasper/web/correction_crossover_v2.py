@@ -1500,6 +1500,12 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # ``phase`` is ``closing`` (two-stage D1). ``""`` everywhere else.
         "cloud_close": str((state or {}).get("cloud_close") or ""),
         "candidate": (state or {}).get("candidate"),
+        # MEASURE's own verdict-time disclosures — today just G1's ripple
+        # reservation (#2087). Copied through unvalidated, exactly like
+        # ``candidate`` and ``verify`` beside it: the envelope's own accessor
+        # is the validating reader, so a state file written by another build
+        # cannot 500 this poll path.
+        "measure": (state or {}).get("measure"),
         "verify": (state or {}).get("verify"),
         "failure": (state or {}).get("failure"),
         "apply_blocked": (state or {}).get("apply_blocked"),
@@ -2013,6 +2019,11 @@ def persist_conductor_state(
 
     snap = conductor.snapshot()
     verify_outcome = conductor.verify_outcome
+    # Read through ``getattr`` with a default: this host persists conductors
+    # from more than one build during a rolling deploy, and the property is
+    # newer than some of them. An absent property is "nothing reserved", which
+    # is the same thing the key's own absence means downstream.
+    ripple_reservation = getattr(conductor, "measure_ripple_reservation", None)
     prior = load_v2_state() or {}
     if hasattr(snap, "attempt_history"):
         attempts_loop_state: dict[str, Any] | None = {
@@ -2062,6 +2073,20 @@ def persist_conductor_state(
         # read fresh from its persistence owner at the `/state` boundary.
         "attempts_loop": attempts_loop_state,
         "candidate": _candidate_summary(conductor.candidate),
+        # What MEASURE accepted WITH A RESERVATION (owner ruling 2026-08-03,
+        # issue #2087). Absent/`None` means the accepted capture had nothing to
+        # reserve about — never "we did not check", because this key is written
+        # on every persist by a session that runs MEASURE.
+        #
+        # Its own block rather than a key on ``candidate`` above: that summary
+        # projects the candidate ARTIFACT's own fields, and a reservation is a
+        # verdict-time judgement about the capture the artifact was built from.
+        # Folding it in there would make one dict have two owners.
+        "measure": (
+            {"ripple_reservation": dict(ripple_reservation)}
+            if ripple_reservation
+            else None
+        ),
         "verify": (
             {
                 "outcome": verify_outcome,
@@ -2375,6 +2400,21 @@ def persist_conductor_state(
                 prior_evidence[FINDING_HOUSEHOLD_REFS_KEY],
             )
             state["evidence"] = merged_evidence
+        # G1's reservation (#2087) carries forward on the SAME predicate and
+        # for the same reason as the findings projection above: it is banked
+        # by MEASURE, and the DONE screen is rendered by stage 2 — a different
+        # session, in a different bundle, whose conductor never ran MEASURE and
+        # so would persist ``None`` over it. Without this line the household
+        # would be shown the reservation on the screen where they DECIDE and
+        # then not on the screen that tells them the speaker is tuned, which is
+        # the worse half to lose.
+        #
+        # The converse holds too, again like findings: a session that DOES run
+        # MEASURE writes its own value, ``None`` included, so a fresh clean
+        # measurement clears a previous session's reservation rather than
+        # replaying a caveat about a capture that has been superseded.
+        if isinstance(prior.get("measure"), Mapping) and state["measure"] is None:
+            state["measure"] = dict(prior["measure"])
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
     # handle_v2_restore), ``expected_post_apply_offset_db`` (the apply's own
     # declared level move — observe_apply_success / the delta probe's

@@ -995,10 +995,15 @@ class CrossoverCandidate:
     model at rung P3 / R10b. It asks a capture-quality question — how
     coherently can these two branches sum at all — which is a property of the
     measurement and not of the delay selection, and it is the sole input to
-    ``crossover_v2_flow``'s G1 ``MEASURE_PREDICTED_RIPPLE_CEILING_DB``, whose
+    ``crossover_v2_flow``'s G1 ``MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB``, whose
     threshold that constant documents as calibrated against a fixed hardware
-    corpus scored on THIS metric. Moving it onto the delay-carrying curve would
-    let a candidate's own alignment lower its own veto number — see
+    corpus scored on THIS metric. **That threshold discloses rather than
+    refuses since the owner's 2026-08-03 ruling (#2087)** — crossing it banks a
+    reservation the household reads and the session proceeds — but the frame
+    argument below is unchanged and still load-bearing, because a disclosure
+    that a candidate's own alignment could talk its way out of would be as
+    dishonest as a veto that could be. Moving it onto the delay-carrying curve
+    would let a candidate's own alignment lower its own disclosure number — see
     ``_build_candidate``'s comment at the two calls for the measured evasion
     margin. The two ripples that DO carry the residual are the snap-evidence
     pair above, which is what makes them a comparison.
@@ -1284,7 +1289,7 @@ class ProgramAnalysis:
     # deliberately superseded. Quality is graded separately and elsewhere:
     # ``crossover_v2_flow.spec_report_for_predicted_sum`` against the flat
     # spec, and ``CrossoverCandidate.predicted_ripple_db`` (still the
-    # independently-aligned instrument) at the G1 capture-quality ceiling.
+    # independently-aligned instrument) at the G1 capture-quality threshold.
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     # Set by MEASURE from ``drift.glitch_detected`` and by VERIFY from
     # ``capture_integrity.glitched`` (issue #1971) — in BOTH cases a one-bit
@@ -4555,14 +4560,18 @@ def _build_candidate(
     # capture's two branches sum at all?", which is a property of the
     # measurement and not of the delay selection. It is the ONLY input to
     # `predicted_ripple_db`, and therefore to `crossover_v2_flow`'s G1
-    # `MEASURE_PREDICTED_RIPPLE_CEILING_DB` gate, whose threshold that constant
+    # `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` threshold, which that constant
     # documents as calibrated against a fixed 2026-07-22 hardware corpus scored
     # on THIS metric — the zero-residual ripple, not the delay-carrying one.
+    # Since the owner's 2026-08-03 ruling (#2087) crossing it DISCLOSES rather
+    # than refuses; the frame argument below survives the change intact.
     #
-    # Why the gate keeps this frame: a candidate's own committed delay can LOWER
-    # its ripple, so pointing the veto at a delay-carrying curve would let a
-    # capture whose branches sum incoherently be carried under the ceiling by
-    # its own alignment. Measured on the banked 2026-07-30 JTS3 capture
+    # Why the disclosure keeps this frame: a candidate's own committed delay can
+    # LOWER its ripple, so pointing it at a delay-carrying curve would let a
+    # capture whose branches sum incoherently slip under the threshold on its
+    # own alignment — and a reservation a capture can talk itself out of is
+    # exactly as dishonest as a veto it could. Measured on the banked
+    # 2026-07-30 JTS3 capture
     # (`captures/r10b-alignment-20260801/ripple_vs_residual_sweep.py`): sweeping
     # the residual across the ±(period/6) snap radius, 32 of 84 sampled
     # residuals come in BELOW the zero-residual 14.8831 dB, bottoming at
