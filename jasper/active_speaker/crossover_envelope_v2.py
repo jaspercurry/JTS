@@ -74,7 +74,6 @@ from .crossover_v2_flow import (
     PHASE_VERIFY,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_REGISTRY,
-    REASON_VERIFY_INCONCLUSIVE,
     ReasonSpec,
     TEMPLATE_HARD_STOP,
     TEMPLATE_SESSION_RESTART,
@@ -82,9 +81,9 @@ from .crossover_v2_flow import (
     TEMPLATE_VERIFY_FAIL,
     TIER_EXPRESS,
     TIER_FULL,
+    reason_message,
     tier_display_info,
     verify_inconclusive_cause,
-    verify_inconclusive_message,
 )
 from .delta_probe import VERDICT_LEVEL_MISMATCH
 
@@ -2400,22 +2399,54 @@ def _verify_fail_envelope(
     )
 
 
-def _verify_fail_message(
+def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
+    """Whether the failed capture's pilot pair was heard — or ``None``, unknown.
+
+    ``locate_failed``'s copy branches on this (#2085), read through one
+    accessor for the same reason
+    :func:`_verify_gate_reflection_measured` is. ``None`` is a third state,
+    not a falsy second one: a failure that ran no capture, and every state
+    file written before this shipped, simply do not say — and the copy owner
+    answers an unestablished fact by making no claim about it rather than by
+    assuming the safer-sounding branch.
+    """
+    heard = _mapping(_v2(status).get("failure")).get("pilot_heard")
+    return heard if isinstance(heard, bool) else None
+
+
+def _reason_message(
     code: str, spec: ReasonSpec, status: Mapping[str, Any],
 ) -> str:
-    """The verify_fail screen's sentence: the registry's, or its live rendering.
+    """This screen's sentence: the registry's copy, or its live rendering.
 
-    SELECTION, never composition (issue #1974). ``verify_inconclusive`` is the
-    one code whose honest copy depends on a fact only the record holds —
-    whether the gate that came up short actually found a reflection — so the
-    registry cannot hold a single literal for it and stay true. It holds the
-    cause-unknown rendering; this asks the same single writer for the rendering
-    that matches what was persisted. Every other code renders its registry copy
-    unchanged, and no sentence is built here.
+    SELECTION, never composition (issue #1974). Two codes have honest copy
+    that depends on a fact only the record holds — whether the gate that came
+    up short actually found a reflection (``verify_inconclusive``), and
+    whether the capture that could not be located had nonetheless been heard
+    (``locate_failed``, #2085) — so the registry cannot hold a single literal
+    for either and stay true. It holds their fact-unknown renderings; this
+    pulls the persisted facts out of ``status`` and asks the flow module's
+    single writer for the rendering that matches. Every other code renders its
+    registry copy unchanged, and no sentence is built here.
+
+    Applies to EVERY template, not just verify_fail (which is all it covered
+    when it was ``_verify_fail_message``). ``locate_failed`` is
+    ``fix_and_retry``, so a selector wired only into the verify_fail branch
+    would have left the screen most households actually see rendering the
+    literal — the same one-fix-two-surfaces gap this whole change closes.
+
+    This reads the record; it does not decide. WHICH sentence a fact produces
+    belongs to :func:`~jasper.active_speaker.crossover_v2_flow.reason_message`,
+    which the relay verdict and the budget refusal also call — so all three
+    surfaces stay one voice. Both facts are extracted unconditionally: they
+    are dictionary reads, and branching here on which code needs which fact
+    would put a second copy of that knowledge next to the one that owns it.
     """
-    if code == REASON_VERIFY_INCONCLUSIVE:
-        return verify_inconclusive_message(_verify_gate_reflection_measured(status))
-    return spec.message
+    return reason_message(
+        code, spec,
+        pilot_heard=_failure_pilot_heard(status),
+        reflection_measured=_verify_gate_reflection_measured(status),
+    )
 
 
 def _failure_envelope(
@@ -2477,8 +2508,11 @@ def _failure_envelope(
             next_action={"id": "retry", "label": "Try again"},
             status=status,
         )
+    # ONE resolution point for this screen's sentence, whichever template
+    # renders it below (#2085). Resolved before the template branch so no
+    # branch can quietly go back to ``spec.message``.
+    message = _reason_message(code, spec, status)
     if applied and spec.template != TEMPLATE_VERIFY_FAIL:
-        message = spec.message or spec.banner
         if spec.template == TEMPLATE_SESSION_RESTART:
             message = (
                 f"{message} The crossover was already applied — if it sounds "
@@ -2489,10 +2523,14 @@ def _failure_envelope(
     if template == TEMPLATE_SILENT_AUTO_RETRY:
         # No decision screen: stay on the phase screen with a banner; the phone
         # auto-retries (§5.10 template 1).
+        # ``message`` rather than ``spec.banner``: for a silent-auto-retry code
+        # the selector returns exactly the banner (``message`` is empty by
+        # construction), so this is identical today and stays correct if an
+        # evidence-keyed code ever lands on this template.
         return _envelope(
             screen=active_step, active_step=active_step,
-            verdict=spec.banner,
-            nudges=[{"code": code, "severity": "info", "text": spec.banner}],
+            verdict=message,
+            nudges=[{"code": code, "severity": "info", "text": message}],
             next_action=None,
             status=status,
         )
@@ -2510,8 +2548,8 @@ def _failure_envelope(
         # action can never disagree about what the household should do next.
         return _envelope(
             screen="hard_stop", active_step=active_step,
-            verdict=spec.message,
-            nudges=[{"code": code, "severity": "warn", "text": spec.message}],
+            verdict=message,
+            nudges=[{"code": code, "severity": "warn", "text": message}],
             next_action=dict(spec.next_action) if spec.next_action else {
                 "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/",
             },
@@ -2520,8 +2558,8 @@ def _failure_envelope(
     if template == TEMPLATE_SESSION_RESTART:
         return _envelope(
             screen="session_restart", active_step="microphone_check",
-            verdict=spec.message,
-            nudges=[{"code": code, "severity": "warn", "text": spec.message}],
+            verdict=message,
+            nudges=[{"code": code, "severity": "warn", "text": message}],
             next_action={
                 "id": "restart_session",
                 "label": "Start over",
@@ -2537,11 +2575,9 @@ def _failure_envelope(
         # One default — "Try again" (internally re-verify once, then re-measure)
         # — plus "Undo (restore previous sound)"; the explicit trio lives behind
         # the expert disclosure (§5.2).
-        return _verify_fail_envelope(
-            code, _verify_fail_message(code, spec, status), status,
-        )
+        return _verify_fail_envelope(code, message, status)
     # TEMPLATE_FIX_AND_RETRY (the default decision screen).
-    nudges = [{"code": code, "severity": "warn", "text": spec.message}]
+    nudges = [{"code": code, "severity": "warn", "text": message}]
     if active_step == "apply":
         # Layer the SPECIFIC blocked-apply issue
         # (jasper.web.correction_crossover_v2._persist_apply_blocked) on top
@@ -2553,11 +2589,11 @@ def _failure_envelope(
             nudges.append({
                 "code": str(apply_blocked.get("id") or "apply_blocked"),
                 "severity": "warn",
-                "text": str(apply_blocked.get("message") or spec.message),
+                "text": str(apply_blocked.get("message") or message),
             })
     return _envelope(
         screen="fix_and_retry", active_step=active_step,
-        verdict=spec.message,
+        verdict=message,
         nudges=nudges,
         next_action={
             "id": "retry",

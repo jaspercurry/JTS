@@ -982,6 +982,12 @@ def test_low_alignment_confidence_rejects_measure_before_building_candidate():
         "reason": REASON_REGISTRY["low_alignment_confidence"].message,
         "banner": "",
         "auto_retry": False,
+        # Every rejection carries the capture's pilot evidence since #2085 —
+        # here `None`, because this scenario's analysis states no pilot
+        # verdict. Kept in the exact-equality assertion rather than relaxed to
+        # a subset: the relay dict is the phone's contract, and a test that
+        # stops noticing new keys stops defending it.
+        "pilot_heard": None,
     }
     assert not fakes.published_candidates
     assert c.candidate is None
@@ -1295,6 +1301,11 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
         "reason": REASON_REGISTRY["clipped"].banner,
         "banner": REASON_REGISTRY["clipped"].banner,
         "auto_retry": True,
+        # See the same key in
+        # `test_low_alignment_confidence_rejects_measure_before_building_candidate`
+        # — the pilot evidence rides every rejection (#2085), not only the
+        # codes whose copy currently branches on it.
+        "pilot_heard": None,
     }
     # The automatic retry is gain-adjusted: 3 dB quieter.
     gain_after = c._program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
@@ -1363,8 +1374,13 @@ def test_weakly_located_sweep_reads_too_quiet_not_glitched():
     retry — the household was told its capture had glitched, and the flow
     re-ran the same level. A sweep the locator can barely find was not
     spliced; it was too quiet to hear, and re-running it at the same level
-    cannot succeed. `locate_failed` says so ("couldn't hear the speaker
-    clearly — check the volume and the microphone") and does not auto-retry.
+    cannot succeed. `locate_failed` says so and does not auto-retry.
+
+    WHICH sentence it says is no longer fixed: since #2085 the copy is chosen
+    from this capture's own pilot evidence, because "too quiet to hear" is an
+    inference the pilot can refute. This scenario's analysis carries no pilot
+    verdict, so it renders the unknown-evidence copy; the two established
+    branches are pinned in `test_crossover_v2_honest_capture_copy.py`.
     """
     fakes = FakeSeams()
     c = _conductor(fakes)
