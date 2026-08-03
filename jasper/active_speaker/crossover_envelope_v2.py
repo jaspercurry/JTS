@@ -1264,6 +1264,13 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "severity": "warn",
             "text": "The predicted result does not meet the target.",
         })
+    # G1's reservation (#2087) belongs on THIS screen for the reason the CC1
+    # findings line below it does: this is where the household is asked to
+    # decide, and the #1949 defect was disclosing nothing at exactly that
+    # moment. Last of the three, and quietest — the two above are about
+    # whether Apply can or should happen at all; this one qualifies the
+    # evidence behind a proposal that is otherwise fine.
+    nudges.extend(_ripple_reservation_nudges(status))
 
     alternate_actions: list[dict[str, Any]] = [
         {
@@ -1325,7 +1332,9 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         # its flatness/carve-out disclosure belongs here — the same lines the
         # done screen folds away, on the screen where they inform a decision
         # rather than explain a fait accompli.
-        expert_details=_flatness_details_lines(status),
+        expert_details=(
+            _flatness_details_lines(status) + _ripple_reservation_lines(status)
+        ),
         prediction=prediction,
         # CC1: this is the screen the #1949 ruling took a sentence away from.
         # The frame gate now banks its disagreement and PROCEEDS, so the
@@ -1423,6 +1432,99 @@ def _done_nudges(
             ),
         })
     return nudges
+
+
+# --- G1's ripple reservation (owner ruling 2026-08-03, issue #2087) ----------
+#
+# Three functions, one owner. The flow decides (``_note_ripple_reservation``),
+# the host persists, and everything a household or an operator READS about the
+# reservation is composed here — so the sentence and the numbers cannot drift
+# apart the way two writers of one fact always eventually do.
+
+
+#: The one sentence. Written in the owner's own register for the #2087 ruling:
+#: "We helped you as much as we could, but we have some reservations, and
+#: here's what they are." v1 is deliberately one plain sentence, not a lecture.
+#:
+#: **It names no cause, and that is the load-bearing part.** A high predicted
+#: ripple is consistent with the room, the microphone, the recording chain, and
+#: the speaker itself, and this session separated none of them — so the copy
+#: reports what the measurement saw and stops. The refusal it replaces did the
+#: opposite: it reused ``low_alignment_confidence``'s "place the microphone
+#: about 1 m in front of the speaker" and told a household with a correctly
+#: placed mic to move it (issue #2085).
+#:
+#: **"blended less evenly" is the gloss, and it is deliberate.** The word the
+#: instrument uses is *ripple*, which the owner himself had to ask the meaning
+#: of; a household sentence that needs a glossary is not a disclosure. It names
+#: no part of the speaker either — "high and low ranges" is the same
+#: phenomenon-level vocabulary ``jasper.attribution.promotion``'s household copy
+#: is held to, and the honest word for the parts involved would be a
+#: hardware noun that register forbids.
+#:
+#: **It claims the tuning is rougher EVIDENCE, never a worse RESULT.** The
+#: measurement says how coherently two branches summed, not how the speaker
+#: will sound, and the accountability gates that grade the correction itself
+#: all still ran. Copy promising a worse outcome would be a claim no
+#: instrument in this session made.
+RIPPLE_RESERVATION_COPY = (
+    "We helped as much as this measurement allows: where this speaker's high "
+    "and low ranges overlap, they blended less evenly than a clean measurement "
+    "shows, so this tuning rests on rougher evidence than usual."
+)
+
+
+def _ripple_reservation(status: Mapping[str, Any]) -> Mapping[str, Any]:
+    """G1's banked reservation, or an empty mapping (#2087).
+
+    The validating reader for a key that ``crossover_v2_status_block`` copies
+    through unchecked. Empty is the honest answer for every unusable shape —
+    absent (a clean capture, or a state file older than the ruling), the wrong
+    type, or a record missing either number — because the two surfaces below
+    both need the pair, and half a reservation is not one.
+    """
+    return _mapping(_mapping(_v2(status).get("measure")).get("ripple_reservation"))
+
+
+def _ripple_reservation_nudges(status: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The household's one sentence, or nothing at all (#2087).
+
+    ``info``, not ``warn``: the session succeeded and this is something to
+    know rather than a problem to solve — the same register the banked-findings
+    line uses, and the renderer gives them the same quiet styling.
+
+    Gated on the VALUE parsing, not merely on the record existing, so a
+    malformed reservation renders silence rather than a sentence whose expert
+    line beneath it would be blank. The sentence itself quotes no number; the
+    numbers are the expert line's job.
+    """
+    if _finite(_ripple_reservation(status).get("predicted_ripple_db")) is None:
+        return []
+    return [{
+        "code": "crossover_v2_ripple_reservation",
+        "severity": "info",
+        "text": RIPPLE_RESERVATION_COPY,
+    }]
+
+
+def _ripple_reservation_lines(status: Mapping[str, Any]) -> list[str]:
+    """The reservation's numbers, for the collapsed expert disclosure (#2087).
+
+    What the sentence above deliberately leaves out: the measured value and
+    the threshold it crossed. Both come from the ONE persisted record, so the
+    line cannot claim a threshold the capture was not judged against — the
+    reason the flow banks the threshold with the value instead of letting a
+    renderer re-read the constant.
+    """
+    reservation = _ripple_reservation(status)
+    ripple = _finite(reservation.get("predicted_ripple_db"))
+    threshold = _finite(reservation.get("threshold_db"))
+    if ripple is None or threshold is None:
+        return []
+    return [
+        f"predicted ripple {ripple:.2f} dB, above the {threshold:.1f} dB "
+        "disclosure threshold"
+    ]
 
 
 def _attempt_db(value: Any) -> str | None:
@@ -2283,6 +2385,17 @@ def _verify_fail_envelope(
             _verify_expert_details(status, headline_code=code)
             + _verify_level_reference_lines(status)
             + _flatness_details_lines(status)
+            # G1's numbers (#2087). EXPERT ONLY on this screen — no household
+            # sentence, matching the banked-findings precedent (this envelope
+            # passes no ``findings`` either): the household copy here is the
+            # failure's own, and a second caveat beside it would compete with
+            # the one action they are being asked to take.
+            #
+            # The numbers still belong, and arguably most of all here: "the
+            # measurement this tuning was built from was rough" is exactly the
+            # context for a verify that did not settle, and this screen's
+            # reader has already opened the disclosure to look at numbers.
+            + _ripple_reservation_lines(status)
         ),
     )
 
@@ -2785,7 +2898,18 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # "Verified." still means the tracking comparator passed, but a
             # speaker whose spec verdict FAILED gets the honest badge instead —
             # one claim per instrument, neither pretending to be the other.
-            nudges=_done_nudges(verify, spec_passed=spec_passed),
+            # G1's reservation (#2087) is appended at the CALL SITE rather than
+            # inside ``_done_nudges``, because that composer answers "which
+            # badge did the verify outcome earn" and returns nothing at all on
+            # a non-pass. The reservation is about the MEASURE capture this
+            # tuning was built from and is owed on this screen regardless of
+            # which badge won — the household is being told the speaker is
+            # tuned, which is exactly when an unstated caveat becomes an
+            # overclaim.
+            nudges=(
+                _done_nudges(verify, spec_passed=spec_passed)
+                + _ripple_reservation_nudges(status)
+            ),
             status=status,
             candidate_review=_candidate_review_payload(candidate or None),
             # Gauge fix (2026-07-24): the flatness numbers previously never
@@ -2825,6 +2949,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 + _verify_gate_lines(status)
                 + _verify_level_reference_lines(status)
                 + _flatness_details_lines(status)
+                # R9's rule, one instrument over (#2087): a screen that reports
+                # a result owes the numbers behind any caveat printed above it.
+                + _ripple_reservation_lines(status)
             ),
             # CC1: the result screen is the OTHER place a banked finding is
             # owed. It rides the durable projection rather than this session's

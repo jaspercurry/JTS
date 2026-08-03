@@ -38,6 +38,7 @@ from jasper.active_speaker.attempts_loop import (
 )
 from jasper.active_speaker.crossover_envelope_v2 import (
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
+    RIPPLE_RESERVATION_COPY,
     _PHASE_STEP,
     _per_band_flatness_lines,
     build_crossover_envelope_v2,
@@ -45,6 +46,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 from jasper.active_speaker.crossover_v2_flow import (
     ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
     ATTEMPT_REASON_NO_FLOOR,
+    MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_REVIEW,
@@ -3509,3 +3511,198 @@ def test_an_aged_resume_stays_one_quiet_line_and_carries_no_finding():
     assert env["screen"] == "microphone_check"
     assert env["findings"] == []
     assert len(env["nudges"]) == 1
+
+
+# --- G1's ripple reservation (owner ruling 2026-08-03, issue #2087) -----------
+
+
+def _reservation(ripple_db: float = 15.244, threshold_db: float = 15.0) -> dict:
+    """A banked reservation as ``persist_conductor_state`` writes it.
+
+    Defaults are the live 2026-08-03 bench validation that produced the ruling:
+    15.244 dB against the 15.0 dB threshold, refused 58 s after an
+    identically-positioned 11.324 dB capture was accepted.
+    """
+    return {
+        "ripple_reservation": {
+            "predicted_ripple_db": ripple_db,
+            "threshold_db": threshold_db,
+        }
+    }
+
+
+def test_the_ripple_reservation_reaches_both_decision_screens():
+    """**The acceptance.** A capture the flow accepted WITH a reservation says
+    so, in one plain sentence, on the two screens that owe it.
+
+    Owner ruling #2087: the threshold stopped refusing and became a disclosure
+    trigger. The screens are the decision (review) and the result (done) —
+    the same pair the banked-finding line lands on, and for the same reason:
+    one is where the household chooses, the other is where they are told the
+    speaker is tuned.
+    """
+    review = build_crossover_envelope_v2(_review_status(measure=_reservation()))
+    done = build_crossover_envelope_v2(_done_status(measure=_reservation()))
+    for env in (review, done):
+        texts = [n["text"] for n in env["nudges"]]
+        assert RIPPLE_RESERVATION_COPY in texts
+        # ONE sentence, not a lecture (the ruling's own 80/20 scope).
+        assert texts.count(RIPPLE_RESERVATION_COPY) == 1
+        # `info`, never `warn`: the session succeeded and this is something to
+        # know, not a problem to solve.
+        reservation = next(
+            n for n in env["nudges"] if n["text"] == RIPPLE_RESERVATION_COPY
+        )
+        assert reservation["severity"] == "info"
+        assert reservation["code"] == "crossover_v2_ripple_reservation"
+
+
+def test_a_clean_capture_says_nothing_about_ripple_at_all():
+    """No reservation banked means silence — no line, no reassurance.
+
+    The counterpart every disclosure needs: a screen that says "no concerns"
+    on a clean measurement spends a household's attention on a non-event, and
+    would make the reservation itself easy to skim past.
+    """
+    for env in (
+        build_crossover_envelope_v2(_review_status()),
+        build_crossover_envelope_v2(_done_status()),
+    ):
+        assert all(n["text"] != RIPPLE_RESERVATION_COPY for n in env["nudges"])
+        assert all("predicted ripple" not in line for line in env["expert_details"])
+
+
+def test_the_reservation_numbers_ride_the_expert_disclosure():
+    """The sentence carries no number; the collapsed expert block carries both.
+
+    Household copy stays plain, and the measured value plus the threshold it
+    was judged against stay available to whoever wants them.
+    """
+    for env in (
+        build_crossover_envelope_v2(_review_status(measure=_reservation())),
+        build_crossover_envelope_v2(_done_status(measure=_reservation())),
+    ):
+        assert (
+            "predicted ripple 15.24 dB, above the 15.0 dB disclosure threshold"
+            in env["expert_details"]
+        )
+    # The plain sentence quotes neither number — a household reading it is not
+    # asked to judge a decibel figure.
+    assert "15.2" not in RIPPLE_RESERVATION_COPY
+    assert "15.0" not in RIPPLE_RESERVATION_COPY
+
+
+def test_the_expert_line_quotes_the_threshold_the_capture_was_judged_against():
+    """The threshold is read from the BANKED RECORD, never re-read from the
+    live constant.
+
+    Why this is pinned rather than assumed: the reservation is a statement
+    about what was true when the capture was judged, and
+    ``MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB`` is documented PROVISIONAL. A
+    renderer that re-read the constant would retro-caption every previously
+    banked reservation the moment it moved — including making one read
+    "above the 18.0 dB threshold" for a capture judged at 15.0.
+    """
+    env = build_crossover_envelope_v2(_done_status(
+        measure=_reservation(ripple_db=16.5, threshold_db=12.0),
+    ))
+    assert (
+        "predicted ripple 16.50 dB, above the 12.0 dB disclosure threshold"
+        in env["expert_details"]
+    )
+    assert str(MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB) not in "".join(
+        env["expert_details"]
+    )
+
+
+@pytest.mark.parametrize("record", [
+    {"ripple_reservation": {"predicted_ripple_db": None, "threshold_db": 15.0}},
+    {"ripple_reservation": {"threshold_db": 15.0}},
+    {"ripple_reservation": {"predicted_ripple_db": float("nan")}},
+    {"ripple_reservation": "15.244"},
+    {"ripple_reservation": {}},
+    {},
+    None,
+])
+def test_an_unusable_reservation_record_renders_silence(record):
+    """A malformed record says nothing rather than half a disclosure.
+
+    ``crossover_v2_status_block`` copies this key through unvalidated (like
+    ``candidate`` and ``verify`` beside it), so the envelope is the validating
+    reader — and it runs on the wizard's 1.5 s poll, where an escaping
+    conversion is a 500 on a plain page load.
+    """
+    env = build_crossover_envelope_v2(_done_status(measure=record))
+    assert all(n["text"] != RIPPLE_RESERVATION_COPY for n in env["nudges"])
+    assert all("predicted ripple" not in line for line in env["expert_details"])
+
+
+def test_the_reservation_sentence_names_no_part_of_the_speaker():
+    """Household copy stays phenomenon-level, per the register
+    ``jasper.attribution.findings`` enforces on its own household strings.
+
+    This sentence does not go through ``Finding``, so nothing enforces the
+    prohibition at construction — which is exactly why it is pinned here. The
+    honest words for what interferes would be hardware nouns, and naming one
+    would be a device-taxonomy guess this session never measured.
+    """
+    from jasper.attribution.findings import _HARDWARE_NOUN_RE
+
+    assert _HARDWARE_NOUN_RE.search(RIPPLE_RESERVATION_COPY) is None
+    # And no un-glossed instrument jargon: the owner himself asked what
+    # "ripple" meant, so the household sentence does not use the word.
+    assert "ripple" not in RIPPLE_RESERVATION_COPY.lower()
+
+
+def test_the_reservation_never_claims_the_result_is_worse():
+    """It qualifies the EVIDENCE, not the outcome.
+
+    The measurement says how coherently two branches summed; it does not say
+    how the speaker will sound, and every accountability gate that grades the
+    correction itself still ran. Copy promising a worse result would be a
+    claim no instrument in this session made.
+    """
+    lowered = RIPPLE_RESERVATION_COPY.lower()
+    assert "evidence" in lowered
+    for overclaim in ("will sound", "worse", "may not work", "poor result"):
+        assert overclaim not in lowered
+
+
+def test_verify_fail_carries_the_reservation_numbers_but_no_second_sentence():
+    """The failure screen gets G1's numbers and NOT its household sentence.
+
+    Numbers, because "the measurement this tuning was built from was rough" is
+    exactly the context for a verify that did not settle, and this screen's
+    reader has already opened the disclosure to look at numbers.
+
+    No sentence, matching the banked-findings precedent (`_verify_fail_envelope`
+    passes no `findings` either): the household copy here is the failure's own,
+    and a competing caveat beside the one action they are asked to take would
+    dilute it.
+    """
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        measure=_reservation(),
+    ))
+    assert env["screen"] == "verify_fail"
+    assert (
+        "predicted ripple 15.24 dB, above the 15.0 dB disclosure threshold"
+        in env["expert_details"]
+    )
+    assert all(n["text"] != RIPPLE_RESERVATION_COPY for n in env["nudges"])
+
+
+def test_the_reservation_does_not_displace_the_verified_badge():
+    """It is appended BESIDE whichever badge the verify outcome earned, never
+    instead of it — the same rule the level-mismatch caveat follows.
+
+    They answer different questions ("did it match its prediction" vs "how
+    good was the evidence"), so neither may silence the other.
+    """
+    env = build_crossover_envelope_v2(_done_status(measure=_reservation()))
+    texts = [n["text"] for n in env["nudges"]]
+    assert "Verified." in texts
+    assert RIPPLE_RESERVATION_COPY in texts
+    # The badge keeps the slot it earned; the reservation follows it.
+    assert texts.index("Verified.") < texts.index(RIPPLE_RESERVATION_COPY)

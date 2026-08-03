@@ -1930,6 +1930,98 @@ def test_a_fresh_measurement_that_banks_nothing_clears_the_old_finding():
     assert v2host.crossover_v2_status_block()["findings"] == []
 
 
+# --- G1's ripple reservation across the stage-2 bundle hop (#2087) ------------
+
+
+def _seeded_session_with_a_ripple_reservation() -> dict:
+    """A completed measuring session whose accepted MEASURE banked one."""
+    reservation = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
+    v2host.save_v2_state({
+        "session_id": "cap_measuring_session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "candidate": {"fingerprint": "fp-measured"},
+        "applied": True,
+        "measure": {"ripple_reservation": dict(reservation)},
+        "evidence": {"bundle_session_id": "bundle-stage-1"},
+    })
+    return reservation
+
+
+def test_stage_2_keeps_the_measuring_sessions_ripple_reservation(monkeypatch):
+    """The reservation survives the stage-2 session hop to the DONE screen.
+
+    Same shape and same hazard as the banked-finding test above: stage 2 runs
+    under a NEW conductor that never ran MEASURE, so its own persist writes
+    ``None`` over the reservation. Without the carry-forward the household
+    would read the caveat on the screen where they DECIDE and then not on the
+    screen that tells them the speaker is tuned — the worse half to lose,
+    because that screen is the one that otherwise says only "Verified."
+
+    Walks the real seam: seeded durable state -> the REAL re-arm conductor ->
+    the REAL ``persist_conductor_state`` -> state, ``/state``, and the screen.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        RIPPLE_RESERVATION_COPY,
+        build_crossover_envelope_v2,
+    )
+
+    reservation = _seeded_session_with_a_ripple_reservation()
+
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
+        failure_code=None,
+        evidence={"bundle_session_id": "bundle-stage-2"},
+    )
+
+    # Surface 1: the durable state — carried across the bundle hop.
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["measure"]["ripple_reservation"] == reservation
+
+    # Surface 2: /state's projection.
+    assert (
+        v2host.crossover_v2_status_block()["measure"]["ripple_reservation"]
+        == reservation
+    )
+
+    # Surface 3: the screen the household actually reads.
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            **v2host.crossover_v2_status_block(),
+            "phase": PHASE_DONE,
+            "verify": {"outcome": "pass"},
+        },
+    })
+    assert RIPPLE_RESERVATION_COPY in [n["text"] for n in env["nudges"]]
+    assert (
+        "predicted ripple 15.24 dB, above the 15.0 dB disclosure threshold"
+        in env["expert_details"]
+    )
+
+
+def test_a_fresh_measurement_clears_a_previous_sessions_ripple_reservation():
+    """The converse, and the reason the predicate is MEASURE rather than an
+    unconditional carry: a new measuring session owns the answer to "how good
+    was this measurement", so a clean retake must not replay a caveat about a
+    capture the household already replaced.
+    """
+    _seeded_session_with_a_ripple_reservation()
+
+    v2host.persist_conductor_state(
+        _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
+        failure_code=None,
+        evidence={"bundle_session_id": "bundle-fresh"},
+    )
+
+    assert v2host.load_v2_state()["measure"] is None
+    assert v2host.crossover_v2_status_block()["measure"] is None
+
+
 # --- the projection contract, pinned AT the projection layer ------------------
 #
 # Gate finding SF-1 (adversarial review of #1982): `_household_findings_status`
@@ -3636,6 +3728,10 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     carry-forward in ``persist_conductor_state`` reads ``prior["evidence"]``
     unconditionally, so a stale ``cloud_artifacts`` fingerprint map left behind
     by an Undo would be resurrected on the very next verify-only re-arm.
+
+    ``measure`` is the fourth (#2087): G1's ripple reservation describes the
+    capture the undone tuning was built from, and the same PR added a
+    ``prior["measure"]`` carry-forward with the identical resurrection shape.
     """
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3669,6 +3765,11 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
             "last_decision": {"decision": "stop_floor"},
             "store_count": 1,
         },
+        "measure": {
+            "ripple_reservation": {
+                "predicted_ripple_db": 15.244, "threshold_db": 15.0,
+            }
+        },
     })
     v2host.observe_restore()
     state = v2host.load_v2_state()
@@ -3692,6 +3793,11 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     # verify-only re-arm, describing artifacts from the undone session.
     assert state["evidence"] is None
     assert state["attempts_loop"] is None
+    # #2087's field: a surviving ``measure`` is a reservation about the capture
+    # the UNDONE tuning was built from, and persist_conductor_state's own
+    # ``prior["measure"]`` carry-forward is the same resurrection shape SF-2
+    # found for ``evidence``.
+    assert state["measure"] is None
     assert v2host._applied_gate() is False
 
 

@@ -507,7 +507,8 @@ ProgramAnalysis`:
    branches — phasing by the full applied τ double-counts it, which is the
    reverted fix-2 failure mode. Two safety properties the old fixed target
    carried are retained by other owners rather than by this curve:
-   `predicted_ripple_db` (the G1 capture-quality ceiling) stays on the
+   `predicted_ripple_db` (the G1 capture-quality threshold — a DISCLOSURE
+   trigger, not a refusal, since the 2026-08-03 ruling on #2087) stays on the
    independently aligned sum, and the ±(period/6) snap radius bounds the
    residual below one comb period, so a candidate cannot describe — let alone
    excuse — a wrong-lobe apply. Measured and predicted magnitude receive the
@@ -794,7 +795,8 @@ which would double-count the peak gap `_aligned_branch_tf` already removed — t
 reverted fix-2 mode. Item 5's "VERIFY's reference is the independently aligned
 zero-residual target sum, not a candidate-specific model" sentence is
 **superseded**; two safety properties it carried moved to named owners rather
-than being dropped — `predicted_ripple_db` (the G1 ceiling) stays on the
+than being dropped — `predicted_ripple_db` (the G1 threshold, a disclosure
+trigger since #2087) stays on the
 independently aligned frame, and the ±(period/6) snap radius bounds the residual
 below one comb period. Consequence recorded in
 `HANDOFF-crossover-measurement-v2.md`: the predicted-spec improvement gate's
