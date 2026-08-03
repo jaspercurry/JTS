@@ -1578,6 +1578,12 @@ prescription look plausible?" — a judgement call, which is what the 2026-08-02
 replay was reduced to — into "did it recover the thing I put in?", which is a
 fact.
 
+A banked capture goes further than it first looks, and the section would be
+dishonest not to say so: its *inputs* can be replayed with one varied — severing
+the cloud is the production `cloud is None` branch — so a severed re-fit shows
+whether the evidence actually *bound*. What it still cannot supply is the answer:
+whether the correction that came out was right.
+
 This is already the house pattern in places — what is missing is that it is
 applied *systematically*, as a coverage obligation rather than wherever someone
 happened to reach for it. `fit_driver_linearization` is exercised by a synthetic
@@ -1662,15 +1668,28 @@ sit over an octave and a half above the highest filter the fit places. There was
 never a filter up there to remove.
 
 The corpus cannot settle it either, and for the reason already given: it carries
-no ground truth. It also carries no counterfactual. A capture records one
-outcome, and nothing in that outcome separates "the exclusion held the fit out of
-those bands" from "the fit had no reason to go there anyway." You cannot sever a
-capture and re-run it. That is not a shortage of captures — it is what a capture
-is.
+no ground truth. A severed re-fit of a banked session is a real and cheap
+experiment, and it is worth running — it can show that the exclusion *bound* and
+what the fit does without it. It cannot say the correction that resulted was
+*right*. Only an injected defect gives you that, and one thing more: a defect on
+demand. The second matters most exactly here, because the null registry's
+*gating* band is floored at 4 kHz (`ECHO_BAND_HF_REGIME_FLOOR_HZ`), so a real
+null below that is never registered at all and the corpus structurally cannot
+carry a labelled case of one. (`_crossover_region_null_registry` asks about that
+region anyway, deliberately without letting the answer gate anything — #1967,
+#1867.)
 
-Synthetically, both the case and its severed twin are near-trivial to construct,
-and constructing them is the only way to test the gate's decision against a known
-answer before a household meets it.
+Synthetically the defect is built to order and its answer is known before the
+flow runs, which is what lets a scenario grade the gate's decision rather than
+merely observe it — and that has to exist before a household meets it.
+
+A note on how this paragraph was written, because it is this section's own thesis
+turned on its author. Three successive versions of it claimed the corpus
+*lacked* something — a cloud, a null inside the working band, a counterfactual —
+and measurement falsified all three; one of the three was authored by the
+reviewer rather than the writer, and inherited on the strength of the label. A
+negative claim about a corpus is a strong empirical claim. It needs the same
+measurement a positive one does.
 
 ### The ambition: one scenario per diagnostic criterion
 
