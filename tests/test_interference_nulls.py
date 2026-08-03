@@ -65,8 +65,10 @@ from jasper.audio_measurement.interference_nulls import (
     REASON_NO_LADDER,
     REASON_NO_PER_POSITION_CURVES,
     REASON_R_DISAGREEMENT,
+    REASON_TOO_FEW_POSITIONS,
     RUNG_MATCH_TOLERANCE_SPACINGS,
     RefusedCandidate,
+    classify_dip_position_variance,
     identify_interference_nulls,
     null_depth_ceiling_db,
     reflection_ratio_from_depth,
@@ -1025,7 +1027,7 @@ def test_every_refusal_slug_the_module_defines_is_exercised_here():
         for name, value in vars(module).items()
         if name.startswith(("REASON_", "CANDIDATE_")) and isinstance(value, str)
     }
-    assert len(slugs) == 12, sorted(slugs)
+    assert len(slugs) == 13, sorted(slugs)
     untested = sorted(name for name in slugs if name not in source)
     assert untested == [], untested
 
@@ -1664,3 +1666,259 @@ def test_s0_exclusion_stays_far_below_the_runaway_cap(s0_main_leg):
     assert max(fractions) == pytest.approx(0.3074, abs=0.001)
     assert min(fractions[1:]) == pytest.approx(0.2385, abs=0.001)
     assert EXCLUSION_CAP_FRACTION - max(fractions) == pytest.approx(0.3426, abs=0.002)
+
+
+# --------------------------------------------------------------------------- #
+# F. Position variance without the ladder (#1967)
+#
+# `classify_dip_position_variance` is stage 6 of the gate above, run on its
+# own. These pin the two things that make it usable as a boost bound: it
+# answers where the full gate refuses, and its "invariant" verdict is not a
+# licence.
+# --------------------------------------------------------------------------- #
+
+
+def _variance(captures, band_hz=SYNTHETIC_BAND_HZ, **kwargs):
+    return classify_dip_position_variance(
+        combine_positions(captures), band_hz=band_hz, **kwargs
+    )
+
+
+# The band the notch fixtures below are read over: low enough that a single
+# comb rung would be the only feature there, which is the regime this check
+# is actually USED in (below the registry's 4 kHz floor). The synthetic band
+# above is deliberately NOT reused -- see
+# `test_f_dense_combs_read_invariant_and_that_direction_is_the_safe_one`.
+NOTCH_BAND_HZ = (1200.0, 3400.0)
+
+
+def _notched_cloud(
+    notch_hz: list[float],
+    *,
+    depth_db: float = 18.0,
+    width_oct: float = 0.06,
+    ripple_db: float = 1.5,
+    ripple_oct: float = 1.7,
+) -> list[PositionCapture]:
+    """A magnitude-domain cloud where each position carries ONE narrow notch,
+    at whatever frequency that position was given.
+
+    Built in the magnitude domain rather than from an IR because the property
+    under test is purely "does this dip sit at the same place at every
+    position", and an IR fixture would additionally have to keep a whole comb
+    from wandering into the answer. The gentle log-frequency ripple is not
+    decoration: a perfectly flat baseline has no strict local maxima, so a
+    notch on it has no flank to measure a depth against and is refused as
+    ``CANDIDATE_NOT_MEASURABLE`` before it can be classified.
+
+    ``ir=None`` throughout, so these clouds also carry no arrival evidence --
+    which is the shape the real 2026-07-30 session had.
+    """
+    freqs = np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE)
+    log_f = np.log2(np.maximum(freqs, 1.0))
+    baseline = ripple_db * np.sin(2.0 * np.pi * log_f / ripple_oct)
+    return [
+        PositionCapture(
+            position_id=f"p{k:02d}",
+            freqs_hz=freqs,
+            magnitude_db=baseline
+            - depth_db * np.exp(-0.5 * ((log_f - np.log2(f0)) / width_oct) ** 2),
+            sample_rate=SAMPLE_RATE,
+            ir=None,
+        )
+        for k, f0 in enumerate(notch_hz)
+    ]
+
+
+def test_f_positions_sharing_one_delay_read_invariant_and_exclude_nothing():
+    """Eight positions, one sample-aligned delay: the comb sits at the same
+    frequencies everywhere, so every material dip is present at every
+    position and NOTHING is offered for exclusion.
+
+    The empty ``position_dependent_bands_hz`` is the assertion. A consumer
+    using this as a boost bound must get "nothing contradicted" here, or the
+    bound would withhold gain on a cloud that agrees with itself.
+    """
+    report = _variance(_cloud([15] * 8, 0.37))
+
+    assert report.reason == ""
+    assert report.n_positions == 8
+    assert report.dips
+    assert all(
+        dip.classification == CLASSIFICATION_POSITION_INVARIANT for dip in report.dips
+    )
+    assert all(dip.positions_present == 8 for dip in report.dips)
+    assert report.position_dependent_bands_hz == ()
+
+
+def test_f_a_dip_that_moves_with_position_reads_dependent_and_is_offered():
+    """Five positions notch at 1800 Hz and three at 2400 Hz: the combined
+    curve carries both dips, and NEITHER is present at enough positions.
+
+    This is the case the bound acts on. The bands returned are the dips' own
+    half-depth intervals, so a consumer acting on them touches exactly the
+    bins the registry would have excluded had it identified the same feature.
+    """
+    report = _variance(
+        _notched_cloud([1800.0] * 5 + [2400.0] * 3), band_hz=NOTCH_BAND_HZ,
+    )
+
+    assert report.reason == ""
+    dependent = [
+        dip for dip in report.dips
+        if dip.classification == CLASSIFICATION_POSITION_DEPENDENT
+    ]
+    assert [d.positions_present for d in dependent] == [5, 3]
+    assert all(
+        dip.positions_present / dip.positions_total < POSITION_PRESENCE_FRACTION
+        for dip in dependent
+    )
+    assert len(report.position_dependent_bands_hz) == 2
+    for lo, hi in report.position_dependent_bands_hz:
+        assert any(d.f_lo_hz <= lo and hi <= d.f_hi_hz for d in dependent), (lo, hi)
+
+
+def test_f_the_same_notch_at_every_position_is_not_offered():
+    """The control for the test above, differing in one thing: where the
+    notch sits. Eight positions notched at the SAME frequency read 8/8
+    invariant and nothing is offered -- so the verdict tracks the dip's
+    mobility rather than its presence or its depth."""
+    report = _variance(_notched_cloud([1800.0] * 8), band_hz=NOTCH_BAND_HZ)
+
+    assert report.reason == ""
+    assert [d.positions_present for d in report.dips] == [8]
+    assert report.dips[0].classification == CLASSIFICATION_POSITION_INVARIANT
+    assert report.position_dependent_bands_hz == ()
+
+
+def test_f_dense_combs_read_invariant_and_that_direction_is_the_safe_one():
+    """A limit of this check, pinned rather than left to be discovered.
+
+    Where combs are DENSE relative to the smoothing window -- eight positions
+    on eight different delays, read over 4-19 kHz -- some minimum of every
+    position lands inside the proximity window of every combined-curve dip,
+    so the check reads ``position_invariant`` even though no single feature
+    is shared. It over-reads agreement, never disagreement.
+
+    That direction is why this is a usable boost bound anyway: over-reading
+    agreement offers nothing for exclusion, which leaves the permission
+    exactly where the gate already had it. Under-reading would have withheld
+    gain on a cloud that agrees with itself. The regime the bound is USED in
+    (below 4 kHz, where a 300 us comb has at most one rung) is the sparse one
+    the notch fixtures above model.
+    """
+    report = _variance(_cloud([11, 14, 17, 20, 23, 26, 29, 32], 0.37))
+
+    assert report.reason == ""
+    assert report.dips
+    assert all(
+        dip.classification == CLASSIFICATION_POSITION_INVARIANT
+        for dip in report.dips
+    )
+    assert report.position_dependent_bands_hz == ()
+
+
+def test_f_it_answers_where_the_full_gate_refuses_for_want_of_arrivals():
+    """The motivating shape (#1967). A cloud whose positions supplied no IR
+    gives the full gate nothing to corroborate against, so it refuses with
+    ``no_corroborating_arrivals`` and classifies nothing -- which is exactly
+    what the real 2026-07-30 JTS3 session's registry returned.
+
+    The variance check reads the same curves and still answers, because
+    per-position presence never needed the arrival evidence. Without this
+    property the bound would be a no-op on the very session that motivated
+    it.
+    """
+    combined = combine_positions(_notched_cloud([1800.0] * 5 + [2400.0] * 3))
+
+    gate = identify_interference_nulls(combined, band_hz=NOTCH_BAND_HZ)
+    assert gate.reason == REASON_NO_CORROBORATING_ARRIVALS
+    assert gate.nulls == ()
+    assert gate.excluded_bands_hz == ()
+
+    variance = classify_dip_position_variance(combined, band_hz=NOTCH_BAND_HZ)
+    assert variance.reason == ""
+    assert variance.dips
+    assert variance.position_dependent_bands_hz
+
+
+def test_f_a_single_position_cannot_support_a_cross_position_statistic():
+    """N < 2 refuses by name rather than reading 0/1 or 1/1 as a verdict —
+    the same line ``combine_positions`` draws when it returns an empty
+    ``band_spread``."""
+    report = _variance(_cloud([15], 0.37))
+
+    assert report.reason == REASON_TOO_FEW_POSITIONS
+    assert report.dips == ()
+    assert report.position_dependent_bands_hz == ()
+
+
+def test_f_a_record_without_per_position_curves_refuses_by_name():
+    """A deserialised or hand-built record can legally carry empty
+    per-position arrays. It must refuse, never silently classify every dip as
+    invariant — which is the direction that would grant boost."""
+    import dataclasses
+
+    combined = combine_positions(_cloud([15] * 6, 0.37))
+    stripped = dataclasses.replace(
+        combined,
+        per_position_db=np.empty((0, 0)),
+        per_position_diag_db=np.empty((0, 0)),
+    )
+    report = classify_dip_position_variance(stripped, band_hz=SYNTHETIC_BAND_HZ)
+
+    assert report.reason == REASON_NO_PER_POSITION_CURVES
+    assert report.dips == ()
+    assert report.position_dependent_bands_hz == ()
+
+
+def test_f_a_flat_cloud_has_no_candidate_nulls():
+    """No dip clears the materiality floor, so there is nothing to classify —
+    reported by name rather than as an empty success."""
+    report = _variance(_cloud([15] * 6, 0.0))
+
+    assert report.reason == REASON_NO_CANDIDATE_NULLS
+    assert report.dips == ()
+
+
+def test_f_malformed_config_raises_through_the_shared_validator():
+    """Both entry points validate the band with one function, so a band that
+    is illegal for the gate is illegal here — identically, and by raising
+    rather than refusing, because it is caller configuration."""
+    combined = combine_positions(_cloud([15] * 6, 0.37))
+
+    for bad in ((0.0, 19_000.0), (19_000.0, 4000.0), (4000.0, float("inf"))):
+        with pytest.raises(ValueError):
+            classify_dip_position_variance(combined, band_hz=bad)
+        with pytest.raises(ValueError):
+            identify_interference_nulls(combined, band_hz=bad)
+
+    with pytest.raises(ValueError):
+        classify_dip_position_variance(
+            combined, band_hz=SYNTHETIC_BAND_HZ, min_depth_db=0.0,
+        )
+    # A band that lands on fewer than three bins of this grid.
+    with pytest.raises(ValueError):
+        classify_dip_position_variance(combined, band_hz=(4000.0, 4000.5))
+
+
+def test_f_presence_proximity_is_derived_from_the_smoothing_window():
+    """The one quantity this function introduces is not a chosen threshold:
+    it is the width of the 1/``diag_fraction``-octave window the minima were
+    located through, so two minima closer than one window are one feature.
+
+    Pinned because a future edit that swaps it for a literal would look
+    harmless and would silently re-calibrate the verdict.
+    """
+    import inspect
+
+    from jasper.audio_measurement import interference_nulls as module
+
+    source = inspect.getsource(module.classify_dip_position_variance)
+    assert "_smoothing_bandwidth_hz(cand.f_hz, combined.diag_fraction)" in source
+
+    # And it tracks the fraction rather than a constant: a coarser diagnostic
+    # curve gives a wider window at the same frequency.
+    assert module._smoothing_bandwidth_hz(4000.0, 3) > module._smoothing_bandwidth_hz(
+        4000.0, 6
+    )

@@ -15,6 +15,8 @@ description for the offline sanity numbers.
 """
 from __future__ import annotations
 
+from collections import Counter
+
 import math
 import re
 
@@ -42,11 +44,14 @@ from jasper.active_speaker.linearization_fit import (
     _CUT_REDUCTION_EPS_DB,
     _ENVELOPE_NONZERO_EPS_DB,
     _MIN_FILTER_GAIN_DB,
+    _PEAKING_Q_MAX,
+    _PEAKING_Q_MIN,
     FitVocabulary,
     LinearizationFilter,
     LinearizationFit,
     _HF_MIN_OCCURRENCES,
     _HIGHSHELF_Q,
+    _boost_exclusion_verdicts,
     _core_or_fallback_mask,
     _highshelf_response_db,
     _ladder_smooth,
@@ -60,6 +65,7 @@ from jasper.active_speaker.linearization_fit import (
     reduce_cuts_for_lift,
     solve_shared_level_frame,
 )
+from jasper.active_speaker.branch_target import SIGNIFICANT_GAIN_DB
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.correction.peq import PEQ, predicted_response
@@ -1568,6 +1574,478 @@ def test_boost_cannot_fill_an_envelope_excluded_band():
     )
     assert all(f.gain <= 0.0 for f in fit.filters)
     assert fit.headroom_cost_db == 0.0
+
+
+def test_skirt_spill_into_an_excluded_band_is_kept_and_disclosed():
+    """#1967's central case, and the one that decides whether this bound is a
+    bound or a ban.
+
+    One boost at 1485 Hz working on a dip 0.7 octaves away puts real gain into
+    an excluded band at 900-1000 Hz through its skirt. That is SPILL, not
+    action — the band is nowhere near the filter's own half-gain bandwidth —
+    so the filter survives untouched and the leftover in-band energy is
+    disclosed instead.
+
+    A whole-cascade test at an absolute threshold refuses this, which is why
+    that shape was rejected: measured, it destroyed the entire lift on 94.4 %
+    of randomized multi-dip fits.
+    """
+    resp, envelope = _dip_response(depth_db=8.0, center_hz=1500.0)
+    base = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    kept = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(
+            allow_boost=True, boost_excluded_bands_hz=((900.0, 1000.0),),
+        ),
+    )
+    assert [f for f in base.filters if f.gain > 0.0]
+    assert kept.filters == base.filters
+    assert kept.lift_suppressed_reason == ""
+    assert kept.lift_boost_excluded_drops == ()
+    # The spill is not hidden: it is reported per band, as an accepted
+    # remainder the post-apply sweep will measure for real.
+    assert [r.band_hz for r in kept.lift_boost_excluded_residual] == [(900.0, 1000.0)]
+    assert kept.lift_boost_excluded_residual[0].realized_max_db > 0.0
+
+
+def test_a_boost_aimed_at_an_excluded_band_is_dropped_and_its_sibling_kept():
+    """The per-filter decision, with a control in the same fit.
+
+    Two dips, one inside an excluded band and one far outside it. The boost
+    working on the excluded dip is aimed at the band — its own realized
+    magnitude there IS its peak — so it goes; the boost working on the other
+    dip is untouched. This is what "per filter, not per cascade" buys, and it
+    is the difference between correcting half a driver and correcting none.
+    """
+    resp, envelope = _multi_dip_response(
+        ((700.0, 12.0, 0.16), (2400.0, 10.0, 0.20)),
+    )
+    base = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    base_boosts = [f for f in base.filters if f.gain > 0.0]
+    assert len(base_boosts) == 2
+
+    bounded = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(
+            allow_boost=True, boost_excluded_bands_hz=((620.0, 800.0),),
+        ),
+    )
+    kept_boosts = [f for f in bounded.filters if f.gain > 0.0]
+
+    # A lift DID happen, so there is no whole-lift suppression reason.
+    assert bounded.lift_suppressed_reason == ""
+    assert len(kept_boosts) == 1
+    assert not (Counter(kept_boosts) - Counter(base_boosts))
+    assert not (620.0 <= kept_boosts[0].freq <= 800.0)
+    # …and the one that went is disclosed with the arithmetic that dropped it.
+    assert len(bounded.lift_boost_excluded_drops) == 1
+    drop = bounded.lift_boost_excluded_drops[0]
+    assert drop.band_hz == (620.0, 800.0)
+    assert 620.0 <= drop.freq_hz <= 800.0
+    assert drop.realized_in_band_db >= drop.gain_db / 2.0
+
+
+def test_when_every_boost_is_aimed_the_lift_is_empty_and_named():
+    """The whole-lift refusal still exists — it is just no longer the default
+    outcome. When the ONLY boost is aimed at the excluded band there is
+    nothing left to emit, and the fit says so through the reason a caller
+    already reads.
+    """
+    resp, envelope = _dip_response(depth_db=8.0, center_hz=1500.0)
+    refused = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(
+            allow_boost=True, boost_excluded_bands_hz=((1300.0, 1700.0),),
+        ),
+    )
+    assert all(f.gain <= 0.0 for f in refused.filters)
+    assert refused.headroom_cost_db == 0.0
+    assert refused.lift_suppressed_reason == "boost_excluded_band"
+    assert len(refused.lift_boost_excluded_drops) == 1
+    # Nothing survives, so nothing is left inside the band either.
+    assert refused.lift_boost_excluded_residual[0].realized_max_db == 0.0
+
+    # The cut side is untouched: the envelope still allows real depth across
+    # the excluded span, which is what an envelope-term implementation would
+    # have destroyed.
+    in_band = (envelope.freqs_hz >= 1300.0) & (envelope.freqs_hz <= 1700.0)
+    assert float(np.min(envelope.allowed_depth_db[in_band])) > 0.05
+
+
+def test_the_action_region_depends_on_q_alone_not_on_how_big_the_boost_is():
+    """Why a RATIO is well-behaved where an absolute threshold was not.
+
+    For a peaking biquad the half-gain-in-dB bandwidth is a function of Q
+    only — the width in octaves is identical at 1 dB and at 12 dB. So
+    "does the band lie inside this filter's action region" asks a question
+    about WHERE the filter works, never about how hard it works, and the
+    criterion cannot be gamed by the size of the boost in either direction.
+
+    An absolute threshold has the opposite property, which is exactly how
+    round 2 became a ban: the bigger the (legitimate) boost, the further its
+    skirt clears any fixed dB line, so large corrections were punished
+    hardest.
+
+    Also pins the ordering by Q, since the whole point is that a broad filter
+    legitimately owns a wider region than a narrow one.
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+
+    def action_region_octaves(q, gain_db):
+        response_db = 20.0 * np.log10(np.maximum(np.abs(
+            complex_correction_response(
+                (LinearizationFilter(
+                    biquad_type="Peaking", freq=1000.0, q=q, gain=gain_db,
+                ),), grid,
+            )
+        ), 1e-12))
+        inside = grid[response_db >= gain_db / 2.0]
+        return float(np.log2(inside.max() / inside.min()))
+
+    widths = {}
+    for q in (0.5, 1.0, 2.0, 4.0, _PEAKING_Q_MAX):
+        at_gain = [action_region_octaves(q, g) for g in (1.0, 6.0, 12.0)]
+        assert max(at_gain) - min(at_gain) < 1e-6, (q, at_gain)
+        widths[q] = at_gain[0]
+
+    # Monotone in Q, and the span is wide enough that the criterion actually
+    # discriminates rather than reducing to "same answer for every filter".
+    assert sorted(widths, key=lambda q: widths[q], reverse=True) == sorted(widths)
+    assert widths[0.5] > 2.0 > widths[_PEAKING_Q_MAX]
+
+
+#: Half-gain reach of a peaking bell, in octaves EITHER SIDE of centre, as a
+#: function of Q. Re-derived by the test below rather than quoted: it is the
+#: drop radius of :func:`_boost_exclusion_verdicts`, so it is the number a
+#: future edit to the boost Q floor would move.
+_HALF_GAIN_REACH_OCT = {1.0: 0.68, 0.5: 1.25, 0.3: 1.85}
+
+_Q_FLOOR_CONSEQUENCE = (
+    "The #1967 boost-exclusion drop radius IS the emitted bell's half-gain "
+    "bandwidth, which depends on Q alone: Q=1.0 reaches +/-0.68 oct, Q=0.5 "
+    "+/-1.25 oct, Q=0.3 +/-1.85 oct. Lowering the boost Q floor widens every "
+    "drop decision by the same factor and walks the bound back toward the "
+    "whole-cascade bluntness round 2 was rejected for (94.4% of multi-dip "
+    "fits lost their entire lift). If broader boost bells are genuinely "
+    "wanted, re-derive the drop criterion in the SAME change."
+)
+
+
+def test_the_boost_path_pins_its_own_q_floor_instead_of_inheriting_one():
+    """``design_peq``'s ``q_min`` is a DEFAULT ARGUMENT, not a clamp — a call
+    site that omits it inherits whatever another module happens to default to.
+
+    Since #1967 that floor is load-bearing for a safety property in THIS
+    module (see ``_Q_FLOOR_CONSEQUENCE``), so the lift stage must pass it
+    explicitly. Asserted by capturing the real call's kwargs rather than by
+    reading the source, so a refactor that keeps the text and loses the
+    argument still fails.
+    """
+    import jasper.active_speaker.linearization_fit as fit_mod
+
+    captured: list[dict] = []
+    real = fit_mod.design_peq
+
+    def _spy(*args, **kwargs):
+        captured.append(kwargs)
+        return real(*args, **kwargs)
+
+    resp, envelope = _dip_response(depth_db=8.0, center_hz=1500.0)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fit_mod, "design_peq", _spy)
+        fit = fit_driver_linearization(
+            resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        )
+    assert [f for f in fit.filters if f.gain > 0.0], "need a boosting fit"
+
+    boost_calls = [k for k in captured if k.get("cuts_only") is False]
+    assert boost_calls, "the lift stage never ran"
+    for kwargs in boost_calls:
+        assert "q_min" in kwargs, (
+            "the lift stage must pass q_min EXPLICITLY, not inherit "
+            f"design_peq's default. {_Q_FLOOR_CONSEQUENCE}"
+        )
+        assert kwargs["q_min"] >= 1.0, _Q_FLOOR_CONSEQUENCE
+
+
+@pytest.mark.parametrize("width_oct", [0.4, 1.0, 1.5])
+def test_no_emitted_boost_is_broader_than_the_pinned_q_floor(width_oct):
+    """The same invariant at the surface that matters — the filters actually
+    emitted — so a future path that reaches ``design_peq`` some other way is
+    still caught.
+
+    **The widths are the test.** ``design_peq`` only wants a sub-1.0 Q for a
+    BROAD residue, so a narrow-dip fixture cannot tell a pinned floor from an
+    unpinned one: measured, a 0.4-octave dip emits Q 1.966 whether the floor
+    is 1.0 or 0.3, while a 1.5-octave dip emits Q 1.0 pinned and **0.335**
+    unpinned. Only the wide cases make this assertion do work — which is why
+    an earlier single-width version of it stayed green under the very
+    mutation it exists to catch.
+    """
+    resp, envelope = _dip_response(
+        depth_db=10.0, center_hz=1200.0, width=width_oct,
+    )
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    boosts = [f for f in fit.filters if f.gain > 0.0]
+    assert boosts, width_oct
+    for f in boosts:
+        # The LITERAL, not ``_PEAKING_Q_MIN``. Comparing an emitted Q against
+        # the constant that produced it is a tautology: lower the constant and
+        # the assertion lowers with it. The shipped floor is 1.0, and moving
+        # it should cost whoever moves it a deliberate edit here — which is
+        # where they meet the consequence.
+        assert f.q >= 1.0, (
+            f"boost at {f.freq:.1f} Hz has Q={f.q:.3f} < 1.0. "
+            f"{_Q_FLOOR_CONSEQUENCE}"
+        )
+        assert f.q >= _PEAKING_Q_MIN
+
+
+def test_the_q_floor_buys_exactly_the_drop_radius_the_criterion_assumes():
+    """The coupling itself, measured rather than asserted in prose: the reach
+    numbers in ``_PEAKING_Q_MIN``'s comment and in the failure message above
+    are re-derived here, so they cannot drift away from the filter maths."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+
+    def reach_octaves(q):
+        gain_db = 8.0
+        response_db = 20.0 * np.log10(np.maximum(np.abs(
+            complex_correction_response((LinearizationFilter(
+                biquad_type="Peaking", freq=1000.0, q=q, gain=gain_db,
+            ),), grid)
+        ), 1e-12))
+        inside = grid[response_db >= gain_db / 2.0]
+        return float(np.log2(inside.max() / inside.min())) / 2.0
+
+    for q, expected_oct in _HALF_GAIN_REACH_OCT.items():
+        assert reach_octaves(q) == pytest.approx(expected_oct, abs=0.02), q
+
+    # And the shipped floor is the tightest of the three, which is the point.
+    # Pinned as a LITERAL, house style (test_crossover_v2_crossover_region_registry
+    # pins ECHO_BAND_HF_REGIME_FLOOR_HZ == 4000.0 the same way): a max() over the
+    # documentation table above would fail spuriously the moment someone adds a
+    # Q=2.0 row to it, which is a doc edit, not a policy change.
+    assert _PEAKING_Q_MIN == 1.0
+    assert reach_octaves(_PEAKING_Q_MIN) < reach_octaves(0.5)
+
+
+def test_a_band_off_the_grid_decides_nothing_and_discloses_nothing():
+    """An excluded band the fit's own grid does not reach cannot be evidence
+    about any filter, so it drops nothing AND reports no residual — rather
+    than reporting a confident 0.0 dB for a band nobody looked at."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    boost = LinearizationFilter(
+        biquad_type="Peaking", freq=1000.0, q=2.0, gain=8.0,
+    )
+    kept, dropped, residual = _boost_exclusion_verdicts(
+        [boost], grid, ((30_000.0, 40_000.0),),
+    )
+    assert kept == [boost]
+    assert dropped == []
+    assert residual == []
+
+
+def test_the_drop_criterion_is_relative_to_each_filter_s_own_peak():
+    """The criterion itself, isolated from the fit.
+
+    A filter is aimed at a band when the band lies inside its own half-gain
+    bandwidth. That is scale-free on purpose: a small boost centred in the
+    band IS aimed at it and goes, while a large boost whose skirt reaches the
+    band is not and stays. An absolute threshold cannot express both — 0.5 dB
+    catches the large filter's skirt (a ban), and no threshold at all catches
+    neither (no bound).
+    """
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    small_centred = LinearizationFilter(
+        biquad_type="Peaking", freq=950.0, q=2.0, gain=1.0,
+    )
+    large_nearby = LinearizationFilter(
+        biquad_type="Peaking", freq=1485.0, q=1.7, gain=11.67,
+    )
+    band = ((900.0, 1000.0),)
+
+    kept, dropped, residual = _boost_exclusion_verdicts(
+        [small_centred, large_nearby], grid, band,
+    )
+    assert kept == [large_nearby]
+    assert [d.freq_hz for d in dropped] == [950.0]
+    assert residual[0].band_hz == (900.0, 1000.0)
+
+    # The large filter's spill is real and above an absolute 0.5 dB — the
+    # threshold the stopband guard uses — which is exactly why that constant
+    # could not be reused here.
+    spill_db = 20.0 * np.log10(np.maximum(np.abs(
+        complex_correction_response((large_nearby,), grid)
+    ), 1e-12))
+    in_band = (grid >= 900.0) & (grid <= 1000.0)
+    assert float(np.max(spill_db[in_band])) > SIGNIFICANT_GAIN_DB
+    assert float(np.max(spill_db[in_band])) < large_nearby.gain / 2.0
+
+
+def _multi_dip_response(specs, *, excited_band_hz=(150.0, 4000.0)):
+    """A driver carrying SEVERAL dips — the shape the monotonicity pathology
+    needs, and the reason a single-dip fixture cannot find it.
+
+    ``specs`` is ``(center_hz, depth_db, width_oct)`` per dip.
+    """
+    db = np.zeros_like(_NATIVE_FREQS_HZ)
+    for center_hz, depth_db, width_oct in specs:
+        db = db - _bell(_NATIVE_FREQS_HZ, center_hz, depth_db, width_oct)
+    resp = _driver_response("woofer", db)
+    return resp, _envelope("woofer", resp, excited_band_hz=excited_band_hz)
+
+
+def _realized_boost_db(fit, freqs_hz):
+    """The emitted BOOST cascade's realized response, and the boosts."""
+    boosts = tuple(f for f in fit.filters if f.gain > 0.0)
+    if not boosts:
+        return np.zeros_like(freqs_hz), ()
+    return 20.0 * np.log10(np.maximum(
+        np.abs(complex_correction_response(boosts, freqs_hz)), 1e-12,
+    )), boosts
+
+
+#: Two shapes that a REQUEST-mask implementation of the #1967 bound turns
+#: non-monotone, found by sweeping multi-dip responses against that
+#: implementation and pinned here deterministically. They cover both
+#: mechanisms, which are different bugs wearing one symptom:
+#:
+#: * ``unlock`` — the base fit is suppressed WHOLESALE (``exceeds_envelope``)
+#:   and emits nothing; removing demand shrinks the residue enough that the
+#:   cascade fits, so the bound turns "no boost at all" into +7.85 dB.
+#: * ``greedy_relocation`` — both fits emit, but ``design_peq`` is greedy over
+#:   the residue, so a changed residue moves and enlarges filters elsewhere:
+#:   +3.19 dB more gain at some bin than the unbounded fit had.
+#:
+#: They are spelled out rather than left to a sweep because a sweep's hit rate
+#: depends on the response family it draws from, and an earlier version of this
+#: comment quoted a "0 of 1500" figure for single-dip responses that a reviewer
+#: could not reproduce — they hit it in every single-dip family they tried. The
+#: number is withdrawn rather than re-argued: it is not needed to justify
+#: pinning these two, and a wrong number in shipped source telling the next
+#: maintainer that some fixture family is safe is worse than no number at all.
+_NON_MONOTONE_SHAPES = (
+    (
+        "unlock",
+        ((3011.3, 8.04, 0.236), (3265.9, 8.13, 0.416),
+         (596.8, 8.86, 0.297), (2888.3, 14.41, 0.144)),
+        (1499.8, 4035.1),
+    ),
+    (
+        "greedy_relocation",
+        ((482.8, 14.25, 0.346), (2629.5, 15.45, 0.172), (3244.0, 6.15, 0.298)),
+        (1488.2, 4839.7),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "label,specs,excluded", _NON_MONOTONE_SHAPES,
+    ids=[shape[0] for shape in _NON_MONOTONE_SHAPES],
+)
+def test_the_bound_is_monotone_on_the_shapes_that_break_a_request_mask(
+    label, specs, excluded,
+):
+    """The load-bearing safety property, on the two shapes that falsify the
+    obvious implementation.
+
+    An exclusion may only ever REMOVE gain: never raise the realized response
+    at any bin, never introduce a boost the unbounded fit did not have, never
+    turn a wholesale refusal into an emitted cascade.
+
+    Reading the REALIZED cascade (rather than masking ``wanted``) makes this
+    hold by construction — ``design_peq``'s inputs are untouched, so the
+    designed cascade is bit-identical and the bound can only ever REMOVE
+    filters from it. And removing one cannot raise anything: every boost bell
+    is non-negative at every bin, so a kept subset's realized response is
+    ``<=`` the full cascade's everywhere. These cases exist so that a future
+    edit which "simplifies" the bound back onto ``lift_mask`` fails here
+    instead of shipping.
+    """
+    resp, envelope = _multi_dip_response(specs)
+    base = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    bounded = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(
+            allow_boost=True, boost_excluded_bands_hz=(excluded,),
+        ),
+    )
+    base_db, base_boosts = _realized_boost_db(base, envelope.freqs_hz)
+    bounded_db, bounded_boosts = _realized_boost_db(bounded, envelope.freqs_hz)
+
+    assert float(np.max(bounded_db - base_db)) <= 1e-9, label
+    assert bounded.headroom_cost_db <= base.headroom_cost_db + 1e-9
+    # DROP-ONLY: the surviving boosts are a SUB-MULTISET of the unbounded
+    # fit's, filter for filter. A boost that is present but different —
+    # moved, re-Q'd, or enlarged — is the pathology, and it is what a request
+    # mask produced by feeding design_peq a different residue. Counter rather
+    # than set because a set would silently accept a DUPLICATED filter.
+    assert not (Counter(bounded_boosts) - Counter(base_boosts)), label
+
+
+def test_the_bound_is_monotone_across_a_swept_population():
+    """The same property as a sweep rather than two cases, so a shape the two
+    above do not represent still has to satisfy it.
+
+    Deterministic seed: this is a population claim, and a flaky population is
+    worse than a small one.
+    """
+    rng = np.random.default_rng(11)
+    worst_rise_db = -np.inf
+    for _ in range(120):
+        specs = [
+            (float(rng.uniform(300.0, 3500.0)),
+             float(rng.uniform(3.0, 16.0)),
+             float(rng.uniform(0.08, 0.5)))
+            for _ in range(int(rng.integers(2, 5)))
+        ]
+        resp, envelope = _multi_dip_response(specs)
+        center = float(rng.uniform(300.0, 3800.0))
+        width = float(rng.uniform(1.03, 2.0))
+        excluded = (center / width, center * width)
+
+        base = fit_driver_linearization(
+            resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+        )
+        bounded = fit_driver_linearization(
+            resp, envelope,
+            vocabulary=FitVocabulary(
+                allow_boost=True, boost_excluded_bands_hz=(excluded,),
+            ),
+        )
+        base_db, base_boosts = _realized_boost_db(base, envelope.freqs_hz)
+        bounded_db, bounded_boosts = _realized_boost_db(bounded, envelope.freqs_hz)
+        worst_rise_db = max(worst_rise_db, float(np.max(bounded_db - base_db)))
+        assert not (Counter(bounded_boosts) - Counter(base_boosts)), (specs, excluded)
+
+    # Never positive anywhere. The geometric reason is why this is a property
+    # and not a tolerance: every boost bell is non-negative at every bin, so
+    # removing one lowers the cascade everywhere and raises it nowhere.
+    assert worst_rise_db <= 1e-9
+
+
+def test_an_empty_boost_exclusion_is_byte_identical_to_no_exclusion():
+    """The default is the pre-#1967 fit exactly. ``()`` means "nothing
+    contradicted a boost", never "no evidence was gathered" — the distinction
+    the composer's own docstring turns on."""
+    resp, envelope = _dip_response(depth_db=8.0)
+    assert FitVocabulary(allow_boost=True).boost_excluded_bands_hz == ()
+    before = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    after = fit_driver_linearization(
+        resp, envelope,
+        vocabulary=FitVocabulary(allow_boost=True, boost_excluded_bands_hz=()),
+    )
+    assert before.to_dict() == after.to_dict()
 
 
 def test_reduce_cuts_for_lift_shrinks_a_cut_instead_of_stacking_a_boost():

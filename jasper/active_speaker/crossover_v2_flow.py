@@ -4098,11 +4098,19 @@ class _CloudFitEvidence:
     :func:`assemble_cloud_group_result` merged it. Not the screen's intervals
     and not the registry's: the wiring contract (issue #1742 item 4) is that
     the instruments are consumed together.
+
+    ``boost_excluded_bands_hz`` does NOT go to the envelope. It is the
+    boost-only bound (#1967) the fit vocabulary takes, and it rides here
+    because it is derived from the same closed cloud at the same moment —
+    see :meth:`CrossoverV2Conductor._boost_excluded_bands_hz`. Empty is the
+    ordinary case and means "nothing contradicted a boost", never "no
+    evidence".
     """
 
     excluded_bands_hz: tuple[tuple[float, float], ...]
     band_spread: tuple[Any, ...]
     n_positions: int
+    boost_excluded_bands_hz: tuple[tuple[float, float], ...] = ()
 
 
 def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None:
@@ -7610,7 +7618,136 @@ class CrossoverV2Conductor:
             excluded_bands_hz=intervals,
             band_spread=tuple(combined.band_spread),
             n_positions=int(combined.n_positions),
+            boost_excluded_bands_hz=self._boost_excluded_bands_hz(combined, result),
         )
+
+    def _boost_excluded_bands_hz(
+        self, combined: Any, result: Mapping[str, Any],
+    ) -> tuple[tuple[float, float], ...]:
+        """Bands BELOW the null registry's own floor where this cloud's
+        positions disagree about a dip — so boosting one corrects nothing any
+        listener hears (#1967).
+
+        **The hole this fills.** Boost permission is granted on ``cloud is not
+        None`` (see :meth:`_fit_linearization`'s gate), whose stated meaning is
+        that "null-exclusion stays a measured, registry-gated fact". The
+        registry's analysis band is floored at
+        :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so below that edge the
+        registry contributes no exclusions — not because it was uncertain but
+        because it was never asked — and the gate's claim is satisfied in form
+        without being satisfied in substance. On the 2026-07-30 JTS3 session
+        the registry returned ``insufficient_evidence`` /
+        ``no_corroborating_arrivals`` with zero exclusions (re-derived from
+        that session's own ``cloud_measure.json``), while its largest
+        prescribed boost was **+8.06 dB at 3633.6 Hz** — 366 Hz under the
+        floor. That boost figure is the owner's, from the offline replay
+        recorded on issue #1967; it is quoted here rather than re-derived, and
+        no test pins it.
+
+        **What this does and, more importantly, what it does not.** It runs
+        :func:`~jasper.audio_measurement.interference_nulls.classify_dip_position_variance`
+        over the blind span and hands the dips the cloud's own positions
+        DISAGREE about to the fit vocabulary, which refuses a lift whose
+        realized cascade would put significant gain in one. It cannot grant
+        boost anywhere — the bound is monotone by construction (see
+        :func:`~jasper.active_speaker.linearization_fit._lift_stage`) and a
+        ``position_invariant`` dip is left exactly as the gate already had it.
+        That asymmetry is deliberate and is not this conductor's call to make
+        — ``interference_nulls``' module docstring ("position-invariance says
+        *this is real*; it does not say *this is correctable*"),
+        ``docs/attribution-stage-plan.md`` §5 (a finding supported only by
+        position variance stays ``unsure``, adjudicated by rotating the
+        speaker), and :mod:`jasper.attribution.promotion` (which routes
+        ``position_invariant`` to ``carve``) all refuse to read stationarity
+        as a driver property. So this narrows the gate where the evidence
+        decides against a boost and leaves it open otherwise, which is the
+        owner's ruling ("do not trade a blind gate for a blunt one") applied
+        rather than overridden.
+
+        The residual is therefore real and named: a dip that every position
+        sees may still be a source-fixed interference null rather than a
+        driver deficit, and separating those needs the post-apply arm to ask
+        "did this help" rather than "did this match the model" (#1868).
+
+        **Know what one band costs before adding to this list.** The fit
+        drops any boost filter whose own action region overlaps a band here —
+        per filter, so siblings working elsewhere survive, and a whole-lift
+        refusal (``lift_suppressed_reason="boost_excluded_band"``) only when
+        EVERY boost was aimed. Skirt spill from a surviving filter is kept and
+        disclosed rather than refused. Even so, each band here can cost a real
+        correction, which is why this returns only the positively-contradicted
+        class and never a "we were unsure here" list. Per-filter verdicts ride
+        ``event=correction.crossover_v2_boost_excluded_verdicts``.
+
+        **Fails OPEN**, disclosed. A span too narrow to analyse, a cloud that
+        never retained per-position curves, or an unexpected numeric failure
+        all yield no exclusions — i.e. exactly the permission the gate grants
+        today. Failing closed would blanket-ban boost below 4 kHz on a
+        computation hiccup, which is the blunt outcome this whole function
+        exists to avoid.
+        """
+        from jasper.audio_measurement.interference_nulls import (
+            CLASSIFICATION_POSITION_DEPENDENT,
+            classify_dip_position_variance,
+        )
+
+        registry = result.get("null_registry") or {}
+        n_dependent = 0
+        floor_hz = float(self._cloud_echo_band.band_hz[0])
+        grid = np.asarray(getattr(combined, "freqs_hz", ()), dtype=float)
+        # The cloud's own gated validity floor is the honest lower edge: below
+        # it every position's curve is a truncated-window artifact, which is
+        # the same bound the spec band already clamps to.
+        validity_floor_hz = result.get("validity_floor_hz")
+        lo_hz = float(validity_floor_hz) if validity_floor_hz else 0.0
+        if grid.size:
+            lo_hz = max(lo_hz, float(grid[0]))
+        span = (lo_hz, floor_hz)
+        bands: tuple[tuple[float, float], ...] = ()
+        reason = ""
+        n_dips = 0
+        if not (0.0 < lo_hz < floor_hz) or int(
+            np.count_nonzero((grid >= lo_hz) & (grid <= floor_hz))
+        ) < 3:
+            reason = "no_blind_span"
+        else:
+            try:
+                report = classify_dip_position_variance(combined, band_hz=span)
+            except Exception:  # noqa: BLE001 - see "Fails OPEN" above.
+                reason = "variance_check_failed"
+                log_event(
+                    logger, "correction.crossover_v2_boost_variance_failed",
+                    level=logging.WARNING, session_id=self.session_id,
+                    band_hz=[round(v, 3) for v in span],
+                )
+            else:
+                reason = report.reason
+                n_dips = len(report.dips)
+                n_dependent = sum(
+                    dip.classification == CLASSIFICATION_POSITION_DEPENDENT
+                    for dip in report.dips
+                )
+                bands = report.position_dependent_bands_hz
+        log_event(
+            logger, "correction.crossover_v2_boost_evidence",
+            level=logging.WARNING if bands else logging.INFO,
+            session_id=self.session_id,
+            # The band the corroborating registry actually adjudicated, and
+            # the span below it where it structurally could not.
+            registry_band_hz=[round(v, 3) for v in self._cloud_echo_band.band_hz],
+            registry_classification=str(registry.get("classification") or ""),
+            registry_reason=str(registry.get("reason") or ""),
+            unadjudicated_span_hz=[round(v, 3) for v in span],
+            variance_reason=reason,
+            n_dips=n_dips,
+            # How many of those dips the cloud's positions DISAGREED about —
+            # the only class this bound acts on. `n_dips - n_position_dependent`
+            # is the invariant remainder, which keeps its boost and is exactly
+            # the residual #1868 has to close.
+            n_position_dependent=n_dependent,
+            boost_excluded_bands_hz=[[round(lo, 3), round(hi, 3)] for lo, hi in bands],
+        )
+        return bands
 
     def _run_cloud_pipeline(
         self, phase: str, combined: Any, positions: Sequence[_CloudPosition],
@@ -9088,8 +9225,30 @@ class CrossoverV2Conductor:
         #    these paths. Cut-only still proceeds; only the lift vocabulary is
         #    withheld, and the absence is already disclosed by
         #    `event=correction.crossover_v2_fit_without_cloud`.
+        #
+        # Condition 2 is necessary but NOT sufficient, and #1967 is why.
+        # `cloud is not None` asks whether the cloud REACHED the envelope; it
+        # does not ask whether the corroborating instrument could examine the
+        # band a boost lands in. Below `ECHO_BAND_HF_REGIME_FLOOR_HZ` the
+        # registry contributes no exclusions at all, so `allowed_depth_db` is
+        # never zeroed there and the hazard named above — "granting boost
+        # there would let the fit EQ a null" — is exactly what the gate
+        # cannot rule out in the band where it is blind. The 2026-07-30
+        # session's largest prescribed boost sat 366 Hz under the floor; see
+        # `_boost_excluded_bands_hz` for the figure and its provenance.
+        #
+        # `boost_excluded_bands_hz` is the substantive half. It is composed
+        # by `_boost_excluded_bands_hz` from the SAME closed cloud, carries
+        # only the bins that cloud's own positions disagree about, and binds
+        # the lift stage alone — cuts keep the full fit band. Read that
+        # method before changing this: it withholds on contradicting
+        # evidence and never grants on absent evidence, which is the shape
+        # the owner's ruling asks for.
         vocabulary = FitVocabulary(
             allow_boost=self._post_apply_verifies and cloud is not None,
+            boost_excluded_bands_hz=(
+                cloud.boost_excluded_bands_hz if cloud is not None else ()
+            ),
         )
 
         fits: dict[str, Any] = {}
@@ -9111,6 +9270,26 @@ class CrossoverV2Conductor:
                 ),
             )
             fits[role] = fit
+            # #1967's per-filter verdicts, disclosed HERE rather than in the
+            # fit: `linearization_fit` is pure computation and owns no logger,
+            # so the conductor is the layer that turns its records into a
+            # journal line. Emitted only when the bound actually decided
+            # something, so a session with no cloud exclusions adds no noise.
+            if fit.lift_boost_excluded_drops or fit.lift_boost_excluded_residual:
+                log_event(
+                    logger, "correction.crossover_v2_boost_excluded_verdicts",
+                    level=(
+                        logging.WARNING if fit.lift_boost_excluded_drops
+                        else logging.INFO
+                    ),
+                    session_id=self.session_id, role=role,
+                    # Dropped: the boost was AIMED at a contradicted band.
+                    dropped=[d.to_dict() for d in fit.lift_boost_excluded_drops],
+                    # Kept: skirt tail from filters working elsewhere. Accepted
+                    # and measured by the post-apply sweep, not refused here.
+                    residual=[r.to_dict() for r in fit.lift_boost_excluded_residual],
+                    lift_suppressed_reason=fit.lift_suppressed_reason,
+                )
             # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
             # scale (#1667). The emitted biquads rotate phase near their
             # corners and the two-branch summation below is phase-dominated, so

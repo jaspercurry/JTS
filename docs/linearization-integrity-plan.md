@@ -309,6 +309,19 @@ Owner-ruled 2026-07-27 (recorded in FORENSICS-SYNTHESIS.md):
   costs N dB of maximum level"), never silently limited. The protection
   layer (tweeter protection, limiters, the 0 dB ceiling) remains the
   hard rail and is not weakened.
+
+  > **"Registry-gated" is not uniform across the spectrum (#1967,
+  > 2026-08-02).** The null registry's analysis band is floored at
+  > `ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so below that edge the ruling's
+  > corroborating instrument structurally never looked. The ruling is
+  > unchanged and this is not a weakening of it — what changed is that the
+  > blind span now gets the cross-position check the cloud already supports
+  > (`interference_nulls.classify_dip_position_variance`), and a lift whose
+  > realized cascade lands gain in a dip the positions DISAGREE about is
+  > refused. Below 4 kHz the evidence backing a boost is therefore
+  > cross-position agreement, which is weaker than a registry verdict: it
+  > can say a boost is not contradicted, never that it helped. Closing that
+  > gap is #1868's post-apply question.
 - **"Reduce our own cuts" is a first-class operation** distinct from
   boost.
 - **Both drivers' targets live in one shared level frame** (closes the
