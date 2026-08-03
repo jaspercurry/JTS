@@ -576,8 +576,9 @@ def test_accepted_apply_verify_writes_model_error_exactly_once():
     written: list[dict[str, Any]] = []
     fakes = FakeSeams()
 
-    def record(**observation: Any) -> None:
+    def record(**observation: Any) -> bool:
         written.append(dict(observation))
+        return True
 
     c = _verify_only_conductor(
         fakes,
@@ -615,8 +616,9 @@ def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_pat
 
     path = tmp_path / "model-error.json"
 
-    def record(**observation: Any) -> None:
+    def record(**observation: Any) -> bool:
         record_model_error(path=path, **observation)
+        return True
 
     first_fakes = FakeSeams()
     first = _verify_only_conductor(
@@ -642,6 +644,59 @@ def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_pat
     records = load_state(path)["model_error"]
     assert [item["attempt_id"] for item in records] == ["candidate-a"]
     assert [item.attempt_id for item in recovered.attempt_history] == ["candidate-a"]
+
+
+def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
+    tmp_path, caplog,
+):
+    """A new recovery capture is not assumed byte-for-byte repeatable."""
+    from jasper.active_speaker.model_error_store import (
+        ModelErrorConflictError,
+        load_state,
+        record_model_error,
+    )
+
+    path = tmp_path / "model-error.json"
+
+    def record(**observation: Any) -> bool:
+        try:
+            record_model_error(path=path, **observation)
+        except ModelErrorConflictError:
+            return False
+        return True
+
+    first_fakes = FakeSeams()
+    first = _verify_only_conductor(
+        first_fakes,
+        seams=replace(first_fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    assert _run_phase(first, 1, 1)["accepted"] is True
+
+    recovered_fakes = FakeSeams()
+    recovered_fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.7, n_graded_bins=80,
+    )
+    recovered = _verify_only_conductor(
+        recovered_fakes,
+        seams=replace(recovered_fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    with caplog.at_level(logging.WARNING):
+        assert _run_phase(recovered, 1, 1)["accepted"] is True
+
+    records = load_state(path)["model_error"]
+    assert len(records) == 1
+    assert records[0]["realized_db"] == pytest.approx(0.9)
+    assert recovered.attempt_history == ()
+    assert recovered.last_attempt_decision is None
+    assert (
+        "event=correction.crossover_v2_model_error_identity_conflict"
+        in caplog.text
+    )
+    assert "correction.crossover_v2_model_error_write_failed" not in caplog.text
 
 
 def test_model_error_store_failure_warns_without_blocking_verify(caplog):

@@ -25,8 +25,11 @@ reading its imports instead of a claim you have to trust. That split is the
 whole reason this is a separate file.
 
 The update API is deliberately two calls — :func:`adopt_floor` and
-:func:`record_model_error` — each read-modify-write, so the live flow can call
-whichever it has news for without assembling a whole state document.
+:func:`record_model_error` — so the live flow can call whichever it has news
+for without assembling a whole state document. Both serialize their complete
+read-modify-write transaction on the same advisory lock; atomic replacement
+alone prevents torn JSON, but cannot prevent one process from publishing a
+stale snapshot over another process's update.
 ``record_model_error`` is idempotent by its per-speaker stable observation
 identity, closing the process-crash window between this file's atomic write and
 the conductor journey's separate atomic write.
@@ -42,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_json
+from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.log_event import log_event
 
 from .attempts_loop import FLOOR_BASES, FloorStats
@@ -57,6 +60,8 @@ STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH"
 #: the point of the history is a trend in the model's error, and a trend that
 #: needs more than 32 points is one nobody is reading anyway.
 MAX_MODEL_ERROR_RECORDS = 32
+_STORE_LOCK_MODE = 0o660
+_STORE_LOCK_TIMEOUT_SEC = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +82,12 @@ def model_error_state_path(path: str | Path | None = None) -> Path:
     """Explicit argument, then env override, then the production default."""
 
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+
+
+def _store_lock_path(path: Path) -> Path:
+    """The one cross-process lock for every mutation of ``path``."""
+
+    return path.with_name(f"{path.name}.lock")
 
 
 def _utc_now() -> str:
@@ -164,7 +175,7 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
     state["state_path"] = str(path)
     state["updated_at"] = _utc_now()
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, state, mode=0o640)
+    atomic_write_json(path, state, mode=0o640, group_from_parent=True)
 
 
 def adopt_floor(
@@ -178,9 +189,15 @@ def adopt_floor(
     """
 
     resolved = model_error_state_path(path)
-    state = load_state(resolved)
-    state["floor"] = floor.to_dict()
-    _write_state(resolved, state)
+    with advisory_file_lock(
+        _store_lock_path(resolved),
+        mode=_STORE_LOCK_MODE,
+        group_from_parent=True,
+        timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
+    ):
+        state = load_state(resolved)
+        state["floor"] = floor.to_dict()
+        _write_state(resolved, state)
     log_event(
         logger,
         "active_speaker.model_error_floor_adopted",
@@ -270,57 +287,63 @@ def record_model_error(
     predicted = float(predicted_db)
     realized = float(realized_db)
     resolved = model_error_state_path(path)
-    state = load_state(resolved)
-    records = state["model_error"]
-    for existing in records:
-        if not (
-            str(existing.get("speaker_id") or "") == speaker
-            and str(existing.get("attempt_id") or "") == attempt
-            and str(existing.get("metric") or "") == metric_name
-        ):
-            continue
-        if (
-            _optional_float(existing.get("predicted_db")) == predicted
-            and _optional_float(existing.get("realized_db")) == realized
-        ):
+    with advisory_file_lock(
+        _store_lock_path(resolved),
+        mode=_STORE_LOCK_MODE,
+        group_from_parent=True,
+        timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
+    ):
+        state = load_state(resolved)
+        records = state["model_error"]
+        for existing in records:
+            if not (
+                str(existing.get("speaker_id") or "") == speaker
+                and str(existing.get("attempt_id") or "") == attempt
+                and str(existing.get("metric") or "") == metric_name
+            ):
+                continue
+            if (
+                _optional_float(existing.get("predicted_db")) == predicted
+                and _optional_float(existing.get("realized_db")) == realized
+            ):
+                log_event(
+                    logger,
+                    "active_speaker.model_error_duplicate_ignored",
+                    path=str(resolved),
+                    speaker_id=speaker,
+                    attempt_id=attempt,
+                    metric=metric_name,
+                )
+                return state
             log_event(
                 logger,
-                "active_speaker.model_error_duplicate_ignored",
+                "active_speaker.model_error_identity_conflict",
                 path=str(resolved),
                 speaker_id=speaker,
                 attempt_id=attempt,
                 metric=metric_name,
+                level=logging.WARNING,
             )
-            return state
-        log_event(
-            logger,
-            "active_speaker.model_error_identity_conflict",
-            path=str(resolved),
-            speaker_id=speaker,
-            attempt_id=attempt,
-            metric=metric_name,
-            level=logging.WARNING,
-        )
-        raise ModelErrorConflictError(
-            "model-error identity already exists with different values: "
-            f"{speaker}/{attempt}/{metric_name}"
-        )
+            raise ModelErrorConflictError(
+                "model-error identity already exists with different values: "
+                f"{speaker}/{attempt}/{metric_name}"
+            )
 
-    error_db = realized - predicted
-    record = {
-        "speaker_id": speaker,
-        "attempt_id": attempt,
-        "metric": metric_name,
-        "predicted_db": predicted,
-        "realized_db": realized,
-        "error_db": error_db,
-        "recorded_at": _utc_now(),
-        "context": dict(context or {}),
-    }
-    state["model_error"] = (
-        [record] + list(records)
-    )[:MAX_MODEL_ERROR_RECORDS]
-    _write_state(resolved, state)
+        error_db = realized - predicted
+        record = {
+            "speaker_id": speaker,
+            "attempt_id": attempt,
+            "metric": metric_name,
+            "predicted_db": predicted,
+            "realized_db": realized,
+            "error_db": error_db,
+            "recorded_at": _utc_now(),
+            "context": dict(context or {}),
+        }
+        state["model_error"] = (
+            [record] + list(records)
+        )[:MAX_MODEL_ERROR_RECORDS]
+        _write_state(resolved, state)
     log_event(
         logger,
         "active_speaker.model_error_recorded",

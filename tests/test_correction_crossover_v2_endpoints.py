@@ -120,6 +120,22 @@ def _bg_run_async(coro, *, timeout=None):
     return asyncio.run(coro)
 
 
+def test_live_model_error_binding_reports_identity_conflict_to_conductor():
+    observation = {
+        "speaker_id": "speaker-a",
+        "attempt_id": "candidate-a",
+        "metric": "max_db_notch_excluded",
+        "predicted_db": 0.0,
+        "realized_db": 0.9,
+        "context": {"session_id": "session-a"},
+    }
+
+    assert v2host._record_live_model_error(**observation) is True
+    assert v2host._record_live_model_error(
+        **{**observation, "realized_db": 0.7},
+    ) is False
+
+
 class _FakeVolCam:
     """A CamillaController stand-in for the session-volume drains."""
 

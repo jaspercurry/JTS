@@ -92,18 +92,26 @@ improvement won by grading a narrower denominator. The candidate fingerprint
 is the attempt identity; it survives the verify-session rebind, and the store
 treats an identical retry as an idempotent no-op while refusing a conflicting
 reuse, so a crash/recovery re-verify cannot double-write or masquerade as
-another tune. Journey-scoped attempt history
+another tune. A conflicting recovery capture does not bank a second journey
+record or decision under the store-owned identity. Journey-scoped attempt
+history
 survives the relay-session rebind between apply and VERIFY; capture-phase
 evidence remains session-scoped as before. This is rung P4's live seam; see the
 [correction revision spine](HANDOFF-correction-revision-plan.md#rung-p4--wire-the-learning-loop)
 for program context.
 
 The conductor performs no persistence itself. Its injected writer calls
-`model_error_store.record_model_error` once after an accepted VERIFY, banking
+`model_error_store.record_model_error` once for an accepted VERIFY, before
+banking the journey projection,
 the tracking model's predicted error (`0`) and the analyzer's realized error;
-store failures warn at
+ordinary I/O failures warn at
 `event=correction.crossover_v2_model_error_write_failed` and never reverse an
-accepted flow verdict. The store's `active_speaker.model_error_recorded` event
+accepted flow verdict. An identity/value conflict instead warns at
+`event=correction.crossover_v2_model_error_identity_conflict` and leaves both
+journey record and decision unbanked, rather than publishing two grades for
+one candidate identity. The store serializes floor adoption and record writes
+on one cross-process lock, so neither read-modify-write transaction can erase
+the other's fact. Its `active_speaker.model_error_recorded` event
 carries the explicit speaker, attempt, metric, and signed error. Every loop
 judgment is visible at
 `event=correction.crossover_v2_attempt_decision`; the existing

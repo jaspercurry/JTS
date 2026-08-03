@@ -404,11 +404,18 @@ def _attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
     return store_snapshot()
 
 
-def _record_live_model_error(**observation: Any) -> None:
-    """Production binding for the conductor's fail-soft persistence seam."""
-    from jasper.active_speaker.model_error_store import record_model_error
+def _record_live_model_error(**observation: Any) -> bool:
+    """Claim one durable identity for the conductor's persistence seam."""
+    from jasper.active_speaker.model_error_store import (
+        ModelErrorConflictError,
+        record_model_error,
+    )
 
-    record_model_error(**observation)
+    try:
+        record_model_error(**observation)
+    except ModelErrorConflictError:
+        return False
+    return True
 
 
 def reset_v2_journey_state() -> None:

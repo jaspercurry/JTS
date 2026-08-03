@@ -377,9 +377,10 @@ gap R11's first hardware run exposed), #2060 (owner decision deferred from
 **What it is.** Make the machine remember. At ladder drafting time every
 learning signal terminated before a consumer: the findings store had zero
 readers, `flatness_improvement_db` had zero consumers, and VERIFY's own
-model-error record was discarded. P4 is the read path plus the render, the
-household-wire delta labeled honestly as model-vs-model, and per-speaker
-persistence of VERIFY's model error.
+model-error record was discarded. P4 is the read path plus the render, a
+provenance-aware prediction-tracking delta (realized vs realized in the live
+journey; model-graded vs model-graded when replay is the evidence), and
+per-speaker persistence of VERIFY's model error.
 
 **Status.** PENDING RATIFICATION. First piece merged — the findings reader,
 #1982, 2026-07-31. Then **R11 landed the attempts loop (#2029) and the VERIFY

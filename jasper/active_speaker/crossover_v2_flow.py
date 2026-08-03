@@ -3094,7 +3094,7 @@ class RecordModelError(Protocol):
         realized_db: float,
         speaker_id: str,
         context: Mapping[str, Any],
-    ) -> None: ...
+    ) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -8167,6 +8167,52 @@ class CrossoverV2Conductor:
             return
 
         record = attempt_record_from_verify(analysis, attempt_id=attempt_id)
+        writer = self._seams.record_model_error
+        if verdict.accepted and writer is not None and record.grade_db is not None:
+            try:
+                # ``max_db_notch_excluded`` is measured deviation from the
+                # fitted prediction, whose predicted error is exactly zero.
+                # Claim the durable observation identity before banking the
+                # journey projection: a crash-recovery capture can measure a
+                # slightly different grade for the same applied candidate.
+                identity_accepted = writer(
+                    speaker_id=self._speaker_id,
+                    attempt_id=record.attempt_id,
+                    metric=record.metric,
+                    predicted_db=0.0,
+                    realized_db=record.grade_db,
+                    context={
+                        "session_id": self.session_id,
+                        "provenance": record.provenance,
+                    },
+                )
+            except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
+                # Ordinary persistence outages are forensics failures: they do
+                # not reverse a VERIFY the measurement gate already accepted.
+                log_event(
+                    logger,
+                    "correction.crossover_v2_model_error_write_failed",
+                    level=logging.WARNING,
+                    session_id=self.session_id,
+                    speaker_id=self._speaker_id,
+                    attempt_id=record.attempt_id,
+                    exc_info=True,
+                )
+            else:
+                if not identity_accepted:
+                    # The store already owns this candidate identity with
+                    # different numbers. Do not let a fresh recovery capture
+                    # create a second truth in journey history or its decision.
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_model_error_identity_conflict",
+                        level=logging.WARNING,
+                        session_id=self.session_id,
+                        speaker_id=self._speaker_id,
+                        attempt_id=record.attempt_id,
+                    )
+                    return
+
         prospective = [*self._attempt_history, record]
         # Evidence refusal outranks grading preconditions. ``decide_next``
         # requires a real floor, but #2033's integrity result is meaningful
@@ -8221,35 +8267,6 @@ class CrossoverV2Conductor:
             return
 
         self._attempt_history = prospective[-AttemptBudget().hard_cap_attempts:]
-        writer = self._seams.record_model_error
-        if writer is None or record.grade_db is None:
-            return
-        try:
-            # ``max_db_notch_excluded`` is measured deviation from the fitted
-            # prediction, whose predicted error is exactly zero. Keeping the
-            # pair explicit makes the store's realized−predicted sign contract
-            # reproducible without reinterpreting the grade later.
-            writer(
-                speaker_id=self._speaker_id,
-                attempt_id=record.attempt_id,
-                metric=record.metric,
-                predicted_db=0.0,
-                realized_db=record.grade_db,
-                context={
-                    "session_id": self.session_id,
-                    "provenance": record.provenance,
-                },
-            )
-        except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
-            log_event(
-                logger,
-                "correction.crossover_v2_model_error_write_failed",
-                level=logging.WARNING,
-                session_id=self.session_id,
-                speaker_id=self._speaker_id,
-                attempt_id=record.attempt_id,
-                exc_info=True,
-            )
 
     def _set_verify_outcome(
         self, outcome: str, code: str | None, gate: dict[str, Any] | None,
