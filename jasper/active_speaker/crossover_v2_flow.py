@@ -7670,11 +7670,14 @@ class CrossoverV2Conductor:
         "did this help" rather than "did this match the model" (#1868).
 
         **Know what one band costs before adding to this list.** The fit
-        enforces these ALL-OR-NOTHING: a driver whose realized boost cascade
-        lands significant gain in any one of them loses its whole lift, not
-        just that band (``lift_suppressed_reason="boost_excluded_band"``).
-        That is why this returns only the positively-contradicted class and
-        never a "we were unsure here" list.
+        drops any boost filter whose own action region overlaps a band here —
+        per filter, so siblings working elsewhere survive, and a whole-lift
+        refusal (``lift_suppressed_reason="boost_excluded_band"``) only when
+        EVERY boost was aimed. Skirt spill from a surviving filter is kept and
+        disclosed rather than refused. Even so, each band here can cost a real
+        correction, which is why this returns only the positively-contradicted
+        class and never a "we were unsure here" list. Per-filter verdicts ride
+        ``event=correction.crossover_v2_boost_excluded_verdicts``.
 
         **Fails OPEN**, disclosed. A span too narrow to analyse, a cloud that
         never retained per-position curves, or an unexpected numeric failure
@@ -9267,6 +9270,26 @@ class CrossoverV2Conductor:
                 ),
             )
             fits[role] = fit
+            # #1967's per-filter verdicts, disclosed HERE rather than in the
+            # fit: `linearization_fit` is pure computation and owns no logger,
+            # so the conductor is the layer that turns its records into a
+            # journal line. Emitted only when the bound actually decided
+            # something, so a session with no cloud exclusions adds no noise.
+            if fit.lift_boost_excluded_drops or fit.lift_boost_excluded_residual:
+                log_event(
+                    logger, "correction.crossover_v2_boost_excluded_verdicts",
+                    level=(
+                        logging.WARNING if fit.lift_boost_excluded_drops
+                        else logging.INFO
+                    ),
+                    session_id=self.session_id, role=role,
+                    # Dropped: the boost was AIMED at a contradicted band.
+                    dropped=[d.to_dict() for d in fit.lift_boost_excluded_drops],
+                    # Kept: skirt tail from filters working elsewhere. Accepted
+                    # and measured by the post-apply sweep, not refused here.
+                    residual=[r.to_dict() for r in fit.lift_boost_excluded_residual],
+                    lift_suppressed_reason=fit.lift_suppressed_reason,
+                )
             # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
             # scale (#1667). The emitted biquads rotate phase near their
             # corners and the two-branch summation below is phase-dominated, so

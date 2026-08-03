@@ -10705,6 +10705,38 @@ def test_the_boost_evidence_disclosure_is_reached_by_an_ordinary_walk(caplog):
     assert f'unadjudicated_span_hz="[100.0, {c._cloud_echo_band.band_hz[0]}]"' in message
 
 
+def test_per_filter_boost_verdicts_are_disclosed_by_the_conductor(caplog):
+    """``linearization_fit`` is pure computation and owns no logger, so the
+    per-filter verdicts only become observable if the conductor emits them.
+
+    Walks the real cloud group with an exclusion band placed over the boost
+    the fake session's woofer actually attracts, and asserts the drop reaches
+    the journal with the arithmetic that caused it. A bound that silently
+    removes a correction is the failure mode this whole area exists to avoid.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            flow.CrossoverV2Conductor, "_boost_excluded_bands_hz",
+            lambda self, combined, result: ((350.0, 450.0),),
+        )
+        c = _cloud_conductor(fakes)
+        _walk_measure_cloud_to_close(c)
+
+    verdicts = [
+        r for r in caplog.records
+        if "event=correction.crossover_v2_boost_excluded_verdicts" in r.getMessage()
+    ]
+    assert verdicts, "the per-filter verdicts never reached the journal"
+    dropped = [r for r in verdicts if "realized_in_band_db" in r.getMessage()]
+    assert dropped
+    # A drop narrows a correction, so it is a WARNING.
+    assert all(r.levelno == logging.WARNING for r in dropped)
+    assert "band_hz" in dropped[0].getMessage()
+
+
 def test_the_fit_vocabulary_actually_carries_the_cloud_s_boost_exclusions():
     """The wiring, end to end at the conductor's own surface: what
     ``_boost_excluded_bands_hz`` composes is what ``fit_driver_linearization``

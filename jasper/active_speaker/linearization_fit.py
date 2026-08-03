@@ -69,17 +69,18 @@ boost still enforces the cut-only invariant with an explicit ``raise`` before
 returning (not a bare ``assert`` — a hardware-bound safety invariant must
 survive ``python -O``; see :func:`fit_driver_linearization`), pinned by a test.
 
-**Lift is also refused when its realized cascade lands gain in a band the
-cloud's positions disagree about** (#1967).
-:attr:`FitVocabulary.boost_excluded_bands_hz` is the second REALIZED-response
-bound, alongside #1968's stopband guard and enforced identically — on the
-emitted cascade, over the whole grid, at the same ``SIGNIFICANT_GAIN_DB``.
-Composed the same way as every other bound here: this module is handed bands,
-never evidence, and knows nothing about clouds or positions. What the composer
-puts there is the narrow, decided case — the cross-position check positively
-CONTRADICTED boosting at those bins — never "no evidence was available",
-because withholding boost wherever nothing was measured is the blunt gate the
-owner's 2026-07-27 ruling rejected. Cuts are again untouched.
+**Boost filters AIMED at a band the cloud's positions disagree about are
+dropped** (#1967). :attr:`FitVocabulary.boost_excluded_bands_hz` is a
+realized-response bound like #1968's stopband guard, but it is applied PER
+FILTER and on a RELATIVE criterion: a filter goes when the band lies inside
+its own half-gain bandwidth, i.e. when its action region overlaps the band.
+Skirt spill from a filter working elsewhere is kept and disclosed, never
+refused. Composed the same way as every other bound here: this module is
+handed bands, never evidence, and knows nothing about clouds or positions.
+What the composer puts there is the narrow, decided case — the cross-position
+check positively CONTRADICTED boosting at those bins — never "no evidence was
+available", because withholding boost wherever nothing was measured is the
+blunt gate the owner's 2026-07-27 ruling rejected. Cuts are again untouched.
 
 **The fit domain is whatever grid the caller's ``EnvelopeCurve`` was
 composed on** — :data:`~jasper.active_speaker.linearization_envelope.
@@ -409,10 +410,12 @@ class FitVocabulary:
     #: Per-filter boost ceiling. TOTAL boost is uncapped by design (owner
     #: ruling); this bounds one biquad's realization, not the correction.
     per_filter_boost_cap_db: float = PER_FILTER_BOOST_CAP_DB
-    #: Bands the LIFT stage's REALIZED cascade may not put significant gain
-    #: into (#1967). Enforced on the emitted response rather than on the
-    #: request — see :func:`_lift_stage` for the two measured pathologies a
-    #: request mask has. Cuts are untouched: this narrows one move, which is
+    #: Bands no LIFT filter may be AIMED at (#1967). Enforced per filter on
+    #: the emitted response — a boost is dropped when the band falls inside
+    #: its own half-gain bandwidth — rather than on the request, and never as
+    #: a whole-cascade veto; see :func:`_boost_exclusion_verdicts` for the
+    #: criterion and :func:`_lift_stage` for the measured pathologies of the
+    #: two alternatives. Cuts are untouched: this narrows one move, which is
     #: why it lives on the vocabulary rather than in the envelope's
     #: ``allowed_depth_db`` — that array is direction-agnostic and zeroing it
     #: would forbid a legitimate cut at the same bins.
@@ -439,6 +442,55 @@ class FitVocabulary:
 #: that does not pass a vocabulary gets exactly the fit it got before this
 #: capability existed, byte for byte.
 CUT_ONLY_VOCABULARY = FitVocabulary()
+
+
+@dataclass(frozen=True)
+class BoostExclusionDrop:
+    """One boost filter the #1967 bound removed, and the arithmetic that
+    removed it — so a reader can re-derive the decision instead of trusting
+    it.
+
+    ``realized_in_band_db`` is this filter's OWN realized magnitude at its
+    strongest point inside ``band_hz``; it was dropped because that reached
+    at least ``gain_db / 2``, i.e. the band lies inside the filter's own
+    half-gain bandwidth.
+    """
+
+    band_hz: tuple[float, float]
+    freq_hz: float
+    q: float
+    gain_db: float
+    realized_in_band_db: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "band_hz": [self.band_hz[0], self.band_hz[1]],
+            "freq_hz": self.freq_hz,
+            "q": self.q,
+            "gain_db": self.gain_db,
+            "realized_in_band_db": self.realized_in_band_db,
+        }
+
+
+@dataclass(frozen=True)
+class BoostExclusionResidual:
+    """What the emitted cascade still puts inside one excluded band after the
+    drops — the ACCEPTED, disclosed remainder.
+
+    Skirt tail by construction: no surviving filter's action region overlaps
+    the band, or it would have been dropped. Refusing on this number would be
+    refusing a correction on the strength of a model; the post-apply sweep
+    measures the reality instead.
+    """
+
+    band_hz: tuple[float, float]
+    realized_max_db: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "band_hz": [self.band_hz[0], self.band_hz[1]],
+            "realized_max_db": self.realized_max_db,
+        }
 
 
 @dataclass(frozen=True)
@@ -777,6 +829,17 @@ class LinearizationFit:
     lift_from_reduced_cuts_db: float = 0.0
     lift_from_boost_db: float = 0.0
     lift_suppressed_reason: str = ""
+    # #1967's boost-evidence bound, disclosed at the two levels it decides at.
+    # ``lift_boost_excluded_drops`` is one record per boost filter REMOVED
+    # because its own action region overlapped a contradicted band;
+    # ``lift_boost_excluded_residual`` is what the surviving cascade still
+    # puts inside each of those bands, which is accepted skirt rather than a
+    # refusal. Both empty for every caller that supplies no excluded bands,
+    # which is every caller before #1967. A whole-lift refusal (every boost
+    # dropped) additionally sets ``lift_suppressed_reason``; a partial one
+    # deliberately does NOT, because a lift did happen.
+    lift_boost_excluded_drops: tuple[BoostExclusionDrop, ...] = ()
+    lift_boost_excluded_residual: tuple[BoostExclusionResidual, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -806,6 +869,12 @@ class LinearizationFit:
             "lift_from_reduced_cuts_db": self.lift_from_reduced_cuts_db,
             "lift_from_boost_db": self.lift_from_boost_db,
             "lift_suppressed_reason": self.lift_suppressed_reason,
+            "lift_boost_excluded_drops": [
+                d.to_dict() for d in self.lift_boost_excluded_drops
+            ],
+            "lift_boost_excluded_residual": [
+                r.to_dict() for r in self.lift_boost_excluded_residual
+            ],
         }
 
 
@@ -1970,6 +2039,101 @@ class _Lift:
     from_reduced_cuts_db: float
     from_boost_db: float
     suppressed_reason: str
+    boost_excluded_drops: tuple["BoostExclusionDrop", ...] = ()
+    boost_excluded_residual: tuple["BoostExclusionResidual", ...] = ()
+
+
+def _boost_exclusion_verdicts(
+    boosts: Sequence[LinearizationFilter],
+    grid_hz: np.ndarray,
+    excluded_bands_hz: Sequence[tuple[float, float]],
+) -> tuple[
+    list[LinearizationFilter],
+    list["BoostExclusionDrop"],
+    list["BoostExclusionResidual"],
+]:
+    """Split ``boosts`` into the ones AIMED at an excluded band and the rest.
+
+    **The test is per filter, intrinsic, and relative** — each filter is read
+    once against its OWN transfer function, independently of every other, so
+    there is no ordering, no iteration and no "drop until it fits". That is
+    what separates this from the arbitrary-ordering hazard
+    ``interference_nulls.EXCLUSION_CAP_FRACTION`` warns about: this is a
+    property of one filter, not a search over subsets.
+
+    **The criterion is the filter's own half-gain bandwidth.** A filter is
+    aimed at a band when its realized magnitude anywhere inside that band
+    reaches **half its own peak gain in dB** — the standard parametric-EQ
+    bandwidth convention (RBJ cookbook defines a bell's bandwidth at its
+    half-gain-in-dB points). So the question asked is "does this filter's
+    ACTION REGION overlap the band", which is scale-free: a +1 dB bell centred
+    in the band is aimed at it and goes; an +11.67 dB bell 0.7 octaves away
+    delivering a sixth of its peak into the band is spill and stays.
+
+    **Why not an absolute threshold, in either direction.** Both absolutes
+    were tried and both failed, in opposite ways.
+    :data:`~jasper.active_speaker.branch_target.SIGNIFICANT_GAIN_DB` (0.5 dB)
+    is calibrated for the stopband guard, where any gain outside a
+    half-octave-widened passband is anomalous by construction. An excluded
+    band sits INSIDE the passband, right next to a dip the fit is working on,
+    so nearly any legitimate boost clears 0.5 dB there through its skirts:
+    measured, a whole-cascade test at that threshold refused the entire lift
+    on **94.4 %** of randomized multi-dip fits and **84.7 %** of single-dip
+    ones, destroying a median **14.83 dB** / **8.55 dB** of boost that lived
+    almost entirely OUTSIDE the band. Going the other way, no threshold at
+    all (a mask on the request) was effectively infinitely permissive. A
+    constant borrowed across two different geometries is the bug in both
+    directions; the ratio has no such population to be wrong about.
+
+    Returns ``(kept, dropped, residual)``. ``residual`` carries the realized
+    max still inside each band AFTER the drops — skirt tails by construction,
+    since no surviving filter's action region overlaps the band. It is
+    disclosed rather than refused: the post-apply sweep measures what the
+    speaker actually did, which is the cheaper and more honest answer than
+    refusing a correction on a model.
+    """
+    kept: list[LinearizationFilter] = []
+    dropped: list[BoostExclusionDrop] = []
+    band_masks: list[tuple[tuple[float, float], np.ndarray]] = []
+    for lo_hz, hi_hz in excluded_bands_hz:
+        mask = (grid_hz >= lo_hz) & (grid_hz <= hi_hz)
+        if np.any(mask):
+            band_masks.append(((float(lo_hz), float(hi_hz)), mask))
+
+    for boost in boosts:
+        own_db = 20.0 * np.log10(np.maximum(
+            np.abs(complex_correction_response((boost,), grid_hz)), 1e-12,
+        ))
+        aimed: tuple[tuple[float, float], float] | None = None
+        for band_hz, mask in band_masks:
+            in_band_db = float(np.max(own_db[mask]))
+            if in_band_db >= boost.gain / 2.0 and (
+                aimed is None or in_band_db > aimed[1]
+            ):
+                aimed = (band_hz, in_band_db)
+        if aimed is None:
+            kept.append(boost)
+        else:
+            # One record per DROPPED FILTER, naming the band it overlaps most
+            # — a filter aimed at two bands is one decision, not two.
+            dropped.append(BoostExclusionDrop(
+                band_hz=aimed[0], freq_hz=float(boost.freq), q=float(boost.q),
+                gain_db=float(boost.gain), realized_in_band_db=aimed[1],
+            ))
+
+    residual: list[BoostExclusionResidual] = []
+    for band_hz, mask in band_masks:
+        if kept:
+            surviving_db = 20.0 * np.log10(np.maximum(
+                np.abs(complex_correction_response(tuple(kept), grid_hz)), 1e-12,
+            ))
+            residual_db = float(np.max(surviving_db[mask]))
+        else:
+            residual_db = 0.0
+        residual.append(BoostExclusionResidual(
+            band_hz=band_hz, realized_max_db=residual_db,
+        ))
+    return kept, dropped, residual
 
 
 def _lift_stage(
@@ -2063,18 +2227,19 @@ def _lift_stage(
     ``test_a_mask_limited_guard_would_miss_these_bins_entirely`` pins the
     distinction.
 
-    **The boost-evidence bound (#1967)** is the second realized-response
-    check, and it is here rather than on ``lift_mask`` for the reasons
-    measured at its own call site below. ``vocabulary.boost_excluded_bands_hz``
-    carries the bands the composer's cross-position evidence CONTRADICTED
-    boosting at; a realized cascade putting more than
-    :data:`~jasper.active_speaker.branch_target.SIGNIFICANT_GAIN_DB` inside one
-    is refused as ``"boost_excluded_band"``.
+    **The boost-evidence bound (#1967)** runs last, per filter, on the
+    emitted response. ``vocabulary.boost_excluded_bands_hz`` carries the bands
+    the composer's cross-position evidence CONTRADICTED boosting at; a boost
+    whose own action region overlaps one is DROPPED, its siblings survive, and
+    the remaining in-band skirt is disclosed rather than refused
+    (:func:`_boost_exclusion_verdicts`). Only when EVERY boost is dropped does
+    the lift come back empty with ``"boost_excluded_band"``.
 
     Suppressed (named, never silent) when no filter slots remain, when
     ``design_peq`` cannot realize the residue, when the realized cascade
     overshoots the envelope's own allowance, when it puts gain in the
-    stopband, or when it puts gain in a boost-excluded band.
+    stopband, or when every boost it designed was aimed at a boost-excluded
+    band.
     """
     if not vocabulary.allow_boost:
         return _Lift(tuple(filters), 0.0, 0.0, 0.0, "")
@@ -2210,24 +2375,51 @@ def _lift_stage(
     # thing that can change is whether it is ACCEPTED — which makes the bound
     # monotone by construction: it can never raise the gain at any bin.
     #
-    # All-or-nothing, deliberately, and it is the blunt end of the trade: a
-    # driver whose realized cascade spills into one contradicted dip loses its
-    # whole lift, not just that band. That is the posture the stopband guard
-    # above already takes, and dropping "the offending filters until it fits"
-    # would be an arbitrary ordering presented as a measurement (the same
-    # argument ``interference_nulls.EXCLUSION_CAP_FRACTION`` makes). The cut
-    # stages keep everything they placed, and the reason is named rather than
-    # silent.
-    for excluded_lo_hz, excluded_hi_hz in vocabulary.boost_excluded_bands_hz:
-        excluded = (grid_hz >= excluded_lo_hz) & (grid_hz <= excluded_hi_hz)
-        if np.any(realized_db[excluded] > SIGNIFICANT_GAIN_DB):
+    # PER FILTER, not per cascade — see ``_boost_exclusion_verdicts`` for the
+    # criterion and for the measured reason a whole-cascade test at an
+    # absolute threshold is a ban rather than a bound.
+    #
+    # **Placed AFTER both gates above, and that ordering is load-bearing.**
+    # Dropping filters can only shrink the cascade, so a subset of a cascade
+    # those gates already ACCEPTED still satisfies them. Running the drop
+    # first would let a cascade they had refused wholesale come back as an
+    # accepted subset — the exact unlock pathology this bound was rewritten to
+    # eliminate. Monotonicity then holds by construction and by the geometry:
+    # every boost bell is non-negative at every bin, so any kept subset's
+    # realized response is <= the full cascade's everywhere. Dropping can
+    # never raise the gain at any frequency.
+    #
+    # **Drop-only. No re-spend, no refit.** The freed envelope headroom is not
+    # handed back to ``design_peq`` for another pass: bounded, deterministic,
+    # nothing to oscillate.
+    kept, dropped, residual = _boost_exclusion_verdicts(
+        boosts, grid_hz, vocabulary.boost_excluded_bands_hz,
+    )
+    if dropped:
+        if not kept:
+            # Every boost was aimed at a contradicted band, so the lift is
+            # empty and says why — the whole-lift reason a caller already
+            # reads, kept for exactly this case.
             return _Lift(
                 tuple(reduced), requested_db, from_reduced_cuts_db, 0.0,
                 "boost_excluded_band",
+                boost_excluded_drops=tuple(dropped),
+                boost_excluded_residual=tuple(residual),
             )
+        boosts = kept
+        realized_db = 20.0 * np.log10(np.maximum(
+            np.abs(complex_correction_response(tuple(boosts), grid_hz)), 1e-12,
+        ))
+    # Whatever gain survives INSIDE an excluded band is now skirt tail — no
+    # surviving filter's action region overlaps it — and it is disclosed
+    # rather than refused. The post-apply sweep measures what the speaker
+    # actually did, which is a better answer than refusing a correction on
+    # the strength of a model.
     return _Lift(
         tuple([*reduced, *boosts]), requested_db, from_reduced_cuts_db,
         float(np.max(realized_db)), "",
+        boost_excluded_drops=tuple(dropped),
+        boost_excluded_residual=tuple(residual),
     )
 
 
@@ -2700,4 +2892,6 @@ def fit_driver_linearization(
         lift_from_reduced_cuts_db=lift.from_reduced_cuts_db,
         lift_from_boost_db=lift.from_boost_db,
         lift_suppressed_reason=lift.suppressed_reason,
+        lift_boost_excluded_drops=lift.boost_excluded_drops,
+        lift_boost_excluded_residual=lift.boost_excluded_residual,
     )
