@@ -145,6 +145,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     cloud_walk_shape,
     express_cloud_measure_positions,
     format_position_distance,
+    locate_failed_diagnosis,
     open_measurement_volume,
     resolve_plan_shape,
     spec_report_for_predicted_sum,
@@ -988,6 +989,11 @@ def test_low_alignment_confidence_rejects_measure_before_building_candidate():
         # a subset: the relay dict is the phone's contract, and a test that
         # stops noticing new keys stops defending it.
         "pilot_heard": None,
+        # The honest per-position count rides EVERY verdict (#2086 item 2).
+        "attempts": {
+            "used": 0, "allowed": 3, "left": 3,
+            "by_speaker": 0, "by_household": 0,
+        },
     }
     assert not fakes.published_candidates
     assert c.candidate is None
@@ -1306,6 +1312,13 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
         # — the pilot evidence rides every rejection (#2085), not only the
         # codes whose copy currently branches on it.
         "pilot_heard": None,
+        # The honest per-position count rides EVERY verdict (#2086 item 2).
+        # This rejection was the slot's PLANNED capture, so nothing is spent
+        # yet and all three extras are still on offer.
+        "attempts": {
+            "used": 0, "allowed": 3, "left": 3,
+            "by_speaker": 0, "by_household": 0,
+        },
     }
     # The automatic retry is gain-adjusted: 3 dB quieter.
     gain_after = c._program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
@@ -1555,18 +1568,45 @@ def test_stimulus_locate_floor_is_per_role_not_per_capture():
 
 
 def test_locate_failed_and_budget_exhaustion():
+    """The planned capture plus THREE extra tries, then the honest end.
+
+    Transformed from a per-code budget (this reason's ``retry_budget`` of 1 gave
+    two attempts total) to the owner's pooled per-position bound (#2086). CHECK
+    is a single-capture phase: there are no other positions to proceed with, so
+    exhaustion ends the session — but the refusal names the spent tries, and
+    the code it attributes is the condition actually observed, never a generic
+    exhaustion code.
+    """
     fakes = FakeSeams()
     fakes.check = lambda program: _check_analysis(program, locate_confidence=0.01)
     c = _conductor(fakes)
     verdict = _run_phase(c, 1, 1)
     assert verdict["code"] == "locate_failed"
     assert verdict["template"] == "fix_and_retry"
-    # Budget 1 ⇒ one retry admitted, then the third begin is refused.
-    verdict = _run_phase(c, 1, 2)
-    assert verdict["code"] == "locate_failed"
+    # The planned capture spent nothing; three extras are on offer, and the
+    # count the phone renders says so.
+    assert verdict["attempts"] == {
+        "used": 0, "allowed": 3, "left": 3, "by_speaker": 0, "by_household": 0,
+    }
+    for extra in (1, 2, 3):
+        verdict = _run_phase(c, 1, 1 + extra)
+        assert verdict["code"] == "locate_failed"
+        assert verdict["attempts"]["used"] == extra
+        assert verdict["attempts"]["left"] == 3 - extra
+        # The household asked for every one of them — nothing was system-forced.
+        assert verdict["attempts"]["by_household"] == extra
+        assert verdict["attempts"]["by_speaker"] == 0
+
     with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(1, 3)
+        c.authorize_begin(1, 5)
     assert excinfo.value.code == "locate_failed"
+    # The copy states the count and the outcome. It must NOT invite another try:
+    # that is the exact sentence the ruling forbids in front of a refusal.
+    message = excinfo.value.user_message
+    assert "4 times" in message and "3 extra tries" in message
+    assert message.startswith(locate_failed_diagnosis(verdict["pilot_heard"]))
+    assert "cannot continue" in message.lower()
+    assert "try again" not in message.lower()
 
 
 def test_check_agc_and_snr_and_channel_map_verdicts():
@@ -2846,6 +2886,17 @@ VERIFY_INDEX = next(i for i, p in STAGE2_MAP.items() if p == PHASE_VERIFY)
 CLOUD_VERIFY_INDEXES = tuple(
     i for i, p in sorted(STAGE2_MAP.items()) if p == PHASE_CLOUD_VERIFY
 )
+# A deliberately SHORT verify group — the anchor plus ONE prompted position.
+# Not a shipped plan shape (the tiers ship M=1 or M=6), but the conductor takes
+# its index map as a constructor argument, and this is the compact way to reach
+# the position floor: give that one position up and the group has no curve left
+# and nothing unwalked to recover with. Building it from the same vocabulary the
+# production map builder emits, so it cannot drift into a shape the conductor
+# would never see.
+SHORT_VERIFY_MAP = {1: PHASE_VERIFY, 2: PHASE_CLOUD_VERIFY}
+SHORT_VERIFY_CLOUD_INDEXES = tuple(
+    i for i, p in sorted(SHORT_VERIFY_MAP.items()) if p == PHASE_CLOUD_VERIFY
+)
 
 
 def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
@@ -3948,22 +3999,232 @@ def test_a_geometry_retried_position_keeps_its_ordinary_failure_budget(monkeypat
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
-def test_the_geometry_discount_is_capped_and_still_refuses_a_runaway(monkeypatch):
-    """The discount above is bounded at GEOMETRY_RETRY_POSITIONS, so a slot
-    cannot be kept alive forever by manufacturing geometry rejections — the
-    ordinary budget still bites once the forgiven attempts are used up."""
+def test_a_spent_cloud_position_is_attributed_and_the_group_continues(monkeypatch):
+    """The pooled bound is finite, and hitting it does NOT kill the session.
+
+    Transformed from ``test_the_geometry_discount_is_capped_and_still_refuses_a_runaway``,
+    which pinned the behaviour the owner ruled against (#2086): the slot's
+    budget "still bites" with a terminal ``CaptureBeginRefused`` raised BEFORE
+    any audio plays, while the phone's screen still said "try again". The bound
+    is still finite — that half of the old test is what this keeps — but the
+    fourth failure now settles the position instead of the session.
+    """
     fakes = FakeSeams()
     c = _cloud_conductor(fakes)
     attempt = _walk(c, (1, 2), 1)
     index = CLOUD_MEASURE_INDEXES[0]
 
     # A non-terminal position (not the group's last) can only fail on quality.
-    fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
-    for _ in range(REASON_REGISTRY[REASON_LOCATE_FAILED].retry_budget + 1):
-        assert _run_phase(c, index, attempt)["accepted"] is False
+    fakes.verify = lambda program: _verify_analysis(
+        program, locate_confidence=0.0, pilot_snr_ok=True,
+    )
+    # The planned capture plus two extras: still ordinary retries.
+    for extra in (0, 1, 2):
+        verdict = _run_phase(c, index, attempt)
         attempt += 1
-    with pytest.raises(CaptureBeginRefused):
+        assert verdict["accepted"] is False
+        assert verdict["attempts"]["used"] == extra
+
+    # The last extra. FINITE — the flow stops asking — and honest: the position
+    # is marked unresolved carrying the observed condition, and the group
+    # advances rather than the session dying at the microphone.
+    verdict = _run_phase(c, index, attempt)
+    attempt += 1
+    assert verdict["accepted"] is True
+    assert verdict["unresolved"] == {
+        "index": index,
+        "code": REASON_LOCATE_FAILED,
+        "diagnosis": locate_failed_diagnosis(True),
+    }
+    assert verdict["attempts"]["left"] == 0
+    # Nothing was retained for it — an unresolved position is not evidence.
+    assert index not in {
+        int(pid.rsplit("_", 1)[1])
+        for pid in c.group_positions(PHASE_CLOUD_MEASURE)
+    }
+    # …and the NEXT prompted position is admitted normally, with its own budget.
+    second = CLOUD_MEASURE_INDEXES[1]
+    c.authorize_begin(second, attempt)
+    assert c.armed_capture == (second, attempt)
+
+
+# ===========================================================================
+# The bounded-retry ruling (owner, 2026-08-03, issue #2086). One prompted
+# position gets the planned capture plus THREE extra attempts, pooled across
+# everyone who can ask for one; exhaustion attributes and degrades rather than
+# killing the session with copy that says "try again".
+# ===========================================================================
+
+
+def test_the_extra_try_bound_is_pooled_across_initiators(monkeypatch):
+    """Ruling item 1 + 4, replayed on the shape that killed the 2026-08-03
+    verify: at position index 6 the flow spent locate_failed, two geometry
+    rungs, then locate_failed again — five attempts at one spot, because each
+    reason code held its own budget and the geometry discount forgave two more.
+    The sixth begin was refused pre-play.
+
+    One pooled meter now covers all of it. The bound is shared (a geometry rung
+    spends an extra like anything else), and the accounting is not (it is
+    booked to the speaker, because the speaker is who asked)."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    # The planned capture, then the wider retake the speaker asks for.
+    for _ in range(GEOMETRY_RETRY_POSITIONS):
+        verdict = _run_phase(c, last, attempt)
+        attempt += 1
+        assert verdict["code"] == REASON_CLOUD_GEOMETRY_LOCKED
+    assert verdict["attempts"]["by_speaker"] == 1
+    assert verdict["attempts"]["by_household"] == 0
+
+    # The geometry ladder is spent; ordinary quality failures follow.
+    monkeypatch.undo()
+    fakes.verify = lambda program: _verify_analysis(
+        program, locate_confidence=0.0, pilot_snr_ok=True,
+    )
+    verdict = _run_phase(c, last, attempt)
+    attempt += 1
+    assert verdict["code"] == REASON_LOCATE_FAILED
+    # The take the speaker asked for is still the speaker's ask.
+    assert verdict["attempts"] == {
+        "used": 2, "allowed": 3, "left": 1, "by_speaker": 2, "by_household": 0,
+    }
+
+    # The household's own try is the third and last extra.
+    verdict = _run_phase(c, last, attempt)
+    attempt += 1
+    assert verdict["attempts"] == {
+        "used": 3, "allowed": 3, "left": 0, "by_speaker": 2, "by_household": 1,
+    }
+    # FINITE and honest: the position carries the condition actually observed,
+    # and the group closes with what it has instead of the session dying.
+    assert verdict["accepted"] is True
+    assert verdict["unresolved"] == {
+        "index": last,
+        "code": REASON_LOCATE_FAILED,
+        "diagnosis": locate_failed_diagnosis(True),
+    }
+    assert verdict["group_complete"] == PHASE_CLOUD_MEASURE
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+
+
+def test_an_accepted_capture_leaves_the_positions_extras_intact():
+    """Ruling item 4. A position measured cleanly on its planned take has spent
+    nothing, so a household that chooses to redo it gets the full three tries.
+
+    This is the compounding defect from #2086: acceptance popped the reason but
+    left the cumulative counter standing, so ONE voluntary retake of a healthy
+    position landed in a meter with zero headroom and the next begin killed the
+    session. Here the retakes all fail and the session survives — the earlier
+    take was never lost, which is what makes giving up on it safe."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    index = CLOUD_MEASURE_INDEXES[0]
+
+    verdict = _run_phase(c, index, attempt)
+    attempt += 1
+    assert verdict["accepted"] is True
+    assert verdict["attempts"]["left"] == 3, "an accepted take consumes no extra"
+
+    fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
+    for extra in (1, 2):
+        verdict = _run_phase(c, index, attempt)
+        attempt += 1
+        assert verdict["accepted"] is False
+        assert verdict["attempts"]["by_household"] == extra
+
+    # The third failed retake settles the slot — and because the ORIGINAL take
+    # is still retained, nothing is unresolved: the earlier measurement stands.
+    verdict = _run_phase(c, index, attempt)
+    attempt += 1
+    assert verdict["accepted"] is True
+    assert verdict["kept_earlier_take"] is True
+    assert "unresolved" not in verdict
+    assert index in {
+        int(pid.rsplit("_", 1)[1])
+        for pid in c.group_positions(PHASE_CLOUD_MEASURE)
+    }
+
+
+def test_a_group_that_cannot_reach_the_floor_ends_honestly_not_with_retry_copy():
+    """Ruling item 3's second half. When the phase genuinely cannot proceed the
+    session does end — but the copy names the tries that were spent, never an
+    action the flow will refuse. The pre-play refusal whose screen said "measure
+    again" is the exact shape the owner ruled out."""
+    fakes = FakeSeams()
+    fakes.apply_done = True
+    # A one-position verify group: giving its only position up would leave zero
+    # curves, which is below MIN_RESOLVED_CLOUD_POSITIONS with nothing left to
+    # walk, so this is the honest-terminal branch.
+    c = _conductor(
+        fakes,
+        index_phase_map=SHORT_VERIFY_MAP,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    index = SHORT_VERIFY_CLOUD_INDEXES[0]
+    attempt = _walk(c, (1,), 1)
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, locate_confidence=0.0, pilot_snr_ok=True,
+    )
+    for _ in range(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
+        verdict = _run_phase(c, index, attempt)
+        attempt += 1
+        assert verdict["accepted"] is False
+    assert verdict["attempts"]["left"] == 0
+    # Still a rejection — nothing was silently dropped — and the group did NOT
+    # close: there is no cloud to close with.
+    assert PHASE_CLOUD_VERIFY not in c.accepted_phases
+
+    with pytest.raises(CaptureBeginRefused) as excinfo:
         c.authorize_begin(index, attempt)
+    assert excinfo.value.code == REASON_LOCATE_FAILED, "attribute the observation"
+    assert "3 extra tries" in excinfo.value.user_message
+    assert excinfo.value.user_message.startswith(
+        locate_failed_diagnosis(True)
+    )
+    assert "too few positions" in excinfo.value.user_message.lower()
+
+
+def test_no_exhaustion_refusal_ever_carries_a_reasons_try_again_copy():
+    """The ruling's hard prohibition, pinned over the WHOLE registry rather than
+    one code: a refusal reached by spending a position's extras must never
+    publish the reason's own action sentence, because every retriable one of
+    those ends by inviting a retry the flow will not grant.
+
+    Mutation-checked: reverting ``authorize_begin``'s exhaustion arm to the old
+    ``raise CaptureBeginRefused(spec.code, spec.message or spec.banner)`` fails
+    this. The message is taken from a REAL refusal rather than from the
+    formatter, because a test that only inspects the formatter passes happily
+    while the refusal publishes something else entirely."""
+    retriable = [
+        code for code in REASON_REGISTRY
+        if code not in flow.NON_RETRIABLE_CODES
+    ]
+    assert retriable, "fixture sanity: the registry has retriable codes"
+
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(program, locate_confidence=0.01)
+    c = _conductor(fakes)
+    for attempt in range(1, flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
+        assert _run_phase(c, 1, attempt)["accepted"] is False
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        c.authorize_begin(1, flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2)
+    published = excinfo.value.user_message
+
+    assert "try again" not in published.lower()
+    assert "measure again" not in published.lower()
+    for code in retriable:
+        spec = REASON_REGISTRY[code]
+        assert published != (spec.message or spec.banner), (
+            f"{code}: an exhaustion refusal must not republish retry copy"
+        )
 
 
 def test_thin_evidence_lock_is_disclosed_not_retried(monkeypatch):

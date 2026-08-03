@@ -881,7 +881,13 @@ together. Design rationale:
 - **Retry budget is per POSITION, not per group.** `_slot_of_index`
   keys attempt bookkeeping by `phase:index` inside a group and by the
   bare phase everywhere else, so CHECK/MEASURE/VERIFY bookkeeping is
-  unchanged and a retake at position 2 cannot refuse position 7.
+  unchanged and a retake at position 2 cannot refuse position 7. Since
+  the bounded-retry ruling (#2086) that budget is the planned capture
+  plus three extras, pooled across every initiator — see "Retries are
+  bounded per POSITION" under **Failure taxonomy & debugging**. A
+  position whose extras run out is dropped from the group with its
+  observed condition recorded, and the walk continues; the geometry
+  retake above spends one of those extras, booked to the speaker.
 - **Session budget.** `session_wall_clock_ceiling_s(plan)` scales the
   walked-away measurement-volume ceiling with plan length
   (1800 s + 120 s per capture beyond the 3-entry baseline), and each STAGE
@@ -1627,9 +1633,11 @@ Terminal verdicts are **internal reason codes, not screens.**
 `REASON_REGISTRY` (in `crossover_v2_flow.py`) maps each code to one of
 four templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
 `session_restart`) plus the two special screens (`verify_fail`,
-`volume_recovery`), its owning phase, and its retry budget. The
-conductor decides the code; the envelope renders the copy — one copy
-source, no drift.
+`volume_recovery`), its owning phase, and whether it is retriable at all
+(`retry_budget == 0` ⇒ `NON_RETRIABLE_CODES`; the retry COUNT is
+per-position, not per-code — see "Retries are bounded per POSITION"
+below). The conductor decides the code; the envelope renders the copy —
+one copy source, no drift.
 
 **A failure screen has a lifetime (#1942).** The persisted `failure`
 record carries its own `at` stamp (epoch float, written by
@@ -1737,7 +1745,9 @@ at 15.244 dB was refused 58 s after an identically-positioned 11.324 dB
 capture was accepted, at alignment confidences 0.677 and 0.677 — both well
 clear of the 0.6 trust floor, so confidence was never the discriminator the
 reused reason code claimed. The household was told to move a correctly-placed
-microphone, and the attempt meter then ended the session. The threshold's own
+microphone, and the attempt meter then ended the session (that second half is
+fixed separately — see "Retries are bounded per POSITION" below; it is quoted
+here as the incident, not as current behaviour). The threshold's own
 calibration corpus was collected on clean rigs at 4.4–9.0 dB; a room and
 recording chain that simply sit at 11–15 dB are the case the ruling addresses.
 
@@ -1894,9 +1904,53 @@ write (`_set_verify_outcome`) — **not** from `failure.code`, which is the most
 recent rejection of any phase and is nulled by a later persist while the
 outcome stands.
 
-**Budgets are cumulative per phase** (compared against the *last*
-failure's budget) so alternating codes can't restart the meter; the
-relay plan's `max_attempts` bounds the whole session.
+**Retries are bounded per POSITION, pooled, and honest** (owner ruling
+2026-08-03, issue #2086). One prompted position gets its planned capture
+plus at most `MAX_EXTRA_ATTEMPTS_PER_POSITION` (3) extra attempts,
+counted in one `SlotAttempts` ledger no matter who asked — a household
+"Try again", a voluntary retake, or a geometry rung. `ReasonSpec.
+retry_budget` no longer supplies a count: zero still means "no extra
+attempt can help" (`NON_RETRIABLE_CODES` — those refuse on the next begin
+with their own copy, unchanged), and any non-zero value now means only
+"retriable". The relay plan's `max_attempts` still bounds the whole
+session.
+
+Every verdict carries the count on the wire as `attempts`
+(`{used, allowed, left, by_speaker, by_household}`), and the capture page
+renders it — "Measurement 6 of 6 — extra try 2 of 3", plus a note naming
+the speaker's own share. `by_speaker` is read off the rejection that kept
+the plan alive, never the relay's `retake` flag: a geometry rung travels
+the ordinary begin path with `retake=false`, so the flag would bill every
+system-forced take to the household.
+
+**Exhaustion attributes and degrades; it does not end a session with copy
+that says "measure again."** It is settled at the verdict that spends the
+last extra (`_resolve_spent_slot`), not at the next begin, so the phone
+is never handed a retry screen whose button only leads to a pre-play
+refusal. Three outcomes, in order: an earlier accepted take at that index
+still stands, so it is kept (`kept_earlier_take`); or the group can still
+reach `MIN_RESOLVED_CLOUD_POSITIONS` (2 — the floor
+`linearization_envelope.position_stability_limit` imposes, *not* the 6/5
+plan-declaration floors), so the position is recorded in
+`_group_unresolved` with the observed code and the group advances
+(`unresolved` on the wire, `accepted` because that is the fixed-length
+runner's only "this slot is done" signal); or it cannot, and the next
+begin meets `authorize_begin`'s backstop. Diagnosis and action are distinct:
+`reason_diagnosis` preserves the same capture-derived observation used by the
+retryable verdict (with pilot evidence paired to the addressed slot), while
+the exhausted surface replaces "Try again" with the measured count and the
+actual outcome. The unresolved wire payload carries that diagnosis beside the
+code, so the phone says both what happened and that the position was left out;
+the backstop says the measurement cannot continue. Neither surface offers an
+action the conductor will refuse. A cloud position never reaches the latter
+branch while the group can still be completed.
+
+*Why this shape*: on 2026-08-03 two live sessions died at
+`CaptureBeginRefused` raised before any audio played, while the household
+screen read "step 6 … one last time" and the flow was on attempt 12 —
+three reason codes each holding their own budget, a geometry discount
+forgiving two more, and an accepted capture leaving the cumulative
+counter standing (#2083 entries 4 and 6).
 
 Key `event=` lines (via `jasper.log_event`):
 
@@ -3132,5 +3186,8 @@ predicted-ripple frame claim against `crossover_v2_flow.py` /
 wrote the new "Timeline anchor" section against `program_analysis.py`
 (`_global_offset` / `_resolve_anchor` / `_locate_in_window`) while landing
 #2093, with its measured numbers re-derived from the 11 retained 2026-08-03
-cloud VERIFY captures. Sections outside those paths carry their 2026-07-30
-verification.
+cloud VERIFY captures; and re-verified the retry/refusal contract (the position-group
+retry-budget bullet, the reason-registry paragraph, and the attempt-meter
+paragraph under Failure taxonomy) against `crossover_v2_flow.py` /
+`capture_relay/session.py` / `capture-page/js/main.js` while landing the #2086
+ruling. Sections outside those paths carry their 2026-07-30 verification.

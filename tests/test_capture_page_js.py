@@ -214,7 +214,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260803.1",
+        "capture_page_build": "20260803.3",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
@@ -222,7 +222,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch, and what it
     # caught for the flat-linearization PR-3b page fix.
-    assert "main.js?v=20260803-1" in index_html
+    assert "main.js?v=20260803-3" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260802-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -271,9 +271,9 @@ def _capture_page_js_digest() -> str:
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "59c1a8c4830666e5afa5ab97c4a3e5cba85c17c315d3a43f3944cefaea8e3d4b"
+    "d02a4dcb23a4a05e8ed69671ed6a12e1231c94173c64159fdb400735eceddf09"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.1"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260803.3"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():
@@ -516,15 +516,21 @@ def test_capture_page_retake_offer_never_outlives_the_runners_window():
     end = main_js.index("async function onPlanStart(ctx)", start)
     run_body = main_js[start:end]
     assert "shutRetakeWindow(ctx);" in run_body
-    # …and shutting it disables the control that offered it, rather than
-    # leaving a live-looking button that does nothing (review M1).
-    assert "ctx.retakeButtonEl.disabled = true;" in main_js
-    # …and only an accepted verdict re-arms it, within the plan's own budget.
-    assert "armRetakeSlot(ctx, { index, attempt });" in run_body
-    assert "planSupportsRetake(ctx.spec) && attempt + 1 <= maxAttempts" in main_js
-    # 2. The tap re-checks (a countdown's auto-begin can win the race).
+    # …and only an accepted verdict re-arms it, within the plan's own budget
+    # AND the position's own extra-try budget (owner ruling #2086: a retake IS
+    # one of the position's three extras).
+    assert "armRetakeSlot(ctx, { index, attempt, attempts: verdict.attempts });" in run_body
+    assert "planSupportsRetake(ctx.spec) && extrasLeft && attempt + 1 <= maxAttempts" in main_js
+    # 2. The tap re-checks (a countdown's auto-begin can win the race) — and
+    # SAYS SO. The re-check used to `return` silently, and shutting the window
+    # used to disable the button; between them a retake press produced no
+    # retake and no explanation at all (issue #2090, owner's 2026-08-03 verify).
     assert "function canRetake(ctx, index) {" in main_js
-    assert main_js.count("if (!canRetake(ctx, index)) return") >= 2
+    assert "if (!canRetake(ctx, index)) return null;" in main_js
+    assert 'setStatus(RETAKE_TOO_LATE_MESSAGE, "error");' in main_js
+    assert "ctx.retakeButtonEl.disabled = true;" not in main_js, (
+        "a disabled control cannot report why it refused — #2090"
+    )
     # 3. The marker is a distinct wire shape, and a rejected retake keeps it.
     assert "function beginCapturePayload({ index, attempt, retake = false }) {" in main_js
     assert "return retake ? { index, attempt, retake: true } : { index, attempt };" in main_js

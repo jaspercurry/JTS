@@ -38,11 +38,13 @@ import pytest
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2_flow import (
     LOCATE_MIN_CONFIDENCE,
+    MAX_EXTRA_ATTEMPTS_PER_POSITION,
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
     REASON_REGISTRY,
     REASON_RELAY_TIMEOUT,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    locate_failed_diagnosis,
     locate_failed_message,
     reason_message,
 )
@@ -282,18 +284,12 @@ def test_every_capture_of_a_heard_speaker_gets_the_measured_sentence():
 
 
 def test_budget_exhaustion_does_not_contradict_the_captures_that_caused_it():
-    """The terminal screen agrees with the captures that led to it.
+    """The observation agrees; the action follows the attempt state.
 
-    ``retry_budget=1``, so the 3rd authorize is refused and THAT is the last
-    thing the household reads on the measurement page — which then adds "The
-    speaker page shows what happens next" and sends them to the envelope. If
-    the refusal rendered the registry literal while the envelope rendered the
-    measured sentence, one failure would have two accounts and the household
-    would be pointed straight at the contradiction.
-
-    Asserted as an equality between the two live surfaces rather than against
-    a literal: the invariant is that they agree, not that they say any
-    particular thing.
+    Retryable copy may invite another take. Once the pooled extras are spent,
+    that advice would be a dead affordance: exhaustion must keep the same
+    evidence-derived diagnosis, add the count and honest terminal outcome, and
+    drop the unavailable action.
     """
     fakes = FakeSeams()
     fakes.check = lambda program: _check_analysis(
@@ -302,12 +298,44 @@ def test_budget_exhaustion_does_not_contradict_the_captures_that_caused_it():
     c = _conductor(fakes)
 
     first = _run_phase(c, 1, 1)
-    _run_phase(c, 1, 2)
+    for attempt in range(2, MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
+        _run_phase(c, 1, attempt)
     with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(1, 3)
+        c.authorize_begin(1, MAX_EXTRA_ATTEMPTS_PER_POSITION + 2)
 
+    diagnosis = locate_failed_diagnosis(True)
     assert excinfo.value.code == REASON_LOCATE_FAILED
-    assert excinfo.value.user_message == first["reason"]
+    assert first["reason"] == f"{diagnosis} Try again."
+    assert excinfo.value.user_message.startswith(diagnosis)
+    assert "try again" not in excinfo.value.user_message.lower()
+    assert "cannot continue" in excinfo.value.user_message.lower()
+    assert "volume" not in excinfo.value.user_message.lower()
+
+
+def test_exhaustion_uses_the_addressed_slots_evidence_not_the_global_failure():
+    """A replayed begin can address slot B after slot A became global-last.
+
+    The exhausted slot's pilot evidence remains its own. Using the global
+    discriminator would silently change a heard-but-unlocatable capture into
+    the registry's volume diagnosis when another slot failed more recently.
+    """
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(
+        program, locate_confidence=0.01, pilot_snr_ok=True,
+    )
+    c = _conductor(fakes)
+    for attempt in range(1, MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
+        _run_phase(c, 1, attempt)
+
+    # Poison only the GLOBAL persistence pair as if a different slot failed
+    # later with the same code and opposite evidence. Slot B's pair stays True.
+    c._last_failure_code = REASON_LOCATE_FAILED
+    c._last_failure_pilot_heard = False
+
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        c.authorize_begin(1, MAX_EXTRA_ATTEMPTS_PER_POSITION + 2)
+
+    assert excinfo.value.user_message.startswith(locate_failed_diagnosis(True))
     assert "volume" not in excinfo.value.user_message.lower()
 
 
