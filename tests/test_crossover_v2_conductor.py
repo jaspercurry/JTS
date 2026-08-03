@@ -2948,7 +2948,8 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
     # — the exclusion punches holes rather than moving filters).
     #
     # Stated as a SEPARATION and not as two frequency ranges on purpose: the
-    # fit's own range tracks the shared fixture's bump, so the literal that
+    # TOP of the fit's range tracks the shared fixture's bump (the 150 Hz floor
+    # is the woofer RoleBand's own edge and does not move), so the literal that
     # used to sit here ("150-1485 Hz") went stale the moment R10a moved that
     # bump to +3 dB at 2400 Hz. Re-derived at that revision on 2026-08-02, the
     # fit tops out near 2.4 kHz and the nulls start above 7 kHz — a margin of
@@ -7018,10 +7019,21 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     fakes = FakeSeams()
     # A defect inside the tweeter's OWN swept band (this conductor sweeps the
     # tweeter from Fc up), so the fit has real work to do and the candidate
-    # clears item 2's gate. The shared fixture's bump sits at 1500 Hz — below
-    # Fc, i.e. outside this geometry's tweeter band — so the fit barely moves
-    # and the session is (correctly) refused for not improving its own model,
-    # which would test the gate rather than the ripple skip this is about.
+    # clears item 2's gate.
+    #
+    # **Why the override below is still here is an OPEN QUESTION (#2073) — it
+    # is NOT what this comment used to say.** The original rationale read: "the
+    # shared fixture's bump sits at 1500 Hz — below Fc, i.e. outside this
+    # geometry's tweeter band — so the fit barely moves and the session is
+    # (correctly) refused." Both halves stopped being true when R10a moved that
+    # bump to +3 dB at 2400 Hz, which is ABOVE this conductor's Fc of 1600 Hz,
+    # so it is INSIDE the tweeter's band: driving this setup with the shared
+    # fixture and no override returns accepted, with the ripple scan still
+    # correctly skipped. The override is left in place rather than repaired
+    # because deciding whether it still earns its keep — its 8 dB at 2500 Hz is
+    # a deeper defect than the shared 3 dB, and the give-back arithmetic below
+    # is derived from the one-sided curve — is a design call, not a
+    # transcription fix. #2073 carries it.
     _one_sided_tweeter_db = 8.0 * np.exp(
         -0.5 * ((np.log2(_LINEARIZABLE_FREQS_HZ / 2500.0) / 0.3) ** 2)
     )
