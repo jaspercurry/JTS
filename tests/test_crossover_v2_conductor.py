@@ -7025,11 +7025,12 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     # is NOT what this comment used to say.** The original rationale read: "the
     # shared fixture's bump sits at 1500 Hz — below Fc, i.e. outside this
     # geometry's tweeter band — so the fit barely moves and the session is
-    # (correctly) refused." Both halves stopped being true when R10a moved that
-    # bump to +3 dB at 2400 Hz, which is ABOVE this conductor's Fc of 1600 Hz,
-    # so it is INSIDE the tweeter's band: driving this setup with the shared
-    # fixture and no override returns accepted, with the ripple scan still
-    # correctly skipped. The override is left in place rather than repaired
+    # (correctly) refused …" Both halves stopped being true when R10a moved
+    # that bump to +3 dB at 2400 Hz, which is ABOVE this conductor's Fc of
+    # 1600 Hz, so it is INSIDE the tweeter's band: driving this setup with the
+    # shared fixture and no override returns accepted, with the ripple scan
+    # still correctly skipped (measured 2026-08-02, at that same R10a
+    # revision). The override is left in place rather than repaired
     # because deciding whether it still earns its keep — its 8 dB at 2500 Hz is
     # a deeper defect than the shared 3 dB, and the give-back arithmetic below
     # is derived from the one-sided curve — is a design call, not a
