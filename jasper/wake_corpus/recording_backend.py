@@ -484,12 +484,15 @@ class RecordingBackend:
     # ----- lifecycle -------------------------------------------------
 
     def start(self) -> None:
-        if self._loop_thread is not None:
-            return  # idempotent
-        self._loop_thread = threading.Thread(
-            target=self._run_loop, name="wake-corpus-loop", daemon=True,
-        )
-        self._loop_thread.start()
+        with self._lock:
+            if self._shutdown_started:
+                raise StateError("backend is shutting down")
+            if self._loop_thread is not None:
+                return  # idempotent
+            self._loop_thread = threading.Thread(
+                target=self._run_loop, name="wake-corpus-loop", daemon=True,
+            )
+            self._loop_thread.start()
         self._loop_ready.wait()
         # Recover from a previous run only when the prior process left
         # an active-session marker behind. A plain recent metadata file
@@ -540,17 +543,33 @@ class RecordingBackend:
                 )
                 return
             self._clear_pending_stop()
-            if self._loop is not None:
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._loop_thread is not None:
-                self._loop_thread.join(
-                    timeout=max(0.0, deadline - time.monotonic()),
+            loop = self._loop
+            loop_thread = self._loop_thread
+            if (
+                loop_thread is None
+                or not loop_thread.is_alive()
+                or (loop is not None and loop.is_closed())
+            ):
+                finished = True
+                return
+            if loop is not None:
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    # The loop can close between the state check and signal.
+                    # That is success only when teardown actually won.
+                    if loop.is_closed() or not loop_thread.is_alive():
+                        finished = True
+                        return
+                    raise
+            loop_thread.join(
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+            if loop_thread.is_alive():
+                logger.warning(
+                    "wake-corpus shutdown timed out waiting for its loop",
                 )
-                if self._loop_thread.is_alive():
-                    logger.warning(
-                        "wake-corpus shutdown timed out waiting for its loop",
-                    )
-                    return
+                return
             finished = True
         finally:
             with self._lock:

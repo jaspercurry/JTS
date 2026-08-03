@@ -81,6 +81,50 @@ def test_backend_start_is_idempotent(tmp_path: Path) -> None:
     b.shutdown()
 
 
+def test_shutdown_before_start_makes_backend_terminal(tmp_path: Path) -> None:
+    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b.shutdown()
+
+    with pytest.raises(wake_corpus_setup.StateError, match="shutting down"):
+        b.start()
+    assert b._loop is None
+    assert b._loop_thread is None
+    with b._lock:
+        assert b._shutdown_complete is True
+
+
+def test_shutdown_retry_accepts_loop_that_closed_after_join_timeout(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queued stop may finish after the first shared deadline expires."""
+    monkeypatch.setattr(recording_backend, "STOP_SHUTDOWN_JOIN_SEC", 0.05)
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+
+    def block_loop() -> None:
+        callback_entered.set()
+        assert release_callback.wait(timeout=2)
+
+    assert backend._loop is not None
+    backend._loop.call_soon_threadsafe(block_loop)
+    assert callback_entered.wait(timeout=2)
+    backend.shutdown()
+    with backend._lock:
+        assert backend._shutdown_owner is None
+        assert backend._shutdown_complete is False
+    assert backend._loop_thread is not None and backend._loop_thread.is_alive()
+
+    release_callback.set()
+    backend._loop_thread.join(timeout=2)
+    assert not backend._loop_thread.is_alive()
+    assert backend._loop.is_closed()
+    backend.shutdown()
+    backend.shutdown()  # complete shutdown stays idempotent
+    with backend._lock:
+        assert backend._shutdown_complete is True
+
+
 # ---------------------------------------------------------------------------
 # begin_session
 # ---------------------------------------------------------------------------
