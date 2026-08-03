@@ -41,10 +41,13 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
     REASON_REGISTRY,
+    REASON_RELAY_TIMEOUT,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     locate_failed_message,
     reason_message,
 )
+from jasper.web import correction_crossover_v2 as v2host
+from jasper.capture_relay.session import CaptureBeginRefused
 from tests.test_crossover_envelope_v2 import _status
 from tests.test_crossover_v2_conductor import (
     FakeSeams,
@@ -264,15 +267,6 @@ def test_every_capture_of_a_heard_speaker_gets_the_measured_sentence():
     Deliberately a different gate from the VERIFY-integrity scenario above:
     the rule is that the sentence follows the evidence, so a second gate
     firing on the same fact must not need its own wiring to be honest.
-
-    **Where this stops.** Once the retry budget is spent, ``authorize_begin``
-    raises its own ``CaptureBeginRefused`` from inside the attempt-meter
-    block, and that raise still renders the registry literal — so a household
-    that fails twice reads the measured sentence and then the volume advice.
-    That is a known, deliberate gap, not an oversight: the meter is being
-    rewritten by the bounded-retry work, and one expression there belongs to
-    whichever change lands second. It is NOT pinned here, because a test
-    asserting the current wording would pin the bug in place.
     """
     fakes = FakeSeams()
     fakes.check = lambda program: _check_analysis(
@@ -285,6 +279,36 @@ def test_every_capture_of_a_heard_speaker_gets_the_measured_sentence():
     assert verdict["pilot_heard"] is True
     assert "volume" not in verdict["reason"].lower()
     assert verdict["reason"] == locate_failed_message(True)
+
+
+def test_budget_exhaustion_does_not_contradict_the_captures_that_caused_it():
+    """The terminal screen agrees with the captures that led to it.
+
+    ``retry_budget=1``, so the 3rd authorize is refused and THAT is the last
+    thing the household reads on the measurement page — which then adds "The
+    speaker page shows what happens next" and sends them to the envelope. If
+    the refusal rendered the registry literal while the envelope rendered the
+    measured sentence, one failure would have two accounts and the household
+    would be pointed straight at the contradiction.
+
+    Asserted as an equality between the two live surfaces rather than against
+    a literal: the invariant is that they agree, not that they say any
+    particular thing.
+    """
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(
+        program, locate_confidence=0.01, pilot_snr_ok=True,
+    )
+    c = _conductor(fakes)
+
+    first = _run_phase(c, 1, 1)
+    _run_phase(c, 1, 2)
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        c.authorize_begin(1, 3)
+
+    assert excinfo.value.code == REASON_LOCATE_FAILED
+    assert excinfo.value.user_message == first["reason"]
+    assert "volume" not in excinfo.value.user_message.lower()
 
 
 def test_a_refusal_never_borrows_another_failures_evidence():
@@ -307,6 +331,74 @@ def test_a_refusal_never_borrows_another_failures_evidence():
     refusal = c._refuse(REASON_PILOT_LEVEL_COLLAPSE)
     assert refusal.user_message == REASON_REGISTRY[REASON_PILOT_LEVEL_COLLAPSE].message
     assert c.last_failure_pilot_heard is None
+
+
+@pytest.fixture
+def isolated_v2_state(tmp_path):
+    """Point the v2 state file at a tmp path, like the endpoints suite does."""
+    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    yield
+    v2host.set_state_path_for_tests(None)
+
+
+def _persisted_envelope_verdict():
+    """Build the envelope the way the page does: from the persisted state."""
+    return build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": v2host.crossover_v2_status_block(),
+    })["verdict_text"]
+
+
+def test_the_persisted_failure_reaches_the_envelope_with_its_evidence(
+    isolated_v2_state,
+):
+    """The production link, end to end — conductor to state file to screen.
+
+    Every other test here stops at ``to_relay_dict`` or feeds the envelope a
+    hand-built dict, so between them the real write was unpinned: deleting the
+    ``pilot_heard`` write from ``persist_conductor_state`` left the whole
+    targeted suite green while every real session silently reverted to the
+    volume copy. This is the test that fails when that write goes.
+    """
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(
+        program, locate_confidence=0.01, pilot_snr_ok=True,
+    )
+    c = _conductor(fakes)
+    capture_reason = _run_phase(c, 1, 1)["reason"]
+
+    v2host.persist_conductor_state(c, failure_code=c.last_failure_code)
+
+    # The screen the household lands on says what the capture said.
+    assert _persisted_envelope_verdict() == capture_reason
+    assert "volume" not in _persisted_envelope_verdict().lower()
+
+
+def test_a_persisted_code_never_carries_another_failures_evidence(
+    isolated_v2_state,
+):
+    """The caller-side half of the pairing rule.
+
+    The relay-death arm persists ``relay_timeout`` over whatever the last
+    capture failed on. Ungated, that wrote ``{"code": "relay_timeout",
+    "pilot_heard": True}`` — one failure's code with another's evidence. Only
+    ``locate_failed`` reads the key today, so no wrong sentence shipped, but
+    the record is the thing a later reader trusts.
+    """
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(
+        program, locate_confidence=0.01, pilot_snr_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert c.last_failure_pilot_heard is True
+
+    v2host.persist_conductor_state(c, failure_code=REASON_RELAY_TIMEOUT)
+
+    failure = v2host.load_v2_state()["failure"]
+    assert failure["code"] == REASON_RELAY_TIMEOUT
+    assert "pilot_heard" not in failure
 
 
 @pytest.mark.parametrize(

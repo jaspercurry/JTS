@@ -1983,13 +1983,14 @@ def reason_message(
     evidence-keyed code means adding a branch HERE; a caller that renders
     ``spec.message`` directly re-opens the gap.
 
-    **One such caller is deliberately still open**: the budget-exhaustion
-    raise inside ``authorize_begin`` renders ``spec.message or spec.banner``,
-    so a ``locate_failed`` session that spends its retry ends on the
-    registry's copy even when this capture's pilot refutes it. That raise sits
-    in the attempt-meter block, which the bounded-retry work owns and is
-    actively rewriting; routing it here is one expression and belongs to
-    whichever change lands second, not to a drive-by edit that would collide.
+    **Every caller is routed, including the budget-exhaustion raise inside
+    ``authorize_begin``.** That one was briefly left out on the grounds that
+    the attempt-meter block belongs to the bounded-retry work — but leaving it
+    did not preserve the old behaviour, it INTRODUCED a divergence: the phone's
+    terminal screen said one thing, the speaker page said another, about a
+    single failure, with the phone's copy pointing the household at the
+    speaker page to see it. A surface left un-routed is not neutral once its
+    siblings move.
 
     ``spec`` is passed in rather than looked up so each caller keeps the
     existence guard it already had — ``REASON_REGISTRY[code]`` raising
@@ -6024,14 +6025,18 @@ class CrossoverV2Conductor:
         """Pilot evidence for :attr:`last_failure_code` — the host persists it.
 
         The envelope re-renders the failure's sentence from the pair (#2085),
-        so both halves have to survive the session that produced them. Read
-        through :meth:`_pilot_heard_for` rather than off the attribute, so the
-        pairing is re-checked at the boundary instead of assumed.
+        so both halves have to survive the session that produced them.
+
+        **This getter checks nothing**, and an earlier docstring here claiming
+        it "re-checks the pairing" was wrong: the two attributes are written
+        together, so validating one against the other compares a value with
+        itself. The pairing that CAN diverge is between this evidence and the
+        code a caller chooses to persist — several terminal arms pass a
+        ``failure_code`` the capture loop never produced — and that check
+        belongs to the caller, which has the differing value.
+        ``persist_conductor_state`` makes it.
         """
-        return (
-            self._pilot_heard_for(self._last_failure_code)
-            if self._last_failure_code else None
-        )
+        return self._last_failure_pilot_heard if self._last_failure_code else None
 
     def _pilot_heard_for(self, code: str | None) -> bool | None:
         """The pilot evidence recorded WITH ``code``, else ``None`` (#2085).
@@ -6282,7 +6287,25 @@ class CrossoverV2Conductor:
             and count - forgiven > REASON_REGISTRY[last].retry_budget + 1
         ):
             spec = REASON_REGISTRY[last]
-            raise CaptureBeginRefused(spec.code, spec.message or spec.banner)
+            # Same selector as every other surface (#2085). Without this the
+            # phone's terminal screen and the speaker page describe ONE failure
+            # two different ways — and the phone's own copy ends with "The
+            # speaker page shows what happens next", pointing the household
+            # straight at the contradiction. With ``retry_budget=1`` this
+            # refusal is the 3rd authorize, so the misattribution would be the
+            # LAST thing read.
+            #
+            # ``_pilot_heard_for(last)`` does real work here rather than
+            # returning the stored value unconditionally: ``last`` is the
+            # SLOT's reason, and a session that failed a different slot more
+            # recently has moved ``_last_failure_code`` on. Mismatch degrades
+            # to the registry copy, which claims nothing.
+            raise CaptureBeginRefused(
+                spec.code,
+                reason_message(
+                    spec.code, spec, pilot_heard=self._pilot_heard_for(last),
+                ),
+            )
         self._phase_attempts[slot] = count
         self._armed_index = index
         self._armed_capture = (index, attempt)
@@ -7650,12 +7673,13 @@ class CrossoverV2Conductor:
         return worst_headroom_cost_db(linearization)
 
     def _refuse(self, code: str) -> "CaptureBeginRefused":
-        """Build the refusal for ``code``, with the registry's own copy, and
+        """Build the refusal for ``code``, with that code's household copy, and
         record it as this conductor's failure code.
 
         One construction point so a refusal can never ship a bare code where a
         household expects a sentence (:data:`REASON_REGISTRY` is the §5.10 SSOT
-        for both).
+        for the code, its template, and its budget; since #2085 the sentence
+        itself comes from :func:`reason_message` — see below).
 
         **Stamping ``_last_failure_code`` is the load-bearing half**, not
         bookkeeping. The host's ``CaptureBeginRefused`` arm persists

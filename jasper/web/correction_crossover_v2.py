@@ -2043,7 +2043,23 @@ def persist_conductor_state(
     # Same duck-typed read, same reason: a stand-in conductor that predates
     # this field is "no pilot evidence", which is what the key's own absence
     # means downstream. See the ``failure`` block below for what it renders.
-    failure_pilot_heard = getattr(conductor, "last_failure_pilot_heard", None)
+    #
+    # GATED ON THE CODE BEING PERSISTED, not on the conductor's own. The
+    # caller supplies ``failure_code``, and several terminal arms supply one
+    # the capture loop never produced — the relay-death arm persists
+    # ``relay_timeout`` over whatever the last capture failed on. Ungated,
+    # ``_persist_terminal_failure(c, "relay_timeout")`` after a heard-speaker
+    # ``locate_failed`` writes ``{"code": "relay_timeout", "pilot_heard":
+    # True}``: one failure's code carrying another's evidence, which is the
+    # exact mispairing ``_pilot_heard_for`` refuses on the conductor side.
+    # No terminal arm renders a wrong sentence from that pair today (only
+    # ``locate_failed`` reads the key), but the drift surface is introduced
+    # here, so the check belongs here too.
+    failure_pilot_heard = (
+        getattr(conductor, "last_failure_pilot_heard", None)
+        if failure_code == getattr(conductor, "last_failure_code", None)
+        else None
+    )
     prior = load_v2_state() or {}
     if hasattr(snap, "attempt_history"):
         attempts_loop_state: dict[str, Any] | None = {
