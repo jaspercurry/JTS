@@ -1772,22 +1772,33 @@ def test_the_boost_path_pins_its_own_q_floor_instead_of_inheriting_one():
         assert kwargs["q_min"] >= 1.0, _Q_FLOOR_CONSEQUENCE
 
 
-def test_no_emitted_boost_is_broader_than_the_pinned_q_floor():
+@pytest.mark.parametrize("width_oct", [0.4, 1.0, 1.5])
+def test_no_emitted_boost_is_broader_than_the_pinned_q_floor(width_oct):
     """The same invariant at the surface that matters — the filters actually
     emitted — so a future path that reaches ``design_peq`` some other way is
     still caught.
+
+    **The widths are the test.** ``design_peq`` only wants a sub-1.0 Q for a
+    BROAD residue, so a narrow-dip fixture cannot tell a pinned floor from an
+    unpinned one: measured, a 0.4-octave dip emits Q 1.966 whether the floor
+    is 1.0 or 0.3, while a 1.5-octave dip emits Q 1.0 pinned and **0.335**
+    unpinned. Only the wide cases make this assertion do work — which is why
+    an earlier single-width version of it stayed green under the very
+    mutation it exists to catch.
     """
-    for center_hz in (500.0, 1500.0, 3000.0):
-        resp, envelope = _dip_response(depth_db=10.0, center_hz=center_hz)
-        fit = fit_driver_linearization(
-            resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    resp, envelope = _dip_response(
+        depth_db=10.0, center_hz=1200.0, width=width_oct,
+    )
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+    boosts = [f for f in fit.filters if f.gain > 0.0]
+    assert boosts, width_oct
+    for f in boosts:
+        assert f.q >= _PEAKING_Q_MIN, (
+            f"boost at {f.freq:.1f} Hz has Q={f.q:.3f} < "
+            f"{_PEAKING_Q_MIN}. {_Q_FLOOR_CONSEQUENCE}"
         )
-        for f in fit.filters:
-            if f.gain > 0.0:
-                assert f.q >= _PEAKING_Q_MIN, (
-                    f"boost at {f.freq:.1f} Hz has Q={f.q:.3f} < "
-                    f"{_PEAKING_Q_MIN}. {_Q_FLOOR_CONSEQUENCE}"
-                )
 
 
 def test_the_q_floor_buys_exactly_the_drop_radius_the_criterion_assumes():
