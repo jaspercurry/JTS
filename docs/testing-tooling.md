@@ -32,6 +32,8 @@
 | Diagnose one correction level/sweep run with synchronized UMIK audio and speaker gain state | [Correction capture diagnostic](#correction-capture-diagnostic) |
 | Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
 | Replay recorded tuning attempts through the S3 improve/stop policy, and see whether the loop would have claimed an improvement that was only noise | [Attempts-loop replay](#attempts-loop-replay) |
+| Find out whether a banked session's cloud null evidence actually *bound* the linearization fit, and what the fit does without it | [Severed-twin replay](#severed-twin-replay) |
+| Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
@@ -1010,6 +1012,56 @@ directory's `README.md` for what the loop decided on real data, including the
 honest limits — chiefly that the repeat-floor run derives its floor from the
 same pairs it grades, which makes it a self-consistency demonstration rather
 than a validation of the threshold.
+
+---
+
+## Severed-twin replay
+
+[`scripts/severed-twin-replay.py`](../scripts/severed-twin-replay.py) re-fits a
+banked crossover-v2 session twice — once as recorded, once with the cloud
+verdict cut (`excluded_bands_hz=None`, the production `cloud is None` branch)
+— and diffs the two fits. It answers **did the null evidence actually bind,
+and what does the fit do without it?** It cannot answer whether the wired
+answer was *right*; the corpus carries no ground truth. For that, see the
+synthetic scenarios in
+[`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py),
+which inject the defect so the correct answer is known before the flow runs.
+
+Fully offline — laptop, no Pi, no microphone. It reads banked WAVs and JSON
+and runs the shipped analysis over them.
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/severed-twin-replay.py \
+  --bank captures/wo0-retrospective-20260729/reanalysis-data/pi-pull \
+  --ring captures/ring-snapshot-20260730 \
+  --calibration captures/flat-linearization-20260725/umik2-cal/umik2-b7343c0c625b.txt
+```
+
+**Two properties worth knowing before you trust its output.**
+
+*It binds a capture to a session by content, never by filename.* A raw-ring
+sidecar carries no session id, and phase tokens changed era to era — selecting
+on one produced two false claims in PR #2070's review. The tool matches the
+sidecar's recorded `diagnostic` block against the banked `candidate.json`'s
+`analysis` block and requires a unique hit.
+
+*It validates itself and refuses when it cannot.* That same sidecar block is
+the analysis as PERFORMED, so it is ground truth for the replay's own fidelity.
+The tool reproduces 20 of its values and prints no fit unless every one matches
+(exit 1 otherwise, and a field the sidecar never recorded is a refusal too), so
+an era-drifted reconstruction fails loudly instead of quietly re-reading the
+evidence. Its own module docstring states the two things that gate does **not**
+reach — the post-T2 delay refinement, and the calibration sign convention,
+which the tool *derives* from the product's own mic registry but which no
+banked diagnostic can *check*. Read it before extending the tool to a delay or
+level question.
+
+The **fit engine is today's, the capture analysis is the banked era's** — those
+are different claims and the tool only makes the second. A banked candidate's
+filters were produced by whatever build recorded it, so its numbers and a fresh
+replay's will differ wherever the fit has moved since; that is cross-era
+evolution, not a fidelity failure, and the wired-vs-severed diff is a
+within-run comparison precisely so it does not depend on the difference.
 
 ---
 
