@@ -113,7 +113,6 @@ assumed is worse than one whose reach is known:
 class Session:
     """One banked session, and the raw-ring capture bound to it."""
 
-    tag: str
     relay_id: str
     artifacts: Path
     candidate: dict[str, Any]
@@ -129,7 +128,6 @@ class Fit:
     role: str
     filters: tuple[dict[str, float], ...]
     lift_suppressed_reason: str
-    boost_excluded_drops: tuple[Any, ...]
     reason_at: dict[float, str]
 
 
@@ -203,7 +201,6 @@ def discover(bank: Path, ring: Path) -> list[Session]:
         wav, sidecar = bind_measure_capture(artifacts, ring, candidate)
         sessions.append(
             Session(
-                tag=artifacts.name[:14],
                 relay_id=artifacts.name,
                 artifacts=artifacts,
                 candidate=candidate,
@@ -469,9 +466,6 @@ def refit(session: Session, analysis: Any, *, arm: str) -> dict[str, Fit]:
                 for f in fit.filters
             ),
             lift_suppressed_reason=str(getattr(fit, "lift_suppressed_reason", "")),
-            boost_excluded_drops=tuple(
-                getattr(fit, "lift_boost_excluded_drops", ()) or ()
-            ),
             reason_at=dict(getattr(fit, "reason_summary", {}) or {}),
         )
     return out

@@ -24,13 +24,22 @@ drop (``tests/test_active_speaker_linearization_fit.py``) and of the
 presence classification (``tests/test_interference_nulls.py``'s ``test_f_*``
 family); these do not re-cover them.
 
-**The generator is the module's, and it is independent of the fit's model.**
-Every cloud here comes from ``tests.test_interference_nulls``' two-path IR
-builder — one direct arrival plus one delayed copy at a known ``tau`` and
-``r``, with the magnitude curve derived from that same IR. Nothing is built by
-running the fit backwards, and no assertion below compares two outputs of the
-same fit to each other: the recovered ``tau``/``r`` are checked against the
-values injected, which is the ladder's second clause.
+**The generators are the module's own, and neither is the fit's model run
+backwards.** Both come from ``tests.test_interference_nulls``, and which one a
+scenario uses IS the injected truth:
+
+* ``_cloud`` builds an IR per position — one direct arrival plus one delayed
+  copy at a known ``tau`` and ``r`` — and takes the magnitude curve from that
+  same IR. A cloud built this way carries a real reflection, so its dips are
+  interference and the arrival evidence to prove it is present.
+* ``_notched_cloud`` writes a notch into the magnitude domain with ``ir=None``.
+  A cloud built this way carries NO reflection anywhere, so its dips are a
+  property of the thing being measured and there is no arrival to attribute.
+
+That is the whole difference between the two halves of the pair below, and it
+is a difference in the fixture rather than in the assertion. No assertion here
+compares two outputs of the same fit to each other: the recovered ``tau``/``r``
+are checked against the values injected, which is the ladder's second clause.
 
 **What the injected truth is, per scenario.** Stated in each docstring,
 because "the flow decided X" is only a finding next to "the right answer was
