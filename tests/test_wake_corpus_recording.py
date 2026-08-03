@@ -1365,7 +1365,8 @@ def test_shutdown_joins_active_retry_before_closing_loop(
         assert backend._shutdown_started is True
         assert backend._pending_stop is None
         assert backend._stop_retry_handle is None
-    assert backend.list_clips() == []
+    clips = backend.list_clips()
+    assert len(clips) == 1 and clips[0].auto_stopped is True
 
 
 def test_shutdown_joins_admitted_initial_worker_before_closing_loop(
@@ -1382,14 +1383,17 @@ def test_shutdown_joins_admitted_initial_worker_before_closing_loop(
 
     worker_entered = threading.Event()
     release_worker = threading.Event()
-    original_quiesce = backend._quiesce_current_capture
+    original_recovery = backend._stop_with_recovery
 
-    def blocked_quiesce(generation_arg):
+    def blocked_recovery(generation_arg, **labels):
         worker_entered.set()
         assert release_worker.wait(timeout=2)
-        return original_quiesce(generation_arg)
+        # The admitted worker may encounter shutdown too. It must return to
+        # the external teardown owner instead of waiting on itself.
+        backend.shutdown()
+        return original_recovery(generation_arg, **labels)
 
-    monkeypatch.setattr(backend, "_quiesce_current_capture", blocked_quiesce)
+    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
     backend._auto_stop_threadsafe(generation)
     assert worker_entered.wait(timeout=2)
     with backend._lock:
@@ -1406,6 +1410,8 @@ def test_shutdown_joins_admitted_initial_worker_before_closing_loop(
     try:
         assert not shutdown_done.wait(timeout=0.05)
         assert backend._loop_thread is not None and backend._loop_thread.is_alive()
+        with backend._lock:
+            assert backend._shutdown_owner is shutdown_thread
     finally:
         release_worker.set()
     shutdown_thread.join(timeout=2)
@@ -1458,10 +1464,15 @@ def test_retry_join_timeout_keeps_loop_alive_until_later_shutdown(
     backend.shutdown()
     assert time.monotonic() - started_shutdown < 0.5
     assert backend._loop_thread is not None and backend._loop_thread.is_alive()
+    with backend._lock:
+        assert backend._shutdown_owner is None
+        assert backend._shutdown_complete is False
     release_callback.set()
     assert callback_done.wait(timeout=2)
     backend.shutdown()
     assert backend._loop_thread is not None and not backend._loop_thread.is_alive()
+    with backend._lock:
+        assert backend._shutdown_complete is True
 
 
 def test_retry_timer_can_initiate_shutdown_without_self_join(
@@ -1524,6 +1535,61 @@ def test_shutdown_terminal_rejects_start_and_retry_admission(backend) -> None:
         assert backend._pending_stop is None
         assert backend._stop_retry_handle is None
         assert backend._safety_workers == set()
+
+
+def test_concurrent_shutdown_call_returns_to_the_teardown_owner(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exactly one caller coordinates loop teardown; peers return safely."""
+    backend.begin_session("jasper")
+    started = backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+    assert task is not None
+    generation = (started["clip_id"], task)
+
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    original_recovery = backend._stop_with_recovery
+
+    def blocked_recovery(generation_arg, **labels):
+        worker_entered.set()
+        assert release_worker.wait(timeout=2)
+        return original_recovery(generation_arg, **labels)
+
+    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
+    backend._auto_stop_threadsafe(generation)
+    assert worker_entered.wait(timeout=2)
+
+    first_done = threading.Event()
+
+    def first_shutdown() -> None:
+        backend.shutdown()
+        first_done.set()
+
+    first = threading.Thread(target=first_shutdown)
+    first.start()
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        with backend._lock:
+            if backend._shutdown_owner is first:
+                break
+        time.sleep(0.005)
+    with backend._lock:
+        assert backend._shutdown_owner is first
+
+    second_started = time.monotonic()
+    backend.shutdown()
+    assert time.monotonic() - second_started < 0.1
+    assert not first_done.is_set()
+    release_worker.set()
+    first.join(timeout=2)
+    assert not first.is_alive() and first_done.is_set()
+    with backend._lock:
+        assert backend._shutdown_owner is None
+        assert backend._shutdown_complete is True
+    assert backend._loop_thread is not None and not backend._loop_thread.is_alive()
 
 
 def test_begin_session_refuses_while_stop_is_saving_clip(

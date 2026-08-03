@@ -471,6 +471,8 @@ class RecordingBackend:
         self._stop_retry_attempts = 0
         self._safety_workers: set[threading.Thread] = set()
         self._shutdown_started = False
+        self._shutdown_owner: threading.Thread | None = None
+        self._shutdown_complete = False
 
         # Background asyncio loop running in a daemon thread. Lazily
         # created in start() so tests can construct a backend without
@@ -509,35 +511,52 @@ class RecordingBackend:
             self._loop.close()
 
     def shutdown(self) -> None:
+        current_thread = threading.current_thread()
         with self._lock:
-            if self._shutdown_started and (
-                self._loop_thread is None or not self._loop_thread.is_alive()
-            ):
+            if self._shutdown_complete or self._shutdown_owner is not None:
                 return
+            self._shutdown_owner = current_thread
             self._shutdown_started = True
             retry_handle = self._stop_retry_handle
             safety_workers = set(self._safety_workers)
-        if retry_handle is not None:
-            retry_handle.cancel()
-        # Initial safety workers and Timer retries may be inside _submit().
-        # One shared deadline bounds the total wait; never self-join.
-        current_thread = threading.current_thread()
-        owners = safety_workers | ({retry_handle} if retry_handle else set())
-        deadline = time.monotonic() + STOP_SHUTDOWN_JOIN_SEC
-        for owner in owners:
-            if owner is not current_thread:
-                owner.join(timeout=max(0.0, deadline - time.monotonic()))
-        if any(owner is not current_thread and owner.is_alive() for owner in owners):
-            logger.warning(
-                "wake-corpus shutdown left its loop alive while a stop "
-                "worker remained active",
-            )
-            return
-        self._clear_pending_stop()
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._loop_thread is not None:
-            self._loop_thread.join(timeout=5)
+        finished = False
+        try:
+            if retry_handle is not None:
+                retry_handle.cancel()
+            # Initial safety workers and Timer retries may be inside _submit().
+            # One shared deadline bounds every join; never self-join.
+            owners = safety_workers | ({retry_handle} if retry_handle else set())
+            deadline = time.monotonic() + STOP_SHUTDOWN_JOIN_SEC
+            for owner in owners:
+                if owner is not current_thread:
+                    owner.join(timeout=max(0.0, deadline - time.monotonic()))
+            if any(
+                owner is not current_thread and owner.is_alive()
+                for owner in owners
+            ):
+                logger.warning(
+                    "wake-corpus shutdown left its loop alive while a stop "
+                    "worker remained active",
+                )
+                return
+            self._clear_pending_stop()
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._loop_thread is not None:
+                self._loop_thread.join(
+                    timeout=max(0.0, deadline - time.monotonic()),
+                )
+                if self._loop_thread.is_alive():
+                    logger.warning(
+                        "wake-corpus shutdown timed out waiting for its loop",
+                    )
+                    return
+            finished = True
+        finally:
+            with self._lock:
+                if self._shutdown_owner is current_thread:
+                    self._shutdown_owner = None
+                    self._shutdown_complete = finished
 
     def _submit(self, coro: Any) -> Any:
         """Run a coroutine on the backend loop, block for the result."""
@@ -1313,7 +1332,7 @@ class RecordingBackend:
         ended early. Fail-soft: a poll error logs and rearms rather than
         leaving the recording unwatched."""
         with self._lock:
-            if not self._owns_current_locked(generation):
+            if not self._can_admit_current_locked(generation):
                 return
         try:
             muted = self.mic_muted()
@@ -1340,7 +1359,7 @@ class RecordingBackend:
             return
         with self._lock:
             if (
-                self._owns_current_locked(generation)
+                self._can_admit_current_locked(generation)
                 and self._loop is not None
             ):
                 self._mute_poll_handle = self._loop.call_later(
@@ -1380,7 +1399,7 @@ class RecordingBackend:
             daemon=True,
         )
         with self._lock:
-            if not self._owns_current_locked(generation):
+            if not self._can_admit_current_locked(generation):
                 return
             self._safety_workers.add(worker)
             worker.start()
@@ -1415,13 +1434,15 @@ class RecordingBackend:
                 mute_stopped=mute_stopped,
             )
 
-    def _owns_current_locked(self, generation: _StopGeneration) -> bool:
+    def _matches_current_locked(self, generation: _StopGeneration) -> bool:
         clip_id, task = generation
         return (
-            not self._shutdown_started
-            and self._current_clip_id == clip_id
+            self._current_clip_id == clip_id
             and self._current is task
         )
+
+    def _can_admit_current_locked(self, generation: _StopGeneration) -> bool:
+        return not self._shutdown_started and self._matches_current_locked(generation)
 
     def _owns_pending_locked(self, generation: _StopGeneration) -> bool:
         return self._pending_stop_generation == generation
@@ -1433,7 +1454,7 @@ class RecordingBackend:
         """Stop one exact generation retaining frames; publish may retry."""
         _clip_id, task = generation
         with self._lock:
-            if not self._owns_current_locked(generation):
+            if not self._matches_current_locked(generation):
                 return
             loop = self._loop
         if loop is not None:
@@ -1469,7 +1490,10 @@ class RecordingBackend:
         mute_stopped: bool,
     ) -> None:
         with self._lock:
-            if not self._owns_current_locked(generation) or self._loop is None:
+            if (
+                not self._can_admit_current_locked(generation)
+                or self._loop is None
+            ):
                 return
             if self._pending_stop is None:
                 self._pending_stop_generation = generation
@@ -1518,7 +1542,7 @@ class RecordingBackend:
             pending = self._pending_stop
             owned = (
                 self._owns_pending_locked(generation)
-                and self._owns_current_locked(generation)
+                and self._matches_current_locked(generation)
                 and active_timer is current_timer
             )
         if pending is None or not owned:
@@ -1542,7 +1566,7 @@ class RecordingBackend:
             pending = self._pending_stop
             still_owned = (
                 self._owns_pending_locked(generation)
-                and self._owns_current_locked(generation)
+                and self._can_admit_current_locked(generation)
             )
         if pending is not None and still_owned:
             auto, mute_stopped = pending
@@ -1561,7 +1585,7 @@ class RecordingBackend:
     ) -> bool:
         """Quiesce immediately; return whether publication is terminal."""
         with self._lock:
-            live_generation = self._owns_current_locked(generation)
+            live_generation = self._matches_current_locked(generation)
         if not live_generation:
             self._clear_pending_stop(generation)
             return True
