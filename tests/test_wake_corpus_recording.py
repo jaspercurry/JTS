@@ -1115,7 +1115,9 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     time.sleep(0.03)
     with backend._lock:
         task = backend._current
-    assert task is not None and task._task is not None
+        clip_id = backend._current_clip_id
+    assert clip_id is not None and task is not None and task._task is not None
+    generation = (clip_id, task)
 
     # Stand in for a lifecycle owner stalled in filesystem I/O. The safety
     # worker must return promptly, quiesce capture on the loop, and leave one
@@ -1123,7 +1125,7 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
         trigger = getattr(backend, trigger_name)
-        trigger_thread = threading.Thread(target=trigger)
+        trigger_thread = threading.Thread(target=trigger, args=(generation,))
         trigger_thread.start()
         trigger_thread.join(timeout=0.25)
         assert not trigger_thread.is_alive()
@@ -1137,13 +1139,14 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
             assert backend._pending_stop == (expected_auto, expected_mute)
             retry_handle = backend._stop_retry_handle
             assert retry_handle is not None
+            assert backend._pending_stop_generation == generation
             assert backend._stop_retry_attempts >= 1
         assert retry_handle.interval <= recording_backend.STOP_RETRY_MAX_SEC
 
         # Repeated triggers merge into the existing timer; they do not spawn
         # more Timer/worker threads while its owner remains blocked.
         for _ in range(3):
-            trigger()
+            trigger(generation)
         with backend._lock:
             assert backend._stop_retry_handle is retry_handle
             assert backend._stop_retry_attempts == 1
@@ -1168,6 +1171,201 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
         assert backend._pending_stop is None
         assert backend._stop_retry_handle is None
         assert backend._stop_retry_attempts == 0
+
+
+def test_stale_retry_callback_cannot_stop_the_next_clip(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Timer admitted for clip A remains generation-bound after B starts."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    backend.begin_session("jasper")
+    first = backend.start_recording("quiet", "near")
+    with backend._lock:
+        first_task = backend._current
+    assert first_task is not None
+    first_generation = (first["clip_id"], first_task)
+
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    callback_done = threading.Event()
+    original_recovery = backend._stop_with_recovery
+
+    def blocked_recovery(generation, **labels):
+        is_stale_timer = generation == first_generation and isinstance(
+            threading.current_thread(), threading.Timer,
+        )
+        if is_stale_timer:
+            callback_entered.set()
+            assert release_callback.wait(timeout=2)
+        try:
+            return original_recovery(generation, **labels)
+        finally:
+            if is_stale_timer:
+                callback_done.set()
+
+    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
+    assert backend._lifecycle_lock.acquire(blocking=False)
+    try:
+        backend._auto_stop_safe(first_generation)
+    finally:
+        backend._lifecycle_lock.release()
+    assert callback_entered.wait(timeout=2)
+
+    backend.stop_recording()
+    second = backend.start_recording("quiet", "near")
+    with backend._lock:
+        second_task = backend._current
+    assert second_task is not None
+    release_callback.set()
+    assert callback_done.wait(timeout=2)
+
+    with backend._lock:
+        assert backend._current_clip_id == second["clip_id"]
+        assert backend._current is second_task
+    assert second_task._task is not None and not second_task._task.done()
+    backend.stop_recording()
+
+
+def test_old_cleanup_finishes_before_a_new_generation_can_install_retry(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clip A's cleanup stays under lifecycle ownership and cannot erase B."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.2)
+    backend.begin_session("jasper")
+    first = backend.start_recording("quiet", "near")
+    with backend._lock:
+        first_task = backend._current
+    assert first_task is not None
+    first_generation = (first["clip_id"], first_task)
+
+    cleanup_entered = threading.Event()
+    release_cleanup = threading.Event()
+    original_clear = backend._clear_pending_stop
+
+    def blocked_clear(generation=None):
+        if generation == first_generation:
+            cleanup_entered.set()
+            assert backend._lifecycle_lock.locked()
+            assert release_cleanup.wait(timeout=2)
+        return original_clear(generation)
+
+    monkeypatch.setattr(backend, "_clear_pending_stop", blocked_clear)
+    stopped: list[object] = []
+    stop_thread = threading.Thread(target=lambda: stopped.append(backend.stop_recording()))
+    stop_thread.start()
+    assert cleanup_entered.wait(timeout=2)
+    with pytest.raises(wake_corpus_setup.StateError, match="in progress"):
+        backend.start_recording("quiet", "near")
+    release_cleanup.set()
+    stop_thread.join(timeout=2)
+    assert not stop_thread.is_alive() and len(stopped) == 1
+
+    second = backend.start_recording("quiet", "near")
+    with backend._lock:
+        second_task = backend._current
+    assert second_task is not None
+    second_generation = (second["clip_id"], second_task)
+    assert backend._lifecycle_lock.acquire(blocking=False)
+    try:
+        backend._auto_stop_safe(second_generation)
+        with backend._lock:
+            assert backend._pending_stop_generation == second_generation
+            assert backend._stop_retry_handle is not None
+    finally:
+        backend._lifecycle_lock.release()
+    backend.stop_recording()
+
+
+def test_mute_intent_merges_after_auto_stop_owns_lifecycle(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mute wins when it linearizes before auto publication takes state."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.2)
+    backend.begin_session("jasper")
+    started = backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+    assert task is not None
+    generation = (started["clip_id"], task)
+
+    publisher_entered = threading.Event()
+    release_publisher = threading.Event()
+    original_stop = backend._stop_recording
+
+    def blocked_stop(*args, **kwargs):
+        publisher_entered.set()
+        assert release_publisher.wait(timeout=2)
+        return original_stop(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "_stop_recording", blocked_stop)
+    auto_thread = threading.Thread(target=backend._auto_stop_safe, args=(generation,))
+    auto_thread.start()
+    assert publisher_entered.wait(timeout=2)
+    backend._mute_stop_safe(generation)
+    release_publisher.set()
+    auto_thread.join(timeout=2)
+    assert not auto_thread.is_alive()
+
+    clips = backend.list_clips()
+    assert len(clips) == 1
+    assert clips[0].mute_stopped is True
+    assert clips[0].auto_stopped is False
+
+
+def test_shutdown_joins_active_retry_before_closing_loop(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal shutdown prevents an admitted Timer from publishing/rearming."""
+    monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.01)
+    backend.begin_session("jasper")
+    started = backend.start_recording("quiet", "near")
+    with backend._lock:
+        task = backend._current
+    assert task is not None
+    generation = (started["clip_id"], task)
+
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    original_recovery = backend._stop_with_recovery
+
+    def blocked_recovery(generation_arg, **labels):
+        if isinstance(threading.current_thread(), threading.Timer):
+            callback_entered.set()
+            assert release_callback.wait(timeout=2)
+        return original_recovery(generation_arg, **labels)
+
+    monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
+    assert backend._lifecycle_lock.acquire(blocking=False)
+    try:
+        backend._auto_stop_safe(generation)
+    finally:
+        backend._lifecycle_lock.release()
+    assert callback_entered.wait(timeout=2)
+
+    shutdown_done = threading.Event()
+
+    def shut_down() -> None:
+        backend.shutdown()
+        shutdown_done.set()
+
+    shutdown_thread = threading.Thread(target=shut_down)
+    shutdown_thread.start()
+    assert not shutdown_done.wait(timeout=0.05)
+    assert backend._loop_thread is not None and backend._loop_thread.is_alive()
+    release_callback.set()
+    shutdown_thread.join(timeout=2)
+    assert not shutdown_thread.is_alive()
+    assert shutdown_done.is_set()
+    assert backend._loop_thread is not None and not backend._loop_thread.is_alive()
+    with backend._lock:
+        assert backend._shutdown_started is True
+        assert backend._pending_stop is None
+        assert backend._stop_retry_handle is None
+    assert backend.list_clips() == []
 
 
 def test_begin_session_refuses_while_stop_is_saving_clip(
