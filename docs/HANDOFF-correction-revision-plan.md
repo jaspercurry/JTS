@@ -119,8 +119,9 @@ text stands as written.
 > not *the code does not exist*. As of the campaign's close, **P1, P3, and P4's
 > chassis have all landed** across R8–R11; **P2 remains unbuilt.** Each rung's
 > own **Status** paragraph below is authoritative for which PRs shipped and what
-> they did not cover — notably P4's, which records that the chassis landed with
-> its per-speaker model-error store **still unwired**.
+> they did not cover — notably P4's, which records both the campaign-close
+> chassis with an unwired store and the owner-cleared 2026-08-03 live wiring
+> that followed it.
 >
 > The owner gave a **provisional green light to build along the
 > ladder** ahead of ratification (see [the campaign](#the-campaign--rounds-to-monday-2026-08-03-and-beyond)).
@@ -373,36 +374,34 @@ gap R11's first hardware run exposed), #2060 (owner decision deferred from
 
 ### Rung P4 — Wire the learning loop
 
-**What it is.** Make the machine remember. Every learning signal currently
-terminates before a consumer: the findings store has zero readers,
-`flatness_improvement_db` has zero consumers, and VERIFY's own model-error record
-is discarded. P4 is the read path plus the render, the household-wire delta
-labeled honestly as model-vs-model, and per-speaker persistence of VERIFY's
-model error. Cheap — every piece exists; nothing reads it.
+**What it is.** Make the machine remember. At ladder drafting time every
+learning signal terminated before a consumer: the findings store had zero
+readers, `flatness_improvement_db` had zero consumers, and VERIFY's own
+model-error record was discarded. P4 is the read path plus the render, a
+provenance-aware prediction-tracking delta (realized vs realized in the live
+journey; model-graded vs model-graded when replay is the evidence), and
+per-speaker persistence of VERIFY's model error.
 
 **Status.** PENDING RATIFICATION. First piece merged — the findings reader,
 #1982, 2026-07-31. Then **R11 landed the attempts loop (#2029) and the VERIFY
 evidence gate (#2031)**, so the chassis exists; **ratification still pending**.
-
-**Honest limit of what shipped — the store has no live writer.** The
-per-speaker model-error store
-([`jasper/active_speaker/model_error_store.py`](../jasper/active_speaker/model_error_store.py))
-is real, tested, and **not yet wired to the flow**: `record_model_error` has
-**no caller anywhere outside its own tests** — not in `crossover_v2_flow`, not
-in the envelope, nowhere. The only production writer of the file at all is
-`adopt_floor`, called from the offline replay CLI
-([`jasper/cli/active_speaker_attempts_replay.py`](../jasper/cli/active_speaker_attempts_replay.py)),
-which is why R11's proof ran on recorded data and why the R11 outcome records
-the store as starting "honestly empty". So P4 today is the *read* path plus the
-loop plus the storage shape — **the learn-from-VERIFY seam the rung is named
-for is still open**. Tracked as **#2048** (the store has no live writer) under
-parent **#2049** (live in-flow attempts-loop wiring — the household-visible
-"improved X, stopped because more would be noise" payoff, which has no owner
-until that wiring lands).
+At the campaign close that chassis still had no live store writer, which is the
+historical state recorded above and in R11. The owner cleared the wiring on
+2026-08-03; **#2048/#2049/#2033 now connect it to the live v2 journey**:
+accepted applied-candidate VERIFY grades are persisted through
+`record_model_error`, `capture_integrity` maps into the loop's comparability
+input, and the kernel's last decision reaches the household verdict through
+one copy writer. Attempt lifecycle stays in `CrossoverV2Conductor`; persistence
+stays in
+[`model_error_store.py`](../jasper/active_speaker/model_error_store.py); the
+decision kernel remains pure. Floors are still adopted only by the offline
+`adopt_floor` / replay path. A speaker with no stored floor banks the realized
+observation but makes no improvement claim (`ungraded_no_floor`) — the live
+flow does not invent a threshold.
 
 **Reshapes.** Precedes WO-6 and WO-7. WO-7's per-attempt
-predicted-vs-measured evidence stream is **unimplementable until P4 exists** —
-it is the same read path. No WO text is contradicted; the dependency is added.
+predicted-vs-measured evidence stream depended on P4's live read path; the
+2026-08-03 wiring now supplies that prerequisite. No WO text is contradicted.
 
 **Research inputs.** None directly. (The Dirac digest's separate
 position-stability argument lands on rung P3, not here.)
@@ -415,12 +414,10 @@ pilot-transfer baseline never expires — and see P0 finding 1: a fixed baseline
 drift comparable to the whole floor within ~15 attempts, so this is a rule, not
 just a bug, closed), #1876 (convergence: does a clean-slate re-run reach the same tune?),
 #1844 (LLM-native tuning workbench W1–W4 — the consumer the loop feeds), #2033
-(wire VERIFY's `capture_integrity` into the attempts loop's `STOP_EVIDENCE`
-input once the live flow feeds it — today the live path is safe by
-construction, because glitched captures auto-retry before becoming grades),
-#2048 (the model-error store has no live writer — see Status above), #2049
-(live in-flow attempts-loop wiring; the parent that owns the household-visible
-payoff).
+(VERIFY `capture_integrity` → attempts-loop `STOP_EVIDENCE`, closed by the
+2026-08-03 live wiring), #2048 (live model-error-store writer, closed by that
+wiring), #2049 (live in-flow attempts judgment and household-visible
+prediction-tracking payoff, closed by that wiring).
 
 ---
 

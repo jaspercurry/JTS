@@ -28,6 +28,14 @@ from typing import Mapping
 import numpy as np
 import pytest
 
+from jasper.active_speaker.attempts_loop import (
+    PROVENANCE_MODEL_GRADED,
+    PROVENANCE_REALIZED,
+    AttemptIntegrity,
+    AttemptRecord,
+    FloorStats,
+    decide_next,
+)
 from jasper.active_speaker.crossover_envelope_v2 import (
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     _PHASE_STEP,
@@ -35,6 +43,8 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     build_crossover_envelope_v2,
 )
 from jasper.active_speaker.crossover_v2_flow import (
+    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+    ATTEMPT_REASON_NO_FLOOR,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_REVIEW,
@@ -491,6 +501,129 @@ def test_done_is_the_result_screen_plain_outcome_first():
     assert "tuned" in env["verdict_text"].lower()
     assert "undo" in env["verdict_text"].lower()
     assert any(n["code"] == "crossover_v2_verified" for n in env["nudges"])
+
+
+def test_done_renders_the_floor_stop_sentence_from_kernel_output():
+    floor = FloorStats.from_repeat_study(
+        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        median_db=0.04,
+        p95_db=0.085,
+        source="2026-07-31 fixed-mic repeat study",
+        measured_at="2026-07-31",
+    )
+    attempts = [
+        AttemptRecord(
+            attempt_id="candidate-a",
+            metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+        ),
+        AttemptRecord(
+            attempt_id="candidate-b",
+            metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=0.91,
+        ),
+    ]
+    decision = decide_next(attempts, floor)
+    assert decision.decision == "stop_floor"
+
+    env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={"last_decision": decision.to_dict(), "store_count": 2},
+    ))
+
+    assert env["verdict_text"].endswith(
+        "Stopped: the change in prediction tracking from the previous attempt "
+        "(0.09 dB) is below what this instrument can distinguish (floor 0.17 dB)."
+    )
+
+
+def test_done_describes_tracking_fidelity_without_claiming_crossover_quality():
+    floor = FloorStats.from_repeat_study(
+        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        median_db=0.04,
+        p95_db=0.1,
+        source="test fixed-mic repeat study",
+        measured_at="2026-08-03",
+    )
+    decision = decide_next(
+        [
+            AttemptRecord(
+                attempt_id="candidate-a",
+                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+                provenance=PROVENANCE_REALIZED,
+                integrity=AttemptIntegrity(comparable=True),
+                grade_db=1.0,
+            ),
+            AttemptRecord(
+                attempt_id="candidate-b",
+                metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+                provenance=PROVENANCE_REALIZED,
+                integrity=AttemptIntegrity(comparable=True),
+                grade_db=0.6,
+            ),
+        ],
+        floor,
+    )
+
+    env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={"last_decision": decision.to_dict()},
+    ))
+
+    assert env["verdict_text"].endswith(
+        "The latest applied result tracked its prediction 0.4 dB more closely "
+        "(realized vs realized)."
+    )
+    assert "Improved the crossover" not in env["verdict_text"]
+
+
+def test_first_attempt_sentence_formats_the_kernel_provenance():
+    metric = "linearization_residual_rms_db"
+    floor = FloorStats.from_policy_bar(
+        metric=metric,
+        claim_floor_db=0.5,
+        source="test policy bar",
+    )
+    decision = decide_next(
+        [AttemptRecord(
+            attempt_id="candidate-a",
+            metric=metric,
+            provenance=PROVENANCE_MODEL_GRADED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=0.9,
+        )],
+        floor,
+    )
+
+    env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={"last_decision": decision.to_dict()},
+    ))
+
+    assert env["verdict_text"].endswith(
+        "Recorded the first model-graded tracking result; another attempt is "
+        "needed before improvement can be judged."
+    )
+
+
+def test_done_makes_no_claim_when_the_store_has_no_floor():
+    env = build_crossover_envelope_v2(_done_status(
+        attempts_loop={
+            "last_decision": {
+                "decision": None,
+                "reason": ATTEMPT_REASON_NO_FLOOR,
+                "provenance": PROVENANCE_REALIZED,
+                "floor": None,
+            },
+            "store_count": 1,
+        },
+    ))
+
+    assert env["verdict_text"].endswith(
+        "No improvement claim was made because this speaker has no adopted "
+        "measurement floor."
+    )
 
 
 def _cloud_verify_spec(passed: bool):

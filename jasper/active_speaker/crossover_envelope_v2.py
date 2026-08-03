@@ -41,7 +41,27 @@ import time
 from typing import Any, Mapping
 
 from ..log_event import log_event
+from .attempts_loop import (
+    PROVENANCE_MODEL_GRADED,
+    PROVENANCE_REALIZED,
+    REASON_ATTEMPT_NOT_COMPARABLE,
+    REASON_AWAITING_FIRST_ATTEMPT,
+    REASON_BASELINE_ESTABLISHED,
+    REASON_BELOW_CLAIM_FLOOR,
+    REASON_BUDGET_EXHAUSTED,
+    REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR,
+    REASON_FLOOR_METRIC_MISMATCH,
+    REASON_GRADED_BINS_SHRANK,
+    REASON_IMPROVEMENT_ABOVE_FLOOR,
+    REASON_IN_SPEC,
+    REASON_NO_DEVIATION_AVAILABLE,
+    REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED,
+    REASON_PREDECESSOR_NOT_COMPARABLE,
+    REASON_PROVENANCE_MISMATCH,
+    REASON_REGRESSION_FROM_PREDECESSOR,
+)
 from .crossover_v2_flow import (
+    ATTEMPT_REASON_NO_FLOOR,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -1405,6 +1425,131 @@ def _done_nudges(
     return nudges
 
 
+def _attempt_db(value: Any) -> str | None:
+    number = _finite(value)
+    if number is None:
+        return None
+    return f"{number:.2f}".rstrip("0").rstrip(".")
+
+
+def _attempt_provenance(decision: Mapping[str, Any]) -> str | None:
+    provenance = decision.get("provenance")
+    if provenance == PROVENANCE_REALIZED:
+        return f"{PROVENANCE_REALIZED} vs {PROVENANCE_REALIZED}"
+    if provenance == PROVENANCE_MODEL_GRADED:
+        return f"{PROVENANCE_MODEL_GRADED} vs {PROVENANCE_MODEL_GRADED}"
+    return None
+
+
+def _attempt_first_sentence(decision: Mapping[str, Any]) -> str:
+    provenance = decision.get("provenance")
+    if provenance not in {PROVENANCE_REALIZED, PROVENANCE_MODEL_GRADED}:
+        return "Recorded the first tracking result without an improvement claim."
+    return (
+        f"Recorded the first {provenance} tracking result; another attempt is "
+        "needed before improvement can be judged."
+    )
+
+
+def _attempt_improved_sentence(decision: Mapping[str, Any]) -> str:
+    amount = _attempt_db(decision.get("improvement_db"))
+    provenance = _attempt_provenance(decision)
+    if amount is None or provenance is None:
+        return "The latest attempt was recorded without an improvement claim."
+    return (
+        "The latest applied result tracked its prediction "
+        f"{amount} dB more closely ({provenance})."
+    )
+
+
+def _attempt_floor_sentence(decision: Mapping[str, Any]) -> str:
+    magnitude = _attempt_db(decision.get("magnitude_db"))
+    floor = _mapping(decision.get("floor"))
+    floor_db = _attempt_db(floor.get("claim_floor_db"))
+    if magnitude is None or floor_db is None:
+        return "Stopped because the instrument could not support another claim."
+    return (
+        "Stopped: the change in prediction tracking from the previous attempt "
+        f"({magnitude} dB) is below what this instrument can distinguish "
+        f"(floor {floor_db} dB)."
+    )
+
+
+def _attempt_evidence_sentence(decision: Mapping[str, Any]) -> str:
+    return "Stopped because the latest attempt could not be compared reliably."
+
+
+def _attempt_regression_sentence(decision: Mapping[str, Any]) -> str:
+    improvement = _finite(decision.get("improvement_db"))
+    provenance = _attempt_provenance(decision)
+    if improvement is None or provenance is None:
+        return "The latest attempt did not support an improvement claim."
+    amount = _attempt_db(abs(improvement))
+    return (
+        "The latest applied result tracked its prediction "
+        f"{amount} dB less closely ({provenance})."
+    )
+
+
+def _attempt_budget_sentence(decision: Mapping[str, Any]) -> str:
+    attempts = decision.get("attempts_used")
+    count = (
+        int(attempts)
+        if isinstance(attempts, int) and not isinstance(attempts, bool) else None
+    )
+    return (
+        f"Stopped after {count} attempts because the attempt budget was reached."
+        if count is not None
+        else "Stopped because the attempt budget was reached."
+    )
+
+
+def _attempt_converged_sentence(decision: Mapping[str, Any]) -> str:
+    return "Stopped because no material improvement remains."
+
+
+def _attempt_in_spec_sentence(decision: Mapping[str, Any]) -> str:
+    return "Stopped because the latest result is already within the target."
+
+
+# The household sentence has one writer. It dispatches on the kernel's reason
+# vocabulary and formats the kernel/store numbers; it never recomputes a
+# decision or substitutes a literal floor.
+_ATTEMPT_SENTENCE_BY_REASON = {
+    REASON_AWAITING_FIRST_ATTEMPT: _attempt_first_sentence,
+    REASON_BASELINE_ESTABLISHED: _attempt_first_sentence,
+    REASON_IMPROVEMENT_ABOVE_FLOOR: _attempt_improved_sentence,
+    REASON_BELOW_CLAIM_FLOOR: _attempt_floor_sentence,
+    REASON_ATTEMPT_NOT_COMPARABLE: _attempt_evidence_sentence,
+    REASON_PREDECESSOR_NOT_COMPARABLE: _attempt_evidence_sentence,
+    REASON_FLOOR_METRIC_MISMATCH: _attempt_evidence_sentence,
+    REASON_PROVENANCE_MISMATCH: _attempt_evidence_sentence,
+    REASON_NO_DEVIATION_AVAILABLE: _attempt_evidence_sentence,
+    REASON_DIRECTION_UNKNOWN_ABOVE_FLOOR: _attempt_evidence_sentence,
+    REASON_GRADED_BINS_SHRANK: _attempt_evidence_sentence,
+    REASON_REGRESSION_FROM_PREDECESSOR: _attempt_regression_sentence,
+    REASON_BUDGET_EXHAUSTED: _attempt_budget_sentence,
+    REASON_NO_MATERIAL_IMPROVEMENT_PREDICTED: _attempt_converged_sentence,
+    REASON_IN_SPEC: _attempt_in_spec_sentence,
+}
+
+
+def attempt_loop_verdict_sentence(status: Mapping[str, Any]) -> str:
+    """One household sentence from the conductor/kernel's last S3 output."""
+    attempts = _mapping(_v2(status).get("attempts_loop"))
+    decision = _mapping(attempts.get("last_decision"))
+    reason = decision.get("reason")
+    if not isinstance(reason, str):
+        return ""
+    if reason == ATTEMPT_REASON_NO_FLOOR:
+        return (
+            "No improvement claim was made because this speaker has no "
+            "adopted measurement floor."
+        )
+    renderer = _ATTEMPT_SENTENCE_BY_REASON.get(reason)
+    return renderer(decision) if renderer is not None else ""
+
+
 def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
     """The honest gauge-absent rendering (plan PR-5) for a CLOUD-VERIFY block
     that CLOSED but carries no usable flatness — two distinguishable states,
@@ -2609,6 +2754,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     "never finished, so this result is unverified. Re-verify to "
                     "confirm it, or undo to restore the previous sound."
                 )
+        attempt_sentence = attempt_loop_verdict_sentence(status)
+        if attempt_sentence:
+            done_verdict = f"{done_verdict} {attempt_sentence}"
         alternate_actions = [
             {
                 "id": "room",

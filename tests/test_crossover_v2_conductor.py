@@ -37,6 +37,18 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.attempts_loop import (
+    PROVENANCE_REALIZED,
+    REASON_ATTEMPT_NOT_COMPARABLE,
+    REASON_BASELINE_ESTABLISHED,
+    REASON_GRADED_BINS_SHRANK,
+    REASON_IMPROVEMENT_ABOVE_FLOOR,
+    STOP_EVIDENCE,
+    AttemptIntegrity,
+    AttemptRecord,
+    FloorStats,
+    decide_next,
+)
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     DELTA_PROBE_VERDICTS,
@@ -150,11 +162,15 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_REPEAT_EPSILON,
     INTEGRITY_CHECK_SWEEP_HEARD,
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
+    INTEGRITY_FAIL,
+    INTEGRITY_NOT_EVALUATED,
     AlignmentEstimate,
+    CaptureIntegrity,
     CrossoverCandidate,
     DriftEstimate,
     DriverResponse,
     GainPlan,
+    IntegrityCheck,
     PilotObservation,
     ProgramAnalysis,
     RoleGainSolve,
@@ -392,6 +408,7 @@ def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
     pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
     pilot_snr_ok=None, floor_source=None, residual_samples=0.0,
+    n_graded_bins=120,
     integrity=_INTEGRITY_FROM_LOCATIONS,
 ) -> ProgramAnalysis:
     locations = (
@@ -421,7 +438,12 @@ def _verify_analysis(
         # W6.7 ruling 1: the conductor gates on the notch-excluded max, not the
         # raw ``max_db`` — this fake keeps them equal (a fake with no notch to
         # exclude), so the ``max_db`` parameter still controls the gate.
-        verify_tracking={"rms_db": 0.4, "max_db": max_db, "max_db_notch_excluded": max_db},
+        verify_tracking={
+            "rms_db": 0.4,
+            "max_db": max_db,
+            "max_db_notch_excluded": max_db,
+            "frame": {"n_bins": n_graded_bins},
+        },
         linearity_ok=linearity,
         pilot_snr_ok=pilot_snr_ok,
         pilots=(
@@ -486,6 +508,7 @@ class FakeSeams:
 
 
 def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+    seams = kwargs.pop("seams", fakes.seams())
     return CrossoverV2Conductor(
         session_id=SESSION,
         source_preset=_preset(),
@@ -493,8 +516,29 @@ def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
         fc_hz=FC_HZ,
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
-        seams=fakes.seams(),
+        seams=seams,
         driver_spacing_m=0.15,
+        **kwargs,
+    )
+
+
+def _attempt_floor() -> FloorStats:
+    return FloorStats.from_repeat_study(
+        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        median_db=0.05,
+        p95_db=0.1,
+        source="test repeat study",
+        measured_at="2026-08-03",
+    )
+
+
+def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+    return _conductor(
+        fakes,
+        index_phase_map={1: PHASE_VERIFY},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        attempt_floor=_attempt_floor(),
         **kwargs,
     )
 
@@ -524,6 +568,314 @@ def _confirm_cloud(conductor) -> dict:
     returns ``None`` rather than re-fitting.
     """
     return conductor.confirm_cloud_measure_group() or {}
+
+
+# --- live attempts loop -------------------------------------------------------
+
+
+def test_accepted_apply_verify_writes_model_error_exactly_once():
+    written: list[dict[str, Any]] = []
+    fakes = FakeSeams()
+
+    def record(**observation: Any) -> bool:
+        written.append(dict(observation))
+        return True
+
+    c = _verify_only_conductor(
+        fakes,
+        seams=replace(fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    first = _run_phase(c, 1, 1)
+    repeated = _run_phase(c, 1, 2)
+
+    assert first["accepted"] is True
+    assert repeated["accepted"] is True
+    assert len(written) == 1
+    assert written[0] == {
+        "speaker_id": "speaker-a",
+        "attempt_id": "candidate-a",
+        "metric": flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        "predicted_db": 0.0,
+        "realized_db": 0.9,
+        "context": {
+            "session_id": SESSION,
+            "provenance": PROVENANCE_REALIZED,
+        },
+    }
+    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
+    assert c.last_attempt_decision["reason"] == REASON_BASELINE_ESTABLISHED
+
+
+def test_store_write_is_idempotent_across_a_crash_before_journey_persist(tmp_path):
+    """A rebuilt conductor may lack history even though the store write won."""
+    from jasper.active_speaker.model_error_store import (
+        load_state,
+        record_model_error,
+    )
+
+    path = tmp_path / "model-error.json"
+
+    def record(**observation: Any) -> bool:
+        record_model_error(path=path, **observation)
+        return True
+
+    first_fakes = FakeSeams()
+    first = _verify_only_conductor(
+        first_fakes,
+        seams=replace(first_fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    assert _run_phase(first, 1, 1)["accepted"] is True
+    assert len(load_state(path)["model_error"]) == 1
+
+    # Simulate a crash before the host persisted ``first.attempt_history``:
+    # rebuild with no history but the same applied-candidate identity.
+    recovered_fakes = FakeSeams()
+    recovered = _verify_only_conductor(
+        recovered_fakes,
+        seams=replace(recovered_fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    assert _run_phase(recovered, 1, 1)["accepted"] is True
+
+    records = load_state(path)["model_error"]
+    assert [item["attempt_id"] for item in records] == ["candidate-a"]
+    assert [item.attempt_id for item in recovered.attempt_history] == ["candidate-a"]
+
+
+def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
+    tmp_path, caplog,
+):
+    """A recovery conflict cannot reuse the previous candidate's verdict."""
+    from jasper.active_speaker.model_error_store import (
+        ModelErrorConflictError,
+        load_state,
+        record_model_error,
+    )
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+    from jasper.web import correction_crossover_v2 as v2host
+
+    path = tmp_path / "model-error.json"
+    state_path = tmp_path / "v2-state.json"
+    history = (
+        AttemptRecord(
+            attempt_id="candidate-base",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.4,
+            n_graded_bins=120,
+        ),
+        AttemptRecord(
+            attempt_id="candidate-previous",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+            n_graded_bins=120,
+        ),
+    )
+    prior_decision = decide_next(history, _attempt_floor()).to_dict()
+    assert prior_decision["reason"] == REASON_IMPROVEMENT_ABOVE_FLOOR
+    assert prior_decision["basis_attempt_ids"] == [
+        "candidate-base", "candidate-previous",
+    ]
+
+    # The store write won, then the process died before the new journey fact.
+    record_model_error(
+        speaker_id="speaker-a",
+        attempt_id="candidate-current",
+        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        predicted_db=0.0,
+        realized_db=0.9,
+        path=path,
+    )
+
+    def record(**observation: Any) -> bool:
+        try:
+            record_model_error(path=path, **observation)
+        except ModelErrorConflictError:
+            return False
+        return True
+
+    recovered_fakes = FakeSeams()
+    recovered_fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.7, n_graded_bins=80,
+    )
+    recovered = _verify_only_conductor(
+        recovered_fakes,
+        seams=replace(recovered_fakes.seams(), record_model_error=record),
+        attempt_history=history,
+        last_attempt_decision=prior_decision,
+        tuning_attempt_id="candidate-current",
+        speaker_id="speaker-a",
+    )
+    with caplog.at_level(logging.WARNING):
+        assert _run_phase(recovered, 1, 1)["accepted"] is True
+
+    records = load_state(path)["model_error"]
+    assert len(records) == 1
+    assert records[0]["realized_db"] == pytest.approx(0.9)
+    assert recovered.attempt_history == history
+    assert recovered.last_attempt_decision is None
+    assert (
+        "event=correction.crossover_v2_model_error_identity_conflict"
+        in caplog.text
+    )
+    assert "correction.crossover_v2_model_error_write_failed" not in caplog.text
+
+    # The host persists the conductor snapshot verbatim. The household surface
+    # must see no attempt sentence—not the hydrated previous candidate's 0.4 dB
+    # claim dressed up as the current result.
+    v2host.set_state_path_for_tests(state_path)
+    try:
+        v2host.persist_conductor_state(recovered, failure_code=None)
+        persisted = v2host.load_v2_state()
+    finally:
+        v2host.set_state_path_for_tests(None)
+    assert persisted["attempts_loop"]["last_decision"] is None
+    assert [
+        item["attempt_id"] for item in persisted["attempts_loop"]["history"]
+    ] == ["candidate-base", "candidate-previous"]
+    envelope = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "done",
+            "verify": persisted["verify"],
+            "candidate": persisted["candidate"],
+            "attempts_loop": persisted["attempts_loop"],
+        },
+    })
+    assert "tracked its prediction" not in envelope["verdict_text"]
+
+
+def test_model_error_store_failure_warns_without_blocking_verify(caplog):
+    def fail_write(**_observation: Any) -> None:
+        raise OSError("synthetic full disk")
+
+    fakes = FakeSeams()
+    c = _verify_only_conductor(
+        fakes,
+        seams=replace(fakes.seams(), record_model_error=fail_write),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    with caplog.at_level(logging.WARNING):
+        verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is True
+    assert c.current_phase == PHASE_DONE
+    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
+    assert "event=correction.crossover_v2_model_error_write_failed" in caplog.text
+
+
+def test_glitched_verify_reaches_loop_as_stop_evidence():
+    integrity = CaptureIntegrity(checks=(
+        IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_FAIL),
+        IntegrityCheck(
+            INTEGRITY_CHECK_SWEEP_SCHEDULE,
+            INTEGRITY_NOT_EVALUATED,
+            "sweep was not heard",
+        ),
+    ))
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, integrity=integrity)
+    # No adopted floor is the production default. Evidence refusal must still
+    # outrank that absent grading precondition (#2033).
+    c = _conductor(
+        fakes,
+        index_phase_map={1: PHASE_VERIFY},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        tuning_attempt_id="candidate-glitched",
+    )
+
+    verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is False
+    assert c.attempt_history == ()
+    decision = c.last_attempt_decision
+    assert decision["decision"] == STOP_EVIDENCE
+    assert decision["reason"] == REASON_ATTEMPT_NOT_COMPARABLE
+    assert decision["notes"] == [
+        INTEGRITY_CHECK_SWEEP_HEARD,
+        INTEGRITY_CHECK_SWEEP_SCHEDULE,
+    ]
+
+
+def test_live_seam_refuses_improvement_when_verify_denominator_shrinks():
+    history = (
+        AttemptRecord(
+            attempt_id="candidate-previous",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+            n_graded_bins=400,
+        ),
+    )
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(
+        program, max_db=0.6, n_graded_bins=200,
+    )
+    c = _verify_only_conductor(
+        fakes,
+        attempt_history=history,
+        tuning_attempt_id="candidate-latest",
+    )
+
+    verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is True
+    decision = c.last_attempt_decision
+    assert decision["decision"] == STOP_EVIDENCE
+    assert decision["reason"] == REASON_GRADED_BINS_SHRANK
+    assert decision["basis_attempt_ids"] == [
+        "candidate-previous", "candidate-latest",
+    ]
+
+
+def test_live_seam_preserves_immediate_predecessor_basis():
+    history = (
+        AttemptRecord(
+            attempt_id="candidate-early",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=9.0,
+        ),
+        AttemptRecord(
+            attempt_id="candidate-previous",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+        ),
+    )
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.6)
+    c = _verify_only_conductor(
+        fakes,
+        attempt_history=history,
+        tuning_attempt_id="candidate-latest",
+    )
+
+    verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is True
+    decision = c.last_attempt_decision
+    assert decision["reason"] == REASON_IMPROVEMENT_ABOVE_FLOOR
+    assert decision["basis_attempt_ids"] == [
+        "candidate-previous", "candidate-latest",
+    ]
+    assert decision["improvement_db"] == pytest.approx(0.4)
 
 
 # --- happy path -----------------------------------------------------------------

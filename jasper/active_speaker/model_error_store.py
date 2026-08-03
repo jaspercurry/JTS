@@ -25,8 +25,14 @@ reading its imports instead of a claim you have to trust. That split is the
 whole reason this is a separate file.
 
 The update API is deliberately two calls — :func:`adopt_floor` and
-:func:`record_model_error` — each read-modify-write, so the live flow can call
-whichever it has news for without assembling a whole state document.
+:func:`record_model_error` — so the live flow can call whichever it has news
+for without assembling a whole state document. Both serialize their complete
+read-modify-write transaction on the same advisory lock; atomic replacement
+alone prevents torn JSON, but cannot prevent one process from publishing a
+stale snapshot over another process's update.
+``record_model_error`` is idempotent by its per-speaker stable observation
+identity, closing the process-crash window between this file's atomic write and
+the conductor journey's separate atomic write.
 """
 
 from __future__ import annotations
@@ -35,10 +41,11 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_json
+from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.log_event import log_event
 
 from .attempts_loop import FLOOR_BASES, FloorStats
@@ -53,14 +60,34 @@ STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH"
 #: the point of the history is a trend in the model's error, and a trend that
 #: needs more than 32 points is one nobody is reading anyway.
 MAX_MODEL_ERROR_RECORDS = 32
+_STORE_LOCK_MODE = 0o660
+_STORE_LOCK_TIMEOUT_SEC = 5.0
 
 logger = logging.getLogger(__name__)
+
+
+class ModelErrorConflictError(RuntimeError):
+    """A stable observation identity was reused with different numbers."""
+
+
+@dataclass(frozen=True)
+class ModelErrorStoreSnapshot:
+    """One coherent read of the store-owned facts used by the live host."""
+
+    floor: FloorStats | None
+    model_error_count: int
 
 
 def model_error_state_path(path: str | Path | None = None) -> Path:
     """Explicit argument, then env override, then the production default."""
 
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+
+
+def _store_lock_path(path: Path) -> Path:
+    """The one cross-process lock for every mutation of ``path``."""
+
+    return path.with_name(f"{path.name}.lock")
 
 
 def _utc_now() -> str:
@@ -148,7 +175,7 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
     state["state_path"] = str(path)
     state["updated_at"] = _utc_now()
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, state, mode=0o640)
+    atomic_write_json(path, state, mode=0o640, group_from_parent=True)
 
 
 def adopt_floor(
@@ -162,9 +189,15 @@ def adopt_floor(
     """
 
     resolved = model_error_state_path(path)
-    state = load_state(resolved)
-    state["floor"] = floor.to_dict()
-    _write_state(resolved, state)
+    with advisory_file_lock(
+        _store_lock_path(resolved),
+        mode=_STORE_LOCK_MODE,
+        group_from_parent=True,
+        timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
+    ):
+        state = load_state(resolved)
+        state["floor"] = floor.to_dict()
+        _write_state(resolved, state)
     log_event(
         logger,
         "active_speaker.model_error_floor_adopted",
@@ -176,11 +209,9 @@ def adopt_floor(
     return state
 
 
-def stored_floor(path: str | Path | None = None) -> FloorStats | None:
-    """The adopted floor, or ``None`` when this speaker has never adopted one."""
-
-    raw = load_state(path)["floor"]
-    if raw is None:
+def _floor_from_state(state: Mapping[str, Any]) -> FloorStats | None:
+    raw = state.get("floor")
+    if not isinstance(raw, Mapping):
         return None
     return FloorStats(
         metric=str(raw["metric"]),
@@ -193,6 +224,23 @@ def stored_floor(path: str | Path | None = None) -> FloorStats | None:
     )
 
 
+def store_snapshot(path: str | Path | None = None) -> ModelErrorStoreSnapshot:
+    """Read the adopted floor and record count from one store revision."""
+
+    state = load_state(path)
+    records = state.get("model_error")
+    return ModelErrorStoreSnapshot(
+        floor=_floor_from_state(state),
+        model_error_count=len(records) if isinstance(records, list) else 0,
+    )
+
+
+def stored_floor(path: str | Path | None = None) -> FloorStats | None:
+    """The adopted floor, or ``None`` when this speaker has never adopted one."""
+
+    return store_snapshot(path).floor
+
+
 def _optional_float(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -201,6 +249,7 @@ def _optional_float(value: Any) -> float | None:
 
 def record_model_error(
     *,
+    speaker_id: str,
     attempt_id: str,
     metric: str,
     predicted_db: float,
@@ -215,33 +264,93 @@ def record_model_error(
     the hardware came out worse than the model promised**, which is the
     direction that matters — it is the model over-claiming.
 
+    ``speaker_id`` + ``attempt_id`` + ``metric`` is the stable observation
+    identity. Replaying an identical write is an idempotent no-op; reusing
+    that identity with different numbers raises :class:`ModelErrorConflictError`
+    without changing the store. That closes the crash window between this
+    write and the conductor's separate journey-state persist.
+
     ``context`` is free-form provenance (build sha, session id, band) stored
     verbatim under ``context``. It is never interpreted here; the store's job
     is to keep the pair, not to explain it.
     """
 
+    speaker = str(speaker_id)
+    attempt = str(attempt_id)
+    metric_name = str(metric)
+    if not speaker:
+        raise ValueError("speaker_id must be non-empty")
+    if not attempt:
+        raise ValueError("attempt_id must be non-empty")
+    if not metric_name:
+        raise ValueError("metric must be non-empty")
+    predicted = float(predicted_db)
+    realized = float(realized_db)
     resolved = model_error_state_path(path)
-    state = load_state(resolved)
-    error_db = float(realized_db) - float(predicted_db)
-    record = {
-        "attempt_id": str(attempt_id),
-        "metric": str(metric),
-        "predicted_db": float(predicted_db),
-        "realized_db": float(realized_db),
-        "error_db": error_db,
-        "recorded_at": _utc_now(),
-        "context": dict(context or {}),
-    }
-    state["model_error"] = (
-        [record] + list(state["model_error"])
-    )[:MAX_MODEL_ERROR_RECORDS]
-    _write_state(resolved, state)
+    with advisory_file_lock(
+        _store_lock_path(resolved),
+        mode=_STORE_LOCK_MODE,
+        group_from_parent=True,
+        timeout_sec=_STORE_LOCK_TIMEOUT_SEC,
+    ):
+        state = load_state(resolved)
+        records = state["model_error"]
+        for existing in records:
+            if not (
+                str(existing.get("speaker_id") or "") == speaker
+                and str(existing.get("attempt_id") or "") == attempt
+                and str(existing.get("metric") or "") == metric_name
+            ):
+                continue
+            if (
+                _optional_float(existing.get("predicted_db")) == predicted
+                and _optional_float(existing.get("realized_db")) == realized
+            ):
+                log_event(
+                    logger,
+                    "active_speaker.model_error_duplicate_ignored",
+                    path=str(resolved),
+                    speaker_id=speaker,
+                    attempt_id=attempt,
+                    metric=metric_name,
+                )
+                return state
+            log_event(
+                logger,
+                "active_speaker.model_error_identity_conflict",
+                path=str(resolved),
+                speaker_id=speaker,
+                attempt_id=attempt,
+                metric=metric_name,
+                level=logging.WARNING,
+            )
+            raise ModelErrorConflictError(
+                "model-error identity already exists with different values: "
+                f"{speaker}/{attempt}/{metric_name}"
+            )
+
+        error_db = realized - predicted
+        record = {
+            "speaker_id": speaker,
+            "attempt_id": attempt,
+            "metric": metric_name,
+            "predicted_db": predicted,
+            "realized_db": realized,
+            "error_db": error_db,
+            "recorded_at": _utc_now(),
+            "context": dict(context or {}),
+        }
+        state["model_error"] = (
+            [record] + list(records)
+        )[:MAX_MODEL_ERROR_RECORDS]
+        _write_state(resolved, state)
     log_event(
         logger,
         "active_speaker.model_error_recorded",
         path=str(resolved),
-        attempt_id=str(attempt_id),
-        metric=str(metric),
+        speaker_id=speaker,
+        attempt_id=attempt,
+        metric=metric_name,
         error_db=round(error_db, 5),
     )
     return state

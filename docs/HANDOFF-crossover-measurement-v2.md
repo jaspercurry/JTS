@@ -79,6 +79,68 @@ this doc is the current operational truth.
 
 ## Current status (2026-07-22)
 
+### Live attempts loop (2026-08-03)
+
+An accepted applied-candidate VERIFY now crosses one lifecycle seam in
+`CrossoverV2Conductor`: `ProgramAnalysis.capture_integrity` and the shipped
+`max_db_notch_excluded` tracking grade become a realized `AttemptRecord`, and
+the pure [`attempts_loop.py`](../jasper/active_speaker/attempts_loop.py) kernel
+judges that record against the immediately preceding accepted candidate. The
+record also carries `verify_tracking.frame.n_bins`, the analyzer-owned count
+of validity-clamped, notch-excluded bins, so the kernel refuses an apparent
+improvement won by grading a narrower denominator. The candidate fingerprint
+is the attempt identity; it survives the verify-session rebind, and the store
+treats an identical retry as an idempotent no-op while refusing a conflicting
+reuse, so a crash/recovery re-verify cannot double-write or masquerade as
+another tune. A conflicting recovery capture does not bank a second journey
+record or decision under the store-owned identity. Journey-scoped attempt
+history
+survives the relay-session rebind between apply and VERIFY; capture-phase
+evidence remains session-scoped as before. This is rung P4's live seam; see the
+[correction revision spine](HANDOFF-correction-revision-plan.md#rung-p4--wire-the-learning-loop)
+for program context.
+
+The conductor performs no persistence itself. Its injected writer calls
+`model_error_store.record_model_error` once for an accepted VERIFY, before
+banking the journey projection,
+the tracking model's predicted error (`0`) and the analyzer's realized error;
+ordinary I/O failures warn at
+`event=correction.crossover_v2_model_error_write_failed` and never reverse an
+accepted flow verdict. An identity/value conflict instead warns at
+`event=correction.crossover_v2_model_error_identity_conflict` and leaves both
+journey record and decision unbanked, rather than publishing two grades for
+one candidate identity. The store serializes floor adoption and record writes
+on one cross-process lock, so neither read-modify-write transaction can erase
+the other's fact. Its `active_speaker.model_error_recorded` event
+carries the explicit speaker, attempt, metric, and signed error. Every loop
+judgment is visible at
+`event=correction.crossover_v2_attempt_decision`; the existing
+`crossover_v2` state block exposes only the last decision and the store-owned
+record count read fresh at that boundary.
+`crossover_envelope_v2.attempt_loop_verdict_sentence` is the sole household
+copy writer and formats the kernel's reason, provenance, delta, and the floor
+carried on its decision rather than recomputing any of them. Because this live
+grade measures applied-response agreement with the prediction—not flatness or
+target quality—the sentence says whether prediction tracking moved closer or
+farther, never that the crossover itself improved.
+
+Comparability is defense in depth, not a replacement for VERIFY's existing
+pre-tracking integrity gate. Any evaluated capture-integrity failure maps to
+`comparable=False` and carries both failed and not-evaluated check names into
+the kernel's `STOP_EVIDENCE` record. A clean one-sweep VERIFY necessarily has
+repeat-only checks marked `not_evaluated`; those names remain disclosed but do
+not by themselves make every live VERIFY incomparable.
+
+The claim floor still has one owner and one adoption path:
+`model_error_store.stored_floor`, populated only by the offline repeat-study
+path (`adopt_floor` / the replay CLI). The live flow never adopts or invents a
+floor. When none exists it stores the realized attempt and model error but
+labels the decision `ungraded_no_floor`; the household surface explicitly
+makes no improvement claim. Capture-integrity refusal outranks that status: a
+glitched no-floor VERIFY still reports the kernel's
+`STOP_EVIDENCE / attempt_not_comparable`, rather than hiding failed evidence
+behind the missing floor.
+
 **2026-07-24 — Layer-1a linearization now EMITS (#1668 PR-D), not yet
 hardware-validated.** The fit engine's output (PR-C) now actually reaches
 the applied graph — see "Linearization EMISSION" and "Flatness-verify"

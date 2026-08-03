@@ -102,6 +102,10 @@ _WIDER_SPOT_DISTANCE = format_position_distance(GEOMETRY_RETRY_OFFSET_CM)
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH",
+        str(tmp_path / "model_error.json"),
+    )
     v2host.reset_session_measurement_pause_for_tests()
     yield
     v2host.set_state_path_for_tests(None)
@@ -114,6 +118,22 @@ def _bg_run_async(coro, *, timeout=None):
     coroutine to completion and return its result (each on a fresh loop — the
     session-volume drains are self-contained, no cross-loop context manager)."""
     return asyncio.run(coro)
+
+
+def test_live_model_error_binding_reports_identity_conflict_to_conductor():
+    observation = {
+        "speaker_id": "speaker-a",
+        "attempt_id": "candidate-a",
+        "metric": "max_db_notch_excluded",
+        "predicted_db": 0.0,
+        "realized_db": 0.9,
+        "context": {"session_id": "session-a"},
+    }
+
+    assert v2host._record_live_model_error(**observation) is True
+    assert v2host._record_live_model_error(
+        **{**observation, "realized_db": 0.7},
+    ) is False
 
 
 class _FakeVolCam:
@@ -1614,8 +1634,10 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
     assert no_current[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
 
 
-def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):
-    """B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
+def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
+    """A new VERIFY relay keeps the applied candidate and its cloud evidence.
+
+    B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
     (``prepare_v2_verify``'s ``index_phase_map={1: PHASE_VERIFY}``) has no
     group phase in ITS OWN session, so ``_cloud_summary`` honestly returns
     ``None`` for it — but the OLD session-id-gated carry-forward turned that
@@ -1631,7 +1653,10 @@ def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):
     production seam ``prepare_v2_verify``'s ``_open`` uses, mirroring
     ``test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm``'s
     own pattern for ``pre_apply_profile``) -> asserts all three surfaces
-    (`/state`, the envelope, the doctor) still see the cloud verdict.
+    (`/state`, the envelope, the doctor) still see the cloud verdict. The
+    candidate assertion also pins #2079's crash/retry write identity: the
+    fingerprint must survive this same new-session rebind so a recovery
+    VERIFY cannot become a second model-error observation.
     """
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
     from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
@@ -1693,6 +1718,7 @@ def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):
     # Surface 1: the durable state itself.
     state = v2host.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
+    assert state["candidate"] == {"fingerprint": "fp-original"}
     assert state["cloud"] == cloud_block
     assert state["evidence"]["cloud_artifacts"] == {
         PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"
@@ -3638,6 +3664,11 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
             "bundle_session_id": "bundle-undone",
             "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-undone"},
         },
+        "attempts_loop": {
+            "history": [{"attempt_id": "candidate-undone"}],
+            "last_decision": {"decision": "stop_floor"},
+            "store_count": 1,
+        },
     })
     v2host.observe_restore()
     state = v2host.load_v2_state()
@@ -3660,7 +3691,57 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     # persist_conductor_state's B1 carry-forward would resurrect on the next
     # verify-only re-arm, describing artifacts from the undone session.
     assert state["evidence"] is None
+    assert state["attempts_loop"] is None
     assert v2host._applied_gate() is False
+
+
+def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
+    loop = {
+        "history": [
+            {
+                "attempt_id": "candidate-a",
+                "metric": "max_db_notch_excluded",
+                "provenance": "realized",
+                "integrity": {"comparable": True, "reasons": []},
+                "repeats_used": 1,
+                "grade_db": 0.9,
+            }
+        ],
+        "last_decision": {
+            "decision": "continue",
+            "reason": "baseline_established",
+            "basis_attempt_ids": ["candidate-a"],
+            "provenance": "realized",
+            "floor": {"claim_floor_db": 0.17},
+        },
+    }
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "applied": True,
+        "attempts_loop": loop,
+    })
+
+    from jasper.active_speaker.model_error_store import record_model_error
+
+    for index in range(7):
+        record_model_error(
+            speaker_id="speaker-a",
+            attempt_id=f"candidate-{index}",
+            metric="max_db_notch_excluded",
+            predicted_db=0.0,
+            realized_db=float(index),
+        )
+
+    block = v2host.crossover_v2_status_block()
+    assert block["attempts_loop"] == {
+        "last_decision": loop["last_decision"],
+        "store_count": 7,
+    }
+    assert "history" not in block["attempts_loop"]
+
+    v2host.reset_v2_journey_state()
+    assert v2host.load_v2_state()["attempts_loop"] == loop
 
 
 def test_undo_after_a_re_verify_does_not_leave_the_verify_screen_standing():
