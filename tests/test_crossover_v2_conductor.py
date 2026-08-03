@@ -2942,10 +2942,20 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
 
     # (b) no correction is placed inside an identified null. NOTE: on THIS
     # fixture this assertion does not discriminate — it holds in the severed
-    # case too, because the fit places every filter at 150-1485 Hz and the
-    # nulls sit at 7.3-18.3 kHz, so there was never a filter up there to
-    # remove (measured 2026-07-27; PR-6a's own corpus acceptance records the
-    # same shape — the exclusion punches holes rather than moving filters).
+    # case too, because every filter the fit places lands more than an octave
+    # below the lowest null the cloud identifies, so there was never a filter
+    # up there to remove (PR-6a's own corpus acceptance records the same shape
+    # — the exclusion punches holes rather than moving filters).
+    #
+    # Stated as a SEPARATION and not as two frequency ranges on purpose: the
+    # fit's own range tracks the shared fixture's bump, so the literal that
+    # used to sit here ("150-1485 Hz") went stale the moment R10a moved that
+    # bump to +3 dB at 2400 Hz. Re-derived at that revision on 2026-08-02, the
+    # fit tops out near 2.4 kHz and the nulls start above 7 kHz — a margin of
+    # ~1.6 octaves, i.e. the conclusion holds with room to spare rather than
+    # by a hair. If a later fixture change narrows that, this note is the
+    # thing to re-measure; the endpoints themselves are not the claim.
+    #
     # It is kept as a standing invariant, not as this test's proof; (a) and
     # (c) plus the sibling severing test are what carry that.
     for fit in c.candidate.linearization.values():
@@ -3041,14 +3051,17 @@ def test_severing_the_cloud_wiring_changes_the_fit(monkeypatch):
     the passing test above would collapse into.
 
     **The emitted correction now differs too** (PR-L5). Until L5 the biquads
-    and trims were IDENTICAL wired and severed on this fixture — the nulls sit
-    at 7.3-18.3 kHz, the cut-only fit placed every filter at 150-1485 Hz, and
-    the exclusion only narrowed the permitted band. L5 makes the cloud
-    load-bearing on the FILTERS: boost permission is gated on the cloud verdict
-    having reached the envelope, because without it ``allowed_depth_db`` is not
-    zeroed in the registry's nulls and a lift could be designed into one. So
-    the wired run emits a boost the severed run does not, and severing now
-    costs the correction a filter rather than only a disclosure.
+    and trims were IDENTICAL wired and severed on this fixture — the cut-only
+    fit placed every filter more than an octave below the lowest null the
+    cloud identifies (the sibling test's note (b) carries the measured
+    separation and the reason it is not written here as two ranges), so the
+    exclusion had no filter to move and only narrowed the permitted band. L5
+    makes the cloud load-bearing on the FILTERS: boost permission is gated on
+    the cloud verdict having reached the envelope, because without it
+    ``allowed_depth_db`` is not zeroed in the registry's nulls and a lift could
+    be designed into one. So the wired run emits a boost the severed run does
+    not, and severing now costs the correction a filter rather than only a
+    disclosure.
     """
     def _run(sever: bool):
         fakes = FakeSeams()
