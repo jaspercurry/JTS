@@ -26,6 +26,22 @@ RunningConfigReader = Callable[[], Awaitable[str | None]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
 
 
+class CommissionPresetResolutionError(ValueError):
+    """A saved crossover preview could not produce a commissioning preset."""
+
+    def __init__(self, issues: list[dict[str, Any]]) -> None:
+        self.issues = issues
+        messages = [
+            str(issue.get("message") or issue.get("code"))
+            for issue in issues
+            if isinstance(issue, Mapping)
+        ]
+        super().__init__(
+            "active speaker preset is not ready for capture analysis"
+            + (": " + "; ".join(messages[:2]) if messages else "")
+        )
+
+
 def commission_load_config(cam: Any) -> PathLoader:
     """The INLINE loader seam: read the candidate file and apply it as the running
     graph WITHOUT repointing the persisted statefile.
@@ -94,26 +110,34 @@ def resolve_capture_preset(topology: Any) -> Any:
     """Resolve the protected preset used by every capture-analysis surface."""
 
     preset, crossover_preview = resolve_commission_inputs()
+    return resolve_commission_preset(
+        topology,
+        preset=preset,
+        crossover_preview=crossover_preview,
+    )
+
+
+def resolve_commission_preset(
+    topology: Any,
+    *,
+    preset: Any = None,
+    crossover_preview: dict[str, Any] | None = None,
+) -> Any:
+    """Resolve explicit, preview-compiled, or configured fallback preset."""
+
     if preset is not None:
         return preset
     if crossover_preview is not None:
         from jasper.active_speaker.staging import compile_preset_from_crossover_preview
 
-        compiled, issues, _gates = compile_preset_from_crossover_preview(
+        compiled, raw_issues, _gates = compile_preset_from_crossover_preview(
             topology,
             crossover_preview,
         )
         if compiled is not None:
             return compiled
-        messages = [
-            str(issue.get("message") or issue.get("code"))
-            for issue in issues
-            if isinstance(issue, Mapping)
-        ]
-        raise ValueError(
-            "active speaker preset is not ready for capture analysis"
-            + (": " + "; ".join(messages[:2]) if messages else "")
-        )
+        issues = [issue for issue in raw_issues if isinstance(issue, dict)]
+        raise CommissionPresetResolutionError(issues)
 
     from jasper.active_speaker.tone_plan import load_active_speaker_preset
 

@@ -224,7 +224,28 @@ The pure parsers live in `scripts/_lib.sh` (`oom_killed_units`,
 `oom_killed_comms`, `oom_unit_is_production`) and are unit-tested against
 captured kernel-log text.
 
-### 5. A failed install leaves live services running
+### 5. Full-profile unit generation rolls back as one cohort
+
+After the shared support files and core-audio-graph table land,
+`install_systemd_units` opens a rollback transaction around the remaining
+full-profile unit/helper generation. Each file destination is snapshotted once;
+generated Apple-mixer units render into the transaction directory before their
+promotion. If any copy or render fails, the installer restores pre-existing
+destinations, removes destinations that were new in this generation, runs
+`systemctl daemon-reload` against the restored set, and exits before the managed
+unit enable/start phase. The transaction commits only after the central
+daemon-reload accepts the complete generation.
+
+This is intentionally a bounded cohort, not a claim that the entire install is
+an A/B filesystem update. The shared core-audio-graph installer has its own
+all-rows-attempted + guaranteed-reload contract, and the build manifest remains
+the whole-install verified marker. Together they prevent the common mixed-unit
+generation failure without overstating the broader rollback guarantee.
+
+Pinned by `tests/test_install_core_audio_graph_loop.py`, including restoration
+of an overwritten file and removal of a newly-created file.
+
+### 6. A failed install leaves live services running
 
 On install failure, `deploy-to-pi.sh` exits **before** the
 restart/reconcile section. The running daemons keep their old code in RAM,
@@ -232,7 +253,7 @@ the manifest still points at the prior good build, and the operator is
 told what failed (and any collateral). "No worse than before" holds in the
 immediate term; re-deploying converges.
 
-### 6. Rust build-cache staging is content-based, not mtime-preserving
+### 7. Rust build-cache staging is content-based, not mtime-preserving
 
 Cargo's freshness check is mtime-based: a unit recompiles only when a
 source file is *newer* than the fingerprint from the last compile. The

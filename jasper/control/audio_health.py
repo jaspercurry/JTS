@@ -31,6 +31,10 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ..audio_runtime_plan import (
+    USB_LOW_LATENCY_P95_BUDGET_MS,
+    USB_LOW_LATENCY_P99_BUDGET_MS,
+)
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..source_intent import read_source_intents
@@ -408,10 +412,11 @@ def _verification(route: Mapping[str, Any]) -> dict[str, Any]:
         for issue in artifact.get("issues") or []
         if isinstance(issue, str)
     ]
-    target_missed = any(
-        issue in {"p95_exceeds_40ms", "p99_exceeds_42ms"}
-        for issue in issues
-    )
+    budget_issue_codes = {
+        f"p95_exceeds_{USB_LOW_LATENCY_P95_BUDGET_MS:g}ms",
+        f"p99_exceeds_{USB_LOW_LATENCY_P99_BUDGET_MS:g}ms",
+    }
+    target_missed = any(issue in budget_issue_codes for issue in issues)
     if target_missed:
         status = "target_missed"
     else:

@@ -255,10 +255,11 @@ class CaptureStimulus:
 class CaptureValidity:
     """Per-kind measurement-validity policy (plan §9).
 
-    Carried *as data* in the spec so a single spec per kind drives both the page
-    (``clean_capture`` / ``allow_capability_fallback``) and the Pi
-    (``require_alignment`` / ``clock_drift``). The full enforcement lands in
-    build step 6; step 1 fixes the vocabulary so the schema never has to change.
+    Carried *as data* in the spec so the page and Pi receive the same statement
+    of measurement policy. Browser-cleanliness fields drive the page directly;
+    alignment and clock policy describe what the owning Pi analysis actually
+    enforces. Alignment metrics are deliberately per-flow because a timing
+    marker and an acoustic sweep do not share a meaningful confidence scale.
 
       - ``clean_capture``: ``"refuse"`` or ``"warn"`` if the browser did not
         honor the EC/AGC/NS=false constraints.
@@ -267,8 +268,10 @@ class CaptureValidity:
         page degrades **gracefully and labeled** rather than dead-ending the
         phone. Pairs with ``clean_capture="refuse"`` to mean "refuse the clean
         path, offer the labeled fallback."
-      - ``require_alignment``: the Pi's cross-correlation alignment confidence is
-        a hard gate (a weak/ambiguous peak fails loud).
+      - ``require_alignment``: the owning Pi analysis has a hard alignment gate
+        (a weak/ambiguous result fails loud). False means alignment is absent or
+        observation-only; it must not be set speculatively before a calibrated
+        production gate exists.
       - ``clock_drift``: per-kind handling of independent mic/playback clock
         drift. ``"ignore"`` for magnitude FR and level work; ``"single_window"``
         for timing comparisons that must stay within one recording; ``"critical"``
@@ -1514,7 +1517,11 @@ def build_room_sweep_spec(
         validity=CaptureValidity(
             clean_capture="refuse",
             allow_capability_fallback=True,
-            require_alignment=True,
+            # Room alignment is observation-only while fleet evidence is
+            # collected; the relay adapter emits capture_relay.alignment from
+            # the persisted direct-arrival proxy. Do not advertise a hard gate
+            # until its threshold is calibrated on representative speakers.
+            require_alignment=False,
             clock_drift="ignore",
         ),
         theme=build_theme(accent=accent, font=font),
@@ -2203,8 +2210,9 @@ def build_bass_nearfield_spec(
     bass-extension bench runner.
 
     Same measurement-clean acoustic shape as `crossover_sweep` (48 kHz, mono,
-    EC/AGC/NS off, WAV upload, magnitude FR so drift-insensitive with alignment
-    as a hard gate), scoped to a single near-field woofer capture.
+    EC/AGC/NS off, WAV upload, magnitude FR so drift-insensitive), scoped to a
+    single near-field woofer capture. This builder has no production analysis
+    caller yet, so it does not claim a hard alignment gate.
 
     The capture GEOMETRY is **server-derived**, never operator/browser-supplied:
     it is fixed to ``near_field`` here — there is deliberately no geometry
@@ -2247,7 +2255,7 @@ def build_bass_nearfield_spec(
         validity=CaptureValidity(
             clean_capture="refuse",
             allow_capability_fallback=True,
-            require_alignment=True,
+            require_alignment=False,
             clock_drift="ignore",
         ),
         theme=build_theme(accent=accent, font=font),

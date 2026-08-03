@@ -12,19 +12,12 @@ callbacks).
 from __future__ import annotations
 
 import os
-import secrets
 
 import pytest
 import pytest_asyncio
 
 from jasper.peering import uds as uds_mod
-
-
-# UDS sun_path is capped at 108 bytes on Linux, 104 on macOS. pytest's
-# tmp_path on macOS is /private/var/folders/... — usually too long.
-# A short /tmp path with a hex suffix dodges that.
-def _short_socket_path() -> str:
-    return f"/tmp/jts-pt-{secrets.token_hex(4)}.sock"
+from tests._socket_paths import short_unix_socket_path as _short_socket_path
 
 
 @pytest_asyncio.fixture

@@ -268,7 +268,7 @@ VOICE_UNIT = "jasper-voice.service"
 # backend latency offset. Holds the bonded-leader-only Snapcast round-trip
 # delay; EMPTY (no keys) for solo/follower so the offset stays
 # byte-identical to the solo value (and an empty body avoids a spurious
-# shairport restart on a fresh solo speaker — see _write_outputd_env).
+# shairport restart on a fresh solo speaker — see _write_derived_env).
 # Persistent (NOT /run) so a bonded leader boots with the bonded offset
 # already derived. mode 0644, no secret.
 AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
@@ -760,7 +760,7 @@ def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     (shairport parked), invalid — gets an EMPTY dict, which clears the file
     to the byte-identical solo offset (the disable-clears-stale idiom). An
     empty body (no keys) also avoids a spurious shairport restart on a
-    fresh solo speaker's first reconcile (see _write_outputd_env's
+    fresh solo speaker's first reconcile (see _write_derived_env's
     old-is-None-and-empty guard).
 
     The value is the Snapcast buffer in seconds — the DOMINANT new delay
@@ -1127,16 +1127,17 @@ def _apply(plan_: ReconcilePlan) -> int:
     return rc
 
 
-def _write_outputd_env(
+def _write_derived_env(
     keys: dict[str, str],
     *,
     path: str = OUTPUTD_GROUPING_ENV_FILE,
+    consumer: str,
 ) -> tuple[bool, bool]:
-    """Write the outputd round-trip lane env iff it changed.
+    """Write a reconciler-owned derived environment file iff it changed.
 
     Returns ``(changed, ok)``. Compare-before-write keeps the common
-    no-change reconcile from restarting outputd (the caller restarts the
-    unit only on ``changed and ok`` — EnvironmentFile= is read at unit
+    no-change reconcile from restarting its consumer (the caller refreshes the
+    consumer only on ``changed and ok`` — EnvironmentFile= is read at unit
     start, so a content change without a restart would silently not
     apply). Fail-soft like ``_write_args_file``; carries no secrets
     (mode 0644)."""
@@ -1158,7 +1159,7 @@ def _write_outputd_env(
     except OSError as e:
         log_event(
             logger,
-            "multiroom.reconcile.outputd_env_failed",
+            f"multiroom.reconcile.{consumer}_env_failed",
             path=path,
             error=e,
             level=logging.WARNING,
@@ -1802,6 +1803,23 @@ def main(argv: list[str] | None = None) -> int:
     active_leader_arm_blocked = False
     refused_follower_fallback = False
 
+    def fall_back_to_solo() -> None:
+        """Reset every derived bond role after a fail-safe refusal."""
+        nonlocal cfg, decision, active, active_leader, active_follower
+        nonlocal active_speaker_leader, passive_leader, active_endpoint
+        nonlocal refused_follower_fallback, rc
+
+        cfg = replace(cfg, enabled=False)
+        refused_follower_fallback = local_sources_parked(requested_cfg)
+        decision = plan(cfg)
+        active = False
+        active_leader = False
+        active_follower = False
+        active_speaker_leader = False
+        passive_leader = False
+        active_endpoint = False
+        rc = 1
+
     if active_box_state is None:
         endpoint_block_reason = "active_speaker_topology_unknown"
         log_event(
@@ -1852,16 +1870,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 level=logging.WARNING,
             )
-            cfg = replace(cfg, enabled=False)
-            refused_follower_fallback = local_sources_parked(requested_cfg)
-            decision = plan(cfg)
-            active = False
-            active_leader = False
-            active_follower = False
-            active_speaker_leader = False
-            passive_leader = False
-            active_endpoint = False
-            rc = 1
+            fall_back_to_solo()
 
     # Grouping prerequisite: ensure the snapcast binaries are installed — the
     # "grouping opt-in's job" install.sh ships the units for but never installs
@@ -1936,16 +1945,7 @@ def main(argv: list[str] | None = None) -> int:
             # Reset EVERY role flag — including active_leader, which gates the
             # step-6 stream-binding pin — so a refused bond never partially
             # behaves like a leader/endpoint.
-            cfg = replace(cfg, enabled=False)
-            refused_follower_fallback = local_sources_parked(requested_cfg)
-            decision = plan(cfg)
-            active = False
-            active_leader = False
-            active_follower = False
-            active_speaker_leader = False
-            passive_leader = False
-            active_endpoint = False
-            rc = 1
+            fall_back_to_solo()
 
     # A solo-active box needs positive ownership proof BEFORE any role-derived
     # file or unit mutation. Enabled intent alone is insufficient: a partial
@@ -2042,9 +2042,10 @@ def main(argv: list[str] | None = None) -> int:
     # test harness can redirect them; a def-time default would pin the
     # production path.
     outputd_env = outputd_grouping_env(cfg, active_endpoint=active_endpoint)
-    env_changed, env_ok = _write_outputd_env(
+    env_changed, env_ok = _write_derived_env(
         outputd_env,
         path=OUTPUTD_GROUPING_ENV_FILE,
+        consumer="outputd",
     )
     log_event(
         logger,
@@ -2172,9 +2173,10 @@ def main(argv: list[str] | None = None) -> int:
     # its own provider + mic gates (writer/validator coherence — two
     # writers of one unit's state was the jts3 boot-loop class).
     voice_env = voice_grouping_env(cfg, active_endpoint=active_endpoint)
-    voice_changed, voice_ok = _write_outputd_env(
+    voice_changed, voice_ok = _write_derived_env(
         voice_env,
         path=VOICE_GROUPING_ENV_FILE,
+        consumer="voice",
     )
     log_event(
         logger,
@@ -2208,9 +2210,10 @@ def main(argv: list[str] | None = None) -> int:
     # itself happens in shairport's ExecStartPre (jasper-apply-airplay-mode
     # reads this file), so the restart in step 4b is what applies it.
     airplay_env = airplay_grouping_env(cfg)
-    airplay_changed, airplay_ok = _write_outputd_env(
+    airplay_changed, airplay_ok = _write_derived_env(
         airplay_env,
         path=AIRPLAY_GROUPING_ENV_FILE,
+        consumer="airplay",
     )
     log_event(
         logger,

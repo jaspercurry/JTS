@@ -29,22 +29,17 @@
 
 #include <pybind11/pybind11.h>
 
-#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 #include <modules/audio_processing/include/audio_processing.h>
+
+#include "process_10ms.h"
 
 namespace py = pybind11;
 
 namespace {
-
-constexpr int kSampleRate = 16000;
-constexpr int kNumChannels = 1;
-// AEC3 mandates 10 ms frames. 160 samples @ 16 kHz mono = 320 bytes.
-constexpr int kFrameSamples10ms = 160;
 
 class Aec3 {
 public:
@@ -54,7 +49,7 @@ public:
          bool agc1_enabled = false,
          int agc1_target_dbfs = 9,
          int agc1_max_gain_db = 18)
-        : stream_cfg_(kSampleRate, kNumChannels),
+        : stream_cfg_(jasper_aec3::kSampleRate, jasper_aec3::kNumChannels),
           stream_delay_ms_(stream_delay_ms),
           enable_agc2_(enable_agc2) {
         // libwebrtc-audio-processing-1-3 (Debian Trixie) doesn't expose
@@ -111,60 +106,8 @@ public:
     }
 
     py::bytes process(py::bytes mic_bytes, py::bytes ref_bytes) {
-        // py::bytes → std::string holds the raw byte payload.
-        const std::string mic_str = mic_bytes;
-        const std::string ref_str = ref_bytes;
-
-        if (mic_str.size() != ref_str.size()) {
-            throw std::invalid_argument(
-                "mic and ref byte buffers must be the same length");
-        }
-        const size_t total_bytes = mic_str.size();
-        if (total_bytes == 0) {
-            throw std::invalid_argument("empty buffer");
-        }
-        if (total_bytes % sizeof(int16_t) != 0) {
-            throw std::invalid_argument(
-                "buffer size must be a multiple of int16 (2 bytes)");
-        }
-        const size_t total_samples = total_bytes / sizeof(int16_t);
-        if (total_samples % kFrameSamples10ms != 0) {
-            throw std::invalid_argument(
-                "buffer must be a multiple of 10 ms "
-                "(160 samples @ 16 kHz mono = 320 bytes)");
-        }
-
-        const auto* mic =
-            reinterpret_cast<const int16_t*>(mic_str.data());
-        const auto* ref =
-            reinterpret_cast<const int16_t*>(ref_str.data());
-
-        std::vector<int16_t> output(total_samples);
-        // ProcessReverseStream still produces a (post-render-processing)
-        // output we don't consume; give it a scratch buffer to write to.
-        std::vector<int16_t> reverse_scratch(kFrameSamples10ms);
-
-        for (size_t i = 0; i < total_samples; i += kFrameSamples10ms) {
-            // API contract: render before capture for each 10 ms window.
-            apm_->ProcessReverseStream(
-                ref + i, stream_cfg_, stream_cfg_,
-                reverse_scratch.data());
-            // Hint AEC3 with the measured ref-to-mic delay (default
-            // 40 ms, the value we measured for the Pi 5 + AirPlay →
-            // CamillaDSP → dongle → speaker → free-floating XVF mic
-            // path via scripts/aec-probe-latency.py). The delay
-            // estimator's search converges faster when given a
-            // starting point. Per WebRTC API convention this is set
-            // before every ProcessStream call.
-            apm_->set_stream_delay_ms(stream_delay_ms_);
-            apm_->ProcessStream(
-                mic + i, stream_cfg_, stream_cfg_,
-                output.data() + i);
-        }
-
-        return py::bytes(
-            reinterpret_cast<const char*>(output.data()),
-            total_samples * sizeof(int16_t));
+        return jasper_aec3::process_10ms(
+            apm_.get(), stream_cfg_, stream_delay_ms_, mic_bytes, ref_bytes);
     }
 
 private:

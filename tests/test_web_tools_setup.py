@@ -27,8 +27,6 @@ import json
 import subprocess
 import sys
 import threading
-from email.message import Message
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +40,7 @@ from jasper.tool_state import (
     write_tool_state,
 )
 from jasper.web import tools_setup
+from tests._web_test_helpers import make_real_handler
 
 
 CSRF = "x" * 43  # passes _common._is_valid_token (32..128 url-safe chars)
@@ -103,29 +102,15 @@ def _make_request(
     body: bytes = b"",
     headers: dict[str, str] | None = None,
 ) -> Any:
-    h = handler_cls.__new__(handler_cls)
-    h.path = path
-    h.headers = Message()
-    h.headers["Content-Length"] = str(len(body))
-    if method == "POST":
-        h.headers["Content-Type"] = "application/json"
     merged = {"Host": "jts.local", **(headers or {})}
-    for key, value in merged.items():
-        h.headers[key] = value
-    h.rfile = BytesIO(body)
-    h.wfile = BytesIO()
-    h.client_address = ("127.0.0.1", 0)
-
-    h.status = None
-    h.sent_headers = []
-    h.send_response = lambda status, *a, **k: setattr(h, "status", int(status))
-    h.send_response_only = h.send_response
-    h.send_header = lambda name, value: h.sent_headers.append((name, value))
-    h.end_headers = lambda: None
-    h.send_error = lambda status, *a, **k: setattr(h, "status", int(status))
-    h.address_string = lambda: "127.0.0.1"
-    h.log_message = lambda *a, **k: None
-    return h
+    handler, _ = make_real_handler(
+        handler_cls,
+        path,
+        body=body,
+        headers=merged,
+        content_type="application/json" if method == "POST" else None,
+    )
+    return handler
 
 
 def _post(handler_cls, route, payload, *, token=CSRF, cookie_token=CSRF):

@@ -1969,19 +1969,34 @@ def _effective_outputd_positive_int(
     return default, None
 
 
-def _resolve_profile_floor_int(
+@dataclass(frozen=True)
+class _PositiveIntPolicy:
+    """Policy-specific provenance and warning vocabulary for one integer knob."""
+
+    value: int | None
+    source_kind: SourceKind
+    source: str
+    name: str
+    owner_id: str
+    absent_detail: str
+    override_scope: str
+    packaged_default: int
+    packaged_source: str
+
+
+def _resolve_layered_policy_int(
     *,
     key: str,
-    default: int,
-    floor_value: int | None,
+    policy: _PositiveIntPolicy,
     base_env: Mapping[str, str],
     override_env: Mapping[str, str],
     generated_env: Mapping[str, str],
     base_label: str,
     override_label: str,
     generated_label: str,
-    profile_id: str,
 ) -> RuntimeSetting:
+    """Resolve override/operator/policy/default precedence for a positive int."""
+
     operator_raw = _raw(base_env, key)
     override_raw = _raw(override_env, key)
     generated_raw = _raw(generated_env, key)
@@ -2010,10 +2025,12 @@ def _resolve_profile_floor_int(
             f"{key} is set in both {base_label} and {generated_label}; "
             "one knob has two homes"
         )
-    if override_raw is not None and (operator_raw is not None or generated_raw is not None):
+    if override_raw is not None and (
+        operator_raw is not None or generated_raw is not None
+    ):
         warnings.append(
             f"{key} lab override in {override_label} is active; it intentionally "
-            "wins over env/profile values"
+            f"wins over env/{policy.override_scope} values"
         )
 
     if override_value is not None:
@@ -2041,45 +2058,80 @@ def _resolve_profile_floor_int(
             warnings=tuple(warnings),
         )
 
-    if floor_value is not None:
+    if policy.value is not None:
         if generated_value is None:
             warnings.append(
-                f"{key} profile floor for {profile_id} is {floor_value}, but "
+                f"{key} {policy.name} for {policy.owner_id} is {policy.value}, but "
                 f"{generated_label} does not emit it; run "
                 "jasper-audio-hardware-reconcile"
             )
-        elif generated_value != floor_value:
+        elif generated_value != policy.value:
             warnings.append(
                 f"{key} in {generated_label} is {generated_value}, but the "
-                f"{profile_id} profile floor is {floor_value}; rerun "
+                f"{policy.owner_id} {policy.name} is {policy.value}; rerun "
                 "audio hardware reconcile"
             )
         return RuntimeSetting(
             key=key,
-            value=floor_value,
-            source_kind="device_profile",
-            source=f"DacProfile:{profile_id}",
+            value=policy.value,
+            source_kind=policy.source_kind,
+            source=policy.source,
             unit="frames",
             operator_value=operator_raw,
             generated_value=generated_raw,
             warnings=tuple(warnings),
         )
 
-    if generated_value is not None and generated_value != default:
+    if generated_value is not None and generated_value != policy.packaged_default:
         warnings.append(
             f"{key} in {generated_label} is {generated_value}, but the active "
-            f"profile has no floor; stale generated value will override the "
-            f"packaged default {default}"
+            f"{policy.absent_detail}; stale generated value will override the "
+            f"packaged default {policy.packaged_default}"
         )
     return RuntimeSetting(
         key=key,
-        value=default,
+        value=policy.packaged_default,
         source_kind="packaged_default",
-        source="packaged systemd/Camilla default",
+        source=policy.packaged_source,
         unit="frames",
         operator_value=operator_raw,
         generated_value=generated_raw,
         warnings=tuple(warnings),
+    )
+
+
+def _resolve_profile_floor_int(
+    *,
+    key: str,
+    default: int,
+    floor_value: int | None,
+    base_env: Mapping[str, str],
+    override_env: Mapping[str, str],
+    generated_env: Mapping[str, str],
+    base_label: str,
+    override_label: str,
+    generated_label: str,
+    profile_id: str,
+) -> RuntimeSetting:
+    return _resolve_layered_policy_int(
+        key=key,
+        policy=_PositiveIntPolicy(
+            value=floor_value,
+            source_kind="device_profile",
+            source=f"DacProfile:{profile_id}",
+            name="profile floor",
+            owner_id=profile_id,
+            absent_detail="profile has no floor",
+            override_scope="profile",
+            packaged_default=default,
+            packaged_source="packaged systemd/Camilla default",
+        ),
+        base_env=base_env,
+        override_env=override_env,
+        generated_env=generated_env,
+        base_label=base_label,
+        override_label=override_label,
+        generated_label=generated_label,
     )
 
 
@@ -2094,12 +2146,6 @@ def _resolve_outputd_content_buffer_int(
     generated_label: str,
 ) -> RuntimeSetting:
     key = OUTPUTD_CONTENT_BUFFER_KEY
-    operator_raw = _raw(base_env, key)
-    override_raw = _raw(override_env, key)
-    generated_raw = _raw(generated_env, key)
-    operator_value, operator_error = _positive_int(operator_raw)
-    override_value, override_error = _positive_int(override_raw)
-    generated_value, generated_error = _positive_int(generated_raw)
     # The low-latency route policy for the outputd content buffer is architecturally
     # INERT under the shm_ring content bridge (Ring B): outputd never opens the
     # content ALSA PCM, so `configure_pcm` — the only consumer of
@@ -2123,98 +2169,25 @@ def _resolve_outputd_content_buffer_int(
         and generated_bridge != OUTPUTD_CONTENT_BRIDGE_SHM_RING
         else None
     )
-    warnings: list[str] = []
-
-    if override_error is not None:
-        warnings.append(
-            f"{key} in {override_label} is invalid ({override_raw!r}: "
-            f"{override_error}); ignored"
-        )
-    if operator_error is not None:
-        warnings.append(
-            f"{key} in {base_label} is invalid ({operator_raw!r}: "
-            f"{operator_error}); ignored"
-        )
-    if generated_error is not None:
-        warnings.append(
-            f"{key} in {generated_label} is invalid ({generated_raw!r}: "
-            f"{generated_error}); remove it or rerun audio hardware reconcile"
-        )
-    if operator_raw is not None and generated_raw is not None:
-        warnings.append(
-            f"{key} is set in both {base_label} and {generated_label}; "
-            "one knob has two homes"
-        )
-    if override_raw is not None and (operator_raw is not None or generated_raw is not None):
-        warnings.append(
-            f"{key} lab override in {override_label} is active; it intentionally "
-            "wins over env/route values"
-        )
-
-    if override_value is not None:
-        return RuntimeSetting(
-            key=key,
-            value=override_value,
-            source_kind="lab_override",
-            source=override_label,
-            unit="frames",
-            override_value=override_raw,
-            operator_value=operator_raw,
-            generated_value=generated_raw,
-            warnings=tuple(warnings),
-        )
-
-    if operator_value is not None:
-        return RuntimeSetting(
-            key=key,
-            value=operator_value,
-            source_kind="operator_env",
-            source=base_label,
-            unit="frames",
-            operator_value=operator_raw,
-            generated_value=generated_raw,
-            warnings=tuple(warnings),
-        )
-
-    if route_value is not None:
-        if generated_value is None:
-            warnings.append(
-                f"{key} route policy for {route.route_id} is {route_value}, but "
-                f"{generated_label} does not emit it; run "
-                "jasper-audio-hardware-reconcile"
-            )
-        elif generated_value != route_value:
-            warnings.append(
-                f"{key} in {generated_label} is {generated_value}, but the "
-                f"{route.route_id} route policy is {route_value}; rerun "
-                "audio hardware reconcile"
-            )
-        return RuntimeSetting(
-            key=key,
+    return _resolve_layered_policy_int(
+        key=key,
+        policy=_PositiveIntPolicy(
             value=route_value,
             source_kind="route_policy",
             source=f"AudioRouteProfile:{route.route_id}",
-            unit="frames",
-            operator_value=operator_raw,
-            generated_value=generated_raw,
-            warnings=tuple(warnings),
-        )
-
-    if generated_value is not None and generated_value != DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES:
-        warnings.append(
-            f"{key} in {generated_label} is {generated_value}, but the active "
-            f"route has no content-buffer policy; stale generated value will "
-            f"override the packaged default {DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES}"
-        )
-    return RuntimeSetting(
-        key=key,
-        value=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
-        source_kind="packaged_default",
-        source="packaged systemd/outputd default",
-        unit="frames",
-        operator_value=operator_raw,
-        generated_value=generated_raw,
-        warnings=tuple(warnings),
+            name="route policy",
+            owner_id=route.route_id,
+            absent_detail="route has no content-buffer policy",
+            override_scope="route",
+            packaged_default=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
+            packaged_source="packaged systemd/outputd default",
+        ),
+        base_env=base_env,
+        override_env=override_env,
+        generated_env=generated_env,
+        base_label=base_label,
+        override_label=override_label,
+        generated_label=generated_label,
     )
 
 

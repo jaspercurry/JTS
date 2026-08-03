@@ -44,6 +44,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.airplay_mode import ENV_VAR, MODE_ENV_FILE, mode_from_env
+
 from ..control.restart_broker import manage_units
 from ._common import (
     begin_request,
@@ -64,9 +66,8 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
-MODE_FILE = "/var/lib/jasper/airplay_mode.env"
+MODE_FILE = MODE_ENV_FILE
 SHAIRPORT_RESTART_TIMEOUT_SEC = 36.0  # unit start+stop contract plus margin
-ENV_VAR = "JASPER_AIRPLAY_FREE_RUNNING"
 
 
 def _current_mode(path: str = MODE_FILE) -> str:
@@ -74,11 +75,7 @@ def _current_mode(path: str = MODE_FILE) -> str:
     env file is missing or holds an unrecognized value — synced is
     glitch-free on this chain since the resync_threshold fix and is
     the right default for video A/V sync + multi-room AirPlay."""
-    env = read_env_file(path)
-    val = env.get(ENV_VAR, "no").strip().lower()
-    if val in ("no", "false", "0"):
-        return "synced"
-    return "free-running"
+    return mode_from_env(read_env_file(path))
 
 
 def _apply_save(form: dict[str, str]) -> tuple[str | None, str | None]:

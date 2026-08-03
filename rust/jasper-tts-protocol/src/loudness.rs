@@ -23,6 +23,17 @@ pub const MIN_TTS_GAIN_DB: f32 = -60.0;
 const FULL_SCALE: f64 = 32768.0;
 const FULL_SCALE_SQ: f64 = FULL_SCALE * FULL_SCALE;
 const BS1770_OFFSET_DB: f64 = -0.691;
+/// BS.1770 K-weighting pre-filter coefficients, normalized to `a0 = 1`.
+pub const K_WEIGHTING_PRE_COEFFICIENTS: [f64; 5] = [
+    1.53512485958697,
+    -2.69169618940638,
+    1.19839281085285,
+    -1.69065929318241,
+    0.73248077421585,
+];
+/// BS.1770 RLB high-pass coefficients, normalized to `a0 = 1`.
+pub const K_WEIGHTING_RLB_COEFFICIENTS: [f64; 5] =
+    [1.0, -2.0, 1.0, -1.99004745483398, 0.99007225036621];
 const MOMENTARY_FRAMES: u64 = (SAMPLE_RATE as u64) * 400 / 1000;
 const SHORT_TERM_FRAMES: u64 = (SAMPLE_RATE as u64) * 3;
 const CONTENT_ANCHOR_FRAMES: u64 = (SAMPLE_RATE as u64) * 12;
@@ -333,12 +344,7 @@ impl AssistantLoudness {
         self.pending_context = None;
     }
 
-    pub fn decide_gain(
-        &mut self,
-        _kind: SegmentKind,
-        _fallback_gain_db: f32,
-        profile: Option<AssistantProfile>,
-    ) -> AssistantGainDecision {
+    pub fn decide_gain(&mut self, profile: Option<AssistantProfile>) -> AssistantGainDecision {
         let context = self.pending_context.clone();
         let observed_baseline_lufs =
             context
@@ -1003,15 +1009,11 @@ struct KWeightingChannel {
 
 impl KWeightingChannel {
     fn new() -> Self {
+        let [pre_b0, pre_b1, pre_b2, pre_a1, pre_a2] = K_WEIGHTING_PRE_COEFFICIENTS;
+        let [rlb_b0, rlb_b1, rlb_b2, rlb_a1, rlb_a2] = K_WEIGHTING_RLB_COEFFICIENTS;
         Self {
-            pre: Biquad::new(
-                1.53512485958697,
-                -2.69169618940638,
-                1.19839281085285,
-                -1.69065929318241,
-                0.73248077421585,
-            ),
-            rlb: Biquad::new(1.0, -2.0, 1.0, -1.99004745483398, 0.99007225036621),
+            pre: Biquad::new(pre_b0, pre_b1, pre_b2, pre_a1, pre_a2),
+            rlb: Biquad::new(rlb_b0, rlb_b1, rlb_b2, rlb_a1, rlb_a2),
         }
     }
 
@@ -1020,8 +1022,10 @@ impl KWeightingChannel {
     }
 }
 
+/// Allocation-free Direct-Form-I biquad shared by loudness metering and the
+/// output daemon's crossover filters. Coefficients are normalized (`a0 = 1`).
 #[derive(Debug, Clone, Copy)]
-struct Biquad {
+pub struct Biquad {
     b0: f64,
     b1: f64,
     b2: f64,
@@ -1034,7 +1038,7 @@ struct Biquad {
 }
 
 impl Biquad {
-    fn new(b0: f64, b1: f64, b2: f64, a1: f64, a2: f64) -> Self {
+    pub fn new(b0: f64, b1: f64, b2: f64, a1: f64, a2: f64) -> Self {
         Self {
             b0,
             b1,
@@ -1048,7 +1052,8 @@ impl Biquad {
         }
     }
 
-    fn process(&mut self, x0: f64) -> f64 {
+    #[inline]
+    pub fn process(&mut self, x0: f64) -> f64 {
         let y0 = self.b0 * x0 + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1
             - self.a2 * self.y2;
@@ -1096,6 +1101,19 @@ mod tests {
     }
 
     #[test]
+    fn bs1770_impulse_matches_cross_language_golden() {
+        // Shared with tests/test_assistant_loudness.py. This compact golden pins
+        // both coefficient sets, stereo energy summing, full-scale scaling, and
+        // the BS.1770 offset across the Rust runtime and Python profiler.
+        let mut meter = KWeightedWindow::new(256);
+        let mut samples = vec![0i16; 256 * (CHANNELS as usize)];
+        samples[0] = 1000;
+        samples[1] = 1000;
+        let lufs = meter.push_interleaved(&samples).unwrap();
+        assert!((lufs - -48.243_145).abs() < 0.000_01, "lufs={lufs}");
+    }
+
+    #[test]
     fn steady_tone_reports_plausible_loudness() {
         let mut meter = KWeightedWindow::new(SHORT_TERM_FRAMES);
         for _ in 0..3 {
@@ -1122,18 +1140,14 @@ mod tests {
             "marin".to_string(),
             -38.0,
         );
-        let decision = loudness.decide_gain(
-            SegmentKind::Assistant,
-            -12.0,
-            Some(AssistantProfile {
-                provider: "openai".to_string(),
-                model: "gpt-realtime-2".to_string(),
-                voice: "marin".to_string(),
-                source_lufs: Some(-25.0),
-                source_peak_dbfs: Some(-8.0),
-                confidence: 1.0,
-            }),
-        );
+        let decision = loudness.decide_gain(Some(AssistantProfile {
+            provider: "openai".to_string(),
+            model: "gpt-realtime-2".to_string(),
+            voice: "marin".to_string(),
+            source_lufs: Some(-25.0),
+            source_peak_dbfs: Some(-8.0),
+            confidence: 1.0,
+        }));
         assert_eq!(decision.target_lufs, -38.0);
         assert_eq!(decision.requested_gain_db, -13.0);
         assert_eq!(decision.final_gain_db, -13.0);
@@ -1153,18 +1167,14 @@ mod tests {
             "Aoede".to_string(),
             -30.0,
         );
-        let decision = loudness.decide_gain(
-            SegmentKind::Assistant,
-            -12.0,
-            Some(AssistantProfile {
-                provider: "gemini".to_string(),
-                model: "gemini-3.1".to_string(),
-                voice: "Aoede".to_string(),
-                source_lufs: Some(-35.0),
-                source_peak_dbfs: Some(-2.0),
-                confidence: 1.0,
-            }),
-        );
+        let decision = loudness.decide_gain(Some(AssistantProfile {
+            provider: "gemini".to_string(),
+            model: "gemini-3.1".to_string(),
+            voice: "Aoede".to_string(),
+            source_lufs: Some(-35.0),
+            source_peak_dbfs: Some(-2.0),
+            confidence: 1.0,
+        }));
         assert_eq!(decision.peak_cap_gain_db, -4.0);
         assert_eq!(decision.final_gain_db, -4.0);
         assert_eq!(decision.clamp_reason, "peak_cap");
@@ -1179,18 +1189,14 @@ mod tests {
             ..AssistantLoudnessConfig::default()
         });
 
-        let decision = loudness.decide_gain(
-            SegmentKind::Cue,
-            0.0,
-            Some(AssistantProfile {
-                provider: "openai".to_string(),
-                model: "gpt-4o-mini-tts".to_string(),
-                voice: "marin".to_string(),
-                source_lufs: Some(-24.0),
-                source_peak_dbfs: Some(-8.0),
-                confidence: 0.65,
-            }),
-        );
+        let decision = loudness.decide_gain(Some(AssistantProfile {
+            provider: "openai".to_string(),
+            model: "gpt-4o-mini-tts".to_string(),
+            voice: "marin".to_string(),
+            source_lufs: Some(-24.0),
+            source_peak_dbfs: Some(-8.0),
+            confidence: 0.65,
+        }));
 
         assert_eq!(decision.baseline_lufs, -41.0);
         assert_eq!(decision.target_lufs, -41.0);
@@ -1209,7 +1215,7 @@ mod tests {
             ..AssistantLoudnessConfig::default()
         });
 
-        let decision = loudness.decide_gain(SegmentKind::Cue, 0.0, None);
+        let decision = loudness.decide_gain(None);
 
         assert_eq!(decision.baseline_lufs, -41.0);
         assert_eq!(decision.target_lufs, -41.0);
@@ -1229,18 +1235,14 @@ mod tests {
             ..AssistantLoudnessConfig::default()
         });
 
-        let decision = loudness.decide_gain(
-            SegmentKind::Assistant,
-            0.0,
-            Some(AssistantProfile {
-                provider: "openai".to_string(),
-                model: "gpt-realtime-2".to_string(),
-                voice: "marin".to_string(),
-                source_lufs: Some(-1000.0),
-                source_peak_dbfs: Some(-1000.0),
-                confidence: 99.0,
-            }),
-        );
+        let decision = loudness.decide_gain(Some(AssistantProfile {
+            provider: "openai".to_string(),
+            model: "gpt-realtime-2".to_string(),
+            voice: "marin".to_string(),
+            source_lufs: Some(-1000.0),
+            source_peak_dbfs: Some(-1000.0),
+            confidence: 99.0,
+        }));
 
         assert!(!decision.calibrated);
         assert_eq!(decision.profile_confidence, 0.0);
@@ -1261,18 +1263,14 @@ mod tests {
             ..AssistantLoudnessConfig::default()
         });
 
-        let decision = loudness.decide_gain(
-            SegmentKind::Chirp,
-            0.0,
-            Some(AssistantProfile {
-                provider: "jts".to_string(),
-                model: "synthetic-listening-chirp".to_string(),
-                voice: "wake_start".to_string(),
-                source_lufs: Some(-15.0),
-                source_peak_dbfs: Some(-14.9),
-                confidence: 1.0,
-            }),
-        );
+        let decision = loudness.decide_gain(Some(AssistantProfile {
+            provider: "jts".to_string(),
+            model: "synthetic-listening-chirp".to_string(),
+            voice: "wake_start".to_string(),
+            source_lufs: Some(-15.0),
+            source_peak_dbfs: Some(-14.9),
+            confidence: 1.0,
+        }));
 
         assert_eq!(decision.provider, Some("jts".to_string()));
         assert_eq!(
@@ -1297,7 +1295,7 @@ mod tests {
             ..AssistantLoudnessConfig::default()
         });
 
-        let decision = loudness.decide_gain(SegmentKind::Chirp, 0.0, None);
+        let decision = loudness.decide_gain(None);
 
         assert_eq!(decision.baseline_lufs, -41.0);
         assert_eq!(decision.target_lufs, -41.0);
@@ -1357,8 +1355,7 @@ mod tests {
             -46.7,
             Some(context),
         );
-        let decision =
-            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let decision = loudness.decide_gain(Some(profile(-25.0, -30.0)));
 
         assert_eq!(decision.reference_kind, ReferenceKind::FirstUseFallback);
         assert!((decision.target_speaker_lufs.unwrap() - -46.7).abs() < 0.01);
@@ -1382,8 +1379,7 @@ mod tests {
             -41.0,
             Some(volume_context(-24.0, 0.0, -39.0, 1)),
         );
-        let decision =
-            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -30.0)));
+        let decision = loudness.decide_gain(Some(profile(-24.0, -30.0)));
 
         assert_eq!(decision.reference_kind, ReferenceKind::HeldAssistant);
         assert_eq!(decision.target_speaker_lufs, Some(-38.5));
@@ -1425,8 +1421,7 @@ mod tests {
             "marin".to_string(),
             -38.0,
         );
-        let decision =
-            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -12.0)));
+        let decision = loudness.decide_gain(Some(profile(-24.0, -12.0)));
         assert_eq!(decision.reference_kind, ReferenceKind::FirstUseFallback);
     }
 
@@ -1465,7 +1460,7 @@ mod tests {
         );
         assert_eq!(
             loudness
-                .decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -12.0)))
+                .decide_gain(Some(profile(-24.0, -12.0)))
                 .reference_kind,
             ReferenceKind::LiveContent
         );
@@ -1480,7 +1475,7 @@ mod tests {
         );
         assert_eq!(
             loudness
-                .decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -12.0)))
+                .decide_gain(Some(profile(-24.0, -12.0)))
                 .reference_kind,
             ReferenceKind::HeldContent
         );
@@ -1494,7 +1489,7 @@ mod tests {
         );
         assert_eq!(
             loudness
-                .decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -12.0)))
+                .decide_gain(Some(profile(-24.0, -12.0)))
                 .reference_kind,
             ReferenceKind::HeldAssistant
         );
@@ -1513,7 +1508,7 @@ mod tests {
             -41.0,
             Some(volume_context(-30.0, 0.0, -41.0, 1)),
         );
-        let first = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let first = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(first.envelope_offset_lu, Some(0.0));
         assert_eq!(first.target_speaker_lufs, Some(-41.0));
 
@@ -1528,7 +1523,7 @@ mod tests {
             "v".to_string(),
             -41.0,
         );
-        let second = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let second = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(second.envelope_offset_lu, Some(-8.0));
         assert_eq!(second.target_speaker_lufs, Some(-49.0));
 
@@ -1562,8 +1557,7 @@ mod tests {
             -41.0,
             Some(muted),
         );
-        let decision =
-            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let decision = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(
             loudness.complete_assistant_segment(&decision, decision.final_gain_db),
             None
@@ -1586,8 +1580,7 @@ mod tests {
             "v".to_string(),
             -41.0,
         );
-        let decision =
-            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let decision = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(decision.reference_kind, ReferenceKind::LiveContent);
         assert_eq!(
             loudness.complete_assistant_segment(&decision, decision.final_gain_db),
@@ -1609,8 +1602,7 @@ mod tests {
             -41.0,
             Some(volume_context(-30.0, -30.0, -41.0, 1)),
         );
-        let decision =
-            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-24.0, -12.0)));
+        let decision = loudness.decide_gain(Some(profile(-24.0, -12.0)));
         loudness.update_volume_context(volume_context(-24.0, -24.0, -39.44, 2));
         assert!((loudness.live_gain_delta_db(&decision) - -4.44).abs() < 0.01);
 
@@ -1635,8 +1627,7 @@ mod tests {
             -41.0,
             Some(volume_context(-30.0, -30.0, -41.0, 1)),
         );
-        let decision =
-            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let decision = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(decision.reference_kind, ReferenceKind::FirstUseFallback);
         assert_eq!(decision.target_speaker_lufs, Some(-41.0));
         assert_eq!(decision.target_lufs, -41.0);
@@ -1650,7 +1641,7 @@ mod tests {
             -35.0,
             Some(volume_context(-30.0, -30.0, -35.0, 2)),
         );
-        let louder = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let louder = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(louder.target_lufs, -35.0);
 
         // Canonical user-delta is still tracked through a held-content
@@ -1667,7 +1658,7 @@ mod tests {
             (SAMPLE_RATE as usize) / 2 * (CHANNELS as usize)
         ]);
         held.prepare_context("o".to_string(), "m".to_string(), "v".to_string(), -41.0);
-        let at_low = held.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let at_low = held.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(at_low.reference_kind, ReferenceKind::HeldContent);
 
         held.update_volume_context(volume_context(-24.0, -30.0, -41.0, 2));
@@ -1676,7 +1667,7 @@ mod tests {
             (SAMPLE_RATE as usize) / 2 * (CHANNELS as usize)
         ]);
         held.prepare_context("o".to_string(), "m".to_string(), "v".to_string(), -41.0);
-        let at_high = held.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let at_high = held.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(at_high.reference_kind, ReferenceKind::HeldContent);
         assert!(
             (at_high.target_lufs - at_low.target_lufs - 6.0).abs() < 0.01,
@@ -1713,7 +1704,7 @@ mod tests {
                 Some(ctx),
             );
             loudness
-                .decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)))
+                .decide_gain(Some(profile(-25.0, -30.0)))
                 .final_gain_db
         };
         let pre = decide(MixStage::PreDsp);
@@ -1734,7 +1725,7 @@ mod tests {
             -41.0,
             Some(volume_context(-30.0, -30.0, -41.0, 1)),
         );
-        let first = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let first = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(first.reference_kind, ReferenceKind::FirstUseFallback);
         assert_eq!(first.target_speaker_lufs, Some(-41.0));
 
@@ -1755,7 +1746,7 @@ mod tests {
             -41.0,
             Some(volume_context(-30.0, -30.0, -41.0, 2)),
         );
-        let second = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        let second = loudness.decide_gain(Some(profile(-25.0, -30.0)));
         assert_eq!(second.reference_kind, ReferenceKind::HeldAssistant);
         assert_eq!(second.envelope_offset_lu, Some(-4.0));
         assert_eq!(second.target_speaker_lufs, Some(-45.0));
@@ -1928,21 +1919,17 @@ mod tests {
             "marin".to_string(),
             -41.0,
         );
-        let first = loudness.decide_gain(
-            SegmentKind::Assistant,
-            -6.0,
-            Some(AssistantProfile {
-                provider: "openai".to_string(),
-                model: "gpt-realtime-2".to_string(),
-                voice: "marin".to_string(),
-                source_lufs: Some(-25.0),
-                source_peak_dbfs: Some(-8.0),
-                confidence: 1.0,
-            }),
-        );
+        let first = loudness.decide_gain(Some(AssistantProfile {
+            provider: "openai".to_string(),
+            model: "gpt-realtime-2".to_string(),
+            voice: "marin".to_string(),
+            source_lufs: Some(-25.0),
+            source_peak_dbfs: Some(-8.0),
+            confidence: 1.0,
+        }));
         loudness.clear_context();
         loudness.observe_content_period(&vec![0i16; content.len()]);
-        let second = loudness.decide_gain(SegmentKind::Cue, 0.0, None);
+        let second = loudness.decide_gain(None);
         vec![first, second]
     }
 

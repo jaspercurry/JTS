@@ -8,18 +8,7 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 from jasper.tools.spotify import make_spotify_tools
-
-
-class FakeRenderer:
-    def __init__(self, renderers=None, currentsong=None) -> None:
-        self._renderers = renderers or {}
-        self._currentsong = currentsong or {}
-
-    async def active_renderers(self) -> dict:
-        return self._renderers
-
-    async def get_currentsong(self) -> dict:
-        return self._currentsong
+from tests._spotify_tool_fakes import FakeAccountClient, FakeRenderer, FakeRouter
 
 
 class FakeSpotify:
@@ -164,61 +153,6 @@ class FakeSpotify:
             self._playlist_tracks = {}
         self._playlist_tracks[playlist_id] = tracks
         return self
-
-
-class FakeAccountClient:
-    def __init__(self, name: str, sp, playlists=None) -> None:
-        self.account = MagicMock()
-        self.account.name = name
-        # Real dict so `dict(ac.account.playlists)` round-trips. Without
-        # this, MagicMock auto-creates a child mock and dict() barfs.
-        self.account.playlists = playlists if playlists is not None else {}
-        self.sp = sp
-
-
-class FakeRouter:
-    def __init__(
-        self, transport_match=None, active_account=None,
-        empty_reason: str = "no_accounts",
-        rebuild_clients=None,
-        revoked_names=None,
-    ) -> None:
-        self._transport_match = transport_match
-        self._active_account = active_account
-        self.clients = {"jasper": active_account or transport_match} if (
-            active_account or transport_match
-        ) else {}
-        self._empty_reason = empty_reason
-        # When set, refresh_if_empty() drops these into self.clients
-        # so the test can simulate "wizard re-link landed mid-call".
-        self._rebuild_clients = rebuild_clients
-        self._revoked_names = list(revoked_names or [])
-        self.refresh_calls = 0
-
-    async def resolve_for_transport(self, client_name: str, title: str):
-        return self._transport_match
-
-    async def active(self, *, airplay_active: bool):
-        return self._active_account
-
-    async def refresh_if_empty(self) -> bool:
-        self.refresh_calls += 1
-        if self.clients:
-            return True
-        if self._rebuild_clients:
-            self.clients = dict(self._rebuild_clients)
-            # If a rebuild populated clients, also expose them via
-            # active() so the next call resolves cleanly.
-            if not self._active_account:
-                self._active_account = next(iter(self.clients.values()))
-            return True
-        return False
-
-    def empty_reason(self) -> str:
-        return "" if self.clients else self._empty_reason
-
-    def revoked_account_names(self) -> list:
-        return list(self._revoked_names)
 
 
 def _by_name(tools):

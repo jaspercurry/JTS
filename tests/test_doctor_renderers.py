@@ -1,0 +1,811 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unit tests for the jasper-doctor renderers domain."""
+
+from pathlib import Path
+from types import SimpleNamespace
+
+
+from jasper.cli import doctor
+
+
+from .doctor_test_support import (
+    _grouping_cfg,
+)
+
+
+def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
+    """Read a synthetic shairport-sync.conf instead of the host file."""
+    target = tmp_path / "shairport-sync.conf"
+    target.write_text(conf_text)
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/shairport-sync.conf":
+            return target
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+
+
+def test_check_bluetooth_pairing_policy_ok(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
+                ),
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=("\tPowered: yes\n\tDiscoverable: no\n\tPairable: no\n"),
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "ok"
+    assert "no-code agent active" in r.detail
+    assert "closed" in r.detail
+
+
+def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        assert cmd[:3] == ["systemctl", "show", "bt-agent.service"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "ActiveState=active\n"
+                "SubState=running\n"
+                "ExecStart={ path=/usr/bin/bt-agent ; }\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "fail"
+    assert "not the JTS no-code agent" in r.detail
+
+
+def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
+                ),
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=("\tPowered: yes\n\tDiscoverable: no\n\tPairable: yes\n"),
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "warn"
+    assert "Pairable=yes outside an open pairing window" in r.detail
+
+
+def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
+                ),
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=("\tPowered: yes\n\tDiscoverable: yes\n\tPairable: yes\n"),
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "warn"
+    assert "pairing window open" in r.detail
+
+
+def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
+    """Canonical fan-in wiring: AirPlay targets its private lane."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "shairport_substream";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "ok"
+    assert "shairport_substream" in r.detail
+
+
+def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
+    """The retired renderer-dmix device is now a hard drift signal."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "jasper_renderer_in";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "fail"
+    assert "retired dmix" in r.detail
+
+
+def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
+    monkeypatch,
+    tmp_path,
+):
+    """Pre-PR-#214 wiring: output_device still points at the bare
+    loopback. Doctor warns and tells the user to redeploy. This is
+    the legacy-but-functional path, not a hard failure."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "plughw:Loopback,0,0";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "warn"
+    assert "plughw:Loopback" in r.detail
+    assert "redeploy" in r.detail.lower() or "deploy-to-pi" in r.detail
+
+
+def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
+    """Raw `hw:Loopback,0,0` bypasses plug entirely. shairport requests
+    44.1 kHz and snd-aloop is locked at 48 kHz → silent rejection.
+    This is the hard-fail case."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "hw:Loopback,0,0";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "fail"
+
+
+def test_shairport_check_missing_output_device_warns(monkeypatch, tmp_path):
+    """A conf without an output_device line at all means shairport is
+    using its own default — almost certainly wrong on this host."""
+    _patch_shairport_conf(
+        monkeypatch,
+        "alsa = {\n    output_rate = 44100;\n};\n",
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "warn"
+    assert "no `output_device`" in r.detail
+
+
+def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
+    """// comments referencing plughw:Loopback (e.g. PR-history notes
+    in the template) must not bait the check into reporting `ok` when
+    the active line says something else."""
+    conf = (
+        "alsa = {\n"
+        "    // Pre-2026-05-22 this was plughw:Loopback,0,0 directly\n"
+        '    output_device = "shairport_substream";\n'
+        "};\n"
+    )
+    _patch_shairport_conf(monkeypatch, conf, tmp_path)
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "ok"
+
+
+# ---- renderer ALSA device resolvable (PR #223 — the bug-class catch) ---
+
+# These tests mock the parse helpers + the systemd-user lookup + the
+# probe subprocess. They don't actually shell out — we're testing the
+# orchestration, not aplay. The integration angle (does aplay actually
+# open the device?) only meaningfully runs on the Pi via `jasper-doctor`.
+
+
+def test_renderer_resolvable_all_ok(monkeypatch):
+    """Happy path: every renderer has a discoverable device and the
+    probe succeeds for each."""
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_substream"
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_bluealsa", lambda: "bluealsa_substream"
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_systemd_user_for",
+        lambda unit: {
+            "shairport-sync.service": "shairport-sync",
+            "librespot.service": "pi",
+            "bluealsa-aplay.service": None,  # root
+        }[unit],
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_probe_open_as_user", lambda dev, user: (True, "")
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    assert "shairport-sync(shairport-sync)→shairport_substream" in r.detail
+    assert "librespot(pi)→librespot_substream" in r.detail
+    assert "bluealsa-aplay(root)→bluealsa_substream" in r.detail
+
+
+def test_renderer_resolvable_accepts_busy_private_fanin_lane(monkeypatch):
+    """An active renderer already owns its private lane, so a second
+    aplay probe can return EBUSY. That is not an Unknown-PCM failure."""
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+    )
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_probe_open_as_user",
+        lambda dev, user: (False, "Device or resource busy"),
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_fanin_lane_busy_owner_matches",
+        lambda dev, unit: (True, "busy/owned pid=123"),
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    assert "busy/owned" in r.detail
+
+
+def test_renderer_resolvable_rejects_busy_lane_owned_by_wrong_unit(monkeypatch):
+    """EBUSY is okay only when /proc shows the expected renderer owns
+    the private fan-in lane."""
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+    )
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_probe_open_as_user",
+        lambda dev, user: (False, "Device or resource busy"),
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_fanin_lane_busy_owner_matches",
+        lambda dev, unit: (False, "busy but owner pid=999 cgroup='other.service'"),
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "fail"
+    assert "other.service" in r.detail
+
+
+def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
+    """The exact bug PR #223 fixes: configs look right, services look
+    active, but shairport-sync's runtime user can't open the device.
+    Pre-#223 the doctor missed this entirely. This test pins that the
+    new check would have caught it."""
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_substream"
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_bluealsa", lambda: "bluealsa_substream"
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_systemd_user_for",
+        lambda unit: {
+            "shairport-sync.service": "shairport-sync",
+            "librespot.service": "pi",
+            "bluealsa-aplay.service": None,
+        }[unit],
+    )
+
+    # Simulate the bug: as shairport-sync user, the open fails with
+    # the canonical "Unknown PCM" pattern. Root + pi (somehow) succeed
+    # — only shairport-sync fails. Doctor must still fail-the-check.
+    def fake_probe(dev, user):
+        if user == "shairport-sync":
+            return (False, "ALSA lib pcm.c:2722: Unknown PCM shairport_substream")
+        return (True, "")
+
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
+
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "fail"
+    assert "shairport-sync" in r.detail
+    assert "Unknown PCM" in r.detail
+    # The actionable hint should mention the fix path.
+    assert "/etc/asound.conf" in r.detail
+
+
+def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
+    """Failure details must name the failing user — that's the key
+    diagnostic for any "device works as root, fails as non-root" bug
+    of which the PR #214 regression is the canonical example."""
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_shairport", lambda: "weird-device"
+    )
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_probe_open_as_user", lambda d, u: (False, "open failed")
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "fail"
+    assert "(shairport-sync)" in r.detail
+
+
+def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
+    """A stripped image without all renderers installed should
+    `ok` for what works, `warn` only if nothing was probeable."""
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+    )
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_probe_open_as_user", lambda d, u: (True, "")
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    assert "shairport-sync" in r.detail
+    # Skipped renderers should be mentioned (informational).
+    assert "skipped" in r.detail.lower()
+
+
+def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
+    """If literally nothing is configured, no audio path exists —
+    surface as warn, not fail (could be a doctor-only image)."""
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "warn"
+
+
+def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
+    """Operator overrides can still use `${VAR}` device indirection.
+    The doctor's check must resolve those env vars via `systemctl show
+    -p Environment` before probing, otherwise it false-positives with
+    'Unknown PCM ${JASPER_LIBRESPOT_DEVICE}'."""
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
+    )  # already literal
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_renderer_device_librespot",
+        lambda: "${JASPER_LIBRESPOT_DEVICE}",
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_renderer_device_bluealsa",
+        lambda: "${JASPER_BLUEALSA_DEVICE}",
+    )
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_systemd_user_for",
+        lambda unit: {
+            "shairport-sync.service": "shairport-sync",
+            "librespot.service": "pi",
+            "bluealsa-aplay.service": None,
+        }[unit],
+    )
+
+    # Mock _resolve_systemd_env_vars to simulate systemd returning
+    # operator-supplied fan-in lane names.
+    def fake_resolve(device, unit):
+        env = {
+            "librespot.service": {
+                "JASPER_LIBRESPOT_DEVICE": "librespot_substream",
+            },
+            "bluealsa-aplay.service": {
+                "JASPER_BLUEALSA_DEVICE": "bluealsa_substream",
+            },
+        }.get(unit, {})
+        import re
+
+        return re.sub(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+            lambda m: env.get(m.group(1), m.group(0)),
+            device,
+        )
+
+    monkeypatch.setattr(doctor.renderers, "_resolve_systemd_env_vars", fake_resolve)
+
+    # Probe sees the RESOLVED device — record what it gets called with.
+    received: list[str] = []
+
+    def fake_probe(device, user):
+        received.append(device)
+        return (True, "")
+
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
+
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    # Probe must have been called with the RESOLVED value, not the
+    # literal ${VAR} string.
+    assert "librespot_substream" in received
+    assert "bluealsa_substream" in received
+    assert "${JASPER_LIBRESPOT_DEVICE}" not in received
+    assert "${JASPER_BLUEALSA_DEVICE}" not in received
+    # Detail should show both literal and resolved when they differ,
+    # so the operator can see env-var resolution at a glance.
+    assert "from ${JASPER_LIBRESPOT_DEVICE}" in r.detail
+    assert "from ${JASPER_BLUEALSA_DEVICE}" in r.detail
+    # And the shairport literal (no `${`) is shown unchanged.
+    assert "(shairport-sync)→shairport_substream" in r.detail
+    assert "(from " not in r.detail.split("shairport-sync(")[1].split(";")[0]
+
+
+def test_resolve_systemd_env_vars_no_op_when_no_placeholder():
+    """Strings without ${VAR} pass through unchanged — avoids the
+    subprocess call entirely."""
+    assert (
+        doctor._resolve_systemd_env_vars("librespot_substream", "librespot.service")
+        == "librespot_substream"
+    )
+    assert (
+        doctor._resolve_systemd_env_vars("hw:Loopback,0,0", "any.service")
+        == "hw:Loopback,0,0"
+    )
+
+
+def test_resolve_systemd_env_vars_returns_original_on_failure(monkeypatch):
+    """If systemctl is unavailable / errors, return the original
+    string unchanged. The caller's aplay probe will then fail with
+    a clear 'Unknown PCM ${VAR}' message — explicit failure beats
+    silent wrong-value substitution."""
+    import subprocess as sp
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("systemctl missing")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    # The function should swallow the error and return the input.
+    assert (
+        doctor._resolve_systemd_env_vars(
+            "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
+        )
+        == "${JASPER_LIBRESPOT_DEVICE}"
+    )
+
+
+# ---- renderer device parsers ----------------------------------------
+
+
+def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
+    """shairport-sync.conf uses libconfig syntax. Parser must handle
+    double quotes, leading whitespace, and ignore // comments."""
+    conf = tmp_path / "shairport-sync.conf"
+    conf.write_text(
+        "alsa = {\n"
+        "    // Pre-2026-05-23 this was plughw:Loopback,0,0\n"
+        '    output_device = "shairport_substream";\n'
+        "};\n"
+    )
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/shairport-sync.conf":
+            return conf
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    assert doctor._renderer_device_shairport() == "shairport_substream"
+
+
+def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
+    """librespot.service has a multi-line ExecStart= with backslash
+    continuations. Parser must handle line joining and grab --device."""
+    unit = tmp_path / "librespot.service"
+    unit.write_text(
+        "[Service]\n"
+        "ExecStart=/usr/bin/librespot \\\n"
+        "    --name JTS \\\n"
+        "    --backend alsa \\\n"
+        "    --device librespot_substream \\\n"
+        "    --format S24_3\n"
+    )
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/systemd/system/librespot.service":
+            return unit
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    assert doctor._renderer_device_librespot() == "librespot_substream"
+
+
+def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
+    """bluealsa-aplay's device is configured via a drop-in's --pcm= flag."""
+    dropin_dir = tmp_path / "bluealsa-aplay.service.d"
+    dropin_dir.mkdir()
+    dropin = dropin_dir / "jts-output.conf"
+    dropin.write_text(
+        "[Service]\n"
+        "ExecStart=\n"
+        "ExecStart=/usr/bin/bluealsa-aplay -S --pcm=bluealsa_substream\n"
+    )
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/systemd/system/bluealsa-aplay.service.d/jts-output.conf":
+            return dropin
+        # The other candidate (override.conf) should not exist for this test.
+        if arg == "/etc/systemd/system/bluealsa-aplay.service.d/override.conf":
+            return tmp_path / "does-not-exist"
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
+    assert doctor._renderer_device_bluealsa() == "bluealsa_substream"
+
+
+def test_renderer_checks_read_parked_on_bonded_follower(monkeypatch):
+    """The dumb-follower profile deliberately stops the renderer stack —
+    every liveness check for a parked unit must read ok/'parked', never
+    fail against intended state. Driven through the real shared
+    predicate with only the grouping config patched."""
+    import jasper.multiroom.config as mr_config
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(
+        mr_config,
+        "load_config",
+        lambda *a, **k: _grouping_cfg(
+            enabled=True,
+            role="follower",
+            channel="right",
+            bond_id="b",
+            leader_addr="jts.local",
+        ),
+    )
+    checks = [
+        lambda: rdoc.check_librespot_running(None),
+        rdoc.check_shairport_sync_ap2,
+        rdoc.check_nqptp_running,
+        rdoc.check_jasper_mux,
+        rdoc.check_bluealsa,
+    ]
+    for check in checks:
+        r = check()
+        assert r.status == "ok", r
+        assert "parked (bonded follower)" in r.detail
+
+
+def test_renderer_checks_probe_normally_when_solo(monkeypatch):
+    """The parked skip must vanish on a solo speaker — a dead librespot
+    is a real failure there. (Fail-open contract of the predicate.)"""
+    import jasper.multiroom.config as mr_config
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(
+        mr_config,
+        "load_config",
+        lambda *a, **k: _grouping_cfg(enabled=False),
+    )
+    monkeypatch.setattr(rdoc.os.path, "isfile", lambda p: False)
+    r = rdoc.check_librespot_running(None)
+    assert r.status == "fail"  # binary missing probes through, no skip
+
+
+def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
+    """Intentional Off is desired state, not a dead-renderer incident."""
+    from jasper.cli.doctor import renderers as rdoc
+    from jasper.source_intent import BluetoothRfkillState
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
+    monkeypatch.setattr(
+        rdoc,
+        "_run",
+        lambda cmd: SimpleNamespace(
+            returncode=3,
+            stdout="Powered: no\n"
+            if cmd[:2] == ["bluetoothctl", "show"]
+            else "inactive\n",
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        rdoc,
+        "read_bluetooth_rfkill_state",
+        lambda: BluetoothRfkillState(True, True, False),
+    )
+
+    checks = (
+        lambda: rdoc.check_librespot_running(None),
+        rdoc.check_shairport_sync_ap2,
+        rdoc.check_bluealsa,
+        rdoc.check_bluetooth_pairing_policy,
+    )
+    for check in checks:
+        result = check()
+        assert result.status == "ok", result
+        assert "intentionally off" in result.detail
+
+
+def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
+    monkeypatch.setattr(
+        rdoc,
+        "_run",
+        lambda cmd: SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+    )
+    result = rdoc.check_librespot_running(None)
+
+    assert result.status == "fail"
+    assert "intent is off" in result.detail
+    assert "librespot.service is still active" in result.detail
+
+
+def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+
+    def invalid(_source):
+        raise RuntimeError("bad source intent")
+
+    monkeypatch.setattr(rdoc, "source_intent_enabled", invalid)
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "fail"
+    assert "bad source intent" in result.detail
+
+
+def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
+    monkeypatch,
+):
+    from jasper.cli.doctor import renderers as rdoc
+    from jasper.source_intent import BluetoothRfkillState
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(
+        rdoc,
+        "read_bluetooth_rfkill_state",
+        lambda: BluetoothRfkillState(True, True, False),
+    )
+    monkeypatch.setattr(
+        rdoc,
+        "_run",
+        lambda cmd: SimpleNamespace(
+            returncode=0,
+            stdout="Powered: no\n",
+            stderr="",
+        ),
+    )
+
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "fail"
+    assert "source intent is on" in result.detail
+    assert "soft blocked" in result.detail
+    assert "Powered: no" in result.detail
+
+
+def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+    from jasper.source_intent import BluetoothRfkillState
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(
+        rdoc,
+        "read_bluetooth_rfkill_state",
+        lambda: BluetoothRfkillState(True, False, False),
+    )
+
+    def run(cmd):
+        stdout = "Powered: yes\n" if cmd[0] == "bluetoothctl" else "active\n"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(rdoc, "_run", run)
+
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "ok"
+    assert "daemon + aplay active" in result.detail
+
+
+def test_bluealsa_desired_on_fails_when_rfkill_is_unreadable(monkeypatch):
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
+
+    def unreadable_rfkill():
+        raise RuntimeError("rfkill unavailable")
+
+    monkeypatch.setattr(rdoc, "read_bluetooth_rfkill_state", unreadable_rfkill)
+
+    result = rdoc.check_bluealsa()
+
+    assert result.status == "fail"
+    assert "cannot be verified" in result.detail
+    assert "rfkill unavailable" in result.detail
+
+
+def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
+    """PR-B: voice + the AEC stack park on a bonded follower — the
+    bridge/mic liveness checks must read parked, never fail against
+    intended state."""
+    import jasper.multiroom.config as mr_config
+    from jasper.cli.doctor import aec as adoc
+    from jasper.cli.doctor import audio as audoc
+
+    monkeypatch.setattr(
+        mr_config,
+        "load_config",
+        lambda *a, **k: _grouping_cfg(
+            enabled=True,
+            role="follower",
+            channel="right",
+            bond_id="b",
+            leader_addr="jts.local",
+        ),
+    )
+    from jasper.cli.doctor import renderers as rdoc
+
+    checks = [
+        adoc.check_aec_bridge_running,
+        adoc.check_aec_bridge_output_health,
+        adoc.check_aec_bridge_dtln_engine,
+        adoc.check_audio_profile_runtime,
+        lambda: audoc.check_mic_card_matches_config(None),
+        lambda: audoc.check_mic_capture(None),
+        # Caught LIVE by the first on-pair doctor run after PR-B
+        # deployed: these three probed parked units and read fail/warn
+        # against intended state.
+        rdoc.check_bluetooth_pairing_policy,
+        lambda: rdoc.check_spotify_connect_device(None),
+    ]
+    for check in checks:
+        r = check()
+        assert r.status == "ok", r
+        assert "parked (bonded follower)" in r.detail

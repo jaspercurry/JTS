@@ -156,13 +156,13 @@ box converges to it on the next deploy. This section is the single reference for
 | Camilla ring-emit chunksize | `128` | `RING_CAMILLA_CHUNKSIZE` (`fanin_coupling.py`), emitted by `emit_flat_ring_config` |
 | Camilla ring-emit target_level | `128` | `RING_CAMILLA_TARGET_LEVEL` |
 | Camilla ring-emit queuelimit | `1` | `RING_CAMILLA_QUEUELIMIT` |
-| Camilla ring-emit `enable_rate_adjust` | `false` | one-clock ring: rate_adjust off (see `jasper/ring_negotiation.py` + HANDOFF-usb-low-latency.md "conservation law") |
+| Camilla ring-emit `enable_rate_adjust` | `false` | one-clock ring: rate_adjust off (see the CI model in `tests/_ring_negotiation_model.py` + HANDOFF-usb-low-latency.md "conservation law") |
 
-The emitter↔ioplug geometry compatibility is pinned by the source-derived model
-in [`jasper/ring_negotiation.py`](../jasper/ring_negotiation.py) (three layers:
-ioplug constraints from `pcm_jts_ring.c`, ALSA `*_near` clamping, and
-CamillaDSP 4.1.3 acceptance predicates) — a chunk/slot mismatch fails CI with a
-named reason rather than crash-looping CamillaDSP on deploy.
+The emitter↔ioplug geometry compatibility is pinned by the source-derived CI
+model in [`tests/_ring_negotiation_model.py`](../tests/_ring_negotiation_model.py)
+(three layers: ioplug constraints from `pcm_jts_ring.c`, ALSA `*_near`
+clamping, and CamillaDSP 4.1.3 acceptance predicates) — a chunk/slot mismatch
+fails CI with a named reason rather than crash-looping CamillaDSP on deploy.
 
 ### Host-clock combo (armed by the auto-pass on eligible gadget boxes — PR #1173)
 

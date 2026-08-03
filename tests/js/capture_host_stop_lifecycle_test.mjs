@@ -64,6 +64,7 @@ const recorder = {
 let uploads = 0;
 const injected = `
 const acceptedAcknowledgement = () => null;
+const setText = (node, text) => { node.textContent = typeof text === "string" ? text : ""; };
 const createMonoRecorder = async () => globalThis.__recorder;
 const delayMs = async () => {};
 const rmsToDbfs = (rms) => Number(rms) > 0 ? 20 * Math.log10(Number(rms)) : -120;

@@ -30,7 +30,8 @@ cargo test
 
 Hardware-free unit tests only. Integration tests (the systemd unit
 shape, the asoundrc references, the doctor checks) live in the Python
-pytest suite under `tests/test_fanin_*.py` and `tests/test_doctor.py`.
+pytest suite under `tests/test_fanin_*.py` and
+`tests/test_doctor_audio_runtime.py`.
 
 ## Status
 

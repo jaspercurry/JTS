@@ -149,3 +149,20 @@ def test_deliberately_unlogged_allowlist_is_not_stale():
             f"{key[0]}.{key[1]} now emits an event= log — remove it from "
             "DELIBERATELY_UNLOGGED (it's audited; no allowlist needed)."
         )
+
+
+def test_correction_event_literals_use_dotted_domain_names():
+    tree = ast.parse((WEB_DIR / "correction_setup.py").read_text())
+    flat = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if name != "log_event" or len(node.args) < 2:
+            continue
+        event = node.args[1]
+        if isinstance(event, ast.Constant) and isinstance(event.value, str):
+            if "." not in event.value:
+                flat.append((node.lineno, event.value))
+    assert flat == []

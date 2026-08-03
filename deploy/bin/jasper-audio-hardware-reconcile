@@ -41,6 +41,7 @@ NO_RESTART=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
+ALSA_CARD_LIB="${JASPER_ALSA_CARD_LIB:-}"
 
 # Shared quoting helper (jasper_env_quote_value) — single
 # implementation for both reconcilers so the PR #534 bash-%q
@@ -95,6 +96,22 @@ load_asound_render_lib() {
     source "$ASOUND_RENDER_LIB"
 }
 
+load_alsa_card_lib() {
+    if [[ -z "$ALSA_CARD_LIB" ]]; then
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-alsa-card.sh" ]]; then
+            ALSA_CARD_LIB="${SCRIPT_DIR}/../lib/jasper-alsa-card.sh"
+        else
+            ALSA_CARD_LIB="/usr/local/lib/jasper/jasper-alsa-card.sh"
+        fi
+    fi
+    if [[ ! -r "$ALSA_CARD_LIB" ]]; then
+        echo "jasper-audio-hardware-reconcile: missing ALSA-card library: ${ALSA_CARD_LIB}" >&2
+        exit 66
+    fi
+    # shellcheck source=deploy/lib/jasper-alsa-card.sh
+    source "$ALSA_CARD_LIB"
+}
+
 usage() {
     cat <<'EOF'
 Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env] [--no-restart]
@@ -138,6 +155,7 @@ done
 
 load_env_file_lib
 load_asound_render_lib
+load_alsa_card_lib
 
 # Quoting is the shared lib's jasper_env_quote_value (sourced by
 # load_env_file_lib above); this thin alias keeps print_env readable.
@@ -152,13 +170,7 @@ log_event() {
 }
 
 find_card() {
-    local regex="$1"
-    "$APLAY" -L 2>/dev/null \
-        | grep -B1 -iE "$regex" \
-        | grep -oE 'CARD=[^,]+' \
-        | head -1 \
-        | sed 's/CARD=//' \
-        || true
+    jasper_find_alsa_card "$APLAY" "$1"
 }
 
 observe_output_hardware_state() {

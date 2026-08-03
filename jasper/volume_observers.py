@@ -51,6 +51,7 @@ from typing import Optional
 
 from . import librespot_state
 from .bluealsa_probe import active_transport_path
+from .busctl import run_busctl
 from .volume_coordinator import (
     AIRPLAY_DB_MAX,
     AIRPLAY_DB_MIN,
@@ -293,8 +294,7 @@ class VolumeObserver:
 
 
 # ----------------------------------------------------------------------
-# DBus helpers — re-used from coordinator's pattern. Subprocess+busctl
-# is the proven low-dep approach in this codebase.
+# DBus helpers — protocol parsing stays local; subprocess lifecycle is shared.
 # ----------------------------------------------------------------------
 
 async def _busctl_get_property_value(
@@ -307,17 +307,14 @@ async def _busctl_get_property_value(
 ) -> Optional[str]:
     """Run `busctl get-property` and return the raw stdout, or None
     on any error. Caller parses the typed-variant value."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", bus, "get-property",
-            bus_name, object_path, interface, prop,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl get-property %s.%s failed: %s", interface, prop, e)
+    result = await run_busctl(
+        "get-property",
+        bus_name, object_path, interface, prop,
+        bus=bus,
+    )
+    if result is None:
+        logger.debug("busctl get-property %s.%s failed", interface, prop)
         return None
-    if proc.returncode != 0:
+    if result.returncode != 0:
         return None
-    return stdout.decode("utf-8", "replace").strip()
+    return result.stdout.decode("utf-8", "replace").strip()

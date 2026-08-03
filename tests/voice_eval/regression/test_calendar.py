@@ -40,31 +40,14 @@ from __future__ import annotations
 
 import pytest
 
+from tests.voice_eval.regression._guards import require_google
+
 
 PASS_K = 3
 
 
 def _require_google(harness) -> None:
-    """Skip cleanly unless Google is configured with at least one
-    linked account. Mirrors the daemon's gate in `_build_registry`
-    (CLIENT_ID/SECRET present AND an account linked) and the
-    subway/citibike `cfg.*_enabled` skip idiom — when the backing
-    accessor isn't usable, the tools aren't registered, so the model
-    can't call them and the scenario would fail on the trajectory
-    assertion for an environment reason, not a code bug."""
-    clients = harness.test_state.get("google_clients")
-    if clients is None:
-        pytest.skip(
-            "voice-eval: Google not configured (no GOOGLE_CLIENT_ID / "
-            "GOOGLE_CLIENT_SECRET) — calendar tools not registered. Set "
-            "the env + link an account at jts.local/google to run this.",
-        )
-    if not clients.list_account_names():
-        pytest.skip(
-            "voice-eval: Google CLIENT_ID/SECRET set but no account "
-            "linked — calendar tools not registered. Link one at "
-            "jts.local/google to run this scenario.",
-        )
+    require_google(harness, product="Calendar")
 
 
 @pytest.mark.parametrize("trial", range(PASS_K))

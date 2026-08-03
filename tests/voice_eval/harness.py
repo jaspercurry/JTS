@@ -245,7 +245,7 @@ def _build_test_registry(
     volume_persistence = VolumePersistence(cfg.volume_state_path)
     renderer = RendererClient(librespot_state_path=cfg.librespot_state_path)
     try:
-        from jasper.voice_daemon import _build_router
+        from jasper.voice.daemon_main import _build_router
         router = _build_router(cfg)
     except Exception as e:  # noqa: BLE001
         logger.warning("voice-eval: spotify router build failed: %r", e)
@@ -612,7 +612,7 @@ class VoiceEvalHarness:
                 return self._connection
             # Import lazily so module-import-time doesn't pull the whole
             # daemon graph (which costs ~1s of cold imports).
-            from jasper.voice_daemon import (
+            from jasper.voice.daemon_main import (
                 _build_system_instruction,
                 _make_connection,
             )

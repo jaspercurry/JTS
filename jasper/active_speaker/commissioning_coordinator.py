@@ -13,11 +13,11 @@ is and how failure evidence should be presented to a household.
 
 from __future__ import annotations
 
-import math
 from typing import Any, Mapping
 
 from jasper.output_topology import OutputTopology, channel_identity_report
 
+from ._common import finite_float as _finite_float
 from .measurement import active_summed_targets
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 
@@ -185,14 +185,6 @@ def _latest(mapping: Any, key: str) -> Mapping[str, Any]:
     return {}
 
 
-def _finite_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
-
-
 def _combined_test_level(
     calibration_level: Mapping[str, Any] | None,
     latest_test: Mapping[str, Any] | None = None,
@@ -239,7 +231,7 @@ def _combined_group_view(
     *,
     summary: Mapping[str, Any],
     calibration_level: Mapping[str, Any] | None,
-    driver_target_proof_complete: bool | None = None,
+    driver_target_proof_complete: bool,
 ) -> dict[str, Any]:
     group_id = str(target.get("speaker_group_id") or "")
     label = str(target.get("speaker_group_label") or group_id or "Speaker")
@@ -248,11 +240,6 @@ def _combined_group_view(
     latest_test = _latest(latest_tests, group_id)
     latest_validation = _latest(latest_validations, group_id)
     test_level = _combined_test_level(calibration_level, latest_test)
-    if driver_target_proof_complete is None:
-        driver_target_proof_complete = bool(
-            summary.get("driver_checks_complete")
-            or summary.get("driver_measurements_complete")
-        )
     has_audible_test = (
         latest_test.get("captured") is True
         and latest_test.get("audio_emitted") is True
@@ -398,6 +385,16 @@ def build_commissioning_view(
     )
     driver_checks_complete = (
         raw_driver_checks_complete or driver_target_proof_satisfied_by_revalidation
+    )
+    captured_driver_count = int(
+        summary.get("captured_driver_check_count")
+        or summary.get("captured_driver_count")
+        or 0
+    )
+    required_driver_count = int(
+        summary.get("required_driver_check_count")
+        or summary.get("required_driver_count")
+        or 0
     )
     active_targets = active_summed_targets(topology)
     has_layout = bool(topology.speaker_groups)
@@ -556,16 +553,8 @@ def build_commissioning_view(
             ),
             "output_identity_complete": output_identity_complete,
             "driver_checks_complete": driver_checks_complete,
-            "captured": int(
-                summary.get("captured_driver_check_count")
-                or summary.get("captured_driver_count")
-                or 0
-            ),
-            "required": int(
-                summary.get("required_driver_check_count")
-                or summary.get("required_driver_count")
-                or 0
-            ),
+            "captured": captured_driver_count,
+            "required": required_driver_count,
         },
         "driver_checks": {
             "complete": driver_checks_complete,
@@ -576,16 +565,8 @@ def build_commissioning_view(
                 if raw_driver_checks_complete
                 else "missing"
             ),
-            "captured": int(
-                summary.get("captured_driver_check_count")
-                or summary.get("captured_driver_count")
-                or 0
-            ),
-            "required": int(
-                summary.get("required_driver_check_count")
-                or summary.get("required_driver_count")
-                or 0
-            ),
+            "captured": captured_driver_count,
+            "required": required_driver_count,
         },
         "summed_validation": {
             "complete": summed_complete,

@@ -495,7 +495,7 @@ edges, delivery failures, and patrol repairs without journal guesswork.
 following the same 2 s timeout / fail-soft pattern used for the other
 daemons.
 
-### jasper-doctor checks (`jasper/cli/doctor/audio.py`)
+### jasper-doctor checks (`jasper/cli/doctor/audio_runtime.py`)
 
 Fan-in checks are in the main doctor run-list:
 
@@ -1035,7 +1035,7 @@ scripts/
 tests/
   test_fanin_systemd.py             ← hardware-free pytest for the systemd unit shape
   test_fanin_wiring.py              ← asoundrc + renderer unit topology shape
-  test_doctor.py                    ← doctor parser/check behavior
+  test_doctor_audio_runtime.py      ← doctor parser/check behavior
 ```
 
 The Rust binary is built on the Pi during `install.sh` (taking ~3-5
@@ -1070,7 +1070,8 @@ maintainability. Rust wins on all three.
 - **Not aware of source state.** It knows only a selected input label
   or auto/null. Mux owns "current primary", renderer probing,
   source-specific preemption APIs, and user source selection. Current
-  examples: AirPlay loses via shairport-sync MPRIS `Stop`, Spotify via
+  examples: AirPlay loses via shairport-sync `DropSession` with MPRIS `Stop`
+  as a compatibility fallback, Spotify via
   Web API pause or active-only librespot try-restart fallback, and USB via
   fan-in's lane-level MUTE/UNMUTE command.
 - **Not PipeWire.** Per the AGENTS.md "architecture is fixed; swap the

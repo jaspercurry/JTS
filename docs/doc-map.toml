@@ -247,6 +247,7 @@ title = "Renderer source policy, fan-in, ALSA, and audio routing"
 safety = "audio-output-risk"
 code = [
   "jasper/music_sources.py",
+  "jasper/busctl.py",
   "jasper/local_sources/**",
   "jasper/mux.py",
   "jasper/renderer.py",
@@ -270,6 +271,7 @@ code = [
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/bluealsa-aplay.service.d/**",
   "scripts/airplay-receiver-timing-proof.py",
+  "rust/jasper-env/**",
   "rust/jasper-fanin/**",
   "rust/jasper-outputd/**",
   "jasper/fanin/**",
@@ -440,7 +442,7 @@ requires_docs_when = [
   "Wake model registry, thresholds, wake-event schema, corpus capture legs, scoring, labeling, or review tooling changes.",
 ]
 verification = [
-  "pytest tests/test_wake_setup.py tests/test_wake_events.py tests/test_wake_score.py tests/test_wake_review.py tests/test_wake_corpus_setup.py",
+  "pytest tests/test_wake_setup.py tests/test_wake_events.py tests/test_wake_score.py tests/test_wake_review.py tests/test_wake_corpus_*.py",
 ]
 
 [[subsystem]]
@@ -455,7 +457,7 @@ code = [
   "jasper/cli/xvf_firmware_update.py",
   "jasper/aec_engines/**",
   "jasper/audio_profile_state.py",
-  "jasper/audio_validation.py",
+  "jasper/audio_validation*.py",
   "jasper/audio_input_view.py",
   "jasper/control/aec_endpoints.py",
   "jasper/mics/**",
@@ -639,12 +641,14 @@ code = [
   "jasper/multiroom/reconcile.py",
   "jasper/multiroom/effective_role.py",
   "jasper/control/server.py",
+  "jasper/control/handlers/**",
   "jasper/tools/audio.py",
   "jasper/web/_common.py",
   "jasper/web/sources_setup.py",
   "jasper/web/bluetooth_setup.py",
   "jasper/web/airplay_setup.py",
   "jasper/web/speaker_setup.py",
+  "jasper/airplay_mode.py",
   "jasper/cli/airplay_mode.py",
   "jasper/cli/doctor/renderers.py",
   "jasper/cli/doctor/usbsink.py",
@@ -1085,6 +1089,7 @@ code = [
   "docs/audit-pending-followups.md",
   "jasper/http_security.py",
   "jasper/control/server.py",
+  "jasper/control/handlers/**",
   "scripts/_diagnostic_redaction.sh",
   "scripts/fetch-pi-logs.sh",
   "scripts/pi-bundle.sh",
@@ -1273,6 +1278,7 @@ code = [
   "jasper/capture_relay/alignment.py",
   "jasper/capture_relay/cues.py",
   "jasper/capture_relay/health.py",
+  "jasper/capture_relay_config.py",
   "jasper/capture_relay/correction_adapter.py",
   "relay/src/worker.js",
   "capture-page/**",

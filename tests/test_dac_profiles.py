@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+import jasper.audio_hardware as audio_hardware
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
@@ -21,6 +22,12 @@ from jasper.audio_hardware.dac import (
     DacProfile,
     LatencyFloor,
 )
+
+
+def test_package_reexports_the_complete_dac_registry_surface() -> None:
+    assert set(audio_hardware.__all__) == set(dac.__all__)
+    for name in dac.__all__:
+        assert getattr(audio_hardware, name) is getattr(dac, name)
 
 
 def test_registry_contains_current_output_profiles_in_stable_order() -> None:

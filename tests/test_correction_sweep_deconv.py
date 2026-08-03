@@ -369,3 +369,11 @@ def test_magnitude_response_basic_shape():
     # edges from the windowing shape.
     assert float(np.max(midband_mag)) <= 0.001  # peak normalize → ≤ 0
     assert float(np.min(midband_mag)) > -0.5
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, 1), (1, 1), (2, 2), (3, 4), (8192, 8192), (8193, 16384)],
+)
+def test_next_power_of_two(value: int, expected: int) -> None:
+    assert deconv._next_power_of_two(value) == expected

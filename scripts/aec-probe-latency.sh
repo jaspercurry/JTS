@@ -31,6 +31,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 MIC_DEVICE="${MIC_DEVICE:-hw:CARD=Array,DEV=0}"
@@ -49,7 +50,9 @@ remote_cmd=$(
     "${REF_UDP_HOST}" "${REF_UDP_PORT}"
 )
 
-ssh "${PI_USER}@${PI_HOST}" "${remote_cmd}" <<'REMOTE'
+{
+cat "${SCRIPT_DIR}/_aec_probe_service_guard.sh"
+cat <<'REMOTE'
 set -euo pipefail
 
 MIC_DEVICE="$1"
@@ -61,61 +64,7 @@ CHIRP_GAIN="$6"
 REF_UDP_HOST="$7"
 REF_UDP_PORT="$8"
 
-shairport_was_active=0
-nqptp_was_active=0
-voice_was_active=0
-bridge_was_active=0
-
-unit_active() {
-  sudo systemctl is-active --quiet "$1"
-}
-
-stop_if_active() {
-  local unit="$1"
-  local state_var="$2"
-  if unit_active "${unit}"; then
-    printf -v "${state_var}" '1'
-    sudo systemctl stop "${unit}"
-  fi
-}
-
-restore_services() {
-  local restore_rc=0
-  set +e
-  if [[ "${bridge_was_active}" == "1" ]]; then
-    # The bridge intentionally carries StartLimitAction=reboot so real
-    # runtime crash loops fail loudly. This probe may stop/start it several
-    # times during a tuning session, so clear the rate-limit counter before
-    # this operator-requested restore.
-    sudo systemctl reset-failed jasper-aec-bridge.service || restore_rc=1
-    sudo systemctl start jasper-aec-bridge.service || restore_rc=1
-  fi
-  if [[ "${voice_was_active}" == "1" ]]; then
-    sudo systemctl start jasper-voice.service || restore_rc=1
-  fi
-  if [[ "${nqptp_was_active}" == "1" ]]; then
-    sudo systemctl restart nqptp.service || restore_rc=1
-  fi
-  if [[ "${shairport_was_active}" == "1" ]]; then
-    # Restart (not just start) shairport-sync to force a fresh AP2 state.
-    # Stopping shairport leaves clients (e.g. a Mac AirPlaying to JTS)
-    # with a half-open AP2 session; on resume shairport sometimes refuses
-    # new SETUPs. A clean restart guarantees the session state is reset.
-    sudo systemctl restart shairport-sync.service || restore_rc=1
-  fi
-  return "${restore_rc}"
-}
-
-on_exit() {
-  local rc=$?
-  restore_services
-  local restore_rc=$?
-  if [[ "${rc}" -eq 0 ]]; then
-    exit "${restore_rc}"
-  fi
-  exit "${rc}"
-}
-trap on_exit EXIT
+install_aec_probe_service_guard
 
 stop_if_active shairport-sync.service shairport_was_active
 stop_if_active jasper-voice.service voice_was_active
@@ -316,3 +265,4 @@ print(f"peak/median ratio: {xc_m[peak] / max(np.median(xc_m), 1):.1f}x  "
       f"(>3 is a clean peak)")
 PY
 REMOTE
+} | ssh "${PI_USER}@${PI_HOST}" "${remote_cmd}"

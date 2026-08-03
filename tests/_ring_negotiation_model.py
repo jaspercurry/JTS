@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""CamillaDSP <-> jts_ring ALSA negotiation model.
+"""Test-only CamillaDSP <-> jts_ring ALSA negotiation model.
 
-This is intentionally pure: it models the source-derived geometry contract that
-the product ring emitter, the jts_ring ioplug, and CamillaDSP v4.1.3 must all
-satisfy without opening ALSA or touching /dev/shm.
+It models the source-derived geometry contract that the product ring emitter,
+the jts_ring ioplug, and CamillaDSP v4.1.3 must all satisfy without opening
+ALSA or touching /dev/shm. Production code does not import this model; the
+contract suite owns it next to the assertions it supports.
 """
 
 from __future__ import annotations

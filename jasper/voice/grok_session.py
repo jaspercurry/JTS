@@ -37,7 +37,7 @@ plumbing from ``OpenAIRealtimeConnection``. The recorded intervals fold
 into the daily spend cap via
 ``UsageStore._time_billed_spend_by_provider`` — so the cap constrains
 Grok the same as token-billed providers. See ``jasper.usage`` and
-``jasper.voice_daemon._make_connection``."""
+``jasper.voice.daemon_main._make_connection``."""
 from __future__ import annotations
 
 import logging

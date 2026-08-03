@@ -43,6 +43,7 @@ from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
 from . import fence_untrusted, tool
+from .google_errors import no_account_error, no_credentials_error
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
@@ -192,44 +193,6 @@ def _header(headers: list[dict], name: str) -> str:
 # ----------------------------------------------------------------------
 
 
-def _no_account_error(clients: "GoogleClients", attempted: str) -> dict:
-    available = clients.list_account_names()
-    if not available:
-        return {
-            "ok": False,
-            "error": (
-                "No Google accounts linked to this speaker yet. "
-                "Visit jts.local/google to add one."
-            ),
-        }
-    name_list = ", ".join(available)
-    if attempted:
-        return {
-            "ok": False,
-            "error": (
-                f"No Google account named '{attempted}' on this speaker. "
-                f"Available: {name_list}."
-            ),
-        }
-    return {
-        "ok": False,
-        "error": (
-            f"Could not pick a default Google account. "
-            f"Try naming one: {name_list}."
-        ),
-    }
-
-
-def _no_credentials_error(account_name: str) -> dict:
-    return {
-        "ok": False,
-        "error": (
-            f"Google access for {account_name} can't be refreshed. "
-            f"Re-link at jts.local/google."
-        ),
-    }
-
-
 def _api_error(account_name: str, exc: Exception) -> dict:
     logger.warning(
         "gmail API error for %s: %s", account_name, exc, exc_info=True,
@@ -309,7 +272,7 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return _no_account_error(clients, account)
+            return no_account_error(clients, account)
         try:
             n = int(limit)
         except (TypeError, ValueError):
@@ -320,7 +283,7 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
             n = _MAX_UNREAD
         service = clients.build_gmail(canonical)
         if service is None:
-            return _no_credentials_error(canonical)
+            return no_credentials_error(canonical)
         try:
             stub_list = await asyncio.to_thread(
                 _list_unread_sync, service, max_results=n,
@@ -419,12 +382,12 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return _no_account_error(clients, account)
+            return no_account_error(clients, account)
         if not thread_id or not isinstance(thread_id, str):
             return {"ok": False, "error": "thread_id is required."}
         service = clients.build_gmail(canonical)
         if service is None:
-            return _no_credentials_error(canonical)
+            return no_credentials_error(canonical)
         try:
             thread = await asyncio.to_thread(
                 _get_thread_sync, service, thread_id,

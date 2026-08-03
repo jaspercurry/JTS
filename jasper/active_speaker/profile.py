@@ -12,8 +12,6 @@ wizard code should consume these dataclasses instead of accepting freeform YAML.
 
 from __future__ import annotations
 
-import math
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,6 +21,7 @@ from jasper.camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_LO,
     BASS_MANAGEMENT_CROSSOVER_ORDER,
 )
+from jasper.json_fields import JsonFields
 
 SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
@@ -81,9 +80,6 @@ BASELINE_STATUSES = {
     "commissioned",
     "rejected",
 }
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
-
-
 class ActiveSpeakerConfigError(ValueError):
     """Raised when an active-speaker preset or baseline is unsafe/invalid."""
 
@@ -112,52 +108,34 @@ def _required_sides(layout: str) -> tuple[str, ...]:
     return SIDES_BY_LAYOUT[layout]
 
 
-def _require_id(value: Any, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ActiveSpeakerConfigError(f"{field_name} is required")
-    out = value.strip()
-    if not _ID_RE.match(out):
-        raise ActiveSpeakerConfigError(
-            f"{field_name} must be <=80 chars and contain only safe id chars"
-        )
-    return out
+_JSON_FIELDS = JsonFields(
+    ActiveSpeakerConfigError,
+    length_limit_separator=" ",
+)
+_require_id = _JSON_FIELDS.require_id
 
 
 def _require_text(value: Any, field_name: str, *, max_chars: int = 120) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ActiveSpeakerConfigError(f"{field_name} is required")
-    out = " ".join(value.split())
-    if len(out) > max_chars:
-        raise ActiveSpeakerConfigError(f"{field_name} must be <= {max_chars} chars")
-    return out
+    return _JSON_FIELDS.text(value, field_name, max_length=max_chars)
 
 
 def _optional_text(value: Any, *, max_chars: int = 160) -> str | None:
-    if value is None or value == "":
-        return None
-    if not isinstance(value, str):
-        raise ActiveSpeakerConfigError("optional text fields must be strings")
-    out = " ".join(value.split())
-    if len(out) > max_chars:
-        raise ActiveSpeakerConfigError(f"text field must be <= {max_chars} chars")
-    return out
+    return _JSON_FIELDS.optional_text(
+        value,
+        "optional text field",
+        max_length=max_chars,
+        allow_blank=True,
+        type_error_message="optional text fields must be strings",
+        length_field_name="text field",
+    )
 
 
 def _finite_float(value: Any, field_name: str) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError) as e:
-        raise ActiveSpeakerConfigError(f"{field_name} must be numeric") from e
-    if not math.isfinite(out):
-        raise ActiveSpeakerConfigError(f"{field_name} must be finite")
-    return out
+    return _JSON_FIELDS.finite_number(value, field_name)
 
 
 def _integer(value: Any, field_name: str) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError) as e:
-        raise ActiveSpeakerConfigError(f"{field_name} must be an integer") from e
+    return _JSON_FIELDS.integer(value, field_name)
 
 
 def _optional_float(value: Any, field_name: str) -> float | None:
@@ -174,15 +152,11 @@ def _positive_float(value: Any, field_name: str) -> float:
 
 
 def _bool(value: Any, field_name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    raise ActiveSpeakerConfigError(f"{field_name} must be boolean")
+    return _JSON_FIELDS.strict_boolean(value, field_name)
 
 
 def _sequence(value: Any, field_name: str) -> list[Any]:
-    if not isinstance(value, list):
-        raise ActiveSpeakerConfigError(f"{field_name} must be a list")
-    return value
+    return _JSON_FIELDS.sequence(value, field_name)
 
 
 @dataclass(frozen=True)

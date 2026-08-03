@@ -137,6 +137,141 @@ def test_common_library_failure_does_not_overwrite_guard_consumers(tmp_path):
     assert "jasper-camilla-crossover-guard" not in attempted
 
 
+def test_full_generation_rollback_restores_old_files_and_removes_new(tmp_path):
+    existing = tmp_path / "existing.service"
+    new = tmp_path / "new.service"
+    transaction = tmp_path / "transaction"
+    existing.write_text("old generation\n", encoding="utf-8")
+    script = f"""
+set -euo pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path / 'systemd'}"
+source "{FRAGMENT}"
+systemctl() {{ return 0; }}
+install_transaction_dir="{transaction}"
+mkdir -p "$install_transaction_dir"
+declare -a install_transaction_paths=()
+declare -a install_transaction_existed=()
+_snapshot_full_unit_install_destination "{existing}"
+printf 'mixed generation\n' > "{existing}"
+_snapshot_full_unit_install_destination "{new}"
+printf 'new generation\n' > "{new}"
+_rollback_full_unit_install_transaction
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert existing.read_text(encoding="utf-8") == "old generation\n"
+    assert not new.exists()
+    assert not transaction.exists()
+
+
+def test_full_generation_install_error_triggers_rollback(tmp_path):
+    existing = tmp_path / "existing.service"
+    staged = tmp_path / "staged.service"
+    new = tmp_path / "new.service"
+    transaction = tmp_path / "transaction"
+    existing.write_text("old generation\n", encoding="utf-8")
+    staged.write_text("new generation\n", encoding="utf-8")
+    script = f"""
+set -euo pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path / 'systemd'}"
+source "{FRAGMENT}"
+systemctl() {{ return 0; }}
+install_transaction_dir="{transaction}"
+mkdir -p "$install_transaction_dir"
+declare -a install_transaction_paths=()
+declare -a install_transaction_existed=()
+set -E
+trap '_rollback_full_unit_install_transaction' ERR
+install() {{ _transactional_full_unit_install "$@"; }}
+install -m 0644 "{staged}" "{existing}"
+install -m 0644 "{tmp_path / 'missing.service'}" "{new}"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode != 0
+    assert "rolled back the incomplete full-profile unit generation" in result.stderr
+    assert existing.read_text(encoding="utf-8") == "old generation\n"
+    assert not new.exists()
+    assert not transaction.exists()
+
+
+def test_usbgadget_forensics_units_both_roll_back_after_later_staging_failure(
+    tmp_path,
+):
+    """Every file install must snapshot its exact destination, not a directory.
+
+    GNU install accepts multiple sources plus a directory destination.  The full
+    profile's transaction wrapper cannot safely roll that shape back because a
+    directory snapshot can be restored *inside* the live directory, leaving a
+    mixed generation.  Exercise the production USB helper and then fail a later
+    staging row: both prior forensics units must return byte-for-byte and the
+    systemd directory must contain no nested rollback artifact.
+    """
+    systemd_dir = tmp_path / "systemd"
+    transaction = tmp_path / "transaction"
+    systemd_dir.mkdir()
+    service = systemd_dir / "jasper-usbgadget-forensics.service"
+    path = systemd_dir / "jasper-usbgadget-forensics.path"
+    service.write_text("old service generation\n", encoding="utf-8")
+    path.write_text("old path generation\n", encoding="utf-8")
+    script = f"""
+set -euo pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{systemd_dir}"
+source "{FRAGMENT}"
+systemctl() {{ return 0; }}
+# The production helper also installs non-systemd support files.  They are
+# outside this transaction regression's scope and must not touch the host.
+install_usb_network_files() {{ return 0; }}
+install_transaction_dir="{transaction}"
+mkdir -p "$install_transaction_dir"
+declare -a install_transaction_paths=()
+declare -a install_transaction_existed=()
+set -E
+trap '_rollback_full_unit_install_transaction' ERR
+install() {{
+  local destination="${{!#}}"
+  case "$destination" in
+    "$SYSTEMD_DIR"/*|"$SYSTEMD_DIR"/) _transactional_full_unit_install "$@" ;;
+    *) return 0 ;;
+  esac
+}}
+install_usbsink_unit_files
+install -m 0644 "{tmp_path / 'missing.service'}" \
+    "$SYSTEMD_DIR/later.service"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode != 0
+    assert "rolled back the incomplete full-profile unit generation" in result.stderr
+    assert service.read_text(encoding="utf-8") == "old service generation\n"
+    assert path.read_text(encoding="utf-8") == "old path generation\n"
+    assert not (systemd_dir / "later.service").exists()
+    assert sorted(item.name for item in systemd_dir.iterdir()) == [
+        "jasper-usbgadget-forensics.path",
+        "jasper-usbgadget-forensics.service",
+    ]
+    assert not transaction.exists()
+
+
 def test_full_install_uses_transactional_core_graph_installer():
     """The full profile must consume the same table as streambox installs.
 
@@ -156,6 +291,21 @@ def test_full_install_uses_transactional_core_graph_installer():
         "install_jasper_support_files",
         "install_local_audio_graph_unit_files",
     ]
+
+
+def test_full_install_commits_before_runtime_and_starts_both_audio_slices():
+    body = _function_body(FRAGMENT.read_text(), "install_systemd_units")
+    transaction = body.index("mktemp -d /tmp/jasper-full-unit-install")
+    first_full_unit = body.index("deploy/systemd/jasper-voice.service")
+    reload = body.index("systemctl daemon-reload", first_full_unit)
+    commit = body.index("trap - ERR", reload)
+    slices = body.index(
+        "systemctl enable --now jts-audio.slice jts-mic.slice",
+        commit,
+    )
+    runtime = body.index("enable_usbgadget", slices)
+
+    assert transaction < first_full_unit < reload < commit < slices < runtime
 
 
 def test_full_profile_does_not_duplicate_shared_install_rows() -> None:

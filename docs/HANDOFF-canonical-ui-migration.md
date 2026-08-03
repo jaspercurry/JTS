@@ -174,7 +174,7 @@ code was correct; only the fakes were incomplete.
 **D. Stale assertions in pre-existing test files (fixed).** Several
 already-tracked test files asserted the *old* markup the migration
 changed (`tests/test_web_rooms_setup.py`, `tests/test_wifi_setup_ui.py`,
-`tests/test_system_setup.py`, plus `test_doctor.py` for the new
+`tests/test_system_setup.py`, plus `test_doctor_correction.py` for the new
 correction assets). Updated to the canonical equivalents, intent
 preserved. `test_system_setup.py`'s CSRF-in-module check now also scans
 the shared `http.js` (where CSRF-reading was promoted).
@@ -245,7 +245,8 @@ plus `deploy/assets/shared/js/http.js`.
 `tests/test_wifi_setup_ui.py`, `tests/test_bluetooth_setup_ui.py`,
 `tests/test_sources_setup_usbsink.py`, `tests/test_voice_setup.py`,
 `tests/test_correction_setup.py`,
-`tests/test_correction_status_and_bundles.py`, `tests/test_doctor.py`,
+`tests/test_correction_status_and_bundles.py`,
+`tests/test_doctor_{correction,web}.py`,
 `tests/test_web_common.py`.
 
 **Docs:** `docs/HANDOFF-management-ui.md` (updated), this file (new).

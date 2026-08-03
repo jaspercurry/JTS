@@ -73,7 +73,8 @@ def test_per_kind_validity_policy_is_the_differentiation():
     assert balance.validity.require_alignment is False
     assert balance.validity.clock_drift == "ignore"
 
-    # Crossover is magnitude FR like room: drift-insensitive, alignment matters.
+    # Crossover is magnitude FR: drift-insensitive, with calibrated per-flow
+    # alignment gates already enforced by its analysis.
     xover = build_crossover_sweep_spec(driver_label="tweeter")
     assert xover.validity.clock_drift == "ignore"
     assert xover.validity.require_alignment is True

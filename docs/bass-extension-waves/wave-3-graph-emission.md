@@ -956,7 +956,8 @@ STOP and report — do not restructure the contract to fit.
   tests/test_active_speaker_commissioning_capture_producer.py \
   tests/test_active_speaker_commissioning_verification.py \
   tests/test_multiroom_active_leader_config.py \
-  tests/test_multiroom_follower_config.py tests/test_doctor.py -q
+  tests/test_multiroom_follower_config.py \
+  tests/test_doctor_{correction,grouping}.py -q
 scripts/test-fast
 ```
 

@@ -100,7 +100,7 @@ import threading
 import time
 from queue import Queue, Empty, Full
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 import json
 
 import numpy as np
@@ -1869,6 +1869,352 @@ class _MicStarvationWatchdog:
         return self._starved_windows >= self._max_starved
 
 
+def _add_loop_emitter(
+    emitters: dict[str, LegEmitter],
+    config: BridgeConfig,
+    leg: str,
+    port: int,
+    *,
+    frame_samples: int = OUT_FRAME_SAMPLES,
+    emitter_cls: type[LegEmitter] = LegEmitter,
+) -> LegEmitter:
+    emitter = emitter_cls(
+        sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+        dest=(config.out_host, port),
+        batch=bytearray(),
+        stats_key=leg,
+        frame_samples=frame_samples,
+    )
+    emitter.sock.setblocking(False)
+    emitters[leg] = emitter
+    return emitter
+
+
+def _process_optional_engine(
+    engine: Any,
+    input_bytes: bytes,
+    ref_bytes: bytes,
+    *,
+    failure_message: str | None,
+) -> tuple[Any | None, bytes, Exception | None]:
+    """Process one optional leg and disable it after its first failure.
+
+    The primary AEC engine deliberately does not use this helper: a primary
+    failure must still escape and trigger the bridge's systemd recovery path.
+    """
+    try:
+        return engine, engine.process(input_bytes, ref_bytes), None
+    except Exception as exc:  # noqa: BLE001
+        if failure_message is not None:
+            logger.exception(failure_message, exc)
+        return None, b"", exc
+
+
+def _build_xvf_raw0_optional_paths(
+    emitters: dict[str, LegEmitter],
+    config: BridgeConfig,
+    *,
+    webrtc_enabled: bool,
+    dtln_enabled: bool,
+) -> tuple[Any | None, LegEmitter | None, Any | None, LegEmitter | None]:
+    """Build the two optional XVF raw0 corpus-processing legs."""
+    xvf_raw0_engine = None
+    xvf_raw0_webrtc_emitter = None
+    if webrtc_enabled:
+        xvf_raw0_engine = _select_engine(label="xvf_raw0_webrtc_aec3")
+        xvf_raw0_webrtc_emitter = _add_loop_emitter(
+            emitters,
+            config,
+            "xvf_raw0_webrtc_aec3",
+            config.out_port_xvf_raw0_webrtc_aec3,
+        )
+
+    xvf_raw0_dtln_engine = None
+    xvf_raw0_dtln_emitter = None
+    if dtln_enabled:
+        try:
+            from jasper.aec_engines import dtln_models
+            from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
+            xvf_raw0_dtln_size = int(os.environ.get(
+                "JASPER_AEC_XVF_RAW0_DTLN_SIZE",
+                os.environ.get(
+                    "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
+                ),
+            ))
+            xvf_raw0_dtln_engine = DTLNEngine(
+                model_dir=default_model_dir(), model_size=xvf_raw0_dtln_size,
+            )
+            xvf_raw0_dtln_emitter = _add_loop_emitter(
+                emitters,
+                config,
+                "xvf_raw0_dtln",
+                config.out_port_xvf_raw0_dtln,
+            )
+            logger.info(
+                "XVF raw0 DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
+                xvf_raw0_dtln_size,
+                config.out_host,
+                config.out_port_xvf_raw0_dtln,
+            )
+        except (FileNotFoundError, ImportError) as e:
+            logger.warning(
+                "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED set but XVF raw0 "
+                "DTLN couldn't load: %s. Continuing without xvf_raw0_dtln.",
+                e,
+            )
+    return (
+        xvf_raw0_engine,
+        xvf_raw0_webrtc_emitter,
+        xvf_raw0_dtln_engine,
+        xvf_raw0_dtln_emitter,
+    )
+
+
+
+def _build_usb_optional_paths(
+    emitters: dict[str, LegEmitter],
+    config: BridgeConfig,
+    *,
+    usb_raw_q: Queue | None,
+) -> tuple[
+    LegEmitter | None,
+    LegEmitter | None,
+    Any | None,
+    Any | None,
+    LegEmitter | None,
+]:
+    """Build optional USB raw, WebRTC, and DTLN corpus legs."""
+    usb_raw_emitter = None
+    usb_webrtc_emitter = None
+    usb_engine = None
+    usb_dtln_engine = None
+    usb_dtln_emitter = None
+    if usb_raw_q is not None:
+        usb_raw_emitter = _add_loop_emitter(
+            emitters, config, "usb_raw", config.out_port_usb_raw
+        )
+        usb_webrtc_emitter = _add_loop_emitter(
+            emitters,
+            config,
+            "usb_webrtc",
+            config.out_port_usb_webrtc,
+        )
+        usb_webrtc_overrides = USB_AEC3_CORPUS_OVERRIDES
+        usb_webrtc_label = "usb_webrtc/aec3_edge_combo_80"
+        usb_webrtc_display_label = USB_AEC3_CORPUS_LABEL
+        if (
+            _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
+            and config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
+        ):
+            # In USB AEC3 sweep mode, the normal usb_webrtc leg becomes
+            # the 40 ms member of the delay sweep. The three stable
+            # variant slots carry the same edge-combo tuning at longer
+            # stream-delay hints, giving four same-utterance USB AEC3
+            # candidates without adding more sockets.
+            usb_webrtc_overrides = USB_AEC3_SWEEP_BASELINE_OVERRIDES
+            usb_webrtc_label = "usb_webrtc/aec3_sweep_delay_40"
+            usb_webrtc_display_label = USB_AEC3_SWEEP_BASELINE_LABEL
+        usb_engine = _select_engine(
+            overrides=usb_webrtc_overrides,
+            label=usb_webrtc_label,
+        )
+        logger.info(
+            "USB corpus outputs enabled: raw=%s:%d webrtc=%s:%d label=%s",
+            config.out_host,
+            config.out_port_usb_raw,
+            config.out_host,
+            config.out_port_usb_webrtc,
+            usb_webrtc_display_label,
+        )
+        if _env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
+            try:
+                from jasper.aec_engines import dtln_models
+                from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
+                usb_dtln_size = int(os.environ.get(
+                    "JASPER_AEC_USB_DTLN_SIZE",
+                    os.environ.get(
+                        "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
+                    ),
+                ))
+                usb_dtln_engine = DTLNEngine(
+                    model_dir=default_model_dir(), model_size=usb_dtln_size,
+                )
+                usb_dtln_emitter = _add_loop_emitter(
+                    emitters,
+                    config,
+                    "usb_dtln",
+                    config.out_port_usb_dtln,
+                )
+                logger.info(
+                    "USB DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
+                    usb_dtln_size, config.out_host, config.out_port_usb_dtln,
+                )
+            except (FileNotFoundError, ImportError) as e:
+                logger.warning(
+                    "JASPER_AEC_CORPUS_USB_DTLN_ENABLED set but USB DTLN "
+                    "couldn't load: %s. Continuing without usb_dtln.",
+                    e,
+                )
+
+    return (
+        usb_raw_emitter,
+        usb_webrtc_emitter,
+        usb_engine,
+        usb_dtln_engine,
+        usb_dtln_emitter,
+    )
+
+
+
+def _build_aec3_sweep_paths(
+    emitters: dict[str, LegEmitter],
+    config: BridgeConfig,
+    *,
+    production_chip_aec_enabled: bool,
+    usb_raw_q: Queue | None,
+) -> tuple[list[dict[str, object]], Callable[[bytes, bytes], None]]:
+    """Build configured sweep variants and their per-frame dispatcher."""
+    aec3_sweep_paths: list[dict[str, object]] = []
+    if (not production_chip_aec_enabled) and _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
+        if (
+            config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
+            and usb_raw_q is None
+        ):
+            logger.warning(
+                "AEC3 sweep requested with input_source=usb but USB corpus "
+                "capture is disabled; continuing without sweep variants",
+            )
+        else:
+            for variant in config.aec3_sweep_variants:
+                try:
+                    variant_engine = _select_engine(
+                        overrides=variant.env_overrides,
+                        label=(
+                            f"aec3_sweep/{config.aec3_sweep_input_source}/"
+                            f"{variant.leg}"
+                        ),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "AEC3 sweep variant %s couldn't load: %s. "
+                        "Continuing without this variant.",
+                        variant.leg, e,
+                    )
+                    continue
+                variant_port = config.out_port_aec3_sweep[variant.leg]
+                variant_emitter = _add_loop_emitter(emitters, config, variant.leg, variant_port)
+                aec3_sweep_paths.append({
+                    "variant": variant,
+                    "engine": variant_engine,
+                    "emitter": variant_emitter,
+                    "input_source": config.aec3_sweep_input_source,
+                })
+                logger.info(
+                    "AEC3 corpus sweep variant enabled: leg=%s label=%s "
+                    "input_source=%s udp out=%s:%d overrides=%s",
+                    variant.leg,
+                    variant.label,
+                    config.aec3_sweep_input_source,
+                    config.out_host,
+                    variant_port,
+                    variant.env_overrides,
+                )
+
+    def emit_aec3_sweep(input_bytes: bytes, ref_bytes: bytes) -> None:
+        for path in list(aec3_sweep_paths):
+            variant = path["variant"]
+            engine_variant = path["engine"]
+            try:
+                variant_clean = engine_variant.process(input_bytes, ref_bytes)
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "AEC3 sweep variant %s process() crashed; "
+                    "disabling this path: %s",
+                    variant.leg, e,
+                )
+                try:
+                    engine_variant.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                emitter = path["emitter"]
+                emitter.close()
+                emitters.pop(variant.leg, None)
+                aec3_sweep_paths.remove(path)
+                continue
+            path["emitter"].emit(variant_clean)
+
+    return aec3_sweep_paths, emit_aec3_sweep
+
+
+
+def _build_dtln_optional_path(
+    emitters: dict[str, LegEmitter],
+    config: BridgeConfig,
+    *,
+    production_chip_aec_enabled: bool,
+) -> tuple[Any | None, LegEmitter | None]:
+    """Build the optional DTLN observation leg without gating primary AEC3."""
+    dtln_engine = None
+    dtln_emitter = None
+    dtln_wanted = (
+        not production_chip_aec_enabled
+    ) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0")
+    _bridge_stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
+    if dtln_wanted:
+        try:
+            from jasper.aec_engines import dtln_models
+            from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
+            dtln_size = int(os.environ.get(
+                "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE),
+            ))
+            dtln_engine = DTLNEngine(
+                model_dir=default_model_dir(), model_size=dtln_size,
+            )
+            dtln_emitter = _add_loop_emitter(emitters, config, "dtln", config.out_port_dtln)
+            _bridge_stats.set_leg_engine("dtln", enabled=True, loaded=True)
+            logger.info(
+                "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
+                dtln_size, config.out_host, config.out_port_dtln,
+            )
+        except Exception as e:  # noqa: BLE001
+            # DTLN is an optional tertiary leg. Bad config, malformed ONNX,
+            # or another ordinary initialization failure must not crash-loop
+            # the healthy primary AEC3 bridge into systemd's reboot ladder.
+            if dtln_emitter is not None:
+                with suppress(Exception):
+                    dtln_emitter.close()
+                emitters.pop("dtln", None)
+                dtln_emitter = None
+            if dtln_engine is not None:
+                with suppress(Exception):
+                    dtln_engine.close()
+                dtln_engine = None
+            # Degraded state lands in the stats snapshot so the doctor
+            # can flag it long after this line ages out of the journal
+            # window — voice keeps listening on the permanently-unfed
+            # :9878 leg otherwise with zero surface.
+            _bridge_stats.set_leg_engine(
+                "dtln", enabled=True, loaded=False, error=str(e),
+            )
+            log_event(
+                logger,
+                "aec_bridge.leg_degraded",
+                leg="dtln",
+                phase="initialize",
+                action="continue_aec3",
+                error_type=type(e).__name__,
+                error=str(e),
+                note=(
+                    f"JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: {e}. "
+                    "Continuing with AEC3 only."
+                ),
+                level=logging.WARNING,
+            )
+
+    return dtln_engine, dtln_emitter
+
+
+
 def _aec_loop(  # noqa: PLR0915
     ref_q: Queue, mic_q: Queue, engine: Optional[_Aec3Engine],
     heartbeat: Optional[Heartbeat] = None,
@@ -1983,16 +2329,14 @@ def _aec_loop(  # noqa: PLR0915
         frame_samples: int = OUT_FRAME_SAMPLES,
         emitter_cls: type[LegEmitter] = LegEmitter,
     ) -> LegEmitter:
-        emitter = emitter_cls(
-            sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-            dest=(config.out_host, port),
-            batch=bytearray(),
-            stats_key=leg,
+        return _add_loop_emitter(
+            emitters,
+            config,
+            leg,
+            port,
             frame_samples=frame_samples,
+            emitter_cls=emitter_cls,
         )
-        emitter.sock.setblocking(False)
-        emitters[leg] = emitter
-        return emitter
 
     on_emitter = add_emitter("on", config.out_port)
     # Dedicated non-wake consumer for the optional USB host microphone.  This
@@ -2036,245 +2380,42 @@ def _aec_loop(  # noqa: PLR0915
             port = chip_aec_ports.get(beam.token, _leg_default_port(beam.token))
             chip_aec_emitters[beam.token] = add_emitter(beam.token, port)
 
-    xvf_raw0_engine = None
-    xvf_raw0_webrtc_emitter = None
-    if xvf_raw0_webrtc_enabled:
-        xvf_raw0_engine = _select_engine(label="xvf_raw0_webrtc_aec3")
-        xvf_raw0_webrtc_emitter = add_emitter(
-            "xvf_raw0_webrtc_aec3",
-            config.out_port_xvf_raw0_webrtc_aec3,
-        )
-
-    xvf_raw0_dtln_engine = None
-    xvf_raw0_dtln_emitter = None
-    if xvf_raw0_dtln_enabled:
-        try:
-            from jasper.aec_engines import dtln_models
-            from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
-            xvf_raw0_dtln_size = int(os.environ.get(
-                "JASPER_AEC_XVF_RAW0_DTLN_SIZE",
-                os.environ.get(
-                    "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
-                ),
-            ))
-            xvf_raw0_dtln_engine = DTLNEngine(
-                model_dir=default_model_dir(), model_size=xvf_raw0_dtln_size,
-            )
-            xvf_raw0_dtln_emitter = add_emitter(
-                "xvf_raw0_dtln",
-                config.out_port_xvf_raw0_dtln,
-            )
-            logger.info(
-                "XVF raw0 DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
-                xvf_raw0_dtln_size,
-                config.out_host,
-                config.out_port_xvf_raw0_dtln,
-            )
-        except (FileNotFoundError, ImportError) as e:
-            logger.warning(
-                "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED set but XVF raw0 "
-                "DTLN couldn't load: %s. Continuing without xvf_raw0_dtln.",
-                e,
-            )
+    (
+        xvf_raw0_engine,
+        xvf_raw0_webrtc_emitter,
+        xvf_raw0_dtln_engine,
+        xvf_raw0_dtln_emitter,
+    ) = _build_xvf_raw0_optional_paths(
+        emitters,
+        config,
+        webrtc_enabled=xvf_raw0_webrtc_enabled,
+        dtln_enabled=xvf_raw0_dtln_enabled,
+    )
     ref_emitter = None
     if emit_ref:
         ref_emitter = add_emitter("ref", config.out_port_ref)
 
-    usb_raw_emitter = None
-    usb_webrtc_emitter = None
-    usb_engine = None
-    usb_dtln_engine = None
-    usb_dtln_emitter = None
-    if usb_raw_q is not None:
-        usb_raw_emitter = add_emitter("usb_raw", config.out_port_usb_raw)
-        usb_webrtc_emitter = add_emitter(
-            "usb_webrtc",
-            config.out_port_usb_webrtc,
-        )
-        usb_webrtc_overrides = USB_AEC3_CORPUS_OVERRIDES
-        usb_webrtc_label = "usb_webrtc/aec3_edge_combo_80"
-        usb_webrtc_display_label = USB_AEC3_CORPUS_LABEL
-        if (
-            _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
-            and config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
-        ):
-            # In USB AEC3 sweep mode, the normal usb_webrtc leg becomes
-            # the 40 ms member of the delay sweep. The three stable
-            # variant slots carry the same edge-combo tuning at longer
-            # stream-delay hints, giving four same-utterance USB AEC3
-            # candidates without adding more sockets.
-            usb_webrtc_overrides = USB_AEC3_SWEEP_BASELINE_OVERRIDES
-            usb_webrtc_label = "usb_webrtc/aec3_sweep_delay_40"
-            usb_webrtc_display_label = USB_AEC3_SWEEP_BASELINE_LABEL
-        usb_engine = _select_engine(
-            overrides=usb_webrtc_overrides,
-            label=usb_webrtc_label,
-        )
-        logger.info(
-            "USB corpus outputs enabled: raw=%s:%d webrtc=%s:%d label=%s",
-            config.out_host,
-            config.out_port_usb_raw,
-            config.out_host,
-            config.out_port_usb_webrtc,
-            usb_webrtc_display_label,
-        )
-        if _env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
-            try:
-                from jasper.aec_engines import dtln_models
-                from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
-                usb_dtln_size = int(os.environ.get(
-                    "JASPER_AEC_USB_DTLN_SIZE",
-                    os.environ.get(
-                        "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
-                    ),
-                ))
-                usb_dtln_engine = DTLNEngine(
-                    model_dir=default_model_dir(), model_size=usb_dtln_size,
-                )
-                usb_dtln_emitter = add_emitter(
-                    "usb_dtln",
-                    config.out_port_usb_dtln,
-                )
-                logger.info(
-                    "USB DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
-                    usb_dtln_size, config.out_host, config.out_port_usb_dtln,
-                )
-            except (FileNotFoundError, ImportError) as e:
-                logger.warning(
-                    "JASPER_AEC_CORPUS_USB_DTLN_ENABLED set but USB DTLN "
-                    "couldn't load: %s. Continuing without usb_dtln.",
-                    e,
-                )
-
-    aec3_sweep_paths: list[dict[str, object]] = []
-    if (not production_chip_aec_enabled) and _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
-        if (
-            config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
-            and usb_raw_q is None
-        ):
-            logger.warning(
-                "AEC3 sweep requested with input_source=usb but USB corpus "
-                "capture is disabled; continuing without sweep variants",
-            )
-        else:
-            for variant in config.aec3_sweep_variants:
-                try:
-                    variant_engine = _select_engine(
-                        overrides=variant.env_overrides,
-                        label=(
-                            f"aec3_sweep/{config.aec3_sweep_input_source}/"
-                            f"{variant.leg}"
-                        ),
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "AEC3 sweep variant %s couldn't load: %s. "
-                        "Continuing without this variant.",
-                        variant.leg, e,
-                    )
-                    continue
-                variant_port = config.out_port_aec3_sweep[variant.leg]
-                variant_emitter = add_emitter(variant.leg, variant_port)
-                aec3_sweep_paths.append({
-                    "variant": variant,
-                    "engine": variant_engine,
-                    "emitter": variant_emitter,
-                    "input_source": config.aec3_sweep_input_source,
-                })
-                logger.info(
-                    "AEC3 corpus sweep variant enabled: leg=%s label=%s "
-                    "input_source=%s udp out=%s:%d overrides=%s",
-                    variant.leg,
-                    variant.label,
-                    config.aec3_sweep_input_source,
-                    config.out_host,
-                    variant_port,
-                    variant.env_overrides,
-                )
-
-    def emit_aec3_sweep(input_bytes: bytes, ref_bytes: bytes) -> None:
-        for path in list(aec3_sweep_paths):
-            variant = path["variant"]
-            engine_variant = path["engine"]
-            try:
-                variant_clean = engine_variant.process(input_bytes, ref_bytes)
-            except Exception as e:  # noqa: BLE001
-                logger.exception(
-                    "AEC3 sweep variant %s process() crashed; "
-                    "disabling this path: %s",
-                    variant.leg, e,
-                )
-                try:
-                    engine_variant.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                emitter = path["emitter"]
-                emitter.close()
-                emitters.pop(variant.leg, None)
-                aec3_sweep_paths.remove(path)
-                continue
-            path["emitter"].emit(variant_clean)
-
+    (
+        usb_raw_emitter,
+        usb_webrtc_emitter,
+        usb_engine,
+        usb_dtln_engine,
+        usb_dtln_emitter,
+    ) = _build_usb_optional_paths(emitters, config, usb_raw_q=usb_raw_q)
+    aec3_sweep_paths, emit_aec3_sweep = _build_aec3_sweep_paths(
+        emitters,
+        config,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+        usb_raw_q=usb_raw_q,
+    )
     # Optional DTLN-aec parallel engine. Constructed once, mutated
     # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
     # for the streaming algorithm.
-    dtln_engine = None
-    dtln_emitter = None
-    dtln_wanted = (
-        not production_chip_aec_enabled
-    ) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0")
-    _bridge_stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
-    if dtln_wanted:
-        try:
-            from jasper.aec_engines import dtln_models
-            from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
-            dtln_size = int(os.environ.get(
-                "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE),
-            ))
-            dtln_engine = DTLNEngine(
-                model_dir=default_model_dir(), model_size=dtln_size,
-            )
-            dtln_emitter = add_emitter("dtln", config.out_port_dtln)
-            _bridge_stats.set_leg_engine("dtln", enabled=True, loaded=True)
-            logger.info(
-                "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
-                dtln_size, config.out_host, config.out_port_dtln,
-            )
-        except Exception as e:  # noqa: BLE001
-            # DTLN is an optional tertiary leg. Bad config, malformed ONNX,
-            # or another ordinary initialization failure must not crash-loop
-            # the healthy primary AEC3 bridge into systemd's reboot ladder.
-            if dtln_emitter is not None:
-                with suppress(Exception):
-                    dtln_emitter.close()
-                emitters.pop("dtln", None)
-                dtln_emitter = None
-            if dtln_engine is not None:
-                with suppress(Exception):
-                    dtln_engine.close()
-                dtln_engine = None
-            # Degraded state lands in the stats snapshot so the doctor
-            # can flag it long after this line ages out of the journal
-            # window — voice keeps listening on the permanently-unfed
-            # :9878 leg otherwise with zero surface.
-            _bridge_stats.set_leg_engine(
-                "dtln", enabled=True, loaded=False, error=str(e),
-            )
-            log_event(
-                logger,
-                "aec_bridge.leg_degraded",
-                leg="dtln",
-                phase="initialize",
-                action="continue_aec3",
-                error_type=type(e).__name__,
-                error=str(e),
-                note=(
-                    f"JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: {e}. "
-                    "Continuing with AEC3 only."
-                ),
-                level=logging.WARNING,
-            )
-
+    dtln_engine, dtln_emitter = _build_dtln_optional_path(
+        emitters,
+        config,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+    )
     output_parts = [f"aec={config.out_host}:{config.out_port}"]
     if usb_host_mic_emitter is not None:
         output_parts.append(
@@ -2537,33 +2678,35 @@ def _aec_loop(  # noqa: PLR0915
                 if raw0_bytes:
                     raw0_emitter.emit(raw0_bytes)
                     if xvf_raw0_engine is not None:
-                        try:
-                            xvf_raw0_clean = xvf_raw0_engine.process(
-                                raw0_bytes, ref_bytes,
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            logger.exception(
+                        (
+                            xvf_raw0_engine,
+                            xvf_raw0_clean,
+                            _error,
+                        ) = _process_optional_engine(
+                            xvf_raw0_engine,
+                            raw0_bytes,
+                            ref_bytes,
+                            failure_message=(
                                 "XVF raw0 WebRTC process() crashed; disabling "
-                                "xvf_raw0_webrtc_aec3 path: %s",
-                                e,
-                            )
-                            xvf_raw0_engine = None
-                            xvf_raw0_clean = b""
+                                "xvf_raw0_webrtc_aec3 path: %s"
+                            ),
+                        )
                         if xvf_raw0_clean:
                             xvf_raw0_webrtc_emitter.emit(xvf_raw0_clean)
                     if xvf_raw0_dtln_engine is not None:
-                        try:
-                            xvf_raw0_dtln_clean = xvf_raw0_dtln_engine.process(
-                                raw0_bytes, ref_bytes,
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            logger.exception(
+                        (
+                            xvf_raw0_dtln_engine,
+                            xvf_raw0_dtln_clean,
+                            _error,
+                        ) = _process_optional_engine(
+                            xvf_raw0_dtln_engine,
+                            raw0_bytes,
+                            ref_bytes,
+                            failure_message=(
                                 "XVF raw0 DTLN process() crashed; disabling "
-                                "xvf_raw0_dtln path: %s",
-                                e,
-                            )
-                            xvf_raw0_dtln_engine = None
-                            xvf_raw0_dtln_clean = b""
+                                "xvf_raw0_dtln path: %s"
+                            ),
+                        )
                         if xvf_raw0_dtln_clean:
                             xvf_raw0_dtln_emitter.emit(xvf_raw0_dtln_clean)
 
@@ -2669,15 +2812,18 @@ def _aec_loop(  # noqa: PLR0915
             # side of the 20 ms frame budget. State is carried by the
             # DTLNEngine instance across calls.
             if dtln_engine is not None:
-                try:
-                    dtln_clean = dtln_engine.process(mic_bytes, ref_bytes)
-                except Exception as e:  # noqa: BLE001
+                failed_dtln_engine = dtln_engine
+                dtln_engine, dtln_clean, dtln_error = _process_optional_engine(
+                    dtln_engine,
+                    mic_bytes,
+                    ref_bytes,
+                    failure_message=None,
+                )
+                if dtln_error is not None:
                     # DTLN is observational; preserve the primary AEC3 path
                     # and make this runtime transition authoritative for the
                     # stats writer and doctor. Nulling the engine guarantees
                     # one event rather than one warning per audio frame.
-                    failed_dtln_engine = dtln_engine
-                    dtln_engine = None
                     with suppress(Exception):
                         failed_dtln_engine.close()
                     failed_dtln_emitter = emitters.pop("dtln", None)
@@ -2685,19 +2831,24 @@ def _aec_loop(  # noqa: PLR0915
                         with suppress(Exception):
                             failed_dtln_emitter.close()
                     dtln_emitter = None
-                    _bridge_stats.mark_leg_unavailable("dtln", error=str(e))
+                    _bridge_stats.mark_leg_unavailable(
+                        "dtln", error=str(dtln_error)
+                    )
                     log_event(
                         logger,
                         "aec_bridge.leg_degraded",
                         leg="dtln",
                         phase="process",
                         action="disable",
-                        error_type=type(e).__name__,
-                        error=str(e),
+                        error_type=type(dtln_error).__name__,
+                        error=str(dtln_error),
                         level=logging.WARNING,
-                        exc_info=True,
+                        exc_info=(
+                            type(dtln_error),
+                            dtln_error,
+                            dtln_error.__traceback__,
+                        ),
                     )
-                    dtln_clean = b""
                 if dtln_clean:
                     dtln_emitter.emit(dtln_clean)
 
@@ -2713,32 +2864,32 @@ def _aec_loop(  # noqa: PLR0915
                     usb_raw_emitter.emit(usb_bytes)
 
                     if usb_engine is not None:
-                        try:
-                            usb_clean = usb_engine.process(usb_bytes, ref_bytes)
-                        except Exception as e:  # noqa: BLE001
-                            logger.exception(
+                        usb_engine, usb_clean, _error = _process_optional_engine(
+                            usb_engine,
+                            usb_bytes,
+                            ref_bytes,
+                            failure_message=(
                                 "USB WebRTC process() crashed; disabling "
-                                "usb_webrtc path: %s",
-                                e,
-                            )
-                            usb_engine = None
-                            usb_clean = b""
+                                "usb_webrtc path: %s"
+                            ),
+                        )
                         if usb_clean:
                             usb_webrtc_emitter.emit(usb_clean)
 
                     if usb_dtln_engine is not None:
-                        try:
-                            usb_dtln_clean = usb_dtln_engine.process(
-                                usb_bytes, ref_bytes,
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            logger.exception(
+                        (
+                            usb_dtln_engine,
+                            usb_dtln_clean,
+                            _error,
+                        ) = _process_optional_engine(
+                            usb_dtln_engine,
+                            usb_bytes,
+                            ref_bytes,
+                            failure_message=(
                                 "USB DTLN process() crashed; disabling "
-                                "usb_dtln path: %s",
-                                e,
-                            )
-                            usb_dtln_engine = None
-                            usb_dtln_clean = b""
+                                "usb_dtln path: %s"
+                            ),
+                        )
                         if usb_dtln_clean:
                             usb_dtln_emitter.emit(usb_dtln_clean)
                     if config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB:

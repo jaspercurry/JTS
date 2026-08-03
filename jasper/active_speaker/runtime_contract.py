@@ -96,6 +96,7 @@ from .environment import (
     DEFAULT_CAMILLA_STATEFILE,
     classify_camilla_config_text,
     parse_camilla_statefile_config_path,
+    read_camilla_statefile_config_path,
 )
 from .path_safety import (
     software_guard_ready_for_startup,
@@ -556,11 +557,7 @@ def flat_program_graph_blocked_reason(
 
 
 def _statefile_config_path(statefile_path: str | Path | None) -> str | None:
-    path = Path(statefile_path or os.environ.get("JASPER_CAMILLA_STATEFILE") or DEFAULT_CAMILLA_STATEFILE)
-    try:
-        return parse_camilla_statefile_config_path(path.read_text(encoding="utf-8"))
-    except OSError:
-        return None
+    return read_camilla_statefile_config_path(statefile_path)
 
 
 def _read_text(path: str | Path) -> tuple[str | None, dict[str, str] | None]:

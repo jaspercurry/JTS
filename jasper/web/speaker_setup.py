@@ -23,7 +23,6 @@ import html
 import logging
 import os
 import re
-import subprocess
 import urllib.parse
 from collections.abc import Mapping
 from http import HTTPStatus
@@ -58,6 +57,7 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
+from ._service_state import unit_active as _unit_active
 
 logger = logging.getLogger(__name__)
 
@@ -80,27 +80,6 @@ SOURCE_TRY_RESTART_UNITS = [
     "bluealsa-aplay.service",
     "bt-agent.service",
 ]
-
-
-def _systemctl(*args: str, timeout: int = 8) -> tuple[int, str]:
-    try:
-        proc = subprocess.run(
-            ["systemctl", *args],
-            check=False,
-            timeout=timeout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return proc.returncode, (proc.stdout or proc.stderr or "").strip()
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("systemctl %s failed: %s", " ".join(args), e)
-        return 1, str(e)
-
-
-def _unit_active(unit: str) -> bool:
-    rc, _ = _systemctl("is-active", "--quiet", unit, timeout=3)
-    return rc == 0
 
 
 def _restart_units(

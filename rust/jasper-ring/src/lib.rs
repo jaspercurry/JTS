@@ -447,6 +447,44 @@ impl RingMapping {
         // and the mapping is sized HEADER_BYTES + n_slots*slot_bytes.
         unsafe { self.base.add(off) }
     }
+
+    /// Stamp a writer attach and return the file-lifetime write sequence.
+    /// Both the production writer and the non-blocking test writer use this
+    /// exact epoch/pid/heartbeat ordering.
+    pub(crate) fn attach_writer(&self) -> u64 {
+        let write_seq = self
+            .header_atomic(layout::OFF_WRITE_SEQ)
+            .load(Ordering::Acquire);
+        let epoch = self
+            .header_atomic(layout::OFF_WRITER_EPOCH)
+            .load(Ordering::Acquire);
+        self.header_atomic(layout::OFF_WRITER_EPOCH)
+            .store(epoch + 1, Ordering::Release);
+        self.header_atomic(layout::OFF_WRITER_PID)
+            .store(std::process::id() as u64, Ordering::Relaxed);
+        self.header_atomic(layout::OFF_WRITER_HEARTBEAT_NS)
+            .store(monotonic_ns(), Ordering::Relaxed);
+        write_seq
+    }
+
+    /// Copy one complete S16LE slot at `write_seq`. Publication of
+    /// `OFF_WRITE_SEQ` remains the caller's Release-store responsibility.
+    pub(crate) fn write_i16_slot(&self, write_seq: u64, samples: &[i16]) {
+        assert_eq!(
+            samples.len(),
+            self.geometry.samples_per_slot(),
+            "ring publish requires exactly one complete slot"
+        );
+        let slot_index = (write_seq % self.geometry.n_slots as u64) as u32;
+        // SAFETY: slot_index is modulo validated n_slots and the length check
+        // above pins the copy to exactly one mapped slot.
+        unsafe {
+            let dst = self.slot_ptr(slot_index) as *mut u8;
+            for (i, &sample) in samples.iter().enumerate() {
+                std::ptr::write_unaligned(dst.add(i * 2) as *mut i16, sample);
+            }
+        }
+    }
 }
 
 impl Drop for RingMapping {
@@ -1150,19 +1188,17 @@ pub fn monotonic_ns() -> u64 {
 /// A minimal in-process WRITER, used ONLY by tests and by the outputd cfg
 /// tests to drive the reader without the C ioplug. It implements the exact
 /// publish discipline the C writer and the production [`writer::RingWriter`]
-/// implement (space check with Acquire, payload memcpy, Release publish), so the
-/// cross-language interop the bench proves on-Pi is exercised in-process here
-/// too.
+/// implement (space check with Acquire, the shared [`RingMapping`] slot copy,
+/// Release publish), so the cross-language interop the bench proves on-Pi is
+/// exercised in-process here too.
 ///
 /// This is the deliberate NON-BLOCKING test twin: `try_publish_slot` returns
 /// `false` on a full ring, whereas the product writers block/poll or free-run —
 /// keeping the reader-side tests simple. It is NOT a product path (the product
-/// writers are the C ioplug under Ring B and [`writer::RingWriter`] under
-/// Ring A). If the shared publish ordering ever changes, update BOTH this twin
-/// and `writer::RingWriter`. (A future cleanup could retire this in favour of a
-/// non-blocking mode on `RingWriter`; deferred to avoid rewriting the ALSA-gated
-/// reader tests here.) Gated behind the public API but intended for test/bench
-/// use only.
+/// writers are the C ioplug under Ring B and [`writer::RingWriter`] under Ring
+/// A). Attach stamping and payload copying are shared with `RingWriter`; only
+/// full-ring policy differs. Gated behind the public API but intended for
+/// test/bench use only.
 pub struct TestRingWriter {
     map: RingMapping,
     write_seq: u64,
@@ -1174,20 +1210,7 @@ impl TestRingWriter {
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
         let map = attach_or_create(path, expected, RingRole::Writer)?;
-        // Writer attach: epoch++ (Release), pid, heartbeat, continue from
-        // stored write_seq (file-lifetime monotonic).
-        let write_seq = map
-            .header_atomic(layout::OFF_WRITE_SEQ)
-            .load(Ordering::Acquire);
-        let epoch = map
-            .header_atomic(layout::OFF_WRITER_EPOCH)
-            .load(Ordering::Acquire);
-        map.header_atomic(layout::OFF_WRITER_EPOCH)
-            .store(epoch + 1, Ordering::Release);
-        map.header_atomic(layout::OFF_WRITER_PID)
-            .store(std::process::id() as u64, Ordering::Relaxed);
-        map.header_atomic(layout::OFF_WRITER_HEARTBEAT_NS)
-            .store(monotonic_ns(), Ordering::Relaxed);
+        let write_seq = map.attach_writer();
         Ok(Self { map, write_seq })
     }
 
@@ -1218,15 +1241,7 @@ impl TestRingWriter {
         if w.wrapping_sub(r) >= g.n_slots as u64 {
             return false; // full
         }
-        let slot_index = (w % g.n_slots as u64) as u32;
-        // SAFETY: slot_index < n_slots; samples.len() == samples_per_slot; the
-        // slot payload is exactly slot_bytes.
-        unsafe {
-            let dst = self.map.slot_ptr(slot_index) as *mut u8;
-            for (i, &s) in samples.iter().enumerate() {
-                std::ptr::write_unaligned(dst.add(i * 2) as *mut i16, s);
-            }
-        }
+        self.map.write_i16_slot(w, samples);
         let next = w.wrapping_add(1);
         self.write_seq = next;
         self.map

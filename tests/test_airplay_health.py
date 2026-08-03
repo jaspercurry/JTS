@@ -6,15 +6,10 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
-import socket
-import tempfile
 import threading
-import time
 import types
 import urllib.request
 from http.server import ThreadingHTTPServer
-from pathlib import Path
 
 import jasper.control.airplay_health as airplay_health
 from jasper.control.airplay_health import (
@@ -22,6 +17,7 @@ from jasper.control.airplay_health import (
     classify_journal_line,
 )
 from jasper.control.server import _make_handler
+from tests.status_socket_fixtures import JsonStatusSocket
 
 
 def _fanin_status(
@@ -578,32 +574,16 @@ def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
     # ~123 bytes deep and overflows it (Linux allows 108 with a shorter
     # CI tmp base, so this only bit on macOS). Bind under a short /tmp dir
     # instead — matches the socket-path convention in test_control_server.py.
-    sock_dir = tempfile.mkdtemp(dir="/tmp")
-    socket_path = Path(sock_dir) / "control.sock"
-    ready = threading.Event()
-
-    def serve_once() -> None:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-            server.bind(str(socket_path))
-            server.listen(1)
-            ready.set()
-            time.sleep(0.35)
-            conn, _addr = server.accept()
-            with conn:
-                assert conn.recv(1024) == b"STATUS\n"
-                conn.sendall(b'{"ok": true}\n')
-
-    thread = threading.Thread(target=serve_once, daemon=True)
-    thread.start()
-    try:
-        assert ready.wait(timeout=1.0)
-
+    server = JsonStatusSocket(
+        {"ok": True},
+        name="control.sock",
+        accept_delay_seconds=0.35,
+    )
+    with server as socket_path:
         assert AirPlayHealthSampler._read_fanin_status(str(socket_path)) == {
             "ok": True,
         }
-        thread.join(timeout=1.0)
-    finally:
-        shutil.rmtree(sock_dir, ignore_errors=True)
+    assert server.requests == [b"STATUS\n"]
 
 
 def test_system_snapshot_endpoint_includes_airplay_health(monkeypatch) -> None:

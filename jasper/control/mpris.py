@@ -6,8 +6,8 @@
 
 Both `/state`'s AirPlay row and the Tier 3 ShairportSupervisor's
 session gate ask the same question — "does shairport-sync's MPRIS
-surface report Playing right now?" — via the same `busctl` call. This
-module owns that subprocess so the hygiene rules live in one place:
+surface report Playing right now?" — via the same `busctl` call. The shared
+system-bus subprocess boundary owns the hygiene rules in one place:
 
 - **Kill-on-timeout.** `asyncio.wait_for(proc.communicate(), ...)`
   cancels the *await*, not the child. Under a DBus stall every probe
@@ -28,11 +28,10 @@ shairport unit itself still appears live or unknown.
 """
 from __future__ import annotations
 
-import asyncio
-import contextlib
+from ..busctl import system_busctl
 
-_BUSCTL_PLAYBACK_STATUS_ARGV = (
-    "busctl", "--system", "call",
+_BUSCTL_PLAYBACK_STATUS_ARGS = (
+    "call",
     "org.mpris.MediaPlayer2.ShairportSync",
     "/org/mpris/MediaPlayer2",
     "org.freedesktop.DBus.Properties", "Get", "ss",
@@ -43,27 +42,10 @@ _BUSCTL_PLAYBACK_STATUS_ARGV = (
 async def shairport_playing(timeout: float = 2.0) -> bool | None:
     """True/False when MPRIS answered; None when the answer is unknown
     (busctl missing, spawn failure, DBus stall, non-zero exit)."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *_BUSCTL_PLAYBACK_STATUS_ARGV,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-    except OSError:
-        # Covers FileNotFoundError (busctl not installed) plus the
-        # transient spawn errnos (EAGAIN/ENOMEM) a loaded Pi can hit.
-        return None
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        # DBus stall. wait_for cancelled our *await* but the child is
-        # still alive — kill and reap it so a stuck system bus can't
-        # accumulate one busctl per poll.
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        with contextlib.suppress(asyncio.TimeoutError, OSError):
-            await asyncio.wait_for(proc.wait(), 1.0)
-        return None
-    if proc.returncode != 0:
+    stdout = await system_busctl(
+        *_BUSCTL_PLAYBACK_STATUS_ARGS,
+        timeout=timeout,
+    )
+    if stdout is None:
         return None
     return b'"Playing"' in stdout

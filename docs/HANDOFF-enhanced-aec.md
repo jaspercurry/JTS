@@ -237,7 +237,7 @@ Hardware-free contracts live in:
   dedicated/token-gated API and narrow privilege allowlist;
 - `tests/test_system_setup.py` plus the system UI module tests — progressively
   disclosed management surface and proxy contract.
-- `tests/test_doctor.py` — requested-only advisory health: an absent request,
+- `tests/test_doctor_aec.py` — requested-only advisory health: an absent request,
   current install, chip-AEC bypass, or active background job is healthy;
   requested failure/staleness remains a warning with `/system/` retry guidance.
 

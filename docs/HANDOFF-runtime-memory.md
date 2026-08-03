@@ -103,7 +103,7 @@ show meaningful RSS retained in `jasper-control`.
 
 - Wake/AEC contract: `tests/test_aec_reconcile.py`,
   `tests/test_aec_bridge_stall.py`, `tests/test_control_aec_state.py`,
-  `tests/test_audio_validation.py`, `tests/test_doctor.py`.
+  `tests/test_audio_validation.py`, `tests/test_doctor_aec.py`.
 - HA cache contract: `tests/test_ha_status_cache.py`,
   `tests/test_control_server.py`.
 - Dashboard memory breakdown: `tests/test_system_metrics.py`.

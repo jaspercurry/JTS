@@ -18,7 +18,6 @@ sockets. The state machine and dispatch logic run unmodified.
 from __future__ import annotations
 
 import asyncio
-import secrets
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,10 +30,7 @@ from jasper.peering.transport import (
     IncomingClaim,
     IncomingWake,
 )
-
-
-def _short_socket_path() -> str:
-    return f"/tmp/jts-pt-{secrets.token_hex(4)}.sock"
+from tests._socket_paths import short_unix_socket_path as _short_socket_path
 
 
 def _cfg(mode=PeeringMode.ON, primary=False) -> PeeringConfig:
@@ -140,6 +136,59 @@ async def test_mode_off_start_is_noop(monkeypatch):
     assert d._uds_server is None
     assert d._transport is None
     await d.stop()  # safe to call even though start was a noop
+
+
+async def test_stop_cancels_retained_send_tasks(daemon_setup):
+    daemon, transport = daemon_setup
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocked_send(_payload: bytes) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    transport.send = blocked_send
+    daemon._spawn_send(b"payload")
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    assert len(daemon._send_tasks) == 1
+    await daemon.stop()
+
+    assert cancelled.is_set()
+    assert daemon._send_tasks == set()
+
+
+async def test_stop_refuses_send_spawned_while_cancellation_yields(daemon_setup):
+    daemon, transport = daemon_setup
+    started: list[bytes] = []
+    first_cancelled = asyncio.Event()
+
+    async def blocked_send(payload: bytes) -> None:
+        started.append(payload)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            first_cancelled.set()
+            # Reproduce a state-machine action racing with stop's gather. The
+            # late send must be refused, not created and then erased un-drained.
+            daemon._spawn_send(b"late")
+            await asyncio.sleep(0)
+            raise
+
+    transport.send = blocked_send
+    daemon._spawn_send(b"first")
+    while started != [b"first"]:
+        await asyncio.sleep(0)
+
+    await daemon.stop()
+
+    assert first_cancelled.is_set()
+    assert started == [b"first"]
+    assert daemon._send_tasks == set()
 
 
 # ---------- mode=ON, solo arbitration ----------

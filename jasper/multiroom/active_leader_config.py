@@ -102,8 +102,8 @@ LEADER_BAKE_PRIOR_STASH = "/var/lib/jasper/grouping-active-leader-prior-camilla.
 
 # camilla#2's OWN statefile (NOT camilla#1's outputd-statefile.yml). The unit
 # loads its config from this file's ``config_path:`` field. The default mirrors
-# deploy/systemd/jasper-camilla-crossover.service + the crossover guard +
-# Config.camilla2_statefile; read via JASPER_CAMILLA2_STATEFILE at CALL time so
+# deploy/systemd/jasper-camilla-crossover.service + the crossover guard; read
+# via JASPER_CAMILLA2_STATEFILE at CALL time so
 # the env override (and tests) are honoured.
 _DEFAULT_CROSSOVER_STATEFILE = "/var/lib/camilladsp/crossover-statefile.yml"
 

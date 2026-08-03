@@ -2,28 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reconnect backoff schedule — tests don't need the Gemini SDK so
-they live here rather than in test_gemini_connection.py (which is
-all skipped without google-genai installed)."""
+"""Dependency-free reconnect backoff schedule."""
 from __future__ import annotations
 
-import pytest
-
-
 def _import_func():
-    """Import lazily so a missing google-genai install doesn't error
-    out at collection time. The file under test imports `genai` at
-    module level, but only the constants + helper we care about
-    don't depend on it being importable."""
-    try:
-        from jasper.voice.gemini_session import (
-            RECONNECT_INITIAL_BACKOFF_SEC,
-            RECONNECT_MAX_BACKOFF_SEC,
-            _reconnect_backoff_delay,
-        )
-    except ImportError as e:
-        pytest.skip(f"gemini_session import failed (likely no google-genai): {e}")
-    return RECONNECT_INITIAL_BACKOFF_SEC, RECONNECT_MAX_BACKOFF_SEC, _reconnect_backoff_delay
+    from jasper.backoff import (
+        RECONNECT_INITIAL_BACKOFF_SEC,
+        RECONNECT_MAX_BACKOFF_SEC,
+        reconnect_backoff_delay,
+    )
+
+    return (
+        RECONNECT_INITIAL_BACKOFF_SEC,
+        RECONNECT_MAX_BACKOFF_SEC,
+        reconnect_backoff_delay,
+    )
 
 
 def test_first_attempt_is_around_initial():

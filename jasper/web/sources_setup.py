@@ -45,7 +45,6 @@ import argparse
 import asyncio
 import logging
 import os
-import subprocess
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -89,6 +88,8 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
+from ._service_state import systemctl as _systemctl
+from ._service_state import unit_active as _unit_active
 from ._unit_snapshot import UnitSnapshot, probe_unit_snapshot
 
 logger = logging.getLogger(__name__)
@@ -180,21 +181,6 @@ def _usbsink_capability() -> tuple[bool, str]:
     return state.gadget_available, gadget_unavailable_detail(state)
 
 
-def _systemctl(*args: str, timeout: int = 10) -> tuple[int, str]:
-    """Run `systemctl <args>` and return (rc, stripped-stdout). Errors
-    are logged but not raised; the caller decides how to surface them."""
-    try:
-        proc = subprocess.run(
-            ["systemctl", *args],
-            check=False, timeout=timeout,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        return proc.returncode, (proc.stdout or "").strip()
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("systemctl %s failed: %s", " ".join(args), e)
-        return 1, ""
-
-
 def _unit_available(unit: str) -> bool:
     """True iff systemd knows about this unit file.
 
@@ -210,11 +196,6 @@ def _unit_available(unit: str) -> bool:
         if fields and fields[0] == unit:
             return True
     return False
-
-
-def _unit_active(unit: str) -> bool:
-    rc, out = _systemctl("is-active", unit, timeout=5)
-    return rc == 0 and out == "active"
 
 
 def _local_sources_allowed() -> bool:

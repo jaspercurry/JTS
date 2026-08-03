@@ -63,6 +63,8 @@
 use std::io;
 use std::os::fd::RawFd;
 
+use jasper_tts_protocol::loudness::Biquad;
+
 /// Sample rate of the round-trip lane. Pinned to the SNAPFIFO stream
 /// format (48000:16:2) — the FIFO never carries any other rate, so the
 /// sub low-pass / mains high-pass coefficients can be precomputed
@@ -80,99 +82,40 @@ pub const SUB_DEFAULT_CORNER_HZ: f64 = 80.0;
 pub const SUB_MIN_CORNER_HZ: f64 = 40.0;
 pub const SUB_MAX_CORNER_HZ: f64 = 200.0;
 
-/// One 2nd-order IIR section (RBJ biquad), Direct Form I, f64 state.
-///
-/// Direct Form I keeps two input-history and two output-history taps;
-/// it is the numerically-robust choice for a low-Q audio biquad and
-/// makes the state continuity contract (a period boundary is just two
-/// remembered samples, identical to processing one big buffer) obvious.
-#[derive(Debug, Clone, Copy)]
-struct Biquad {
-    // Normalized coefficients (a0 folded out).
-    b0: f64,
-    b1: f64,
-    b2: f64,
-    a1: f64,
-    a2: f64,
-    // Direct Form I state: last two inputs and last two outputs.
-    x1: f64,
-    x2: f64,
-    y1: f64,
-    y2: f64,
+/// Low-pass section via the RBJ audio-EQ cookbook. An LR4 low-pass is two of
+/// these cascaded at Q = 1/sqrt(2) (Butterworth).
+fn low_pass_biquad(corner_hz: f64, sample_rate_hz: f64, q: f64) -> Biquad {
+    let w0 = 2.0 * std::f64::consts::PI * corner_hz / sample_rate_hz;
+    let (sin_w0, cos_w0) = w0.sin_cos();
+    let alpha = sin_w0 / (2.0 * q);
+    let b1 = 1.0 - cos_w0;
+    let b0 = b1 / 2.0;
+    let a0 = 1.0 + alpha;
+    Biquad::new(
+        b0 / a0,
+        b1 / a0,
+        b0 / a0,
+        (-2.0 * cos_w0) / a0,
+        (1.0 - alpha) / a0,
+    )
 }
 
-impl Biquad {
-    /// Low-pass section via the RBJ audio-EQ cookbook, parameterised by
-    /// corner frequency and Q. An LR4 low-pass is two of these cascaded
-    /// at Q = 1/sqrt(2) (Butterworth), giving a 4th-order, −24 dB/octave
-    /// roll-off that is −6 dB at the corner per section (−12 dB summed at
-    /// the LR crossover point, the LR4 signature).
-    fn low_pass(corner_hz: f64, sample_rate_hz: f64, q: f64) -> Self {
-        let w0 = 2.0 * std::f64::consts::PI * corner_hz / sample_rate_hz;
-        let (sin_w0, cos_w0) = w0.sin_cos();
-        let alpha = sin_w0 / (2.0 * q);
-
-        let b1 = 1.0 - cos_w0;
-        let b0 = b1 / 2.0;
-        let b2 = b0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w0;
-        let a2 = 1.0 - alpha;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            x1: 0.0,
-            x2: 0.0,
-            y1: 0.0,
-            y2: 0.0,
-        }
-    }
-
-    /// High-pass section via the RBJ audio-EQ cookbook. An LR4 high-pass
-    /// is two of these cascaded at the same Butterworth Q as the sub
-    /// low-pass, giving the complementary half of the bass-management
-    /// crossover.
-    fn high_pass(corner_hz: f64, sample_rate_hz: f64, q: f64) -> Self {
-        let w0 = 2.0 * std::f64::consts::PI * corner_hz / sample_rate_hz;
-        let (sin_w0, cos_w0) = w0.sin_cos();
-        let alpha = sin_w0 / (2.0 * q);
-
-        let b0 = (1.0 + cos_w0) / 2.0;
-        let b1 = -(1.0 + cos_w0);
-        let b2 = b0;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * cos_w0;
-        let a2 = 1.0 - alpha;
-
-        Self {
-            b0: b0 / a0,
-            b1: b1 / a0,
-            b2: b2 / a0,
-            a1: a1 / a0,
-            a2: a2 / a0,
-            x1: 0.0,
-            x2: 0.0,
-            y1: 0.0,
-            y2: 0.0,
-        }
-    }
-
-    /// Process one sample, advancing the Direct Form I state.
-    #[inline]
-    fn process(&mut self, x0: f64) -> f64 {
-        let y0 = self.b0 * x0 + self.b1 * self.x1 + self.b2 * self.x2
-            - self.a1 * self.y1
-            - self.a2 * self.y2;
-        self.x2 = self.x1;
-        self.x1 = x0;
-        self.y2 = self.y1;
-        self.y1 = y0;
-        y0
-    }
+/// High-pass section via the RBJ audio-EQ cookbook, complementary to the
+/// low-pass above.
+fn high_pass_biquad(corner_hz: f64, sample_rate_hz: f64, q: f64) -> Biquad {
+    let w0 = 2.0 * std::f64::consts::PI * corner_hz / sample_rate_hz;
+    let (sin_w0, cos_w0) = w0.sin_cos();
+    let alpha = sin_w0 / (2.0 * q);
+    let b0 = (1.0 + cos_w0) / 2.0;
+    let b1 = -(1.0 + cos_w0);
+    let a0 = 1.0 + alpha;
+    Biquad::new(
+        b0 / a0,
+        b1 / a0,
+        b0 / a0,
+        (-2.0 * cos_w0) / a0,
+        (1.0 - alpha) / a0,
+    )
 }
 
 /// 4th-order Linkwitz-Riley low-pass: two cascaded Butterworth biquads
@@ -196,8 +139,8 @@ impl Lr4LowPass {
     /// (re)construct".
     pub fn new(corner_hz: f64) -> Self {
         Self {
-            s1: Biquad::low_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
-            s2: Biquad::low_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
+            s1: low_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
+            s2: low_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
             corner_hz,
         }
     }
@@ -228,8 +171,8 @@ impl Lr4HighPass {
     /// Build a fresh LR4 high-pass at `corner_hz`.
     pub fn new(corner_hz: f64) -> Self {
         Self {
-            s1: Biquad::high_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
-            s2: Biquad::high_pass(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
+            s1: high_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
+            s2: high_pass_biquad(corner_hz, SUB_SAMPLE_RATE_HZ, LR4_SECTION_Q),
             corner_hz,
         }
     }

@@ -26,6 +26,7 @@ from jasper.output_topology import (
     PAIRING_INTENTS,
     OutputTopology,
     OutputTopologyError,
+    SpeakerChannel,
     channel_identity_report,
     clock_domain_report,
     hardware_from_env,
@@ -189,6 +190,36 @@ def test_empty_topology_draft_is_honest_and_no_audio_allowed() -> None:
     assert payload["hardware"]["physical_output_count"] == 8
     assert payload["safety"]["sound_tests_allowed"] is False
     assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
+
+
+def test_direct_channel_construction_requires_explicit_protection_state() -> None:
+    with pytest.raises(TypeError):
+        SpeakerChannel(role="tweeter")  # type: ignore[call-arg]
+
+    channel = SpeakerChannel(
+        role="tweeter",
+        protection_required=True,
+        protection_status="required_missing",
+    )
+
+    assert channel.protection_required is True
+    assert channel.protection_status == "required_missing"
+
+
+def test_persisted_status_hint_cannot_override_derived_status() -> None:
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "verified",
+        "hardware": _base_hardware(),
+        "speaker_groups": [],
+        "routing": {},
+    })
+
+    assert topology.status == "draft"
+    assert topology.to_dict()["status"] == "draft"
 
 
 def test_passive_stereo_topology_can_be_valid_before_identity_verified() -> None:

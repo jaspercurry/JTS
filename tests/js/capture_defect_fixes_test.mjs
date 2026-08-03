@@ -144,6 +144,7 @@ function makeRecorder() {
 
 const injected = `
 const acceptedAcknowledgement = () => null;
+const setText = (node, text) => { node.textContent = typeof text === "string" ? text : ""; };
 const createMonoRecorder = async () => globalThis.__recorder;
 const delayMs = async () => {};
 const safeReturnUrl = (spec) => {

@@ -58,9 +58,10 @@ things legitimately spell the literal outside that scope, on purpose:
 * ``deploy/alsa/asoundrc.jasper`` declares the actual ``pcm.correction_substream``
   block the system's ALSA config reads at runtime. It is not Python, so it
   cannot import this constant — but it is not disconnected from this module
-  either: :func:`jasper.cli.doctor.audio.check_fanin_asound_wiring` reads
+  either: :func:`jasper.cli.doctor.audio_runtime.check_fanin_asound_wiring` reads
   :data:`CORRECTION_SUBSTREAM` as the expected-alias dict key it checks
-  ``/etc/asound.conf`` against, and ``tests/test_doctor.py``'s hand-maintained
+  ``/etc/asound.conf`` against, and ``tests/test_doctor_audio_runtime.py``'s
+  hand-maintained
   ``_FANIN_ASOUND`` fixture mirrors ``asoundrc.jasper``'s
   ``pcm.correction_substream`` block byte-for-byte. So the Python constant and
   the checked-in ALSA config stay cross-validated through that doctor check,

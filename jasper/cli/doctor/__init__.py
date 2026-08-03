@@ -10,7 +10,8 @@ This package is the decomposed form of the original single-file
 name that external code or the test-suite imports resolve from
 this ``__init__`` exactly as they did from the old module — the
 checks were re-homed into per-domain modules
-(:mod:`~jasper.cli.doctor.audio`, :mod:`~jasper.cli.doctor.network`,
+(:mod:`~jasper.cli.doctor.audio`, :mod:`~jasper.cli.doctor.audio_runtime`,
+:mod:`~jasper.cli.doctor.network`,
 …) and the cross-cutting harness/helpers into
 :mod:`~jasper.cli.doctor._shared`, then re-exported here.
 
@@ -48,7 +49,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
-from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
 from ...install_profile import (
@@ -115,6 +115,7 @@ from .voice import (
     check_pricing,
 )
 from . import audio as audio
+from . import audio_runtime as audio_runtime
 from .audio import (
     check_alsa_card,
     _HW_SHORTHAND_RE,
@@ -670,222 +671,13 @@ __all__ = [
     "Optional",
 ]
 
-# Threshold for `probe_aec_ref_path`. A 5 s, -26 dBFS sine through dsnoop +
-# plug + the bridge's 125 Hz HPF + (default) 0 dB pre-gain lands in the low
-# thousands of RMS at the bridge's `ref`. We accept anything ≥200 as proof
-# the path is live — comfortably above the silent floor (a broken path
-# stays at 0-50) but well below typical music-playback levels (1000+).
-_PROBE_REF_PASS_THRESHOLD = 200
-
-_PROBE_SINE_PATH = "/tmp/jasper-doctor-probe-sine.wav"
-
-_PROBE_SINE_DURATION_S = 5.0
-
-def probe_aec_ref_path() -> list[CheckResult]:
-    """Active probe: confirm the bridge's reference path is wired
-    correctly by playing a brief sine into correction_substream and
-    verifying the bridge's `ref` RMS rises in the rms log over the
-    test window.
-
-    Codifies the manual differential test from 2026-05-16 (see
-    docs/HANDOFF-aec.md "Lessons learned" #10). Useful when
-    `check_aec_bridge_output_health` returns ok because no music has
-    been playing and you want a positive confirmation that the path
-    works end-to-end — or when it fails and you want to localize the
-    break between the ref path, the speaker chain, and the mic.
-
-    Refuses to run if a renderer is actively playing (would mix with
-    music and disturb the operator) or if the bridge isn't active."""
-    import datetime
-    import math
-    import struct
-    import wave
-
-    from ...control import client as control
-
-    results: list[CheckResult] = []
-
-    # Pre-flight 1 — bridge must be running. The probe inspects the
-    # bridge's rms log; a stopped bridge has nothing to inspect.
-    is_active = _run(
-        ["systemctl", "is-active", "jasper-aec-bridge.service"]
-    ).stdout.strip()
-    if is_active != "active":
-        results.append(CheckResult(
-            "probe — bridge running", "fail",
-            f"bridge state is '{is_active}'; can't probe a stopped bridge. "
-            f"`systemctl status jasper-aec-bridge`.",
-        ))
-        return results
-    results.append(CheckResult("probe — bridge running", "ok", "active"))
-
-    # Pre-flight 2 — refuse if a renderer is currently playing. The
-    # probe writes to correction_substream, a dedicated fan-in input,
-    # but it still emerges from the speaker and would mix with active
-    # music for 5 s.
-    try:
-        state = control.get_state(timeout=3)
-        active = state.get("active_source", "idle")
-        # "voice" is fine — voice TTS goes to jasper_out, not the
-        # loopback. "spotify" / "airplay" would compete with us.
-        if active not in ("idle", "voice"):
-            results.append(CheckResult(
-                "probe — renderers idle", "fail",
-                f"active_source={active!r}; refuse to play test sine over "
-                f"existing music. Stop {active} playback and re-run.",
-            ))
-            return results
-        if _loopback_playback_active():
-            results.append(CheckResult(
-                "probe — renderers idle", "fail",
-                "a fan-in input lane is currently open in /proc/asound; "
-                "refuse to play test sine over active renderer audio. "
-                "Stop playback and re-run.",
-            ))
-            return results
-        results.append(CheckResult(
-            "probe — renderers idle", "ok",
-            f"active_source={active!r}",
-        ))
-    except (control.ControlError, json.JSONDecodeError) as e:
-        # correction_substream is a private fan-in input, so aplay won't
-        # necessarily get EBUSY just because AirPlay/Spotify is active.
-        # If /state is down, fall back to /proc/asound ownership before
-        # deciding whether the active probe is safe to run.
-        if _loopback_playback_active():
-            results.append(CheckResult(
-                "probe — renderers idle", "fail",
-                f"jasper-control /state unreachable ({e}) and a fan-in "
-                f"input lane is open in /proc/asound. Refuse to play "
-                f"test sine over possible active renderer audio.",
-            ))
-            return results
-        results.append(CheckResult(
-            "probe — renderers idle", "warn",
-            f"jasper-control /state unreachable ({e}); /proc/asound "
-            f"shows fan-in input lanes idle, so proceeding with active "
-            f"probe.",
-        ))
-
-    # Generate the test sine. Stereo S16_LE 48 kHz to match the dongle's
-    # native rate; -26 dBFS amplitude (conversational SPL through the
-    # speaker at typical main_volume).
-    fs = 48000
-    amp = 0.05  # -26 dBFS
-    freq = 1000
-    n_samples = int(_PROBE_SINE_DURATION_S * fs)
-    samples = bytearray()
-    for i in range(n_samples):
-        v = int(amp * 32767 * math.sin(2 * math.pi * freq * i / fs))
-        samples += struct.pack("<hh", v, v)
-    try:
-        with wave.open(_PROBE_SINE_PATH, "wb") as f:
-            f.setnchannels(2)
-            f.setsampwidth(2)
-            f.setframerate(fs)
-            f.writeframes(samples)
-    except OSError as e:
-        results.append(CheckResult(
-            "probe — generate sine", "fail",
-            f"could not write {_PROBE_SINE_PATH}: {e}",
-        ))
-        return results
-
-    # Note the journal cursor BEFORE we play, so we only assess rms
-    # lines that cover the probe window. journalctl `--since` accepts
-    # ISO timestamps; UTC avoids timezone surprises.
-    probe_start = datetime.datetime.now(datetime.timezone.utc)
-    since = probe_start.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    # Play the sine through the dedicated correction/test fan-in lane.
-    # Its plug wrapper handles format/rate conversion before fanin.
-    play = _run(
-        ["aplay", "-q", "-D", CORRECTION_SUBSTREAM, _PROBE_SINE_PATH],
-        timeout=_PROBE_SINE_DURATION_S + 5.0,
-    )
-    try:
-        os.unlink(_PROBE_SINE_PATH)
-    except OSError:
-        pass
-    if play.returncode != 0:
-        results.append(CheckResult(
-            "probe — aplay sine", "fail",
-            f"aplay failed: {play.stderr.strip() or f'rc={play.returncode}'}. "
-            f"If 'Unknown PCM', re-run install.sh so /etc/asound.conf "
-            f"defines correction_substream; if 'invalid argument', check "
-            f"/proc/asound/Loopback exists.",
-        ))
-        return results
-    results.append(CheckResult(
-        "probe — aplay sine", "ok",
-        f"{_PROBE_SINE_DURATION_S:.0f} s of {freq} Hz sine to correction_substream",
-    ))
-
-    # Wait one bridge rms window (5 s cadence) so the post-play log
-    # line is captured.
-    time.sleep(6.0)
-
-    journal = _run(
-        ["journalctl", "-u", "jasper-aec-bridge.service",
-         "--since", since, "--no-pager", "--output=cat"],
-        timeout=5.0,
-    )
-    if journal.returncode != 0:
-        results.append(CheckResult(
-            "probe — bridge journal", "warn",
-            f"could not read journal: {journal.stderr.strip()}",
-        ))
-        return results
-
-    max_ref = 0
-    max_mic = 0
-    window_count = 0
-    for line in journal.stdout.split("\n"):
-        m = _AEC_RMS_RE.search(line)
-        if not m:
-            continue
-        window_count += 1
-        max_ref = max(max_ref, int(m.group(1)))
-        max_mic = max(max_mic, int(m.group(2)))
-
-    if window_count == 0:
-        results.append(CheckResult(
-            "probe — ref signal observed", "warn",
-            "no bridge rms windows since probe start; bridge may have "
-            "stalled or the journal is not capturing INFO-level lines.",
-        ))
-        return results
-
-    if max_ref >= _PROBE_REF_PASS_THRESHOLD:
-        results.append(CheckResult(
-            "probe — ref signal observed", "ok",
-            f"max ref={max_ref} across {window_count} windows "
-            f"(threshold ≥{_PROBE_REF_PASS_THRESHOLD}); dsnoop/plug ref "
-            f"chain healthy",
-        ))
-    elif max_mic >= _AEC_MIC_MUSIC_THRESHOLD:
-        # Mic heard the sine, ref didn't see it — speaker chain is fine,
-        # ref capture is broken. This is the PR #75 silent-ref signature
-        # made trivially reproducible.
-        results.append(CheckResult(
-            "probe — ref signal observed", "fail",
-            f"max ref={max_ref} (need ≥{_PROBE_REF_PASS_THRESHOLD}) but "
-            f"max mic={max_mic} — speaker is reproducing the test tone "
-            f"(mic hears it) yet ref path is silent. dsnoop/plug ref "
-            f"chain is broken. See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
-        ))
-    else:
-        # Neither path saw the sine — speaker or capture is the issue,
-        # not specifically the ref. Most common cause: main_volume is
-        # muted, the dongle is unplugged, or the chip mic is muted.
-        results.append(CheckResult(
-            "probe — ref signal observed", "warn",
-            f"max ref={max_ref} AND max mic={max_mic} — neither path saw "
-            f"the test tone. Check that the speaker is on (main_volume "
-            f"not muted), the Apple dongle is plugged in, and the chip "
-            f"mic isn't muted (`jasper-doctor` mixer check).",
-        ))
-    return results
+from . import aec_probe as aec_probe
+from .aec_probe import (
+    _PROBE_REF_PASS_THRESHOLD,
+    _PROBE_SINE_DURATION_S,
+    _PROBE_SINE_PATH,
+    probe_aec_ref_path,
+)
 
 def render(results: list[CheckResult]) -> int:
     print()

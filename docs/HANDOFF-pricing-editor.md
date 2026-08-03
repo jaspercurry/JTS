@@ -323,7 +323,7 @@ per-provider price integrations.
   canonical spend-accounting behavior remains in
   [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md).
 - `jasper/web/_common.py` — `write_json_file` (atomic, mode 0644).
-- `tests/test_usage.py`, `tests/test_voice_setup.py`, `tests/test_doctor.py`
+- `tests/test_usage.py`, `tests/test_voice_setup.py`, `tests/test_doctor_voice.py`
   — coverage incl. the import-merge route test.
 - Shipped: [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md)
   "Spend-cap pricing" bullet updated (model keying, dated JSON); README

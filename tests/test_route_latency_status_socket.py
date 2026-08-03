@@ -12,37 +12,15 @@ harness) share one verified mechanic.
 from __future__ import annotations
 
 import json
-import os
 import socket
-import tempfile
 import threading
 
 import pytest
 
 from jasper.route_latency import status_socket
+from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 
-
-@pytest.fixture()
-def short_sock_path():
-    """A Unix-socket path short enough for AF_UNIX's ~104-char limit.
-
-    pytest's ``tmp_path`` is too deep on macOS, so bind under a short mkdtemp
-    dir and clean it up afterward.
-    """
-
-    d = tempfile.mkdtemp(prefix="jts-ss-")
-    path = os.path.join(d, "control.sock")
-    try:
-        yield path
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-        try:
-            os.rmdir(d)
-        except OSError:
-            pass
+_IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 
 
 def _serve_once(sock_path: str, reply: bytes, *, expect_request: bytes = b"STATUS\n") -> threading.Thread:

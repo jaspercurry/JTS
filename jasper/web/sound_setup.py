@@ -1379,7 +1379,6 @@ async def _live_draft_profile(
     profile: SoundProfile,
     *,
     expected_dsp_write_epoch: str,
-    profile_path: str | Path,
     library_path: str | Path | None = None,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
@@ -1891,7 +1890,6 @@ def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
         staged_config=staged_config,
         calibration_level=calibration_level,
         tone_backend=_active_speaker_tone_backend_status(topology),
-        stop_control_available=True,
     )
     log_event(
         logger,
@@ -5411,7 +5409,6 @@ def _make_handler(
                             _live_draft_profile(
                                 profile,
                                 expected_dsp_write_epoch=expected_epoch,
-                                profile_path=profile_path,
                                 library_path=library_path,
                                 config_dir=config_dir,
                                 camilla_factory=camilla_factory,

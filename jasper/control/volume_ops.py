@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
@@ -46,6 +47,7 @@ class _SpotifyEmptyRouterCache:
 
 
 _spotify_empty_router_cache: _SpotifyEmptyRouterCache | None = None
+_spotify_empty_router_cache_lock = threading.Lock()
 
 
 def _clamp_db(db: float) -> float:
@@ -133,7 +135,8 @@ def _build_spotify_router_or_none():
         )
         global _spotify_empty_router_cache
         now = time.monotonic()
-        cached = _spotify_empty_router_cache
+        with _spotify_empty_router_cache_lock:
+            cached = _spotify_empty_router_cache
         if (
             cached is not None
             and cached.fingerprint == fingerprint
@@ -159,13 +162,15 @@ def _build_spotify_router_or_none():
         if not result.clients:
             reason = ",".join(sorted({s.state for s in result.statuses}))
             reason = reason or "no_accounts"
-            _spotify_empty_router_cache = _SpotifyEmptyRouterCache(
-                fingerprint=fingerprint,
-                expires_at=now + _SPOTIFY_EMPTY_ROUTER_CACHE_TTL_SEC,
-                reason=reason,
-            )
+            with _spotify_empty_router_cache_lock:
+                _spotify_empty_router_cache = _SpotifyEmptyRouterCache(
+                    fingerprint=fingerprint,
+                    expires_at=now + _SPOTIFY_EMPTY_ROUTER_CACHE_TTL_SEC,
+                    reason=reason,
+                )
             return None
-        _spotify_empty_router_cache = None
+        with _spotify_empty_router_cache_lock:
+            _spotify_empty_router_cache = None
         return Router(
             clients=result.clients,
             default_name=registry.default_name,

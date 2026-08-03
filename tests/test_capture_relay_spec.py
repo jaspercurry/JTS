@@ -20,6 +20,7 @@ import re
 
 import pytest
 
+import jasper.capture_relay as capture_relay
 from jasper.capture_relay import spec as spec_mod
 from jasper.capture_relay.spec import (
     CAPTURE_PROTOCOL_VERSION,
@@ -37,6 +38,11 @@ from jasper.capture_relay.spec import (
     ui_level_meter,
     ui_steps,
 )
+
+
+def test_package_exports_every_shipped_capture_builder() -> None:
+    for builder in capture_relay.BUILDERS.values():
+        assert getattr(capture_relay, builder.__name__) is builder
 from jasper.audio_measurement.calibration import SUPPORTED_MODELS, supported_model_options
 
 
@@ -154,7 +160,9 @@ def test_room_sweep_validity_refuses_unclean_with_fallback():
     assert s.validity.clean_capture == "refuse"
     # …but never dead-end an iPhone that cannot do a clean capture.
     assert s.validity.allow_capability_fallback is True
-    assert s.validity.require_alignment is True
+    # Room reports direct-arrival alignment evidence but does not advertise a
+    # hard gate until its fleet threshold has been calibrated.
+    assert s.validity.require_alignment is False
     # Magnitude FR is drift-insensitive.
     assert s.validity.clock_drift == "ignore"
 

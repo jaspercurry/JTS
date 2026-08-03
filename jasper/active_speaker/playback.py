@@ -24,7 +24,7 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
-from ._common import issue as _issue
+from ._common import bounded_int as _bounded_int, issue as _issue
 from .calibration_level import (
     DEFAULT_TEST_LEVEL_DBFS,
     MAX_TEST_LEVEL_DBFS,
@@ -161,14 +161,6 @@ def _positive_int(value: Any, *, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return out if out > 0 else default
-
-
-def _bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:
-    try:
-        out = int(value)
-    except (TypeError, ValueError):
-        out = default
-    return min(max(out, lo), hi)
 
 
 def _bounded_float(value: Any, *, default: float, lo: float, hi: float) -> float:
@@ -957,9 +949,6 @@ def start_tone_playback(
     tone = _tone_fields(plan)
     bounded_plan = _plan_with_bounded_tone(plan, tone)
     audio_backend = bool(getattr(selected, "audio_backend", False))
-    requires_protected_startup = bool(
-        getattr(selected, "requires_protected_startup", True)
-    )
     issues = _validate_plan_for_dry_backend(
         plan,
         safe_session=safe_session,
@@ -989,7 +978,6 @@ def start_tone_playback(
         )
     if (
         audio_backend
-        and requires_protected_startup
         and not safety.get("protected_startup_loaded")
     ):
         issues.append(

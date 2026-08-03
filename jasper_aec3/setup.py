@@ -73,6 +73,7 @@ def _build_v1_extension() -> Pybind11Extension:
     return Pybind11Extension(
         "jasper_aec3._aec3",
         sources=["src/aec3_binding.cpp"],
+        depends=["src/process_10ms.h"],
         include_dirs=include_dirs,
         library_dirs=library_dirs,
         libraries=libraries,
@@ -215,6 +216,7 @@ def _build_v2_extension(prefix: Path) -> Pybind11Extension:
     return Pybind11Extension(
         "jasper_aec3._aec3_v2",
         sources=["src/aec3_binding_v2.cpp"],
+        depends=["src/process_10ms.h"],
         include_dirs=include_dirs,
         library_dirs=library_dirs,
         libraries=library_names,

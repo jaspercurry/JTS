@@ -125,7 +125,7 @@ def test_build_ports_default_output_unchanged():
 
 
 def test_build_ports_include_flags_behaviour_preserved():
-    # Mirrors the documented gating (and tests/test_wake_corpus_setup.py).
+    # Mirrors the documented gating (and tests/test_wake_corpus_capture_plan.py).
     no_dtln = wake_ports.build_ports(include_dtln=False)
     assert "dtln" not in no_dtln
     assert "raw0" in no_dtln  # raw0 is always present

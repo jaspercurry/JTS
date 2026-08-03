@@ -122,6 +122,7 @@ class PeeringDaemon:
         # the StartSession/StandDown back to the RPC.
         self._pending_epoch: Optional[str] = None
         self._hello_task: Optional[asyncio.Task] = None
+        self._send_tasks: set[asyncio.Task[None]] = set()
         self._known_peers: dict[str, dict] = {}  # peer_id → {room, primary, address, last_seen}
         self._running = False
         # Snapshot for STATUS so the wizard can show current state.
@@ -228,6 +229,12 @@ class PeeringDaemon:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._hello_task = None
+
+        if self._send_tasks:
+            pending_sends = tuple(self._send_tasks)
+            for task in pending_sends:
+                task.cancel()
+            await asyncio.gather(*pending_sends, return_exceptions=True)
 
         if self._uds_server is not None:
             self._uds_server.close()
@@ -472,12 +479,20 @@ class PeeringDaemon:
             self._pending_decision.set_result(decision)
 
     def _spawn_send(self, payload: bytes) -> None:
-        if self._transport is None or self._loop is None:
+        # stop() clears _running before it yields to cancellation. Refuse any
+        # action that races in after that quiesce point so a late send cannot
+        # appear after stop's task snapshot and escape its drain.
+        if not self._running or self._transport is None or self._loop is None:
             return
         # Best-effort fire-and-forget; the recv side has its own error
         # handling. Spawn a task rather than awaiting so the state
         # machine's action loop isn't blocked.
-        self._loop.create_task(self._transport.send(payload), name="peering-send")
+        task = self._loop.create_task(
+            self._transport.send(payload),
+            name="peering-send",
+        )
+        self._send_tasks.add(task)
+        task.add_done_callback(self._send_tasks.discard)
 
     def _schedule_timer(self, timer_id: str, at_monotonic: float) -> None:
         if self._loop is None:

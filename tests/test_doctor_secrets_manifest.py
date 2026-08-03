@@ -26,11 +26,11 @@ this. This test pins the manifest against the committed unit files, mirroring
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from jasper.cli.doctor import privsep
 from jasper.cli.doctor.secret_compartments import COMPARTMENTS
+from tests.systemd_unit_helpers import value_for, values_for
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,21 +46,11 @@ _TIER_A_UNIT_FILE = {s.unit: s.unit_file for s in privsep.MANIFEST}
 def _supp_groups(unit_file: Path) -> set[str]:
     """The union of every ``SupplementaryGroups=`` line in a unit file (systemd
     unions them). Mirrors ``test_doctor_privsep_manifest._unit_identity``."""
-    supp: set[str] = set()
-    for raw in unit_file.read_text().splitlines():
-        line = raw.strip()
-        if m := re.match(r"^SupplementaryGroups=(.*)$", line):
-            supp.update(m.group(1).split())
-    return supp
+    return set(values_for(unit_file.read_text(), "SupplementaryGroups"))
 
 
 def _user(unit_file: Path) -> str:
-    user = ""
-    for raw in unit_file.read_text().splitlines():
-        line = raw.strip()
-        if m := re.match(r"^User=(.*)$", line):
-            user = m.group(1).strip()
-    return user
+    return value_for(unit_file.read_text(), "User") or ""
 
 
 def _effective_compartment_groups_by_user() -> dict[str, set[str]]:

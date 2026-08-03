@@ -3273,6 +3273,43 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         assert callable(getattr(srv_mod, name))
 
 
+def test_control_route_bodies_stay_partitioned_by_concern() -> None:
+    """Keep dispatch/security central while route bodies stay modular."""
+    from jasper.control.handlers import (
+        AecRoutes,
+        GroupingRoutes,
+        SystemRoutes,
+        VoiceRoutes,
+        VolumeRoutes,
+    )
+
+    handler = _make_handler(
+        "127.0.0.1",
+        1234,
+        "/nonexistent.sock",
+        ha_status_cache=object(),
+    )
+    assert {"do_GET", "do_POST", "_GET_ROUTES", "_POST_ROUTES"} <= set(
+        handler.__dict__,
+    )
+
+    concern_mixins = (
+        VolumeRoutes,
+        VoiceRoutes,
+        AecRoutes,
+        GroupingRoutes,
+        SystemRoutes,
+    )
+    routed_methods = {
+        *handler._GET_ROUTES.values(),
+        *handler._POST_ROUTES.values(),
+    }
+    for method_name in routed_methods:
+        assert method_name not in handler.__dict__
+        owners = [mixin for mixin in concern_mixins if method_name in mixin.__dict__]
+        assert len(owners) == 1, (method_name, owners)
+
+
 # --- 404 / coordinator-failure ---
 
 
@@ -4117,6 +4154,21 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
         "event=state.aggregate_timeout" in r.getMessage()
         for r in caplog.records
     ), "aggregate timeout must emit a greppable event= line"
+
+
+@pytest.mark.asyncio
+async def test_wifi_guardian_snapshot_runs_off_aggregate_event_loop(monkeypatch):
+    caller_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def fake_snapshot():
+        seen.append(threading.get_ident())
+        return {"enabled": False}
+
+    monkeypatch.setattr(state_aggregate.wifi_guardian_state, "snapshot", fake_snapshot)
+
+    assert await state_aggregate._wifi_guardian_snapshot() == {"enabled": False}
+    assert seen and seen[0] != caller_thread
 
 
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):

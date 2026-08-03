@@ -13,13 +13,14 @@ future microphone meter observations into coarse operator guidance.
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
+
+from ._common import finite_float as _finite_float
 
 SCHEMA_VERSION = 1
 CALIBRATION_LEVEL_KIND = "jts_active_speaker_calibration_level"
@@ -35,14 +36,6 @@ AUDIBLE_RAMP_STEP_DB = 10.0
 MIC_TOO_QUIET_BELOW_DBFS = -55.0
 MIC_USABLE_MIN_DBFS = -45.0
 MIC_USABLE_MAX_DBFS = -18.0
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 def _utc_now() -> str:

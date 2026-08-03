@@ -11,15 +11,11 @@ serialize — so the dedup is purely structural, not behavioural. Consumers impo
 them aliased to their existing private names (`from ._common import issue as
 _issue, gate as _gate`) so call sites stay identical.
 
-Deliberately NOT consolidated here: `_finite_float` and `_level_at_floor`.
-`_level_at_floor` genuinely encodes different contracts across modules
-(return-None vs raise vs return-default; dict-arg vs float-arg), so those
-really are distinct functions. `_finite_float` is not: `calibration_level.py`,
-`baseline_profile.py`, `measurement.py`, `safe_playback.py`, and
-`commissioning_coordinator.py` all share the same body (return `None` on a
-non-finite/unconvertible value), and `driver_protection.py`'s version is the
-same logic with an if/return instead of a ternary — that cluster is
-duplicated, not distinct, and a candidate for future consolidation.
+`finite_float` owns the modules' shared nullable coercion contract (return
+`None` for non-finite or unconvertible values). Deliberately NOT consolidated
+here: `_level_at_floor`, whose module-specific variants genuinely encode
+different contracts (return-None vs raise vs return-default; dict-arg vs
+float-arg).
 
 `require_sha256_hex` replaces the module-local `_sha256(value, field_name)`
 hex-fingerprint checks — a regex `fullmatch` in some modules, an equivalent
@@ -38,6 +34,7 @@ import-light contract.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -79,6 +76,12 @@ def issue(severity: str, code: str, message: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "message": message}
 
 
+def blocker_issue(code: str, message: str) -> dict[str, str]:
+    """A blocker diagnostic for fail-closed operator paths."""
+
+    return issue("blocker", code, message)
+
+
 def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, Any]:
     """A named pass/fail readiness gate with an operator-facing label."""
 
@@ -88,6 +91,26 @@ def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, A
         "passed": bool(passed),
         "message": message,
     }
+
+
+def finite_float(value: Any) -> float | None:
+    """Return ``value`` as a finite float, or ``None`` when unusable."""
+
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:
+    """Coerce an integer and clamp it to the inclusive ``lo``/``hi`` range."""
+
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        out = default
+    return min(max(out, lo), hi)
 
 
 def require_sha256_hex(

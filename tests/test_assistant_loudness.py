@@ -37,6 +37,16 @@ def test_tts_envelope_tracks_user_level():
     assert tts_envelope_lufs_for_level("bad") == -41.0
 
 
+def test_bs1770_impulse_matches_rust_runtime_golden():
+    """Pin Python and Rust to one K-weighting/LUFS contract vector."""
+    np = pytest.importorskip("numpy")
+    samples = np.zeros(256, dtype=np.float64)
+    samples[0] = 1000.0
+    energy = assistant_loudness._k_weighted_stereo_energy(samples)
+    lufs = assistant_loudness._lufs_from_energy(float(energy.sum()), len(samples))
+    assert lufs == pytest.approx(-48.24314664579623, abs=1e-10)
+
+
 def test_profile_round_trip_and_merge(tmp_path):
     path = _profile_path(tmp_path)
     first = LoudnessMeasurement(
@@ -53,7 +63,6 @@ def test_profile_round_trip_and_merge(tmp_path):
         path=path,
         method="seed_tts",
         confidence=0.60,
-        phrase=CALIBRATION_TEXT,
     )
     second = LoudnessMeasurement(
         source_lufs=-14.0,

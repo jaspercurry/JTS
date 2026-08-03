@@ -59,6 +59,7 @@ from .assistant_volume import (
     volume_context_stamp_boot_ns,
 )
 from .assistant_loudness import tts_envelope_lufs_for_level
+from .busctl import run_busctl
 from .log_event import log_event
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
 from . import volume_diagnostics
@@ -1095,8 +1096,15 @@ class VolumeCoordinator:
             await self._read_camilla_volume_and_mute()
         )
 
-        if prev_source == current_source:
-            now = time.monotonic()
+        def _handoff(
+            *,
+            push_ok: bool | None = None,
+            camilla_guarded: bool = False,
+            settled_ms: int = 0,
+            result: str = "ok",
+            detail: str = "",
+        ) -> SourceHandoff:
+            """Build one result from the handoff state accumulated so far."""
             return SourceHandoff(
                 prev_source=prev_source,
                 current_source=current_source,
@@ -1106,10 +1114,17 @@ class VolumeCoordinator:
                 current_mode=current_mode,
                 guard_db=guard_db,
                 camilla_before_db=camilla_before,
-                result="noop",
+                push_ok=push_ok,
+                camilla_guarded=camilla_guarded,
+                settled_ms=settled_ms,
+                result=result,
+                detail=detail,
                 started_at_mono=started,
-                prepared_at_mono=now,
+                prepared_at_mono=time.monotonic(),
             )
+
+        if prev_source == current_source:
+            return _handoff(result="noop")
 
         if current_mode == VolumeMode.CAMILLA_MASTER:
             settled_ms = 0
@@ -1130,20 +1145,9 @@ class VolumeCoordinator:
                     persist=True,
                 )
                 if not ok:
-                    now = time.monotonic()
-                    return SourceHandoff(
-                        prev_source=prev_source,
-                        current_source=current_source,
-                        reason=reason,
-                        level=level,
-                        prev_mode=prev_mode,
-                        current_mode=current_mode,
-                        guard_db=guard_db,
-                        camilla_before_db=camilla_before,
+                    return _handoff(
                         result="failed",
                         detail="camilla_guard_failed",
-                        started_at_mono=started,
-                        prepared_at_mono=now,
                     )
                 level, guard_db, settled_ms, ok = (
                     await self._settle_handoff_guard(
@@ -1152,22 +1156,11 @@ class VolumeCoordinator:
                     )
                 )
                 if not ok:
-                    now = time.monotonic()
-                    return SourceHandoff(
-                        prev_source=prev_source,
-                        current_source=current_source,
-                        reason=reason,
-                        level=level,
-                        prev_mode=prev_mode,
-                        current_mode=current_mode,
-                        guard_db=guard_db,
-                        camilla_before_db=camilla_before,
+                    return _handoff(
                         camilla_guarded=True,
                         settled_ms=settled_ms,
                         result="failed",
                         detail="camilla_guard_catchdown_failed",
-                        started_at_mono=started,
-                        prepared_at_mono=now,
                     )
             else:
                 self._refresh_from_disk()
@@ -1180,20 +1173,11 @@ class VolumeCoordinator:
                         persist=True,
                     )
                     if not ok:
-                        now = time.monotonic()
-                        return SourceHandoff(
-                            prev_source=prev_source,
-                            current_source=current_source,
-                            reason=reason,
-                            level=latest_level,
-                            prev_mode=prev_mode,
-                            current_mode=current_mode,
-                            guard_db=latest_guard_db,
-                            camilla_before_db=camilla_before,
+                        level = latest_level
+                        guard_db = latest_guard_db
+                        return _handoff(
                             result="failed",
                             detail="camilla_guard_catchdown_failed",
-                            started_at_mono=started,
-                            prepared_at_mono=now,
                         )
                     level, guard_db, settled_ms, ok = (
                         await self._settle_handoff_guard(
@@ -1203,37 +1187,15 @@ class VolumeCoordinator:
                         )
                     )
                     if not ok:
-                        now = time.monotonic()
-                        return SourceHandoff(
-                            prev_source=prev_source,
-                            current_source=current_source,
-                            reason=reason,
-                            level=level,
-                            prev_mode=prev_mode,
-                            current_mode=current_mode,
-                            guard_db=guard_db,
-                            camilla_before_db=camilla_before,
+                        return _handoff(
                             camilla_guarded=True,
                             settled_ms=settled_ms,
                             result="failed",
                             detail="camilla_guard_catchdown_failed",
-                            started_at_mono=started,
-                            prepared_at_mono=now,
                         )
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
+            return _handoff(
                 camilla_guarded=True,
                 settled_ms=settled_ms,
-                started_at_mono=started,
-                prepared_at_mono=now,
             )
 
         push_ok = await self._set_push_source_for_handoff(current_source, level)
@@ -1247,20 +1209,7 @@ class VolumeCoordinator:
                     current_source, level,
                 )
         if push_ok:
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
-                push_ok=True,
-                started_at_mono=started,
-                prepared_at_mono=now,
-            )
+            return _handoff(push_ok=True)
 
         ok = await self._set_camilla_db(
             guard_db,
@@ -1268,21 +1217,10 @@ class VolumeCoordinator:
             persist=True,
         )
         if not ok:
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
+            return _handoff(
                 push_ok=False,
                 result="failed",
                 detail="push_failed_and_camilla_guard_failed",
-                started_at_mono=started,
-                prepared_at_mono=now,
             )
         level, guard_db, settled_ms, settle_ok = (
             await self._settle_handoff_guard(
@@ -1291,23 +1229,12 @@ class VolumeCoordinator:
             )
         )
         if not settle_ok:
-            now = time.monotonic()
-            return SourceHandoff(
-                prev_source=prev_source,
-                current_source=current_source,
-                reason=reason,
-                level=level,
-                prev_mode=prev_mode,
-                current_mode=current_mode,
-                guard_db=guard_db,
-                camilla_before_db=camilla_before,
+            return _handoff(
                 push_ok=False,
                 camilla_guarded=True,
                 settled_ms=settled_ms,
                 result="failed",
                 detail="push_failed_camilla_guard_catchdown_failed",
-                started_at_mono=started,
-                prepared_at_mono=now,
             )
         self._record_push_guard(
             current_source,
@@ -1317,23 +1244,12 @@ class VolumeCoordinator:
             context="source_handoff_push_degraded",
             previous_db=camilla_before,
         )
-        now = time.monotonic()
-        return SourceHandoff(
-            prev_source=prev_source,
-            current_source=current_source,
-            reason=reason,
-            level=level,
-            prev_mode=prev_mode,
-            current_mode=current_mode,
-            guard_db=guard_db,
-            camilla_before_db=camilla_before,
+        return _handoff(
             push_ok=False,
             camilla_guarded=True,
             settled_ms=settled_ms,
             result="degraded_safe",
             detail="push_volume_failed_camilla_guarded",
-            started_at_mono=started,
-            prepared_at_mono=now,
         )
 
     async def finalize_source_handoff(self, handoff: SourceHandoff) -> bool:
@@ -2764,10 +2680,8 @@ class VolumeCoordinator:
 
 
 # ----------------------------------------------------------------------
-# DBus helpers — mirror jasper.renderer's busctl wrappers, extended for
-# property setters. Subprocess+busctl is the proven pattern in this
-# codebase; observers in volume_observers.py use dbus-next for live
-# subscriptions, but one-shot Set ops stay subprocess.
+# DBus helpers — protocol/property policy stays here while the shared busctl
+# boundary owns one-shot subprocess lifecycle and timeout cleanup.
 # ----------------------------------------------------------------------
 
 async def _busctl_set_property(
@@ -2782,33 +2696,22 @@ async def _busctl_set_property(
 ) -> bool:
     """Run `busctl set-property` for one property. Returns True on
     success, False on any error (logged at debug)."""
-    try:
-        # `--` before the typed value so busctl's getopt doesn't
-        # parse leading-`-` values as flag options.
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", bus, "set-property",
-            bus_name, object_path, interface, prop, signature, "--", value,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        # asyncio.timeout(), NOT asyncio.wait_for(): see the note on
-        # RendererClient.selected_source (jasper/renderer.py). This call sits
-        # on VolumeObserver._run's other directly-awaited chain -- _tick ->
-        # apply_active_source_transition -> _set_push_source_for_handoff ->
-        # _set_bluetooth -> here -- so a cancel swallowed by wait_for makes
-        # that cancellation-only loop immortal (#2003). Transition-gated
-        # rather than every-tick, but the same swallow. Do not "simplify"
-        # this back to wait_for while 3.11 is supported.
-        async with asyncio.timeout(2.0):
-            _, stderr = await proc.communicate()
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl set-property %s.%s failed: %s", interface, prop, e)
+    # `--` before the typed value keeps a leading-`-` value out of busctl's
+    # option parser. The shared runner uses asyncio.timeout (not wait_for),
+    # preserving this directly-awaited transition chain's cancellation rule.
+    result = await run_busctl(
+        "set-property",
+        bus_name, object_path, interface, prop, signature, "--", value,
+        bus=bus,
+    )
+    if result is None:
+        logger.debug("busctl set-property %s.%s failed", interface, prop)
         return False
-    if proc.returncode != 0:
+    if result.returncode != 0:
         logger.debug(
             "busctl set-property %s.%s rc=%d stderr=%s",
-            interface, prop, proc.returncode,
-            stderr.decode("utf-8", "replace") if stderr else "",
+            interface, prop, result.returncode,
+            result.stderr.decode("utf-8", "replace") if result.stderr else "",
         )
         return False
     return True

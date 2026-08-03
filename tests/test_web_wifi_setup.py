@@ -19,13 +19,13 @@ import http
 import json
 import logging
 import subprocess
-from email.message import Message
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from jasper.web import wifi_setup
+from tests._web_test_helpers import make_real_handler
 
 
 def _render(csrf_token: str = "tok-abcdefghijklmnopqrstuvwx") -> str:
@@ -183,6 +183,51 @@ def test_connect_new_rolls_back_on_failure(monkeypatch):
     assert "HomeNet" in msg
 
 
+def test_connect_new_reactivates_same_profile_on_failure(monkeypatch):
+    """A failed reconnect can leave the already-active profile deactivated.
+
+    Rollback must therefore reactivate it even when its profile name matches
+    the requested SSID.
+    """
+    calls = []
+    monkeypatch.setattr(
+        wifi_setup,
+        "_current_wifi",
+        lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
+    )
+    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        wifi_setup,
+        "_run_nmcli_secret",
+        lambda cmd, *, timeout=10: _completed(
+            cmd,
+            returncode=4,
+            stderr="Error: Connection activation failed.",
+        ),
+    )
+
+    def fake_run(cmd, *, timeout=10, log_argv=True):
+        calls.append(list(cmd))
+        return _completed(cmd)
+
+    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
+
+    ok, message = wifi_setup.connect_new("HomeNet", "secretpw")
+
+    assert ok is False
+    assert calls == [
+        [
+            "nmcli",
+            "--wait",
+            str(wifi_setup._ROLLBACK_WAIT),
+            "connection",
+            "up",
+            "HomeNet",
+        ]
+    ]
+    assert message.endswith("Restored previous network (HomeNet).")
+
+
 def test_connect_new_worst_path_matches_declared_timeout_ceiling(monkeypatch):
     """Drive the real serialized fail path without sleeping: current-profile
     reads, profile lookup, visible + hidden attempts, cleanup, and rollback."""
@@ -323,34 +368,18 @@ def _make_request(path: str, body: bytes = b"", cookies: str = "",
     skip BaseHTTPRequestHandler.__init__'s socket plumbing) and bolt the request
     I/O onto it. Returns (handler, captured) where ``captured`` exposes
     ``.status`` and ``.body`` after do_GET/do_POST runs."""
-    handler_cls = wifi_setup._make_handler()
-    h = handler_cls.__new__(handler_cls)
-    h.path = path
-    h.headers = Message()
-    h.headers["Content-Length"] = str(len(body))
-    h.headers["Content-Type"] = "application/json"
+    headers = {}
     if cookies:
-        h.headers["Cookie"] = cookies
+        headers["Cookie"] = cookies
     if csrf_header:
-        h.headers["X-CSRF-Token"] = csrf_header
-    h.rfile = BytesIO(body)
-    h.wfile = BytesIO()
-    h.client_address = ("127.0.0.1", 0)
-
-    captured = {"status": None, "responses": [], "headers": []}
-    # Override the network-touching surface of BaseHTTPRequestHandler so the
-    # real helper methods (_send_json etc.) run without a socket.
-    def capture_response(status, *args, **kwargs):
-        captured["status"] = int(status)
-        captured["responses"].append(int(status))
-
-    h.send_response = capture_response
-    h.send_response_only = h.send_response
-    h.send_header = lambda name, value: captured["headers"].append((name, value))
-    h.end_headers = lambda: None
-    h.send_error = lambda status, *a, **k: captured.__setitem__("status", int(status))
-    h.log_message = lambda *a, **k: None
-    return h, captured
+        headers["X-CSRF-Token"] = csrf_header
+    return make_real_handler(
+        wifi_setup._make_handler(),
+        path,
+        body=body,
+        headers=headers,
+        content_type="application/json",
+    )
 
 
 class _TrackingReader(BytesIO):

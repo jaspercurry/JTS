@@ -161,30 +161,7 @@ chip_aec_restore_full
 # ---------- Summary ----------
 echo
 echo "=== Summary ==="
-python3 - <<PYEOF
-import wave, math, os, struct
-outdir = "${OUTDIR}"
-for fname in sorted(os.listdir(outdir)):
-    if not fname.endswith(".wav"):
-        continue
-    path = os.path.join(outdir, fname)
-    try:
-        with wave.open(path, "rb") as w:
-            n = w.getnframes(); rate = w.getframerate(); nchan = w.getnchannels()
-            pcm = w.readframes(n)
-        samples = struct.unpack("<" + "h" * (n * nchan), pcm)
-        if nchan > 1:
-            samples = samples[::nchan]
-            n = len(samples)
-        mean = sum(samples) / max(n, 1)
-        rms = math.sqrt(sum((s - mean) ** 2 for s in samples) / max(n, 1))
-        rms_db = 20 * math.log10(max(rms, 1) / 32768)
-        peak = max(abs(s) for s in samples) if samples else 0
-        peak_db = 20 * math.log10(max(peak, 1) / 32768)
-        print(f"  {fname:32s} {n/rate:5.1f}s  RMS={rms:6.0f} ({rms_db:+6.1f} dBFS)  peak={peak:5d} ({peak_db:+6.1f} dBFS)")
-    except Exception as e:
-        print(f"  {fname}: ERROR {e}")
-PYEOF
+python3 "${SCRIPT_DIR}/_wav_stats.py" "$OUTDIR"
 
 echo
 echo "=== Done ==="

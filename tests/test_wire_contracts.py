@@ -28,6 +28,7 @@ FANIN_STATE_RS = REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 FANIN_CONFIG_RS = REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
 OUTPUTD_STATE_RS = REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
 CONTROL_SERVER_PY = REPO / "jasper" / "control" / "server.py"
+SYSTEM_ROUTES_PY = REPO / "jasper" / "control" / "handlers" / "system.py"
 CONTROL_SPLIT_MODULES = (
     CONTROL_SERVER_PY,
     REPO / "jasper" / "control" / "aec_endpoints.py",
@@ -64,10 +65,18 @@ def _rust_emitted_json_keys(path: Path) -> set[str]:
     the contract below pins "this name exists somewhere in the
     snapshot", which is what a fail-soft ``.get()`` consumer needs.
     """
-    src = _strip_comment_lines(path.read_text(), markers=("//",))
+    # Test-only snapshot assertions must not be able to satisfy the production
+    # wire contract. Both state modules keep their unit tests after this marker.
+    src = path.read_text().split("#[cfg(test)]", 1)[0]
+    src = _strip_comment_lines(src, markers=("//",))
     keys: set[str] = set()
-    keys.update(re.findall(r'push_kv_\w+\(\s*&mut buf,\s*"(\w+)"', src))
-    keys.update(re.findall(r'push_str\(r#""(\w+)":', src))
+    # Snapshot helpers receive the buffer either as ``&mut buf`` at the top
+    # level or as an already-borrowed ``buf`` in extracted rendering methods.
+    keys.update(re.findall(
+        r'push_kv_\w+\(\s*(?:&mut\s+)?\w+,\s*"(\w+)"',
+        src,
+    ))
+    keys.update(re.findall(r'\w+\.push_str\(r#""(\w+)":', src))
     return keys
 
 
@@ -97,7 +106,7 @@ FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
         "watchdog", "last_progress_age_ms", "pings_skipped",
     },
     # check_fanin_service
-    "jasper/cli/doctor/audio.py": {
+    "jasper/cli/doctor/audio_runtime.py": {
         "output", "pcm", "frames_written", "xrun_count", "buffer_frames",
         "inputs", "label", "input_buffer_frames",
         "watchdog", "last_progress_age_ms",
@@ -115,7 +124,7 @@ OUTPUTD_STATUS_CONSUMERS: dict[str, set[str]] = {
         "chip_ref_buffer_frames", "udp_target",
     },
     # check_outputd_service + check_aec_clock_drift
-    "jasper/cli/doctor/audio.py": {
+    "jasper/cli/doctor/audio_runtime.py": {
         "backend", "sink_mode", "content", "dac", "pcm",
         "reference_outputs", "speaker_reference_source",
         "speaker_reference_active", "speaker_reference_channels",
@@ -223,16 +232,25 @@ def test_control_socket_paths_agree_across_processes():
     outputd_sock = "/run/jasper-outputd/control.sock"
 
     assert f'"{fanin_sock}"' in FANIN_CONFIG_RS.read_text()
+    assert f'FANIN_STATUS_SOCKET = "{fanin_sock}"' in (
+        REPO / "jasper/fanin/status.py"
+    ).read_text()
     for rel in (
         "jasper/mux.py",
         "jasper/control/airplay_health.py",
-        "jasper/cli/doctor/audio.py",
+        "jasper/cli/doctor/audio_runtime.py",
         "jasper/cli/system_soak.py",
-        "jasper/correction/runtime_integrity.py",
     ):
         assert fanin_sock in (REPO / rel).read_text(), (
             f"{rel} no longer pins the fan-in control socket {fanin_sock}"
         )
+    correction_integrity = (
+        REPO / "jasper/correction/runtime_integrity.py"
+    ).read_text()
+    assert "from jasper.fanin.status import FANIN_STATUS_SOCKET" in (
+        correction_integrity
+    )
+    assert "FANIN_CONTROL_SOCKET = FANIN_STATUS_SOCKET" in correction_integrity
     control_src = _control_split_text()
     _assert_state_route_delegates_to_aggregate()
     assert f'local_status_json("{fanin_sock}")' in control_src, (
@@ -244,7 +262,7 @@ def test_control_socket_paths_agree_across_processes():
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
     for rel in (
         "jasper/audio_validation.py",
-        "jasper/cli/doctor/audio.py",
+        "jasper/cli/doctor/audio_runtime.py",
         "jasper/cli/system_soak.py",
     ):
         assert outputd_sock in (REPO / rel).read_text(), (
@@ -445,7 +463,7 @@ def _system_status_js_text() -> str:
 
 
 def _server_snapshot_region() -> str:
-    src = CONTROL_SERVER_PY.read_text()
+    src = SYSTEM_ROUTES_PY.read_text()
     start = src.index("def _get_system_snapshot")
     end = src.index("def _get_system_diagnostics")
     return src[start:end]
@@ -458,7 +476,7 @@ def test_dashboard_snapshot_top_level_keys_exist_in_server_payload():
     region = _server_snapshot_region()
     problems = [
         f"dashboard JS reads snap.{key} but _get_system_snapshot in "
-        f"jasper/control/server.py builds no {key!r} key — that card "
+        f"jasper/control/handlers/system.py builds no {key!r} key — that card "
         f"goes silently blank"
         for key in sorted(snap_keys)
         if f'"{key}"' not in region

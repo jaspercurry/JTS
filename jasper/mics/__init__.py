@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-mic-family capability and check registry.
+"""Per-mic-family capability and check modules.
 
 Each supported microphone gets a profile module in this package
 (e.g. `xvf3800.py`). The module holds the mic-family-specific
@@ -10,9 +10,10 @@ knowledge: USB identity, ALSA card name, firmware variants, mixer
 invariants, and small helpers that callers (doctor, aec_bridge,
 reconciler tooling) consult instead of inlining literals.
 
-Pattern: add a new mic = drop a new file here + add to PROFILES.
-**Do NOT generalize the interface yet.** There is exactly one mic
-in this registry today; designing a `MicProfile` Protocol or ABC
+There is exactly one concrete mic family today. Add a second profile only with
+the reconciler/detection wiring that consumes it; a registry with no consumer
+is a misleading extension seam. **Do NOT generalize the interface yet.**
+Designing a `MicProfile` Protocol or ABC
 from a single data point is the over-abstraction trap. When a
 second mic actually lands, the common surface will be obvious from
 diffing the two profiles, and we'll define an interface only for
@@ -33,10 +34,3 @@ What this package is NOT:
 - A `MicProfile` base class (see above — premature)
 """
 from __future__ import annotations
-
-from . import xvf3800
-
-# USB VID:PID → profile module. Stable identifier for the mic family.
-PROFILES = {
-    vid_pid: xvf3800 for vid_pid in xvf3800.USB_VID_PIDS
-}

@@ -47,6 +47,11 @@ DEFAULT_EPSILON_RELATIVE = 1e-3
 DEFAULT_MAX_CAPTURE_SECONDS = 30.0
 
 
+def _next_power_of_two(value: int) -> int:
+    """Return the smallest power of two greater than or equal to ``value``."""
+    return 1 << (max(int(value), 1) - 1).bit_length()
+
+
 def cap_capture_length(
     captured: np.ndarray,
     *,
@@ -152,9 +157,7 @@ def regularized_deconvolution_full(
         sample_rate=sample_rate,
         max_capture_seconds=max_capture_seconds,
     )
-    n_pad = 1
-    while n_pad < len(captured) + len(sweep):
-        n_pad *= 2
+    n_pad = _next_power_of_two(len(captured) + len(sweep))
     Y = np.fft.rfft(captured, n=n_pad)
     X = np.fft.rfft(sweep, n=n_pad)
     eps = epsilon_relative * float(np.max(np.abs(X) ** 2))
@@ -282,9 +285,7 @@ def magnitude_response(
       (frequencies_hz, magnitude_db). Both 1-D float64.
     """
     if n_fft is None:
-        # bit_length of (len-1) is the number of bits to represent
-        # len-1; 1 << that is the next power of 2.
-        n_fft = max(8192, 1 << (max(len(ir), 1) - 1).bit_length())
+        n_fft = max(8192, _next_power_of_two(len(ir)))
     H = np.fft.rfft(ir, n=n_fft)
     freqs = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate)
     magnitude = np.abs(H)

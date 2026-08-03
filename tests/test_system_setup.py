@@ -11,10 +11,13 @@ sparkline rendering — that's browser territory.
 from __future__ import annotations
 
 import json
+import http.cookiejar
+import re
 import shutil
 import subprocess
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -87,12 +90,14 @@ def test_optional_features_runtime_contract() -> None:
     assert json.loads(proc.stdout) == {"ok": True}
 
 
-def _http_post(url: str) -> tuple[int, bytes]:
-    """POST with CSRF round-trip. Mints the cookie via GET /, reads the
-    csrf token from the rendered <meta name=jts-csrf>, sends both on
-    the actual POST as X-CSRF-Token."""
-    import http.cookiejar
-    import re
+def _csrf_post(
+    url: str,
+    *,
+    data: bytes = b"",
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """POST after acquiring the dashboard's CSRF cookie and page token."""
+
     parsed = urllib.parse.urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}"
     jar = http.cookiejar.CookieJar()
@@ -104,46 +109,27 @@ def _http_post(url: str) -> tuple[int, bytes]:
         r'<meta\s+name="jts-csrf"\s+content="([^"]+)"', page,
     )
     token = m.group(1) if m else ""
+    request_headers = {"X-CSRF-Token": token, **(headers or {})}
     req = urllib.request.Request(
-        url, data=b"", method="POST",
-        headers={"X-CSRF-Token": token},
+        url, data=data, method="POST", headers=request_headers,
     )
     try:
         with opener.open(req, timeout=5) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+
+
+def _http_post(url: str) -> tuple[int, bytes]:
+    return _csrf_post(url)
 
 
 def _http_post_json(url: str, payload: dict[str, Any]) -> tuple[int, bytes]:
-    """JSON POST with the same CSRF round-trip as _http_post."""
-    import http.cookiejar
-    import re
-    parsed = urllib.parse.urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(jar),
-    )
-    page = opener.open(base + "/", timeout=5).read().decode()
-    m = re.search(
-        r'<meta\s+name="jts-csrf"\s+content="([^"]+)"', page,
-    )
-    token = m.group(1) if m else ""
-    req = urllib.request.Request(
+    return _csrf_post(
         url,
         data=json.dumps(payload).encode(),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "X-CSRF-Token": token,
-        },
+        headers={"Content-Type": "application/json"},
     )
-    try:
-        with opener.open(req, timeout=5) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
 
 
 @pytest.fixture
@@ -523,26 +509,7 @@ def test_post_poweroff_proxies(dashboard_server) -> None:
 def _http_post_with_token(url: str, token: str) -> tuple[int, bytes]:
     """_http_post + an X-JTS-Token header (the browser-supplied control
     token the wizard must forward to jasper-control)."""
-    import http.cookiejar
-    import re
-    parsed = urllib.parse.urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(jar),
-    )
-    page = opener.open(base + "/", timeout=5).read().decode()
-    m = re.search(r'<meta\s+name="jts-csrf"\s+content="([^"]+)"', page)
-    csrf = m.group(1) if m else ""
-    req = urllib.request.Request(
-        url, data=b"", method="POST",
-        headers={"X-CSRF-Token": csrf, "X-JTS-Token": token},
-    )
-    try:
-        with opener.open(req, timeout=5) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+    return _csrf_post(url, headers={"X-JTS-Token": token})
 
 
 def test_reboot_forwards_control_token_to_upstream(dashboard_server) -> None:

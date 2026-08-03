@@ -22,10 +22,10 @@ committed unit files, mirroring ``test_env_load_mirrors_unit.py``:
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from jasper.cli.doctor.privsep import MANIFEST, OUT_OF_SCOPE_NONROOT_UNITS
+from tests.systemd_unit_helpers import value_for, values_for
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,18 +53,12 @@ def _unit_identity(unit_file: Path) -> tuple[str, str, frozenset[str]]:
     """(User, Group, {SupplementaryGroups}) from a unit file. User/Group take the
     last assignment (systemd's last-wins); SupplementaryGroups accumulate across
     every line (systemd unions them)."""
-    user = ""
-    group = ""
-    supp: set[str] = set()
-    for raw in unit_file.read_text().splitlines():
-        line = raw.strip()
-        if m := re.match(r"^User=(.*)$", line):
-            user = m.group(1).strip()
-        elif m := re.match(r"^Group=(.*)$", line):
-            group = m.group(1).strip()
-        elif m := re.match(r"^SupplementaryGroups=(.*)$", line):
-            supp.update(m.group(1).split())
-    return user, group, frozenset(supp)
+    unit_text = unit_file.read_text()
+    return (
+        value_for(unit_text, "User") or "",
+        value_for(unit_text, "Group") or "",
+        frozenset(values_for(unit_text, "SupplementaryGroups")),
+    )
 
 
 def test_manifest_covers_exactly_the_tier_a_daemons():

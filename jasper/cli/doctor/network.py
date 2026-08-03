@@ -86,7 +86,7 @@ def _active_wifi_connection(nmcli: str) -> tuple[str | None, str | None]:
     DEVICE tokens parse unambiguously and NAME is the remainder, which
     we then unescape. This mirrors the ``TYPE,NAME`` order the bash
     guardian uses for the same reason (deploy/bin/jasper-wifi-guardian);
-    drift is pinned by tests/test_doctor.py."""
+    drift is pinned by tests/test_doctor_network.py."""
     proc = _run(
         [nmcli, "-t", "-f", "TYPE,DEVICE,NAME", "connection", "show", "--active"],
         timeout=5,

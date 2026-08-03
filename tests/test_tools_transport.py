@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from jasper.bluetooth.avrcp import bluetooth_avrcp_call, bluetooth_player_path
@@ -13,29 +14,10 @@ from jasper.tools.transport import (
     make_transport_dispatcher,
     make_transport_tools,
 )
+from tests._spotify_tool_fakes import FakeAccountClient, FakeRenderer
+from tests._spotify_tool_fakes import FakeRouter as _SharedFakeRouter
 
-
-class FakeRenderer:
-    def __init__(
-        self, renderers=None, currentsong=None, selected_source=None,
-        selected_source_error=None,
-    ) -> None:
-        self._renderers = renderers or {}
-        self._currentsong = currentsong or {}
-        self._selected_source = selected_source
-        self._selected_source_error = selected_source_error
-        self.pause_airplay = AsyncMock()
-
-    async def active_renderers(self) -> dict:
-        return self._renderers
-
-    async def get_currentsong(self) -> dict:
-        return self._currentsong
-
-    async def selected_source(self):
-        if self._selected_source_error is not None:
-            raise self._selected_source_error
-        return self._selected_source
+FakeRouter = partial(_SharedFakeRouter, populate_clients=False)
 
 
 class FakeSpotify:
@@ -56,56 +38,6 @@ class FakeSpotify:
 
     def current_playback(self):
         return None
-
-
-class FakeAccountClient:
-    """Stand-in for an AccountClient — same .account.name and .sp attrs."""
-    def __init__(self, name: str, sp) -> None:
-        self.account = MagicMock()
-        self.account.name = name
-        self.sp = sp
-
-
-class FakeRouter:
-    def __init__(
-        self, transport_match=None, active_account=None,
-        empty_reason: str = "no_accounts",
-        rebuild_clients=None,
-        revoked_names=None,
-    ) -> None:
-        self._transport_match = transport_match
-        self._active_account = active_account
-        # Match the test_tools_spotify.py FakeRouter shape so transport
-        # and play tests stay analogous. clients defaults to empty
-        # (transport uses router.clients only to gate the lazy rebuild).
-        self.clients = {}
-        self._empty_reason = empty_reason
-        self._rebuild_clients = rebuild_clients
-        self._revoked_names = list(revoked_names or [])
-        self.refresh_calls = 0
-
-    async def resolve_for_transport(self, client_name: str, title: str):
-        return self._transport_match
-
-    async def active(self, *, airplay_active: bool):
-        return self._active_account
-
-    async def refresh_if_empty(self) -> bool:
-        self.refresh_calls += 1
-        if self.clients:
-            return True
-        if self._rebuild_clients:
-            self.clients = dict(self._rebuild_clients)
-            if not self._active_account:
-                self._active_account = next(iter(self.clients.values()))
-            return True
-        return False
-
-    def empty_reason(self) -> str:
-        return "" if self.clients else self._empty_reason
-
-    def revoked_account_names(self) -> list:
-        return list(self._revoked_names)
 
 
 def _by_name(tools):
@@ -429,7 +361,7 @@ def test_bluetooth_playpause_uses_status_to_call_pause_when_playing():
         "jasper.bluetooth.avrcp.bluetooth_player_status",
         new=AsyncMock(return_value="playing"),
     ), patch(
-        "jasper.bluetooth.avrcp.asyncio.create_subprocess_exec",
+        "jasper.busctl.asyncio.create_subprocess_exec",
         new=fake_exec,
     ):
         asyncio.run(bluetooth_avrcp_call("PlayPause"))

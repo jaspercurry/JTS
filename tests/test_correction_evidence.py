@@ -71,6 +71,26 @@ def test_acoustic_quality_report_promotes_snr_to_summary():
     assert report["summary"]["min_estimated_snr_db"] == 38.0
 
 
+def test_acoustic_quality_report_preserves_raw_capture_failures():
+    raw_issue = {
+        "code": "capture_clipped",
+        "severity": "fail",
+        "message": "capture clipped",
+    }
+    report = acoustic_quality.build_acoustic_quality_report(
+        session_id="abc",
+        capture_quality=[{
+            "capture_kind": "measurement",
+            "estimated_snr_db": 38.0,
+            "issues": [raw_issue],
+        }],
+    )
+
+    assert report["captures"][0]["issues"] == [raw_issue]
+    assert report["issues"] == [raw_issue]
+    assert report["summary"]["level"] == "fail"
+
+
 def test_acoustic_quality_report_marks_the_band_snr_scale():
     """#1838: bundles written before and after the band-power fix carry
     `band_snr` / `min_band_snr_db` / `band_noise_dbfs` on scales ~12 dB

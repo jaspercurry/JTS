@@ -187,15 +187,17 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # ``event=correction.crossover_v2_boost_evidence`` line as every other
 # outcome, with ``variance_reason=variance_check_failed``. Mirrors the
 # classify-only ``_crossover_region_null_registry`` catch three functions up.
-# The ceilings do NOT move: measured on this branch the tree carries 618
-# BLE001 markers against 624, and 798 suppression comments against 817, so
-# the new marker fits inside existing slack. (Spelled "suppression comments"
-# rather than the literal token, which this file counts by substring.) Raising a ratchet that is not binding would
-# hand out slack rather than record debt, which is the opposite of what it is
-# for — the attribution is recorded here instead, the same way the 2026-07-16
-# NET ZERO entry above does.
-MAX_NOQA_MARKERS = 817
-MAX_BLE001_MARKERS = 624
+# When #1967 landed, the tree carried 618 BLE001 markers and 798 suppression
+# comments, so the new marker fit inside the then-existing slack.
+#
+# 2026-08-02 (deep-audit cleanup): ratchet both ceilings to the combined live
+# counts after rebasing onto #1967. The audit replaces 14 fixture-import F401
+# suppressions with explicit module references and consolidates or removes
+# broad-exception boundaries elsewhere. Keeping the old slack would let nine
+# total suppressions and five BLE001 suppressions return without tripping this
+# contract.
+MAX_NOQA_MARKERS = 808
+MAX_BLE001_MARKERS = 619
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

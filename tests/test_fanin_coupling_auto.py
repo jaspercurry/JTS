@@ -43,6 +43,11 @@ from jasper.fanin_coupling import (
 )
 
 
+def test_pure_auto_decision_module_does_not_import_transition_owner():
+    source = Path(ca.__file__).read_text(encoding="utf-8")
+    assert "from jasper.fanin.coupling_reconcile import" not in source
+
+
 @pytest.fixture(autouse=True)
 def _isolate_base_jasper_env(tmp_path, monkeypatch):
     """Keep effective-env tests independent of the developer host's /etc state."""
@@ -87,7 +92,7 @@ def test_streambox_profile_keeps_ring_loopback_while_usb_combo_arms(monkeypatch)
         marker_raw=None,
         gadget_present=True,
         usb_intent_enabled=True,
-        ring_gates=ca.default_ring_gates(),
+        ring_gates=cr.default_ring_gates(),
     )
 
     assert decision.coupling == COUPLING_LOOPBACK
@@ -340,7 +345,7 @@ def _stub_ring_gates(monkeypatch, *, eligible: bool):
     grouping read / conf.d read is never needed."""
     assets = ("ring_assets", lambda: (eligible, "assets"))
     topo = ("ring_topology", lambda: (eligible, "topology"))
-    monkeypatch.setattr(ca, "default_ring_gates", lambda: (assets, topo))
+    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
     monkeypatch.setattr(cr, "ring_route_ready", lambda route_mode: (eligible, "route"))
     monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (eligible, "geom"))
     monkeypatch.setattr(cr, "ring_slot_geometry_ready", lambda text: (eligible, "slots"))
@@ -571,7 +576,7 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
         raise RuntimeError("bad USB intent value")
 
     monkeypatch.setattr(
-        ca,
+        cr,
         "usbsink_effectively_enabled",
         invalid_usb_intent,
     )
@@ -823,7 +828,7 @@ def _stub_ring_gates_except_route(monkeypatch, *, eligible: bool):
     route decision (grouped vs solo) flows through for the F3 test."""
     assets = ("ring_assets", lambda: (eligible, "assets"))
     topo = ("ring_topology", lambda: (eligible, "topology"))
-    monkeypatch.setattr(ca, "default_ring_gates", lambda: (assets, topo))
+    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
     monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (eligible, "geom"))
     monkeypatch.setattr(cr, "ring_slot_geometry_ready", lambda text: (eligible, "slots"))
     monkeypatch.setattr(cr, "_migrate_stale_fanin_ring_slots", lambda snap, reason: snap)
@@ -919,7 +924,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     # F6 wiring is exercised end to end.
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
-    monkeypatch.setattr(ca, "default_ring_gates", lambda: (assets, topo))
+    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
     monkeypatch.setattr(cr, "ring_route_ready", lambda route_mode: (True, "route"))
     monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (True, "geom"))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
@@ -959,7 +964,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
 
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
-    monkeypatch.setattr(ca, "default_ring_gates", lambda: (assets, topo))
+    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
     monkeypatch.setattr(cr, "ring_route_ready", lambda route_mode: (True, "route"))
     monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (True, "geom"))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))

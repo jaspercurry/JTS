@@ -16,7 +16,8 @@ import { parseFragment, withinUploadCap } from "./fragment.js?v=20260711-3";
 import {
   acceptedAcknowledgement,
   renderScreen,
-} from "./render.js?v=20260711-1";
+  setText,
+} from "./render.js?v=20260802-1";
 import { RelayClient } from "./relay-client.js?v=20260728-1";
 import { importContentKey, encryptWav } from "./crypto.js";
 import {
@@ -145,7 +146,7 @@ function setupWirePayload() {
 function setStatus(message, kind = "info") {
   const el = document.getElementById("status");
   if (el) {
-    el.textContent = message;
+    setText(el, message);
     el.dataset.kind = kind;
   }
 }
@@ -264,12 +265,12 @@ function insertPlanAnnouncement(screenEl, spec) {
 
 function showWakeLockHint(spec) {
   const el = document.getElementById("wakelock-hint");
-  if (el) el.textContent = wakeLockHintText(spec);
+  if (el) setText(el, wakeLockHintText(spec));
 }
 
 function hideWakeLockHint() {
   const el = document.getElementById("wakelock-hint");
-  if (el) el.textContent = "";
+  if (el) setText(el, "");
 }
 
 // Wraps acquireWakeLock() with the fallback hint. Wake-lock failure is
@@ -460,7 +461,7 @@ function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs || {})) {
     if (key === "class") node.className = value;
-    else if (key === "text") node.textContent = value;
+    else if (key === "text") setText(node, value);
     else if (key === "for") node.htmlFor = value;
     else if (key.startsWith("on") && typeof value === "function") {
       node.addEventListener(key.slice(2).toLowerCase(), value);
@@ -2709,7 +2710,7 @@ function resolvePendingConfirm(ctx) {
 // held (check/measure) or whose hold already moved on to a later screen.
 function advanceDeferredHoldHeading(ctx) {
   if (ctx.captureRefs && ctx.captureRefs.heading) {
-    ctx.captureRefs.heading.textContent = "Verifying…";
+    setText(ctx.captureRefs.heading, "Verifying…");
   }
 }
 
@@ -2779,7 +2780,7 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
     // entry and #1823 made it a tap. The countdown vocabulary is retained for
     // a future same-spot transition, so the bug is fixed where it lives rather
     // than left to come back with it.
-    counter.textContent = "";
+    setText(counter, "");
     void runPlanCapture(ctx, { index: nextIndex, attempt: nextAttempt });
   };
   const cancel = button("Cancel", () => {
@@ -2807,7 +2808,7 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
         // The counter stops being true the moment the countdown is cancelled
         // behind this tap; blank it rather than freezing "Starting in 3…" on
         // screen for the whole retake.
-        onTap: () => { counter.textContent = ""; },
+        onTap: () => { setText(counter, ""); },
       }),
     ],
   });
@@ -2823,7 +2824,7 @@ function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttem
       begin();
       return;
     }
-    counter.textContent = `Starting in ${seconds}…`;
+    setText(counter, `Starting in ${seconds}…`);
   }, 1000);
 }
 
@@ -4114,12 +4115,12 @@ async function buildMicPicker(beforeEl) {
   const select = document.createElement("select");
   const auto = document.createElement("option");
   auto.value = "";
-  auto.textContent = "Automatic (recommended)";
+  setText(auto, "Automatic (recommended)");
   select.appendChild(auto);
   for (const d of inputs) {
     const opt = document.createElement("option");
     opt.value = d.deviceId;
-    opt.textContent = d.label; // browser-provided → textContent, never innerHTML
+    setText(opt, d.label); // browser-provided text uses the shared inert-text boundary
     select.appendChild(opt);
   }
   select.value = selectedDeviceId;

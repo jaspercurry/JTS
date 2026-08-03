@@ -349,7 +349,8 @@ computer gets a mono USB input.
   saved networks in a collapse section with Forget. Backed by
   `nmcli`. On Pi 5 brcmfmac scan suppression, `/wifi/scan` attempts a
   bounded non-disruptive self-heal before falling back to manual join.
-  Connect rolls back to the previous network on failure
+  Connect rolls back to the previous network on failure, including when a
+  reconnect attempt disrupted that same currently-active profile
   (`nmcli --wait 30 dev wifi connect` + explicit `connection up
   <previous>` on non-zero exit). Saved profiles are hardened to keep
   retrying after router/ISP flaps, and a no-resident-RAM recovery timer
@@ -401,10 +402,10 @@ jasper/                         Python daemon source
   cli/                          jasper-doctor, jasper-spotify-auth,
                                 jasper-aec-{init,tune,bridge}
   xvf/                          JTS-owned XVF3800 USB control helper
-  mics/                         Per-mic-family profile registry — one
-                                  module per supported mic (xvf3800.py
-                                  today). Identity, firmware variants,
-                                  mixer invariants, helpers. See mics/README.md.
+  mics/                         Per-mic-family profile modules — one concrete
+                                  family today (xvf3800.py). Identity, firmware
+                                  variants, mixer invariants, helpers. See
+                                  mics/README.md.
   transit/                      Modular transit-provider registry —
                                   base Protocol + geocode.py + per-city
                                   providers/. NYC subway + bus + Citi

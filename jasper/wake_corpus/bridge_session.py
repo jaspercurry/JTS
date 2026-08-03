@@ -398,8 +398,12 @@ def bridge_output_status() -> dict[str, Any]:
             env.get(AEC3_SWEEP_SOURCE_ENV),
         )
     except Aec3SweepConfigError as e:
-        logger.warning(
-            "invalid AEC3 sweep source in bridge env: %s; treating as XVF", e,
+        log_event(
+            logger,
+            "wake_corpus.aec3_sweep_source_invalid",
+            error=e,
+            fallback=AEC3_SWEEP_SOURCE_XVF,
+            level=logging.WARNING,
         )
         aec3_sweep_source = AEC3_SWEEP_SOURCE_XVF
     recorder_outputs = {
@@ -1223,9 +1227,12 @@ def restart_aec_bridge() -> None:
         reason="wake-corpus bridge outputs", no_block=False, timeout=5.0,
     )
     if not reset.get("ok"):
-        logger.warning(
-            "could not reset %s start-limit state: %s",
-            BRIDGE_UNIT, reset.get("error") or f"rc={reset.get('rc')}",
+        log_event(
+            logger,
+            "wake_corpus.bridge_reset_failed",
+            unit=BRIDGE_UNIT,
+            error=reset.get("error") or f"rc={reset.get('rc')}",
+            level=logging.WARNING,
         )
     _broker_restart_or_raise(BRIDGE_UNIT, timeout_sec=BRIDGE_RESTART_TIMEOUT_SEC)
 
@@ -1265,11 +1272,12 @@ def _write_env_and_restart_with_rollback(
         try:
             restart()
         except _BRIDGE_RESTART_ERRORS as rollback_error:
-            logger.warning(
-                "bridge env rollback restart failed after corpus-output "
-                "%s failure: %s",
-                failure_context,
-                rollback_error,
+            log_event(
+                logger,
+                "wake_corpus.bridge_rollback_restart_failed",
+                failure_context=failure_context,
+                error=rollback_error,
+                level=logging.WARNING,
             )
         raise
 
@@ -1512,24 +1520,12 @@ def _enabled_legs_from_metadata(
                 aec3_sweep_source=aec3_sweep_source,
             )
         legs: list[str] = []
-        inserted_aec3 = False
         for leg in raw_legs:
             if leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS:
                 continue
             if leg not in ports:
                 continue
             legs.append(leg)
-            if leg == "on" and include_aec3_sweep:
-                legs.extend(
-                    sweep_leg for sweep_leg in AEC3_SWEEP_LEGS
-                    if sweep_leg in ports
-                )
-                inserted_aec3 = True
-        if include_aec3_sweep and not inserted_aec3:
-            legs = [
-                sweep_leg for sweep_leg in AEC3_SWEEP_LEGS
-                if sweep_leg in ports
-            ] + legs
         legs = tuple(dict.fromkeys(legs))
         if legs:
             return legs
@@ -2609,10 +2605,12 @@ def enter_corpus_test_mode(
             try:
                 set_voice_daemon_state("start")
             except (subprocess.CalledProcessError, OSError) as start_error:
-                logger.warning(
-                    "failed to restart jasper-voice after corpus test-mode "
-                    "entry failed: %s",
-                    start_error,
+                log_event(
+                    logger,
+                    "wake_corpus.voice_restore_failed",
+                    unit=VOICE_UNIT,
+                    error=start_error,
+                    level=logging.WARNING,
                 )
         raise
 

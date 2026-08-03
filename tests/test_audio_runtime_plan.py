@@ -150,6 +150,107 @@ def test_lab_override_wins_over_operator_and_profile_floor():
     assert any("lab override" in warning for warning in plan.warnings)
 
 
+def test_profile_floor_wrapper_preserves_layer_precedence_and_warnings():
+    key = "JASPER_CAMILLA_TARGET_LEVEL"
+    base_label = "/etc/jasper/jasper.env"
+    override_label = "/var/lib/jasper/audio_runtime_overrides.json"
+    generated_label = "/var/lib/jasper/outputd.env"
+
+    setting = audio_plan._resolve_profile_floor_int(
+        key=key,
+        default=1024,
+        floor_value=1536,
+        base_env={key: "512"},
+        override_env={key: "384"},
+        generated_env={key: "256"},
+        base_label=base_label,
+        override_label=override_label,
+        generated_label=generated_label,
+        profile_id=APPLE_USB_C_DONGLE_ID,
+    )
+
+    assert setting.value == 384
+    assert setting.source_kind == "lab_override"
+    assert setting.override_value == "384"
+    assert setting.operator_value == "512"
+    assert setting.generated_value == "256"
+    assert setting.warnings == (
+        f"{key} is set in both {base_label} and {generated_label}; "
+        "one knob has two homes",
+        f"{key} lab override in {override_label} is active; it intentionally "
+        "wins over env/profile values",
+    )
+
+    policy_setting = audio_plan._resolve_profile_floor_int(
+        key=key,
+        default=1024,
+        floor_value=1536,
+        base_env={},
+        override_env={},
+        generated_env={key: "1024"},
+        base_label=base_label,
+        override_label=override_label,
+        generated_label=generated_label,
+        profile_id=APPLE_USB_C_DONGLE_ID,
+    )
+    assert policy_setting.value == 1536
+    assert policy_setting.source_kind == "device_profile"
+    assert policy_setting.warnings == (
+        f"{key} in {generated_label} is 1024, but the "
+        f"{APPLE_USB_C_DONGLE_ID} profile floor is 1536; rerun "
+        "audio hardware reconcile",
+    )
+
+
+def test_content_buffer_wrapper_preserves_layer_precedence_and_warnings():
+    key = OUTPUTD_CONTENT_BUFFER_KEY
+    base_label = "/etc/jasper/jasper.env"
+    override_label = "/var/lib/jasper/audio_runtime_overrides.json"
+    generated_label = "/var/lib/jasper/outputd.env"
+    route = resolve_audio_route_profile(
+        {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
+    )
+
+    setting = audio_plan._resolve_outputd_content_buffer_int(
+        route=route,
+        base_env={key: "2048"},
+        override_env={key: "768"},
+        generated_env={key: "1024"},
+        base_label=base_label,
+        override_label=override_label,
+        generated_label=generated_label,
+    )
+
+    assert setting.value == 768
+    assert setting.source_kind == "lab_override"
+    assert setting.override_value == "768"
+    assert setting.operator_value == "2048"
+    assert setting.generated_value == "1024"
+    assert setting.warnings == (
+        f"{key} is set in both {base_label} and {generated_label}; "
+        "one knob has two homes",
+        f"{key} lab override in {override_label} is active; it intentionally "
+        "wins over env/route values",
+    )
+
+    policy_setting = audio_plan._resolve_outputd_content_buffer_int(
+        route=route,
+        base_env={},
+        override_env={},
+        generated_env={key: "1024"},
+        base_label=base_label,
+        override_label=override_label,
+        generated_label=generated_label,
+    )
+    assert policy_setting.value == 1536
+    assert policy_setting.source_kind == "route_policy"
+    assert policy_setting.warnings == (
+        f"{key} in {generated_label} is 1024, but the "
+        f"{ROUTE_USB_LOW_LATENCY_48K} route policy is 1536; rerun "
+        "audio hardware reconcile",
+    )
+
+
 def test_invalid_lab_override_is_ignored_with_warning():
     plan = build_audio_runtime_plan(
         overrides={"JASPER_CAMILLA_TARGET_LEVEL": "bad"},

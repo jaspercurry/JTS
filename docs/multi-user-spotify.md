@@ -261,7 +261,7 @@ re-link via the wizard.
 2. `journalctl -u jasper-voice | grep -E "spotify|event=spotify"` —
    look for `event=spotify.startup_empty` or
    `router: lazy rebuild produced no clients` lines.
-3. `sudo /opt/jasper/.venv/bin/python -c "from jasper.config import Config; from jasper.voice_daemon import _build_router; r = _build_router(Config.from_env()); print('clients:', list(r.clients.keys()) if r else 'no router'); print('statuses:', [(s.name, s.state) for s in (r.statuses if r else [])])"` for the live state.
+3. `sudo /opt/jasper/.venv/bin/python -c "from jasper.config import Config; from jasper.voice.daemon_main import _build_router; r = _build_router(Config.from_env()); print('clients:', list(r.clients.keys()) if r else 'no router'); print('statuses:', [(s.name, s.state) for s in (r.statuses if r else [])])"` for the live state.
 
 `sudo systemctl restart jasper-voice` should NOT be the first
 debugging step — the wizard already restarts on link, and the lazy

@@ -16,7 +16,6 @@ topology that is jasper-fanin, so TTS/cues enter before CamillaDSP.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import math
@@ -41,6 +40,20 @@ MEASURE_RATE = 48_000
 FULL_SCALE = 32768.0
 FULL_SCALE_SQ = FULL_SCALE * FULL_SCALE
 BS1770_OFFSET_DB = -0.691
+K_WEIGHTING_PRE_COEFFICIENTS = (
+    1.53512485958697,
+    -2.69169618940638,
+    1.19839281085285,
+    -1.69065929318241,
+    0.73248077421585,
+)
+K_WEIGHTING_RLB_COEFFICIENTS = (
+    1.0,
+    -2.0,
+    1.0,
+    -1.99004745483398,
+    0.99007225036621,
+)
 ABSOLUTE_GATE_LUFS = -70.0
 RELATIVE_GATE_LU = -10.0
 BLOCK_SEC = 0.400
@@ -69,7 +82,6 @@ class AssistantLoudnessProfile:
     updated_at: str
     method: str
     sample_rate: int = MEASURE_RATE
-    phrase_hash: str = ""
     version: int = PROFILE_VERSION
 
 
@@ -177,7 +189,6 @@ def update_profile_from_measurement(
     path: str | os.PathLike[str] = DEFAULT_PROFILE_PATH,
     method: str,
     confidence: float,
-    phrase: str = "",
 ) -> AssistantLoudnessProfile:
     with _PROFILE_LOCK:
         existing = load_profile(provider, model, voice, path=path)
@@ -206,7 +217,6 @@ def update_profile_from_measurement(
             confidence=round(confidence, 2),
             updated_at=_now_iso(),
             method=method,
-            phrase_hash=_phrase_hash(phrase) if phrase else "",
         )
         _save_profile_unlocked(profile, path=path)
     log_event(
@@ -322,7 +332,6 @@ def ensure_seed_profile(
         path=path,
         method="seed_tts",
         confidence=confidence,
-        phrase=CALIBRATION_TEXT,
     )
 
 
@@ -368,22 +377,8 @@ def _upsample_24k_to_48k(samples: "Any") -> "Any":
 def _k_weighted_stereo_energy(samples_48k: "Any") -> "Any":
     import numpy as np
 
-    pre = _biquad(
-        samples_48k,
-        1.53512485958697,
-        -2.69169618940638,
-        1.19839281085285,
-        -1.69065929318241,
-        0.73248077421585,
-    )
-    rlb = _biquad(
-        pre,
-        1.0,
-        -2.0,
-        1.0,
-        -1.99004745483398,
-        0.99007225036621,
-    )
+    pre = _biquad(samples_48k, *K_WEIGHTING_PRE_COEFFICIENTS)
+    rlb = _biquad(pre, *K_WEIGHTING_RLB_COEFFICIENTS)
     # Outputd measures duplicated mono as stereo by summing both channel
     # energies per frame, then dividing by frame count.
     return 2.0 * np.square(rlb)
@@ -525,7 +520,6 @@ def _profile_from_mapping(item: dict[str, Any]) -> AssistantLoudnessProfile | No
             updated_at=str(item.get("updated_at", "")),
             method=str(item.get("method", "")),
             sample_rate=int(item.get("sample_rate", MEASURE_RATE)),
-            phrase_hash=str(item.get("phrase_hash", "")),
             version=int(item.get("version", PROFILE_VERSION)),
         )
     except (KeyError, TypeError, ValueError):
@@ -544,7 +538,3 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(
         timespec="seconds",
     ).replace("+00:00", "Z")
-
-
-def _phrase_hash(phrase: str) -> str:
-    return hashlib.sha256(phrase.encode("utf-8")).hexdigest()[:12]

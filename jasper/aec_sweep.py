@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 
@@ -443,11 +444,7 @@ def write_aec3_sweep_config(
     config_path = _config_path(path)
     variants = validate_aec3_sweep_config_payload(payload)
     data = json.dumps(aec3_sweep_config_payload(variants), indent=2) + "\n"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
-    tmp.write_text(data)
-    os.chmod(tmp, mode)
-    tmp.replace(config_path)
+    atomic_write_text(config_path, data, mode=mode)
     return Aec3SweepConfig(
         variants=variants,
         source="file",

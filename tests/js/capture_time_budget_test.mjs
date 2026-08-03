@@ -45,6 +45,7 @@ if (/^import\s/m.test(withoutImports)) {
 const injected = `
 const renderScreen = () => ({ buttons: [], levelMeters: [], acknowledgement: null });
 const acceptedAcknowledgement = () => null;
+const setText = (node, text) => { node.textContent = typeof text === "string" ? text : ""; };
 const RELAY_BASE = "https://relay.test";
 class RelayClient {}
 const parseFragment = () => ({});

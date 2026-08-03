@@ -16,7 +16,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import os
 import time
 from pathlib import Path
@@ -45,7 +44,7 @@ from jasper.dsp_apply import (
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ._common import issue as _issue
+from ._common import finite_float as _finite_float, issue as _issue
 from .camilla_yaml import (
     DRIVER_DOMAIN_PROGRAM_CHANNELS,
     _branch_context,
@@ -71,7 +70,7 @@ from .playback_route import (
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .staging import (
-    _passive_mains_with_sub_preset,
+    build_passive_mains_with_sub_preset,
     compile_preset_from_crossover_preview,
     topology_is_passive_mains_with_sub,
 )
@@ -369,14 +368,6 @@ def _source_payload(
     if measured_candidate_fingerprint is not None:
         source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
     return {**source, "fingerprint": _fingerprint(source)}
-
-
-def _finite_float(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
 
 
 def _overlap_level_at(
@@ -1796,7 +1787,9 @@ def build_baseline_profile_candidate(
         for issue in route_capability.issues:
             if issue.get("code") == "active_playback_route_too_narrow":
                 issues.append(issue)
-        preset, preset_issues, preset_gates = _passive_mains_with_sub_preset(topology)
+        preset, preset_issues, preset_gates = build_passive_mains_with_sub_preset(
+            topology
+        )
         issues.extend(preset_issues)
     else:
         preview_ready = _crossover_preview_ready(crossover_preview)

@@ -20,6 +20,8 @@ from jasper.research import (
     ResearchJobStore,
     ResearchScheduler,
 )
+from tests._async_wait import wait_until as _wait_for
+from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 
 def _wake_loop():
     from jasper.voice_daemon import State, WakeLoop
@@ -65,43 +67,6 @@ class _MarkingScheduler:
         self.read.append(job_id)
 
 
-class _FakeTurn:
-    def __init__(self, *, bytes_sent: int = 0, chunks_received: int = 0) -> None:
-        self.end_input_calls = 0
-        self.release_calls = 0
-        self._bytes_sent = bytes_sent
-        self._chunks_received = chunks_received
-
-    def last_chunk_at(self) -> float:
-        return 0.0
-
-    def last_activity_at(self) -> float:
-        return 0.0
-
-    async def end_input(self) -> None:
-        self.end_input_calls += 1
-        return None
-
-    async def release(self) -> None:
-        self.release_calls += 1
-        return None
-
-    def usage_tokens(self) -> dict[str, int]:
-        return {"input_tokens": 0, "output_tokens": 0}
-
-    def usage_breakdown(self):
-        return None
-
-    def bytes_sent(self) -> int:
-        return self._bytes_sent
-
-    def chunks_received(self) -> int:
-        return self._chunks_received
-
-    def turn_lost(self) -> bool:
-        return False
-
-
 class _FakeUsageStore:
     def close_session(self, session_id, in_tokens, out_tokens, usage=None):
         assert session_id is not None
@@ -111,15 +76,6 @@ class _FakeUsageStore:
 class _UnusedClient:
     async def complete(self, _req):
         raise AssertionError("restart restore must not re-run research")
-
-
-async def _wait_for(predicate, timeout: float = 1.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condition not met before timeout")
 
 
 def _put_in_session(

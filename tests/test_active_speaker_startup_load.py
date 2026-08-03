@@ -130,6 +130,27 @@ def test_startup_load_preflight_blocks_without_path_safety(
     assert "path_safety_evidence_missing" in {
         issue["code"] for issue in report["issues"]
     }
+    assert "stop_control_available" not in {
+        gate["id"] for gate in report["required_gates"]
+    }
+
+
+def test_startup_and_commission_load_artifacts_own_independent_schema_versions(
+    monkeypatch,
+    tmp_path: Path,
+):
+    assert startup_load_mod.STARTUP_LOAD_SCHEMA_VERSION == 1
+    assert startup_load_mod.COMMISSION_LOAD_SCHEMA_VERSION == 1
+    assert not hasattr(startup_load_mod, "SCHEMA_VERSION")
+
+    monkeypatch.setattr(startup_load_mod, "STARTUP_LOAD_SCHEMA_VERSION", 2)
+    monkeypatch.setattr(startup_load_mod, "COMMISSION_LOAD_SCHEMA_VERSION", 3)
+    assert startup_load_mod._base_state(tmp_path / "startup.json")[
+        "artifact_schema_version"
+    ] == 2
+    assert startup_load_mod._commission_base_state(tmp_path / "commission.json")[
+        "artifact_schema_version"
+    ] == 3
 
 
 def test_startup_load_preflight_requires_level_floor(tmp_path: Path) -> None:

@@ -97,7 +97,9 @@ class CaptureQualityError(ValueError):
         )
 
 
-def _dbfs(value: float, floor: float = DBFS_FLOOR) -> float:
+def dbfs(value: float, floor: float = DBFS_FLOOR) -> float:
+    """Convert a linear amplitude to dBFS with an explicit finite floor."""
+
     if value <= 0 or not math.isfinite(value):
         return floor
     return max(floor, 20.0 * math.log10(value))
@@ -145,8 +147,8 @@ def assess_capture(
         if len(abs_capture)
         else 0.0
     )
-    peak_dbfs = _dbfs(peak, quality_model.dbfs_floor)
-    rms_dbfs = _dbfs(rms, quality_model.dbfs_floor)
+    peak_dbfs = dbfs(peak, quality_model.dbfs_floor)
+    rms_dbfs = dbfs(rms, quality_model.dbfs_floor)
     duration_s = float(len(captured) / sample_rate) if sample_rate > 0 else 0.0
 
     issues: list[QualityIssue] = []

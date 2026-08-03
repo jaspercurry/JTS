@@ -21,20 +21,14 @@ from jasper.google_creds import GoogleAccount, GoogleClients, GoogleRegistry
 from jasper.tools import UntrustedContentMonitor, build_tool
 from jasper.tools import _FENCE_CLOSE, _FENCE_TAG  # fence markers for adversarial asserts
 from jasper.tools.calendar import make_calendar_tools
+from tests._google_client_fakes import FakeExecutable as _FakeExecutable
+from tests._google_client_fakes import make_google_clients
 
 
 _FENCE_OPEN_PREFIX = f"[{_FENCE_TAG} from calendar"
 
 
 # --- fake googleapiclient surfaces --------------------------------
-
-
-class _FakeExecutable:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def execute(self):
-        return self.payload
 
 
 class _FakeEvents:
@@ -65,26 +59,9 @@ class _FakeCalendarService:
 
 
 def _make_clients(monkeypatch, *, accounts=("jasper", "brittany"), service=None):
-    """Build a GoogleClients whose first account is the default. The
-    credential loader returns a sentinel so build_calendar() reaches
-    the test's fake service_factory."""
-    monkeypatch.setattr(
-        gc, "load_credentials", lambda account, **kw: object(),
-    )
-    r = GoogleRegistry()
-    for i, name in enumerate(accounts):
-        r.add_or_update(GoogleAccount(name=name), make_default=(i == 0))
-    captured = {"factory_calls": []}
-
-    def factory(api_name, version, creds):
-        captured["factory_calls"].append((api_name, version))
-        return service
-
-    clients = GoogleClients(
-        registry=r, client_id="x", client_secret="y",
-        service_factory=factory,
-    )
-    return clients, captured
+    return make_google_clients(
+        monkeypatch, accounts=accounts, service=service,
+    ), {}
 
 
 def _tool_by_name(tools, name):

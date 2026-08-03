@@ -621,6 +621,12 @@ async def _outputd_status(
     return await local_status_json("/run/jasper-outputd/control.sock")
 
 
+async def _wifi_guardian_snapshot() -> dict[str, Any]:
+    """Run bounded nmcli/journal probes off the aggregate event loop."""
+
+    return await asyncio.to_thread(wifi_guardian_state.snapshot)
+
+
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Add on/off wizard availability to mux source status.
 
@@ -665,26 +671,13 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _capture_relay_config() -> dict[str, Any]:
     """Network-free phone-mic-relay config snapshot for `/state.capture_relay`.
 
-    Reads relay env from os.environ DIRECTLY (deploy-time values) so
-    jasper-control never imports the capture_relay package's numpy/scipy deps
-    just for a config field. The doctor (on-demand) imports
-    capture_relay.health to actively probe reachability. This MUST stay in
-    lockstep with capture_relay.health.relay_config_from_env — pinned by
-    tests/test_capture_relay_health.py.
+    The parser lives in an import-light top-level module so jasper-control does
+    not import the capture-relay package's audio/crypto runtime for one config
+    field.
     """
-    base = (os.environ.get("JASPER_CAPTURE_RELAY_BASE") or "").strip().rstrip("/")
-    # Keep in lockstep with jasper.capture_relay.health.DISABLED_RELAY_BASE_VALUES
-    # without importing that package on the /state hot path.
-    if base.lower() in {"0", "false", "off", "disable", "disabled", "none"}:
-        base = ""
-    registration_token = (
-        os.environ.get("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN") or ""
-    ).strip()
-    return {
-        "configured": bool(base),
-        "relay_base": base or None,
-        "registration_secret_configured": bool(registration_token),
-    }
+    from jasper.capture_relay_config import relay_config_from_env
+
+    return relay_config_from_env()
 
 
 async def _get_state(
@@ -908,6 +901,7 @@ async def _get_state(
             outputd_st,
             mux_st,
             aec_status,
+            wifi_guardian,
         ) = await asyncio.wait_for(
             asyncio.gather(
                 _camilla_status(),
@@ -918,6 +912,7 @@ async def _get_state(
                 _outputd_status(local_status_json=local_status_json),
                 _mux_status(),
                 _aec_status(),
+                _wifi_guardian_snapshot(),
             ),
             timeout=_STATE_AGGREGATE_BUDGET_SEC,
         )
@@ -1246,7 +1241,7 @@ async def _get_state(
             # most recent `event=wifi_guardian.*` journal line — there's
             # no resident daemon to ask (the guardian is Type=oneshot).
             # Fail-soft inside the snapshot itself; never raises.
-            "wifi_guardian": wifi_guardian_state.snapshot(),
+            "wifi_guardian": wifi_guardian,
             # Boot-loop guard (cross-boot circuit breaker for the T5.1
             # StartLimitAction=reboot ladder). Fresh marker read per
             # call; {"ran": false} when the oneshot hasn't run this

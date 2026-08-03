@@ -698,6 +698,24 @@ def test_old_target_miss_is_technical_evidence_not_a_household_warning() -> None
     assert health["technical"]["route_verification"]["status"] == "target_missed"
 
 
+def test_target_miss_issue_code_tracks_budget_constant(monkeypatch) -> None:
+    monkeypatch.setattr(audio_health, "USB_LOW_LATENCY_P99_BUDGET_MS", 43)
+    route = _route(
+        artifact_status="warn",
+        artifact_issues=["p99_exceeds_43ms"],
+    )
+
+    health = compose_audio_health(
+        airplay=_airplay(selected="usbsink", ladder="l0_locked"),
+        outputd=_outputd(),
+        route=route,
+        issues=[],
+        sampled_at=1000.0,
+    )
+
+    assert health["technical"]["route_verification"]["status"] == "target_missed"
+
+
 def test_selected_source_without_a_fanin_lane_is_a_continuity_issue() -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked")
     airplay["current"]["fanin"]["inputs"]["usbsink"]["present"] = False

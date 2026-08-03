@@ -13,6 +13,9 @@ rust-version = "1.75"
 # language-choice rationale.
 [dependencies]
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
+# Shared policy-light scalar environment parsing. Fan-in keeps its own
+# feature-token, optional-string, fallback-key, and positive-dimension policy.
+jasper-env = { path = "../jasper-env" }
 # The ONE shared windowed-sinc resampler + DLL rate controller (same crate
 # jasper-outputd's content_bridge consumes). Pure, no ALSA — used here for the
 # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane,

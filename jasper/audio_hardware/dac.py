@@ -621,6 +621,7 @@ __all__ = [
     "is_known_profile_id",
     "known_profile_ids",
     "label_for",
+    "latency_floor_for",
     "mixer_control_groups_for",
     "profile_for_card_label",
     "physical_output_count_for",

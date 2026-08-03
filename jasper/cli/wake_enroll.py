@@ -78,6 +78,8 @@ from jasper.wake_ports import (
     DEFAULT_AEC_RAW0_PORT as DEFAULT_AEC_RAW0_PORT,
 )
 
+from ._logging import configure_verbose_logging
+
 logger = logging.getLogger("jasper-wake-enroll")
 
 
@@ -634,10 +636,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_verbose_logging(verbose=args.verbose)
 
     voice_stopped = False
 

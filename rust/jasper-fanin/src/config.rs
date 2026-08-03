@@ -18,7 +18,8 @@
 //! `/var/lib/jasper/fanin.env` (wizard-owned, if a wizard is ever
 //! added).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+use jasper_env::{env_f32, env_parse, env_str};
 
 use crate::loudness::AssistantLoudnessConfig;
 
@@ -598,9 +599,14 @@ impl Config {
         // ceiling < 576 constructs at its ceiling). This is the P3 default-coherence
         // fix — a default-flip box arming the combo with no explicit floor lands on
         // the validated 576 and constructs cleanly.
-        let cushion_decay_floor_default = DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
-            .max(cushion_decay_floor_min)
-            .min(cushion_decay_ceiling);
+        let cushion_decay_floor_default = if cushion_decay_floor_min <= cushion_decay_ceiling {
+            DEFAULT_CUSHION_DECAY_FLOOR_FRAMES.clamp(cushion_decay_floor_min, cushion_decay_ceiling)
+        } else {
+            // Preserve parseability while decay is disabled. If it is armed,
+            // the range check below reports the invalid geometry instead of
+            // panicking inside `u32::clamp`.
+            cushion_decay_ceiling
+        };
         let input_resampler_cushion_decay_floor_frames = env_u32(
             "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
             cushion_decay_floor_default,
@@ -932,10 +938,6 @@ impl Config {
 
 // ---- env var helpers ------------------------------------------------
 
-fn env_str(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.to_string())
-}
-
 /// Fail-safe feature gate: only the exact `enabled` token, ignoring case and
 /// surrounding whitespace, arms the feature.
 fn env_enabled(name: &str) -> bool {
@@ -978,13 +980,7 @@ fn env_list(name: &str, default: &[&str]) -> Vec<String> {
 }
 
 fn env_u32(name: &str, default: u32) -> Result<u32> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => s
-            .trim()
-            .parse::<u32>()
-            .with_context(|| format!("{} must be a non-negative integer; got {:?}", name, s)),
-        _ => Ok(default),
-    }
+    env_parse(name, default, "a non-negative integer")
 }
 
 /// Like `env_u32`, but for a load-bearing GEOMETRY DIMENSION that must be
@@ -1014,46 +1010,19 @@ fn env_u32_positive(name: &str, default: u32) -> Result<u32> {
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => s
-            .trim()
-            .parse::<u64>()
-            .with_context(|| format!("{} must be a non-negative integer; got {:?}", name, s)),
-        _ => Ok(default),
-    }
-}
-
-fn env_f32(name: &str, default: f32) -> Result<f32> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => parse_env_f32(name, &s),
-        _ => Ok(default),
-    }
+    env_parse(name, default, "a non-negative integer")
 }
 
 fn env_f32_fallback(name: &str, fallback_name: &str, default: f32) -> Result<f32> {
     match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => parse_env_f32(name, &s),
+        Ok(s) if !s.trim().is_empty() => jasper_env::parse_f32(name, &s),
         _ => env_f32(fallback_name, default),
     }
 }
 
-fn parse_env_f32(name: &str, raw: &str) -> Result<f32> {
-    let parsed = raw
-        .trim()
-        .parse::<f32>()
-        .with_context(|| format!("{} must be a number; got {:?}", name, raw))?;
-    if !parsed.is_finite() {
-        anyhow::bail!("{} must be finite", name);
-    }
-    Ok(parsed)
-}
-
 fn env_u32_fallback(name: &str, fallback_name: &str, default: u32) -> Result<u32> {
     match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => s
-            .trim()
-            .parse::<u32>()
-            .with_context(|| format!("{} must be a non-negative integer; got {:?}", name, s)),
+        Ok(s) if !s.trim().is_empty() => env_parse(name, default, "a non-negative integer"),
         _ => env_u32(fallback_name, default),
     }
 }
@@ -2170,6 +2139,47 @@ mod tests {
                 let cfg = Config::from_env().expect("disabled decay must ignore a bad floor");
                 assert!(!cfg.input_resampler_cushion_decay_enabled);
                 assert_eq!(cfg.input_resampler_cushion_decay_floor_frames, 1);
+            },
+        );
+    }
+
+    #[test]
+    fn inverted_decay_default_range_never_panics() {
+        // A cushion smaller than the required 32-frame working margin makes
+        // derived_min > acquisition ceiling. The feature-off path must remain
+        // parseable, and arming the same geometry must return the ordinary
+        // range error rather than panicking inside `u32::clamp`.
+        let geometry = [
+            (
+                "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                Some("0"),
+            ),
+            ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+        ];
+        with_env(&geometry, || {
+            let cfg = Config::from_env().expect("disabled inverted geometry stays parseable");
+            assert!(!cfg.input_resampler_cushion_decay_enabled);
+            assert_eq!(
+                cfg.input_resampler_cushion_decay_floor_frames,
+                cfg.input_resampler_target_frames,
+            );
+        });
+
+        with_env(
+            &[
+                geometry[0],
+                geometry[1],
+                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
+            ],
+            || {
+                let error = Config::from_env()
+                    .expect_err("armed inverted geometry must fail through validation");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
+                    "{error:#}",
+                );
             },
         );
     }

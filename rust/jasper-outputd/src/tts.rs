@@ -65,7 +65,7 @@ use anyhow::{Context, Result};
 use crate::core::OutputCore;
 use crate::json::json_string;
 use crate::ledger::{PlayoutEvent, SegmentId};
-use crate::mixer::{gain_db_to_linear, DEFAULT_TTS_GAIN_DB};
+use crate::mixer::gain_db_to_linear;
 use crate::types::{SegmentKind, CHANNELS, SAMPLE_RATE};
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
@@ -419,16 +419,15 @@ fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
 
 /// Drained by the audio loop each period (never blocks — try_recv only).
 /// Owns the protocol-session state the engine doesn't: the current open
-/// segment, the fallback gain, the program-duck flag, and the
-/// flush-epoch gate (commands enqueued before a flush are stale and
-/// dropped; `ProgramDuckOff` is exempt so a flush can never strand the
-/// program ducked — fanin's rule, kept).
+/// segment, the program-duck flag, and the flush-epoch gate (commands
+/// enqueued before a flush are stale and dropped; `ProgramDuckOff` is
+/// exempt so a flush can never strand the program ducked — fanin's rule,
+/// kept).
 pub struct TtsBridge {
     rx: Receiver<QueuedTtsCommand>,
     flush_rx: Receiver<QueuedFlush>,
     metrics: TtsMetrics,
     program_duck_gain_db: f32,
-    fallback_gain_db: f32,
     duck_active: bool,
     open_segment: Option<SegmentId>,
     active_epoch: u64,
@@ -446,7 +445,6 @@ impl TtsBridge {
             flush_rx,
             metrics,
             program_duck_gain_db,
-            fallback_gain_db: DEFAULT_TTS_GAIN_DB,
             duck_active: false,
             open_segment: None,
             active_epoch: 0,
@@ -528,9 +526,10 @@ impl TtsBridge {
                 continue; // pre-flush stale command
             }
             match queued.command {
-                TtsCommand::GainDb(db) => {
-                    self.fallback_gain_db = db; // clamped inside the core
-                }
+                // Retained as an accepted legacy wire command. Per-segment
+                // loudness context is now the sole gain authority, so there is
+                // deliberately no mutable fallback-gain state to update.
+                TtsCommand::GainDb(_) => {}
                 TtsCommand::PrepareAssistant {
                     provider,
                     model,
@@ -604,12 +603,8 @@ impl TtsBridge {
                     profile,
                 } => {
                     self.close_open_segment(core);
-                    let id = core.start_assistant_segment_with_profile(
-                        provider_item_id,
-                        kind,
-                        self.fallback_gain_db,
-                        profile,
-                    );
+                    let id =
+                        core.start_assistant_segment_with_profile(provider_item_id, kind, profile);
                     self.open_segment = Some(id);
                 }
                 TtsCommand::Audio(samples) => {
@@ -633,11 +628,7 @@ impl TtsBridge {
                             // Legacy GAIN+AUDIO path (cues): open an
                             // implicit Assistant segment until the next
                             // boundary (SEGMENT_START / flush).
-                            let id = core.start_assistant_segment(
-                                None,
-                                SegmentKind::Assistant,
-                                self.fallback_gain_db,
-                            );
+                            let id = core.start_assistant_segment(None, SegmentKind::Assistant);
                             self.open_segment = Some(id);
                             id
                         }
@@ -878,18 +869,14 @@ mod tests {
                 stamp_boot_ns: 1,
             }),
         );
-        let pre_decision: AssistantGainDecision = pre_dsp.decide_gain(
-            SegmentKind::Assistant,
-            0.0,
-            Some(AssistantProfile {
-                provider: "openai".to_string(),
-                model: "gpt-realtime-2".to_string(),
-                voice: "marin".to_string(),
-                source_lufs: Some(-25.0),
-                source_peak_dbfs: Some(-20.0),
-                confidence: 1.0,
-            }),
-        );
+        let pre_decision: AssistantGainDecision = pre_dsp.decide_gain(Some(AssistantProfile {
+            provider: "openai".to_string(),
+            model: "gpt-realtime-2".to_string(),
+            voice: "marin".to_string(),
+            source_lufs: Some(-25.0),
+            source_peak_dbfs: Some(-20.0),
+            confidence: 1.0,
+        }));
 
         assert_eq!(post_dsp_gain, -16.0);
         assert_eq!(pre_decision.final_gain_db, 14.0);

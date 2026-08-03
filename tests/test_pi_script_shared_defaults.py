@@ -163,6 +163,26 @@ def test_capture_scripts_use_repo_root_from_the_shared_owner() -> None:
         assert '"$REPO_ROOT/' in text
 
 
+@pytest.mark.parametrize(
+    ("name", "remote_prefix"),
+    [
+        ("verify-ref-no-silence-bug.sh", "/tmp/ref-verify-"),
+        ("wake-rate-test.sh", "/tmp/wake-rate-"),
+    ],
+)
+def test_capture_scripts_clean_their_bounded_remote_directory_on_exit(
+    name: str,
+    remote_prefix: str,
+) -> None:
+    text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+
+    assert "cleanup_remote_capture()" in text
+    assert "trap cleanup_remote_capture EXIT" in text
+    assert f"{remote_prefix}*)" in text
+    assert 'printf -v remote_capture_q \'%q\' "$OUT_REMOTE"' in text
+    assert '"sudo rm -rf -- ${remote_capture_q}"' in text
+
+
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
 def test_explicit_environment_target_works_from_any_cwd(
     script_repo: tuple[Path, Path, Path],

@@ -2013,6 +2013,25 @@ async def test_winner_stopping_holds_fanin_none(
 
 
 @pytest.mark.asyncio
+async def test_busctl_adapter_uses_shared_system_bus_runner(monkeypatch):
+    calls: list[tuple[tuple[str, ...], float]] = []
+
+    async def fake_system_busctl(
+        *args: str,
+        timeout: float = 2.0,
+    ) -> bytes | None:
+        calls.append((args, timeout))
+        return b"response\xff"
+
+    monkeypatch.setattr(mux_module, "system_busctl", fake_system_busctl)
+
+    result = await mux_module._busctl("call", "org.example.Service")
+
+    assert result == "response\ufffd"
+    assert calls == [(("call", "org.example.Service"), 2.0)]
+
+
+@pytest.mark.asyncio
 async def test_airplay_preempt_drops_receiver_session(mux, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     calls: list[tuple[str, ...]] = []

@@ -330,6 +330,65 @@ async def _post_room_sweep_host_event(
     )
 
 
+def _assert_room_relay_alignment_policy(pi_session: Any) -> None:
+    """Keep Room relay captures observe-only until a gate is calibrated.
+
+    ``PiCaptureSession`` always carries the registered spec. A few focused tests
+    inject a transport-only namespace without one, so absence means "no policy
+    assertion" for that test seam. A real room spec that advertises a hard gate
+    must fail closed here instead of silently accepting an ungated capture.
+    """
+    spec = getattr(pi_session, "spec", None)
+    validity = getattr(spec, "validity", None)
+    if bool(getattr(validity, "require_alignment", False)):
+        raise RuntimeError(
+            "room_sweep requested a hard alignment gate, but Room alignment "
+            "is observation-only until its threshold is fleet-calibrated"
+        )
+
+
+def _log_room_relay_alignment(
+    sess: Any,
+    pi_session: Any,
+    *,
+    capture_kind: str,
+) -> None:
+    """Emit Room's existing direct-arrival proxy as rollout evidence."""
+    report: Any
+    if capture_kind == "measurement":
+        captures = getattr(sess, "capture_quality", ())
+        report = captures[-1] if captures else None
+    elif capture_kind == "repeat":
+        report = getattr(sess, "repeat_quality", None)
+    else:
+        report = getattr(sess, "verify_quality", None)
+    direct = report.get("direct_arrival") if isinstance(report, Mapping) else None
+    direct_report: Mapping[str, Any] | None = (
+        direct if isinstance(direct, Mapping) else None
+    )
+    available = bool(direct_report and direct_report.get("available"))
+    value = (
+        direct_report.get("direct_to_pre_arrival_db")
+        if available and direct_report is not None
+        else None
+    )
+    reason = None
+    if not available:
+        reason = direct_report.get("reason") if direct_report else "unavailable"
+    log_event(
+        logger,
+        "capture_relay.alignment",
+        session_id=getattr(pi_session, "session_id", ""),
+        capture_kind=capture_kind,
+        metric="direct_to_pre_arrival_db",
+        mode="observe",
+        required=False,
+        available=available,
+        value_db=value,
+        reason=reason,
+    )
+
+
 def _crossover_volume_safety_refusal() -> dict[str, str]:
     return {
         "status": "refused",
@@ -2484,7 +2543,7 @@ def _room_readiness() -> _RoomReadiness:
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
         log_event(
             logger,
-            "correction_readiness_unavailable",
+            "correction.readiness_unavailable",
             error_type=type(exc).__name__,
             level=logging.WARNING,
         )
@@ -2570,7 +2629,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not readiness.allowed:
         log_event(
             logger,
-            "correction_start_rejected",
+            "correction.start_rejected",
             reason=readiness.reason,
             level=logging.WARNING,
         )
@@ -2595,7 +2654,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if blocking_state is not None:
         log_event(
             logger,
-            "correction_start_rejected",
+            "correction.start_rejected",
             reason="active_session",
             state=blocking_state,
             level=logging.WARNING,
@@ -2674,7 +2733,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         if mismatch is not None:
             log_event(
                 logger,
-                "correction_start_rejected",
+                "correction.start_rejected",
                 reason="calibration_device_mismatch",
                 provider=getattr(mic_calibration, "provider", ""),
                 level=logging.WARNING,
@@ -2696,7 +2755,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             ]
             log_event(
                 logger,
-                "correction_start_rejected",
+                "correction.start_rejected",
                 reason="browser_audio_path_failed",
                 issue_codes=",".join(
                     str(code) for code in issue_codes if code
@@ -2736,7 +2795,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             ]
             log_event(
                 logger,
-                "correction_start_rejected",
+                "correction.start_rejected",
                 reason="browser_audio_path_failed",
                 issue_codes=",".join(str(code) for code in issue_codes if code),
                 level=logging.WARNING,
@@ -2788,7 +2847,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             _clear_start_slot()
             log_event(
                 logger,
-                "correction_start_state_wait_timeout",
+                "correction.start_state_wait_timeout",
                 session=sess.session_id,
                 level=logging.WARNING,
             )
@@ -3744,7 +3803,7 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             # measurement entry/result screen when storage is unavailable.
             log_event(
                 logger,
-                "correction_report_discovery_failed",
+                "correction.report_discovery_failed",
                 session=getattr(sess, "session_id", ""),
                 error_type=type(exc).__name__,
                 level=logging.WARNING,
@@ -3804,7 +3863,7 @@ def _handle_session_report(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise BadRequest(str(e)) from e
     log_event(
         logger,
-        "correction_session_report",
+        "correction.session_report",
         session=payload.get("session_id") or session_id,
     )
     return payload
@@ -3837,7 +3896,7 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     shutil.rmtree(bundle_dir)
     log_event(
         logger,
-        "correction_session_bundle_deleted",
+        "correction.session_bundle_deleted",
         session=session_id,
         bundle=bundle_dir,
     )
@@ -3914,7 +3973,7 @@ def _handle_local_capture_setup(
 
     log_event(
         logger,
-        "correction_local_capture_setup_bound",
+        "correction.local_capture_setup_bound",
         session=sess.session_id,
         calibrated=mic_calibration is not None,
         browser_audio_level=str(browser_report.get("level") or ""),
@@ -4133,6 +4192,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     async def _run_and_consume(
         client: RelayClient, pi_session: PiCaptureSession
     ) -> None:
+        _assert_room_relay_alignment_policy(pi_session)
         # On `armed` (phone recording), play the sweep through the SAME
         # measurement_window()/prepare_and_play_sweep path the browser flow uses
         # (loud-output safety + renderer/voice pause preserved). run_capture's
@@ -4224,6 +4284,11 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 await sess.on_repeat_capture_uploaded(capture_path)
             else:
                 await sess.on_capture_uploaded(capture_path)
+            _log_room_relay_alignment(
+                sess,
+                pi_session,
+                capture_kind="repeat" if is_repeat else "measurement",
+            )
         finally:
             # Idempotent backstop for failures before the armed/sweep window.
             await sess.restore_level_match_volume(
@@ -4294,6 +4359,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         from jasper.capture_relay.session import purge, run_capture
         from jasper.correction import coordinator, playback
 
+        _assert_room_relay_alignment_policy(pi_session)
         cam = _camilla()
         capture_path = sess.verify_capture_path()
         control_client = _bounded_relay_control_client(client)
@@ -4394,6 +4460,11 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             capture_path.parent.mkdir(parents=True, exist_ok=True)
             capture_path.write_bytes(result.wav)
             await sess.on_verify_capture_uploaded(capture_path)
+            _log_room_relay_alignment(
+                sess,
+                pi_session,
+                capture_kind="verify",
+            )
             await asyncio.to_thread(_maybe_auto_revert, sess)
         finally:
             try:
@@ -6666,7 +6737,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             public = dict(failure)
             log_event(
                 logger,
-                "correction_homeowner_failure",
+                "correction.homeowner_failure",
                 code=str(public.get("code") or "unknown_failure"),
                 retryable=bool(public.get("retryable")),
                 status=int(status),

@@ -1,0 +1,12 @@
+[package]
+name = "jasper-env"
+version = "0.1.0"
+edition = "2021"
+description = "Small shared environment-variable parsing primitives for JTS Rust daemons."
+license = "Apache-2.0"
+repository = "https://github.com/jaspercurry/JTS"
+authors = ["Jasper Curry <jaspercurry@gmail.com>"]
+rust-version = "1.75"
+
+[dependencies]
+anyhow = "1"

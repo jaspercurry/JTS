@@ -1368,7 +1368,7 @@
   through the browser-safe bundle resolver, refuses deletion of an
   active in-progress or ready-to-apply measurement session, removes
   the filesystem bundle, and logs a structured
-  `event=correction_session_bundle_deleted` entry. This is
+  `event=correction.session_bundle_deleted` entry. This is
   intentionally not an archive product: no database, no pinning, no
   automatic pruning, and no browser exposure of raw audio.
   `jasper-doctor` also summarizes correction-bundle observability:
@@ -1472,7 +1472,7 @@
     looks like a built-in mic (`_calibration_device_mismatch`).
     Defended in depth: a browser guard plus this server backstop a
     stale/bypassed client can't evade. Logs
-    `event=correction_start_rejected reason=calibration_device_mismatch`.
+    `event=correction.start_rejected reason=calibration_device_mismatch`.
     The device picker now forces an explicit `deviceId` and re-enumerates
     on `devicechange` so the USB mic appears reliably on iOS.
   - **Capture upload limit.** A capture WAV is ~1-2 MB; the nginx

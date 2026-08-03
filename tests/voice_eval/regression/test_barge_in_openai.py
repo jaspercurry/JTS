@@ -44,7 +44,8 @@ Approx OpenAI cost: ~$0.20/turn → ~$0.40 per trial (2 turns) at PASS_K=1.
 from __future__ import annotations
 
 import logging
-import re
+import json
+import shlex
 
 import pytest
 
@@ -54,7 +55,39 @@ from jasper.voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 PASS_K = 1
 
 _OPENAI_LOGGER = "jasper.voice.openai_session"
-_AUDIO_END_MS_RE = re.compile(r"audio_end_ms=(\d+)")
+
+
+def _structured_log_payload(record: logging.LogRecord) -> dict[str, object]:
+    """Parse the canonical event record in either JSON or logfmt mode."""
+
+    message = record.getMessage()
+    try:
+        payload = json.loads(message)
+    except json.JSONDecodeError:
+        payload = dict(
+            token.split("=", 1)
+            for token in shlex.split(message)
+            if "=" in token
+        )
+    return payload if isinstance(payload, dict) else {}
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_ms"),
+    [
+        ("event=barge.truncate audio_end_ms=417", 417),
+        ('{"event":"barge.truncate","audio_end_ms":417}', 417),
+    ],
+)
+async def test_structured_log_payload_supports_both_sinks(message, expected_ms):
+    record = logging.LogRecord(
+        _OPENAI_LOGGER, logging.INFO, __file__, 1, message, (), None
+    )
+
+    payload = _structured_log_payload(record)
+
+    assert payload["event"] == "barge.truncate"
+    assert int(payload["audio_end_ms"]) == expected_ms
 
 
 def _skip_unless_client_truncate(harness) -> None:
@@ -104,22 +137,22 @@ async def test_interrupt_mid_tts_truncates_to_heard_boundary(
         f"(played_ms={played_ms}); the truncate path was not exercised. "
         f"Re-check the provider streamed audio at all."
     )
-    truncate_lines = [
-        r.getMessage() for r in caplog.records
-        if "barge.truncate" in r.getMessage()
-        and "barge.truncate_skipped" not in r.getMessage()
-        and "barge.truncate_failed" not in r.getMessage()
+    truncate_events = [
+        payload
+        for record in caplog.records
+        for payload in [_structured_log_payload(record)]
+        if payload.get("event") == "barge.truncate"
     ]
-    assert truncate_lines, (
+    assert truncate_events, (
         f"[trial {trial}] no event=barge.truncate emitted — the pack did not "
         f"send conversation.item.truncate after the barge-in. "
         f"Records: {[r.getMessage() for r in caplog.records]}"
     )
     logged_ms = [
-        int(m.group(1))
-        for line in truncate_lines
-        for m in [_AUDIO_END_MS_RE.search(line)]
-        if m is not None
+        int(payload["audio_end_ms"])
+        for payload in truncate_events
+        if isinstance(payload.get("audio_end_ms"), (int, str))
+        and str(payload["audio_end_ms"]).isdigit()
     ]
     assert played_ms in logged_ms, (
         f"[trial {trial}] barge.truncate audio_end_ms {logged_ms} did not "

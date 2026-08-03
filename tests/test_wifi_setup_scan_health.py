@@ -6,27 +6,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from unittest.mock import patch
 
-
-def _mock_proc(returncode: int = 0, stdout: str = "", stderr: str = ""):
-    return subprocess.CompletedProcess(
-        args=["nmcli"], returncode=returncode,
-        stdout=stdout, stderr=stderr,
-    )
-
-
-def _scripted_nmcli(steps):
-    steps_iter = iter(steps)
-
-    def side_effect(cmd, *args, **kwargs):
-        try:
-            return next(steps_iter)
-        except StopIteration:
-            return _mock_proc()
-
-    return side_effect
+from tests._nmcli_fakes import mock_proc as _mock_proc
+from tests._nmcli_fakes import scripted_nmcli as _scripted_nmcli
 
 
 def test_scan_repair_timeout_env_parse_is_fail_soft(monkeypatch):

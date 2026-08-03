@@ -26,7 +26,8 @@ import subprocess
 import threading
 import time
 import uuid
-from contextlib import AsyncExitStack
+from collections.abc import Iterator
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.atomic_io import atomic_write_json
 from jasper.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
@@ -120,6 +122,16 @@ RESUME_WINDOW_SEC = 3600.0
 # the post-mute capture window to ~1 s of a ≤30 s clip; the read is a
 # tiny local-file stat+parse, safe on the backend loop.
 MUTE_POLL_INTERVAL_SEC = 1.0
+
+# Safety-triggered stops never wait on the lifecycle mutex. They quiesce the
+# capture immediately, then retry clip publication with one in-flight,
+# capped-backoff threading.Timer until the current short-lived owner releases.
+# This preserves eventual save without mutating the asyncio loop from a worker
+# or stranding an HTTP/worker thread behind I/O of unknown duration.
+STOP_RETRY_INITIAL_SEC = 0.05
+STOP_RETRY_MAX_SEC = 1.0
+STOP_SHUTDOWN_JOIN_SEC = 5.0
+_STOP_LIFECYCLE_BUSY = "can't stop recording: lifecycle transition in progress"
 
 # How long after entering corpus test mode we treat the marker as
 # abandoned and self-heal jasper-voice back on. Kept well under the
@@ -279,6 +291,17 @@ class RecordingTask:
             return 0.0
         return time.monotonic() - self._start_monotonic
 
+    def request_stop(self) -> None:
+        """Cancel frame collection without waiting for clip publication.
+
+        Called on this task's event loop when a privacy/automatic stop races a
+        lifecycle owner. ``stop()`` later gathers the buffered PCM and closes
+        the capture stack; cancellation here ensures no more audio is retained
+        while that bounded-backoff publication retry is pending.
+        """
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
     async def stop(self) -> dict[str, bytes]:
         """Cancel the collection task, return PCM bytes per leg.
 
@@ -322,6 +345,9 @@ class RecordingTask:
             bridge_stop=self._bridge_stats_stop,
             aec3_sweep_source=self._aec3_sweep_source,
         )
+
+
+_StopGeneration = tuple[str, RecordingTask]
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +419,14 @@ class RecordingBackend:
         # AND from the loop thread (auto-stop timer); the lock makes
         # all observers see consistent state.
         self._lock = threading.Lock()
+        # Serialize complete session/recording lifecycle transactions whose
+        # slow I/O happens after _lock is released: begin/load/unload/delete,
+        # UDP capture start, clip stop/save, and clip deletion. A start
+        # reservation alone is not enough: without this guard a session
+        # switch can pass its state check while RecordingTask.start() is
+        # binding ports, or while stop_recording() is publishing WAVs and
+        # metadata for the prior session.
+        self._lifecycle_lock = threading.Lock()
         self._session_id: str | None = None
         self._member: str | None = None
         # Whether THIS session includes the truly-raw mic 0 leg. Set
@@ -428,6 +462,17 @@ class RecordingBackend:
         self._starting_clip_id: str | None = None
         self._auto_stop_handle: Any | None = None  # asyncio.TimerHandle
         self._mute_poll_handle: Any | None = None  # asyncio.TimerHandle
+        self._pending_stop: tuple[bool, bool] | None = None  # auto, mute
+        # A deferred stop belongs to one exact in-memory clip generation.
+        # Both identities are required so stale Timer callbacks can never
+        # retarget a later clip or clear its retry state.
+        self._pending_stop_generation: _StopGeneration | None = None
+        self._stop_retry_handle: threading.Timer | None = None
+        self._stop_retry_attempts = 0
+        self._safety_workers: set[threading.Thread] = set()
+        self._shutdown_started = False
+        self._shutdown_owner: threading.Thread | None = None
+        self._shutdown_complete = False
 
         # Background asyncio loop running in a daemon thread. Lazily
         # created in start() so tests can construct a backend without
@@ -439,12 +484,15 @@ class RecordingBackend:
     # ----- lifecycle -------------------------------------------------
 
     def start(self) -> None:
-        if self._loop_thread is not None:
-            return  # idempotent
-        self._loop_thread = threading.Thread(
-            target=self._run_loop, name="wake-corpus-loop", daemon=True,
-        )
-        self._loop_thread.start()
+        with self._lock:
+            if self._shutdown_started:
+                raise StateError("backend is shutting down")
+            if self._loop_thread is not None:
+                return  # idempotent
+            self._loop_thread = threading.Thread(
+                target=self._run_loop, name="wake-corpus-loop", daemon=True,
+            )
+            self._loop_thread.start()
         self._loop_ready.wait()
         # Recover from a previous run only when the prior process left
         # an active-session marker behind. A plain recent metadata file
@@ -466,10 +514,68 @@ class RecordingBackend:
             self._loop.close()
 
     def shutdown(self) -> None:
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._loop_thread is not None:
-            self._loop_thread.join(timeout=5)
+        current_thread = threading.current_thread()
+        with self._lock:
+            if self._shutdown_complete or self._shutdown_owner is not None:
+                return
+            self._shutdown_owner = current_thread
+            self._shutdown_started = True
+            retry_handle = self._stop_retry_handle
+            safety_workers = set(self._safety_workers)
+        finished = False
+        try:
+            if retry_handle is not None:
+                retry_handle.cancel()
+            # Initial safety workers and Timer retries may be inside _submit().
+            # One shared deadline bounds every join; never self-join.
+            owners = safety_workers | ({retry_handle} if retry_handle else set())
+            deadline = time.monotonic() + STOP_SHUTDOWN_JOIN_SEC
+            for owner in owners:
+                if owner is not current_thread:
+                    owner.join(timeout=max(0.0, deadline - time.monotonic()))
+            if any(
+                owner is not current_thread and owner.is_alive()
+                for owner in owners
+            ):
+                logger.warning(
+                    "wake-corpus shutdown left its loop alive while a stop "
+                    "worker remained active",
+                )
+                return
+            self._clear_pending_stop()
+            loop = self._loop
+            loop_thread = self._loop_thread
+            if (
+                loop_thread is None
+                or not loop_thread.is_alive()
+                or (loop is not None and loop.is_closed())
+            ):
+                finished = True
+                return
+            if loop is not None:
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    # The loop can close between the state check and signal.
+                    # That is success only when teardown actually won.
+                    if loop.is_closed() or not loop_thread.is_alive():
+                        finished = True
+                        return
+                    raise
+            loop_thread.join(
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+            if loop_thread.is_alive():
+                logger.warning(
+                    "wake-corpus shutdown timed out waiting for its loop",
+                )
+                return
+            finished = True
+        finally:
+            with self._lock:
+                if self._shutdown_owner is current_thread:
+                    self._shutdown_owner = None
+                    self._shutdown_complete = finished
 
     def _submit(self, coro: Any) -> Any:
         """Run a coroutine on the backend loop, block for the result."""
@@ -477,6 +583,25 @@ class RecordingBackend:
             raise RuntimeError("backend not started; call .start() first")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result()
+
+    @contextmanager
+    def _lifecycle_transaction(
+        self,
+        busy_message: str,
+    ) -> Iterator[None]:
+        """Own one complete state-plus-I/O lifecycle transaction.
+
+        Every caller fails fast when another transition owns the backend.
+        Safety-triggered stops use the separate capped-backoff recovery path;
+        no handler or worker blocks indefinitely on a stalled owner.
+        """
+        acquired = self._lifecycle_lock.acquire(blocking=False)
+        if not acquired:
+            raise StateError(busy_message)
+        try:
+            yield
+        finally:
+            self._lifecycle_lock.release()
 
     # ----- session + clip state -------------------------------------
 
@@ -494,7 +619,10 @@ class RecordingBackend:
 
     def is_recording(self) -> bool:
         with self._lock:
-            return self._current is not None
+            return (
+                self._current is not None
+                or self._starting_clip_id is not None
+            )
 
     def mic_muted(self) -> bool:
         """Fresh read of the persisted household mic-mute flag.
@@ -551,7 +679,6 @@ class RecordingBackend:
             return
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         path = self._active_session_marker_path()
-        tmp = path.with_suffix(path.suffix + ".tmp")
         data = {
             "session_id": session_id,
             "member": member,
@@ -559,9 +686,7 @@ class RecordingBackend:
                 timespec="seconds",
             ),
         }
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
-        tmp.replace(path)
+        atomic_write_json(path, data)
 
     def _clear_active_session_marker(self) -> None:
         try:
@@ -584,16 +709,13 @@ class RecordingBackend:
         """
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         path = self._test_mode_marker_path()
-        tmp = path.with_suffix(path.suffix + ".tmp")
         data = {
             "entered_at": datetime.now(timezone.utc).isoformat(
                 timespec="seconds",
             ),
         }
         try:
-            with open(tmp, "w") as f:
-                json.dump(data, f, indent=2)
-            tmp.replace(path)
+            atomic_write_json(path, data)
         except OSError as e:
             logger.warning("failed to write test-mode marker: %s", e)
 
@@ -870,6 +992,36 @@ class RecordingBackend:
         aec3_sweep_source: str | None = None,
         capture_plan: dict[str, Any] | None = None,
     ) -> str:
+        """Open one session transaction, refusing concurrent initializers."""
+        with self._lifecycle_transaction(
+            "can't begin session: initialization in progress",
+        ):
+            return self._begin_session(
+                member,
+                corpus_profile=corpus_profile,
+                include_raw_mic_0=include_raw_mic_0,
+                include_dtln=include_dtln,
+                include_usb_mic=include_usb_mic,
+                include_usb_dtln=include_usb_dtln,
+                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+                include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=aec3_sweep_source,
+                capture_plan=capture_plan,
+            )
+
+    def _begin_session(
+        self,
+        member: str,
+        corpus_profile: str = PROFILE_STANDARD,
+        include_raw_mic_0: bool = False,
+        include_dtln: bool = True,
+        include_usb_mic: bool = False,
+        include_usb_dtln: bool = False,
+        include_xvf_raw0_dtln: bool = False,
+        include_aec3_sweep: bool = False,
+        aec3_sweep_source: str | None = None,
+        capture_plan: dict[str, Any] | None = None,
+    ) -> str:
         """Open a fresh recording session. Resets the in-memory clip
         list (existing on-disk WAVs are untouched).
 
@@ -1099,6 +1251,10 @@ class RecordingBackend:
         "already in progress" error instead of racing into a UDP-bind
         failure.
         """
+        with self._lifecycle_transaction("recording already in progress"):
+            return self._start_recording(condition, distance)
+
+    def _start_recording(self, condition: str, distance: str) -> dict[str, str]:
         if condition not in CONDITIONS:
             raise ValueError(
                 f"unknown condition {condition!r}; expected {CONDITIONS}",
@@ -1113,6 +1269,8 @@ class RecordingBackend:
 
         clip_id = str(uuid.uuid4())
         with self._lock:
+            if self._shutdown_started:
+                raise StateError("backend is shutting down")
             if self._session_id is None or self._member is None:
                 raise StateError("call begin_session() first")
             if self._current is not None or self._starting_clip_id is not None:
@@ -1170,16 +1328,20 @@ class RecordingBackend:
             self._starting_clip_id = None  # transitioned: starting → current
             # Auto-stop timer — guards against a forgotten Stop click.
             self._auto_stop_handle = self._loop.call_later(
-                self._max_duration_sec, self._auto_stop_threadsafe,
+                self._max_duration_sec,
+                self._auto_stop_threadsafe,
+                (clip_id, task),
             )
             # Mid-recording mute watch — if the household flips the mic
             # mute while a clip is rolling, stop within one poll.
             self._mute_poll_handle = self._loop.call_later(
-                MUTE_POLL_INTERVAL_SEC, self._mute_poll,
+                MUTE_POLL_INTERVAL_SEC,
+                self._mute_poll,
+                (clip_id, task),
             )
         return {"clip_id": clip_id, "start_ts": start_ts}
 
-    def _mute_poll(self) -> None:
+    def _mute_poll(self, generation: _StopGeneration) -> None:
         """Runs on the backend loop every MUTE_POLL_INTERVAL_SEC while a
         recording is in flight. Stops the recording (keeping the partial
         clip, flagged `mute_stopped`) the first poll after the household
@@ -1189,8 +1351,7 @@ class RecordingBackend:
         ended early. Fail-soft: a poll error logs and rearms rather than
         leaving the recording unwatched."""
         with self._lock:
-            if self._current is None:
-                self._mute_poll_handle = None
+            if not self._can_admit_current_locked(generation):
                 return
         try:
             muted = self.mic_muted()
@@ -1211,50 +1372,307 @@ class RecordingBackend:
             )
             # stop_recording is sync + blocks on the loop; hand it to a
             # worker thread (same shape as the auto-stop timer).
-            threading.Thread(
-                target=self._mute_stop_safe, daemon=True,
-            ).start()
+            self._spawn_safety_worker(
+                generation, auto=False, mute_stopped=True,
+            )
             return
         with self._lock:
-            if self._current is not None and self._loop is not None:
+            if (
+                self._can_admit_current_locked(generation)
+                and self._loop is not None
+            ):
                 self._mute_poll_handle = self._loop.call_later(
-                    MUTE_POLL_INTERVAL_SEC, self._mute_poll,
+                    MUTE_POLL_INTERVAL_SEC,
+                    self._mute_poll,
+                    generation,
                 )
 
-    def _mute_stop_safe(self) -> None:
-        try:
-            # auto=False: this is not the duration-cap auto-stop — the
-            # pending auto-stop timer must be cancelled, and the clip's
-            # auto_stopped flag must stay False so downstream tools
-            # don't misread a privacy stop as a forgotten Stop click.
-            self.stop_recording(auto=False, mute_stopped=True)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("mute-stop failed: %s", e)
+    def _mute_stop_safe(self, generation: _StopGeneration) -> None:
+        # auto=False: a privacy stop must stay distinguishable from the
+        # duration cap even if both timers race. The recovery path makes mute
+        # win while retaining exactly one pending retry.
+        self._safety_stop(generation, auto=False, mute_stopped=True)
 
-    def _auto_stop_threadsafe(self) -> None:
+    def _auto_stop_threadsafe(self, generation: _StopGeneration) -> None:
         """Fires on the backend loop when MAX_RECORDING_DURATION_SEC
         elapses. Triggers stop_recording on a worker thread so the
         loop thread doesn't block on its own sync method."""
-        thread = threading.Thread(
-            target=self._auto_stop_safe, daemon=True,
+        self._spawn_safety_worker(
+            generation, auto=True, mute_stopped=False,
         )
-        thread.start()
 
-    def _auto_stop_safe(self) -> None:
+    def _auto_stop_safe(self, generation: _StopGeneration) -> None:
+        self._safety_stop(generation, auto=True, mute_stopped=False)
+
+    def _spawn_safety_worker(
+        self,
+        generation: _StopGeneration,
+        *,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> None:
+        """Atomically admit one initial worker so shutdown can join it."""
+        worker = threading.Thread(
+            target=self._run_safety_worker,
+            args=(generation, auto, mute_stopped),
+            daemon=True,
+        )
+        with self._lock:
+            if not self._can_admit_current_locked(generation):
+                return
+            self._safety_workers.add(worker)
+            worker.start()
+
+    def _run_safety_worker(
+        self,
+        generation: _StopGeneration,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> None:
         try:
-            self.stop_recording(auto=True)
+            self._safety_stop(
+                generation, auto=auto, mute_stopped=mute_stopped,
+            )
+        finally:
+            with self._lock:
+                self._safety_workers.discard(threading.current_thread())
+
+    def _safety_stop(
+        self,
+        generation: _StopGeneration,
+        *,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> None:
+        if not self._stop_with_recovery(
+            generation, auto=auto, mute_stopped=mute_stopped,
+        ):
+            self._schedule_stop_retry(
+                generation,
+                auto=auto,
+                mute_stopped=mute_stopped,
+            )
+
+    def _matches_current_locked(self, generation: _StopGeneration) -> bool:
+        clip_id, task = generation
+        return (
+            self._current_clip_id == clip_id
+            and self._current is task
+        )
+
+    def _can_admit_current_locked(self, generation: _StopGeneration) -> bool:
+        return not self._shutdown_started and self._matches_current_locked(generation)
+
+    def _owns_pending_locked(self, generation: _StopGeneration) -> bool:
+        return self._pending_stop_generation == generation
+
+    def _quiesce_current_capture(
+        self,
+        generation: _StopGeneration,
+    ) -> None:
+        """Stop one exact generation retaining frames; publish may retry."""
+        _clip_id, task = generation
+        with self._lock:
+            if not self._matches_current_locked(generation):
+                return
+            loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(task.request_stop)
+            except RuntimeError:
+                # Shutdown has made this generation terminal.
+                pass
+
+    def _clear_pending_stop(
+        self,
+        generation: _StopGeneration | None = None,
+    ) -> None:
+        with self._lock:
+            if (
+                generation is not None
+                and not self._owns_pending_locked(generation)
+            ):
+                return
+            handle = self._stop_retry_handle
+            self._pending_stop = None
+            self._pending_stop_generation = None
+            self._stop_retry_handle = None
+            self._stop_retry_attempts = 0
+        if handle is not None:
+            handle.cancel()
+
+    def _schedule_stop_retry(
+        self,
+        generation: _StopGeneration,
+        *,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> None:
+        with self._lock:
+            if (
+                not self._can_admit_current_locked(generation)
+                or self._loop is None
+            ):
+                return
+            if self._pending_stop is None:
+                self._pending_stop_generation = generation
+            elif not self._owns_pending_locked(generation):
+                return
+            previous_auto, previous_mute = self._pending_stop or (False, False)
+            merged_mute = previous_mute or mute_stopped
+            # Privacy is the stronger explanation if mute and duration race.
+            merged_auto = (previous_auto or auto) and not merged_mute
+            self._pending_stop = (merged_auto, merged_mute)
+            if self._stop_retry_handle is not None:
+                return
+            self._stop_retry_attempts += 1
+            exponent = min(self._stop_retry_attempts - 1, 8)
+            delay = min(
+                STOP_RETRY_INITIAL_SEC * (2 ** exponent),
+                STOP_RETRY_MAX_SEC,
+            )
+            retry_timer = threading.Timer(
+                delay,
+                self._retry_pending_stop,
+                args=(generation,),
+            )
+            retry_timer.daemon = True
+            self._stop_retry_handle = retry_timer
+            attempt = self._stop_retry_attempts
+            # Start under the state lock so shutdown never observes an
+            # unstarted Timer and then tries to join it.
+            retry_timer.start()
+        if attempt == 1 or attempt & (attempt - 1) == 0:
+            log_event(
+                logger,
+                "wake_corpus.stop_retry_scheduled",
+                attempt=attempt,
+                delay_sec=f"{delay:.3f}",
+                auto=merged_auto,
+                mute_stopped=merged_mute,
+                level=logging.WARNING,
+            )
+
+    def _retry_pending_stop(self, generation: _StopGeneration) -> None:
+        """One Timer-owned publication attempt; rearm only after it exits."""
+        current_timer = threading.current_thread()
+        with self._lock:
+            active_timer = self._stop_retry_handle
+            pending = self._pending_stop
+            owned = (
+                self._owns_pending_locked(generation)
+                and self._matches_current_locked(generation)
+                and active_timer is current_timer
+            )
+        if pending is None or not owned:
+            return
+        auto, mute_stopped = pending
+        if self._stop_with_recovery(
+            generation,
+            auto=auto,
+            mute_stopped=mute_stopped,
+        ):
+            return
+        # Keep the fired Timer as the in-flight sentinel through the complete
+        # attempt. Repeated safety triggers merge into _pending_stop while it
+        # is present; only this callback may replace it with the next timer.
+        with self._lock:
+            if (
+                self._owns_pending_locked(generation)
+                and self._stop_retry_handle is active_timer
+            ):
+                self._stop_retry_handle = None
+            pending = self._pending_stop
+            still_owned = (
+                self._owns_pending_locked(generation)
+                and self._can_admit_current_locked(generation)
+            )
+        if pending is not None and still_owned:
+            auto, mute_stopped = pending
+            self._schedule_stop_retry(
+                generation,
+                auto=auto,
+                mute_stopped=mute_stopped,
+            )
+
+    def _stop_with_recovery(
+        self,
+        generation: _StopGeneration,
+        *,
+        auto: bool,
+        mute_stopped: bool,
+    ) -> bool:
+        """Quiesce immediately; return whether publication is terminal."""
+        with self._lock:
+            live_generation = self._matches_current_locked(generation)
+        if not live_generation:
+            self._clear_pending_stop(generation)
+            return True
+        self._quiesce_current_capture(generation)
+        try:
+            self.stop_recording(
+                auto=auto,
+                mute_stopped=mute_stopped,
+                _expected_generation=generation,
+            )
+        except StateError as e:
+            if str(e) == _STOP_LIFECYCLE_BUSY:
+                return False
+            if str(e) == "no recording in progress":
+                self._clear_pending_stop(generation)
+                return True
+            logger.warning("deferred recording stop refused: %s", e)
         except Exception as e:  # noqa: BLE001
-            logger.warning("auto-stop failed: %s", e)
+            logger.warning("deferred recording stop failed: %s", e)
+        self._clear_pending_stop(generation)
+        return True
 
     def stop_recording(
-        self, auto: bool = False, mute_stopped: bool = False,
+        self,
+        auto: bool = False,
+        mute_stopped: bool = False,
+        *,
+        _expected_generation: _StopGeneration | None = None,
     ) -> ClipMetadata:
         """Stop the current recording, save WAVs, return metadata."""
+        with self._lifecycle_transaction(
+            _STOP_LIFECYCLE_BUSY,
+        ):
+            with self._lock:
+                clip_id = self._current_clip_id
+                task = self._current
+                if (
+                    _expected_generation is not None
+                    and (clip_id, task) != _expected_generation
+                ):
+                    raise StateError("no recording in progress")
+            try:
+                clip = self._stop_recording(
+                    auto=auto,
+                    mute_stopped=mute_stopped,
+                )
+            finally:
+                if clip_id is not None and task is not None:
+                    # Cleanup stays inside lifecycle ownership so a later
+                    # Start cannot install state that this generation erases.
+                    self._clear_pending_stop((clip_id, task))
+        return clip
+
+    def _stop_recording(
+        self,
+        auto: bool = False,
+        mute_stopped: bool = False,
+    ) -> ClipMetadata:
         with self._lock:
             if self._current is None:
                 raise StateError("no recording in progress")
             task = self._current
             clip_id = self._current_clip_id
+            generation = (clip_id, task)
+            if self._owns_pending_locked(generation):
+                pending_auto, pending_mute = self._pending_stop or (False, False)
+                mute_stopped = mute_stopped or pending_mute
+                auto = (auto or pending_auto) and not mute_stopped
             meta = self._current_meta
             session_id = self._session_id
             member = self._member
@@ -1346,6 +1764,12 @@ class RecordingBackend:
 
         Returns True if the clip existed and was deleted, False if
         not found (or already deleted)."""
+        with self._lifecycle_transaction(
+            "can't delete clip: lifecycle transition in progress",
+        ):
+            return self._delete_clip(clip_id)
+
+    def _delete_clip(self, clip_id: str) -> bool:
         with self._lock:
             clip = next(
                 (c for c in self._clips
@@ -1530,8 +1954,14 @@ class RecordingBackend:
         Refuses if a recording is in progress (would orphan the clip).
         Refuses if the target session doesn't exist.
         """
+        with self._lifecycle_transaction(
+            "can't load session: recording or session transition in progress",
+        ):
+            return self._load_session(session_id)
+
+    def _load_session(self, session_id: str) -> dict[str, Any]:
         with self._lock:
-            if self._current is not None:
+            if self._current is not None or self._starting_clip_id is not None:
                 raise StateError(
                     "can't load session: recording in progress",
                 )
@@ -1567,6 +1997,12 @@ class RecordingBackend:
         loaded later, but a page refresh or server restart starts from
         a blank new-session form.
         """
+        with self._lifecycle_transaction(
+            "can't unload session: recording or session transition in progress",
+        ):
+            return self._unload_session()
+
+    def _unload_session(self) -> str | None:
         with self._lock:
             if self._current is not None or self._starting_clip_id is not None:
                 raise StateError(
@@ -1591,8 +2027,14 @@ class RecordingBackend:
         the in-memory state (operator now needs to begin a new
         session or load another).
         """
+        with self._lifecycle_transaction(
+            "can't delete session: recording or session transition in progress",
+        ):
+            return self._delete_session(session_id)
+
+    def _delete_session(self, session_id: str) -> dict[str, int]:
         with self._lock:
-            if self._current is not None:
+            if self._current is not None or self._starting_clip_id is not None:
                 raise StateError(
                     "can't delete session: recording in progress",
                 )

@@ -39,19 +39,12 @@ human approval and confirmation that changing the volume is OK.
 """
 from __future__ import annotations
 
-import os
-
 import pytest
+
+from tests.voice_eval.regression._guards import playback_skip as _playback_skip
 
 
 PASS_K = 3
-
-
-def _playback_skip() -> bool:
-    """True if the user has opted out of speaker-affecting tests for
-    this run. Volume is a speaker side-effect, so it shares the
-    playback gate. Set `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1` to skip."""
-    return os.environ.get("JASPER_VOICE_EVAL_SKIP_PLAYBACK", "").strip() == "1"
 
 
 def _coordinator(harness):

@@ -113,18 +113,10 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.volume_regress_safe_high_pct == 70
     assert cfg.volume_first_boot_default_pct == 50
     assert cfg.gemini_voice == "Aoede"
-    # camilla#1 (always-on) and camilla#2 (endpoint-crossover, INERT) — the
-    # two CamillaDSP instances an active leader runs. camilla#2 listens on
-    # 1235 so it cannot collide with camilla#1's 1234, and carries its own
-    # statefile. These defaults are pinned here (and against .env.example in
-    # tests/test_env_example_matches_config_defaults.py) because jasper.env
-    # is a frozen first-install seed — a drifted default would silently ship
-    # the .env.example literal instead.
+    # Config owns the always-on camilla#1 endpoint used on the voice hot path.
+    # The role-dependent camilla#2 process reads its own env at call time.
     assert cfg.camilla_host == "127.0.0.1"
     assert cfg.camilla_port == 1234
-    assert cfg.camilla2_host == "127.0.0.1"
-    assert cfg.camilla2_port == 1235
-    assert cfg.camilla2_statefile == "/var/lib/camilladsp/crossover-statefile.yml"
     assert cfg.vad_barge_in_threshold == 0.5
     assert cfg.server_vad_enabled is False
     assert cfg.spotify_device_name == "JTS"
@@ -137,6 +129,16 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     # Transit config is no longer on Config (each jasper.transit provider
     # parses its own env keys); see tests/test_transit_citypacks.py.
     assert cfg.spotify_enabled is False
+    for dead_field in (
+        "camilla2_host",
+        "camilla2_port",
+        "camilla2_statefile",
+        "spotify_web_bind_host",
+        "spotify_web_bind_port",
+        "google_web_bind_host",
+        "google_web_bind_port",
+    ):
+        assert not hasattr(cfg, dead_field)
 
 
 def test_manual_mic_sources_parse_comma_separated(monkeypatch):

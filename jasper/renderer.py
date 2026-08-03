@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from . import librespot_state
+from .busctl import system_busctl
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from .source_state import (
     airplay_playing,
@@ -41,6 +42,25 @@ from .source_state import (
 logger = logging.getLogger(__name__)
 
 MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
+
+
+async def airplay_now_playing() -> dict[str, str]:
+    """Return Shairport's canonical MPRIS title/artist/album projection."""
+    out = await _busctl_get_property(
+        "org.mpris.MediaPlayer2.ShairportSync",
+        "/org/mpris/MediaPlayer2",
+        "org.mpris.MediaPlayer2.Player",
+        "Metadata",
+    )
+    if not out:
+        return {}
+    meta = _parse_mpris_metadata(out)
+    artists = meta.get("xesam:artist") or []
+    return {
+        "title": str(meta.get("xesam:title", "")),
+        "album": str(meta.get("xesam:album", "")),
+        "artist": ", ".join(artists) if isinstance(artists, list) else str(artists),
+    }
 
 
 class RendererClient:
@@ -170,21 +190,7 @@ class RendererClient:
         }
 
     async def _ap_currentsong(self) -> dict[str, Any]:
-        out = await _busctl_get_property(
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player",
-            "Metadata",
-        )
-        if not out:
-            return {}
-        meta = _parse_mpris_metadata(out)
-        artists = meta.get("xesam:artist") or []
-        return {
-            "title": meta.get("xesam:title", ""),
-            "album": meta.get("xesam:album", ""),
-            "artist": ", ".join(artists) if isinstance(artists, list) else str(artists),
-        }
+        return await airplay_now_playing()
 
     # ------------------------------------------------------------------
     # pause_airplay — pauses an active AirPlay session via MPRIS so
@@ -211,19 +217,13 @@ class RendererClient:
 async def _busctl_get_property(
     bus_name: str, object_path: str, interface: str, prop: str,
 ) -> str | None:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", "call",
-            bus_name, object_path,
-            "org.freedesktop.DBus.Properties", "Get", "ss", interface, prop,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl Get %s.%s failed: %s", interface, prop, e)
-        return None
-    if proc.returncode != 0:
+    stdout = await system_busctl(
+        "call",
+        bus_name, object_path,
+        "org.freedesktop.DBus.Properties", "Get", "ss", interface, prop,
+    )
+    if stdout is None:
+        logger.debug("busctl Get %s.%s failed", interface, prop)
         return None
     # busctl returns a single line like:  v s "Playing"
     # (variant of-string of-value). Strip the variant prefix.
@@ -237,18 +237,14 @@ async def _busctl_get_property(
 async def _busctl_call_method(
     bus_name: str, object_path: str, interface: str, method: str,
 ) -> bool:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "busctl", "--system", "call",
-            bus_name, object_path, interface, method,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(proc.wait(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
-        logger.debug("busctl Call %s.%s failed: %s", interface, method, e)
+    stdout = await system_busctl(
+        "call",
+        bus_name, object_path, interface, method,
+    )
+    if stdout is None:
+        logger.debug("busctl Call %s.%s failed", interface, method)
         return False
-    return proc.returncode == 0
+    return True
 
 
 _MPRIS_KV_RE = re.compile(r'"([^"]+)"\s+(\w[\w\d]*)\s+([^"]*?(?:"[^"]*"\s*)*)')

@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, cast
 
 from .atomic_io import atomic_write_text
+from .json_fields import JsonFields
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -123,7 +123,6 @@ PROTECTION_STATUSES = {
 }
 DUAL_APPLE_CLOCK_EVIDENCE_STATUSES = {"passed", "failed", "unknown"}
 OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
-TOPOLOGY_STATUSES = {"draft", "valid", "blocked", "verified"}
 # Pure-data pairing intent recorded at commission time (gap 1 of
 # docs/HANDOFF-distributed-active.md). It answers "is this box meant to run
 # solo, become a wireless follower, or host one?" and seeds later reconciler
@@ -134,9 +133,6 @@ TOPOLOGY_STATUSES = {"draft", "valid", "blocked", "verified"}
 # unchanged.
 PAIRING_INTENTS = {"solo", "will_be_follower", "has_follower"}
 DEFAULT_PAIRING_INTENT = "solo"
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
-
-
 class OutputTopologyError(ValueError):
     """Raised when output topology JSON has an unsupported shape."""
 
@@ -145,105 +141,19 @@ def _issue(severity: str, code: str, message: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "message": message}
 
 
-def _require_mapping(raw: Any, field_name: str) -> Mapping[str, Any]:
-    if not isinstance(raw, Mapping):
-        raise OutputTopologyError(f"{field_name} must be an object")
-    return raw
-
-
-def _sequence(raw: Any, field_name: str) -> list[Any]:
-    if not isinstance(raw, list):
-        raise OutputTopologyError(f"{field_name} must be a list")
-    return raw
-
-
-def _require_id(value: Any, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise OutputTopologyError(f"{field_name} is required")
-    out = value.strip()
-    if not _ID_RE.match(out):
-        raise OutputTopologyError(
-            f"{field_name} must be <=80 chars and contain only safe id chars"
-        )
-    return out
-
-
-def _optional_id(value: Any) -> str | None:
-    if value is None or value == "":
-        return None
-    return _require_id(value, "optional id")
-
-
-def _text(
-    value: Any,
-    field_name: str,
-    *,
-    default: str | None = None,
-    max_length: int = 120,
-) -> str:
-    if value is None and default is not None:
-        return default
-    if not isinstance(value, str) or not value.strip():
-        raise OutputTopologyError(f"{field_name} is required")
-    out = " ".join(value.split())
-    if len(out) > max_length:
-        raise OutputTopologyError(f"{field_name} must be <={max_length} chars")
-    return out
-
-
-def _optional_text(
-    value: Any,
-    field_name: str,
-    *,
-    max_length: int = 240,
-) -> str | None:
-    if value is None or value == "":
-        return None
-    return _text(value, field_name, max_length=max_length)
-
-
-def _int(value: Any, field_name: str) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError) as e:
-        raise OutputTopologyError(f"{field_name} must be an integer") from e
-
-
-def _optional_int(value: Any, field_name: str) -> int | None:
-    if value is None or value == "":
-        return None
-    return _int(value, field_name)
-
-
-def _bool(value: Any, default: bool) -> bool:
-    return value if isinstance(value, bool) else default
-
-
-def _enum(value: Any, field_name: str, supported: set[str]) -> str:
-    if not isinstance(value, str):
-        raise OutputTopologyError(f"{field_name} must be a string")
-    token = value.strip()
-    if token not in supported:
-        raise OutputTopologyError(f"{field_name} is unsupported: {token}")
-    return token
-
-
-def _float(value: Any, field_name: str, *, default: float = 0.0) -> float:
-    if value is None or value == "":
-        return default
-    try:
-        out = float(value)
-    except (TypeError, ValueError) as e:
-        raise OutputTopologyError(f"{field_name} must be numeric") from e
-    if not math.isfinite(out):
-        raise OutputTopologyError(f"{field_name} must be finite")
-    return out
-
-
-def _optional_float(value: Any, field_name: str) -> float | None:
-    if value is None or value == "":
-        return None
-    return _float(value, field_name)
+_JSON_FIELDS = JsonFields(OutputTopologyError)
+_require_mapping = _JSON_FIELDS.mapping
+_sequence = _JSON_FIELDS.sequence
+_require_id = _JSON_FIELDS.require_id
+_optional_id = _JSON_FIELDS.optional_id
+_text = _JSON_FIELDS.text
+_optional_text = _JSON_FIELDS.optional_text
+_int = _JSON_FIELDS.integer
+_optional_int = _JSON_FIELDS.optional_integer
+_bool = _JSON_FIELDS.boolean
+_enum = _JSON_FIELDS.enum
+_float = _JSON_FIELDS.number
+_optional_float = _JSON_FIELDS.optional_number
 
 
 def _safe_id_fragment(value: str) -> str:
@@ -671,13 +581,16 @@ class SpeakerChannel:
     """One speaker role assigned to an optional physical output."""
 
     role: str
+    # No defaults: callers that bypass ``from_mapping`` must make the safety
+    # posture explicit instead of silently constructing an unsafe tweeter with
+    # the non-tweeter values.
+    protection_required: bool
+    protection_status: str
     driver_style: str | None = None
     physical_output_index: int | None = None
     human_output_label: str | None = None
     identity_verified: bool = False
     startup_muted: bool = True
-    protection_required: bool = False
-    protection_status: str = "not_required"
     # The user-settable bass-management corner for a ``subwoofer`` channel: the
     # LR4 low-pass on the sub (and the complementary high-pass on the mains) are
     # emitted at this Hz. ``None`` means "use the default corner" — the active
@@ -853,7 +766,6 @@ class OutputTopology:
     hardware: OutputHardware
     speaker_groups: tuple[SpeakerGroup, ...] = field(default_factory=tuple)
     routing: TopologyRouting = field(default_factory=TopologyRouting)
-    status: str = "draft"
     pairing_intent: str = DEFAULT_PAIRING_INTENT
 
     @classmethod
@@ -873,7 +785,6 @@ class OutputTopology:
                 for item in _sequence(raw.get("speaker_groups", []), "speaker_groups")
             ),
             routing=TopologyRouting.from_mapping(raw.get("routing")),
-            status=_enum(raw.get("status", "draft"), "status", TOPOLOGY_STATUSES),
             pairing_intent=_enum(
                 raw.get("pairing_intent", DEFAULT_PAIRING_INTENT),
                 "pairing_intent",
@@ -914,6 +825,12 @@ class OutputTopology:
 
     def evaluation(self) -> dict[str, Any]:
         return evaluate_output_topology(self)
+
+    @property
+    def status(self) -> str:
+        """Current derived status; never trust the persisted status hint."""
+
+        return cast(str, self.evaluation()["status"])
 
     def to_dict(self, *, include_evaluation: bool = False) -> dict[str, Any]:
         evaluation = self.evaluation()
@@ -992,7 +909,6 @@ def new_topology_draft(
         hardware=hardware or hardware_from_env(),
         speaker_groups=(),
         routing=TopologyRouting(),
-        status="draft",
     )
 
 
@@ -1855,6 +1771,44 @@ def _build_outputd_transport_plan(
     )
 
 
+def _update_speaker_channel(
+    topology: OutputTopology,
+    *,
+    group_id: str,
+    role: str,
+    ambiguity_subject: str,
+    update: Callable[[SpeakerChannel], SpeakerChannel],
+) -> OutputTopology:
+    """Return a topology with one unambiguous speaker channel transformed."""
+
+    matches = [
+        channel
+        for group in topology.speaker_groups
+        for channel in group.channels
+        if group.id == group_id and channel.role == role
+    ]
+    if not matches:
+        raise OutputTopologyError("speaker channel not found")
+    if len(matches) > 1:
+        raise OutputTopologyError(
+            f"speaker channel {ambiguity_subject} is ambiguous"
+        )
+
+    groups = tuple(
+        replace(
+            group,
+            channels=tuple(
+                update(channel) if channel.role == role else channel
+                for channel in group.channels
+            ),
+        )
+        if group.id == group_id
+        else group
+        for group in topology.speaker_groups
+    )
+    return replace(topology, speaker_groups=groups)
+
+
 def set_channel_identity_verified(
     topology: OutputTopology,
     *,
@@ -1866,33 +1820,19 @@ def set_channel_identity_verified(
 
     group_id = _require_id(speaker_group_id, "speaker_group_id")
     role_id = _enum(role, "role", SUPPORTED_ROLES)
-    matches = [
-        (group, channel)
-        for group in topology.speaker_groups
-        for channel in group.channels
-        if group.id == group_id and channel.role == role_id
-    ]
-    if not matches:
-        raise OutputTopologyError("speaker channel not found")
-    if len(matches) > 1:
-        raise OutputTopologyError("speaker channel identity is ambiguous")
-    matched_channel = matches[0][1]
-    if matched_channel.physical_output_index is None and identity_verified:
-        raise OutputTopologyError("cannot verify an unassigned physical output")
 
-    groups: list[SpeakerGroup] = []
-    for group in topology.speaker_groups:
-        if group.id != group_id:
-            groups.append(group)
-            continue
-        channels = []
-        for channel in group.channels:
-            if channel.role != role_id:
-                channels.append(channel)
-                continue
-            channels.append(replace(channel, identity_verified=bool(identity_verified)))
-        groups.append(replace(group, channels=tuple(channels)))
-    return replace(topology, speaker_groups=tuple(groups), status="draft")
+    def update(channel: SpeakerChannel) -> SpeakerChannel:
+        if channel.physical_output_index is None and identity_verified:
+            raise OutputTopologyError("cannot verify an unassigned physical output")
+        return replace(channel, identity_verified=bool(identity_verified))
+
+    return _update_speaker_channel(
+        topology,
+        group_id=group_id,
+        role=role_id,
+        ambiguity_subject="identity",
+        update=update,
+    )
 
 
 def set_channel_protection_status(
@@ -1907,38 +1847,24 @@ def set_channel_protection_status(
     group_id = _require_id(speaker_group_id, "speaker_group_id")
     role_id = _enum(role, "role", SUPPORTED_ROLES)
     status = _enum(protection_status, "protection_status", PROTECTION_STATUSES)
-    matches = [
-        (group, channel)
-        for group in topology.speaker_groups
-        for channel in group.channels
-        if group.id == group_id and channel.role == role_id
-    ]
-    if not matches:
-        raise OutputTopologyError("speaker channel not found")
-    if len(matches) > 1:
-        raise OutputTopologyError("speaker channel protection is ambiguous")
     if role_id != "tweeter" and status != "not_required":
         raise OutputTopologyError("only tweeter channels can require protection")
 
-    groups: list[SpeakerGroup] = []
-    for group in topology.speaker_groups:
-        if group.id != group_id:
-            groups.append(group)
-            continue
-        channels = []
-        for channel in group.channels:
-            if channel.role != role_id:
-                channels.append(channel)
-                continue
-            protection_required = channel.protection_required or role_id == "tweeter"
-            channels.append(replace(
-                channel,
-                startup_muted=True if role_id == "tweeter" else channel.startup_muted,
-                protection_required=protection_required,
-                protection_status=status,
-            ))
-        groups.append(replace(group, channels=tuple(channels)))
-    return replace(topology, speaker_groups=tuple(groups), status="draft")
+    def update(channel: SpeakerChannel) -> SpeakerChannel:
+        return replace(
+            channel,
+            startup_muted=True if role_id == "tweeter" else channel.startup_muted,
+            protection_required=channel.protection_required or role_id == "tweeter",
+            protection_status=status,
+        )
+
+    return _update_speaker_channel(
+        topology,
+        group_id=group_id,
+        role=role_id,
+        ambiguity_subject="protection",
+        update=update,
+    )
 
 
 def topology_path(path: str | Path | None = None) -> Path:

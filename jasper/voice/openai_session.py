@@ -60,9 +60,9 @@ import logging
 import os
 import time as _time
 from collections import deque
-from enum import Enum
 from typing import Awaitable, AsyncIterator, Callable
 
+from jasper.backoff import reconnect_backoff_delay
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
@@ -72,9 +72,13 @@ from ._supervisor import (
     ESCALATION_REPEAT_THRESHOLD,
     DeferredReconnect,
     FailureFingerprint,
-    reconnect_backoff_delay,
 )
-from .session import AudioOutChunk, LiveTurn
+from .session import (
+    CONNECTION_NOISY_TRANSITIONS,
+    AudioOutChunk,
+    ConnectionState,
+    LiveTurn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,22 +161,6 @@ def _normalize_noise_reduction(value: str | None) -> str:
             "OpenAI noise_reduction must be one of: " + ", ".join(allowed)
         )
     return normalized
-
-
-class ConnectionState(Enum):
-    """States for the persistent OpenAI Realtime connection state machine.
-
-    Same shape as the Gemini connection's state machine for consistency,
-    minus the resumption-handle-related transitions that don't apply to
-    OpenAI."""
-    IDLE_INIT = "idle_init"
-    CONNECTING = "connecting"
-    CONNECTED = "connected"
-    IN_TURN = "in_turn"
-    RECONNECTING = "reconnecting"
-    PAUSED_FOR_BACKOFF = "paused_for_backoff"
-    FAILED = "failed"
-    CLOSED = "closed"
 
 
 # ---------- Audio helpers ---------------------------------------------------
@@ -313,7 +301,15 @@ class OpenAIRealtimeTurn:
     async def send_text_context(self, text: str) -> None:
         if self._released or self._turn_lost or self._committed:
             return
-        await self._conn._send_text_context(text)
+        try:
+            await self._conn._send_text_context(text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "openai turn: send_text_context failed (%s: %s); turn lost",
+                type(e).__name__, e,
+            )
+            self._turn_lost = True
+            await self._audio_q.put(None)
 
     async def submit_recorded_audio(self, pcm_16khz_int16: bytes) -> None:
         """Submit a complete pre-recorded user audio blob in one shot.
@@ -939,10 +935,7 @@ class OpenAIRealtimeConnection:
         self._state_lock = asyncio.Lock()
         # CONNECTED ↔ IN_TURN cycles every wake; logging each transition
         # at INFO floods the journal. Filter mirrors gemini_session.
-        self._noisy_transitions = frozenset({
-            (ConnectionState.CONNECTED, ConnectionState.IN_TURN),
-            (ConnectionState.IN_TURN, ConnectionState.CONNECTED),
-        })
+        self._noisy_transitions = CONNECTION_NOISY_TRANSITIONS
 
         # SDK connection + context manager (cleared during reconnect).
         self._conn = None

@@ -12,8 +12,8 @@ whether the measurement environment looked trustworthy.
 """
 from __future__ import annotations
 
-import os
 import json
+import os
 import socket
 import time
 import wave
@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from jasper.fanin.status import FANIN_STATUS_SOCKET
 from jasper.memory_policy import memory_headroom_thresholds
 
 SCHEMA_VERSION = 1
@@ -30,7 +31,7 @@ Severity = Literal["warn", "fail"]
 LOAD_PER_CORE_WARN = 1.50
 CAPTURE_EXTRA_SECONDS_WARN = 30.0
 CAPTURE_EXTRA_RATIO_WARN = 3.0
-FANIN_CONTROL_SOCKET = "/run/jasper-fanin/control.sock"
+FANIN_CONTROL_SOCKET = FANIN_STATUS_SOCKET
 OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
 FANIN_STATUS_TIMEOUT_SEC = 0.15
 OUTPUTD_STATUS_TIMEOUT_SEC = 0.15

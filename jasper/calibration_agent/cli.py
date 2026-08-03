@@ -418,6 +418,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"jasper-calibration-agent: {e}", file=sys.stderr)
         return 2
 
+    advisor_response_path = (
+        args.validate_advisor_response or args.run_advisor_actions
+    )
+    raw_advisor_response = None
+    if advisor_response_path is not None:
+        try:
+            raw_advisor_response = json.loads(advisor_response_path.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            print(
+                f"jasper-calibration-agent: invalid advisor response: {e}",
+                file=sys.stderr,
+            )
+            return 2
+
     if args.advisor_context_json:
         print(json.dumps(intake["advisor_context"], indent=2, sort_keys=True))
     elif args.advisor_prompt_json:
@@ -427,13 +441,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(package, indent=2, sort_keys=True))
     elif args.validate_advisor_response:
-        try:
-            raw = json.loads(args.validate_advisor_response.read_text())
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"jasper-calibration-agent: invalid advisor response: {e}", file=sys.stderr)
-            return 2
         validation = response.validate_advisor_response(
-            raw,
+            raw_advisor_response,
             advisor_context=intake["advisor_context"],
             user_confirmed=args.user_confirmed,
         )
@@ -441,13 +450,8 @@ def main(argv: list[str] | None = None) -> int:
         if not validation["accepted"]:
             return 1
     elif args.run_advisor_actions:
-        try:
-            raw = json.loads(args.run_advisor_actions.read_text())
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"jasper-calibration-agent: invalid advisor response: {e}", file=sys.stderr)
-            return 2
         validation = response.validate_advisor_response(
-            raw,
+            raw_advisor_response,
             advisor_context=intake["advisor_context"],
             user_confirmed=args.user_confirmed,
         )
