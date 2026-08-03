@@ -1695,7 +1695,7 @@ unready setup.
 | `clipped` | MEASURE | 1 | auto quieter retry (gain −3 dB). MEASURE-only: VERIFY replays the *identical* program on every attempt (that invariant is what makes the `verify_level_shift` baseline mean anything), so there is no quieter retry to offer — a clipped VERIFY capture is refused as a capture glitch instead (#1971). This row said "MEASURE / VERIFY" until then; no VERIFY path ever returned this code |
 | `drift_baselines_disagree` | MEASURE / VERIFY | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped on MEASURE (#1765), and `integrity=` says which check tripped on VERIFY (#1971, where the class is a spliced timeline or a clipped run). Since #1838 a merely weakly-located sweep is NOT in this class on either phase — it answers `locate_failed` ahead of this branch |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
-| `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). All four render surfaces — relay verdict, budget-exhaustion refusal, apply-seam refusal, envelope — go through `reason_message`, so one failure gets one account of itself |
+| `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). All four render surfaces — relay verdict, budget-exhaustion refusal, apply-seam refusal, envelope — go through `reason_message`, so one failure gets one account of itself. Since #2093 the timeline ANCHOR those confidences are measured against is cross-checked before this code can be reached — a knife-edge mis-anchor used to fabricate this verdict on pristine captures; see "Timeline anchor" and read `event=program_analysis.anchor` first when triaging one |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
 | `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current (evaluation `unconfirmed` / `stale` / `malformed` — all three are cleared by the one confirm action, which saves the visible values and rebuilds the profile). Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** confirm control here, so "confirm the safety limits" would name a button that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
@@ -1997,7 +1997,23 @@ per-capture event below. Its VERIFY twin is
 `event=program_analysis.capture_integrity` (#1971) — same WARN level, same
 failures-only cadence — carrying `failed`, `not_evaluated`,
 `locate_confidence_min`, `schedule_residual_ms_worst`, and
-`clipped_segments`. The verify diag below carries the same record on EVERY
+`clipped_segments`.
+
+`event=program_analysis.anchor` (#2093) sits one step upstream of both, and
+unlike them it fires on EVERY analyzed capture (INFO; WARNING when it
+corrects one) — because the anchor decision was the single unobservable step
+in the chain, and a fabricated failure read exactly like a real one. It
+carries `anchor` (the stimulus segment the whole timeline is pinned to),
+`witness` (the independent segment that corroborated it), `confidence` and
+`runner_up` (the margin between the surviving interpretations),
+`corroborated`, `corrected`, and `shift_ms`. Read it FIRST when a capture
+reports `locate_failed` or `summed_sweep_heard`: `corrected=true` means a
+mis-anchor was caught and repaired, and a `confidence` near `runner_up` with
+`corroborated=false` means the capture gave the analyzer nothing to pin to —
+a genuinely unlocatable recording, not a knife edge. See "Timeline anchor"
+below.
+
+The verify diag below carries the same record on EVERY
 capture, pass or fail, as `integrity` / `integrity_not_evaluated` /
 `integrity_locate_confidence_min` / `integrity_residual_ms_worst`;
 `integrity=unavailable` there is its own value and means the analysis
@@ -2128,6 +2144,74 @@ on the object: `program_analysis.DriftEstimate.repeat_level_delta_db` and
 `PilotObservation.snr_db` / `.channel_map_target_rise_db` /
 `.channel_map_cross_rise_db` (previously local variables inside
 `_estimate_drift` / `_channel_map_ok`, logged transiently or not at all).
+
+### Timeline anchor — which stimulus the whole capture is pinned to
+
+`program_analysis._global_offset` recovers ONE integer offset G for the whole
+capture by locating a single stimulus; `_locate_segments` then searches every
+other segment only at `scheduled ± SEGMENT_SEARCH_S` (±30 ms). That tight
+window is deliberate — it is what stops a segment locking onto a different
+occurrence of itself — but it means **the anchor is a single point of failure
+for the entire timeline**: get it wrong by more than 30 ms and every segment
+reads as "not found."
+
+The anchor is located by `_earliest_strong_peak`, an energy-normalized
+(therefore level-blind) matched filter that takes the earliest lag within
+0.6× of its max. Level-blindness is the right call for MEASURE's
+bit-identical sweep repeats — equal-level siblings score alike, so "earliest"
+robustly picks the first. It is a **knife edge** for the v2 programs' leading
+pilot pair, whose lo member is deliberately the quietest thing in the program
+(VERIFY's `pilot_summed_lo`, 10 dB under `pilot_summed_hi`): whether the
+quiet pilot clears 0.6× is then decided by its local SNR rather than by its
+waveform.
+
+That fired in production on 2026-08-03 (#2093). Across 11 live cloud VERIFY
+captures of one speaker, eight cleared the gate by +0.019…+0.185 NCC and
+three missed it by −0.0048…−0.0490 — nearest pass and nearest fail 0.024
+apart. On all three the anchor snapped to `pilot_summed_hi`, shifting the
+timeline by exactly the pilot spacing (+1296.5 ms, identical on all three),
+the summed sweep then located at 0.019–0.097, `summed_sweep_heard` failed,
+and households were told "Couldn't hear the speaker clearly. Check the
+volume…" about pristine recordings. Re-anchored correctly those same sweeps
+score 0.7313 / 0.8202 / 0.6671 — squarely among the eight that passed. The
+audio never distinguished pass from fail; the anchor did.
+
+So `_resolve_anchor` no longer trusts that one gate. Two shapes are
+identical to a level-blind correlator exactly when they share
+`(f1_hz, f2_hz, n_samples)` — the stimuli then differ by one scalar gain, so
+the NCC curve *cannot* tell them apart even in principle. That makes the
+ambiguity set provable rather than guessed. Each shape-sibling of the first
+stimulus is tried as an interpretation of the located arrival, and each
+resulting timeline is scored by locating an independent **witness** (the
+longest stimulus whose shape is NOT in that set — for VERIFY, the 6 s summed
+sweep) through the very same `_locate_in_window` the downstream locate uses.
+The winner is the timeline the rest of the program agrees with.
+
+Two properties this deliberately keeps:
+
+- **It cannot manufacture a pass.** Re-anchoring changes only WHERE the
+  analyzer looks. The confidence reported is still the real measured
+  correlation at the chosen place, and `SWEEP_LOCATE_CONFIDENCE_FLOOR`, the
+  residual ceiling, and the linearity gates are untouched.
+- **It re-anchors only on positive evidence.** The winning candidate's
+  witness must itself clear that same "was this even heard" floor. When the
+  witness never played — a silent driver in CHECK, or a capture with no
+  program in it at all — every candidate scores in the noise, the cross-check
+  declines to move, and the capture fails exactly as it did before. A
+  garbage capture must still fail honestly; that is pinned by
+  `tests/test_audio_measurement_anchor_resolution.py`, which also keeps a
+  permanent mutation guard recomputing the pre-#2093 offset and asserting
+  THAT timeline collapses.
+
+Programs with nothing to arbitrate (a legacy pilot-less VERIFY, whose unique
+summed sweep is the anchor) are byte-identical to the pre-#2093 path and log
+nothing.
+
+**Design note, not yet a change:** the same quietest-first pilot design sits
+close to its own detection floor at real household volumes — 2026-08-03's
+fourth failure was a `pilot_level_collapse` at 11.27 dB. The anchor no longer
+depends on the quiet pilot, but the linearity evidence still does. Worth
+revisiting the pilot level plan on its own merits.
 
 ### Operator capture retention — raw WAVs for offline analysis
 
@@ -3044,4 +3128,9 @@ Last verified: 2026-08-03 — re-verified the MEASURE-phase acceptance section,
 the terminal-code cause table's `low_alignment_confidence` row, and the
 predicted-ripple frame claim against `crossover_v2_flow.py` /
 `crossover_envelope_v2.py` / `correction_crossover_v2.py` while landing the
-#2087 ruling. Sections outside that path carry their 2026-07-30 verification.
+#2087 ruling; separately re-verified the per-capture diagnostics section and
+wrote the new "Timeline anchor" section against `program_analysis.py`
+(`_global_offset` / `_resolve_anchor` / `_locate_in_window`) while landing
+#2093, with its measured numbers re-derived from the 11 retained 2026-08-03
+cloud VERIFY captures. Sections outside those paths carry their 2026-07-30
+verification.

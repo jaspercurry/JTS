@@ -1657,16 +1657,176 @@ def _earliest_strong_peak(
     return int(np.argmax(ncc >= frac * peak))
 
 
+def _stimulus_shape(segment: ProgramSegment) -> tuple[float | None, float | None, int]:
+    """A stimulus segment's waveform identity — everything
+    :func:`segment_stimulus` regenerates it from EXCEPT its level.
+
+    Two segments sharing this triple regenerate to stimuli that differ by a
+    single scalar amplitude, and :func:`_earliest_strong_peak`'s correlation is
+    energy-normalized (scale-invariant) BY DESIGN, so its curve cannot
+    distinguish them even in principle. That makes this the exact — and
+    provable, not heuristic — ambiguity set :func:`_resolve_anchor` has to
+    arbitrate.
+    """
+    return (segment.f1_hz, segment.f2_hz, segment.n_samples)
+
+
+def _resolve_anchor(
+    program: ExcitationProgram,
+    capture: np.ndarray,
+    sample_rate: int,
+    arrival: int,
+    first: ProgramSegment,
+    stimuli: dict[str, np.ndarray],
+) -> tuple[ProgramSegment, int]:
+    """Decide WHICH shape-identical stimulus the located ``arrival`` really is.
+
+    ``_earliest_strong_peak`` answers "where is a stimulus of this shape?" but
+    not "which occurrence is it?" — and it is level-blind by construction (see
+    :func:`_stimulus_shape`). Its "earliest lag within ``frac`` of the max"
+    tie-break is robust when the shape-siblings are EQUAL level (MEASURE's
+    bit-identical sweep repeats score alike, so the earliest reliably wins),
+    but the v2 programs open with a deliberately UNEQUAL pilot pair whose lo
+    member is the quietest thing in the program (VERIFY: −22 dBFS, 10 dB under
+    ``pilot_summed_hi``). The quiet member's local SNR — not its waveform —
+    then decides whether it clears ``frac``, which makes the anchor a knife
+    edge: on 2026-08-03's live cloud VERIFY the eight healthy captures cleared
+    it by +0.019…+0.185 NCC while three equally pristine ones missed by
+    −0.0048…−0.0490, snapping the anchor onto ``pilot_summed_hi`` and shifting
+    the WHOLE timeline by exactly the pilot spacing (+1296.5 ms, identical on
+    all three). Every segment is then searched only at
+    ``scheduled ± SEGMENT_SEARCH_S`` (±30 ms), so a 1.3 s anchor error
+    guarantees "not found": the summed sweep located at confidence 0.019–0.097,
+    ``summed_sweep_heard`` failed, and the household was told the speaker could
+    not be heard about a recording in which it is plainly audible (issue #2093).
+
+    So rather than trust one level-blind gate, this enumerates the (few)
+    interpretations the schedule permits and asks the capture which one the
+    REST of the program agrees with: for each shape-sibling of ``first``,
+    reinterpret ``arrival`` as that segment, and score the resulting timeline
+    by locating an independent WITNESS — the longest stimulus whose shape is
+    NOT in the ambiguity set (VERIFY: the 6 s summed sweep) — through the very
+    same :func:`_locate_in_window` the downstream locate uses. The anchor we
+    commit to is by construction the anchor the segments actually locate under.
+
+    This CANNOT manufacture a passing capture. It only changes WHERE the
+    analyzer looks; the confidence it reports is still the real measured
+    correlation at the chosen place, and every downstream gate
+    (``SWEEP_LOCATE_CONFIDENCE_FLOOR``, the residual ceiling, linearity) is
+    untouched. Re-anchoring further requires POSITIVE evidence — the winning
+    candidate's witness must clear that same "was this even heard" floor — so
+    a capture containing no locatable program scores every candidate in the
+    noise, declines to move at all, and is refused exactly as before. See
+    ``tests/test_audio_measurement_anchor_resolution.py``'s garbage cases.
+
+    Degenerate shapes keep today's behavior byte-for-byte: a program whose
+    first stimulus has no shape-sibling (legacy pilot-less VERIFY, where the
+    unique summed sweep is the anchor) has nothing to arbitrate, and one with
+    no non-sibling stimulus has no independent witness to arbitrate WITH.
+    """
+    shape = _stimulus_shape(first)
+    candidates = [
+        seg for seg in program.segments
+        if seg.kind in STIMULUS_KINDS and _stimulus_shape(seg) == shape
+    ]
+    # Longest wins — correlation SNR grows with stimulus length — and `max`
+    # holds its FIRST maximum, so an equal-length tie keeps the earliest such
+    # segment in schedule order.
+    #
+    # That ordering is load-bearing, not incidental. A witness must not be
+    # confusable with ITSELF under the shift being arbitrated: CHECK builds
+    # both roles' pilot pairs with the same duration and gap, so reinterpreting
+    # the anchor as `pilot_woofer_hi` moves the window for `pilot_tweeter_hi`
+    # onto `pilot_tweeter_lo` — same shape, scale-invariant correlation, so
+    # both hypotheses score within ~1e-3 of each other (a loudest-on-tie key
+    # measured 0.968 vs 0.968 and 0.9927 vs 0.9926 on two CHECK fixtures): a
+    # coin flip that shifts the timeline a full pilot spacing, and the reason
+    # the margin is a BOUND here rather than one quoted pair — it varies with
+    # the capture. Taking the EARLIEST of a tied pair avoids it, because nothing
+    # of the same shape sits one gap BEFORE a pair's `lo` member, and
+    # `_append_leading_pilot_pair` always appends lo-then-hi. The property is
+    # asserted on the witness actually chosen, for every shipping program, by
+    # `test_chosen_witness_is_never_confusable_with_itself_under_the_shift` —
+    # rather than re-derived as a runtime filter no shipping program exercises.
+    witness = max(
+        (seg for seg in program.segments
+         if seg.kind in STIMULUS_KINDS and _stimulus_shape(seg) != shape),
+        key=lambda seg: seg.n_samples,
+        default=None,
+    )
+    if len(candidates) < 2 or witness is None:
+        return first, arrival - first.start_sample
+
+    witness_stim = stimuli.get(witness.segment_id)
+    if witness_stim is None:
+        witness_stim = segment_stimulus(witness)
+        stimuli[witness.segment_id] = witness_stim
+    scored: list[tuple[float, ProgramSegment, int]] = []
+    for seg in candidates:
+        offset = arrival - seg.start_sample
+        _located, confidence = _locate_in_window(
+            capture, witness_stim, offset + witness.start_sample,
+            witness.n_samples, sample_rate=sample_rate,
+        )
+        scored.append((confidence, seg, offset))
+    # `max` keeps the FIRST maximum, so an exact tie holds the structurally
+    # first candidate — i.e. the pre-#2093 choice — rather than drifting.
+    best_confidence, best_seg, best_offset = max(scored, key=lambda item: item[0])
+    runner_up = sorted((item[0] for item in scored), reverse=True)[1]
+    # Re-anchoring requires POSITIVE evidence that the witness was heard, not
+    # merely that one candidate out-scored the other. When the witness itself
+    # never played — a silent driver in CHECK, or a capture with no program in
+    # it at all — every candidate scores in the noise and the argmax between
+    # them is a coin flip that could shift the timeline for no reason. The
+    # floor is the module's existing "was this even heard" judgment
+    # (:data:`SWEEP_LOCATE_CONFIDENCE_FLOOR`), not a second number: below it
+    # there is nothing to corroborate against, so the pre-#2093 reading stands
+    # and the capture keeps failing on its own merits.
+    corroborated = best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+    if not corroborated:
+        best_seg, best_offset = first, arrival - first.start_sample
+    corrected = best_seg.segment_id != first.segment_id
+    # One line per analyzed capture (this runs once per capture, never in a
+    # loop). It exists because on 2026-08-03 the anchor decision was the single
+    # unobservable step in the chain: nothing in the journal, `/state`, or the
+    # diagnostic record said which stimulus the timeline was pinned to, so
+    # three fabricated failures read exactly like real ones.
+    log_event(
+        logger,
+        "program_analysis.anchor",
+        level=logging.WARNING if corrected else logging.INFO,
+        phase=program.phase,
+        program_id=program.program_id,
+        anchor=best_seg.segment_id,
+        witness=witness.segment_id,
+        candidates=len(candidates),
+        confidence=round(best_confidence, 4),
+        runner_up=round(runner_up, 4),
+        corroborated=corroborated,
+        corrected=corrected,
+        shift_ms=round(
+            (best_offset - (arrival - first.start_sample)) / sample_rate * 1000.0, 1
+        ),
+    )
+    return best_seg, best_offset
+
+
 def _global_offset(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int
 ) -> tuple[int, ProgramSegment, dict[str, np.ndarray]]:
-    """Locate the first stimulus → integer global offset G. Caches stimuli.
+    """Locate the anchor stimulus → integer global offset G. Caches stimuli.
 
     The whole-capture matched filter runs at :data:`LOCATOR_RATE_HZ` (mirrors
     ``driver_acoustics._capture_to_magnitude``'s 16 kHz downsampled locate) so
     the largest correlation is over a 3× smaller array; the coarse arrival is
     then refined at the full rate inside a tiny window around it, so the
     returned offset is still full-rate-exact.
+
+    That locate answers WHERE a first-stimulus-shaped waveform is, but not
+    WHICH occurrence of it — :func:`_resolve_anchor` arbitrates that against
+    the rest of the program and owns the returned segment, which is therefore
+    the anchor the offset is pinned to (the program's first stimulus on every
+    capture where that reading holds).
     """
     from scipy.signal import resample_poly
 
@@ -1700,8 +1860,42 @@ def _global_offset(
         arrival = lo + _earliest_strong_peak(window, stim)
     else:
         arrival = coarse
-    global_offset = arrival - first.start_sample
-    return global_offset, first, stimuli
+    anchor, global_offset = _resolve_anchor(
+        program, capture, sample_rate, arrival, first, stimuli
+    )
+    return global_offset, anchor, stimuli
+
+
+def _locate_in_window(
+    capture: np.ndarray,
+    stim: np.ndarray,
+    scheduled: int,
+    n_samples: int,
+    *,
+    sample_rate: int,
+) -> tuple[int, float]:
+    """Matched-filter ``stim`` at ``scheduled`` ± :data:`SEGMENT_SEARCH_S`.
+
+    The ONE place the per-segment search geometry lives: :func:`_locate_segments`
+    locates every stimulus through it and :func:`_resolve_anchor` scores every
+    candidate anchor through it, so "the anchor we chose" is by construction
+    "the anchor these segments actually locate under". Two copies of this
+    window would let the choice and the consequence drift apart silently.
+
+    A window too short to hold ``stim`` yields ``(scheduled, 0.0)`` — the
+    schedule's own guess with zero confidence, never a located claim.
+    """
+    search = int(round(SEGMENT_SEARCH_S * sample_rate))
+    lo = max(0, scheduled - search)
+    hi = min(capture.size, scheduled + n_samples + search)
+    window = capture[lo:hi]
+    if window.size < stim.size:
+        return scheduled, 0.0
+    res = _locate(
+        window, stim, sample_rate=sample_rate,
+        max_capture_s=window.size / sample_rate + 1.0,
+    )
+    return lo + int(res.lag_samples), float(res.confidence)
 
 
 def _locate_segments(
@@ -1712,7 +1906,6 @@ def _locate_segments(
     stimuli: dict[str, np.ndarray],
 ) -> list[SegmentLocation]:
     """Locate every segment at scheduled offset ± window; record integrity."""
-    search = int(round(SEGMENT_SEARCH_S * sample_rate))
     out: list[SegmentLocation] = []
     for seg in program.segments:
         scheduled = global_offset + seg.start_sample
@@ -1721,19 +1914,9 @@ def _locate_segments(
             if stim is None:
                 stim = segment_stimulus(seg)
                 stimuli[seg.segment_id] = stim
-            lo = max(0, scheduled - search)
-            hi = min(capture.size, scheduled + seg.n_samples + search)
-            window = capture[lo:hi]
-            if window.size >= stim.size:
-                res = _locate(
-                    window, stim, sample_rate=sample_rate,
-                    max_capture_s=window.size / sample_rate + 1.0,
-                )
-                located = lo + int(res.lag_samples)
-                confidence = float(res.confidence)
-            else:
-                located = scheduled
-                confidence = 0.0
+            located, confidence = _locate_in_window(
+                capture, stim, scheduled, seg.n_samples, sample_rate=sample_rate,
+            )
             seg_samples = capture[located:located + seg.n_samples]
             out.append(SegmentLocation(
                 segment_id=seg.segment_id,
