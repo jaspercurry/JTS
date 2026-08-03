@@ -79,6 +79,46 @@ this doc is the current operational truth.
 
 ## Current status (2026-07-22)
 
+### Live attempts loop (2026-08-03)
+
+An accepted applied-candidate VERIFY now crosses one lifecycle seam in
+`CrossoverV2Conductor`: `ProgramAnalysis.capture_integrity` and the shipped
+`max_db_notch_excluded` tracking grade become a realized `AttemptRecord`, and
+the pure [`attempts_loop.py`](../jasper/active_speaker/attempts_loop.py) kernel
+judges that record against the immediately preceding accepted candidate. The
+candidate fingerprint is the attempt identity, so a recovery re-verify cannot
+double-write or masquerade as another tune. Journey-scoped attempt history
+survives the relay-session rebind between apply and VERIFY; capture-phase
+evidence remains session-scoped as before. This is rung P4's live seam; see the
+[correction revision spine](HANDOFF-correction-revision-plan.md#rung-p4--wire-the-learning-loop)
+for program context.
+
+The conductor performs no persistence itself. Its injected writer calls
+`model_error_store.record_model_error` once after an accepted VERIFY, banking
+the tracking model's predicted error (`0`) and the analyzer's realized error;
+store failures warn at
+`event=correction.crossover_v2_model_error_write_failed` and never reverse an
+accepted flow verdict. Every loop judgment is visible at
+`event=correction.crossover_v2_attempt_decision`; the existing
+`crossover_v2` state block exposes only the last decision and store count.
+`crossover_envelope_v2.attempt_loop_verdict_sentence` is the sole household
+copy writer and formats the kernel's reason, provenance, delta, and the floor
+carried on its decision rather than recomputing any of them.
+
+Comparability is defense in depth, not a replacement for VERIFY's existing
+pre-tracking integrity gate. Any evaluated capture-integrity failure maps to
+`comparable=False` and carries both failed and not-evaluated check names into
+the kernel's `STOP_EVIDENCE` record. A clean one-sweep VERIFY necessarily has
+repeat-only checks marked `not_evaluated`; those names remain disclosed but do
+not by themselves make every live VERIFY incomparable.
+
+The claim floor still has one owner and one adoption path:
+`model_error_store.stored_floor`, populated only by the offline repeat-study
+path (`adopt_floor` / the replay CLI). The live flow never adopts or invents a
+floor. When none exists it stores the realized attempt and model error but
+labels the decision `ungraded_no_floor`; the household surface explicitly
+makes no improvement claim.
+
 **2026-07-24 — Layer-1a linearization now EMITS (#1668 PR-D), not yet
 hardware-validated.** The fit engine's output (PR-C) now actually reaches
 the applied graph — see "Linearization EMISSION" and "Flatness-verify"

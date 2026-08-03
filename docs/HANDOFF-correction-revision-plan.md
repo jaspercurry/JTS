@@ -383,22 +383,19 @@ model error. Cheap — every piece exists; nothing reads it.
 **Status.** PENDING RATIFICATION. First piece merged — the findings reader,
 #1982, 2026-07-31. Then **R11 landed the attempts loop (#2029) and the VERIFY
 evidence gate (#2031)**, so the chassis exists; **ratification still pending**.
-
-**Honest limit of what shipped — the store has no live writer.** The
-per-speaker model-error store
-([`jasper/active_speaker/model_error_store.py`](../jasper/active_speaker/model_error_store.py))
-is real, tested, and **not yet wired to the flow**: `record_model_error` has
-**no caller anywhere outside its own tests** — not in `crossover_v2_flow`, not
-in the envelope, nowhere. The only production writer of the file at all is
-`adopt_floor`, called from the offline replay CLI
-([`jasper/cli/active_speaker_attempts_replay.py`](../jasper/cli/active_speaker_attempts_replay.py)),
-which is why R11's proof ran on recorded data and why the R11 outcome records
-the store as starting "honestly empty". So P4 today is the *read* path plus the
-loop plus the storage shape — **the learn-from-VERIFY seam the rung is named
-for is still open**. Tracked as **#2048** (the store has no live writer) under
-parent **#2049** (live in-flow attempts-loop wiring — the household-visible
-"improved X, stopped because more would be noise" payoff, which has no owner
-until that wiring lands).
+At the campaign close that chassis still had no live store writer, which is the
+historical state recorded above and in R11. The owner cleared the wiring on
+2026-08-03; **#2048/#2049/#2033 now connect it to the live v2 journey**:
+accepted applied-candidate VERIFY grades are persisted through
+`record_model_error`, `capture_integrity` maps into the loop's comparability
+input, and the kernel's last decision reaches the household verdict through
+one copy writer. Attempt lifecycle stays in `CrossoverV2Conductor`; persistence
+stays in
+[`model_error_store.py`](../jasper/active_speaker/model_error_store.py); the
+decision kernel remains pure. Floors are still adopted only by the offline
+`adopt_floor` / replay path. A speaker with no stored floor banks the realized
+observation but makes no improvement claim (`ungraded_no_floor`) — the live
+flow does not invent a threshold.
 
 **Reshapes.** Precedes WO-6 and WO-7. WO-7's per-attempt
 predicted-vs-measured evidence stream is **unimplementable until P4 exists** —

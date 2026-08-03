@@ -89,6 +89,14 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 import numpy as np
 
+from jasper.active_speaker.attempts_loop import (
+    PROVENANCE_REALIZED,
+    AttemptBudget,
+    AttemptIntegrity,
+    AttemptRecord,
+    FloorStats,
+    decide_next,
+)
 from jasper.active_speaker.linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,
     compose_envelope,
@@ -217,6 +225,19 @@ PHASE_DONE = "done"
 CLOUD_CLOSE_NONE = ""
 CLOUD_CLOSE_AWAITING_CONFIRM = "awaiting_confirm"
 CLOUD_CLOSE_RUNNING = "running"
+
+# The absolute VERIFY tracking error used by both the live attempts loop and
+# the offline repeat-floor replay. Lower is better: zero is the model's
+# prediction of perfect realization, while the analyzer's value is what the
+# applied speaker actually realized.
+ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
+
+# A flow-owned status, deliberately not a synthetic kernel decision. The
+# kernel requires a real FloorStats and the store returns ``None`` until an
+# offline repeat study adopts one, so the honest live result is ungraded — no
+# invented floor and no improvement claim.
+ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
+ATTEMPT_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 
 # Capture-plan index → phase. APPLYING is a control-page phase (no capture)
 # that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
@@ -3058,6 +3079,18 @@ ApplyGate = Callable[[], bool]
 # ``authorize_begin`` can REFUSE the deferred VERIFY with an honest reason
 # instead of holding forever toward a dishonest relay_timeout.
 ApplyFailureGate = Callable[[], str]
+class RecordModelError(Protocol):
+    """Banks one model-predicted/realized pair outside the conductor."""
+
+    def __call__(
+        self,
+        *,
+        attempt_id: str,
+        metric: str,
+        predicted_db: float,
+        realized_db: float,
+        context: Mapping[str, Any],
+    ) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -3111,6 +3144,10 @@ class V2FlowSeams:
     # ``classify_delta_probe`` treats honestly — the whole shift stays visible
     # as ``residual_offset_db`` instead of being silently claimed as accounted.
     applied_offset_db: Callable[[], float] | None = None
+    # S3 attempts loop: called once for each newly accepted applied-candidate
+    # VERIFY. Optional so a conductor without a durable host still grades its
+    # in-memory attempt and every pre-wiring construction site remains valid.
+    record_model_error: RecordModelError | None = None
 
 
 @dataclass(frozen=True)
@@ -3153,6 +3190,13 @@ class V2ConductorSnapshot:
     # — the household holding a phone at the confirm screen, the fit running,
     # and a session that ended having produced nothing.
     cloud_close: str = ""
+    # S3 attempt history is journey-scoped, not relay-session-scoped. A second
+    # apply→VERIFY necessarily runs under a fresh relay session, so these
+    # records survive :meth:`hydrate`'s session rebind while CHECK/MEASURE
+    # evidence above correctly does not.
+    attempt_history: tuple[AttemptRecord, ...] = ()
+    last_attempt_decision: Mapping[str, Any] | None = None
+    model_error_store_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -3164,7 +3208,124 @@ class V2ConductorSnapshot:
             "session_phases": list(self.session_phases),
             "tier": self.tier,
             "cloud_close": self.cloud_close,
+            "attempt_history": [item.to_dict() for item in self.attempt_history],
+            "last_attempt_decision": (
+                dict(self.last_attempt_decision)
+                if self.last_attempt_decision is not None else None
+            ),
+            "model_error_store_count": self.model_error_store_count,
         }
+
+
+def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
+    """Restore the conductor-owned attempt history from durable journey state.
+
+    Invalid rows are dropped as unavailable history, never partially trusted.
+    The floor is intentionally absent from this shape: it has one owner in
+    :mod:`jasper.active_speaker.model_error_store` and is read afresh by the
+    host when it constructs the conductor.
+    """
+
+    loop = raw.get("attempts_loop") if isinstance(raw, Mapping) else None
+    rows = loop.get("history") if isinstance(loop, Mapping) else None
+    if not isinstance(rows, list):
+        return ()
+    restored: list[AttemptRecord] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        integrity = row.get("integrity")
+        if not isinstance(integrity, Mapping):
+            continue
+        try:
+            record = AttemptRecord(
+                attempt_id=str(row.get("attempt_id") or ""),
+                metric=str(row.get("metric") or ""),
+                provenance=str(row.get("provenance") or ""),
+                integrity=AttemptIntegrity(
+                    comparable=integrity.get("comparable") is True,
+                    reasons=tuple(
+                        str(reason) for reason in integrity.get("reasons", ())
+                        if isinstance(reason, str) and reason
+                    ),
+                ),
+                repeats_used=(
+                    int(row["repeats_used"])
+                    if isinstance(row.get("repeats_used"), int)
+                    and not isinstance(row.get("repeats_used"), bool)
+                    else 1
+                ),
+                grade_db=_attempt_optional_float(row.get("grade_db")),
+                deviation_from_predecessor_db=_attempt_optional_float(
+                    row.get("deviation_from_predecessor_db")
+                ),
+                n_graded_bins=(
+                    int(row["n_graded_bins"])
+                    if isinstance(row.get("n_graded_bins"), int)
+                    and not isinstance(row.get("n_graded_bins"), bool)
+                    else None
+                ),
+                predicted_remaining_improvement_db=_attempt_optional_float(
+                    row.get("predicted_remaining_improvement_db")
+                ),
+                in_spec=(
+                    row.get("in_spec")
+                    if isinstance(row.get("in_spec"), bool) else None
+                ),
+                curve_refs=tuple(
+                    str(ref) for ref in row.get("curve_refs", ())
+                    if isinstance(ref, str) and ref
+                ),
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+        restored.append(record)
+    # The kernel's hard cap is the only live attempt budget. Older rows carry
+    # no additional decision value and retaining them would grow Pi state for
+    # no payoff.
+    return tuple(restored[-AttemptBudget().hard_cap_attempts:])
+
+
+def _attempt_optional_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def attempt_record_from_verify(
+    analysis: ProgramAnalysis, *, attempt_id: str,
+) -> AttemptRecord:
+    """Map one VERIFY analysis into the pure kernel's realized record (#2033).
+
+    VERIFY necessarily leaves repeat-only checks ``not_evaluated`` because it
+    contains one summed sweep. Their names still ride as reasons, but they do
+    not make an otherwise clean capture incomparable. Any evaluated failure
+    does, and carries both the failed and not-evaluated check names so the
+    kernel's STOP_EVIDENCE record never loses what the analyzer knew.
+    """
+
+    integrity = analysis.capture_integrity
+    if integrity is None:
+        attempt_integrity = AttemptIntegrity(
+            comparable=False, reasons=(ATTEMPT_INTEGRITY_UNAVAILABLE,),
+        )
+    else:
+        reasons = tuple(dict.fromkeys((*integrity.failed, *integrity.not_evaluated)))
+        attempt_integrity = AttemptIntegrity(
+            comparable=not integrity.failed,
+            reasons=reasons,
+        )
+    tracking = analysis.verify_tracking or {}
+    return AttemptRecord(
+        attempt_id=str(attempt_id),
+        metric=ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        provenance=PROVENANCE_REALIZED,
+        integrity=attempt_integrity,
+        grade_db=_attempt_optional_float(
+            tracking.get(ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED)
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -4760,6 +4921,12 @@ class CrossoverV2Conductor:
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         tweeter_measurement_band_hz: tuple[float, float] | None = None,
+        attempt_history: Sequence[AttemptRecord] = (),
+        attempt_floor: FloorStats | None = None,
+        last_attempt_decision: Mapping[str, Any] | None = None,
+        model_error_store_count: int = 0,
+        speaker_id: str = "",
+        tuning_attempt_id: str = "",
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -4790,6 +4957,21 @@ class CrossoverV2Conductor:
         self._caps = dict(driver_caps_dbfs)
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
+        # S3's lifecycle state. Attempts belong to the commissioning journey,
+        # not to this relay session (stage 2 always mints a new one). The
+        # conductor owns the bounded history; the injected floor/store writer
+        # keep persistence outside it and the decision kernel pure.
+        self._attempt_history = list(attempt_history)[
+            -AttemptBudget().hard_cap_attempts:
+        ]
+        self._attempt_floor = attempt_floor
+        self._last_attempt_decision = (
+            dict(last_attempt_decision)
+            if isinstance(last_attempt_decision, Mapping) else None
+        )
+        self._model_error_store_count = max(0, int(model_error_store_count))
+        self._speaker_id = str(speaker_id or "unknown")
+        self._tuning_attempt_id = str(tuning_attempt_id or "")
         # Layer-1a linearization (#1668 PR-C): per-role driver class, used by
         # class_prior_limit(). "unknown" (the conservative default) until
         # #1665 lands component-entry declarations — no production caller
@@ -5395,6 +5577,23 @@ class CrossoverV2Conductor:
     def accepted_phases(self) -> frozenset[str]:
         return frozenset(self._accepted)
 
+    @property
+    def attempt_history(self) -> tuple[AttemptRecord, ...]:
+        """Accepted applied-candidate attempts, oldest first and bounded."""
+        return tuple(self._attempt_history)
+
+    @property
+    def last_attempt_decision(self) -> dict[str, Any] | None:
+        """The kernel's last decision, or the explicit no-floor status."""
+        return (
+            dict(self._last_attempt_decision)
+            if self._last_attempt_decision is not None else None
+        )
+
+    @property
+    def model_error_store_count(self) -> int:
+        return self._model_error_store_count
+
     def phase_status(self, phase: str) -> str:
         return "accepted" if phase in self._accepted else "pending"
 
@@ -5722,6 +5921,9 @@ class CrossoverV2Conductor:
             ),
             tier=self._tier,
             cloud_close=self.cloud_close_state,
+            attempt_history=tuple(self._attempt_history),
+            last_attempt_decision=self._last_attempt_decision,
+            model_error_store_count=self._model_error_store_count,
         )
 
     @classmethod
@@ -5739,12 +5941,28 @@ class CrossoverV2Conductor:
         (CHECK/MEASURE evidence invalidated — mic position is unverifiable
         across sessions).
         """
+        journey: dict[str, Any] = {}
+        if snapshot is not None:
+            journey = {
+                "attempt_history": snapshot.attempt_history,
+                "last_attempt_decision": snapshot.last_attempt_decision,
+                "model_error_store_count": snapshot.model_error_store_count,
+            }
+        # Explicit caller values win for migrations/tests that deliberately
+        # replace one journey fact; ordinary production hydration supplies
+        # none and receives the durable snapshot wholesale.
+        journey.update({
+            key: kwargs.pop(key)
+            for key in tuple(journey)
+            if key in kwargs
+        })
         if snapshot is not None and snapshot.session_id == session_id:
             return cls(
                 session_id=session_id,
                 accepted_phases=snapshot.accepted_phases,
                 applied=snapshot.applied,
                 gain_plan_db=snapshot.gain_plan_db,
+                **journey,
                 **kwargs,
             )
         if snapshot is not None:
@@ -5754,7 +5972,7 @@ class CrossoverV2Conductor:
                 prior_session=snapshot.session_id,
                 session_id=session_id,
             )
-        return cls(session_id=session_id, **kwargs)
+        return cls(session_id=session_id, **journey, **kwargs)
 
     # --- relay callbacks -----------------------------------------------------
 
@@ -5894,7 +6112,7 @@ class CrossoverV2Conductor:
                 phase, index, attempt, analysis, result
             )
         else:
-            verdict = self._consume_verify(analysis)
+            verdict = self._consume_verify(analysis, attempt=attempt)
         if verdict.accepted:
             # A position group's PHASE is accepted only when its last index is
             # in; a single-capture phase closes on its own acceptance. Both
@@ -7909,10 +8127,110 @@ class CrossoverV2Conductor:
             glitch=analysis.glitch_detected,
         )
 
-    def _consume_verify(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+    def _consume_verify(
+        self, analysis: ProgramAnalysis, *, attempt: int,
+    ) -> PhaseVerdict:
         verdict = self._verify_verdict(analysis)
         self._safe_log_diag(self._log_verify_diag, analysis, verdict)
+        self._grade_verify_attempt(analysis, verdict, capture_attempt=attempt)
         return verdict
+
+    def _grade_verify_attempt(
+        self,
+        analysis: ProgramAnalysis,
+        verdict: PhaseVerdict,
+        *,
+        capture_attempt: int,
+    ) -> None:
+        """Hand a VERIFY record to S3 and bank an accepted new attempt once.
+
+        A rejected capture is still mapped and judged so capture-integrity
+        failures reach STOP_EVIDENCE at the loop boundary (#2033), but it is a
+        retry of the same applied candidate and is not appended to accepted
+        history. A repeated successful re-verify of a candidate already in
+        history is likewise not a new tuning attempt and cannot double-write
+        model error.
+        """
+
+        candidate_id = self._tuning_attempt_id
+        if not candidate_id and self._candidate is not None:
+            candidate_id = str(getattr(self._candidate, "fingerprint", "") or "")
+        attempt_id = candidate_id or f"{self.session_id}:{capture_attempt}"
+        already_recorded = any(
+            item.attempt_id == attempt_id for item in self._attempt_history
+        )
+        if already_recorded:
+            return
+
+        record = attempt_record_from_verify(analysis, attempt_id=attempt_id)
+        prospective = [*self._attempt_history, record]
+        if self._attempt_floor is None:
+            decision: dict[str, Any] = {
+                "decision": None,
+                "reason": ATTEMPT_REASON_NO_FLOOR,
+                "attempts_used": len(prospective),
+                "budget": AttemptBudget().to_dict(),
+                "improved": None,
+                "magnitude_db": None,
+                "improvement_db": None,
+                "floor": None,
+                "basis_attempt_ids": [attempt_id],
+                "provenance": record.provenance,
+                "repeats_over_cap": False,
+                "notes": [],
+            }
+        else:
+            decision = decide_next(prospective, self._attempt_floor).to_dict()
+        self._last_attempt_decision = decision
+        floor = decision.get("floor")
+        log_event(
+            logger,
+            "correction.crossover_v2_attempt_decision",
+            session_id=self.session_id,
+            speaker_id=self._speaker_id,
+            decision=str(decision.get("decision") or "ungraded"),
+            reason=str(decision.get("reason") or ""),
+            basis=",".join(
+                str(item) for item in decision.get("basis_attempt_ids", ())
+            ),
+            floor_db=(floor.get("claim_floor_db") if isinstance(floor, Mapping) else None),
+            floor_basis=(floor.get("basis") if isinstance(floor, Mapping) else None),
+            provenance=str(decision.get("provenance") or ""),
+        )
+        if not verdict.accepted:
+            return
+
+        self._attempt_history = prospective[-AttemptBudget().hard_cap_attempts:]
+        writer = self._seams.record_model_error
+        if writer is None or record.grade_db is None:
+            return
+        try:
+            # ``max_db_notch_excluded`` is measured deviation from the fitted
+            # prediction, whose predicted error is exactly zero. Keeping the
+            # pair explicit makes the store's realized−predicted sign contract
+            # reproducible without reinterpreting the grade later.
+            count = writer(
+                attempt_id=record.attempt_id,
+                metric=record.metric,
+                predicted_db=0.0,
+                realized_db=record.grade_db,
+                context={
+                    "session_id": self.session_id,
+                    "speaker_id": self._speaker_id,
+                    "provenance": record.provenance,
+                },
+            )
+            self._model_error_store_count = max(0, int(count))
+        except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
+            log_event(
+                logger,
+                "correction.crossover_v2_model_error_write_failed",
+                level=logging.WARNING,
+                session_id=self.session_id,
+                speaker_id=self._speaker_id,
+                attempt_id=record.attempt_id,
+                exc_info=True,
+            )
 
     def _set_verify_outcome(
         self, outcome: str, code: str | None, gate: dict[str, Any] | None,
@@ -10647,6 +10965,10 @@ __all__ = [
     "abandon_measurement_volume",
     "V2ConductorSnapshot",
     "V2FlowSeams",
+    "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
+    "ATTEMPT_REASON_NO_FLOOR",
+    "attempt_history_from_state",
+    "attempt_record_from_verify",
     "V2PlanShape",
     "TIER_FULL",
     "TIER_EXPRESS",

@@ -3638,6 +3638,11 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
             "bundle_session_id": "bundle-undone",
             "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-undone"},
         },
+        "attempts_loop": {
+            "history": [{"attempt_id": "candidate-undone"}],
+            "last_decision": {"decision": "stop_floor"},
+            "store_count": 1,
+        },
     })
     v2host.observe_restore()
     state = v2host.load_v2_state()
@@ -3660,7 +3665,47 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     # persist_conductor_state's B1 carry-forward would resurrect on the next
     # verify-only re-arm, describing artifacts from the undone session.
     assert state["evidence"] is None
+    assert state["attempts_loop"] is None
     assert v2host._applied_gate() is False
+
+
+def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
+    loop = {
+        "history": [
+            {
+                "attempt_id": "candidate-a",
+                "metric": "max_db_notch_excluded",
+                "provenance": "realized",
+                "integrity": {"comparable": True, "reasons": []},
+                "repeats_used": 1,
+                "grade_db": 0.9,
+            }
+        ],
+        "last_decision": {
+            "decision": "continue",
+            "reason": "baseline_established",
+            "basis_attempt_ids": ["candidate-a"],
+            "provenance": "realized",
+            "floor": {"claim_floor_db": 0.17},
+        },
+        "store_count": 7,
+    }
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "applied": True,
+        "attempts_loop": loop,
+    })
+
+    block = v2host.crossover_v2_status_block()
+    assert block["attempts_loop"] == {
+        "last_decision": loop["last_decision"],
+        "store_count": 7,
+    }
+    assert "history" not in block["attempts_loop"]
+
+    v2host.reset_v2_journey_state()
+    assert v2host.load_v2_state()["attempts_loop"] == loop
 
 
 def test_undo_after_a_re_verify_does_not_leave_the_verify_screen_standing():

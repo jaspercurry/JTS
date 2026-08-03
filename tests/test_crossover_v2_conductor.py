@@ -37,6 +37,16 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.attempts_loop import (
+    PROVENANCE_REALIZED,
+    REASON_ATTEMPT_NOT_COMPARABLE,
+    REASON_BASELINE_ESTABLISHED,
+    REASON_IMPROVEMENT_ABOVE_FLOOR,
+    STOP_EVIDENCE,
+    AttemptIntegrity,
+    AttemptRecord,
+    FloorStats,
+)
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     DELTA_PROBE_VERDICTS,
@@ -150,11 +160,15 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_REPEAT_EPSILON,
     INTEGRITY_CHECK_SWEEP_HEARD,
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
+    INTEGRITY_FAIL,
+    INTEGRITY_NOT_EVALUATED,
     AlignmentEstimate,
+    CaptureIntegrity,
     CrossoverCandidate,
     DriftEstimate,
     DriverResponse,
     GainPlan,
+    IntegrityCheck,
     PilotObservation,
     ProgramAnalysis,
     RoleGainSolve,
@@ -486,6 +500,7 @@ class FakeSeams:
 
 
 def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+    seams = kwargs.pop("seams", fakes.seams())
     return CrossoverV2Conductor(
         session_id=SESSION,
         source_preset=_preset(),
@@ -493,8 +508,29 @@ def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
         fc_hz=FC_HZ,
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
-        seams=fakes.seams(),
+        seams=seams,
         driver_spacing_m=0.15,
+        **kwargs,
+    )
+
+
+def _attempt_floor() -> FloorStats:
+    return FloorStats.from_repeat_study(
+        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        median_db=0.05,
+        p95_db=0.1,
+        source="test repeat study",
+        measured_at="2026-08-03",
+    )
+
+
+def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+    return _conductor(
+        fakes,
+        index_phase_map={1: PHASE_VERIFY},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        attempt_floor=_attempt_floor(),
         **kwargs,
     )
 
@@ -524,6 +560,127 @@ def _confirm_cloud(conductor) -> dict:
     returns ``None`` rather than re-fitting.
     """
     return conductor.confirm_cloud_measure_group() or {}
+
+
+# --- live attempts loop -------------------------------------------------------
+
+
+def test_accepted_apply_verify_writes_model_error_exactly_once():
+    written: list[dict[str, Any]] = []
+    fakes = FakeSeams()
+
+    def record(**observation: Any) -> int:
+        written.append(dict(observation))
+        return len(written)
+
+    c = _verify_only_conductor(
+        fakes,
+        seams=replace(fakes.seams(), record_model_error=record),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    first = _run_phase(c, 1, 1)
+    repeated = _run_phase(c, 1, 2)
+
+    assert first["accepted"] is True
+    assert repeated["accepted"] is True
+    assert len(written) == 1
+    assert written[0] == {
+        "attempt_id": "candidate-a",
+        "metric": flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        "predicted_db": 0.0,
+        "realized_db": 0.9,
+        "context": {
+            "session_id": SESSION,
+            "speaker_id": "speaker-a",
+            "provenance": PROVENANCE_REALIZED,
+        },
+    }
+    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
+    assert c.model_error_store_count == 1
+    assert c.last_attempt_decision["reason"] == REASON_BASELINE_ESTABLISHED
+
+
+def test_model_error_store_failure_warns_without_blocking_verify(caplog):
+    def fail_write(**_observation: Any) -> int:
+        raise OSError("synthetic full disk")
+
+    fakes = FakeSeams()
+    c = _verify_only_conductor(
+        fakes,
+        seams=replace(fakes.seams(), record_model_error=fail_write),
+        tuning_attempt_id="candidate-a",
+        speaker_id="speaker-a",
+    )
+    with caplog.at_level(logging.WARNING):
+        verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is True
+    assert c.current_phase == PHASE_DONE
+    assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
+    assert "event=correction.crossover_v2_model_error_write_failed" in caplog.text
+
+
+def test_glitched_verify_reaches_loop_as_stop_evidence():
+    integrity = CaptureIntegrity(checks=(
+        IntegrityCheck(INTEGRITY_CHECK_SWEEP_HEARD, INTEGRITY_FAIL),
+        IntegrityCheck(
+            INTEGRITY_CHECK_SWEEP_SCHEDULE,
+            INTEGRITY_NOT_EVALUATED,
+            "sweep was not heard",
+        ),
+    ))
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, integrity=integrity)
+    c = _verify_only_conductor(fakes, tuning_attempt_id="candidate-glitched")
+
+    verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is False
+    assert c.attempt_history == ()
+    decision = c.last_attempt_decision
+    assert decision["decision"] == STOP_EVIDENCE
+    assert decision["reason"] == REASON_ATTEMPT_NOT_COMPARABLE
+    assert decision["notes"] == [
+        INTEGRITY_CHECK_SWEEP_HEARD,
+        INTEGRITY_CHECK_SWEEP_SCHEDULE,
+    ]
+
+
+def test_live_seam_preserves_immediate_predecessor_basis():
+    history = (
+        AttemptRecord(
+            attempt_id="candidate-early",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=9.0,
+        ),
+        AttemptRecord(
+            attempt_id="candidate-previous",
+            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            provenance=PROVENANCE_REALIZED,
+            integrity=AttemptIntegrity(comparable=True),
+            grade_db=1.0,
+        ),
+    )
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.6)
+    c = _verify_only_conductor(
+        fakes,
+        attempt_history=history,
+        tuning_attempt_id="candidate-latest",
+    )
+
+    verdict = _run_phase(c, 1, 1)
+
+    assert verdict["accepted"] is True
+    decision = c.last_attempt_decision
+    assert decision["reason"] == REASON_IMPROVEMENT_ABOVE_FLOOR
+    assert decision["basis_attempt_ids"] == [
+        "candidate-previous", "candidate-latest",
+    ]
+    assert decision["improvement_db"] == pytest.approx(0.4)
 
 
 # --- happy path -----------------------------------------------------------------
