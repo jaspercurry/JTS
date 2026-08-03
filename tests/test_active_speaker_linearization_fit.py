@@ -1156,12 +1156,19 @@ def _parse_giveback_table(doc: str) -> dict[str, tuple[str, ...]]:
     """Read the give-back table back out of a docstring, keyed by row label, so
     the test can require it row-for-row. Binding each label to its OWN five
     fields is the point: a bag of matching substrings passes a table whose rows
-    have been renamed, swapped, or invented."""
+    have been renamed, swapped, or invented.
+
+    A repeated label is rejected rather than overwritten. Keying by label means
+    the LAST row silently wins, so duplicate-a-row-then-edit-it — forgetting to
+    delete the original — would ship a docstring printing digits no assertion
+    ever reads."""
     rows: dict[str, tuple[str, ...]] = {}
     for line in doc.splitlines():
         match = _GIVEBACK_ROW_RE.match(line.strip())
         if match:
-            rows[match["label"]] = match.group(
+            label = match["label"]
+            assert label not in rows, f"table has a repeated row label: {label!r}"
+            rows[label] = match.group(
                 "spend", "giveback", "delta", "deficit", "filters"
             )
     return rows
