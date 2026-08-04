@@ -874,18 +874,18 @@ full re-walk.
 
 ## The next campaign — 80/20 crossover + linearization revision
 
-**Status: R14 documentation gate and contract ratified and complete
-(2026-08-04); R14 administrative issue closeout pending.** The same
+**Status: R14 complete (2026-08-04); R15 ready, not started.** The same
 independent reviewer returned 0 blockers and 0 should-fixes on the third
-delta-only review. This documentation-only repair made no issue writes and
-started no product implementation, deployment, or measurements.
+delta-only review. PR #2105 merged the contract; administrative closeout
+created #2106/#2107 and reconciled #1654/#1894. No product implementation,
+deployment, or measurements started.
 
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
 briefs live only in
 [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
 This spine owns only status and order IDs:
-`R14 (documentation gate passed; administrative issue closeout pending) -> R15 -> (R16 || pure R17) -> R18 -> R19 -> R20`.
+`R14 (complete) -> R15 (next) -> (R16 || pure R17) -> R18 -> R19 -> R20`.
 
 ---
 
@@ -969,10 +969,11 @@ remaining rounds in [the campaign](#the-campaign--rounds-to-monday-2026-08-03-an
 Do not restate strategy in a handoff; move the marker here and point at it.
 
 ```
-date:           2026-08-04 (R14 documentation gate ratified at third-delta
-                0 blockers / 0 should-fixes; administrative issue closeout
-                pending; no issue writes, product implementation, deployment,
-                or measurements started)
+date:           2026-08-04 (R14 complete: documentation gate ratified at
+                third-delta 0 blockers / 0 should-fixes; #2105 merged;
+                administrative closeout created #2106/#2107 and reconciled
+                #1654/#1894; no product implementation, deployment, or
+                measurements started)
 capture_page:   public capture_page_build read-only verified 2026-08-04 at
                 20260803.4
 jts3_sha:       build marker read-only verified 2026-08-04 at
@@ -982,13 +983,12 @@ compatibility:  20260803.4 + d742b37bec8293b72f1897194d9bf8e10b85cb08
                 is the compatible current public-capture-page / JTS3 pair.
                 These read-only observations establish current state, not
                 deployment order or chronology
-active_round:   R14 — administrative issue closeout only. The documentation
-                gate passed the same-reviewer third delta-only review at
-                0 blockers / 0 should-fixes. No product implementation is
-                active or was started
+active_round:   none — R14 is complete. R15 is ready for launch from current
+                remote main; no product implementation is active or was
+                started
 last_round:     R13 (owner validation day; last fully completed product
-                round). R14's documentation gate has passed, but the round
-                remains in administrative closeout
+                round). R14 is the completed documentation/administrative
+                campaign round
 validation:     applied=true, tier=full, session phases verify/cloud_verify.
                 Local at-mark VERIFY passed (max raw 0.9835 dB; offset
                 -5.868 dB), but only 4 of 5 cloud positions were accepted;
@@ -999,16 +999,14 @@ rollback:       Undo remains banked through the retained pre_apply_profile;
                 restoration was not exercised during this run
 follow_ups:     #2098 owns misleading mark-only / Full-grade projection;
                 #2099 owns the fit / spatial-grade / bass-room seam; #2100
-                owns honest Full-stage progress and recovery disclosure. The
-                new campaign's complete issue sweep lives only in
-                crossover-linearization-80-20-plan.md
-next_mission:   reconcile existing issue comments and create only the two
-                missing implementation tickets documented by the ratified
-                plan. R15 starts only after that issue setup; those writes
-                have not happened in this repair
-blocked_on:     no R14 documentation blocker. R14 administrative closeout and
-                R15 remain gated only on the planned issue reconciliation and
-                missing-ticket setup
+                owns honest Full-stage progress and recovery disclosure;
+                #2106 owns R15 and #2107 owns R16. The new campaign's complete
+                issue sweep lives only in crossover-linearization-80-20-plan.md
+next_mission:   launch the bounded #2106 R15 implementation task from freshly
+                fetched remote main. R16/#2107 and pure R17/#1894 start only
+                after R15 lands its frozen contracts
+blocked_on:     none — R14 is complete and R15's issue/contract prerequisites
+                exist. Product work has not yet started
 ```
 
 ## How this document relates to session handoffs and issues
@@ -1706,6 +1704,15 @@ non-critical warnings. Those observations establish the compatible current
 pair, not deployment order or chronology. It did not run a measurement or
 change product/DSP state. The older campaign narrative and historical appendix
 were not re-verified by this pass.
+
+**Verification scope.** A **2026-08-04 R14 administrative-closeout pass**
+verified #2105 merged as
+`a7e25f3ddb43457d1b08a9205542d880f3187591`, created exactly #2106/#2107,
+updated #1654's stale shelved title, and posted the ratified scope links to
+#1654/#1894. It re-verified only the next-campaign status/order, CURRENT
+POSITION, and the canonical plan's two-ticket disposition. It changed no
+product code, deployment, DSP state, or measurement evidence; older campaign
+narrative and the historical appendix were not re-verified.
 
 A **second 2026-08-02 pass (the post-campaign
 docs-drift repair)** re-verified, and is warranted by the date below, exactly
