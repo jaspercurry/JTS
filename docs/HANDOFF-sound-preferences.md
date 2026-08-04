@@ -817,22 +817,26 @@ original combined Sound page was the first wizard on this system; see AGENTS.md
 `/sound/settings`:
 
 1. Requires the shared JSON CSRF header (route-checked before CSRF).
-2. Enters the module-local Sound-settings writer lock, filters the request to
-   the three recognized aggregate fields (`headroom_trim_db`,
-   `match_loudness`, `volume_floor_db`), fresh-reads the one existing
-   `/var/lib/jasper/sound_settings.json`, merges only the posted fields, clamps,
-   and durably saves the merged `SoundSettings`. This is the narrow lost-update
-   guard for `/eq/` and `/sound/setup/`; there is no second settings file.
-3. Holds that same lock through DSP re-emission, source-aware volume
-   reconciliation, and the final state readback, so a response cannot describe
-   an older aggregate after another split-page save is already live.
-4. Re-applies the active profile through the `/sound/apply` path so the new
-   output trim takes effect immediately and persists in `sound_current.yml`.
-5. Asks the source-aware volume coordinator to re-apply the current
+2. Shares one module-local Sound-state transaction with `/sound/apply`.
+   Profile Apply fresh-reads saved settings inside it; Settings Save fresh-reads
+   the aggregate settings and saved profile. Their durable writes and DSP emits
+   cannot interleave, and Settings Save also holds the boundary through
+   source-aware volume reconciliation.
+3. Captures a coherent settings/profile/last-apply snapshot before release.
+   Response-only preview, curve, and profile-library rendering happens outside
+   the transaction from that snapshot.
+4. Filters to the three recognized aggregate fields (`headroom_trim_db`,
+   `match_loudness`, `volume_floor_db`), merges only the posted fields, clamps,
+   and durably saves the one `SoundSettings` file. This is the narrow split-page
+   lost-update guard; there is no second settings file.
+5. Re-emits the active saved profile through the same durable DSP runtime as
+   `/sound/apply`, so the new output trim takes effect immediately and persists
+   in `sound_current.yml`.
+6. Asks the source-aware volume coordinator to re-apply the current
    `listening_level` to Camilla when the active source is Camilla-master, so a
    saved `volume_floor_db` affects the current source without unguarding
    Spotify/Bluetooth push-mode handoffs.
-6. Saves the settings **before** the re-apply/reconcile, so a failed DSP
+7. Saves the settings **before** the re-apply/reconcile, so a failed DSP
    reload or volume reconcile still sticks and takes effect on the next apply
    or volume change.
 
@@ -982,8 +986,10 @@ can be diagnosed without scraping journal logs.
   process must not import NumPy/SciPy on cold start or activate the correction
   worker merely to render either page.
 - Keep `SoundSettings` aggregate. Split pages post only the fields they own;
-  `/sound/settings` must fresh-read and merge recognized fields while holding
-  its single lock through every live side effect and final readback.
+  `/sound/apply` and `/sound/settings` share one Sound-state transaction for
+  fresh reads, durable state, and DSP emit; Settings Save keeps volume
+  reconciliation inside it. Capture coherent snapshots before release, then
+  render response-only previews and library data outside the boundary.
 - Keep preference EQ bounded. The Simple EQ range is ±12 dB (matching
   the slider UI; shared with the calibration advisor via
   `SIMPLE_EQ_LIMIT_DB`) and advanced bands are capped. Boosts apply at

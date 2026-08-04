@@ -1717,10 +1717,16 @@ story; "parked-by-role" is surfaced state, NEVER a silent failure):
   output-topology and active-speaker commissioning/driver-protection work
   owned by this speaker's DAC path; leader-owned EQ and volume-shaping controls
   are omitted, and their mutation routes remain blocked.
-- /sound/room/ and the /correction/* compatibility routes: Room remains
-  leader-owned. The follower renders the pair notice and refuses mutating
-  correction requests, because a local measurement sweep would play into
-  outputd's drained direct lane and be inaudible.
+- /sound/room/* and the Room compatibility routes under `/correction/*`: Room
+  remains leader-owned. The follower renders the pair notice and refuses Room
+  mutations, because its sweep would play into outputd's drained direct lane
+  and be inaudible.
+- /sound/crossover/* and `/correction/crossover/*`: active-speaker crossover
+  measurement remains local to the follower that owns the DAC.
+  `jasper/web/correction_setup.py` explicitly exempts its `/crossover/*`
+  backend routes from the follower mutation block;
+  `tests/test_web_correction_setup.py::test_follower_keeps_local_crossover_measurement_post`
+  pins that boundary.
 - /system/: restart-voice 409s with the pair story; restart-audio
   touches only the alive subset (camilla).
 - Doctor: 8 liveness checks read "parked (bonded follower)" via
