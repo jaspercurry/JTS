@@ -131,7 +131,8 @@ and every `--no-block` shape retains the 120-second hard ceiling; the broker
 derives this exception from the validated request rather than trusting the
 client's requested number alone. The coordinator's 783-second ceiling has an
 explicit complete budget for enablement/activity probes and actions, bounded
-failed-state probes and `reset-failed` actions for desired-Off units,
+failed-state probes and `reset-failed` actions before desired-On starts and
+after desired-Off stops,
 BlueZ/RF-kill work, USB direct-lane settling and failed-On cleanup,
 Bluetooth's two 65-second accessory barriers, USB's 125-second coupling
 barrier, and a final process margin. Every source-owned unit declares finite
@@ -167,6 +168,12 @@ The coordinator mirrors desired state to every source-owned runtime unit's
 enablement, then starts them only when desired and local sources are allowed.
 Off means disabled and stopped. A bonded follower keeps desired enablement but
 stops the runtime, so unpairing can restore the household choice.
+
+Before an intentional desired-On start, the coordinator probes the unit's
+failed state and clears and verifies any stale failure/start-limit latch. A
+healthy active unit receives neither `reset-failed` nor another start. Reset
+or start failures remain bounded, fail the owning source loudly, and do not
+prevent the other sources from converging.
 
 USB and Bluetooth select their concrete ordered appliers first. Any remaining
 lifecycle declaration with `intent_unit is not None` uses this ordinary
@@ -487,7 +494,9 @@ USB-output negative gadget path and output recovery; it does **not** validate
 UAC2 or positive gadget mode, which still requires a registered I²S-output
 Zero or a board with separate host ports.
 
-Last verified: 2026-07-22 (USB-forensics repair rechecked as a maintenance
+Last verified: 2026-08-04 (desired-On failed/start-limit recovery ordering,
+healthy-unit no-op behavior, and bounded reset/start failures rechecked).
+Prior 2026-07-22 (USB-forensics repair rechecked as a maintenance
 restart that reuses canonical composition guards and readiness invalidation).
 Prior 2026-07-15 (desired-Off/effective-Off semantics with independent
 USB availability, JTS4 active-host Apple-DAC recovery, and the final guard

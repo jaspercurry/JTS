@@ -998,6 +998,8 @@ def _ensure_active(
     current = ops.unit_active(unit)
     if current is desired and not force:
         return _reset_failed_if_needed(ops, unit) if not desired else False
+    if desired:
+        _reset_failed_if_needed(ops, unit)
     verb = "start" if desired else "stop"
     rc, detail = ops.run_unit(unit, verb)
     _check_result(rc, detail, f"systemctl {verb} {unit}")
@@ -1009,7 +1011,7 @@ def _ensure_active(
 
 
 def _reset_failed_if_needed(ops: ReconcileOps, unit: str) -> bool:
-    """Converge desired-Off units from ``failed`` to terminal ``inactive``."""
+    """Clear a stale failed/start-limit latch around intentional transitions."""
 
     failed = ops.unit_failed(unit)
     if failed is None:

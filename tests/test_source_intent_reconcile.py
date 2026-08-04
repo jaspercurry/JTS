@@ -422,6 +422,9 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(source_intent.subprocess, "run", fake_run)
+    assert source_intent._run_unit_action(
+        "librespot.service", "reset-failed"
+    ) == (0, "")
     assert source_intent._run_unit_action("librespot.service", "start") == (0, "")
     assert source_intent._run_unit_action("shairport-sync.service", "start") == (
         0,
@@ -445,6 +448,7 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
         "start",
     ) == (0, "")
     assert calls == [
+        (["systemctl", "reset-failed", "librespot.service"], 5.0),
         (["systemctl", "start", "librespot.service"], 3.0),
         (
             ["systemctl", "start", "shairport-sync.service"],
@@ -969,6 +973,79 @@ def test_declared_intent_unit_selects_ordinary_systemd_applier(monkeypatch):
         ("enable", "declared-renderer.service"),
         ("start", "declared-renderer.service"),
     ]
+
+
+def test_failed_desired_on_source_resets_before_start():
+    unit = "librespot.service"
+    host = _FakeHost(failed_units={unit})
+
+    assert (
+        source_intent._apply_source(
+            Source.SPOTIFY,
+            True,
+            True,
+            host.ops(),
+        )
+        == "on"
+    )
+
+    assert host.calls == [
+        ("enable", unit),
+        ("reset-failed", unit),
+        ("start", unit),
+    ]
+    assert host.unit_active(unit) is True
+    assert host.unit_failed(unit) is False
+
+
+def test_healthy_desired_on_source_does_not_reset_or_start():
+    unit = "librespot.service"
+    host = _FakeHost(enabled={unit: True}, active={unit: True})
+
+    assert (
+        source_intent._apply_source(
+            Source.SPOTIFY,
+            True,
+            True,
+            host.ops(),
+        )
+        == "on"
+    )
+
+    assert host.calls == []
+
+
+@pytest.mark.parametrize("failed_action", ["reset-failed", "start"])
+def test_desired_on_recovery_failure_is_loud_and_does_not_run_later_actions(
+    tmp_path,
+    caplog,
+    failed_action,
+):
+    unit = "librespot.service"
+    host = _FakeHost(
+        failed_units={unit} if failed_action == "reset-failed" else set(),
+        fail={(failed_action, unit)},
+    )
+    env = _write(tmp_path, f"{_key(Source.SPOTIFY)}=enabled\n")
+
+    with caplog.at_level("WARNING"):
+        rc = source_intent.reconcile(env_path=env, ops=host.ops())
+
+    assert rc == 1
+    unit_calls = [call for call in host.calls if unit in call]
+    if failed_action == "reset-failed":
+        assert unit_calls == [
+            ("enable", unit),
+            ("reset-failed", unit),
+        ]
+    else:
+        assert unit_calls == [
+            ("enable", unit),
+            ("start", unit),
+        ]
+    assert "event=source.reconcile source=spotify" in caplog.text
+    assert "result=failed" in caplog.text
+    assert f"systemctl {failed_action} {unit} failed" in caplog.text
 
 
 def test_disabling_stale_enabled_unit_cancels_queued_boot_start(tmp_path):
